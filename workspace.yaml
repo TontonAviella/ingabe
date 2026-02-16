@@ -1,0 +1,8 @@
+# Dagster workspace configuration
+# Defines the code locations where Dagster will look for pipeline definitions
+
+load_from:
+  - python_module:
+      module_name: src.pipelines
+      working_directory: /app
+      attribute: defs

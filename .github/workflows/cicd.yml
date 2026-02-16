@@ -1,0 +1,67 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - 'docs/**'
+
+env:
+  IMAGE_REPO: us-central1-docker.pkg.dev/mundi-459021/mundi-apps/mundi-public
+  IMAGE_TAG: ${{ github.sha }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+
+# ──────────────── 1. build → test → push ────────────────
+  build-test-push:
+    runs-on: depot-ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+
+    - uses: depot/setup-action@v1
+
+    # ─ auth to Google (Artifact Registry) ─
+    - id: auth
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    # ─ build application image with Depot bake ─
+    - id: bake
+      name: Bake application image
+      uses: depot/bake-action@v1
+      with:
+        project: 9lr9tw2kzl
+        files: docker-compose.yml
+        save: true
+        set: |
+          app.tags=${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+          app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000
+          app.args.VITE_EMAIL_VERIFICATION=disable
+
+    - uses: depot/pull-action@v1
+      with:
+        build-id: ${{ steps.bake.outputs.build-id }}
+        targets: app,qgis-processing
+
+    - name: Add main tag
+      run: docker tag ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }} ${{ env.IMAGE_REPO }}:main
+
+    - name: Configure docker for Artifact Registry
+      run: gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+    # ─ run test container ─
+    - name: Compose up & run tests
+      env:
+        APP_IMAGE: ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+      run: docker compose run app pytest -xvs -n auto
+
+    - name: Push image
+      run: |
+        docker push ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+        docker push ${{ env.IMAGE_REPO }}:main

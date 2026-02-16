@@ -1,0 +1,758 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "gdal_warpreproject",
+      "description": "Reprojects a raster layer to a different CRS.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Reprojects a raster layer to a different CRS"
+          },
+          "TARGET_CRS": {
+            "type": "string",
+            "description": "Assigns a CRS to a raster input. Defaults to EPSG:4326 if not set."
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_aggregate",
+      "description": "Groups features in a vector layer by a chosen expression and calculates summary values for each group using specified aggregate functions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Aggregates a vector or table layer using specified summary functions."
+          },
+          "AGGREGATES": {
+            "type": "array",
+            "description": "Aggregates vector layer fields using functions like sum or mean.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "INPUT",
+          "AGGREGATES"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_buffer",
+      "description": "Buffers vector layers to a specified distance",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Input vector layer to buffer"
+          },
+          "DISTANCE": {
+            "type": "number",
+            "description": "Buffers vector layers to a specified distance",
+            "default": 10.0
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_dissolve",
+      "description": "Merges features in a vector layer based on shared attributes or all features into one.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Dissolves features in a vector layer."
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_fieldcalculator",
+      "description": "Adds or updates a field in a vector layer using a formula expression per feature",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Calculates a new or updated field in a vector layer using a formula"
+          },
+          "FIELD_NAME": {
+            "type": "string",
+            "description": "Calculates a new or updated field in a vector layer using a formula."
+          },
+          "FORMULA": {
+            "type": "string",
+            "description": "Calculates a new or updated field for each vector feature using a QGIS expression formula."
+          }
+        },
+        "required": [
+          "INPUT",
+          "FIELD_NAME",
+          "FORMULA"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_fixgeometries",
+      "description": "Repairs invalid geometries in a vector layer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Repairs invalid geometries in a vector layer."
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_geometrybyexpression",
+      "description": "Modifies vector layer geometries using a geometry expression.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Modifies the geometry of vector layer features using an expression"
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_joinattributesbylocation",
+      "description": "Performs a spatial join by merging attributes from one vector layer to another where features meet a spatial relationship.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Joins attributes from one vector layer to another based on spatial relationship"
+          },
+          "JOIN": {
+            "type": "string",
+            "description": "Joins attributes from a vector layer to another vector layer based on spatial location."
+          }
+        },
+        "required": [
+          "INPUT",
+          "JOIN"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_mergevectorlayers",
+      "description": "Merges multiple vector layers of the same geometry type into one layer, keeping all fields and features.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "LAYERS": {
+            "type": "array",
+            "description": "Merges multiple vector layers of the same geometry type into one layer.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "LAYERS"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_reprojectlayer",
+      "description": "Reprojects a vector layer to another CRS.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Reprojects a vector layer to a different CRS"
+          },
+          "TARGET_CRS": {
+            "type": "string",
+            "description": "Reprojects a vector layer to a different CRS.",
+            "default": "EPSG:4326"
+          }
+        },
+        "required": [
+          "INPUT"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "qgis_clip",
+      "description": "Clips a vector layer using the boundaries of another vector polygon layer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Clips features from a vector layer using the boundary of another vector layer."
+          },
+          "OVERLAY": {
+            "type": "string",
+            "description": "Clips a vector layer to polygons from another vector layer. Only features inside the overlay polygons are kept."
+          }
+        },
+        "required": [
+          "INPUT",
+          "OVERLAY"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "qgis_intersection",
+      "description": "Creates a new vector layer with features where the input and overlay layers intersect, combining attributes from both.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Intersects two vector layers and extracts overlapping features."
+          },
+          "OVERLAY": {
+            "type": "string",
+            "description": "Finds overlapping areas between two vector layers."
+          }
+        },
+        "required": [
+          "INPUT",
+          "OVERLAY"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "qgis_joinbylocationsummary",
+      "description": "Joins two vector layers by spatial relationship and adds summary statistics from the join layer to the input layer.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Joins vector layers by location and adds summary attributes from the join layer."
+          },
+          "JOIN": {
+            "type": "string",
+            "description": "Joins attributes from a vector layer based on spatial relationships with another vector layer."
+          }
+        },
+        "required": [
+          "INPUT",
+          "JOIN"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "qgis_statisticsbycategories",
+      "description": "Calculates grouped statistics for vector layer attributes based on unique values in specified category fields. Outputs a summary table.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Calculates statistics for a vector layer grouped by a category field."
+          },
+          "CATEGORIES_FIELD_NAME": {
+            "type": "array",
+            "description": "Calculates statistics for vector features grouped by values in the specified field(s)",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "INPUT",
+          "CATEGORIES_FIELD_NAME"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_creategrid",
+      "description": "Creates a regular grid of polygons (rectangles or hexagons) covering a specified extent. Useful for spatial sampling, heat maps, and aggregating point data into cells.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "TYPE": {
+            "type": "integer",
+            "description": "Grid type: 0=Point, 1=Line, 2=Rectangle, 3=Diamond, 4=Hexagon. Default: 2",
+            "default": 2
+          },
+          "EXTENT": {
+            "type": "string",
+            "description": "Grid extent as 'xmin,xmax,ymin,ymax [EPSG:code]'. Use a layer name to auto-detect extent."
+          },
+          "HSPACING": {
+            "type": "number",
+            "description": "Horizontal spacing between grid cells (in CRS units, e.g. degrees for EPSG:4326)",
+            "default": 0.01
+          },
+          "VSPACING": {
+            "type": "number",
+            "description": "Vertical spacing between grid cells (in CRS units)",
+            "default": 0.01
+          },
+          "CRS": {
+            "type": "string",
+            "description": "CRS for the output grid. Default: EPSG:4326",
+            "default": "EPSG:4326"
+          }
+        },
+        "required": ["EXTENT"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "native_zonalstatisticsfb",
+      "description": "Calculates raster statistics (mean, min, max, sum, count, std dev) for each polygon zone in a vector layer. Creates a new layer with the statistics appended as columns. Use when the user wants to summarise raster values within polygons (e.g. average elevation per district, total rainfall per field).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "INPUT": {
+            "type": "string",
+            "description": "Vector polygon layer defining the zones"
+          },
+          "INPUT_RASTER": {
+            "type": "string",
+            "description": "Raster layer to compute statistics from"
+          },
+          "RASTER_BAND": {
+            "type": "integer",
+            "description": "Raster band number to analyse. Default: 1",
+            "default": 1
+          },
+          "COLUMN_PREFIX": {
+            "type": "string",
+            "description": "Prefix for the new statistic columns. Default: '_'",
+            "default": "_"
+          },
+          "STATISTICS": {
+            "type": "array",
+            "description": "Statistics to compute: 0=Count, 1=Sum, 2=Mean, 3=Median, 4=StDev, 5=Min, 6=Max. Default: [2] (Mean)",
+            "items": { "type": "integer" },
+            "default": [2]
+          }
+        },
+        "required": ["INPUT", "INPUT_RASTER"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_rwanda_zonal_stats",
+      "description": "Query agricultural zonal statistics for Rwanda. Use query_type='district_summary' (DEFAULT) for per-district NDVI/crop overviews — works for all districts, a single province, or a single district. Use query_type='ndvi_timeseries' ONLY when you have a specific h3_index or parcel_id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query_type": {
+            "type": "string",
+            "enum": ["district_summary", "ndvi_timeseries"],
+            "description": "district_summary: aggregated NDVI stats per district/province (no h3_index needed, this is the default). ndvi_timeseries: weekly NDVI time-series for a SPECIFIC h3_index or parcel_id (REQUIRED, will error without one)."
+          },
+          "district": {
+            "type": "string",
+            "description": "District name to filter by (optional, for district_summary)"
+          },
+          "province": {
+            "type": "string",
+            "description": "Province name to filter by (optional, for district_summary)"
+          },
+          "h3_index": {
+            "type": "string",
+            "description": "H3 hexagon index — REQUIRED for ndvi_timeseries, not used for district_summary"
+          },
+          "parcel_id": {
+            "type": "string",
+            "description": "Parcel ID — REQUIRED for ndvi_timeseries (alternative to h3_index), not used for district_summary"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date in YYYY-MM-DD format (optional, for ndvi_timeseries)"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date in YYYY-MM-DD format (optional, for ndvi_timeseries)"
+          },
+          "week_start": {
+            "type": "string",
+            "description": "Week start date in YYYY-MM-DD format (optional, for district_summary)"
+          }
+        },
+        "required": ["query_type"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_satellite_imagery",
+      "description": "Search for satellite imagery (Sentinel-2, Landsat) over Rwanda or a specific area. Returns available scenes with dates, cloud cover, and download links. Use this when the user asks about satellite images, remote sensing data, or wants to find imagery for a specific date/location.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'west,south,east,north' in WGS84 coordinates. Defaults to Rwanda bounds if not specified."
+          },
+          "datetime_range": {
+            "type": "string",
+            "description": "Date range in ISO 8601 format like '2024-01-01/2024-06-30'. Defaults to last 30 days."
+          },
+          "max_cloud_cover": {
+            "type": "number",
+            "description": "Maximum cloud cover percentage (0-100). Default: 20"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of results (1-50). Default: 10"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_field_health",
+      "description": "Get real-time vegetation health statistics for a field polygon using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. Use when the user asks about crop health, vegetation status, or field monitoring for a specific area.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field to analyse"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date ISO 8601 (default: 30 days ago)"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date ISO 8601 (default: today)"
+          },
+          "index": {
+            "type": "string",
+            "enum": ["ndvi", "multi"],
+            "description": "Index type: 'ndvi' for NDVI only, 'multi' for NDVI+NDWI+BSI. Default: ndvi"
+          }
+        },
+        "required": ["geometry"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_ndvi_stats",
+      "description": "Read the latest NDVI vegetation index statistics from the DuckDB cache. Updated nightly by Dagster from Sentinel-2 satellite imagery via Sentinel Hub. Returns weekly mean, std, min, max NDVI and valid pixel count per district. Use when the user asks about vegetation health, NDVI values, greenness, or crop condition for Rwanda districts.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter results to a specific district name (e.g. Bugesera, Musanze, Gasabo)"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_cell_ndvi_stats",
+      "description": "Read cell-level (ADM4) NDVI vegetation index statistics from the DuckDB cache. Updated nightly by Dagster from Sentinel-2 imagery. Rwanda has ~2,148 cells (~12 km² each), giving much better spatial resolution than district-level stats. Returns weekly mean, std, min, max NDVI per cell. Use when the user asks about vegetation health at cell level, wants finer detail than district level, or mentions a specific cell or area within a district.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cell_name": {
+            "type": "string",
+            "description": "Filter by cell name (partial match supported)"
+          },
+          "district": {
+            "type": "string",
+            "description": "Filter by district name to see all cells within a district"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_parcel_ndvi_stats",
+      "description": "Read parcel-level NDVI statistics from the DuckDB cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "parcel_name": {
+            "type": "string",
+            "description": "Filter by parcel/field name (partial match supported)"
+          },
+          "layer_id": {
+            "type": "string",
+            "description": "Filter by source layer ID"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_agri_indices",
+      "description": "Get REAL-TIME agricultural vegetation indices from Sentinel-2 satellite imagery via Sentinel Hub. Computes 6 indices in one call: NDVI (vegetation health), EVI (enhanced vegetation), NDWI (water content), SAVI (soil-adjusted vegetation), NDRE (nitrogen/chlorophyll), NDBI (built-up index). Works at district, sector (ADM3), or cell (ADM4) level. Uses SCL cloud masking for accurate results. Use when the user asks about vegetation analysis, crop monitoring, agricultural indices, EVI, NDWI, SAVI, NDRE, NDBI, or wants multi-index analysis at any admin level.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "admin_level": {
+            "type": "string",
+            "enum": ["district", "sector", "cell"],
+            "description": "Administrative level: 'district' (30 units), 'sector' (416 units, ADM3), 'cell' (2148 units, ADM4). Default: district"
+          },
+          "name": {
+            "type": "string",
+            "description": "Filter to a specific admin unit name (e.g. 'Gasabo', 'Kimisagara'). Partial match supported."
+          },
+          "district": {
+            "type": "string",
+            "description": "Filter sectors/cells within a specific district"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date ISO 8601 (default: 7 days ago)"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date ISO 8601 (default: today)"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_land_cover_layer",
+      "description": "Add ESA WorldCover 2021 land cover layer to the map. Shows cropland vs non-cropland at 10m resolution from satellite imagery. Two modes: 'all' shows all 11 land cover classes (tree cover, shrubland, grassland, cropland, built-up, bare, snow/ice, water, wetland, mangroves, moss/lichen). 'cropland' highlights cropland in green and mutes everything else. Use when the user asks about land cover, land use, cropland extent, where crops are grown, or crop vs non-crop classification.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["all", "cropland"],
+            "description": "Visualization mode: 'all' shows all 11 land cover classes with distinct colours. 'cropland' highlights cropland areas in green and mutes all other classes. Default: all"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_crop_classifications",
+      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use when the user asks about crop types, land use, or classification maps.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter results to a specific district name"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_anomaly_alerts",
+      "description": "Read the latest anomaly alerts from the DuckDB cache. Anomalies are detected weekly by Dagster using z-score analysis on NDVI time series. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use when the user asks about crop problems, stress alerts, or anomalies.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["high", "moderate"],
+            "description": "Filter by severity level"
+          },
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_yield_risk",
+      "description": "Read pre-computed yield risk assessments from the DuckDB cache. Uses Mann-Kendall trend analysis and Theil-Sen slope on NDVI time series to predict crop yield risk per district. Returns risk level (low/normal/moderate/high/critical), trend direction, and statistical confidence. Use when the user asks about harvest outlook, yield forecast, or crop risk.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_drought_status",
+      "description": "Read pre-computed drought status from the DuckDB cache. Uses Vegetation Condition Index (VCI) with NDWI water stress analysis per district. Returns drought status (normal/watch/moderate_drought/severe_drought), VCI score, and affected period count. Use when the user asks about drought, water stress, or dry conditions.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["severe_drought", "moderate_drought", "watch", "normal"],
+            "description": "Filter by drought status"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_crop_growth_stage",
+      "description": "Read pre-computed crop growth stage analysis from the DuckDB cache. Uses NDVI phenology curve analysis to identify current crop stage per district: dormant, green_up, peak, senescence, or harvest. Returns current stage, peak NDVI date, and key phenological transition dates. Use when the user asks about crop growth, planting, harvesting, or growing season.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district"
+          },
+          "stage": {
+            "type": "string",
+            "enum": ["dormant", "green_up", "peak", "senescence", "harvest", "stable"],
+            "description": "Filter by current growth stage"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_weather_stats",
+      "description": "Read daily weather statistics from the DuckDB cache. Data comes from Copernicus AgERA5 agrometeorological indicators (0.1 degree resolution, updated daily by Dagster). Returns per-district daily temperature (mean/max/min in Celsius), precipitation (mm/day), and solar radiation (MJ/m2/day). Use when the user asks about weather, temperature, rainfall, precipitation, solar radiation, climate conditions, or growing conditions for Rwanda districts.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district name (e.g. Bugesera, Musanze, Gasabo)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date in YYYY-MM-DD format (default: 30 days ago)"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date in YYYY-MM-DD format (default: today)"
+          }
+        },
+        "required": []
+      }
+    }
+  }
+]

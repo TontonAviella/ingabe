@@ -1,0 +1,25 @@
+<svg width="680" height="240" viewBox="0 0 680 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Inyambo cow icon -->
+  <g transform="translate(0, 20) scale(0.85)">
+    <!-- Left horn -->
+    <path d="M120 180 Q60 170 40 120 Q20 60 50 20 Q58 10 62 18 Q42 58 55 110 Q65 145 110 160Z" fill="#181818"/>
+    <!-- Right horn -->
+    <path d="M120 180 Q180 170 200 120 Q220 60 190 20 Q182 10 178 18 Q198 58 185 110 Q175 145 130 160Z" fill="#181818"/>
+    <!-- Head -->
+    <ellipse cx="120" cy="195" rx="28" ry="30" fill="#181818"/>
+    <!-- Face stripe -->
+    <ellipse cx="120" cy="192" rx="12" ry="24" fill="#666" opacity="0.4"/>
+    <!-- Ears -->
+    <ellipse cx="88" cy="185" rx="12" ry="6" transform="rotate(-30 88 185)" fill="#181818"/>
+    <ellipse cx="152" cy="185" rx="12" ry="6" transform="rotate(30 152 185)" fill="#181818"/>
+    <!-- Eyes -->
+    <circle cx="110" cy="190" r="3" fill="#D8D8D8"/>
+    <circle cx="130" cy="190" r="3" fill="#D8D8D8"/>
+    <!-- Nose -->
+    <ellipse cx="120" cy="210" rx="10" ry="6" fill="#666" opacity="0.5"/>
+    <circle cx="116" cy="210" r="2" fill="#999"/>
+    <circle cx="124" cy="210" r="2" fill="#999"/>
+  </g>
+  <!-- "Ingabe" text -->
+  <text x="210" y="170" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="150" font-weight="700" letter-spacing="-3" fill="#181818">Ingabe</text>
+</svg>

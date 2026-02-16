@@ -1,0 +1,334 @@
+services:
+  app:
+    container_name: mundi-app
+    platform: linux/amd64
+    image: "${APP_IMAGE:-mundi-public:local}"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - VITE_WEBSITE_DOMAIN=http://localhost:8000
+      x-bake:
+        tags:
+          - "${APP_IMAGE:-mundi-public:local}"
+    ports:
+      - "8000:8000"
+    depends_on:
+      minio:
+        condition: service_healthy
+      mc:
+        condition: service_completed_successfully
+      postgresdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qgis-processing:
+        condition: service_healthy
+    environment:
+      - MUNDI_AUTH_MODE=edit # "edit" or "view_only"
+      - S3_ACCESS_KEY_ID=s3user
+      - S3_SECRET_ACCESS_KEY=backup123
+      - S3_DEFAULT_REGION=us-east-1
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET=test-bucket
+      - WEBSITE_DOMAIN=http://localhost:8000
+      - QGIS_PROCESSING_URL=http://qgis-processing:8817
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
+      - POSTGRES_HOST=postgresdb
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=mundidb
+      - POSTGRES_USER=mundiuser
+      - POSTGRES_PASSWORD=gdalpassword
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      - POSTGIS_LOCALHOST_POLICY=docker_rewrite
+      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
+      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
+      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
+      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
+      - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
+      - CDSAPI_KEY=${CDSAPI_KEY:-}
+      - SUPERSET_URL=http://superset:8088
+      # Iceberg lakehouse configuration (Phase 2)
+      - ICEBERG_CATALOG_DB=/tmp/iceberg_catalog.db
+      - ICEBERG_WAREHOUSE_PATH=s3://test-bucket/lakehouse/warehouse
+      # Read replica (set to route SELECT queries to replica; omit to use primary for all)
+      # - POSTGRES_READ_HOST=postgresdb-replica
+      # - POSTGRES_READ_PORT=5432
+      # Dask raster pipeline (uses synchronous scheduler by default)
+      # - DASK_SCHEDULER_ADDRESS=tcp://dask-scheduler:8786
+      # - RASTER_EAGER_COG=false  # Disable upload-time COG generation (default: true)
+      # Tile cache (Redis, enabled by default)
+      # - TILE_CACHE_ENABLED=true
+      # - TILE_CACHE_TTL=3600  # seconds
+      # - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
+      # - OPENAI_API_KEY=ollama
+      # - OPENAI_MODEL=orieg/gemma3-tools:1b
+      #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
+    command: uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors
+    volumes:
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+      - ./conftest.py:/app/conftest.py
+      - ./pytest.ini:/app/pytest.ini
+      - ./docs:/app/docs
+      - ingabe-cache:/tmp/ingabe_cache
+
+  minio:
+    image: bitnamilegacy/minio:latest
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DEFAULT_BUCKETS=test-bucket
+    volumes:
+      - ./data/minio:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 1s
+      timeout: 2s
+      retries: 10
+
+  mc:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 admin password;
+      /usr/bin/mc admin user add myminio s3user backup123;
+      /usr/bin/mc admin policy attach myminio readwrite --user s3user ||
+      (sleep 3 && /usr/bin/mc admin policy attach myminio readwrite --user s3user);
+      echo 'S3 user setup complete!';
+      "
+
+  postgresdb:
+    platform: linux/amd64
+    image: postgis/postgis:15-3.4
+    environment:
+      - POSTGRES_DB=mundidb
+      - POSTGRES_USER=mundiuser
+      - POSTGRES_PASSWORD=gdalpassword
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mundiuser -d mundidb"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+
+
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 5
+
+  qgis-processing:
+    platform: linux/amd64
+    image: ${QGIS_PROCESSING_IMAGE:-qgis-processing:local}
+    build:
+      context: ./qgis-processing
+      dockerfile: Dockerfile
+      x-bake:
+        tags:
+          - qgis-processing:local
+    command: python -m uvicorn server:app --host 0.0.0.0 --port 8817
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8817/health"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 10s
+
+  # --- Optional: PostgreSQL read replica (uncomment to scale read-heavy workloads) ---
+  # Requires the primary to have wal_level=replica (default in PostgreSQL 10+).
+  # For production, use your cloud provider's managed read replica (RDS, Cloud SQL)
+  # and set POSTGRES_READ_HOST in the app environment instead.
+  #
+  # postgresdb-replica:
+  #   image: postgis/postgis:15-3.4
+  #   environment:
+  #     - POSTGRES_DB=mundidb
+  #     - POSTGRES_USER=mundiuser
+  #     - POSTGRES_PASSWORD=gdalpassword
+  #     - POSTGRES_PRIMARY_HOST=postgresdb
+  #     - POSTGRES_PRIMARY_PORT=5432
+  #   depends_on:
+  #     postgresdb:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./data/postgres-replica:/var/lib/postgresql/data
+  #   command: >
+  #     bash -c "
+  #     if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+  #       rm -rf /var/lib/postgresql/data/*;
+  #       PGPASSWORD=$$POSTGRES_PASSWORD pg_basebackup
+  #         -h $$POSTGRES_PRIMARY_HOST -p $$POSTGRES_PRIMARY_PORT
+  #         -U $$POSTGRES_USER -D /var/lib/postgresql/data -Fp -Xs -R;
+  #     fi;
+  #     exec postgres -c hot_standby=on
+  #     "
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U mundiuser -d mundidb"]
+  #     interval: 1s
+  #     timeout: 5s
+  #     retries: 10
+
+  # --- Optional: Dask distributed scheduler (uncomment to scale raster processing) ---
+  # dask-scheduler:
+  #   image: "${APP_IMAGE:-mundi-public:local}"
+  #   command: dask scheduler
+  #   ports:
+  #     - "8786:8786"   # scheduler port
+  #     - "8787:8787"   # dashboard
+  #
+  # dask-worker:
+  #   image: "${APP_IMAGE:-mundi-public:local}"
+  #   command: dask worker tcp://dask-scheduler:8786 --nworkers 2 --nthreads 2
+  #   depends_on:
+  #     - dask-scheduler
+  #   environment:
+  #     - S3_ACCESS_KEY_ID=s3user
+  #     - S3_SECRET_ACCESS_KEY=backup123
+  #     - S3_DEFAULT_REGION=us-east-1
+  #     - S3_ENDPOINT_URL=http://minio:9000
+  #     - S3_BUCKET=test-bucket
+
+  # --- Dagster pipeline orchestration ---
+  dagster-webserver:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-dagster-webserver
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster_home/workspace.yaml
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - DAGSTER_HOME=/app/dagster_home
+      - DAGSTER_PG_URL=postgresql://mundiuser:gdalpassword@postgresdb:5432/dagster
+      - S3_ACCESS_KEY_ID=s3user
+      - S3_SECRET_ACCESS_KEY=backup123
+      - S3_DEFAULT_REGION=us-east-1
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET=test-bucket
+      - POSTGRES_HOST=postgresdb
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=mundidb
+      - POSTGRES_USER=mundiuser
+      - POSTGRES_PASSWORD=gdalpassword
+      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
+      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
+      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
+      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
+      - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
+      - CDSAPI_KEY=${CDSAPI_KEY:-}
+    volumes:
+      - ./src:/app/src
+      - dagster-home:/app/dagster_home
+      - ./dagster.yaml:/app/dagster_home/dagster.yaml
+      - ./workspace.yaml:/app/dagster_home/workspace.yaml
+      - ingabe-cache:/tmp/ingabe_cache
+
+  dagster-daemon:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-dagster-daemon
+    command: dagster-daemon run -w /app/dagster_home/workspace.yaml
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - DAGSTER_HOME=/app/dagster_home
+      - DAGSTER_PG_URL=postgresql://mundiuser:gdalpassword@postgresdb:5432/dagster
+      - S3_ACCESS_KEY_ID=s3user
+      - S3_SECRET_ACCESS_KEY=backup123
+      - S3_DEFAULT_REGION=us-east-1
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET=test-bucket
+      - POSTGRES_HOST=postgresdb
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=mundidb
+      - POSTGRES_USER=mundiuser
+      - POSTGRES_PASSWORD=gdalpassword
+      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
+      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
+      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
+      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
+      - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
+      - CDSAPI_KEY=${CDSAPI_KEY:-}
+    volumes:
+      - ./src:/app/src
+      - dagster-home:/app/dagster_home
+      - ./dagster.yaml:/app/dagster_home/dagster.yaml
+      - ./workspace.yaml:/app/dagster_home/workspace.yaml
+      - ingabe-cache:/tmp/ingabe_cache
+
+  superset:
+    platform: linux/amd64
+    image: apache/superset:4.1.1
+    container_name: mundi-superset
+    ports:
+      - "8088:8088"
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - SUPERSET_SECRET_KEY=superset-secret-key-change-in-prod
+      - DATABASE_DB=superset
+      - DATABASE_HOST=postgresdb
+      - DATABASE_PASSWORD=gdalpassword
+      - DATABASE_USER=mundiuser
+      - DATABASE_PORT=5432
+      - DATABASE_DIALECT=postgresql
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SUPERSET_LOAD_EXAMPLES=no
+      - SUPERSET_ENV=production
+      - PYTHONPATH=/app/pythonpath
+    volumes:
+      - ./superset_config.py:/app/pythonpath/superset_config.py
+      - superset-home:/app/superset_home
+    command:
+      - bash
+      - -c
+      - |
+        pip install psycopg2-binary pillow flask-cors &&
+        python -c "
+        import psycopg2; from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+        conn = psycopg2.connect(host='postgresdb', port=5432, user='mundiuser', password='gdalpassword', dbname='mundidb')
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT); cur = conn.cursor()
+        cur.execute(\"SELECT 1 FROM pg_database WHERE datname = 'superset'\")
+        exists = cur.fetchone()
+        if not exists: cur.execute('CREATE DATABASE superset'); print('Created superset database')
+        else: print('superset database already exists')
+        conn.close()
+        " &&
+        superset db upgrade &&
+        (superset fab create-admin --username admin --firstname Admin --lastname User --email admin@localhost --password admin || true) &&
+        superset init &&
+        superset run -h 0.0.0.0 -p 8088 --with-threads --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  dagster-home:
+  superset-home:
+  ingabe-cache:

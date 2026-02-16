@@ -1,0 +1,13 @@
+.venv
+.git
+.github
+**/node_modules
+**/__pycache__
+**/*.pyc
+.pytest_cache
+docs/
+archives/
+*.md
+frontendts/dist/
+frontendts/design_suggestions/
+data/

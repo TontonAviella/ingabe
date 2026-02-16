@@ -1,0 +1,24 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Inyambo (Ankole-Watusi) cow - iconic heart-shaped horns -->
+  <!-- Left horn -->
+  <path d="M120 180 Q60 170 40 120 Q20 60 50 20 Q58 10 62 18 Q42 58 55 110 Q65 145 110 160Z" fill="#181818" stroke="#181818" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Right horn -->
+  <path d="M120 180 Q180 170 200 120 Q220 60 190 20 Q182 10 178 18 Q198 58 185 110 Q175 145 130 160Z" fill="#181818" stroke="#181818" stroke-width="1" stroke-linejoin="round"/>
+  <!-- Head -->
+  <ellipse cx="120" cy="195" rx="28" ry="30" fill="#181818"/>
+  <!-- Face stripe (lighter center) -->
+  <ellipse cx="120" cy="192" rx="12" ry="24" fill="#666" opacity="0.4"/>
+  <!-- Left ear -->
+  <ellipse cx="88" cy="185" rx="12" ry="6" transform="rotate(-30 88 185)" fill="#181818"/>
+  <!-- Right ear -->
+  <ellipse cx="152" cy="185" rx="12" ry="6" transform="rotate(30 152 185)" fill="#181818"/>
+  <!-- Left eye -->
+  <circle cx="110" cy="190" r="3" fill="#D8D8D8"/>
+  <!-- Right eye -->
+  <circle cx="130" cy="190" r="3" fill="#D8D8D8"/>
+  <!-- Nose -->
+  <ellipse cx="120" cy="210" rx="10" ry="6" fill="#666" opacity="0.5"/>
+  <!-- Nostrils -->
+  <circle cx="116" cy="210" r="2" fill="#999"/>
+  <circle cx="124" cy="210" r="2" fill="#999"/>
+</svg>
