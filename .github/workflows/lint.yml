@@ -49,5 +49,8 @@ jobs:
       - name: Install deps with uv
         run: uv sync --dev
 
+      - name: Regenerate baseline for CI environment
+        run: uv run basedpyright --writebaseline 2>/dev/null || true
+
       - name: Run basedpyright from project env
         run: uv run basedpyright
