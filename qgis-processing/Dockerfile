@@ -16,5 +16,6 @@ WORKDIR /app
 
 COPY server.py .
 
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8817"]
+ENV PORT=8817
+CMD ["sh", "-c", "python -m uvicorn server:app --host 0.0.0.0 --port ${PORT}"]
 

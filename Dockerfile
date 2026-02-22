@@ -201,4 +201,7 @@ ENV DISPLAY=:99 \
     GDAL_DATA="/usr/local/share/gdal" \
     GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins"
 
-CMD ["python", "-m", "src.wsgi"]
+COPY scripts/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh"]
