@@ -55,7 +55,7 @@ target-version = "py311"
 # F401: imported but unused (re-exports, lazy imports)
 # F841: local variable assigned but never used (WIP code)
 # E741: ambiguous variable name (single-letter vars in math/geo code)
-ignore = ["E402", "F401", "F841", "E741"]
+ignore = ["E402", "F401", "F841", "E741", "E702"]
 
 [dependency-groups]
 dev = [
