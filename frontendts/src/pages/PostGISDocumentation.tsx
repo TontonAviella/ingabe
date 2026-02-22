@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { ArrowLeft, Database, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -39,7 +40,7 @@ const PostGISDocumentation = () => {
 
     try {
       // First, we need to find which project this connection belongs to
-      const projectsResponse = await fetch('/api/projects/');
+      const projectsResponse = await apiFetch('/api/projects/');
       if (!projectsResponse.ok) {
         throw new Error('Failed to fetch projects');
       }
@@ -51,7 +52,7 @@ const PostGISDocumentation = () => {
 
       for (const project of projectsData.projects) {
         // Fetch project sources (PostGIS connections) for this project
-        const sourcesResponse = await fetch(`/api/projects/${project.id}/sources`);
+        const sourcesResponse = await apiFetch(`/api/projects/${project.id}/sources`);
         if (sourcesResponse.ok) {
           const sources = (await sourcesResponse.json()) as PostgresConnection[];
           const connection = sources.find((c) => c.connection_id === connectionId);
@@ -71,7 +72,7 @@ const PostGISDocumentation = () => {
       setConnectionName(foundConnectionName);
 
       // Now fetch the documentation
-      const docResponse = await fetch(`/api/projects/${foundProjectId}/postgis-connections/${connectionId}/documentation`);
+      const docResponse = await apiFetch(`/api/projects/${foundProjectId}/postgis-connections/${connectionId}/documentation`);
       if (!docResponse.ok) {
         throw new Error(`Failed to fetch documentation: ${docResponse.statusText}`);
       }
@@ -128,7 +129,7 @@ const PostGISDocumentation = () => {
     setError(null);
 
     try {
-      const response = await fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/regenerate-documentation`, {
+      const response = await apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/regenerate-documentation`, {
         method: 'POST',
       });
 
@@ -155,7 +156,7 @@ const PostGISDocumentation = () => {
     setError(null);
 
     try {
-      const response = await fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}`, {
+      const response = await apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}`, {
         method: 'DELETE',
       });
 

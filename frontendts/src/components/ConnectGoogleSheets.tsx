@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -115,7 +116,7 @@ export const ConnectGoogleSheets: React.FC<ConnectGoogleSheetsProps> = ({ isOpen
       // Transform Google Sheets URL to CSV export format
       const processedUrl = transformGoogleSheetsUrl(url);
 
-      const response = await fetch(`/api/maps/${mapId}/layers/remote`, {
+      const response = await apiFetch(`/api/maps/${mapId}/layers/remote`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

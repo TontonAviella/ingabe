@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { Database, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -26,7 +27,7 @@ const DatabaseDetailsDialog = ({ isOpen, onClose, databaseName, connectionId, pr
       setLoading(true);
       setError(null);
 
-      fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/documentation`)
+      apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/documentation`)
         .then((response) => {
           if (!response.ok) {
             throw new Error(`Failed to fetch documentation: ${response.statusText}`);
@@ -52,7 +53,7 @@ const DatabaseDetailsDialog = ({ isOpen, onClose, databaseName, connectionId, pr
 
     setIsDeleting(true);
     try {
-      const response = await fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}`, {
+      const response = await apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}`, {
         method: 'DELETE',
       });
 
@@ -77,7 +78,7 @@ const DatabaseDetailsDialog = ({ isOpen, onClose, databaseName, connectionId, pr
     setError(null);
 
     try {
-      const response = await fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/regenerate-documentation`, {
+      const response = await apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/regenerate-documentation`, {
         method: 'POST',
       });
 
@@ -88,7 +89,7 @@ const DatabaseDetailsDialog = ({ isOpen, onClose, databaseName, connectionId, pr
       // Wait a moment and then refetch the documentation
       setTimeout(() => {
         setLoading(true);
-        fetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/documentation`)
+        apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}/documentation`)
           .then((response) => {
             if (!response.ok) {
               throw new Error(`Failed to fetch documentation: ${response.statusText}`);

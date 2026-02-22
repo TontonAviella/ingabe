@@ -53,7 +53,7 @@
     "type": "function",
     "function": {
       "name": "native_buffer",
-      "description": "Buffers vector layers to a specified distance",
+      "description": "Buffers vector layers to a specified distance in kilometers",
       "parameters": {
         "type": "object",
         "properties": {
@@ -63,8 +63,8 @@
           },
           "DISTANCE": {
             "type": "number",
-            "description": "Buffers vector layers to a specified distance",
-            "default": 10.0
+            "description": "Buffer distance in kilometers. For example, 1 = 1 km, 5 = 5 km.",
+            "default": 1.0
           }
         },
         "required": [
@@ -551,6 +551,63 @@
   {
     "type": "function",
     "function": {
+      "name": "get_soil_properties",
+      "description": "Query African soil properties at a specific location using iSDAsoil's 30m resolution machine learning predictions. Returns soil pH, nitrogen, phosphorus, potassium, organic carbon, clay/sand/silt content, texture class, and 12+ other properties. Each property includes depth (0-20cm or 20-50cm) and uncertainty estimates. Use when the user asks about soil quality, fertility, nutrients, texture, or agronomic suitability at a specific location in Africa.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "longitude": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (WGS84), e.g. 30.05"
+          },
+          "latitude": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (WGS84), e.g. -2.30"
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "ph",
+                "nitrogen_total",
+                "phosphorous_extractable",
+                "potassium_extractable",
+                "carbon_organic",
+                "clay_content",
+                "sand_content",
+                "silt_content",
+                "bulk_density",
+                "cation_exchange_capacity",
+                "calcium_extractable",
+                "magnesium_extractable",
+                "iron_extractable",
+                "sulphur_extractable",
+                "zinc_extractable",
+                "aluminium_extractable",
+                "carbon_total",
+                "stone_content",
+                "bedrock_depth",
+                "texture_class",
+                "fcc"
+              ]
+            },
+            "description": "List of soil properties to query. Defaults to 8 most useful for agriculture: ph, nitrogen_total, phosphorous_extractable, potassium_extractable, carbon_organic, clay_content, sand_content, texture_class"
+          },
+          "depth": {
+            "type": "string",
+            "enum": ["0-20", "20-50"],
+            "description": "Soil depth range in centimeters. Default: 0-20"
+          }
+        },
+        "required": ["longitude", "latitude"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "get_parcel_ndvi_stats",
       "description": "Read parcel-level NDVI statistics from the DuckDB cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health.",
       "strict": false,
@@ -609,7 +666,7 @@
     "type": "function",
     "function": {
       "name": "add_land_cover_layer",
-      "description": "Add ESA WorldCover 2021 land cover layer to the map. Shows cropland vs non-cropland at 10m resolution from satellite imagery. Two modes: 'all' shows all 11 land cover classes (tree cover, shrubland, grassland, cropland, built-up, bare, snow/ice, water, wetland, mangroves, moss/lichen). 'cropland' highlights cropland in green and mutes everything else. Use when the user asks about land cover, land use, cropland extent, where crops are grown, or crop vs non-crop classification.",
+      "description": "Add ESRI 10m Annual LULC 2024 land cover layer to the map. Shows cropland vs non-cropland at 10m resolution from satellite imagery. Two modes: 'all' shows all 9 land cover classes (water, trees, flooded vegetation, crops, built area, bare ground, snow/ice, clouds, rangeland). 'cropland' highlights cropland in green and mutes everything else. IMPORTANT: always clip to the area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon to auto-detect the correct admin boundary. NEVER guess district names. NEVER show the entire country unless the user explicitly asks for it.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -617,7 +674,84 @@
           "mode": {
             "type": "string",
             "enum": ["all", "cropland"],
-            "description": "Visualization mode: 'all' shows all 11 land cover classes with distinct colours. 'cropland' highlights cropland areas in green and mutes all other classes. Default: all"
+            "description": "Visualization mode: 'all' shows all 9 land cover classes with distinct colours. 'cropland' highlights cropland areas in green and mutes all other classes. Default: all"
+          },
+          "lat": {
+            "type": "number",
+            "description": "Latitude (EPSG:4326) of the point of interest. The tool auto-detects the containing district/sector/cell from PostGIS for clipping. Use this instead of guessing district names."
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude (EPSG:4326) of the point of interest."
+          },
+          "bbox": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "Bounding box [west, south, east, north] in EPSG:4326 to clip the layer to. Use when the user refers to a custom area (buffer circle, drawn polygon, existing layer extent). Extract the bounds from the relevant layer in MapState."
+          },
+          "district": {
+            "type": "string",
+            "description": "Rwanda district name — only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
+          },
+          "sector": {
+            "type": "string",
+            "description": "Rwanda sector name — only use if the user explicitly names a sector."
+          },
+          "cell": {
+            "type": "string",
+            "description": "Rwanda cell name — only use if the user explicitly names a cell."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "query_worldcover_stats",
+      "description": "Query ESRI 10m LULC 2024 land-cover statistics for a specific area. Two query types: 'land_cover' returns area in hectares for each land-cover class (crops, trees, rangeland, etc.). 'largest_cropland' returns the biggest contiguous cropland plantations ranked by area. IMPORTANT: always scope to the user's area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon from the Center Point layer — the tool will auto-detect the correct admin boundary. NEVER guess district names — use bbox or lat/lon and let the tool resolve the location.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query_type": {
+            "type": "string",
+            "enum": ["land_cover", "largest_cropland"],
+            "description": "land_cover: area breakdown by land-cover class (DEFAULT). largest_cropland: ranked list of biggest contiguous cropland areas."
+          },
+          "lat": {
+            "type": "number",
+            "description": "Latitude (EPSG:4326) of the point of interest. The tool auto-detects the containing district/sector/cell from PostGIS. Use this instead of guessing district names."
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude (EPSG:4326) of the point of interest."
+          },
+          "bbox": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "Bounding box [west, south, east, north] in EPSG:4326. Use when the user refers to a custom area (buffer circle, drawn polygon, existing layer extent). Extract the bounds from the relevant layer in MapState. This performs on-the-fly analysis for the exact area."
+          },
+          "district": {
+            "type": "string",
+            "description": "Rwanda district name — only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
+          },
+          "sector": {
+            "type": "string",
+            "description": "Rwanda sector name — only use if the user explicitly names a sector."
+          },
+          "cell": {
+            "type": "string",
+            "description": "Rwanda cell name — only use if the user explicitly names a cell."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max results for largest_cropland query. Default: 10"
           }
         },
         "required": []
@@ -628,14 +762,22 @@
     "type": "function",
     "function": {
       "name": "get_crop_classifications",
-      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use when the user asks about crop types, land use, or classification maps.",
+      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use when the user asks about crop types, land use, or classification maps. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
+          "lat": {
+            "type": "number",
+            "description": "Latitude (EPSG:4326) of the point of interest. Auto-detects the containing district from PostGIS."
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude (EPSG:4326) of the point of interest."
+          },
           "district": {
             "type": "string",
-            "description": "Filter results to a specific district name"
+            "description": "District name — only use if the user explicitly names a district. Prefer lat/lon instead."
           }
         },
         "required": []

@@ -14,7 +14,7 @@ import asyncpg
 import boto3
 import duckdb
 import redis
-from dagster import ConfigurableResource, InitResourceContext
+from dagster import ConfigurableResource
 from pydantic import Field
 
 

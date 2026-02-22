@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -56,6 +57,12 @@ const transformEsriFeatureServiceUrl = (url: string): string => {
     const params = urlObject.searchParams;
 
     // Set required parameters if not already present
+    if (!params.has('where')) {
+      params.set('where', '1=1');
+    }
+    if (!params.has('outFields')) {
+      params.set('outFields', '*');
+    }
     if (!params.has('f')) {
       params.set('f', 'pjson');
     }
@@ -117,7 +124,7 @@ export const ConnectESRIFeatureService: React.FC<ConnectESRIFeatureServiceProps>
       // Transform ESRI Feature Service URL to proper query format
       const processedUrl = transformEsriFeatureServiceUrl(url);
 
-      const response = await fetch(`/api/maps/${mapId}/layers/remote`, {
+      const response = await apiFetch(`/api/maps/${mapId}/layers/remote`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

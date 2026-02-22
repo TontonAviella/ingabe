@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # geoBoundaries API — public, maintained by William & Mary geoLab
 _GEOBOUNDARIES_ADM2_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM2/"
+_GEOBOUNDARIES_ADM3_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM3/"
 _GEOBOUNDARIES_ADM4_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM4/"
 
 
@@ -156,6 +157,132 @@ def rwanda_admin_boundaries(
 
     context.log.info("Loaded %d district boundaries into PostGIS", loaded)
     return {"status": "ok", "districts_loaded": loaded}
+
+
+@asset(
+    group_name="rwanda_bootstrap",
+    description="ETL: Fetch Rwanda ADM3 sector boundaries from geoBoundaries API → PostGIS",
+)
+def rwanda_sector_boundaries(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+) -> dict[str, Any]:
+    """Extract Rwanda ADM3 sector boundaries from geoBoundaries public API.
+
+    Creates ``rwanda_sector_boundaries`` PostGIS table with real geometries
+    for all ~416 sectors.  Idempotent — skips if already populated.
+    Source: geoBoundaries (CC-BY-4.0), William & Mary geoLab.
+    """
+    # Check if already populated
+    try:
+        existing = postgres.execute_query(
+            "SELECT COUNT(*) FROM rwanda_sector_boundaries"
+        )
+        if existing and existing[0][0] >= 400:
+            context.log.info("rwanda_sector_boundaries already has %d rows", existing[0][0])
+            return {"status": "exists", "sectors": existing[0][0]}
+    except Exception:
+        pass  # Table doesn't exist yet
+
+    # ── Extract ───────────────────────────────────────────────────────────
+    context.log.info("Fetching Rwanda ADM3 from geoBoundaries API...")
+    try:
+        api_resp = requests.get(_GEOBOUNDARIES_ADM3_API, timeout=30)
+        api_resp.raise_for_status()
+        geojson_url = api_resp.json().get("gjDownloadURL")
+        if not geojson_url:
+            return {"status": "error", "error": "No gjDownloadURL in API response"}
+
+        geojson_resp = requests.get(geojson_url, timeout=180)
+        geojson_resp.raise_for_status()
+        features = geojson_resp.json().get("features", [])
+    except Exception as e:
+        context.log.error("Failed to fetch ADM3 boundaries: %s", e)
+        return {"status": "error", "error": str(e)}
+
+    context.log.info("Downloaded %d sector features", len(features))
+
+    # ── Transform + Load ──────────────────────────────────────────────────
+    with postgres.get_sync_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS rwanda_sector_boundaries (
+                    sector_id SERIAL PRIMARY KEY,
+                    sector_name VARCHAR,
+                    district_name VARCHAR,
+                    geom GEOMETRY(MultiPolygon, 4326),
+                    area_km2 DOUBLE PRECISION,
+                    bbox_west DOUBLE PRECISION,
+                    bbox_south DOUBLE PRECISION,
+                    bbox_east DOUBLE PRECISION,
+                    bbox_north DOUBLE PRECISION
+                )
+            """)
+            cur.execute("DELETE FROM rwanda_sector_boundaries")
+
+            loaded = 0
+            for feat in features:
+                props = feat.get("properties", {})
+                sector_name = props.get("shapeName", "")
+                # geoBoundaries ADM3 nests the parent district in shapeGroup
+                district_name = props.get("shapeGroup", "")
+
+                if not sector_name:
+                    continue
+
+                geom_json = json.dumps(feat["geometry"])
+                cur.execute(
+                    """
+                    INSERT INTO rwanda_sector_boundaries
+                        (sector_name, district_name, geom, area_km2,
+                         bbox_west, bbox_south, bbox_east, bbox_north)
+                    VALUES (
+                        %s, %s,
+                        ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)),
+                        ST_Area(ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), 32736)) / 1e6,
+                        ST_XMin(ST_Envelope(ST_GeomFromGeoJSON(%s))),
+                        ST_YMin(ST_Envelope(ST_GeomFromGeoJSON(%s))),
+                        ST_XMax(ST_Envelope(ST_GeomFromGeoJSON(%s))),
+                        ST_YMax(ST_Envelope(ST_GeomFromGeoJSON(%s)))
+                    )
+                    """,
+                    (sector_name, district_name,
+                     geom_json, geom_json, geom_json, geom_json, geom_json, geom_json),
+                )
+                loaded += 1
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rwanda_sectors_geom
+                ON rwanda_sector_boundaries USING GIST (geom)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rwanda_sectors_district
+                ON rwanda_sector_boundaries (LOWER(district_name))
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_rwanda_sectors_name
+                ON rwanda_sector_boundaries (LOWER(sector_name))
+            """)
+
+            # Back-fill district_name from spatial join if geoBoundaries
+            # didn't provide it (or provided the wrong parent level)
+            try:
+                cur.execute("""
+                    UPDATE rwanda_sector_boundaries s
+                    SET district_name = d.district
+                    FROM rwanda_district_boundaries d
+                    WHERE ST_Within(ST_Centroid(s.geom), d.geom)
+                      AND (s.district_name IS NULL OR s.district_name = '')
+                """)
+                context.log.info("Back-filled district_name from spatial join")
+            except Exception as e:
+                context.log.warning("Could not back-fill district_name: %s", e)
+
+            conn.commit()
+
+    context.log.info("Loaded %d sector boundaries into PostGIS", loaded)
+    return {"status": "ok", "sectors_loaded": loaded}
 
 
 @asset(
@@ -759,6 +886,244 @@ def nightly_cache_cleanup(
         "status": "ok",
         "purge_threshold_days": purge_days,
         "tables_purged": tables_purged,
+    }
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description="Nightly: generate H3 NDVI vector tiles (PMTiles) from cache → S3",
+)
+def nightly_ndvi_vector_tiles(
+    context: AssetExecutionContext,
+    duckdb: DuckDBResource,
+    postgres: PostgresResource,
+    s3: S3Resource,
+) -> dict[str, Any]:
+    """Convert cached NDVI data into H3-gridded vector tiles (PMTiles).
+
+    This replaces raster tiles for NDVI display with vector tiles, which:
+    - Support district/sector/cell spatial filtering natively
+    - Are much smaller (only hexagons with data)
+    - Allow dynamic styling (color by NDVI value) on the frontend
+    - MapLibre GL renders vectors far more efficiently than raster XYZ tiles
+
+    Runs nightly at 2:45 AM UTC (after nightly_field_ndvi populates cache).
+
+    Pipeline:
+    1. Read latest NDVI from DuckDB cache (district + cell level)
+    2. Join with PostGIS admin boundaries to get H3 centroids
+    3. Generate H3 hexagons at resolution 7 (district) and 9 (cell)
+    4. Export as GeoJSON → tippecanoe → PMTiles → S3
+
+    The resulting PMTiles file is served by the vector tile endpoint:
+    GET /api/rwanda/tiles/ndvi.pmtiles
+    """
+    import os
+    import tempfile
+
+    # Read latest NDVI cache from DuckDB
+    try:
+        with duckdb.get_connection() as conn:
+            _ensure_cache_tables(conn)
+
+            # District-level NDVI (latest per district)
+            district_rows = conn.execute("""
+                SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
+                FROM ndvi_field_cache
+                WHERE (district, week_start) IN (
+                    SELECT district, MAX(week_start) FROM ndvi_field_cache
+                    GROUP BY district
+                )
+            """).fetchall()
+
+            # Cell-level NDVI (latest per cell)
+            cell_rows = conn.execute("""
+                SELECT cell_name, district_name, week_start,
+                       mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
+                FROM ndvi_cell_cache
+                WHERE (cell_name, week_start) IN (
+                    SELECT cell_name, MAX(week_start) FROM ndvi_cell_cache
+                    GROUP BY cell_name
+                )
+            """).fetchall()
+
+            # Crop classification (latest)
+            crop_rows = conn.execute("""
+                SELECT district, class_label, area_ha, pixel_count, confidence
+                FROM crop_classification_cache
+                WHERE computed_at = (SELECT MAX(computed_at) FROM crop_classification_cache)
+            """).fetchall()
+
+    except Exception as e:
+        context.log.warning("DuckDB read failed: %s", e)
+        district_rows, cell_rows, crop_rows = [], [], []
+
+    if not district_rows and not cell_rows:
+        context.log.info("No NDVI cache data — skipping vector tile generation")
+        return {"status": "no_data", "features": 0}
+
+    context.log.info(
+        "Building vector tiles: %d districts, %d cells, %d crop classes",
+        len(district_rows), len(cell_rows), len(crop_rows),
+    )
+
+    # Get admin boundary centroids for H3 gridding
+    district_centroids = {}
+    cell_centroids = {}
+    try:
+        district_centroid_rows = postgres.execute_query("""
+            SELECT district, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
+                   bbox_west, bbox_south, bbox_east, bbox_north
+            FROM rwanda_district_boundaries
+        """)
+        for row in (district_centroid_rows or []):
+            district_centroids[row[0]] = {
+                "lng": row[1], "lat": row[2],
+                "bbox": [row[3], row[4], row[5], row[6]],
+            }
+    except Exception:
+        pass
+
+    try:
+        cell_centroid_rows = postgres.execute_query("""
+            SELECT cell_name, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
+                   district_name
+            FROM rwanda_cell_boundaries
+        """)
+        for row in (cell_centroid_rows or []):
+            cell_centroids[row[0]] = {
+                "lng": row[1], "lat": row[2], "district": row[3],
+            }
+    except Exception:
+        pass
+
+    import h3
+
+    features = []
+
+    # ── District-level H3 (resolution 7, ~5.16 km²) ──────────────────────
+    for row in district_rows:
+        district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
+        centroid = district_centroids.get(district)
+        if not centroid:
+            continue
+
+        # Generate H3 cells covering the district bbox
+        bbox = centroid["bbox"]
+        boundary_polygon = {
+            "type": "Polygon",
+            "coordinates": [[
+                [bbox[0], bbox[1]], [bbox[2], bbox[1]],
+                [bbox[2], bbox[3]], [bbox[0], bbox[3]],
+                [bbox[0], bbox[1]],
+            ]],
+        }
+        h3_cells = h3.geo_to_cells(boundary_polygon, res=7)
+
+        for h3_id in h3_cells:
+            boundary = h3.cell_to_boundary(h3_id)
+            coords = [[lng, lat] for lat, lng in boundary]
+            coords.append(coords[0])
+
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "h3": h3_id,
+                    "res": 7,
+                    "district": district,
+                    "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
+                    "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
+                    "date": str(week_start) if week_start else None,
+                    "level": "district",
+                    "pixels": valid_pixels,
+                },
+                "geometry": {"type": "Polygon", "coordinates": [coords]},
+            })
+
+    # ── Cell-level H3 (resolution 9, ~0.1 km²) ──────────────────────────
+    for row in cell_rows:
+        cell_name, district_name, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
+        centroid = cell_centroids.get(cell_name)
+        if not centroid:
+            continue
+
+        h3_id = h3.latlng_to_cell(centroid["lat"], centroid["lng"], 9)
+        boundary = h3.cell_to_boundary(h3_id)
+        coords = [[lng, lat] for lat, lng in boundary]
+        coords.append(coords[0])
+
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "h3": h3_id,
+                "res": 9,
+                "district": district_name or centroid.get("district"),
+                "cell": cell_name,
+                "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
+                "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
+                "date": str(week_start) if week_start else None,
+                "level": "cell",
+                "pixels": valid_pixels,
+            },
+            "geometry": {"type": "Polygon", "coordinates": [coords]},
+        })
+
+    if not features:
+        context.log.info("No features generated — skipping tippecanoe")
+        return {"status": "no_features", "features": 0}
+
+    geojson = {"type": "FeatureCollection", "features": features}
+    context.log.info("Generated %d H3 features for vector tiles", len(features))
+
+    # ── tippecanoe → PMTiles → S3 ────────────────────────────────────────
+    with tempfile.TemporaryDirectory() as temp_dir:
+        geojson_path = os.path.join(temp_dir, "ndvi_h3.geojson")
+        pmtiles_path = os.path.join(temp_dir, "rwanda_ndvi.pmtiles")
+
+        with open(geojson_path, "w") as f:
+            json.dump(geojson, f)
+
+        import subprocess
+
+        tip_cmd = [
+            "tippecanoe",
+            "-o", pmtiles_path,
+            "-q",                           # quiet
+            "-Z", "4",                       # min zoom
+            "-z", "14",                      # max zoom
+            "--no-tile-size-limit",          # allow large tiles
+            "--no-feature-limit",            # keep all features
+            "-l", "ndvi",                    # layer name
+            "--coalesce-densest-as-needed",  # merge dense areas
+            "--extend-zooms-if-still-dropping",
+            geojson_path,
+        ]
+
+        result = subprocess.run(tip_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            context.log.error("tippecanoe failed: %s", result.stderr)
+            return {"status": "error", "error": result.stderr}
+
+        pmtiles_size = os.path.getsize(pmtiles_path)
+        context.log.info(
+            "PMTiles generated: %d bytes (%.1f MB)",
+            pmtiles_size, pmtiles_size / 1e6,
+        )
+
+        # Upload to S3
+        s3_key = "rwanda/vector_tiles/rwanda_ndvi.pmtiles"
+        with s3.get_client() as client:
+            client.upload_file(pmtiles_path, s3.bucket_name, s3_key)
+
+        context.log.info("Uploaded to s3://%s/%s", s3.bucket_name, s3_key)
+
+    return {
+        "status": "ok",
+        "features": len(features),
+        "district_hexagons": sum(1 for f in features if f["properties"]["level"] == "district"),
+        "cell_hexagons": sum(1 for f in features if f["properties"]["level"] == "cell"),
+        "pmtiles_size_bytes": pmtiles_size,
+        "s3_key": s3_key,
     }
 
 
@@ -1768,4 +2133,179 @@ def daily_weather_ingest(
         "total_rows": total_rows_written,
         "range": f"{all_dates[0]} to {all_dates[-1]}" if all_dates else "none",
         "errors": errors_list if errors_list else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WorldCover Land-Cover Zonal Statistics
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description=(
+        "Pre-compute ESRI 10m Annual LULC 2024 land-cover zonal statistics for every "
+        "Rwanda admin boundary (district, sector, cell).  Results are cached in "
+        "DuckDB for instant querying by Kue.  Connected-component analysis for "
+        "largest cropland regions is done on-the-fly per user query."
+    ),
+)
+def worldcover_zonal_stats(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+    duckdb: DuckDBResource,
+) -> dict[str, Any]:
+    """Memory-efficient LULC zonal stats using per-boundary windowed
+    COG reads via WarpedVRT (ESRI tiles are UTM, we need EPSG:4326).
+
+    Instead of loading the full Rwanda mosaic into memory, this approach:
+      1.  Opens COG datasets lazily via WarpedVRT (UTM -> EPSG:4326)
+      2.  For each boundary, reads only the bbox window via rasterio.merge
+      3.  Frees memory after each admin level with gc.collect()
+    """
+    import gc
+
+    from rasterio.features import geometry_mask
+    from rasterio.merge import merge
+
+    from src.worldcover import WORLDCOVER_CLASSES, open_rwanda_datasets_warped
+
+    PIXEL_AREA_HA = 0.01  # 10m x 10m = 100 m^2 = 0.01 hectares
+
+    # ── Step 1: Open COG datasets via WarpedVRT (UTM -> EPSG:4326) ────────
+    context.log.info("Opening ESRI LULC COG datasets via WarpedVRT...")
+    try:
+        wc_pairs = open_rwanda_datasets_warped()
+    except Exception as e:
+        context.log.error("Failed to open LULC tiles: %s", e)
+        return {"status": "error", "error": f"No LULC tiles could be opened: {e}"}
+
+    datasets = [vrt for vrt, _raw in wc_pairs]
+    context.log.info("Opened %d COG datasets via WarpedVRT (EPSG:4326)", len(datasets))
+
+    def _read_window(bbox: tuple[float, float, float, float]):
+        """Read WorldCover data for a bounding box window from COGs."""
+        west, south, east, north = bbox
+        buf = 0.001  # small buffer to avoid edge clipping
+        bounds = (west - buf, south - buf, east + buf, north + buf)
+        arr, tfm = merge(datasets, bounds=bounds)
+        return arr[0], tfm  # single band
+
+    # ── Step 2: Zonal stats per boundary (windowed reads) ─────────────────
+    context.log.info("Computing zonal stats with per-boundary windowed reads...")
+
+    admin_queries = {
+        "district": (
+            "SELECT district AS name, NULL AS sector_name, NULL AS district_name, "
+            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+            "FROM rwanda_district_boundaries"
+        ),
+        "sector": (
+            "SELECT sector_name AS name, sector_name, district_name, "
+            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+            "FROM rwanda_sector_boundaries"
+        ),
+        "cell": (
+            "SELECT cell_name AS name, sector_name, district_name, "
+            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+            "FROM rwanda_cell_boundaries"
+        ),
+    }
+
+    all_stats_rows: list[list] = []
+
+    for level, sql in admin_queries.items():
+        rows = postgres.execute_query(sql)
+        if not rows:
+            context.log.warning("No rows for level %s", level)
+            continue
+
+        context.log.info("Processing %d %s boundaries...", len(rows), level)
+
+        for i, row in enumerate(rows):
+            name = row[0]
+            if level == "district":
+                sector_name, district_name = None, name
+            elif level == "sector":
+                sector_name, district_name = row[1], row[2]
+            else:  # cell
+                sector_name, district_name = row[1], row[2]
+
+            geojson_str = row[3]
+            bbox = (row[4], row[5], row[6], row[7])
+
+            try:
+                geom = json.loads(geojson_str)
+                data, tfm = _read_window(bbox)
+                h, w = data.shape
+                mask = geometry_mask(
+                    [geom], out_shape=(h, w), transform=tfm, invert=True
+                )
+                inside = data[mask]
+                if inside.size == 0:
+                    continue
+
+                vals, counts = np.unique(inside, return_counts=True)
+                for val, cnt in zip(vals, counts):
+                    if val == 0:
+                        continue
+                    class_name = WORLDCOVER_CLASSES.get(int(val), f"unknown_{val}")
+                    hectares = round(float(cnt) * PIXEL_AREA_HA, 2)
+                    all_stats_rows.append([
+                        level, name, district_name, sector_name,
+                        int(val), class_name, int(cnt), hectares,
+                    ])
+            except Exception as e:
+                if i < 3:
+                    context.log.warning("%s/%s failed: %s", level, name, e)
+                continue
+
+            if (i + 1) % 100 == 0:
+                context.log.info("  %s: %d/%d done", level, i + 1, len(rows))
+
+        context.log.info("  %s level complete", level)
+        gc.collect()
+
+    context.log.info("Computed %d stat rows across all admin levels", len(all_stats_rows))
+
+    # Close COG datasets (both VRT and raw)
+    for vrt, raw_ds in wc_pairs:
+        vrt.close()
+        raw_ds.close()
+
+    # ── Step 3: Write results to DuckDB ───────────────────────────────────
+    # Note: Connected-component analysis for largest_cropland queries is
+    # now done on-the-fly in message_routes.py for the specific boundary
+    # the user asks about. This asset only pre-computes zonal stats.
+    context.log.info("Writing results to DuckDB...")
+    with duckdb.get_connection() as conn:
+        conn.execute("DROP TABLE IF EXISTS worldcover_admin_stats")
+        conn.execute("""
+            CREATE TABLE worldcover_admin_stats (
+                admin_level VARCHAR,
+                admin_name VARCHAR,
+                district_name VARCHAR,
+                sector_name VARCHAR,
+                class_value INTEGER,
+                class_name VARCHAR,
+                pixel_count INTEGER,
+                area_hectares DOUBLE
+            )
+        """)
+        if all_stats_rows:
+            conn.executemany(
+                "INSERT INTO worldcover_admin_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                all_stats_rows,
+            )
+        context.log.info("Wrote %d rows to worldcover_admin_stats", len(all_stats_rows))
+
+        # Drop legacy CC table if it exists (no longer pre-computed)
+        conn.execute("DROP TABLE IF EXISTS worldcover_cropland_regions")
+
+    return {
+        "status": "ok",
+        "admin_stat_rows": len(all_stats_rows),
+        "total_districts": sum(1 for r in all_stats_rows if r[0] == "district"),
+        "total_sectors": sum(1 for r in all_stats_rows if r[0] == "sector"),
+        "total_cells": sum(1 for r in all_stats_rows if r[0] == "cell"),
     }

@@ -1,7 +1,6 @@
 import json
 import datetime
 import logging
-from typing import Optional
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, status, Depends, Query
@@ -31,6 +30,30 @@ async def get_available_basemaps(
         "styles": base_map.get_available_styles(),
         "display_names": base_map.get_style_display_names(),
     }
+
+
+@basemap_router.get(
+    "/{name}/style.json",
+    operation_id="get_basemap_style",
+    response_class=StarletteJSONResponse,
+)
+async def get_basemap_style(
+    name: str,
+    base_map: BaseMapProvider = Depends(get_base_map_provider),
+):
+    """Return the MapLibre GL style JSON for a single basemap (sources + layers only).
+
+    Used by the frontend to swap basemaps client-side without a full
+    map.setStyle() call, which would destroy all overlay layers.
+    """
+    available = base_map.get_available_styles()
+    if name not in available:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid basemap '{name}'. Available: {available}",
+        )
+    style = await base_map.get_base_style(name)
+    return style
 
 
 @basemap_router.get("/render.png", operation_id="render_basemap")

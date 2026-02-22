@@ -13,6 +13,21 @@
 
 <body>
   <div id="root"></div>
+  <!-- Polyfill for esbuild class-field helper used by bundled deps (e.g. deck.gl workers) -->
+  <script>
+    if (typeof __publicField === 'undefined') {
+      window.__publicField = function(obj, key, val) {
+        Object.defineProperty(obj, key, { value: val, configurable: true, writable: true, enumerable: true });
+        return val;
+      };
+    }
+    if (typeof __privateAdd === 'undefined') {
+      window.__privateAdd = function(obj, member, value) {
+        if (member.has(obj)) throw new TypeError('Cannot add the same private member more than once');
+        member instanceof WeakSet ? member.add(obj) : member.set(obj, value);
+      };
+    }
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

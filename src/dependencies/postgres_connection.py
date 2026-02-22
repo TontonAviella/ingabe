@@ -200,6 +200,12 @@ class PostgresConnectionManager:
             # Make the connection read-only at the session level
             await conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
 
+            # Guard against runaway queries — cancels any single statement
+            # that exceeds this limit.  Uses the same env var as the
+            # connection timeout so operators have one knob to turn.
+            stmt_timeout_ms = int(timeout * 1000 * 3)  # 3× connect timeout (default 30 s)
+            await conn.execute(f"SET statement_timeout = {stmt_timeout_ms}")
+
             await self.update_error_status(connection_id, error_text=None)
             return conn
         except asyncio.TimeoutError:

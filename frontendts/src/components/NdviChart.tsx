@@ -1,13 +1,4 @@
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  ReferenceLine,
-} from 'recharts';
+import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export interface NdviChartProps {
@@ -16,7 +7,7 @@ export interface NdviChartProps {
   title?: string;
 }
 
-export function NdviChart({ timeseries, isLoading, title = "NDVI Time Series" }: NdviChartProps) {
+export function NdviChart({ timeseries, isLoading, title = 'NDVI Time Series' }: NdviChartProps) {
   if (isLoading) {
     return (
       <Card>
@@ -60,10 +51,7 @@ export function NdviChart({ timeseries, isLoading, title = "NDVI Time Series" }:
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={300}>
-          <AreaChart
-            data={chartData}
-            margin={{ top: 10, right: 30, left: 0, bottom: 0 }}
-          >
+          <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="ndviGradient" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#22c55e" stopOpacity={0.8} />
@@ -72,11 +60,7 @@ export function NdviChart({ timeseries, isLoading, title = "NDVI Time Series" }:
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
-            <XAxis
-              dataKey="formattedDate"
-              className="text-xs"
-              tick={{ fill: 'currentColor', className: 'fill-muted-foreground' }}
-            />
+            <XAxis dataKey="formattedDate" className="text-xs" tick={{ fill: 'currentColor', className: 'fill-muted-foreground' }} />
             <YAxis
               domain={[0, 1]}
               ticks={[0, 0.2, 0.4, 0.6, 0.8, 1.0]}
@@ -105,13 +89,7 @@ export function NdviChart({ timeseries, isLoading, title = "NDVI Time Series" }:
                 className: 'text-xs fill-green-600 dark:fill-green-400',
               }}
             />
-            <Area
-              type="monotone"
-              dataKey="ndvi"
-              stroke="#3b82f6"
-              strokeWidth={2}
-              fill="url(#ndviGradient)"
-            />
+            <Area type="monotone" dataKey="ndvi" stroke="#3b82f6" strokeWidth={2} fill="url(#ndviGradient)" />
           </AreaChart>
         </ResponsiveContainer>
       </CardContent>

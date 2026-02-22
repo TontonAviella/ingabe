@@ -1,11 +1,6 @@
 import os
-import uuid
-import math
-import secrets
 import json
-import csv
-import datetime
-from io import StringIO, BytesIO
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 import aiohttp
@@ -16,21 +11,19 @@ from fastapi import (
     status,
     Request,
     Depends,
-    Query,
 )
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map
+from src.dependencies.rate_limiter import heavy_limit
 from src.database.models import MundiMap, MapLayer
 from src.dependencies.session import (
     verify_session_required,
     verify_session_optional,
     UserContext,
 )
-from typing import List, Optional, Literal
+from typing import List, Optional
 import logging
-from pyproj import Transformer
-from osgeo import osr
 from fastapi import File, UploadFile, Form
 from src.dependencies.redis_client import get_redis_client
 import tempfile
@@ -38,21 +31,10 @@ from starlette.responses import (
     JSONResponse as StarletteJSONResponse,
 )
 import asyncio
-from boto3.s3.transfer import TransferConfig
-from botocore.exceptions import ClientError
 from src.utils import (
     get_bucket_name,
-    process_zip_with_shapefile,
     get_async_s3_client,
-    process_kmz_to_kml,
 )
-from osgeo import gdal
-import subprocess
-import ipaddress
-import socket
-import laspy
-import shutil
-from src.symbology.llm import generate_maplibre_layers_for_layer_id
 from src.structures import get_async_db_connection, async_conn
 from src.tile_cache import tile_cache
 from src.fs_lru import layer_cache
@@ -65,7 +47,6 @@ from src.dependencies.postgres_connection import (
 )
 from typing import Callable
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
 from src.dag import DAGEditOperationResponse
 
 # Import shared service functions
@@ -75,8 +56,6 @@ from src.services.map_service import (
     internal_upload_layer,
     get_map_style_internal,
     render_map_internal,
-    pull_bounds_from_map,
-    one_shot_config,
 )
 
 fiona.drvsupport.supported_drivers["WFS"] = "r"  # type: ignore[attr-defined]
@@ -92,18 +71,12 @@ redis = get_redis_client()
 
 # Upload models — imported from src.upload.models (canonical location)
 from src.upload.models import (  # noqa: E402
-    MetadataUpdates,
-    LayerBoundsMetadata,
     VectorProcessingResult,
-    PointCloudPreprocessResult,
-    InternalLayerUploadResponse,
 )
 
 
 # Upload preprocessing — imported from src.upload.preprocessing (canonical location)
 from src.upload.preprocessing import (  # noqa: E402
-    preprocess_point_cloud,
-    preprocess_raster,
     get_layer_bounds_and_metadata,
 )
 
@@ -271,32 +244,33 @@ async def create_map(
 
     # Connect to database
     async with get_async_db_connection() as conn:
-        # First create a project
-        await conn.execute(
-            """
-            INSERT INTO user_mundiai_projects
-            (id, owner_uuid, maps, title)
-            VALUES ($1, $2, ARRAY[$3], $4)
-            """,
-            project_id,
-            owner_id,
-            map_id,
-            map_request.title,
-        )
+        async with conn.transaction():
+            # First create a project
+            await conn.execute(
+                """
+                INSERT INTO user_mundiai_projects
+                (id, owner_uuid, maps, title)
+                VALUES ($1, $2, ARRAY[$3], $4)
+                """,
+                project_id,
+                owner_id,
+                map_id,
+                map_request.title,
+            )
 
-        # Then insert map with data including project_id and layer_ids
-        result = await conn.fetchrow(
-            """
-            INSERT INTO user_mundiai_maps
-            (id, project_id, owner_uuid, title)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, title, created_on
-            """,
-            map_id,
-            project_id,
-            owner_id,
-            map_request.title,
-        )
+            # Then insert map with data including project_id and layer_ids
+            result = await conn.fetchrow(
+                """
+                INSERT INTO user_mundiai_maps
+                (id, project_id, owner_uuid, title)
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, title, created_on
+                """,
+                map_id,
+                project_id,
+                owner_id,
+                map_request.title,
+            )
 
         # Validate the result
         if not result:
@@ -484,7 +458,7 @@ async def get_map_description(
         # First check if the map exists and is accessible
         map_result = await conn.fetchrow(
             """
-            SELECT id, title, description, owner_uuid
+            SELECT id, title, description, owner_uuid, project_id
             FROM user_mundiai_maps
             WHERE id = $1 AND soft_deleted_at IS NULL
             """,
@@ -501,6 +475,13 @@ async def get_map_description(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You must own this map to access map description",
             )
+        # Auto-provision the internal Rwanda PostGIS connection so Kue
+        # always sees it and can create layers from admin boundary tables.
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+        await _ensure_rwanda_postgis_connection(
+            conn, map_result["project_id"], str(map_result["owner_uuid"]),
+        )
+
         content = []
         # Get PostgreSQL connections for this map's project with documentation
         postgres_connections = await conn.fetch(
@@ -645,6 +626,7 @@ async def get_map_style(
     operation_id="upload_layer_to_map",
     summary="Upload file as layer",
 )
+@heavy_limit
 async def upload_layer(
     original_map_id: str,
     forked_map: MundiMap = Depends(forked_map_by_user),
@@ -919,6 +901,7 @@ async def add_remote_layer(
             metadata.update(li.metadata_updates.model_dump(exclude_none=True))
 
         async with get_async_db_connection() as conn:
+          async with conn.transaction():
             await conn.fetchrow(
                 """
                 INSERT INTO map_layers
@@ -1001,7 +984,6 @@ async def add_remote_layer(
 
 # PMTiles generation and vector processing — imported from src.upload.pmtiles (canonical location)
 from src.upload.pmtiles import (  # noqa: E402
-    generate_pmtiles_from_ogr_source,
     process_vector_layer_common,
 )
 

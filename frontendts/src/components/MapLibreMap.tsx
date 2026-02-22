@@ -1,5 +1,7 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { apiFetch } from '@mundi/ee';
+import { useQuery } from '@tanstack/react-query';
 import legendSymbol, { type RenderElement } from 'legend-symbol-ts';
+import { useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
 import { StyleBridge } from '../lib/StyleBridge';
 import { BasemapControl } from './BasemapControl';
 
@@ -46,11 +48,11 @@ async function getDeckModules(): Promise<DeckGLModules> {
  */
 function ndviColor(ndvi: number): [number, number, number, number] {
   const stops: [number, [number, number, number]][] = [
-    [0.0, [215, 48, 39]],   // #d73027
+    [0.0, [215, 48, 39]], // #d73027
     [0.25, [252, 141, 89]], // #fc8d59
     [0.5, [254, 224, 139]], // #fee08b
-    [0.75, [26, 152, 80]],  // #1a9850
-    [1.0, [0, 104, 55]],    // #006837
+    [0.75, [26, 152, 80]], // #1a9850
+    [1.0, [0, 104, 55]], // #006837
   ];
   const clamped = Math.max(0, Math.min(1, ndvi));
   for (let i = 0; i < stops.length - 1; i++) {
@@ -75,7 +77,7 @@ function ndviColor(ndvi: number): [number, number, number, number] {
  */
 async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
   const { GeoJsonLayer } = await getDeckModules();
-  const response = await fetch(geojsonUrl);
+  const response = await apiFetch(geojsonUrl);
   if (!response.ok) throw new Error(`Failed to fetch GeoJSON: ${response.status}`);
   const data = await response.json();
 
@@ -119,7 +121,16 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 
 import { bbox } from '@turf/turf';
 import { Activity, Brain, Database, Maximize2, Minimize2, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
-import { AJAXError, type MapGeoJSONFeature, type MapOptions, Map as MLMap, NavigationControl, ScaleControl } from 'maplibre-gl';
+import {
+  AJAXError,
+  type LayerSpecification,
+  type MapGeoJSONFeature,
+  type MapOptions,
+  Map as MLMap,
+  NavigationControl,
+  ScaleControl,
+  type SourceSpecification,
+} from 'maplibre-gl';
 import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download } from 'react-bootstrap-icons';
@@ -162,7 +173,6 @@ const KUE_MESSAGE_STYLE = `
 `;
 
 // SWAP_XY is created lazily via getDeckModules() since Matrix4 is dynamically imported.
-
 
 interface MapLibreMapProps {
   mapId: string;
@@ -223,7 +233,6 @@ export default function MapLibreMap({
   invalidateProjectData,
   invalidateMapData,
 }: MapLibreMapProps) {
-  const queryClient = useQueryClient();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const localMapRef = useRef<MLMap | null>(null);
   const basemapControlRef = useRef<BasemapControl | null>(null);
@@ -238,11 +247,23 @@ export default function MapLibreMap({
   }>({});
   const [loadingSourceIds, setLoadingSourceIds] = useState<Set<string>>(new Set());
   const [assistantExpanded, setAssistantExpanded] = useState(false);
+  const [isMapReady, setIsMapReady] = useState(false);
+
+  const {
+    overrides: paintOverrides,
+    setLayerOpacity,
+    setLayerColor,
+    setLayerChoropleth,
+  } = useLayerPaintOverrides({
+    map: localMapRef.current,
+    mapId,
+    isMapReady,
+  });
 
   const { data: basemapsData } = useQuery({
     queryKey: ['basemaps', 'available'],
     queryFn: async () => {
-      const response = await fetch('/api/basemaps/available');
+      const response = await apiFetch('/api/basemaps/available');
       if (!response.ok) {
         throw new Error('Failed to fetch basemaps');
       }
@@ -262,7 +283,7 @@ export default function MapLibreMap({
   const { data: demoConfigData } = useQuery({
     queryKey: ['projects', 'config', 'demo-postgis-available'],
     queryFn: async () => {
-      const response = await fetch('/api/projects/config/demo-postgis-available');
+      const response = await apiFetch('/api/projects/config/demo-postgis-available');
       if (!response.ok) {
         throw new Error('Failed to fetch demo config');
       }
@@ -372,35 +393,92 @@ export default function MapLibreMap({
 
   const [isCancelling, setIsCancelling] = useState(false);
 
-  // Function to handle basemap changes
+  // Known basemap source IDs — these are the only sources that should be
+  // removed/replaced when switching basemaps (overlay sources stay untouched).
+  const BASEMAP_SOURCE_IDS = new Set([
+    'openstreetmap',
+    'esri-satellite',
+    'esri-topo',
+    'carto-dark',
+    'carto-voyager',
+    // OpenFreeMap vector style uses these source IDs:
+    'ne2_shaded',
+    'openmaptiles',
+  ]);
+
+  // Function to handle basemap changes — swaps basemap layers client-side
+  // so overlay layers (WorldCover, user data, etc.) are never destroyed.
   const handleBasemapChange = useCallback(
     async (newBasemap: string) => {
-      // Parse map ID from URL, but handle case where versionIdParam is optional
+      const map = localMapRef.current;
+      if (!map) return;
+
+      // Parse map ID from URL
       const pathParts = window.location.pathname.split('/');
-      const urlMapId = pathParts.length > 3 ? pathParts[3] : mapId; // Use mapId fallback if no version in URL
+      const urlMapId = pathParts.length > 3 ? pathParts[3] : mapId;
 
       try {
-        const response = await fetch(`/api/maps/${urlMapId}`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ basemap: newBasemap }),
-        });
-
-        if (response.ok) {
-          // Invalidate style query to trigger immediate re-fetch with new basemap
-          await queryClient.invalidateQueries({
-            queryKey: ['mapStyle', urlMapId],
-          });
-        } else {
-          console.error('Failed to update basemap:', await response.text());
+        // 1. Fetch the new basemap style from the lightweight endpoint
+        const response = await apiFetch(`/api/basemaps/${newBasemap}/style.json`);
+        if (!response.ok) {
+          console.error('Failed to fetch basemap style:', await response.text());
+          return;
         }
+        const newStyle = await response.json();
+
+        // 2. Remove old basemap layers and sources from the map
+        const currentStyle = map.getStyle();
+        if (currentStyle?.layers) {
+          // Remove layers whose source is a known basemap source
+          for (const layer of [...currentStyle.layers].reverse()) {
+            const src = 'source' in layer ? layer.source : undefined;
+            if (typeof src === 'string' && BASEMAP_SOURCE_IDS.has(src)) {
+              try {
+                map.removeLayer(layer.id);
+              } catch (_) {
+                /* already removed */
+              }
+            }
+          }
+        }
+        if (currentStyle?.sources) {
+          for (const sourceId of Object.keys(currentStyle.sources)) {
+            if (BASEMAP_SOURCE_IDS.has(sourceId)) {
+              try {
+                map.removeSource(sourceId);
+              } catch (_) {
+                /* already removed */
+              }
+            }
+          }
+        }
+
+        // 3. Add new basemap sources
+        for (const [sourceId, sourceDef] of Object.entries(newStyle.sources || {})) {
+          if (!map.getSource(sourceId)) {
+            map.addSource(sourceId, sourceDef as SourceSpecification);
+          }
+        }
+
+        // 4. Add new basemap layers at the bottom (before any existing overlay layers)
+        const firstOverlayLayer = map.getStyle()?.layers?.[0]?.id;
+        for (const layer of newStyle.layers || []) {
+          if (!map.getLayer(layer.id)) {
+            map.addLayer(layer as LayerSpecification, firstOverlayLayer);
+          }
+        }
+
+        // 5. Persist basemap choice to DB (fire-and-forget, don't block UI)
+        apiFetch(`/api/maps/${urlMapId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ basemap: newBasemap }),
+        }).catch((err) => console.error('Failed to persist basemap:', err));
       } catch (error) {
-        console.error('Error updating basemap:', error);
+        console.error('Error switching basemap:', error);
       }
     },
-    [queryClient, mapId],
+    [mapId],
   );
 
   // Function to get the appropriate icon for an action
@@ -446,7 +524,7 @@ export default function MapLibreMap({
   useEffect(() => {
     if (isCancelling) {
       const cancelActions = async () => {
-        await fetch(`/api/maps/${mapId}/messages/cancel`, {
+        await apiFetch(`/api/maps/${mapId}/messages/cancel`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -726,6 +804,7 @@ export default function MapLibreMap({
       };
 
       newMap.on('load', () => {
+        setIsMapReady(true);
         // deck.gl overlay — dynamically imported and isolated so it can't prevent other setup
         (async () => {
           try {
@@ -801,6 +880,13 @@ export default function MapLibreMap({
         // briefly complains about the missing sprite entry before it's added.
         if ((e as any).sourceId === 'pointer-positions') return;
 
+        // Suppress spurious worker errors from maplibre-gl's blob worker.
+        // In dev mode the message is "__publicField is not defined" (full esbuild helper name);
+        // in production builds the variable is minified to 1-3 chars (e.g. "de is not defined").
+        // Also suppress deck.gl multi-version warnings surfaced as map error events.
+        if (e.error?.message && /^(__\w+|[\w$]{1,3}) is not defined$/.test(e.error.message)) return;
+        if (e.error?.message?.includes('multiple versions detected')) return;
+
         if (e.error instanceof AJAXError) {
           // Sometimes we can read the error. If its 4xx, show the user the message
           if (e.error.status >= 400 && e.error.status < 500 && e.error.body instanceof Blob) {
@@ -828,11 +914,7 @@ export default function MapLibreMap({
           } else if (e.error.status == 500 && e.error.message.indexOf('.mvt') !== -1) {
             // Potentially an error with the query
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
-            addError(
-              'PostGIS query errored while executing, either re-create a new query or contact support',
-              true,
-              sourceId,
-            );
+            addError('PostGIS query errored while executing, either re-create a new query or contact support', true, sourceId);
           } else {
             // Unknown type of error?
             addError('Error loading map data: ' + e.error.message, true);
@@ -848,6 +930,12 @@ export default function MapLibreMap({
               addError('Vector tiles are still generating. Please refresh in a moment. This will take 2-3 minutes.', true, sourceId);
               return;
             }
+            if (code === 502) {
+              // 502 for tile/pmtiles requests means the file isn't in storage yet —
+              // not actionable by the user, so log quietly instead of toasting.
+              console.warn('Tile source returned 502 (file may be missing from storage)', sourceId);
+              return;
+            }
           }
           addError('Error loading map data: ' + (msg ?? 'Unknown error'), true, sourceId);
         }
@@ -859,6 +947,7 @@ export default function MapLibreMap({
 
       // Clean up on unmount
       return () => {
+        setIsMapReady(false);
         newMap.remove();
         localMapRef.current = null;
         if (mapRef.current !== undefined) {
@@ -936,11 +1025,21 @@ export default function MapLibreMap({
     queryKey: ['mapStyle', mapId, styleUpdateCounter],
     queryFn: async () => {
       const url = new URL(`/api/maps/${mapId}/style.json`, window.location.origin);
-      const response = await fetch(url.toString());
+      const response = await apiFetch(url.toString());
       if (!response.ok) {
         throw new Error(`Failed to fetch style: ${response.statusText}`);
       }
-      return response.json();
+      const style = await response.json();
+      // Resolve relative tile URLs to absolute (MapLibre requires absolute URLs)
+      const origin = window.location.origin;
+      if (style.sources) {
+        for (const src of Object.values(style.sources) as Record<string, unknown>[]) {
+          if (Array.isArray(src.tiles)) {
+            src.tiles = src.tiles.map((t: string) => (t.startsWith('/') ? `${origin}${t}` : t));
+          }
+        }
+      }
+      return style;
     },
     enabled: !!mapId, // Only run query when mapId is available
   });
@@ -953,15 +1052,52 @@ export default function MapLibreMap({
     return availableBasemaps[0] || '';
   }, [styleData, availableBasemaps]);
 
+  // Add basemap control when map and basemaps are available.
+  // mapInstanceId ensures re-creation after the map is destroyed/recreated.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mapInstanceId is an intentional trigger-only dep
+  useEffect(() => {
+    const map = localMapRef.current;
+    if (!map || availableBasemaps.length === 0) return;
+
+    // Use current basemap from style or default to first available
+    const initialBasemap = currentBasemap || availableBasemaps[0];
+    // Create control with a no-op callback initially to avoid dependency issues
+    const basemapControl = new BasemapControl(availableBasemaps, initialBasemap, basemapDisplayNames, () => undefined);
+    basemapControlRef.current = basemapControl;
+    map.addControl(basemapControl, 'top-right');
+    // Immediately update with the real callback
+    basemapControl.updateCallback(handleBasemapChange);
+
+    return () => {
+      basemapControlRef.current = null;
+      try {
+        map.removeControl(basemapControl);
+      } catch (_) {
+        /* already removed */
+      }
+    };
+  }, [availableBasemaps, currentBasemap, basemapDisplayNames, handleBasemapChange, mapInstanceId]);
+
   // Separate effect to handle style updates when styleData changes
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !styleData) return;
 
     try {
+      // Preserve globe projection across setStyle — setStyle resets to mercator
+      // if the style spec has no projection field, losing any globe toggle the user set.
+      const currentProjection = map.getProjection();
+
       // Update the style using setStyle
       map.setStyle(styleData);
       loadLegendSymbols(map);
+
+      // Re-apply non-mercator projection after the style finishes loading
+      if (currentProjection?.type && currentProjection.type !== 'mercator') {
+        map.once('style.load', () => {
+          map.setProjection(currentProjection);
+        });
+      }
 
       // If we haven't zoomed yet, zoom to the style's center and zoom level
       // setStyle on purpose does not reset the zoom/center, but it's nice to load a map
@@ -1018,20 +1154,47 @@ export default function MapLibreMap({
   }, [deckgl3dLayers]);
 
   useEffect(() => {
-    if (!localMapRef.current) return;
-
     const map = localMapRef.current;
-    if (map && !map.isStyleLoaded()) return;
+    if (!map) return;
 
-    const style = map?.getStyle();
-    if (!style || !style.layers) return;
+    const applyVisibility = () => {
+      if (!map.isStyleLoaded()) return;
+      const style = map.getStyle();
+      if (!style?.layers) return;
 
-    style.layers.forEach((layer) => {
-      if ('source' in layer && layer.source) {
-        const visibility = hiddenLayerIDs.includes(layer.source as string) ? 'none' : 'visible';
-        map.setLayoutProperty(layer.id, 'visibility', visibility);
-      }
-    });
+      style.layers.forEach((layer) => {
+        if ('source' in layer && layer.source) {
+          const src = layer.source as string;
+          // Source IDs may be prefixed (e.g. "worldcover-source-{id}",
+          // "raster-source-{id}", "cog-source-{id}") so check both
+          // exact match and whether the source contains a hidden layer ID.
+          const isHidden = hiddenLayerIDs.some((id) => src === id || src.endsWith(`-${id}`));
+          const visibility = isHidden ? 'none' : 'visible';
+          try {
+            map.setLayoutProperty(layer.id, 'visibility', visibility);
+          } catch {
+            // layer may have been removed between getStyle() and setLayoutProperty()
+          }
+        }
+      });
+    };
+
+    // Apply immediately if style is loaded, otherwise wait for it
+    if (map.isStyleLoaded()) {
+      applyVisibility();
+    } else {
+      map.once('style.load', applyVisibility);
+    }
+
+    // Re-apply after a full style reload (setStyle call from LLM).
+    // Using 'style.load' instead of 'styledata' is critical: 'styledata' fires
+    // on every setLayoutProperty call, which would immediately override any
+    // visibility change. 'style.load' only fires on full style reloads.
+    map.on('style.load', applyVisibility);
+
+    return () => {
+      map.off('style.load', applyVisibility);
+    };
   }, [hiddenLayerIDs]);
 
   // Update the points source when pointer positions change
@@ -1100,7 +1263,7 @@ export default function MapLibreMap({
         };
         setActiveActions((prev) => [...prev, createConversationAction]);
 
-        const createResp = await fetch(`/api/conversations`, {
+        const createResp = await apiFetch(`/api/conversations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ project_id: project.id }),
@@ -1135,7 +1298,7 @@ export default function MapLibreMap({
         };
       }
 
-      const response = await fetch(`/api/maps/conversations/${conversationIdToUse}/maps/${mapId}/send`, {
+      const response = await apiFetch(`/api/maps/conversations/${conversationIdToUse}/maps/${mapId}/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1165,32 +1328,6 @@ export default function MapLibreMap({
       setInputValue('');
     }
   };
-
-  // Add basemap control when map and basemaps are available.
-  // mapInstanceId ensures re-creation after the map is destroyed/recreated.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mapInstanceId is an intentional trigger-only dep
-  useEffect(() => {
-    const map = localMapRef.current;
-    if (!map || availableBasemaps.length === 0) return;
-
-    // Use current basemap from style or default to first available
-    const initialBasemap = currentBasemap || availableBasemaps[0];
-    // Create control with a no-op callback initially to avoid dependency issues
-    const basemapControl = new BasemapControl(availableBasemaps, initialBasemap, basemapDisplayNames, () => undefined);
-    basemapControlRef.current = basemapControl;
-    map.addControl(basemapControl, 'top-right');
-    // Immediately update with the real callback
-    basemapControl.updateCallback(handleBasemapChange);
-
-    return () => {
-      basemapControlRef.current = null;
-      try {
-        map.removeControl(basemapControl);
-      } catch (_) {
-        /* already removed */
-      }
-    };
-  }, [availableBasemaps, currentBasemap, basemapDisplayNames, handleBasemapChange, mapInstanceId]);
 
   // Update basemap control when basemap changes
   useEffect(() => {
@@ -1268,6 +1405,10 @@ export default function MapLibreMap({
             toggleLayerVisibility={toggleLayerVisibility}
             errors={errors}
             loadingLayerIDs={loadingLayerIDs}
+            paintOverrides={paintOverrides}
+            onLayerOpacityChange={setLayerOpacity}
+            onLayerColorChange={setLayerColor}
+            onLayerChoropleth={setLayerChoropleth}
           />
         )}
         {selectedFeature && (

@@ -1,0 +1,247 @@
+# render.yaml — Render Blueprint for Mundi.ai
+# https://docs.render.com/blueprint-spec
+#
+# Deploy: connect this repo in the Render Dashboard → "New Blueprint Instance"
+# All secrets (marked `sync: false`) must be set manually in the Render dashboard.
+
+# ---------------------------------------------------------------------------
+# Environment variable groups (shared across services)
+# ---------------------------------------------------------------------------
+envVarGroups:
+  - name: mundi-shared
+    envVars:
+      # Database (auto-injected by Render for managed DB, but explicit for clarity)
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: mundi-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: mundi-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: mundi-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: mundi-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: mundi-db
+          property: password
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mundi-db
+          property: connectionString
+      # Redis
+      - key: REDIS_HOST
+        fromService:
+          name: mundi-redis
+          type: redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          name: mundi-redis
+          type: redis
+          property: port
+      # Cloudflare R2 (set in dashboard)
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_BUCKET
+        value: mundi-layers
+      - key: S3_DEFAULT_REGION
+        value: auto
+
+  - name: mundi-secrets
+    envVars:
+      # Clerk authentication
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
+      # OpenAI / LLM
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-nano
+      # Sentinel Hub
+      - key: SH_CLIENT_ID
+        sync: false
+      - key: SH_CLIENT_SECRET
+        sync: false
+      # OpenEO
+      - key: OPENEO_CLIENT_ID
+        sync: false
+      - key: OPENEO_CLIENT_SECRET
+        sync: false
+      # Copernicus CDS
+      - key: CDSAPI_URL
+        value: https://cds.climate.copernicus.eu/api
+      - key: CDSAPI_KEY
+        sync: false
+
+  - name: mundi-observability
+    envVars:
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: OTEL_SERVICE_NAME
+        value: ingabe
+
+# ---------------------------------------------------------------------------
+# Databases
+# ---------------------------------------------------------------------------
+databases:
+  - name: mundi-db
+    plan: starter
+    postgresMajorVersion: 15
+    ipAllowList: []  # Only allow internal access
+    postGISEnabled: true
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+services:
+
+  # ── Main application ──
+  - type: web
+    name: mundi-app
+    runtime: docker
+    plan: standard
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    buildFilter:
+      paths:
+        - src/**
+        - frontendts/**
+        - alembic/**
+        - Dockerfile
+        - requirements.txt
+    envVarGroups:
+      - mundi-shared
+      - mundi-secrets
+      - mundi-observability
+    envVars:
+      - key: WEBSITE_DOMAIN
+        sync: false  # Set to https://your-domain.com in dashboard (or https://mundi-app.onrender.com)
+      - key: QGIS_PROCESSING_URL
+        fromService:
+          name: qgis-processing
+          type: web
+          envVarKey: RENDER_INTERNAL_URL
+      - key: MUNDI_AUTH_MODE
+        value: edit
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PYTHONIOENCODING
+        value: utf-8
+      - key: POSTGIS_LOCALHOST_POLICY
+        value: docker_rewrite
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_EXPENSIVE
+        value: 20/minute
+      - key: RATE_LIMIT_HEAVY
+        value: 10/minute
+      - key: RATE_LIMIT_GENERAL
+        value: 120/minute
+    buildCommand: ""
+    startCommand: "bash -c 'alembic upgrade head && uvicorn src.wsgi:app --host 0.0.0.0 --port $PORT'"
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # ── QGIS Processing service ──
+  - type: web
+    name: qgis-processing
+    runtime: docker
+    plan: standard
+    region: oregon
+    dockerfilePath: ./qgis-processing/Dockerfile
+    dockerContext: ./qgis-processing
+    buildFilter:
+      paths:
+        - qgis-processing/**
+    envVars:
+      - key: QT_QPA_PLATFORM
+        value: offscreen
+    startCommand: "python -m uvicorn server:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    autoDeploy: true
+
+  # ── Dagster webserver (UI) ──
+  - type: web
+    name: dagster-webserver
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVarGroups:
+      - mundi-shared
+      - mundi-secrets
+    envVars:
+      - key: DAGSTER_HOME
+        value: /app/dagster_home
+      - key: DAGSTER_PG_URL
+        fromDatabase:
+          name: mundi-db
+          property: connectionString
+    startCommand: "dagster-webserver -h 0.0.0.0 -p $PORT -w /app/dagster_home/workspace.yaml"
+    autoDeploy: true
+
+  # ── Dagster daemon (scheduler/sensor) ──
+  - type: worker
+    name: dagster-daemon
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVarGroups:
+      - mundi-shared
+      - mundi-secrets
+    envVars:
+      - key: DAGSTER_HOME
+        value: /app/dagster_home
+      - key: DAGSTER_PG_URL
+        fromDatabase:
+          name: mundi-db
+          property: connectionString
+    startCommand: "dagster-daemon run -w /app/dagster_home/workspace.yaml"
+    autoDeploy: true
+
+  # ── Redis ──
+  - type: redis
+    name: mundi-redis
+    plan: starter
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+  # ── Database backup cron ──
+  - type: cron
+    name: mundi-backup
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./scripts/Dockerfile.backup
+    dockerContext: .
+    schedule: "0 2 * * *"
+    envVarGroups:
+      - mundi-shared
+    envVars:
+      - key: BACKUP_RETENTION_DAYS
+        value: "7"
+    startCommand: "/bin/bash /backup.sh"

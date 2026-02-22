@@ -1,9 +1,7 @@
 import asyncio
 import json
 import logging
-import os
 import time
-import traceback
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager, suppress
@@ -227,14 +225,7 @@ async def ws_conversation_chat(
     conversation_id: int,
     user_context: UserContext = Depends(verify_websocket),
 ):
-    # In edit mode, we don't require tokens for WebSocket connections
-    auth_mode = os.environ.get("MUNDI_AUTH_MODE")
-    token = ws.query_params.get("token")
-
-    if not token and auth_mode != "edit":
-        await ws.close(code=4401, reason="No token")
-        return
-
+    # Auth is now handled by verify_websocket dependency (Clerk JWT or legacy mode)
     user_id = user_context.get_user_id()
 
     # Check if user owns the conversation
@@ -401,7 +392,7 @@ async def _broadcast_payload(payload: str):
             )
         for q in queues:
             q.put_nowait(parsed_payload)
-    except Exception as e:
+    except Exception:
         logger.exception("Error broadcasting payload")
         raise
 

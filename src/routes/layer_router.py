@@ -984,6 +984,200 @@ async def get_layer_geojson(
         )
 
 
+class ColumnStatsResponse(BaseModel):
+    column: str
+    method: str
+    k: int
+    breaks: list[float]
+    min: float
+    max: float
+
+
+@layer_router.get(
+    "/layer/{layer_id}/column-stats",
+    operation_id="get_layer_column_stats",
+    response_model=ColumnStatsResponse,
+    summary="Compute classification breaks for a numeric column",
+)
+async def get_layer_column_stats(
+    layer: MapLayer = Depends(get_layer),
+    column: str = None,
+    k: int = 5,
+    method: str = "quantile",
+):
+    """Return quantile or equal-interval classification breaks for a numeric column.
+
+    Supports PostGIS and vector (FlatGeoBuf/GeoJSON) layers.
+    ``k`` must be between 2 and 20 (inclusive).
+    ``method`` must be one of ``quantile`` or ``equal_interval``.
+    """
+    if column is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter 'column' is required",
+        )
+    if not (2 <= k <= 20):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'k' must be between 2 and 20",
+        )
+    if method not in ("quantile", "equal_interval"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="'method' must be 'quantile' or 'equal_interval'",
+        )
+
+    # ── helpers ────────────────────────────────────────────────────────────
+    def _quantile_breaks(values: list[float], k: int) -> list[float]:
+        """Return k+1 quantile break values (min … max) from a sorted list."""
+        n = len(values)
+        if n == 0:
+            return []
+        s = sorted(values)
+        breaks: list[float] = [s[0]]
+        for i in range(1, k):
+            idx = (i * n) / k
+            lo, hi = int(idx), min(int(idx) + 1, n - 1)
+            frac = idx - lo
+            breaks.append(s[lo] * (1 - frac) + s[hi] * frac)
+        breaks.append(s[-1])
+        return breaks
+
+    def _equal_interval_breaks(values: list[float], k: int) -> list[float]:
+        mn, mx = min(values), max(values)
+        step = (mx - mn) / k
+        return [mn + step * i for i in range(k + 1)]
+
+    # ── PostGIS path ───────────────────────────────────────────────────────
+    if layer.type == "postgis" and layer.postgis_connection_id and layer.postgis_query:
+        async with async_conn("geojson") as conn:
+            connection_details = await conn.fetchrow(
+                """
+                SELECT connection_uri
+                FROM project_postgres_connections
+                WHERE id = $1 AND soft_deleted_at IS NULL
+                """,
+                layer.postgis_connection_id,
+            )
+            if not connection_details:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="PostGIS connection not found",
+                )
+
+        # Validate column name to avoid SQL injection (only allow safe identifiers)
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_ ]*$', column):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid column name",
+            )
+
+        async with get_pooled_connection(
+            connection_details["connection_uri"]
+        ) as postgis_conn:
+            if method == "quantile":
+                rows = await postgis_conn.fetch(
+                    f"""
+                    SELECT "{column}"::float AS v
+                    FROM ({layer.postgis_query}) AS sub
+                    WHERE "{column}" IS NOT NULL
+                    ORDER BY v
+                    """
+                )
+                values = [r["v"] for r in rows]
+                if not values:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Column '{column}' has no non-null numeric values",
+                    )
+                breaks = _quantile_breaks(values, k)
+            else:  # equal_interval — computed in SQL for efficiency
+                row = await postgis_conn.fetchrow(
+                    f"""
+                    SELECT MIN("{column}"::float) AS mn, MAX("{column}"::float) AS mx
+                    FROM ({layer.postgis_query}) AS sub
+                    WHERE "{column}" IS NOT NULL
+                    """
+                )
+                if row is None or row["mn"] is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Column '{column}' has no non-null numeric values",
+                    )
+                mn, mx = float(row["mn"]), float(row["mx"])
+                step = (mx - mn) / k
+                breaks = [mn + step * i for i in range(k + 1)]
+                values = [mn, mx]  # just for min/max below
+
+        return ColumnStatsResponse(
+            column=column,
+            method=method,
+            k=k,
+            breaks=[round(b, 6) for b in breaks],
+            min=round(min(values), 6),
+            max=round(max(values), 6),
+        )
+
+    # ── Vector (FlatGeoBuf / GeoJSON) path ────────────────────────────────
+    if layer.type != "vector":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="column-stats is only supported for vector and PostGIS layers",
+        )
+
+    async with await layer.get_ogr_source() as ogr_source:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_geojson = os.path.join(temp_dir, "layer.geojson")
+            ogr_cmd = [
+                "ogr2ogr",
+                "-f", "GeoJSON",
+                "-select", column,  # only the column we need
+                "-t_srs", "EPSG:4326",
+                "-skipfailures",
+                local_geojson,
+                ogr_source,
+            ]
+            proc = await asyncio.create_subprocess_exec(*ogr_cmd)
+            await proc.wait()
+            if proc.returncode != 0:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to read vector layer for column stats",
+                )
+
+            with open(local_geojson) as f:
+                fc = json.load(f)
+
+    raw_values = []
+    for feat in fc.get("features", []):
+        v = feat.get("properties", {}).get(column)
+        if v is not None:
+            try:
+                raw_values.append(float(v))
+            except (TypeError, ValueError):
+                pass
+
+    if not raw_values:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Column '{column}' has no non-null numeric values",
+        )
+
+    if method == "quantile":
+        breaks = _quantile_breaks(raw_values, k)
+    else:
+        breaks = _equal_interval_breaks(raw_values, k)
+
+    return ColumnStatsResponse(
+        column=column,
+        method=method,
+        k=k,
+        breaks=[round(b, 6) for b in breaks],
+        min=round(min(raw_values), 6),
+        max=round(max(raw_values), 6),
+    )
+
+
 # Re-export from service layer so existing callers continue to work.
 # New code should import from src.services.layer_service directly.
 from src.services.layer_service import describe_layer_internal  # noqa: F811

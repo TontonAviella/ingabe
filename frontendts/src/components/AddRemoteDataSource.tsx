@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import React, { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -44,7 +45,7 @@ export const AddRemoteDataSource: React.FC<AddRemoteDataSourceProps> = ({ isOpen
     setError(null);
 
     try {
-      const response = await fetch(`/api/maps/${mapId}/layers/remote`, {
+      const response = await apiFetch(`/api/maps/${mapId}/layers/remote`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

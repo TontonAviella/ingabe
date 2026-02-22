@@ -1,4 +1,3 @@
-import os
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from src.dependencies.postgres_connection import PostgresConnectionManager

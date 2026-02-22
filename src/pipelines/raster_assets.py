@@ -4,7 +4,6 @@ Wraps the existing Dask-based raster pipeline (src/upload/dask_raster.py)
 and zonal statistics (src/geoprocessing/zonal_stats.py) into Dagster assets.
 """
 
-import asyncio
 import json
 import logging
 import os

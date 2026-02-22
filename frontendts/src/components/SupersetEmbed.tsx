@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Activity, BarChart3, ExternalLink } from 'lucide-react';
-import { useSupersetStatus, useSupersetGuestToken } from '@/hooks/useRwandaApi';
+import { useEffect, useRef, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useSupersetGuestToken, useSupersetStatus } from '@/hooks/useRwandaApi';
 
 interface SupersetEmbedProps {
   dashboardId?: string;
@@ -80,8 +80,8 @@ export function SupersetEmbed({ dashboardId, title = 'Analytics Dashboard', heig
                 className="text-primary hover:underline inline-flex items-center gap-1"
               >
                 Apache Superset <ExternalLink className="size-3" />
-              </a>
-              {' '}to embed analytics here.
+              </a>{' '}
+              to embed analytics here.
             </p>
             <div className="flex items-center gap-2 mt-4">
               <span className="size-2 rounded-full bg-green-500 animate-pulse" />

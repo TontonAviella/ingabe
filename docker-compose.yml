@@ -8,6 +8,9 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_WEBSITE_DOMAIN=http://localhost:8000
+        - VITE_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
+        - VITE_CLERK_SIGN_IN_URL=${CLERK_SIGN_IN_URL:-}
+        - VITE_CLERK_SIGN_UP_URL=${CLERK_SIGN_UP_URL:-}
       x-bake:
         tags:
           - "${APP_IMAGE:-mundi-public:local}"
@@ -25,24 +28,31 @@ services:
       qgis-processing:
         condition: service_healthy
     environment:
-      - MUNDI_AUTH_MODE=edit # "edit" or "view_only"
-      - S3_ACCESS_KEY_ID=s3user
-      - S3_SECRET_ACCESS_KEY=backup123
-      - S3_DEFAULT_REGION=us-east-1
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_BUCKET=test-bucket
-      - WEBSITE_DOMAIN=http://localhost:8000
+      - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
+      # Clerk authentication (set these to enable real multi-user auth)
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:-}
+      - CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
+      - CLERK_ISSUER=${CLERK_ISSUER:-}  # e.g. https://your-app.clerk.accounts.dev
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - WEBSITE_DOMAIN=${VITE_WEBSITE_DOMAIN:-http://localhost:8000}
       - QGIS_PROCESSING_URL=http://qgis-processing:8817
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
-      - POSTGRES_HOST=postgresdb
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=mundidb
-      - POSTGRES_USER=mundiuser
-      - POSTGRES_PASSWORD=gdalpassword
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ingabe}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - POSTGIS_LOCALHOST_POLICY=docker_rewrite
@@ -53,6 +63,11 @@ services:
       - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
       - CDSAPI_KEY=${CDSAPI_KEY:-}
       - SUPERSET_URL=http://superset:8088
+      # Rate limiting
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_EXPENSIVE=${RATE_LIMIT_EXPENSIVE:-20/minute}
+      - RATE_LIMIT_HEAVY=${RATE_LIMIT_HEAVY:-10/minute}
+      - RATE_LIMIT_GENERAL=${RATE_LIMIT_GENERAL:-120/minute}
       # Iceberg lakehouse configuration (Phase 2)
       - ICEBERG_CATALOG_DB=/tmp/iceberg_catalog.db
       - ICEBERG_WAREHOUSE_PATH=s3://test-bucket/lakehouse/warehouse
@@ -69,7 +84,8 @@ services:
       # - OPENAI_API_KEY=ollama
       # - OPENAI_MODEL=orieg/gemma3-tools:1b
       #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
-    command: uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors
+    command: >
+      bash -c "alembic upgrade head && uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors"
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
@@ -81,9 +97,9 @@ services:
   minio:
     image: bitnamilegacy/minio:latest
     environment:
-      - MINIO_ROOT_USER=admin
-      - MINIO_ROOT_PASSWORD=password
-      - MINIO_DEFAULT_BUCKETS=test-bucket
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme}
+      - MINIO_DEFAULT_BUCKETS=${S3_BUCKET:-test-bucket}
     volumes:
       - ./data/minio:/data
     restart: unless-stopped
@@ -100,10 +116,10 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 admin password;
-      /usr/bin/mc admin user add myminio s3user backup123;
-      /usr/bin/mc admin policy attach myminio readwrite --user s3user ||
-      (sleep 3 && /usr/bin/mc admin policy attach myminio readwrite --user s3user);
+      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-admin} ${MINIO_ROOT_PASSWORD:-changeme};
+      /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
+      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} ||
+      (sleep 3 && /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user});
       echo 'S3 user setup complete!';
       "
 
@@ -111,9 +127,9 @@ services:
     platform: linux/amd64
     image: postgis/postgis:15-3.4
     environment:
-      - POSTGRES_DB=mundidb
-      - POSTGRES_USER=mundiuser
-      - POSTGRES_PASSWORD=gdalpassword
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -125,6 +141,7 @@ services:
 
   redis:
     image: redis:alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 1s
@@ -216,17 +233,17 @@ services:
         condition: service_healthy
     environment:
       - DAGSTER_HOME=/app/dagster_home
-      - DAGSTER_PG_URL=postgresql://mundiuser:gdalpassword@postgresdb:5432/dagster
-      - S3_ACCESS_KEY_ID=s3user
-      - S3_SECRET_ACCESS_KEY=backup123
-      - S3_DEFAULT_REGION=us-east-1
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_BUCKET=test-bucket
-      - POSTGRES_HOST=postgresdb
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=mundidb
-      - POSTGRES_USER=mundiuser
-      - POSTGRES_PASSWORD=gdalpassword
+      - DAGSTER_PG_URL=postgresql://${POSTGRES_USER:-mundiuser}:${POSTGRES_PASSWORD:-changeme}@${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/dagster
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
       - SH_CLIENT_ID=${SH_CLIENT_ID:-}
       - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
       - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
@@ -251,17 +268,17 @@ services:
         condition: service_healthy
     environment:
       - DAGSTER_HOME=/app/dagster_home
-      - DAGSTER_PG_URL=postgresql://mundiuser:gdalpassword@postgresdb:5432/dagster
-      - S3_ACCESS_KEY_ID=s3user
-      - S3_SECRET_ACCESS_KEY=backup123
-      - S3_DEFAULT_REGION=us-east-1
-      - S3_ENDPOINT_URL=http://minio:9000
-      - S3_BUCKET=test-bucket
-      - POSTGRES_HOST=postgresdb
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=mundidb
-      - POSTGRES_USER=mundiuser
-      - POSTGRES_PASSWORD=gdalpassword
+      - DAGSTER_PG_URL=postgresql://${POSTGRES_USER:-mundiuser}:${POSTGRES_PASSWORD:-changeme}@${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/dagster
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
       - SH_CLIENT_ID=${SH_CLIENT_ID:-}
       - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
       - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
@@ -287,12 +304,12 @@ services:
       redis:
         condition: service_healthy
     environment:
-      - SUPERSET_SECRET_KEY=superset-secret-key-change-in-prod
+      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-changeme}
       - DATABASE_DB=superset
-      - DATABASE_HOST=postgresdb
-      - DATABASE_PASSWORD=gdalpassword
-      - DATABASE_USER=mundiuser
-      - DATABASE_PORT=5432
+      - DATABASE_HOST=${POSTGRES_HOST:-postgresdb}
+      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - DATABASE_USER=${POSTGRES_USER:-mundiuser}
+      - DATABASE_PORT=${POSTGRES_PORT:-5432}
       - DATABASE_DIALECT=postgresql
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -308,8 +325,8 @@ services:
       - |
         pip install psycopg2-binary pillow flask-cors &&
         python -c "
-        import psycopg2; from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-        conn = psycopg2.connect(host='postgresdb', port=5432, user='mundiuser', password='gdalpassword', dbname='mundidb')
+        import os, psycopg2; from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+        conn = psycopg2.connect(host=os.environ['DATABASE_HOST'], port=int(os.environ['DATABASE_PORT']), user=os.environ['DATABASE_USER'], password=os.environ['DATABASE_PASSWORD'], dbname='mundidb')
         conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT); cur = conn.cursor()
         cur.execute(\"SELECT 1 FROM pg_database WHERE datname = 'superset'\")
         exists = cur.fetchone()
@@ -327,6 +344,42 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s
+
+  # --- Database backup (pg_dump → gzip → S3/MinIO) ---
+  backup:
+    image: alpine:3.21
+    container_name: mundi-backup
+    depends_on:
+      postgresdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
+      - BACKUP_CRON=${BACKUP_CRON:-0 2 * * *}
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache postgresql16-client bash curl &&
+        curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc &&
+        chmod +x /usr/local/bin/mc &&
+        echo "$$BACKUP_CRON /bin/bash /backup.sh >> /var/log/backup.log 2>&1" > /etc/crontabs/root &&
+        echo "[backup] Cron scheduled: $$BACKUP_CRON — running initial backup" &&
+        /bin/bash /backup.sh &&
+        crond -f -l 2
+    restart: unless-stopped
 
 volumes:
   dagster-home:

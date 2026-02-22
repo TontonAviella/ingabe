@@ -157,6 +157,35 @@ async def list_user_projects(
             offset,
         )
 
+        # Batch-fetch most-recent map details in a single query (avoids N+1)
+        map_ids_to_fetch = [
+            project_data["maps"][-1]
+            for project_data in projects_data
+            if project_data["maps"] and len(project_data["maps"]) > 0
+        ]
+
+        map_details_by_id: dict = {}
+        if map_ids_to_fetch:
+            map_rows = await conn.fetch(
+                """
+                SELECT id, title, description, last_edited
+                FROM user_mundiai_maps
+                WHERE id = ANY($1) AND soft_deleted_at IS NULL
+                """,
+                map_ids_to_fetch,
+            )
+            for row in map_rows:
+                last_edited_str = (
+                    row["last_edited"].isoformat()
+                    if isinstance(row["last_edited"], datetime)
+                    else str(row["last_edited"])
+                )
+                map_details_by_id[row["id"]] = MostRecentVersion(
+                    title=row["title"],
+                    description=row["description"],
+                    last_edited=last_edited_str,
+                )
+
         projects_response = []
         for project_data in projects_data:
             created_on_str = (
@@ -165,29 +194,10 @@ async def list_user_projects(
                 else str(project_data["created_on"])
             )
             most_recent_map_details = None
-
             if project_data["maps"] and len(project_data["maps"]) > 0:
-                most_recent_map_id = project_data["maps"][-1]
-
-                map_details = await conn.fetchrow(
-                    """
-                    SELECT title, description, last_edited
-                    FROM user_mundiai_maps
-                    WHERE id = $1 AND soft_deleted_at IS NULL
-                    """,
-                    most_recent_map_id,
+                most_recent_map_details = map_details_by_id.get(
+                    project_data["maps"][-1]
                 )
-                if map_details:
-                    last_edited_str = (
-                        map_details["last_edited"].isoformat()
-                        if isinstance(map_details["last_edited"], datetime)
-                        else str(map_details["last_edited"])
-                    )
-                    most_recent_map_details = MostRecentVersion(
-                        title=map_details["title"],
-                        description=map_details["description"],
-                        last_edited=last_edited_str,
-                    )
 
             projects_response.append(
                 ProjectResponse(

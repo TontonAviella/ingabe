@@ -8,12 +8,16 @@
     "build": "tsc -b && vite build",
     "lint": "biome ci --error-on-warnings src/",
     "preview": "vite preview",
-    "watch": "tsc -b --watch & vite build --watch --mode development"
+    "watch": "tsc -b --watch & vite build --watch --mode development",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@clerk/clerk-react": "^5.60.1",
     "@deck.gl/core": "^9.2.7",
     "@deck.gl/layers": "^9.2.7",
     "@deck.gl/mapbox": "^9.2.7",
+    "@geoman-io/maplibre-geoman-free": "^0.6.3",
     "@geomatico/maplibre-cog-protocol": "^0.5.0",
     "@hookform/resolvers": "^5.1.1",
     "@loaders.gl/3d-tiles": "^4.4.0-alpha.2",
@@ -42,6 +46,8 @@
     "legend-symbol-ts": "github:brendanashworth/legend-symbol#4f0b923",
     "lucide-react": "^0.503.0",
     "maplibre-gl": "^5.18.0",
+    "maplibre-gl-components": "^0.15.0",
+    "maplibre-gl-layer-control": "^0.14.0",
     "mermaid": "^11.6.0",
     "next-themes": "^0.4.6",
     "openai": "^4.100.0",
@@ -68,6 +74,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.1.1",
     "@eslint/js": "^9.22.0",
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/typography": "^0.5.16",
     "@types/node": "^22.15.3",
     "@types/react": "^18.2.0",

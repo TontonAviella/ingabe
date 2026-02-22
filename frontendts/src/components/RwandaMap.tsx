@@ -1,6 +1,6 @@
-import { Map, Source, Layer, NavigationControl, ScaleControl, type MapRef } from '@vis.gl/react-maplibre';
-import { useRef, useState, useMemo } from 'react';
+import { Layer, Map as MapGL, type MapRef, NavigationControl, ScaleControl, Source } from '@vis.gl/react-maplibre';
 import type { MapGeoJSONFeature } from 'maplibre-gl';
+import { useMemo, useRef, useState } from 'react';
 import { useH3Grid } from '@/hooks/useRwandaApi';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -19,18 +19,20 @@ const RWANDA_BOUNDARY: GeoJSON.Feature<GeoJSON.Polygon> = {
   type: 'Feature',
   geometry: {
     type: 'Polygon',
-    coordinates: [[
-      [28.86, -1.04],
-      [29.44, -1.04],
-      [30.42, -1.13],
-      [30.90, -1.69],
-      [30.86, -2.31],
-      [30.42, -2.84],
-      [29.57, -2.74],
-      [29.02, -2.55],
-      [28.86, -2.22],
-      [28.86, -1.04],
-    ]],
+    coordinates: [
+      [
+        [28.86, -1.04],
+        [29.44, -1.04],
+        [30.42, -1.13],
+        [30.9, -1.69],
+        [30.86, -2.31],
+        [30.42, -2.84],
+        [29.57, -2.74],
+        [29.02, -2.55],
+        [28.86, -2.22],
+        [28.86, -1.04],
+      ],
+    ],
   },
   properties: {},
 };
@@ -51,10 +53,7 @@ export function RwandaMap({ resolution = 7, bounds, selectedDistrict: _selectedD
   const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null);
 
   // Fetch H3 grid data
-  const { data: h3GridData, isLoading } = useH3Grid(
-    resolution,
-    bounds || '28.86,-2.84,30.90,-1.04'
-  );
+  const { data: h3GridData, isLoading } = useH3Grid(resolution, bounds || '28.86,-2.84,30.90,-1.04');
 
   // Create GeoJSON with NDVI-based colors
   const h3GeoJSON = useMemo(() => {
@@ -96,7 +95,7 @@ export function RwandaMap({ resolution = 7, bounds, selectedDistrict: _selectedD
 
   return (
     <div className="relative w-full h-full">
-      <Map
+      <MapGL
         ref={mapRef}
         initialViewState={{
           longitude: RWANDA_CENTER[0],
@@ -153,13 +152,11 @@ export function RwandaMap({ resolution = 7, bounds, selectedDistrict: _selectedD
             />
           </Source>
         )}
-      </Map>
+      </MapGL>
 
       {/* Loading indicator */}
       {isLoading && (
-        <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-md text-sm">
-          Loading H3 grid...
-        </div>
+        <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-md text-sm">Loading H3 grid...</div>
       )}
 
       {/* Hover popup */}
@@ -182,9 +179,7 @@ export function RwandaMap({ resolution = 7, bounds, selectedDistrict: _selectedD
           {hoveredFeature.properties?.mean_ndvi !== undefined && (
             <div>
               <span className="text-gray-600 dark:text-gray-400">NDVI:</span>{' '}
-              <span className="font-semibold">
-                {hoveredFeature.properties.mean_ndvi.toFixed(3)}
-              </span>
+              <span className="font-semibold">{hoveredFeature.properties.mean_ndvi.toFixed(3)}</span>
             </div>
           )}
         </div>

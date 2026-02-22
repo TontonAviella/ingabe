@@ -25,6 +25,10 @@ from src.tools.openstreetmap import (
     download_from_openstreetmap as osm_download_tool,
     DownloadFromOpenStreetMapArgs,
 )
+from src.tools.create_point import (
+    create_point_layer,
+    CreatePointLayerArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -43,6 +47,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "zoom_to_bounds": (
             zoom_to_bounds,
             ZoomToBoundsArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "create_point_layer": (
+            create_point_layer,
+            CreatePointLayerArgs,
             IngabeToolCallMetaArgs,
         ),
     }

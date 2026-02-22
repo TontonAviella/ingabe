@@ -4,7 +4,7 @@ import re
 
 import asyncpg
 from fastapi import HTTPException, status
-from typing import List, Optional
+from typing import List
 from src.database.models import MapLayer
 import redis.exceptions
 

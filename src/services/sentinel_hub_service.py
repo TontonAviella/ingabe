@@ -28,7 +28,7 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +158,47 @@ function evaluatePixel(s) {
 # All agricultural indices computed by EVALSCRIPT_AGRI_INDICES
 AGRI_INDEX_NAMES = ["ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
 
+# Supported satellite collections for switching between data sources
+SUPPORTED_COLLECTIONS = {
+    "SENTINEL2_L2A": "SENTINEL2_L2A",
+    "SENTINEL2_L1C": "SENTINEL2_L1C",
+    "SENTINEL1_GRD": "SENTINEL1",
+    # Aliases for user convenience
+    "sentinel-2": "SENTINEL2_L2A",
+    "sentinel-2-l2a": "SENTINEL2_L2A",
+    "sentinel-2-l1c": "SENTINEL2_L1C",
+    "sentinel-1": "SENTINEL1",
+    "s2": "SENTINEL2_L2A",
+    "s1": "SENTINEL1",
+}
+
+
+def _resolve_collection(collection: Optional[str] = None) -> "DataCollection":
+    """Resolve a collection name string to a sentinelhub DataCollection.
+
+    Args:
+        collection: Collection name (e.g. "SENTINEL2_L2A", "sentinel-2", "s2").
+                    Defaults to SENTINEL2_L2A.
+
+    Returns:
+        DataCollection enum value.
+
+    Raises:
+        ValueError: If collection name is not recognized.
+    """
+    if collection is None:
+        return DataCollection.SENTINEL2_L2A
+
+    normalized = SUPPORTED_COLLECTIONS.get(collection) or SUPPORTED_COLLECTIONS.get(collection.upper())
+    if normalized is None:
+        supported = sorted(set(SUPPORTED_COLLECTIONS.keys()))
+        raise ValueError(
+            f"Unknown satellite collection '{collection}'. "
+            f"Supported: {supported}"
+        )
+
+    return getattr(DataCollection, normalized)
+
 
 def _get_sh_config() -> "SHConfig":
     """Create Sentinel Hub config from environment variables."""
@@ -258,6 +299,7 @@ class SentinelHubService:
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         index: str = "ndvi",
+        collection: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compute vegetation index statistics for a GeoJSON polygon.
 
@@ -266,6 +308,8 @@ class SentinelHubService:
             date_from: Start date ISO 8601 (default: 30 days ago)
             date_to: End date ISO 8601 (default: today)
             index: "ndvi" for NDVI only, "multi" for NDVI+NDWI+BSI
+            collection: Satellite source (e.g. "SENTINEL2_L2A", "sentinel-2-l1c", "s1").
+                        Defaults to SENTINEL2_L2A.
 
         Returns:
             Dict with per-interval statistics (mean, std, min, max, percentiles)
@@ -286,6 +330,9 @@ class SentinelHubService:
         logger.info("SH Statistical: resolution=%s m for geometry type=%s", res, geometry.get("type"))
 
         try:
+            data_collection = _resolve_collection(collection)
+            logger.info("SH Statistical: using collection=%s", data_collection.name)
+
             request = SentinelHubStatistical(
                 aggregation=SentinelHubStatistical.aggregation(
                     evalscript=evalscript,
@@ -295,8 +342,8 @@ class SentinelHubService:
                 ),
                 input_data=[
                     SentinelHubStatistical.input_data(
-                        DataCollection.SENTINEL2_L2A.define_from(
-                            "s2l2a",
+                        data_collection.define_from(
+                            data_collection.name.lower(),
                             service_url=self._config.sh_base_url,
                         ),
                         maxcc=0.8,  # Rwanda is tropical/cloudy; allow up to 80% cloud cover
@@ -353,6 +400,7 @@ class SentinelHubService:
 
             return {
                 "service": "sentinel_hub_cdse",
+                "collection": data_collection.name,
                 "index": index,
                 "date_from": date_from,
                 "date_to": date_to,
@@ -360,6 +408,8 @@ class SentinelHubService:
                 "interval_count": len(intervals),
             }
 
+        except ValueError as e:
+            return {"error": str(e)}
         except Exception as e:
             logger.exception("Sentinel Hub statistical request failed")
             return {"error": f"Sentinel Hub request failed: {str(e)}"}
@@ -369,6 +419,7 @@ class SentinelHubService:
         geometry: Dict[str, Any],
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        collection: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compute ALL agricultural indices for a GeoJSON polygon in one API call.
 
@@ -379,6 +430,8 @@ class SentinelHubService:
             geometry: GeoJSON geometry (Polygon or MultiPolygon)
             date_from: Start date ISO 8601 (default: 7 days ago)
             date_to: End date ISO 8601 (default: today)
+            collection: Satellite source (e.g. "SENTINEL2_L2A", "sentinel-2-l1c").
+                        Defaults to SENTINEL2_L2A.
 
         Returns:
             Dict with per-interval per-index statistics
@@ -396,6 +449,8 @@ class SentinelHubService:
         logger.info("SH agri_stats: resolution=%s for geometry type=%s", res, geometry.get("type"))
 
         try:
+            data_collection = _resolve_collection(collection)
+
             request = SentinelHubStatistical(
                 aggregation=SentinelHubStatistical.aggregation(
                     evalscript=EVALSCRIPT_AGRI_INDICES,
@@ -405,8 +460,8 @@ class SentinelHubService:
                 ),
                 input_data=[
                     SentinelHubStatistical.input_data(
-                        DataCollection.SENTINEL2_L2A.define_from(
-                            "s2l2a",
+                        data_collection.define_from(
+                            data_collection.name.lower(),
                             service_url=self._config.sh_base_url,
                         ),
                         maxcc=0.8,
@@ -456,6 +511,7 @@ class SentinelHubService:
 
             return {
                 "service": "sentinel_hub_cdse",
+                "collection": data_collection.name,
                 "indices": AGRI_INDEX_NAMES,
                 "date_from": date_from,
                 "date_to": date_to,
@@ -463,6 +519,8 @@ class SentinelHubService:
                 "interval_count": len(intervals),
             }
 
+        except ValueError as e:
+            return {"error": str(e)}
         except Exception as e:
             logger.exception("Sentinel Hub agri_stats request failed")
             return {"error": f"Sentinel Hub request failed: {str(e)}"}

@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useWebSocket from 'react-use-websocket';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { fetchMaybeAuth, getJwt } from '@mundi/ee';
+import { apiFetch, fetchMaybeAuth, getJwt, useIsReady } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
@@ -38,6 +38,9 @@ export default function ProjectView() {
     throw new Error('No project ID');
   }
 
+  // Gate all queries on Clerk auth readiness to prevent premature 401s
+  const isReady = useIsReady();
+
   // State for controlling sources (PostGIS connections) refetch interval
   const [sourcesRefetchInterval, setSourcesRefetchInterval] = useState<number | false>(false);
 
@@ -50,8 +53,12 @@ export default function ProjectView() {
         // Either not found or not shared; surface cleanly
         throw new Error('Project not found');
       }
+      if (!res.ok) {
+        throw new Error(`Failed to fetch project: ${res.status}`);
+      }
       return (await res.json()) as MapProject;
     },
+    enabled: isReady,
     // Do not poll the project route; sources polling is handled below
     refetchInterval: false,
   });
@@ -60,10 +67,11 @@ export default function ProjectView() {
   const { data: projectSources } = useQuery({
     queryKey: ['project', projectId, 'sources'],
     queryFn: async () => {
-      const res = await fetch(`/api/projects/${projectId}/sources`);
+      const res = await apiFetch(`/api/projects/${projectId}/sources`);
       if (!res.ok) throw new Error('Failed to fetch project sources');
       return (await res.json()) as PostgresConnectionDetails[];
     },
+    enabled: isReady,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
     // While any connection is still being documented, poll this endpoint
@@ -80,10 +88,11 @@ export default function ProjectView() {
   const { data: conversations, isError: conversationsError } = useQuery({
     queryKey: ['project', projectId, 'conversations'],
     queryFn: async () => {
-      const res = await fetch(`/api/conversations?project_id=${projectId}`);
+      const res = await apiFetch(`/api/conversations?project_id=${projectId}`);
       if (!res.ok) throw new Error('Failed to fetch conversations');
       return (await res.json()) as Conversation[];
     },
+    enabled: isReady,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
   });
@@ -105,7 +114,7 @@ export default function ProjectView() {
   const { error, data: mapData } = useQuery({
     queryKey: ['project', projectId, 'map', versionId],
     queryFn: async () => {
-      const res = await fetch(`/api/maps/${versionId}`);
+      const res = await apiFetch(`/api/maps/${versionId}`);
       if (res.status === 404) {
         throw new Error('Map not found');
       }
@@ -113,17 +122,19 @@ export default function ProjectView() {
     },
     // prevent map (query parameter) refreshing this
     refetchOnMount: false,
-    enabled: !!versionId,
+    enabled: isReady && !!versionId,
   });
 
   const { data: mapTree } = useQuery({
     queryKey: ['project', projectId, 'map', versionId, 'tree', effectiveConversationId],
     queryFn: async () => {
-      const res = await fetch(`/api/maps/${versionId}/tree${effectiveConversationId ? `?conversation_id=${effectiveConversationId}` : ''}`);
+      const res = await apiFetch(
+        `/api/maps/${versionId}/tree${effectiveConversationId ? `?conversation_id=${effectiveConversationId}` : ''}`,
+      );
       if (!res.ok) throw new Error('Failed to fetch map tree');
       return (await res.json()) as MapTreeResponse;
     },
-    enabled: !!versionId,
+    enabled: isReady && !!versionId,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
     placeholderData: (previousData) => {
@@ -194,26 +205,42 @@ export default function ProjectView() {
 
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const [jwt, setJwt] = useState<string | undefined>(undefined);
+  // undefined = JWT not yet resolved (block connection), null = resolved/legacy (no token), string = Clerk JWT
+  const [jwt, setJwt] = useState<string | null | undefined>(undefined);
 
   const wsUrl = useMemo(() => {
-    if (!conversationId) {
-      return null;
-    } else if (!jwt) {
+    if (!conversationId) return null;
+    // Block connection until getJwt() resolves — prevents spurious 1008 errors
+    // when Clerk is enabled and the token hasn't arrived yet.
+    if (jwt === undefined) return null;
+    if (!jwt) {
       return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
     }
-
     return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates?token=${jwt}`;
   }, [conversationId, wsProtocol, jwt]);
 
   // If EE is present, fetch a JWT for authenticated websockets
+  // Refresh every 50 minutes to prevent expiration (Clerk JWTs expire after ~1 hour)
   useEffect(() => {
     let mounted = true;
-    getJwt().then((token: string | undefined) => {
-      if (mounted && token) setJwt(token);
-    });
+
+    const refreshJwt = () => {
+      getJwt().then((token: string | undefined) => {
+        // Always call setJwt after resolution: token string for Clerk, null for legacy/no-auth.
+        // This transitions jwt from undefined (loading) so wsUrl unblocks.
+        if (mounted) setJwt(token ?? null);
+      });
+    };
+
+    // Initial fetch
+    refreshJwt();
+
+    // Refresh every 50 minutes (3000000ms) to stay ahead of 60-minute expiry
+    const refreshInterval = window.setInterval(refreshJwt, 50 * 60 * 1000);
+
     return () => {
       mounted = false;
+      if (refreshInterval) clearInterval(refreshInterval);
     };
   }, []);
 
@@ -390,7 +417,11 @@ export default function ProjectView() {
         });
 
         xhr.open('POST', `/api/maps/${versionId}/layers`);
-        xhr.send(formData);
+        // Attach Clerk Bearer token for auth
+        getJwt().then((token) => {
+          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          xhr.send(formData);
+        });
       });
     },
     onSuccess: (response, { fileId }) => {

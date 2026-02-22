@@ -1,7 +1,7 @@
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -37,6 +37,15 @@ target_metadata = Base.metadata
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 
+def _is_event_loop_running() -> bool:
+    """Check if we're inside a running asyncio event loop (e.g. uvicorn)."""
+    try:
+        loop = asyncio.get_running_loop()
+        return loop.is_running()
+    except RuntimeError:
+        return False
+
+
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
 
@@ -68,12 +77,29 @@ def do_run_migrations(connection: Connection) -> None:
         context.run_migrations()
 
 
-async def run_async_migrations() -> None:
-    """In this scenario we need to create an Engine
-    and associate a connection with the context.
+def run_migrations_sync() -> None:
+    """Run migrations using a synchronous engine.
 
+    Used when called from within an already-running event loop
+    (e.g. uvicorn lifespan) where asyncio.run() would fail.
+    The async DATABASE_URL (postgresql+asyncpg://) is converted
+    to its synchronous equivalent (postgresql+psycopg2://).
     """
+    sync_url = DATABASE_URL.replace("+asyncpg", "+psycopg2")
+    connectable = create_engine(sync_url, poolclass=pool.NullPool)
 
+    with connectable.connect() as connection:
+        do_run_migrations(connection)
+
+    connectable.dispose()
+
+
+async def run_async_migrations() -> None:
+    """Run migrations using an async engine.
+
+    Used from the CLI (alembic upgrade head) where no event loop
+    is running yet.
+    """
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -87,8 +113,12 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+    """Run migrations in 'online' mode.
+
+    Always use the synchronous engine — this is safe whether called
+    from the CLI or from uvicorn (via asyncio.to_thread in migrate.py).
+    """
+    run_migrations_sync()
 
 
 if context.is_offline_mode():

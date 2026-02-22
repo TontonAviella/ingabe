@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,7 +20,7 @@ const EditableTitle: React.FC<EditableTitleProps> = ({ projectId, title = '', pl
 
   const updateTitleMutation = useMutation({
     mutationFn: async (newTitle: string) => {
-      const response = await fetch(`/api/projects/${projectId}`, {
+      const response = await apiFetch(`/api/projects/${projectId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -17,6 +17,7 @@ from src.dependencies.dag import get_map
 from fastapi import UploadFile
 import httpx
 from typing import Callable
+from src.dependencies.rate_limiter import expensive_limit
 from src.dependencies.redis_client import get_redis_client
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from openai.types.chat.chat_completion_tool_message_param import (
@@ -35,7 +36,6 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from openai import APIError
 
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
-from src.postgis_tiles import MVT_LAYER_NAME
 
 from src.routes.layer_router import (
     set_layer_style as set_layer_style_route,
@@ -116,11 +116,29 @@ async def _ensure_rwanda_postgis_connection(
     Returns the connection ID, or None on failure.
     """
     try:
-        existing = await conn.fetchval(
-            "SELECT id FROM project_postgres_connections WHERE id = $1",
+        existing = await conn.fetchrow(
+            "SELECT id, project_id, soft_deleted_at FROM project_postgres_connections WHERE id = $1",
             _RWANDA_INTERNAL_CONN_ID,
         )
         if existing:
+            # Un-delete if soft-deleted, and ensure correct project + user
+            needs_update = (
+                existing["soft_deleted_at"] is not None
+                or existing["project_id"] != project_id
+            )
+            if needs_update:
+                await conn.execute(
+                    """
+                    UPDATE project_postgres_connections
+                    SET project_id = $1, user_id = $2, soft_deleted_at = NULL
+                    WHERE id = $3
+                    """,
+                    project_id, user_id, _RWANDA_INTERNAL_CONN_ID,
+                )
+                logger.info(
+                    "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s",
+                    project_id, existing["soft_deleted_at"] is not None,
+                )
             return _RWANDA_INTERNAL_CONN_ID
 
         pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
@@ -143,6 +161,54 @@ async def _ensure_rwanda_postgis_connection(
             uri,
             "Rwanda Agriculture (internal)",
         )
+
+        # Also insert a schema summary so the LLM knows about the tables
+        _summary_md = (
+            "## Rwanda Administrative Boundaries\n\n"
+            "### rwanda_district_boundaries\n"
+            "All 30 Rwanda districts with polygon geometries.\n"
+            "| Column | Type | Description |\n"
+            "|--------|------|-------------|\n"
+            "| gid | integer | Primary key |\n"
+            "| district | text | District name (e.g. 'Nyagatare', 'Bugesera') |\n"
+            "| geom | geometry(MultiPolygon, 4326) | District boundary |\n\n"
+            "### rwanda_sector_boundaries\n"
+            "All Rwanda sectors with polygon geometries.\n"
+            "| Column | Type | Description |\n"
+            "|--------|------|-------------|\n"
+            "| gid | integer | Primary key |\n"
+            "| sector_name | text | Sector name |\n"
+            "| district_name | text | Parent district |\n"
+            "| geom | geometry(MultiPolygon, 4326) | Sector boundary |\n\n"
+            "### rwanda_cell_boundaries\n"
+            "All Rwanda cells (smallest admin unit) with polygon geometries.\n"
+            "| Column | Type | Description |\n"
+            "|--------|------|-------------|\n"
+            "| cell_id | integer | Primary key |\n"
+            "| cell_name | text | Cell name |\n"
+            "| sector_name | text | Parent sector |\n"
+            "| district_name | text | Parent district |\n"
+            "| geom | geometry(MultiPolygon, 4326) | Cell boundary |\n\n"
+            "### Usage with new_layer_from_postgis\n"
+            "Queries MUST return columns named `id` and `geom`.\n"
+            "Example: `SELECT cell_id AS id, cell_name, sector_name, "
+            "district_name, geom FROM rwanda_cell_boundaries "
+            "WHERE district_name = 'Nyagatare'`\n"
+        )
+        _summary_id = "SRwandaAdmin"
+        await conn.execute(
+            """
+            INSERT INTO project_postgres_summary
+            (id, connection_id, friendly_name, summary_md, table_count)
+            VALUES ($1, $2, $3, $4, 3)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            _summary_id,
+            _RWANDA_INTERNAL_CONN_ID,
+            "Rwanda Administrative Boundaries",
+            _summary_md,
+        )
+
         logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
                      _RWANDA_INTERNAL_CONN_ID, project_id)
         return _RWANDA_INTERNAL_CONN_ID
@@ -557,6 +623,28 @@ async def run_geoprocessing_tool(
     mapped_args["map_id"] = map_id
     mapped_args["user_uuid"] = user_id
 
+    # Convert buffer DISTANCE from kilometres to degrees for EPSG:4326 layers.
+    # All layers in the system are stored in EPSG:4326, so the QGIS native:buffer
+    # algorithm interprets DISTANCE in degrees. 1 degree ≈ 111.32 km at equator;
+    # for Rwanda (~-2° latitude) cos(2°) ≈ 0.9994, so using 111.32 is close enough.
+    if algorithm_id == "native:buffer" and "DISTANCE" in mapped_args:
+        try:
+            km_distance = float(mapped_args["DISTANCE"])
+            mapped_args["DISTANCE"] = km_distance / 111.32
+            logger.info(
+                "Buffer distance converted: %.2f km → %.6f degrees",
+                km_distance,
+                mapped_args["DISTANCE"],
+            )
+        except (ValueError, TypeError):
+            pass  # leave as-is if not numeric
+
+    logger.info(
+        "Geoprocessing tool call: %s (algorithm=%s) args=%s",
+        function_name, algorithm_id,
+        json.dumps({k: v for k, v in tool_args.items() if k != "user_uuid"}, default=str)[:500],
+    )
+
     with tracer.start_as_current_span(f"geoprocessing.{algorithm_id}") as span:
         try:
             async with (
@@ -673,9 +761,31 @@ async def run_geoprocessing_tool(
                     )
 
                 if response.status_code != 200:
+                    # Parse QGIS error details for logging and LLM feedback
+                    qgis_error_detail = ""
+                    try:
+                        err_body = response.json()
+                        detail = err_body.get("detail", err_body)
+                        if isinstance(detail, dict):
+                            stderr = detail.get("stderr", "")
+                            stdout = detail.get("stdout", "")
+                            qgis_error_detail = stderr or stdout
+                        else:
+                            qgis_error_detail = str(detail)
+                    except Exception:
+                        qgis_error_detail = response.text[:2000]
+
+                    logger.error(
+                        "QGIS processing failed for %s (HTTP %s): %s",
+                        algorithm_id,
+                        response.status_code,
+                        qgis_error_detail[:1000],
+                    )
+
+                    # Give the LLM a concise, actionable error message
                     return {
                         "status": "error",
-                        "error": f"QGIS processing failed: {response.status_code} - {response.text}",
+                        "error": f"QGIS algorithm {algorithm_id} failed. Details: {qgis_error_detail[:500]}",
                         "algorithm_id": algorithm_id,
                     }
 
@@ -689,9 +799,14 @@ async def run_geoprocessing_tool(
                         param_name not in upload_results
                         or not upload_results[param_name]["uploaded"]
                     ):
+                        upload_err = upload_results.get(param_name, {}).get("error", "unknown")
+                        logger.error(
+                            "QGIS %s output %s not uploaded: %s",
+                            algorithm_id, param_name, upload_err,
+                        )
                         return {
                             "status": "error",
-                            "error": f"QGIS processing completed but output file {param_name} was not uploaded successfully",
+                            "error": f"QGIS processing completed but output file {param_name} was not uploaded: {upload_err}",
                             "qgis_result": qgis_result,
                         }
 
@@ -733,6 +848,10 @@ async def run_geoprocessing_tool(
                     )
 
                 # Prepare the response
+                logger.info(
+                    "Geoprocessing %s completed: %d layers created",
+                    algorithm_id, len(created_layers),
+                )
                 result = {
                     "status": "success",
                     "message": f"{function_name} completed successfully",
@@ -764,11 +883,15 @@ async def run_geoprocessing_tool(
                 "error": f"Invalid input format: {str(e)}",
             }
         except Exception as e:
+            logger.exception(
+                "Unexpected error running geoprocessing algorithm %s: %s",
+                algorithm_id, e,
+            )
             span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
             span.set_attribute("error.traceback", traceback.format_exc())
             return {
                 "status": "error",
-                "error": "Unexpected error running geoprocessing, this is likely a Mundi bug.",
+                "error": f"Unexpected error running {algorithm_id}: {str(e)[:300]}",
                 "algorithm_id": algorithm_id,
             }
 
@@ -809,6 +932,9 @@ async def process_chat_interaction_task(
             )
 
     with tracer.start_as_current_span("app.process_chat_interaction") as span:
+        _consecutive_tool_errors = 0
+        _MAX_CONSECUTIVE_TOOL_ERRORS = 3
+
         for i in range(25):
             # Check if the message processing has been cancelled
             try:
@@ -1213,14 +1339,19 @@ async def process_chat_interaction_task(
                                     "error": "Missing required parameters (postgis_connection_id or query).",
                                 }
                             else:
-                                # Verify the PostGIS connection exists and user has access
+                                # Verify the PostGIS connection exists and user has access.
+                                # Fall back to project-level access for internal connections
+                                # (e.g. CRwandaIntDB) which may have a different user_id
+                                # when multiple users share a project.
                                 connection_result = await conn.fetchrow(
                                     """
                                     SELECT connection_uri FROM project_postgres_connections
-                                    WHERE id = $1 AND user_id = $2
+                                    WHERE id = $1 AND (user_id = $2 OR project_id = $3)
+                                    AND soft_deleted_at IS NULL
                                     """,
                                     postgis_connection_id,
                                     user_id,
+                                    current_project_id,
                                 )
 
                                 if not connection_result:
@@ -1570,11 +1701,28 @@ async def process_chat_interaction_task(
                                                 "query": query,
                                                 "added_to_map": True,
                                             }
+                                            if bounds and len(bounds) == 4:
+                                                tool_result["bounds"] = bounds
+                                        except HTTPException as e:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Failed to connect to PostGIS database: {e.detail}",
+                                            }
                                         except Exception as e:
                                             tool_result = {
                                                 "status": "error",
                                                 "error": f"Query validation failed: {str(e)}",
                                             }
+
+                                    # Auto-zoom to the new PostGIS layer
+                                    _postgis_bounds = tool_result.get("bounds")
+                                    if _postgis_bounds and len(_postgis_bounds) == 4:
+                                        async with kue_ephemeral_action(
+                                            conversation.id,
+                                            f"Zooming to {layer_name or 'layer'}...",
+                                            bounds=_postgis_bounds,
+                                        ):
+                                            await asyncio.sleep(0.3)
 
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
@@ -1594,7 +1742,7 @@ async def process_chat_interaction_task(
                             ):
                                 layer_exists = await conn.fetchrow(
                                     """
-                                    SELECT layer_id FROM map_layers
+                                    SELECT layer_id, bounds FROM map_layers
                                     WHERE layer_id = $1 AND owner_uuid = $2
                                     """,
                                     layer_id_to_add,
@@ -1627,11 +1775,28 @@ async def process_chat_interaction_task(
                                         layer_id_to_add,
                                         map_id,
                                     )
+                                    _layer_bounds = layer_exists["bounds"] if layer_exists else None
+
                                     tool_result = {
                                         "status": f"Layer '{new_name}' (ID: {layer_id_to_add}) added to map '{map_id}'.",
                                         "layer_id": layer_id_to_add,
                                         "name": new_name,
                                     }
+                                    if _layer_bounds and len(_layer_bounds) == 4:
+                                        tool_result["bounds"] = list(_layer_bounds)
+                                        tool_result["kue_instructions"] = (
+                                            f"Layer added. Call zoom_to_bounds with bounds {list(_layer_bounds)} "
+                                            "so the user can see it."
+                                        )
+
+                                # Auto-zoom to the newly added layer
+                                if _layer_bounds and len(_layer_bounds) == 4:
+                                    async with kue_ephemeral_action(
+                                        conversation.id,
+                                        f"Zooming to {new_name}...",
+                                        bounds=list(_layer_bounds),
+                                    ):
+                                        await asyncio.sleep(0.3)
 
                                 await add_chat_completion_message(
                                     ChatCompletionToolMessageParam(
@@ -1806,14 +1971,17 @@ async def process_chat_interaction_task(
                                     "error": "Missing required parameters (postgis_connection_id or sql_query)",
                                 }
                             else:
-                                # Verify the PostGIS connection exists and user has access
+                                # Verify the PostGIS connection exists and user has access.
+                                # Fall back to project-level access for internal connections.
                                 connection_result = await conn.fetchrow(
                                     """
                                     SELECT connection_uri FROM project_postgres_connections
-                                    WHERE id = $1 AND user_id = $2
+                                    WHERE id = $1 AND (user_id = $2 OR project_id = $3)
+                                    AND soft_deleted_at IS NULL
                                     """,
                                     postgis_connection_id,
                                     user_id,
+                                    current_project_id,
                                 )
 
                                 if not connection_result:
@@ -1941,6 +2109,11 @@ async def process_chat_interaction_task(
                                             finally:
                                                 await postgres_conn.close()
 
+                                    except HTTPException as e:
+                                        tool_result = {
+                                            "status": "error",
+                                            "error": f"Failed to connect to PostGIS database: {e.detail}",
+                                        }
                                     except Exception as e:
                                         tool_result = {
                                             "status": "error",
@@ -2188,7 +2361,7 @@ async def process_chat_interaction_task(
                         elif function_name == "get_ndvi_stats":
                             try:
                                 import duckdb as _duckdb
-                                from datetime import date as _date, timedelta as _td
+                                from datetime import date as _date, datetime as _datetime, timedelta as _td
 
                                 # ── 1. Query DuckDB cache (populated by nightly Dagster job) ──
                                 _cached_rows: list = []
@@ -2263,7 +2436,7 @@ async def process_chat_interaction_task(
                                                     *_query_params,
                                                 )
 
-                                            _now = datetime.utcnow()
+                                            _now = _datetime.utcnow()
                                             _rt_from = (_now - _td(days=7)).strftime("%Y-%m-%d")
                                             _rt_to = _now.strftime("%Y-%m-%d")
                                             _rt_week = _rt_from
@@ -2452,6 +2625,40 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "get_soil_properties":
+                            try:
+                                from src.services.isdasoil_service import query_soil_point
+
+                                lon = tool_args.get("longitude")
+                                lat = tool_args.get("latitude")
+                                properties = tool_args.get("properties")
+                                depth = tool_args.get("depth", "0-20")
+
+                                result_data = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: query_soil_point(
+                                        lon=lon,
+                                        lat=lat,
+                                        properties=properties,
+                                        depth=depth,
+                                    )
+                                )
+
+                                if "error" in result_data:
+                                    tool_result = {"status": "error", "error": result_data["error"]}
+                                else:
+                                    tool_result = result_data
+                            except Exception as e:
+                                logger.exception("get_soil_properties tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "get_parcel_ndvi_stats":
                             try:
                                 import duckdb as _duckdb
@@ -2537,7 +2744,7 @@ async def process_chat_interaction_task(
                                 )
                                 import duckdb as _duckdb
                                 import numpy as _np
-                                from datetime import timedelta as _td
+                                from datetime import datetime as _datetime, timedelta as _td
 
                                 _CACHE_TTL_DAYS = 7  # Sentinel-2 revisit ~5 days
 
@@ -2548,9 +2755,9 @@ async def process_chat_interaction_task(
                                 _date_to = tool_args.get("date_to")
 
                                 if not _date_to:
-                                    _date_to = datetime.utcnow().strftime("%Y-%m-%d")
+                                    _date_to = _datetime.utcnow().strftime("%Y-%m-%d")
                                 if not _date_from:
-                                    _date_from = (datetime.utcnow() - _td(days=7)).strftime("%Y-%m-%d")
+                                    _date_from = (_datetime.utcnow() - _td(days=7)).strftime("%Y-%m-%d")
 
                                 # Select the right admin boundary table
                                 _table_map = {
@@ -2612,7 +2819,7 @@ async def process_chat_interaction_task(
                                     )
 
                                     _admin_names = [r["name"] for r in _admin_rows]
-                                    _cutoff = (datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
+                                    _cutoff = (_datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
 
                                     # Query cache for fresh rows
                                     _placeholders = ", ".join(["?"] * len(_admin_names))
@@ -2966,6 +3173,370 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "query_worldcover_stats":
+                            try:
+                                import duckdb as _duckdb
+
+                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+                                _wc_query_type = tool_args.get("query_type", "land_cover")
+                                _wc_district = tool_args.get("district")
+                                _wc_sector = tool_args.get("sector")
+                                _wc_cell = tool_args.get("cell")
+                                _wc_bbox = tool_args.get("bbox")  # [west, south, east, north]
+                                _wc_lat = tool_args.get("lat")
+                                _wc_lon = tool_args.get("lon")
+                                _wc_limit = tool_args.get("limit", 10)
+
+                                # Reverse-geocode lat/lon to admin boundary if no
+                                # explicit district/sector/cell or bbox was provided
+                                if _wc_lat is not None and _wc_lon is not None and not (_wc_district or _wc_sector or _wc_cell or _wc_bbox):
+                                    try:
+                                        import asyncpg as _asyncpg_rg
+                                        _pg_host_rg = os.environ.get("POSTGRES_HOST", "postgresdb")
+                                        _pg_port_rg = int(os.environ.get("POSTGRES_PORT", "5432"))
+                                        _pg_db_rg = os.environ.get("POSTGRES_DB", "mundidb")
+                                        _pg_user_rg = os.environ.get("POSTGRES_USER", "mundiuser")
+                                        _pg_pass_rg = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                                        _pg_conn_rg = await _asyncpg_rg.connect(
+                                            host=_pg_host_rg, port=_pg_port_rg,
+                                            database=_pg_db_rg, user=_pg_user_rg, password=_pg_pass_rg,
+                                        )
+                                        try:
+                                            # Try cell first (most specific), then sector, then district
+                                            _rg_row = await _pg_conn_rg.fetchrow(
+                                                "SELECT cell_name, sector_name, district_name "
+                                                "FROM rwanda_cell_boundaries "
+                                                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                "LIMIT 1",
+                                                float(_wc_lon), float(_wc_lat),
+                                            )
+                                            if _rg_row:
+                                                _wc_cell = _rg_row["cell_name"]
+                                                _wc_sector = _rg_row["sector_name"]
+                                                _wc_district = _rg_row["district_name"]
+                                                logger.info(
+                                                    "Reverse-geocoded %.4f,%.4f → cell=%s sector=%s district=%s",
+                                                    _wc_lat, _wc_lon, _wc_cell, _wc_sector, _wc_district,
+                                                )
+                                            else:
+                                                # Fall back to district lookup
+                                                _rg_row = await _pg_conn_rg.fetchrow(
+                                                    "SELECT district FROM rwanda_district_boundaries "
+                                                    "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                    "LIMIT 1",
+                                                    float(_wc_lon), float(_wc_lat),
+                                                )
+                                                if _rg_row:
+                                                    _wc_district = _rg_row["district"]
+                                                    logger.info(
+                                                        "Reverse-geocoded %.4f,%.4f → district=%s",
+                                                        _wc_lat, _wc_lon, _wc_district,
+                                                    )
+                                        finally:
+                                            await _pg_conn_rg.close()
+                                    except Exception as _rg_err:
+                                        logger.warning("Reverse-geocode failed for %.4f,%.4f: %s", _wc_lat, _wc_lon, _rg_err)
+
+                                if _wc_query_type == "largest_cropland":
+                                    # On-the-fly connected-component analysis
+                                    # for the SPECIFIC boundary the user asks about.
+                                    _conn.close()  # don't need DuckDB for this
+
+                                    import asyncpg as _asyncpg
+                                    import numpy as _np
+                                    from rasterio.merge import merge as _rio_merge
+                                    from rasterio.features import geometry_mask as _geo_mask
+                                    from scipy.ndimage import label as _scipy_label
+
+                                    _PIXEL_HA = 0.01  # 10m x 10m = 0.01 ha
+
+                                    # Determine admin level: most specific wins
+                                    if _wc_cell:
+                                        _boundary_sql = (
+                                            "SELECT cell_name, sector_name, district_name, "
+                                            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                                            "FROM rwanda_cell_boundaries "
+                                            "WHERE LOWER(cell_name) = LOWER($1) LIMIT 1"
+                                        )
+                                        _boundary_params = [_wc_cell]
+                                        _admin_level = "cell"
+                                    elif _wc_sector:
+                                        _boundary_sql = (
+                                            "SELECT sector_name, sector_name, district_name, "
+                                            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                                            "FROM rwanda_sector_boundaries "
+                                            "WHERE LOWER(sector_name) = LOWER($1) LIMIT 1"
+                                        )
+                                        _boundary_params = [_wc_sector]
+                                        _admin_level = "sector"
+                                    elif _wc_district:
+                                        _boundary_sql = (
+                                            "SELECT district, district, district, "
+                                            "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                                            "FROM rwanda_district_boundaries "
+                                            "WHERE LOWER(district) = LOWER($1) LIMIT 1"
+                                        )
+                                        _boundary_params = [_wc_district]
+                                        _admin_level = "district"
+                                    elif _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+                                        _boundary_sql = None
+                                        _boundary_params = None
+                                        _admin_level = "bbox"
+                                    else:
+                                        tool_result = {
+                                            "status": "error",
+                                            "error": "Please specify a district, sector, cell, or bbox for cropland analysis.",
+                                        }
+                                        await add_chat_completion_message(
+                                            ChatCompletionToolMessageParam(
+                                                role="tool",
+                                                tool_call_id=tool_call.id,
+                                                content=json.dumps(tool_result),
+                                            )
+                                        )
+                                        continue
+
+                                    # For bbox, build geometry directly; for admin, look up from PostGIS
+                                    if _admin_level == "bbox":
+                                        _w, _s, _e, _n = _wc_bbox
+                                        _boundary_name = f"bbox({_w:.4f},{_s:.4f},{_e:.4f},{_n:.4f})"
+                                        _geom = {
+                                            "type": "Polygon",
+                                            "coordinates": [[
+                                                [_w, _s], [_e, _s], [_e, _n], [_w, _n], [_w, _s],
+                                            ]],
+                                        }
+                                        _bbox = (_w, _s, _e, _n)
+                                    else:
+                                        # Look up boundary geometry + bbox from PostGIS
+                                        _pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
+                                        _pg_port = int(os.environ.get("POSTGRES_PORT", "5432"))
+                                        _pg_db = os.environ.get("POSTGRES_DB", "mundidb")
+                                        _pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
+                                        _pg_pass = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                                        _pg_conn = await _asyncpg.connect(
+                                            host=_pg_host, port=_pg_port,
+                                            database=_pg_db, user=_pg_user, password=_pg_pass,
+                                        )
+                                        try:
+                                            _brow = await _pg_conn.fetchrow(_boundary_sql, *_boundary_params)
+                                        finally:
+                                            await _pg_conn.close()
+
+                                        if not _brow:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Boundary not found: {_wc_cell or _wc_sector or _wc_district}",
+                                            }
+                                            await add_chat_completion_message(
+                                                ChatCompletionToolMessageParam(
+                                                    role="tool",
+                                                    tool_call_id=tool_call.id,
+                                                    content=json.dumps(tool_result),
+                                                )
+                                            )
+                                            continue
+
+                                        _boundary_name = _brow[0]
+                                        _geom = json.loads(_brow[3])
+                                        _bbox = (_brow[4], _brow[5], _brow[6], _brow[7])
+
+                                    # Open ESRI LULC COGs via WarpedVRT (UTM -> EPSG:4326)
+                                    from src.worldcover import open_rwanda_datasets_warped as _open_warped
+                                    from src.worldcover import CROPLAND_CLASS as _CROP_CLS
+
+                                    _wc_pairs = []
+                                    _wc_datasets = []
+                                    try:
+                                        _wc_pairs = _open_warped()
+                                        _wc_datasets = [vrt for vrt, _ds in _wc_pairs]
+
+                                        _buf = 0.001
+                                        _bounds = (
+                                            _bbox[0] - _buf, _bbox[1] - _buf,
+                                            _bbox[2] + _buf, _bbox[3] + _buf,
+                                        )
+                                        _arr, _tfm = _rio_merge(_wc_datasets, bounds=_bounds)
+                                        _data = _arr[0]  # single band
+                                        _h, _w = _data.shape
+
+                                        # Mask to boundary geometry
+                                        _mask = _geo_mask(
+                                            [_geom], out_shape=(_h, _w),
+                                            transform=_tfm, invert=True,
+                                        )
+
+                                        # Extract cropland pixels inside boundary
+                                        _cropland = ((_data == _CROP_CLS) & _mask).astype(_np.uint8)
+                                        _labeled, _num = _scipy_label(_cropland)
+
+                                        _regions = []
+                                        if _num > 0:
+                                            _rids, _rcounts = _np.unique(_labeled, return_counts=True)
+                                            _pairs = sorted(
+                                                [
+                                                    (int(_r), int(_c))
+                                                    for _r, _c in zip(_rids, _rcounts)
+                                                    if _r > 0
+                                                ],
+                                                key=lambda x: x[1],
+                                                reverse=True,
+                                            )[: _wc_limit]
+
+                                            for _rank, (_rid, _pc) in enumerate(_pairs, 1):
+                                                _ha = round(_pc * _PIXEL_HA, 2)
+                                                _ys, _xs = _np.where(_labeled == _rid)
+                                                _cy = int(_np.mean(_ys))
+                                                _cx = int(_np.mean(_xs))
+                                                _lon, _lat = _tfm * (_cx, _cy)
+                                                _regions.append({
+                                                    "rank": _rank,
+                                                    "area_hectares": _ha,
+                                                    "centroid_lon": round(_lon, 6),
+                                                    "centroid_lat": round(_lat, 6),
+                                                })
+
+                                        tool_result = {
+                                            "status": "success",
+                                            "query_type": "largest_cropland",
+                                            "admin_level": _admin_level,
+                                            "boundary_name": _boundary_name,
+                                            "total_cropland_pixels": int(_np.sum(_cropland)),
+                                            "total_cropland_hectares": round(
+                                                float(_np.sum(_cropland)) * _PIXEL_HA, 2
+                                            ),
+                                            "num_regions": _num,
+                                            "count": len(_regions),
+                                            "data": _regions,
+                                        }
+                                    finally:
+                                        for _vrt, _raw in _wc_pairs:
+                                            _vrt.close()
+                                            _raw.close()
+                                else:
+                                    # land_cover: area breakdown by class
+                                    if _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+                                        # On-the-fly zonal stats for bbox
+                                        _conn.close()
+
+                                        import numpy as _np
+                                        from rasterio.merge import merge as _rio_merge
+                                        from rasterio.features import geometry_mask as _geo_mask
+                                        from src.worldcover import open_rwanda_datasets_warped as _open_warped
+                                        from src.worldcover import CLASS_NAMES as _CLASS_NAMES
+
+                                        _PIXEL_HA = 0.01  # 10m x 10m = 0.01 ha
+                                        _w, _s, _e, _n = _wc_bbox
+                                        _geom = {
+                                            "type": "Polygon",
+                                            "coordinates": [[
+                                                [_w, _s], [_e, _s], [_e, _n], [_w, _n], [_w, _s],
+                                            ]],
+                                        }
+
+                                        _wc_pairs = []
+                                        try:
+                                            _wc_pairs = _open_warped()
+                                            _wc_datasets = [vrt for vrt, _ds in _wc_pairs]
+
+                                            _buf = 0.001
+                                            _bounds = (_w - _buf, _s - _buf, _e + _buf, _n + _buf)
+                                            _arr, _tfm = _rio_merge(_wc_datasets, bounds=_bounds)
+                                            _data = _arr[0]
+                                            _h, _ww = _data.shape
+
+                                            _mask = _geo_mask(
+                                                [_geom], out_shape=(_h, _ww),
+                                                transform=_tfm, invert=True,
+                                            )
+                                            _masked = _data[_mask]
+
+                                            _classes, _counts = _np.unique(_masked, return_counts=True)
+                                            _lc_data = []
+                                            for _cls, _cnt in sorted(zip(_classes, _counts), key=lambda x: x[1], reverse=True):
+                                                _cls_int = int(_cls)
+                                                if _cls_int == 0:
+                                                    continue  # nodata
+                                                _lc_data.append({
+                                                    "class_id": _cls_int,
+                                                    "class_name": _CLASS_NAMES.get(_cls_int, f"class_{_cls_int}"),
+                                                    "area_hectares": round(float(_cnt) * _PIXEL_HA, 2),
+                                                    "pixel_count": int(_cnt),
+                                                })
+
+                                            tool_result = {
+                                                "status": "success",
+                                                "query_type": "land_cover",
+                                                "area": "custom_bbox",
+                                                "bbox": _wc_bbox,
+                                                "count": len(_lc_data),
+                                                "data": _lc_data,
+                                            }
+                                        finally:
+                                            for _vrt, _raw in _wc_pairs:
+                                                _vrt.close()
+                                                _raw.close()
+                                    else:
+                                        # Pre-computed admin stats from DuckDB
+                                        _sql = "SELECT admin_level, admin_name, district_name, class_name, area_hectares FROM worldcover_admin_stats"
+                                        _where = []
+                                        _params = []
+
+                                        # Filter by most specific admin level provided
+                                        if _wc_cell:
+                                            _where.append("admin_level = 'cell' AND LOWER(admin_name) = LOWER(?)")
+                                            _params.append(_wc_cell)
+                                        elif _wc_sector:
+                                            _where.append("admin_level = 'sector' AND LOWER(admin_name) = LOWER(?)")
+                                            _params.append(_wc_sector)
+                                        elif _wc_district:
+                                            _where.append("admin_level = 'district' AND LOWER(admin_name) = LOWER(?)")
+                                            _params.append(_wc_district)
+                                        else:
+                                            # Default: district-level summary
+                                            _where.append("admin_level = 'district'")
+
+                                        if _where:
+                                            _sql += " WHERE " + " AND ".join(_where)
+                                        _sql += " ORDER BY area_hectares DESC"
+                                        _rows = _conn.execute(_sql, _params).fetchall()
+                                        _conn.close()
+
+                                        if _rows:
+                                            tool_result = {
+                                                "status": "success",
+                                                "query_type": "land_cover",
+                                                "count": len(_rows),
+                                                "data": [
+                                                    {
+                                                        "admin_level": r[0], "admin_name": r[1],
+                                                        "district": r[2], "class_name": r[3],
+                                                        "area_hectares": r[4],
+                                                    }
+                                                    for r in _rows
+                                                ],
+                                            }
+                                        else:
+                                            tool_result = {
+                                                "status": "success",
+                                                "query_type": "land_cover",
+                                                "count": 0,
+                                                "data": [],
+                                                "note": "No data yet. Run the worldcover_zonal_stats Dagster asset first.",
+                                            }
+
+                            except Exception as e:
+                                logger.exception("query_worldcover_stats tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "get_crop_classifications":
                             try:
                                 import duckdb as _duckdb
@@ -2978,6 +3549,36 @@ async def process_chat_interaction_task(
                                     "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
                                 )
                                 _district = tool_args.get("district")
+                                _cc_lat = tool_args.get("lat")
+                                _cc_lon = tool_args.get("lon")
+
+                                # Reverse-geocode lat/lon to district if not explicitly provided
+                                if _cc_lat is not None and _cc_lon is not None and not _district:
+                                    try:
+                                        import asyncpg as _asyncpg_cc
+                                        _pg_host_cc = os.environ.get("POSTGRES_HOST", "postgresdb")
+                                        _pg_port_cc = int(os.environ.get("POSTGRES_PORT", "5432"))
+                                        _pg_db_cc = os.environ.get("POSTGRES_DB", "mundidb")
+                                        _pg_user_cc = os.environ.get("POSTGRES_USER", "mundiuser")
+                                        _pg_pass_cc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                                        _pg_conn_cc = await _asyncpg_cc.connect(
+                                            host=_pg_host_cc, port=_pg_port_cc,
+                                            database=_pg_db_cc, user=_pg_user_cc, password=_pg_pass_cc,
+                                        )
+                                        try:
+                                            _rg_row = await _pg_conn_cc.fetchrow(
+                                                "SELECT district FROM rwanda_district_boundaries "
+                                                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                "LIMIT 1",
+                                                float(_cc_lon), float(_cc_lat),
+                                            )
+                                            if _rg_row:
+                                                _district = _rg_row["district"]
+                                                logger.info("Crop classifications: reverse-geocoded → district=%s", _district)
+                                        finally:
+                                            await _pg_conn_cc.close()
+                                    except Exception as _rg_err:
+                                        logger.warning("Reverse-geocode failed for crop classifications: %s", _rg_err)
                                 if _district:
                                     _rows = _conn.execute(
                                         "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
@@ -3490,7 +4091,7 @@ async def process_chat_interaction_task(
                             )
 
                         elif function_name == "add_land_cover_layer":
-                            # Add ESA WorldCover 2021 land cover as a raster overlay
+                            # Add ESRI 10m LULC 2024 land cover as a raster overlay
                             try:
                                 _wc_mode = tool_args.get("mode", "all")
                                 if _wc_mode not in ("all", "cropland"):
@@ -3499,19 +4100,99 @@ async def process_chat_interaction_task(
                                 _layer_id = generate_id(prefix="L")
                                 _style_id = generate_id(prefix="S")
 
+                                # Admin boundary clipping
+                                _wc_district = tool_args.get("district")
+                                _wc_sector = tool_args.get("sector")
+                                _wc_cell = tool_args.get("cell")
+                                _wc_bbox = tool_args.get("bbox")  # [west, south, east, north]
+                                _wc_lat = tool_args.get("lat")
+                                _wc_lon = tool_args.get("lon")
+
+                                # Reverse-geocode lat/lon → admin boundary if no
+                                # explicit district/sector/cell or bbox was provided
+                                if _wc_lat is not None and _wc_lon is not None and not (_wc_district or _wc_sector or _wc_cell or _wc_bbox):
+                                    try:
+                                        import asyncpg as _asyncpg_lc
+                                        _pg_host_lc = os.environ.get("POSTGRES_HOST", "postgresdb")
+                                        _pg_port_lc = int(os.environ.get("POSTGRES_PORT", "5432"))
+                                        _pg_db_lc = os.environ.get("POSTGRES_DB", "mundidb")
+                                        _pg_user_lc = os.environ.get("POSTGRES_USER", "mundiuser")
+                                        _pg_pass_lc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                                        _pg_conn_lc = await _asyncpg_lc.connect(
+                                            host=_pg_host_lc, port=_pg_port_lc,
+                                            database=_pg_db_lc, user=_pg_user_lc, password=_pg_pass_lc,
+                                        )
+                                        try:
+                                            _rg_row = await _pg_conn_lc.fetchrow(
+                                                "SELECT cell_name, sector_name, district_name "
+                                                "FROM rwanda_cell_boundaries "
+                                                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                "LIMIT 1",
+                                                float(_wc_lon), float(_wc_lat),
+                                            )
+                                            if _rg_row:
+                                                _wc_cell = _rg_row["cell_name"]
+                                                _wc_sector = _rg_row["sector_name"]
+                                                _wc_district = _rg_row["district_name"]
+                                            else:
+                                                _rg_row = await _pg_conn_lc.fetchrow(
+                                                    "SELECT district FROM rwanda_district_boundaries "
+                                                    "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                    "LIMIT 1",
+                                                    float(_wc_lon), float(_wc_lat),
+                                                )
+                                                if _rg_row:
+                                                    _wc_district = _rg_row["district"]
+                                        finally:
+                                            await _pg_conn_lc.close()
+                                    except Exception as _rg_err:
+                                        logger.warning("Reverse-geocode failed for land cover: %s", _rg_err)
+
+                                _admin_name = _wc_cell or _wc_sector or _wc_district
+
+                                _area_label = _admin_name or ("Clipped" if _wc_bbox else None)
                                 _layer_name = (
-                                    "ESA WorldCover — Cropland"
+                                    f"ESRI Land Cover — Cropland ({_area_label})"
+                                    if _wc_mode == "cropland" and _area_label
+                                    else f"ESRI Land Cover ({_area_label})"
+                                    if _area_label
+                                    else "ESRI Land Cover — Cropland"
                                     if _wc_mode == "cropland"
-                                    else "ESA WorldCover 2021"
+                                    else "ESRI Land Cover 2024"
                                 )
 
-                                _meta = json.dumps({
+                                _wc_meta = {
                                     "worldcover": True,
                                     "worldcover_mode": _wc_mode,
-                                })
+                                }
+                                # Store admin clip context so map_service
+                                # includes it in tile URLs
+                                if _wc_district:
+                                    _wc_meta["clip_district"] = _wc_district
+                                if _wc_sector:
+                                    _wc_meta["clip_sector"] = _wc_sector
+                                if _wc_cell:
+                                    _wc_meta["clip_cell"] = _wc_cell
+                                if _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+                                    _wc_meta["clip_bbox"] = _wc_bbox
+                                _meta = json.dumps(_wc_meta)
 
-                                # Rwanda bounds
+                                # Use admin bbox, explicit bbox, or fall back to Rwanda
                                 _bounds = [28.86, -2.84, 30.90, -1.05]
+                                if _wc_district or _wc_sector or _wc_cell:
+                                    try:
+                                        from src.routes.rwanda_routes import _lookup_admin_bbox
+                                        _admin_bbox = await _lookup_admin_bbox(
+                                            district=_wc_district,
+                                            sector=_wc_sector,
+                                            cell=_wc_cell,
+                                        )
+                                        if _admin_bbox:
+                                            _bounds = _admin_bbox
+                                    except Exception:
+                                        pass  # Fall back to Rwanda bounds
+                                elif _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+                                    _bounds = _wc_bbox
 
                                 async with kue_ephemeral_action(
                                     conversation.id,
@@ -3567,7 +4248,7 @@ async def process_chat_interaction_task(
                                 _class_desc = (
                                     "Cropland highlighted in green, other land cover muted"
                                     if _wc_mode == "cropland"
-                                    else "All 11 ESA land cover classes: tree cover, shrubland, grassland, cropland, built-up, bare, snow/ice, water, wetland, mangroves, moss/lichen"
+                                    else "All 9 ESRI land cover classes: water, trees, flooded vegetation, crops, built area, bare ground, snow/ice, clouds, rangeland"
                                 )
 
                                 tool_result = {
@@ -3575,7 +4256,7 @@ async def process_chat_interaction_task(
                                     "layer_id": _layer_id,
                                     "layer_name": _layer_name,
                                     "mode": _wc_mode,
-                                    "source": "ESA WorldCover 2021 v200 (10m resolution)",
+                                    "source": "ESRI / Impact Observatory 10m Annual LULC 2024",
                                     "classes": _class_desc,
                                     "kue_instructions": (
                                         f"The layer '{_layer_name}' (ID: {_layer_id}) has been created and "
@@ -3616,6 +4297,28 @@ async def process_chat_interaction_task(
                         else:
                             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
+            # Track consecutive rounds where tool calls returned errors.
+            # This prevents the LLM from retrying the same failing tool in a
+            # loop until it exhausts the provider rate limit.
+            if assistant_message.tool_calls:
+                if isinstance(tool_result, dict) and tool_result.get("status") == "error":
+                    _consecutive_tool_errors += 1
+                else:
+                    _consecutive_tool_errors = 0
+
+                if _consecutive_tool_errors >= _MAX_CONSECUTIVE_TOOL_ERRORS:
+                    logger.warning(
+                        "Breaking tool call loop after %d consecutive error rounds "
+                        "for conversation %s",
+                        _consecutive_tool_errors, conversation.id,
+                    )
+                    await kue_notify_error(
+                        conversation.id,
+                        "The tool keeps failing. Please try rephrasing your request "
+                        "or start a new chat.",
+                    )
+                    break
+
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":
         #     await label_conversation_inline(conversation.id)
@@ -3644,6 +4347,7 @@ class MessageSendResponse(BaseModel):
     response_model=MessageSendResponse,
     operation_id="send_map_message",
 )
+@expensive_limit
 async def send_map_message(
     request: Request,
     map_id: str,
@@ -3663,6 +4367,7 @@ async def send_map_message(
     pydantic_tool_calls: PydanticToolRegistry = Depends(get_pydantic_tool_calls),
 ):
     # get_conversation authenticates
+    logger.info("send_map_message called: conversation=%s map=%s", conversation.id, map_id)
     user_id = session.get_user_id()
 
     # Check if map is already being processed

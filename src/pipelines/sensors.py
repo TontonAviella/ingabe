@@ -5,7 +5,6 @@ the appropriate processing pipelines based on file type.
 """
 
 import logging
-from typing import Optional
 
 from dagster import RunRequest, SensorEvaluationContext, sensor
 

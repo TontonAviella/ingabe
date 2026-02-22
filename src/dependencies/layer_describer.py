@@ -1,4 +1,3 @@
-import asyncpg
 import csv
 import fiona
 import io

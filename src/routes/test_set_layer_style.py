@@ -132,3 +132,62 @@ async def test_set_layer_style_invalid_layers_type(auth_client, test_map_with_la
     assert style_response.status_code == 422
     error_detail = style_response.json()["detail"]
     assert len(error_detail) > 0
+
+
+@pytest.mark.anyio
+async def test_set_layer_style_non_dict_entry(auth_client, test_map_with_layer):
+    """Non-dict entries in maplibre_json_layers should return 400."""
+    layer_id = test_map_with_layer["layer_id"]
+    map_id = test_map_with_layer["child_map_id"]
+
+    style_request = {
+        "maplibre_json_layers": ["not a dict object"],
+        "map_id": map_id,
+    }
+
+    style_response = await auth_client.post(
+        f"/api/layers/{layer_id}/style", json=style_request
+    )
+    # Pydantic may reject before route logic; accept 400 or 422
+    assert style_response.status_code in (400, 422)
+
+
+@pytest.mark.anyio
+async def test_set_layer_style_nonexistent_layer(auth_client, test_map_with_layer):
+    """Setting style on a non-existent layer returns 404."""
+    map_id = test_map_with_layer["child_map_id"]
+
+    style_request = {
+        "maplibre_json_layers": [
+            {
+                "id": "L_NONEXIST-fill",
+                "type": "fill",
+                "source": "L_NONEXIST00",
+                "paint": {"fill-color": "#000"},
+            }
+        ],
+        "map_id": map_id,
+    }
+
+    style_response = await auth_client.post(
+        "/api/layers/L_NONEXIST00/style", json=style_request
+    )
+    assert style_response.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_set_layer_style_empty_layers_array(auth_client, test_map_with_layer):
+    """Empty maplibre_json_layers array should be handled gracefully."""
+    layer_id = test_map_with_layer["layer_id"]
+    map_id = test_map_with_layer["child_map_id"]
+
+    style_request = {
+        "maplibre_json_layers": [],
+        "map_id": map_id,
+    }
+
+    style_response = await auth_client.post(
+        f"/api/layers/{layer_id}/style", json=style_request
+    )
+    # Empty array is either rejected or accepted — either is valid behavior
+    assert style_response.status_code in (200, 400, 422)

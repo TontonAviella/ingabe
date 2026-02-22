@@ -1,4 +1,4 @@
-import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 export interface NdviClassificationPieProps {
@@ -12,8 +12,8 @@ const NDVI_COLORS: Record<string, string> = {
   'Moderate vegetation': '#fbbf24',
   'Healthy vegetation': '#22c55e',
   'Very healthy vegetation': '#10b981',
-  'Water': '#3b82f6',
-  'Unknown': '#9ca3af',
+  Water: '#3b82f6',
+  Unknown: '#9ca3af',
 };
 
 export function NdviClassificationPie({ classification, isLoading }: NdviClassificationPieProps) {
@@ -53,9 +53,7 @@ export function NdviClassificationPie({ classification, isLoading }: NdviClassif
     count: data.count,
   }));
 
-  const dominantClass = chartData.reduce((max, item) =>
-    item.value > max.value ? item : max
-  );
+  const dominantClass = chartData.reduce((max, item) => (item.value > max.value ? item : max));
 
   return (
     <Card>
@@ -77,10 +75,7 @@ export function NdviClassificationPie({ classification, isLoading }: NdviClassif
               dataKey="value"
             >
               {chartData.map((entry) => (
-                <Cell
-                  key={entry.name}
-                  fill={NDVI_COLORS[entry.name] || NDVI_COLORS['Unknown']}
-                />
+                <Cell key={entry.name} fill={NDVI_COLORS[entry.name] || NDVI_COLORS['Unknown']} />
               ))}
             </Pie>
             <Tooltip content={<CustomTooltip />} />
@@ -96,12 +91,9 @@ export function NdviClassificationPie({ classification, isLoading }: NdviClassif
         </ResponsiveContainer>
         <div className="mt-4 text-center">
           <p className="text-sm text-muted-foreground">
-            Dominant Class:{' '}
-            <span className="font-semibold text-foreground">{dominantClass.name}</span>
+            Dominant Class: <span className="font-semibold text-foreground">{dominantClass.name}</span>
           </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {dominantClass.value.toFixed(1)}% of area
-          </p>
+          <p className="text-xs text-muted-foreground mt-1">{dominantClass.value.toFixed(1)}% of area</p>
         </div>
       </CardContent>
     </Card>
@@ -117,14 +109,7 @@ interface CustomLabelProps {
   percent: number;
 }
 
-function renderCustomLabel({
-  cx,
-  cy,
-  midAngle,
-  innerRadius,
-  outerRadius,
-  percent,
-}: CustomLabelProps) {
+function renderCustomLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent }: CustomLabelProps) {
   const RADIAN = Math.PI / 180;
   const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
   const x = cx + radius * Math.cos(-midAngle * RADIAN);
@@ -133,14 +118,7 @@ function renderCustomLabel({
   if (percent < 0.05) return null;
 
   return (
-    <text
-      x={x}
-      y={y}
-      fill="white"
-      textAnchor={x > cx ? 'start' : 'end'}
-      dominantBaseline="central"
-      className="text-xs font-semibold"
-    >
+    <text x={x} y={y} fill="white" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" className="text-xs font-semibold">
       {`${(percent * 100).toFixed(0)}%`}
     </text>
   );
@@ -169,9 +147,7 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Toolti
       <p className="text-sm text-muted-foreground">
         Coverage: <span className="font-semibold text-foreground">{data.value.toFixed(1)}%</span>
       </p>
-      <p className="text-xs text-muted-foreground">
-        Parcels: {data.count.toLocaleString()}
-      </p>
+      <p className="text-xs text-muted-foreground">Parcels: {data.count.toLocaleString()}</p>
     </div>
   );
 }

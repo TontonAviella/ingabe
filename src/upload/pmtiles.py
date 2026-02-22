@@ -11,7 +11,7 @@ from boto3.s3.transfer import TransferConfig
 
 from src.structures import get_async_db_connection
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
-from src.upload.models import MetadataUpdates, VectorProcessingResult
+from src.upload.models import VectorProcessingResult
 from src.upload.preprocessing import get_layer_bounds_and_metadata
 from src.utils import get_async_s3_client, get_bucket_name
 

@@ -1,7 +1,6 @@
 import os
 import math
 import json
-import datetime
 import tempfile
 import asyncio
 import subprocess
@@ -9,8 +8,6 @@ import ipaddress
 import socket
 import shutil
 import logging
-from io import BytesIO
-from pathlib import Path
 from urllib.parse import urlparse
 from typing import Optional
 
@@ -227,31 +224,32 @@ async def internal_upload_layer(
             await s3_op(s3_client.upload_file(upload_path, bucket_name, upload_key, Config=one_shot_config),
                         "upload", f"layer {ctx.layer_id}")
 
-            # Phase 3: Create layer rows in database
-            result = await handler.create_layers(ctx, result)
+            # Phase 3 + 4: Create layer rows and update map in a single transaction
+            async with conn.transaction():
+                result = await handler.create_layers(ctx, result)
 
-        # Phase 4: Update map layer list
-        if add_layer_to_map and result.created_layer_ids:
-            map_data = await conn.fetchrow(
-                """
-                SELECT layers FROM user_mundiai_maps
-                WHERE id = $1
-                """,
-                map_id,
-            )
-            current_layers = (
-                map_data["layers"] if map_data and map_data["layers"] else []
-            )
-            await conn.execute(
-                """
-                UPDATE user_mundiai_maps
-                SET layers = $1,
-                    last_edited = CURRENT_TIMESTAMP
-                WHERE id = $2
-                """,
-                current_layers + result.created_layer_ids,
-                map_id,
-            )
+                # Phase 4: Update map layer list
+                if add_layer_to_map and result.created_layer_ids:
+                    map_data = await conn.fetchrow(
+                        """
+                        SELECT layers FROM user_mundiai_maps
+                        WHERE id = $1
+                        """,
+                        map_id,
+                    )
+                    current_layers = (
+                        map_data["layers"] if map_data and map_data["layers"] else []
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE user_mundiai_maps
+                        SET layers = $1,
+                            last_edited = CURRENT_TIMESTAMP
+                        WHERE id = $2
+                        """,
+                        current_layers + result.created_layer_ids,
+                        map_id,
+                    )
 
         # Cleanup temp directories from preprocessing
         if result.temp_dir_to_cleanup:
@@ -343,8 +341,10 @@ async def get_map_style_internal(
         vector_layers.sort(key=get_geometry_order)
         postgis_layers.sort(key=get_geometry_order)
 
-    # Use basemap parameter, or fall back to stored basemap from database
-    effective_basemap = basemap or map_result["basemap"]
+    # Use basemap parameter, or fall back to stored basemap from database.
+    # If still None (new map, no stored preference), resolve to the provider's
+    # first available style so the metadata always contains a valid string.
+    effective_basemap = basemap or map_result["basemap"] or base_map.get_available_styles()[0]
     style_json = await base_map.get_base_style(effective_basemap)
 
     # Add current basemap to style metadata for frontend
@@ -413,13 +413,23 @@ async def get_map_style_internal(
             if metadata.get("worldcover"):
                 wc_mode = metadata.get("worldcover_mode", "all")
                 source_id = f"worldcover-source-{layer_id}"
-                tile_url = f"{os.getenv('WEBSITE_DOMAIN')}/api/worldcover/{{z}}/{{x}}/{{y}}.png?mode={wc_mode}"
+                tile_url = f"/api/worldcover/{{z}}/{{x}}/{{y}}.png?mode={wc_mode}"
+                # Append admin clip params if present (district/sector/cell)
+                if metadata.get("clip_district"):
+                    tile_url += f"&district={metadata['clip_district']}"
+                if metadata.get("clip_sector"):
+                    tile_url += f"&sector={metadata['clip_sector']}"
+                if metadata.get("clip_cell"):
+                    tile_url += f"&cell={metadata['clip_cell']}"
+                if metadata.get("clip_bbox"):
+                    _cb = metadata["clip_bbox"]
+                    tile_url += f"&bbox={_cb[0]},{_cb[1]},{_cb[2]},{_cb[3]}"
                 style_json["sources"][source_id] = {
                     "type": "raster",
                     "tiles": [tile_url],
                     "tileSize": 256,
                     "minzoom": 0,
-                    "maxzoom": 16,
+                    "maxzoom": 14,  # Cap at z14 - WorldCover is 10m resolution, z16+ causes timeouts
                 }
                 style_json["layers"].append(
                     {
@@ -434,7 +444,7 @@ async def get_map_style_internal(
             source_id = f"raster-source-{layer_id}"
             # Add cache-busting parameter using last_edited timestamp
             cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
-            tile_url = f"{os.getenv('WEBSITE_DOMAIN')}/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png"
+            tile_url = f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png"
             if cache_param:
                 tile_url += f"?{cache_param}"
 
@@ -462,12 +472,22 @@ async def get_map_style_internal(
                 wc_mode = metadata.get("worldcover_mode", "all")
                 source_id = f"worldcover-source-{layer_id}"
                 tile_url = f"/api/worldcover/{{z}}/{{x}}/{{y}}.png?mode={wc_mode}"
+                # Append admin clip params if present (district/sector/cell)
+                if metadata.get("clip_district"):
+                    tile_url += f"&district={metadata['clip_district']}"
+                if metadata.get("clip_sector"):
+                    tile_url += f"&sector={metadata['clip_sector']}"
+                if metadata.get("clip_cell"):
+                    tile_url += f"&cell={metadata['clip_cell']}"
+                if metadata.get("clip_bbox"):
+                    _cb = metadata["clip_bbox"]
+                    tile_url += f"&bbox={_cb[0]},{_cb[1]},{_cb[2]},{_cb[3]}"
                 style_json["sources"][source_id] = {
                     "type": "raster",
                     "tiles": [tile_url],
                     "tileSize": 256,
                     "minzoom": 0,
-                    "maxzoom": 16,
+                    "maxzoom": 14,  # Cap at z14 - WorldCover is 10m resolution, z16+ causes timeouts
                 }
                 style_json["layers"].append(
                     {
@@ -501,26 +521,52 @@ async def get_map_style_internal(
                 }
             )
 
+    # Pre-generate all presigned URLs in parallel (avoids sequential S3 calls)
+    presigned_urls: dict[str, str] = {}
+    if only_show_inline_sources:
+        layers_needing_presigned: list[tuple[str, str]] = []
+        for layer in vector_layers:
+            if not layer["remote_url"]:
+                metadata = json.loads(layer.get("metadata", "{}"))
+                pmtiles_key = metadata.get("pmtiles_key")
+                if pmtiles_key:
+                    layers_needing_presigned.append((layer["layer_id"], pmtiles_key))
+
+        if layers_needing_presigned:
+            bucket_name = get_bucket_name()
+            s3_client = await get_async_s3_client()
+
+            async def _gen_url(key: str) -> str:
+                return await s3_op(
+                    s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": key}, ExpiresIn=180),
+                    "presigned URL", f"PMTiles {key}",
+                )
+
+            urls = await asyncio.gather(*[_gen_url(k) for _, k in layers_needing_presigned])
+            for (lid, _), url in zip(layers_needing_presigned, urls):
+                presigned_urls[lid] = url
+
     # Add vector layers as sources and layers to the style
     for idx, layer in enumerate(vector_layers, 1):
         layer_id = layer["layer_id"]
 
-        # Use GeoJSON or PMTiles based on the only_show_inline_sources parameter
-        # this is NOT possible for remote cloud native layers
-        if only_show_inline_sources and not layer["remote_url"]:
-            # For rendering, also get a presigned URL for PMTiles if available
+        if layer_id in presigned_urls:
+            style_json["sources"][layer_id] = {
+                "type": "vector",
+                "url": f"pmtiles://{presigned_urls[layer_id]}",
+            }
+        elif only_show_inline_sources and not layer["remote_url"]:
+            # Fallback: pmtiles_key was missing — should not happen
             metadata = json.loads(layer.get("metadata", "{}"))
             pmtiles_key = metadata.get("pmtiles_key")
-            assert pmtiles_key is not None
+            assert pmtiles_key is not None, f"Missing pmtiles_key for layer {layer_id}"
 
             bucket_name = get_bucket_name()
             s3_client = await get_async_s3_client()
-
             presigned_url = await s3_op(
                 s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=180),
                 "presigned URL", f"PMTiles {pmtiles_key}",
             )
-
             style_json["sources"][layer_id] = {
                 "type": "vector",
                 "url": f"pmtiles://{presigned_url}",
@@ -552,7 +598,7 @@ async def get_map_style_internal(
 
             # Add cache-busting parameter using last_edited timestamp
             cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
-            tile_url = f"{os.getenv('WEBSITE_DOMAIN')}/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.mvt"
+            tile_url = f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.mvt"
             if cache_param:
                 tile_url += f"?{cache_param}"
 

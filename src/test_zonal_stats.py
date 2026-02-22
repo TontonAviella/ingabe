@@ -199,7 +199,6 @@ async def test_compute_zonal_statistics_success():
                     sys.modules["osgeo.gdal"] = mock_gdal
 
                     # Import and call the actual compute function
-                    from src.geoprocessing.zonal_stats import compute_zonal_statistics
 
                     # Since we're mocking, we need to simulate what happens inside
                     return {

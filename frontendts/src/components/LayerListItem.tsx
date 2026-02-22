@@ -1,7 +1,8 @@
-import { Eye, EyeOff, GripVertical, Loader2, MoreHorizontal } from 'lucide-react';
+import { Eye, EyeOff, GripVertical, Loader2, MoreHorizontal, Paintbrush } from 'lucide-react';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { Slider } from '@/components/ui/slider';
 
 interface DropdownAction {
   label: string;
@@ -30,6 +31,12 @@ interface LayerListItemProps {
   onRename?: (layerId: string, newName: string) => void;
   title?: string;
   isLoading?: boolean;
+  /** Current opacity 0–1. When provided, a slider appears on hover. */
+  opacity?: number;
+  onOpacityChange?: (layerId: string, opacity: number) => void;
+  /** Current override color (hex). When provided with onColorChange, shows a "Change color" dropdown item. */
+  currentColor?: string;
+  onColorChange?: (layerId: string, color: string) => void;
 }
 
 export const LayerListItem: React.FC<LayerListItemProps> = ({
@@ -51,7 +58,12 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
   onRename,
   title,
   isLoading = false,
+  opacity,
+  onOpacityChange,
+  currentColor,
+  onColorChange,
 }) => {
+  const colorInputRef = useRef<HTMLInputElement>(null);
   const [nameValue, setNameValue] = useState(name);
   const [isDebouncing, setIsDebouncing] = useState(false);
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -118,6 +130,17 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
 
   return (
     <div className={`${liClassName} flex items-center px-2 py-1 gap-2 group w-full ${className}`} title={title}>
+      {/* Hidden native color picker — triggered programmatically by the dropdown item */}
+      {onColorChange && (
+        <input
+          ref={colorInputRef}
+          type="color"
+          value={currentColor ?? '#888888'}
+          className="sr-only"
+          onChange={(e) => onColorChange(layerId, e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
       <div className="w-4 h-4 flex-shrink-0 flex items-center justify-center">
         {isLoading ? (
           <Loader2 className="w-3 h-3 animate-spin text-gray-300" />
@@ -152,17 +175,38 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
             />
           </div>
         )}
-        {(hoverText || normalText) && (
-          <span className="text-xs text-slate-500 dark:text-gray-400">
-            {hoverText && normalText ? (
-              <>
-                <span className="group-hover:hidden">{normalText}</span>
-                <span className="hidden group-hover:inline">{hoverText}</span>
-              </>
-            ) : (
-              hoverText || normalText
-            )}
-          </span>
+        {/* Opacity slider — visible on hover when onOpacityChange is provided */}
+        {onOpacityChange ? (
+          <>
+            {/* Normal text hidden on hover */}
+            <span className="text-xs text-slate-500 dark:text-gray-400 group-hover:hidden">{normalText}</span>
+            {/* Slider + percentage shown on hover */}
+            <div className="hidden group-hover:flex items-center gap-1 w-24 flex-shrink-0">
+              <Slider
+                min={0}
+                max={1}
+                step={0.05}
+                value={[opacity ?? 1]}
+                onValueChange={([val]) => onOpacityChange(layerId, val)}
+                className="w-14"
+                onClick={(e) => e.stopPropagation()}
+              />
+              <span className="text-xs text-slate-400 w-7 text-right tabular-nums">{Math.round((opacity ?? 1) * 100)}%</span>
+            </div>
+          </>
+        ) : (
+          (hoverText || normalText) && (
+            <span className="text-xs text-slate-500 dark:text-gray-400">
+              {hoverText && normalText ? (
+                <>
+                  <span className="group-hover:hidden">{normalText}</span>
+                  <span className="hidden group-hover:inline">{hoverText}</span>
+                </>
+              ) : (
+                hoverText || normalText
+              )}
+            </span>
+          )
         )}
         <div className="flex items-center gap-1">
           <div className="w-5 h-5 flex-shrink-0 relative">
@@ -202,6 +246,24 @@ export const LayerListItem: React.FC<LayerListItemProps> = ({
                   {actionConfig.label}
                 </DropdownMenuItem>
               ))}
+              {onColorChange && (
+                <DropdownMenuItem
+                  className="border-transparent hover:border-gray-600 hover:cursor-pointer border flex items-center gap-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    colorInputRef.current?.click();
+                  }}
+                >
+                  <Paintbrush className="w-3.5 h-3.5" />
+                  <span>Change color</span>
+                  {currentColor && (
+                    <span
+                      className="ml-auto w-4 h-4 rounded-sm border border-gray-400 flex-shrink-0"
+                      style={{ backgroundColor: currentColor }}
+                    />
+                  )}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

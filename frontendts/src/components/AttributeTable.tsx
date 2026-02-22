@@ -1,3 +1,4 @@
+import { apiFetch } from '@mundi/ee';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -26,7 +27,7 @@ interface AttributeTableProps {
 const PAGE_SIZE = 100;
 
 const fetchLayerAttributes = async (layerId: string, offset: number): Promise<AttributeData> => {
-  const response = await fetch(`/api/layer/${layerId}/attributes?offset=${offset}&limit=${PAGE_SIZE}`);
+  const response = await apiFetch(`/api/layer/${layerId}/attributes?offset=${offset}&limit=${PAGE_SIZE}`);
 
   if (!response.ok) {
     throw new Error('Failed to fetch layer data');

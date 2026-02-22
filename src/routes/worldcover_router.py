@@ -1,5 +1,8 @@
 import io
+import json
 import logging
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 from PIL import Image
@@ -31,34 +34,126 @@ _TILE_HEADERS = {
 }
 
 
+# ── In-memory geometry cache ─────────────────────────────────────────────
+# Admin boundary geometries are fetched once from PostGIS per session
+# and cached in memory (they never change at runtime).
+_geom_cache: dict[str, dict] = {}
+
+
+async def _get_admin_geometry(
+    district: Optional[str] = None,
+    sector: Optional[str] = None,
+    cell: Optional[str] = None,
+) -> Optional[dict]:
+    """Fetch GeoJSON geometry for an admin boundary from PostGIS.
+
+    Returns cached result if available.  Priority: cell > sector > district.
+    """
+    cache_key = f"cell:{cell}" if cell else f"sector:{sector}" if sector else f"district:{district}"
+    if cache_key in _geom_cache:
+        return _geom_cache[cache_key]
+
+    try:
+        from src.structures import get_async_db_connection
+
+        async with get_async_db_connection() as conn:
+            if cell:
+                row = await conn.fetchrow(
+                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_cell_boundaries WHERE LOWER(cell_name) = LOWER($1) LIMIT 1",
+                    cell,
+                )
+            elif sector:
+                row = await conn.fetchrow(
+                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_sector_boundaries WHERE LOWER(sector_name) = LOWER($1) LIMIT 1",
+                    sector,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1) LIMIT 1",
+                    district,
+                )
+
+            if row and row[0]:
+                geom = json.loads(row[0])
+                _geom_cache[cache_key] = geom
+                return geom
+    except Exception as e:
+        logger.warning("Admin geometry lookup failed for %s: %s", cache_key, e)
+
+    return None
+
+
 @worldcover_router.get(
     "/worldcover/{z}/{x}/{y}.png",
     operation_id="get_worldcover_tile",
-    summary="ESA WorldCover 2021 land cover tile",
-    description="Serves XYZ raster tiles from ESA WorldCover 2021 v200 (10m resolution). "
-    "mode=all shows all 11 land cover classes. mode=cropland highlights cropland only.",
+    summary="ESRI 10m Annual Land Cover 2024 tile",
+    description="Serves XYZ raster tiles from ESRI / Impact Observatory 10m Annual LULC 2024. "
+    "mode=all shows all 9 land cover classes. mode=cropland highlights cropland only. "
+    "Pass district/sector/cell to clip the tile to an admin boundary.",
 )
 async def get_worldcover_tile(
     z: int,
     x: int,
     y: int,
     mode: str = Query("all", pattern="^(all|cropland)$"),
+    district: Optional[str] = Query(None, description="Clip to Rwanda district boundary"),
+    sector: Optional[str] = Query(None, description="Clip to Rwanda sector boundary"),
+    cell: Optional[str] = Query(None, description="Clip to Rwanda cell boundary"),
+    bbox: Optional[str] = Query(None, description="Clip to bounding box: west,south,east,north in EPSG:4326"),
 ):
     if z < 0 or z > 16 or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
 
-    # WorldCover is 10m resolution — beyond zoom 14 it's just upscaling pixels
-    # Allow up to 16 for UX but no real detail gain past ~14
-    cache_key = f"wc-{mode}"
+    # Build cache key including admin filter or bbox
+    admin_suffix = ""
+    if cell:
+        admin_suffix = f"-cell:{cell.lower()}"
+    elif sector:
+        admin_suffix = f"-sector:{sector.lower()}"
+    elif district:
+        admin_suffix = f"-district:{district.lower()}"
+    elif bbox:
+        admin_suffix = f"-bbox:{bbox}"
+
+    cache_key = f"wc-{mode}{admin_suffix}"
 
     # Check Redis cache
     cached = await tile_cache.get(cache_key, z, x, y)
     if cached is not None:
         return Response(content=cached, media_type="image/png", headers=_TILE_HEADERS)
 
+    # Fetch clip geometry if admin filter or bbox specified
+    clip_geometry = None
+    if district or sector or cell:
+        clip_geometry = await _get_admin_geometry(
+            district=district, sector=sector, cell=cell,
+        )
+        # If admin name not found, return transparent tile (not an error —
+        # the LLM might have misspelled it)
+        if clip_geometry is None:
+            logger.warning(
+                "Admin boundary not found: district=%s sector=%s cell=%s",
+                district, sector, cell,
+            )
+    elif bbox:
+        try:
+            west, south, east, north = [float(v) for v in bbox.split(",")]
+            clip_geometry = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [west, south],
+                    [east, south],
+                    [east, north],
+                    [west, north],
+                    [west, south],
+                ]],
+            }
+        except (ValueError, TypeError):
+            logger.warning("Invalid bbox parameter: %s", bbox)
+
     # Render from remote COG
     try:
-        png_bytes = render_tile(x, y, z, mode=mode)
+        png_bytes = render_tile(x, y, z, mode=mode, clip_geometry=clip_geometry)
     except Exception:
         logger.exception("WorldCover tile render failed z=%d x=%d y=%d", z, x, y)
         return Response(content=_transparent_tile(), media_type="image/png", headers=_TILE_HEADERS)

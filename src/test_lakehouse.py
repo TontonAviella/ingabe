@@ -9,7 +9,7 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import AsyncMock, Mock, patch, MagicMock
+from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
 
 pyiceberg = pytest.importorskip("pyiceberg", reason="pyiceberg not installed")

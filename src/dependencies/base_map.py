@@ -57,7 +57,10 @@ class OpenStreetMapProvider(BaseMapProvider):
             ],
             "tileSize": 256,
             "attribution": "&copy; Esri, Maxar, Earthstar Geographics",
-            "maxzoom": 19,
+            # Esri serves tiles up to ~z19, but coverage in rural Africa is
+            # patchy above z18.  Capping at 18 lets MapLibre overzoom (stretch
+            # the z18 tile) instead of showing "Map data not yet available".
+            "maxzoom": 18,
         },
         "esri_topo": {
             "name": "Esri Topographic",
@@ -97,7 +100,7 @@ class OpenStreetMapProvider(BaseMapProvider):
                   esri_topo, carto_dark, carto_voyager) and the vector
                   basemap 'openfreemap'.
         """
-        basemap_name = name or "openstreetmap"
+        basemap_name = name or "esri_satellite"
 
         if basemap_name == "openfreemap":
             # Fetch the OpenFreeMap vector style from their API
@@ -147,11 +150,14 @@ class OpenStreetMapProvider(BaseMapProvider):
         }
 
     def get_available_styles(self) -> List[str]:
-        """Return list of available basemap style names."""
+        """Return list of available basemap style names.
+
+        esri_satellite is first so it becomes the default for new maps.
+        """
         return [
+            "esri_satellite",
             "openstreetmap",
             "openfreemap",
-            "esri_satellite",
             "esri_topo",
             "carto_dark",
             "carto_voyager",

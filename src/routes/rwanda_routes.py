@@ -38,11 +38,13 @@ Endpoints:
 import asyncio
 import logging
 import os
+import re
 from typing import Optional
 
 import h3
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
@@ -53,6 +55,136 @@ logger = logging.getLogger(__name__)
 _DUCKDB_CACHE_PATH = "/tmp/ingabe_cache/cache.duckdb"
 
 rwanda_router = APIRouter()
+
+
+# ── Admin-level bbox lookup ──────────────────────────────────────────────
+# Looks up pre-computed bounding boxes from PostGIS boundary tables.
+# Supports district (ADM2), sector (ADM3), and cell (ADM4) levels.
+# Returns [west, south, east, north] or None if not found.
+
+async def _lookup_admin_bbox(
+    district: Optional[str] = None,
+    sector: Optional[str] = None,
+    cell: Optional[str] = None,
+) -> Optional[list[float]]:
+    """Look up a bounding box from Rwanda admin boundary tables in PostGIS.
+
+    Priority: cell > sector > district (most specific wins).
+    Returns [west, south, east, north] in WGS84, or None if not found.
+    """
+    from src.structures import get_async_db_connection
+
+    if not (district or sector or cell):
+        return None
+
+    async with get_async_db_connection() as conn:
+        try:
+            if cell:
+                row = await conn.fetchrow(
+                    "SELECT bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_cell_boundaries WHERE LOWER(cell_name) = LOWER($1) LIMIT 1",
+                    cell,
+                )
+                if row:
+                    return [row[0], row[1], row[2], row[3]]
+
+            if sector:
+                try:
+                    row = await conn.fetchrow(
+                        "SELECT bbox_west, bbox_south, bbox_east, bbox_north "
+                        "FROM rwanda_sector_boundaries WHERE LOWER(sector_name) = LOWER($1) LIMIT 1",
+                        sector,
+                    )
+                    if row:
+                        return [row[0], row[1], row[2], row[3]]
+                except Exception:
+                    try:
+                        row = await conn.fetchrow(
+                            "SELECT MIN(bbox_west), MIN(bbox_south), MAX(bbox_east), MAX(bbox_north) "
+                            "FROM rwanda_cell_boundaries WHERE LOWER(sector_name) = LOWER($1)",
+                            sector,
+                        )
+                        if row and row[0] is not None:
+                            return [row[0], row[1], row[2], row[3]]
+                    except Exception:
+                        pass
+
+            if district:
+                row = await conn.fetchrow(
+                    "SELECT bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1) LIMIT 1",
+                    district,
+                )
+                if row:
+                    return [row[0], row[1], row[2], row[3]]
+
+        except Exception as e:
+            logger.warning("Admin bbox lookup failed: %s", e)
+
+    return None
+
+
+async def _lookup_admin_geometry(
+    district: Optional[str] = None,
+    sector: Optional[str] = None,
+    cell: Optional[str] = None,
+) -> Optional[dict]:
+    """Look up a GeoJSON geometry from Rwanda admin boundary tables in PostGIS.
+
+    Priority: cell > sector > district (most specific wins).
+    Returns GeoJSON geometry dict, or None if not found.
+    """
+    import json as _json
+    from src.structures import get_async_db_connection
+
+    if not (district or sector or cell):
+        return None
+
+    async with get_async_db_connection() as conn:
+        try:
+            if cell:
+                row = await conn.fetchrow(
+                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_cell_boundaries "
+                    "WHERE LOWER(cell_name) = LOWER($1) LIMIT 1",
+                    cell,
+                )
+                if row and row[0]:
+                    return _json.loads(row[0])
+
+            if sector:
+                try:
+                    row = await conn.fetchrow(
+                        "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_sector_boundaries "
+                        "WHERE LOWER(sector_name) = LOWER($1) LIMIT 1",
+                        sector,
+                    )
+                    if row and row[0]:
+                        return _json.loads(row[0])
+                except Exception:
+                    try:
+                        row = await conn.fetchrow(
+                            "SELECT ST_AsGeoJSON(ST_Union(geom))::text FROM rwanda_cell_boundaries "
+                            "WHERE LOWER(sector_name) = LOWER($1)",
+                            sector,
+                        )
+                        if row and row[0]:
+                            return _json.loads(row[0])
+                    except Exception:
+                        pass
+
+            if district:
+                row = await conn.fetchrow(
+                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_district_boundaries "
+                    "WHERE LOWER(district) = LOWER($1) LIMIT 1",
+                    district,
+                )
+                if row and row[0]:
+                    return _json.loads(row[0])
+
+        except Exception as e:
+            logger.warning("Admin geometry lookup failed: %s", e)
+
+    return None
 
 
 @rwanda_router.post(
@@ -220,13 +352,21 @@ async def query_district_summary(
 )
 async def search_satellite_imagery(
     bbox: Optional[str] = Query(default=None, description="west,south,east,north"),
+    district: Optional[str] = Query(default=None, description="Rwanda district name (ADM2) — auto-resolves bbox"),
+    sector: Optional[str] = Query(default=None, description="Rwanda sector name (ADM3) — auto-resolves bbox"),
+    cell: Optional[str] = Query(default=None, description="Rwanda cell name (ADM4) — auto-resolves bbox"),
     datetime_range: Optional[str] = Query(default=None, description="ISO 8601 range: 2024-01-01/2024-06-30"),
     max_cloud_cover: float = Query(default=20.0, ge=0, le=100),
     catalog: str = Query(default="earth_search"),
     limit: int = Query(default=10, ge=1, le=50),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Search STAC catalogs for satellite imagery over Rwanda."""
+    """Search STAC catalogs for satellite imagery over Rwanda.
+
+    Spatial filtering: provide `bbox` directly, OR use `district`/`sector`/`cell`
+    to automatically resolve the bounding box from PostGIS admin boundaries.
+    Most specific wins: cell > sector > district.
+    """
     from src.services.stac_service import get_stac_service
 
     parsed_bbox = None
@@ -237,11 +377,22 @@ async def search_satellite_imagery(
                 raise HTTPException(status_code=400, detail="bbox must have 4 values: west,south,east,north")
         except (ValueError, AttributeError):
             raise HTTPException(status_code=400, detail="Invalid bbox format. Expected: west,south,east,north")
+    elif district or sector or cell:
+        # Auto-resolve bbox from admin boundary tables
+        parsed_bbox = await _lookup_admin_bbox(district=district, sector=sector, cell=cell)
+        if parsed_bbox is None:
+            name = cell or sector or district
+            raise HTTPException(
+                status_code=404,
+                detail=f"Admin area '{name}' not found in boundary tables. "
+                "Run the Dagster rwanda_admin_boundaries asset first.",
+            )
 
     service = get_stac_service(catalog)
     result = await asyncio.get_event_loop().run_in_executor(
         None, lambda: service.search_imagery(
             bbox=parsed_bbox, datetime_range=datetime_range,
+            collections=None,  # Uses catalog default (Sentinel-2 L2A)
             max_cloud_cover=max_cloud_cover, limit=limit,
         )
     )
@@ -257,6 +408,9 @@ async def search_satellite_imagery(
 )
 async def compute_imagery_ndvi(
     bbox: Optional[str] = Query(default=None, description="west,south,east,north"),
+    district: Optional[str] = Query(default=None, description="Rwanda district name (ADM2) — auto-resolves bbox"),
+    sector: Optional[str] = Query(default=None, description="Rwanda sector name (ADM3) — auto-resolves bbox"),
+    cell: Optional[str] = Query(default=None, description="Rwanda cell name (ADM4) — auto-resolves bbox"),
     datetime_range: Optional[str] = Query(default=None, description="ISO 8601 range: 2024-01-01/2024-06-30"),
     max_cloud_cover: float = Query(default=10.0, ge=0, le=100),
     catalog: str = Query(default="earth_search"),
@@ -264,9 +418,9 @@ async def compute_imagery_ndvi(
 ):
     """Compute NDVI time-series from satellite imagery over Rwanda.
 
-    This endpoint actually downloads band data and computes NDVI statistics,
-    rather than just returning metadata. Response times may be 10-30 seconds
-    depending on number of scenes and network conditions.
+    This endpoint actually downloads band data and computes NDVI statistics.
+    Provide `bbox` directly, OR use `district`/`sector`/`cell` to auto-resolve.
+    Response times may be 10-30 seconds depending on scenes and network.
     """
     from src.services.stac_service import get_stac_service
 
@@ -278,6 +432,14 @@ async def compute_imagery_ndvi(
                 raise HTTPException(status_code=400, detail="bbox must have 4 values: west,south,east,north")
         except (ValueError, AttributeError):
             raise HTTPException(status_code=400, detail="Invalid bbox format. Expected: west,south,east,north")
+    elif district or sector or cell:
+        parsed_bbox = await _lookup_admin_bbox(district=district, sector=sector, cell=cell)
+        if parsed_bbox is None:
+            name = cell or sector or district
+            raise HTTPException(
+                status_code=404,
+                detail=f"Admin area '{name}' not found in boundary tables.",
+            )
 
     service = get_stac_service(catalog)
     result = await asyncio.get_event_loop().run_in_executor(
@@ -747,10 +909,14 @@ async def field_ndvi(
 
     Request body:
         {
-            "geometry": { GeoJSON Polygon },
-            "date_from": "2024-01-01",   // optional, default 30d ago
-            "date_to": "2024-06-30",     // optional, default today
-            "index": "ndvi"              // or "multi" for NDVI+NDWI+BSI
+            "geometry": { GeoJSON Polygon },   // OR use district/sector/cell below
+            "district": "Kigali",              // auto-resolves geometry from PostGIS
+            "sector": "Nyarugenge",            // more specific than district
+            "cell": "Muhima",                  // most specific (ADM4)
+            "date_from": "2024-01-01",         // optional, default 30d ago
+            "date_to": "2024-06-30",           // optional, default today
+            "index": "ndvi",                   // or "multi" for NDVI+NDWI+BSI
+            "collection": "SENTINEL2_L2A"      // or "sentinel-2-l1c", "s1", etc.
         }
 
     Returns per-day statistics (mean, std, min, max, percentiles).
@@ -766,10 +932,28 @@ async def field_ndvi(
         )
 
     geometry = data.get("geometry")
+
+    # Auto-resolve geometry from admin boundary tables if not provided directly
+    if not geometry:
+        admin_district = data.get("district")
+        admin_sector = data.get("sector")
+        admin_cell = data.get("cell")
+
+        if admin_district or admin_sector or admin_cell:
+            geometry = await _lookup_admin_geometry(
+                district=admin_district, sector=admin_sector, cell=admin_cell,
+            )
+            if geometry is None:
+                name = admin_cell or admin_sector or admin_district
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Admin area '{name}' not found in boundary tables.",
+                )
+
     if not geometry:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GeoJSON geometry is required",
+            detail="GeoJSON geometry OR district/sector/cell name is required",
         )
 
     result = await asyncio.get_running_loop().run_in_executor(
@@ -779,6 +963,7 @@ async def field_ndvi(
             date_from=data.get("date_from"),
             date_to=data.get("date_to"),
             index=data.get("index", "ndvi"),
+            collection=data.get("collection"),
         ),
     )
 
@@ -802,7 +987,10 @@ async def field_timeseries(
 
     Request body:
         {
-            "geometry": { GeoJSON Polygon },
+            "geometry": { GeoJSON Polygon },  // OR use district/sector/cell
+            "district": "Kigali",
+            "sector": "Nyarugenge",
+            "cell": "Muhima",
             "months": 6  // optional, default 6
         }
     """
@@ -816,10 +1004,28 @@ async def field_timeseries(
         )
 
     geometry = data.get("geometry")
+
+    # Auto-resolve geometry from admin boundary tables if not provided
+    if not geometry:
+        admin_district = data.get("district")
+        admin_sector = data.get("sector")
+        admin_cell = data.get("cell")
+
+        if admin_district or admin_sector or admin_cell:
+            geometry = await _lookup_admin_geometry(
+                district=admin_district, sector=admin_sector, cell=admin_cell,
+            )
+            if geometry is None:
+                name = admin_cell or admin_sector or admin_district
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Admin area '{name}' not found in boundary tables.",
+                )
+
     if not geometry:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="GeoJSON geometry is required",
+            detail="GeoJSON geometry OR district/sector/cell name is required",
         )
 
     result = await asyncio.get_running_loop().run_in_executor(
@@ -1480,8 +1686,10 @@ async def get_cell_ndvi_stats(
             where_clauses.append("cell_name ILIKE ?")
             params.append(f"%{cell_name}%")
         if district:
-            where_clauses.append("district_name ILIKE ?")
-            params.append(f"%{district}%")
+            # Use exact match (case-insensitive) to avoid cross-country
+            # false positives. E.g. "Kigali" should not match Uganda districts.
+            where_clauses.append("LOWER(district_name) = LOWER(?)")
+            params.append(district)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         query = f"""
@@ -1645,3 +1853,175 @@ async def get_parcel_ndvi_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
         )
+
+
+# ── Vector tile endpoints ────────────────────────────────────────────────
+# These serve pre-computed PMTiles from S3 (generated by the
+# nightly_ndvi_vector_tiles Dagster asset).  PMTiles is a single-file
+# archive of vector tiles that supports HTTP byte-range requests, so
+# MapLibre GL can fetch individual tiles on demand.
+#
+# Benefits over raster XYZ tiles:
+#   - Native spatial filtering (district/sector/cell in feature properties)
+#   - Dynamic styling on the frontend (color by NDVI value)
+#   - 10-50x smaller than equivalent raster tiles
+#   - No server-side rendering — MapLibre renders on the GPU
+
+_NDVI_PMTILES_KEY = "rwanda/vector_tiles/rwanda_ndvi.pmtiles"
+
+
+@rwanda_router.get(
+    "/rwanda/tiles/ndvi.pmtiles",
+    operation_id="rwanda_ndvi_vector_tiles",
+)
+async def ndvi_vector_tiles(
+    request: Request,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Serve pre-computed NDVI H3 vector tiles as PMTiles.
+
+    The PMTiles file contains H3-gridded NDVI data at two resolutions:
+    - Resolution 7 (~5.16 km²) for district-level view (zoom 4-10)
+    - Resolution 9 (~0.1 km²) for cell-level detail (zoom 10-14)
+
+    Each hexagon has properties: h3, district, cell, ndvi, ndvi_std, date, level.
+    MapLibre GL can filter by `district` or `cell` and color by `ndvi` value.
+
+    Supports HTTP Range requests (required for PMTiles protocol).
+    """
+    from src.utils import get_async_s3_client, get_bucket_name, s3_op
+
+    bucket = get_bucket_name()
+    s3 = await get_async_s3_client()
+
+    # Check file exists and get size
+    try:
+        head = await s3_op(
+            s3.head_object(Bucket=bucket, Key=_NDVI_PMTILES_KEY),
+            "head_object", "NDVI PMTiles",
+        )
+        file_size = head["ContentLength"]
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="NDVI vector tiles not yet generated. Run the nightly_ndvi_vector_tiles Dagster asset.",
+        )
+
+    range_header = request.headers.get("range")
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Range, Content-Type",
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=3600",
+    }
+
+    if range_header:
+        range_match = re.search(r"bytes=(\d+)-(\d*)", range_header)
+        if range_match:
+            start = int(range_match.group(1))
+            end_str = range_match.group(2)
+            end = min(int(end_str), file_size - 1) if end_str else file_size - 1
+        else:
+            start, end = 0, file_size - 1
+
+        content_length = end - start + 1
+
+        s3_resp = await s3_op(
+            s3.get_object(Bucket=bucket, Key=_NDVI_PMTILES_KEY, Range=f"bytes={start}-{end}"),
+            "get_object (range)", "NDVI PMTiles",
+        )
+
+        async def stream_range():
+            body = s3_resp["Body"]
+            while True:
+                chunk = await body.read(8192)
+                if not chunk:
+                    break
+                yield chunk
+            body.close()
+
+        return StreamingResponse(
+            stream_range(),
+            status_code=206,
+            media_type="application/octet-stream",
+            headers={
+                **cors_headers,
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Content-Length": str(content_length),
+            },
+        )
+
+    # Full file request
+    s3_resp = await s3_op(
+        s3.get_object(Bucket=bucket, Key=_NDVI_PMTILES_KEY),
+        "get_object", "NDVI PMTiles",
+    )
+
+    async def stream_full():
+        body = s3_resp["Body"]
+        while True:
+            chunk = await body.read(8192)
+            if not chunk:
+                break
+            yield chunk
+        body.close()
+
+    return StreamingResponse(
+        stream_full(),
+        status_code=200,
+        media_type="application/octet-stream",
+        headers={
+            **cors_headers,
+            "Content-Length": str(file_size),
+        },
+    )
+
+
+@rwanda_router.get(
+    "/rwanda/tiles/status",
+    operation_id="rwanda_vector_tiles_status",
+)
+async def vector_tiles_status(
+    session: UserContext = Depends(verify_session_required),
+):
+    """Check availability and metadata of vector tile layers.
+
+    Returns which PMTiles layers are available and their sizes.
+    The frontend uses this to decide between raster and vector tile rendering.
+    """
+    from src.utils import get_async_s3_client, get_bucket_name, s3_op
+
+    bucket = get_bucket_name()
+    s3 = await get_async_s3_client()
+
+    layers = {}
+
+    # Check NDVI vector tiles
+    try:
+        head = await s3_op(
+            s3.head_object(Bucket=bucket, Key=_NDVI_PMTILES_KEY),
+            "head_object", "NDVI PMTiles status",
+        )
+        layers["ndvi"] = {
+            "available": True,
+            "url": "/api/rwanda/tiles/ndvi.pmtiles",
+            "size_bytes": head["ContentLength"],
+            "last_modified": str(head.get("LastModified", "")),
+            "format": "pmtiles",
+            "layer_name": "ndvi",
+            "properties": ["h3", "district", "cell", "ndvi", "ndvi_std", "date", "level", "pixels"],
+            "zoom_range": {"min": 4, "max": 14},
+        }
+    except Exception:
+        layers["ndvi"] = {
+            "available": False,
+            "url": None,
+            "message": "Run nightly_ndvi_vector_tiles Dagster asset to generate",
+        }
+
+    return {
+        "vector_tiles_enabled": any(v.get("available") for v in layers.values()),
+        "layers": layers,
+    }

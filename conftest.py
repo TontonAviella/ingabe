@@ -1,5 +1,7 @@
 import pytest
 import os
+from contextlib import contextmanager
+from typing import Dict, Generator, Optional
 
 # Set fast timeout for postgres connections in tests
 os.environ["MUNDI_POSTGIS_TIMEOUT_SEC"] = "0.5"
@@ -12,8 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from starlette.testclient import TestClient
 from alembic import command
 from alembic.config import Config
+import asyncpg
 
 from src.wsgi import app
+from src.database.pool import _build_postgres_url
 
 
 @pytest.fixture
@@ -58,7 +62,8 @@ async def client():
 
 @pytest.fixture(scope="session")
 async def auth_client(client):
-    assert os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    # Accept either Clerk auth or legacy edit mode
+    assert os.environ.get("CLERK_SECRET_KEY") or os.environ.get("MUNDI_AUTH_MODE") == "edit"
 
     yield client
 
@@ -148,7 +153,7 @@ def sync_client(_migrations_done):
 
 @pytest.fixture(scope="function")
 def sync_auth_client(sync_client):
-    assert os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    assert os.environ.get("CLERK_SECRET_KEY") or os.environ.get("MUNDI_AUTH_MODE") == "edit"
     yield sync_client
 
 
@@ -232,3 +237,75 @@ def expected_basemaps():
         "first_style": "openstreetmap",
         "default_style_name": "OpenStreetMap",
     }
+
+
+# ---------------------------------------------------------------------------
+# Test isolation fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def db_conn():
+    """Provide a direct asyncpg connection wrapped in a savepoint.
+
+    Any data written through this connection is rolled back automatically
+    when the test ends.  Useful for tests that need to verify or set up
+    DB state directly (outside the HTTP client).
+
+    Usage::
+
+        async def test_something(db_conn):
+            await db_conn.execute("INSERT INTO ...")
+            row = await db_conn.fetchrow("SELECT ...")
+            assert row is not None
+            # rolled back automatically — no cleanup needed
+    """
+    conn: asyncpg.Connection = await asyncpg.connect(_build_postgres_url())
+    tr = conn.transaction()
+    await tr.start()
+    # Create a savepoint so the test can issue its own transactions
+    sp = conn.transaction()
+    await sp.start()
+    try:
+        yield conn
+    finally:
+        # Roll back savepoint, then outer transaction
+        await sp.rollback()
+        await tr.rollback()
+        await conn.close()
+
+
+@pytest.fixture
+def env_override():
+    """Temporarily override environment variables, restoring originals on exit.
+
+    Replaces error-prone manual try/finally patterns in tests.
+
+    Usage::
+
+        def test_something(env_override):
+            with env_override(MUNDI_AUTH_MODE="view_only", CLERK_SECRET_KEY=None):
+                # MUNDI_AUTH_MODE is set; CLERK_SECRET_KEY is removed
+                ...
+            # originals restored automatically
+    """
+
+    @contextmanager
+    def _override(**overrides: Optional[str]) -> Generator[None, None, None]:
+        originals: Dict[str, Optional[str]] = {}
+        for key, value in overrides.items():
+            originals[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        try:
+            yield
+        finally:
+            for key, original in originals.items():
+                if original is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = original
+
+    return _override

@@ -10,7 +10,6 @@ from src.dependencies.chat_completions import ChatArgsProvider
 from src.dependencies.redis_client import get_redis_client
 from src.utils import generate_id
 from openai import AsyncOpenAI
-import os
 
 redis = get_redis_client()
 

@@ -5,7 +5,6 @@ scheduled maintenance tasks like compaction, snapshot expiry, and
 table optimization.
 """
 
-import json
 import logging
 from typing import Any
 

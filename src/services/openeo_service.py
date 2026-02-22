@@ -27,8 +27,9 @@ Environment variables:
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class OpenEOService:
     Users never wait for these jobs — results are pre-computed overnight.
     """
 
+    # Re-authenticate before token expiry (CDSE tokens last ~10 min)
+    _TOKEN_REFRESH_INTERVAL = 8 * 60  # seconds — refresh every 8 minutes
+
     def __init__(self):
         if not _OPENEO_AVAILABLE:
             raise ImportError(
@@ -67,11 +71,21 @@ class OpenEOService:
                 "Install with: pip install openeo==0.47.0"
             )
         self._connection: Optional["openeo.Connection"] = None
+        self._connected_at: float = 0.0
 
     def _connect(self) -> "openeo.Connection":
-        """Establish authenticated connection to CDSE openEO."""
-        if self._connection is not None:
+        """Establish authenticated connection to CDSE openEO.
+
+        Re-authenticates automatically when the token is older than
+        _TOKEN_REFRESH_INTERVAL seconds, preventing mid-job expiry
+        during long-running batch polling (up to 45 minutes).
+        """
+        now = time.monotonic()
+        if self._connection is not None and (now - self._connected_at) < self._TOKEN_REFRESH_INTERVAL:
             return self._connection
+
+        if self._connection is not None:
+            logger.info("OpenEO token approaching expiry — re-authenticating")
 
         client_id = os.environ.get("OPENEO_CLIENT_ID", "")
         client_secret = os.environ.get("OPENEO_CLIENT_SECRET", "")
@@ -87,6 +101,7 @@ class OpenEOService:
             client_secret=client_secret,
         )
         self._connection = conn
+        self._connected_at = now
         return conn
 
     def compute_ndvi_aggregate(

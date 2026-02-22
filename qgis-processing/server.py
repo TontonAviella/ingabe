@@ -1,4 +1,5 @@
 import json
+import logging
 import tempfile
 import os
 import subprocess
@@ -9,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -36,6 +39,12 @@ def run_qgis_process(request: QGISProcessRequest) -> Dict[str, Any]:
                     "overlapping_parameters": list(overlapping_params),
                 },
             )
+
+    logger.info(
+        "QGIS processing request: algorithm=%s inputs=%s",
+        request.algorithm_id,
+        json.dumps(request.qgis_inputs, default=str)[:500],
+    )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         start_time = time.time()
@@ -103,6 +112,15 @@ def run_qgis_process(request: QGISProcessRequest) -> Dict[str, Any]:
             end_time = time.time()
             total_execution_time_ms = (end_time - start_time) * 1000
 
+            logger.error(
+                "qgis_process failed for %s (rc=%d, %.0fms):\nSTDERR: %s\nSTDOUT: %s",
+                request.algorithm_id,
+                result.returncode,
+                qgis_execution_time_ms,
+                result.stderr[:2000],
+                result.stdout[:2000],
+            )
+
             error_info = {
                 "error": "qgis_process failed",
                 "stderr": result.stderr,
@@ -155,6 +173,10 @@ def run_qgis_process(request: QGISProcessRequest) -> Dict[str, Any]:
                             "error": str(e),
                         }
                 else:
+                    logger.warning(
+                        "Output file not found for %s param %s: %s",
+                        request.algorithm_id, param_name, output_path,
+                    )
                     upload_results[param_name] = {
                         "uploaded": False,
                         "error": f"Output file not found: {output_path}",

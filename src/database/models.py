@@ -37,6 +37,19 @@ if TYPE_CHECKING:
 Base = declarative_base()
 
 
+class User(Base):
+    """Clerk-provisioned user mapping Clerk ID → internal UUID."""
+
+    __tablename__ = "users"
+
+    internal_uuid = Column(String(36), primary_key=True)  # UUID5 from clerk_id
+    clerk_id = Column(String(255), unique=True, nullable=False, index=True)
+    email = Column(String(255))
+    created_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.current_timestamp()
+    )
+
+
 class MundiProject(Base):
     __tablename__ = "user_mundiai_projects"
 

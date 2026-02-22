@@ -1,4 +1,5 @@
 from fastapi import Path, Depends, HTTPException
+import logging
 import os
 
 from src.database.models import MundiMap, MundiProject, MapLayer
@@ -8,6 +9,31 @@ from src.dependencies.session import (
     verify_session_required,
 )
 from src.dag import generate_id, ForkReason
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Authorization helpers
+# ---------------------------------------------------------------------------
+
+def _can_access_project(project_row, user_id: str) -> bool:
+    """Check if user can access a project (owner, editor, or viewer)."""
+    if str(project_row["owner_uuid"]) == user_id:
+        return True
+    if project_row.get("link_accessible"):
+        return True
+    editors = project_row.get("editor_uuids") or []
+    viewers = project_row.get("viewer_uuids") or []
+    return user_id in [str(u) for u in editors + viewers]
+
+
+def _can_edit_project(project_row, user_id: str) -> bool:
+    """Check if user can edit a project (owner or editor)."""
+    if str(project_row["owner_uuid"]) == user_id:
+        return True
+    editors = project_row.get("editor_uuids") or []
+    return user_id in [str(u) for u in editors]
 
 
 async def forked_map(
@@ -21,14 +47,15 @@ async def forked_map(
     async with async_conn("forked_map") as conn:
         source_map = await conn.fetchrow(
             """
-            SELECT m.id, m.project_id, m.title, m.description, m.layers, m.basemap
+            SELECT m.id, m.project_id, m.title, m.description, m.layers, m.basemap,
+                   p.owner_uuid AS project_owner, p.editor_uuids, p.viewer_uuids
             FROM user_mundiai_maps m
-            WHERE m.id = $1 AND m.soft_deleted_at IS NULL AND m.owner_uuid = $2
+            JOIN user_mundiai_projects p ON p.id = m.project_id
+            WHERE m.id = $1 AND m.soft_deleted_at IS NULL
             """,
             original_map_id,
-            user_id,
         )
-        if not source_map:
+        if not source_map or not _can_edit_project(source_map, user_id):
             raise HTTPException(404, f"Map {original_map_id} not found")
 
         new_map_id = generate_id(prefix="M")
@@ -105,28 +132,36 @@ async def get_map(
     map_id: str = Path(...),
     session: UserContext = Depends(verify_session_required),
 ) -> MundiMap:
-    """Get a map that the user owns"""
+    """Get a map the user can access (owner, editor, or viewer)."""
     user_id = session.get_user_id()
 
     async with async_read_conn("get_map") as conn:
-        map_row = await conn.fetchrow(
+        row = await conn.fetchrow(
             """
-            SELECT *
-            FROM user_mundiai_maps
-            WHERE id = $1 AND owner_uuid = $2 AND soft_deleted_at IS NULL
+            SELECT m.*,
+                   p.owner_uuid AS project_owner, p.editor_uuids,
+                   p.viewer_uuids, p.link_accessible
+            FROM user_mundiai_maps m
+            JOIN user_mundiai_projects p ON p.id = m.project_id
+            WHERE m.id = $1 AND m.soft_deleted_at IS NULL
             """,
             map_id,
-            user_id,
         )
-        if not map_row:
+        if not row or not _can_access_project(row, user_id):
             raise HTTPException(404, f"Map {map_id} not found")
 
-        return MundiMap(**dict(map_row))
+        # Build MundiMap from the map columns only
+        map_cols = {c.key for c in MundiMap.__table__.columns}
+        return MundiMap(**{k: v for k, v in dict(row).items() if k in map_cols})
 
 
 async def get_layer(
     layer_id: str = Path(...),
+    session: UserContext = Depends(verify_session_required),
 ) -> MapLayer:
+    """Get a layer, verifying the caller owns it or has project access."""
+    user_id = session.get_user_id()
+
     async with async_read_conn("get_layer") as conn:
         layer_row = await conn.fetchrow(
             """
@@ -139,6 +174,24 @@ async def get_layer(
         if not layer_row:
             raise HTTPException(404, f"Layer {layer_id} not found")
 
+        # Owner can always access their own layer
+        if str(layer_row["owner_uuid"]) != user_id:
+            # Check if the layer is on a map in a project the user can access
+            project_row = await conn.fetchrow(
+                """
+                SELECT p.owner_uuid, p.editor_uuids, p.viewer_uuids, p.link_accessible
+                FROM user_mundiai_projects p
+                JOIN user_mundiai_maps m ON m.project_id = p.id
+                WHERE $1 = ANY(m.layers)
+                  AND p.soft_deleted_at IS NULL
+                  AND m.soft_deleted_at IS NULL
+                LIMIT 1
+                """,
+                layer_id,
+            )
+            if not project_row or not _can_access_project(project_row, user_id):
+                raise HTTPException(404, f"Layer {layer_id} not found")
+
         return MapLayer(**dict(layer_row))
 
 
@@ -146,7 +199,7 @@ async def get_project(
     project_id: str = Path(...),
     session: UserContext = Depends(verify_session_required),
 ) -> MundiProject:
-    """Get a project that the user owns"""
+    """Get a project the user can access (owner, editor, viewer, or link-accessible)."""
     user_id = session.get_user_id()
 
     async with async_read_conn("get_project") as conn:
@@ -154,34 +207,63 @@ async def get_project(
             """
             SELECT *
             FROM user_mundiai_projects
-            WHERE id = $1 AND owner_uuid = $2 AND soft_deleted_at IS NULL
+            WHERE id = $1 AND soft_deleted_at IS NULL
             """,
             project_id,
-            user_id,
         )
-        if not project_row:
+        if not project_row or not _can_access_project(project_row, user_id):
             raise HTTPException(404, f"Project {project_id} not found")
 
         return MundiProject(**dict(project_row))
 
 
-# MUNDI_AUTH_MODE guards whether or not mundi data is editable
-# https://docs.mundi.ai/deployments/self-hosting-mundi/
-async def edit_project(project: MundiProject = Depends(get_project)) -> MundiProject:
-    mode = (os.environ.get("MUNDI_AUTH_MODE") or "edit").lower()
-    if mode != "edit":
-        raise HTTPException(
-            status_code=403,
-            detail="Editing disabled when MUNDI_AUTH_MODE not set to edit",
-        )
-    return project
+# Edit guards — Clerk-authenticated users can always edit; legacy mode checks MUNDI_AUTH_MODE
+def _editing_allowed() -> bool:
+    if os.environ.get("CLERK_SECRET_KEY"):
+        return True  # Clerk auth: user is authenticated, editing allowed
+    return (os.environ.get("MUNDI_AUTH_MODE") or "edit").lower() == "edit"
 
 
-async def edit_map(map: MundiMap = Depends(get_map)) -> MundiMap:
-    mode = (os.environ.get("MUNDI_AUTH_MODE") or "edit").lower()
-    if mode != "edit":
-        raise HTTPException(
-            status_code=403,
-            detail="Editing disabled when MUNDI_AUTH_MODE not set to edit",
+async def edit_project(
+    project_id: str = Path(...),
+    session: UserContext = Depends(verify_session_required),
+) -> MundiProject:
+    """Get a project the user can *edit* (owner or editor)."""
+    if not _editing_allowed():
+        raise HTTPException(status_code=403, detail="Editing disabled in view_only mode")
+
+    user_id = session.get_user_id()
+    async with async_read_conn("edit_project") as conn:
+        project_row = await conn.fetchrow(
+            "SELECT * FROM user_mundiai_projects WHERE id = $1 AND soft_deleted_at IS NULL",
+            project_id,
         )
-    return map
+        if not project_row or not _can_edit_project(project_row, user_id):
+            raise HTTPException(403, "You do not have edit access to this project")
+        return MundiProject(**dict(project_row))
+
+
+async def edit_map(
+    map_id: str = Path(...),
+    session: UserContext = Depends(verify_session_required),
+) -> MundiMap:
+    """Get a map the user can *edit* (owner or editor of parent project)."""
+    if not _editing_allowed():
+        raise HTTPException(status_code=403, detail="Editing disabled in view_only mode")
+
+    user_id = session.get_user_id()
+    async with async_read_conn("edit_map") as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT m.*,
+                   p.owner_uuid AS project_owner, p.editor_uuids
+            FROM user_mundiai_maps m
+            JOIN user_mundiai_projects p ON p.id = m.project_id
+            WHERE m.id = $1 AND m.soft_deleted_at IS NULL
+            """,
+            map_id,
+        )
+        if not row or not _can_edit_project(row, user_id):
+            raise HTTPException(403, "You do not have edit access to this map")
+        map_cols = {c.key for c in MundiMap.__table__.columns}
+        return MundiMap(**{k: v for k, v in dict(row).items() if k in map_cols})

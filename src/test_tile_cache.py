@@ -4,9 +4,8 @@ These tests mock the async Redis client so they run without a Redis server.
 All TileCache methods are async, so tests use pytest-asyncio.
 """
 
-import asyncio
 import io
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 

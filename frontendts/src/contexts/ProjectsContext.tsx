@@ -1,3 +1,4 @@
+import { apiFetch, useIsReady } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, ReactNode, useContext, useState } from 'react';
 import { MapProject } from '../lib/types';
@@ -36,6 +37,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   const [currentPage, setCurrentPage] = useState(1);
   const [showDeleted, setShowDeleted] = useState(false);
   const queryClient = useQueryClient();
+  const isReady = useIsReady();
 
   // Query for paginated projects (main list)
   const {
@@ -45,8 +47,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     refetch: refetchProjects,
   } = useQuery({
     queryKey: ['projects', currentPage, showDeleted],
+    enabled: isReady,
     queryFn: async () => {
-      const response = await fetch(`/api/projects/?page=${currentPage}&limit=12&include_deleted=${showDeleted}`);
+      const response = await apiFetch(`/api/projects/?page=${currentPage}&limit=12&include_deleted=${showDeleted}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch projects: ${response.status} ${response.statusText}`);
       }
@@ -57,8 +60,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   // Query for all projects (for sidebar recent projects)
   const { data: allProjectsData, isLoading: allProjectsLoading } = useQuery({
     queryKey: ['projects', 'all'],
+    enabled: isReady,
     queryFn: async () => {
-      const response = await fetch('/api/projects/');
+      const response = await apiFetch('/api/projects/');
       if (!response.ok) {
         throw new Error(`Failed to fetch all projects: ${response.status} ${response.statusText}`);
       }
@@ -69,7 +73,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   // Mutation for creating projects
   const createProjectMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/maps/create', {
+      const response = await apiFetch('/api/maps/create', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -90,7 +94,6 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
       return response.json();
     },
     onSuccess: () => {
-      // Invalidate and refetch both queries
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
   });
@@ -98,7 +101,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   // Mutation for deleting projects
   const deleteProjectMutation = useMutation({
     mutationFn: async (projectId: string) => {
-      const response = await fetch(`/api/projects/${projectId}`, {
+      const response = await apiFetch(`/api/projects/${projectId}`, {
         method: 'DELETE',
       });
 
@@ -109,7 +112,6 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
       return response.json();
     },
     onSuccess: () => {
-      // Invalidate and refetch both queries
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
   });

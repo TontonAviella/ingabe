@@ -1,54 +1,200 @@
+import { ClerkProvider, RedirectToSignIn, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import MaplibreGeocoder from '@maplibre/maplibre-gl-geocoder';
-import React from 'react';
+import React, { useEffect } from 'react';
 import '@maplibre/maplibre-gl-geocoder/dist/maplibre-gl-geocoder.css';
 
+const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+// When set, this app acts as a Clerk satellite domain and redirects sign-in
+// to the primary domain (NozaLabs). Example: "https://nozalabs.rw/sign-in"
+const CLERK_SIGN_IN_URL = import.meta.env.VITE_CLERK_SIGN_IN_URL;
+const CLERK_SIGN_UP_URL = import.meta.env.VITE_CLERK_SIGN_UP_URL;
+const IS_SATELLITE = Boolean(CLERK_SIGN_IN_URL);
+
+// ── init ────────────────────────────────────────────────────────────────
 export async function init(): Promise<void> {
-  // OSS build: EE features disabled
-  // eslint-disable-next-line no-console
-  console.log('[OSS] Ingabe: running without EE features');
+  if (!CLERK_PUBLISHABLE_KEY) {
+    console.warn('[Auth] VITE_CLERK_PUBLISHABLE_KEY not set — auth disabled');
+  }
+  if (IS_SATELLITE) {
+    console.log('[Auth] Running as satellite domain — sign-in via', CLERK_SIGN_IN_URL);
+  }
 }
 
+// ── Provider ────────────────────────────────────────────────────────────
 export function Provider({ children }: React.PropsWithChildren) {
-  return <>{children}</>;
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return <>{children}</>;
+  }
+
+  // Satellite mode: redirect sign-in/sign-up to the primary domain (NozaLabs)
+  const satelliteProps = IS_SATELLITE
+    ? {
+        isSatellite: true as const,
+        domain: (url: URL) => url.host,
+        signInUrl: CLERK_SIGN_IN_URL,
+        signUpUrl: CLERK_SIGN_UP_URL || CLERK_SIGN_IN_URL.replace('/sign-in', '/sign-up'),
+      }
+    : {};
+
+  return (
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY} {...satelliteProps}>
+      <_SetTokenProvider>{children}</_SetTokenProvider>
+    </ClerkProvider>
+  );
 }
 
+// ── RequireAuth ─────────────────────────────────────────────────────────
 export function RequireAuth({ children }: React.PropsWithChildren) {
-  return <>{children}</>;
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return <>{children}</>;
+  }
+
+  return (
+    <>
+      <SignedIn>{children}</SignedIn>
+      <SignedOut>
+        <RedirectToSignIn />
+      </SignedOut>
+    </>
+  );
 }
 
-export function Routes(_reactRouterDom: unknown): React.ReactNode | null {
-  return null;
-}
-
-export function AccountMenu(): React.ReactNode | null {
-  return null;
-}
-
-export function ScheduleCallButton(): React.ReactNode | null {
-  return null;
-}
-
-export function ShareEmbedModal(_props: { isOpen: boolean; onClose: () => void; projectId?: string }): React.ReactNode | null {
-  return null;
-}
-
-export function ApiKeys(): React.ReactNode | null {
-  return null;
-}
-
-export async function getJwt(): Promise<string | undefined> {
-  return undefined;
-}
-
+// ── OptionalAuth ────────────────────────────────────────────────────────
 export function OptionalAuth({ children }: React.PropsWithChildren) {
   return <>{children}</>;
 }
 
-export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  // OSS build: no auth redirect; just use fetch
-  return fetch(input, init);
+// ── Routes (sign-in / sign-up pages) ────────────────────────────────────
+export function Routes(_reactRouterDom: unknown): React.ReactNode | null {
+  // Clerk's hosted UI handles sign-in/sign-up, no extra routes needed
+  return null;
 }
 
+// ── AccountMenu ─────────────────────────────────────────────────────────
+export function AccountMenu(): React.ReactNode | null {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return null;
+  }
+
+  return (
+    <div className="px-3 py-2">
+      <UserButton
+        afterSignOutUrl="/"
+        appearance={{
+          elements: {
+            avatarBox: 'w-8 h-8',
+          },
+        }}
+      />
+    </div>
+  );
+}
+
+// ── ScheduleCallButton ──────────────────────────────────────────────────
+export function ScheduleCallButton(): React.ReactNode | null {
+  return null;
+}
+
+// ── ShareEmbedModal ─────────────────────────────────────────────────────
+export function ShareEmbedModal(_props: { isOpen: boolean; onClose: () => void; projectId?: string }): React.ReactNode | null {
+  return null;
+}
+
+// ── ApiKeys ─────────────────────────────────────────────────────────────
+export function ApiKeys(): React.ReactNode | null {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return null;
+  }
+
+  return (
+    <div className="p-6 max-w-2xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">Account Settings</h1>
+      <p className="text-muted-foreground">Manage your account from the user menu in the sidebar.</p>
+    </div>
+  );
+}
+
+// ── getJwt ──────────────────────────────────────────────────────────────
+// This is called outside React components (e.g. in useEffect callbacks).
+// We store the getToken function from useAuth when the Provider mounts.
+let _getTokenFn: (() => Promise<string | null>) | null = null;
+
+export function _SetTokenProvider({ children }: React.PropsWithChildren) {
+  const { getToken } = useAuth();
+
+  useEffect(() => {
+    _getTokenFn = getToken;
+    return () => {
+      _getTokenFn = null;
+    };
+  }, [getToken]);
+
+  return <>{children}</>;
+}
+
+// ── useIsReady ──────────────────────────────────────────────────────────
+// Returns true once Clerk has loaded and the user is signed in.
+// Use this to gate React Query `enabled` so fetches don't fire before auth.
+export function useIsReady(): boolean {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return true; // no auth — always ready
+  }
+  // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
+  const { isLoaded, isSignedIn } = useAuth();
+  return isLoaded && (isSignedIn ?? false);
+}
+
+// ── apiFetch ────────────────────────────────────────────────────────────
+// Drop-in replacement for fetch() that attaches the Clerk Bearer token.
+// Use this for all /api/* calls instead of raw fetch().
+export { fetchMaybeAuth as apiFetch };
+
+export async function getJwt(): Promise<string | undefined> {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return undefined;
+  }
+
+  if (_getTokenFn) {
+    const token = await _getTokenFn();
+    return token ?? undefined;
+  }
+
+  return undefined;
+}
+
+// ── fetchMaybeAuth ──────────────────────────────────────────────────────
+export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return fetch(input, init);
+  }
+
+  const token = await getJwt();
+  if (!token) {
+    return fetch(input, init);
+  }
+
+  const headers = new Headers(init?.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  const hasRetriedBefore = headers.has('X-Retry-After-401');
+  const response = await fetch(input, { ...init, headers });
+
+  // If we get 401 Unauthorized, token might have expired mid-operation.
+  // Retry once with a fresh token (Clerk auto-refreshes expired tokens).
+  if (response.status === 401 && !hasRetriedBefore) {
+    console.log('401 received, refreshing token and retrying...');
+    const freshToken = await getJwt();
+    if (freshToken && freshToken !== token) {
+      const retryHeaders = new Headers(init?.headers);
+      retryHeaders.set('Authorization', `Bearer ${freshToken}`);
+      retryHeaders.set('X-Retry-After-401', 'true'); // Prevent infinite retry
+      return fetch(input, { ...init, headers: retryHeaders });
+    }
+  }
+
+  return response;
+}
+
+// ── createGeocoder ──────────────────────────────────────────────────────
 // nominatim allows limited geocoding results
 export function createGeocoder(maplibregl: any) {
   const geocoderApi = {
