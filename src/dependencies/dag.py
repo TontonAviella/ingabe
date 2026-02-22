@@ -8,7 +8,8 @@ from src.dependencies.session import (
     UserContext,
     verify_session_required,
 )
-from src.dag import generate_id, ForkReason
+from src.dag import ForkReason
+from src.utils import generate_id
 
 logger = logging.getLogger(__name__)
 
