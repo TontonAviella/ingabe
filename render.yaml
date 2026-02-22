@@ -1,19 +1,21 @@
-# render.yaml — Render Blueprint for Mundi.ai
+# render.yaml — Render Blueprint for Mundi.ai (hobby/free tier)
 # https://render.com/docs/blueprint-spec
 #
 # Deploy: connect this repo in the Render Dashboard → "New Blueprint Instance"
 # Secrets (marked `sync: false`) must be set manually in the Render dashboard.
-# PostGIS must be enabled manually on the mundi-db database in the dashboard.
+# PostGIS: enable manually on mundi-db in the Render dashboard after creation.
+#
+# Dagster, QGIS processing, and backup cron are excluded to stay on free tier.
+# Add them back when upgrading to paid plans.
 
 # ---------------------------------------------------------------------------
-# Environment variable groups (shared across services)
-# NOTE: sync: false is NOT allowed in groups — secrets go on services directly
+# Environment variable groups
 # ---------------------------------------------------------------------------
 envVarGroups:
   - name: mundi-shared
     envVars:
       - key: S3_BUCKET
-        value: mundi-layers
+        value: noza
       - key: S3_DEFAULT_REGION
         value: auto
       - key: OPENAI_MODEL
@@ -28,9 +30,9 @@ envVarGroups:
 # ---------------------------------------------------------------------------
 databases:
   - name: mundi-db
-    plan: basic-256mb
+    plan: free
     postgresMajorVersion: 15
-    ipAllowList: []  # Only allow internal access
+    ipAllowList: []
 
 # ---------------------------------------------------------------------------
 # Services
@@ -41,17 +43,10 @@ services:
   - type: web
     name: mundi-app
     runtime: docker
-    plan: standard
+    plan: free
     region: oregon
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    buildFilter:
-      paths:
-        - src/**
-        - frontendts/**
-        - alembic/**
-        - Dockerfile
-        - requirements.txt
     envVars:
       - fromGroup: mundi-shared
       # Database
@@ -90,12 +85,6 @@ services:
           name: mundi-redis
           type: redis
           property: port
-      # QGIS
-      - key: QGIS_PROCESSING_URL
-        fromService:
-          name: qgis-processing
-          type: web
-          envVarKey: RENDER_INTERNAL_URL
       # Secrets (set in Render dashboard)
       - key: WEBSITE_DOMAIN
         sync: false
@@ -151,211 +140,10 @@ services:
     healthCheckPath: /health
     autoDeploy: true
 
-  # ── QGIS Processing service ──
-  - type: web
-    name: qgis-processing
-    runtime: docker
-    plan: standard
-    region: oregon
-    dockerfilePath: ./qgis-processing/Dockerfile
-    dockerContext: ./qgis-processing
-    buildFilter:
-      paths:
-        - qgis-processing/**
-    envVars:
-      - key: QT_QPA_PLATFORM
-        value: offscreen
-    healthCheckPath: /health
-    autoDeploy: true
-
-  # ── Dagster webserver (UI) ──
-  - type: web
-    name: dagster-webserver
-    runtime: docker
-    plan: starter
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    envVars:
-      - fromGroup: mundi-shared
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: mundi-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: mundi-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: mundi-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: mundi-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: mundi-db
-          property: password
-      - key: DAGSTER_HOME
-        value: /app/dagster_home
-      - key: DAGSTER_PG_URL
-        fromDatabase:
-          name: mundi-db
-          property: connectionString
-      - key: REDIS_HOST
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: host
-      - key: REDIS_PORT
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: port
-      # Secrets needed by Dagster jobs
-      - key: S3_ENDPOINT_URL
-        sync: false
-      - key: S3_ACCESS_KEY_ID
-        sync: false
-      - key: S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: SH_CLIENT_ID
-        sync: false
-      - key: SH_CLIENT_SECRET
-        sync: false
-      - key: OPENEO_CLIENT_ID
-        sync: false
-      - key: OPENEO_CLIENT_SECRET
-        sync: false
-      - key: CDSAPI_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_BASE_URL
-        sync: false
-      - key: RENDER_SERVICE
-        value: dagster-webserver
-    autoDeploy: true
-
-  # ── Dagster daemon (scheduler/sensor) ──
-  - type: worker
-    name: dagster-daemon
-    runtime: docker
-    plan: starter
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    envVars:
-      - fromGroup: mundi-shared
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: mundi-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: mundi-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: mundi-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: mundi-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: mundi-db
-          property: password
-      - key: DAGSTER_HOME
-        value: /app/dagster_home
-      - key: DAGSTER_PG_URL
-        fromDatabase:
-          name: mundi-db
-          property: connectionString
-      - key: REDIS_HOST
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: host
-      - key: REDIS_PORT
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: port
-      - key: S3_ENDPOINT_URL
-        sync: false
-      - key: S3_ACCESS_KEY_ID
-        sync: false
-      - key: S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: SH_CLIENT_ID
-        sync: false
-      - key: SH_CLIENT_SECRET
-        sync: false
-      - key: OPENEO_CLIENT_ID
-        sync: false
-      - key: OPENEO_CLIENT_SECRET
-        sync: false
-      - key: CDSAPI_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_BASE_URL
-        sync: false
-      - key: RENDER_SERVICE
-        value: dagster-daemon
-    autoDeploy: true
-
   # ── Redis ──
   - type: redis
     name: mundi-redis
-    plan: starter
+    plan: free
     region: oregon
     ipAllowList: []
     maxmemoryPolicy: allkeys-lru
-
-  # ── Database backup cron ──
-  - type: cron
-    name: mundi-backup
-    runtime: docker
-    plan: starter
-    region: oregon
-    dockerfilePath: ./scripts/Dockerfile.backup
-    dockerContext: .
-    schedule: "0 2 * * *"
-    envVars:
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: mundi-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: mundi-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: mundi-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: mundi-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: mundi-db
-          property: password
-      - key: S3_ENDPOINT_URL
-        sync: false
-      - key: S3_ACCESS_KEY_ID
-        sync: false
-      - key: S3_SECRET_ACCESS_KEY
-        sync: false
-      - key: S3_BUCKET
-        value: mundi-layers
-      - key: S3_DEFAULT_REGION
-        value: auto
-      - key: BACKUP_RETENTION_DAYS
-        value: "7"
