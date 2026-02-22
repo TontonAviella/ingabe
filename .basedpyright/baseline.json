@@ -122,16 +122,6 @@
                 }
             }
         ],
-        "./src/database/pool.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/dependencies/dag.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -152,68 +142,12 @@
                 }
             }
         ],
-        "./src/dependencies/db_pool.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/dependencies/layer_describer.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/dependencies/postgis.py": [
             {
                 "code": "reportReturnType",
                 "range": {
                     "startColumn": 19,
                     "endColumn": 32,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/dependencies/postgres_connection.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/dependencies/rate_limiter.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 19,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 17,
                     "lineCount": 1
                 }
             }
@@ -292,16 +226,6 @@
                 }
             }
         ],
-        "./src/dependencies/test_session.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/duckdb.py": [
             {
                 "code": "reportAttributeAccessIssue",
@@ -330,14 +254,6 @@
         ],
         "./src/geoprocessing/test_geoprocessing.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 49,
@@ -364,14 +280,6 @@
         ],
         "./src/geoprocessing/test_tool_helpers.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportOperatorIssue",
                 "range": {
                     "startColumn": 15,
@@ -384,16 +292,6 @@
                 "range": {
                     "startColumn": 30,
                     "endColumn": 40,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/geoprocessing/zonal_stats.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 27,
-                    "endColumn": 39,
                     "lineCount": 1
                 }
             }
@@ -427,14 +325,6 @@
             }
         ],
         "./src/pipelines/__init__.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 16,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -1076,25 +966,7 @@
                 }
             }
         ],
-        "./src/pipelines/lakehouse_assets.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/pipelines/raster_assets.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -1105,22 +977,6 @@
             }
         ],
         "./src/pipelines/resources.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -1164,26 +1020,10 @@
         ],
         "./src/pipelines/rwanda_assets.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 32,
                     "endColumn": 42,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 13,
                     "lineCount": 1
                 }
             },
@@ -1204,35 +1044,7 @@
                 }
             }
         ],
-        "./src/pipelines/schedules.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/pipelines/sensors.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/pipelines/vector_assets.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -1252,14 +1064,6 @@
         ],
         "./src/postgis_tiles.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportGeneralTypeIssues",
                 "range": {
                     "startColumn": 11,
@@ -1277,38 +1081,6 @@
             }
         ],
         "./src/routes/layer_router.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 23,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 21,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportGeneralTypeIssues",
                 "range": {
@@ -1728,38 +1500,6 @@
                 }
             },
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 43,
-                    "endColumn": 50,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 47,
-                    "endColumn": 54,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 52,
@@ -1769,14 +1509,6 @@
             }
         ],
         "./src/routes/postgres_routes.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportGeneralTypeIssues",
                 "range": {
@@ -2014,14 +1746,6 @@
         ],
         "./src/routes/rwanda_routes.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 9,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 22,
@@ -2082,169 +1806,11 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 29,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_attribute_table.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_describe_layer.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_embed_routes.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_geojson.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_postgis_mvt_tiles.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_set_layer_style.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_set_layer_style_chat_completion.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_sql_validation.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_update_layer.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/test_validate_sql_query.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/routes/websocket.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
                     "lineCount": 1
                 }
             }
         ],
         "./src/services/lakehouse.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 26,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -2748,14 +2314,6 @@
         ],
         "./src/services/openeo_service.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
                     "startColumn": 15,
@@ -2765,22 +2323,6 @@
             }
         ],
         "./src/services/rwanda_lakehouse.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -3608,14 +3150,6 @@
         ],
         "./src/services/sentinel_hub_service.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 20,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
                     "startColumn": 15,
@@ -3788,16 +3322,6 @@
                 }
             }
         ],
-        "./src/symbology/test_verify.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/symbology/verify.py": [
             {
                 "code": "reportArgumentType",
@@ -3808,46 +3332,8 @@
                 }
             }
         ],
-        "./src/test_basemap.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_bounds.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_bounds_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/test_cloud_services.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 22,
@@ -3908,241 +3394,11 @@
                 "range": {
                     "startColumn": 22,
                     "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 20,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_context_length_error.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_conversation_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_conversation_integration.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_dag.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_duckdb_query_from_kue.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_duckdb_utils.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_empty_upload.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_exceptions.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_gdal.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_gdal_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_kml_samples.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_lakehouse.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 13,
-                    "endColumn": 33,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_laz_upload.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_map_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_mbgl_renderer.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_message_loop.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_messages.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_ml_inference.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_openstreetmap.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
                     "lineCount": 1
                 }
             }
         ],
         "./src/test_pipelines.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -4184,221 +3440,7 @@
                 }
             }
         ],
-        "./src/test_postgres_connection_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_postgres_connection_deletion.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_postgres_error_database_tracking.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_project_api.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_projection_detection.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_remote_uri_mock.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 16,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 9,
-                    "endColumn": 25,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_remove_layer.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_rwanda_endpoints.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_s3_error_handling.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_send_new_conversation.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_stac_service.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_tile_cache.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_upload_errors.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_upload_geocoded_csv.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_upload_kml_kmz.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_upload_without_adding.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_url_validation.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_websocket.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_websocket_security.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/test_worldcover.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -4456,35 +3498,7 @@
                 }
             }
         ],
-        "./src/test_wsgi.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/test_zip_shapefile.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/test_zonal_stats.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportAttributeAccessIssue",
                 "range": {
@@ -4502,35 +3516,7 @@
                 }
             }
         ],
-        "./src/test_zoom_integration.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/upload/base.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 14,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/upload/dask_raster.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 11,
-                    "endColumn": 20,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -4750,43 +3736,7 @@
                 }
             }
         ],
-        "./src/upload/handlers/vector_handler.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/upload/preprocessing.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 12,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/upload/test_raster_processing.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 13,
-                    "lineCount": 1
-                }
-            },
             {
                 "code": "reportPossiblyUnboundVariable",
                 "range": {
@@ -4982,14 +3932,6 @@
         ],
         "./src/utils.py": [
             {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 7,
-                    "endColumn": 15,
-                    "lineCount": 1
-                }
-            },
-            {
                 "code": "reportAttributeAccessIssue",
                 "range": {
                     "startColumn": 19,
@@ -5002,16 +3944,6 @@
                 "range": {
                     "startColumn": 23,
                     "endColumn": 30,
-                    "lineCount": 1
-                }
-            }
-        ],
-        "./src/wsgi.py": [
-            {
-                "code": "reportMissingImports",
-                "range": {
-                    "startColumn": 5,
-                    "endColumn": 19,
                     "lineCount": 1
                 }
             }

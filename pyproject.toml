@@ -44,6 +44,9 @@ baselineFile = ".basedpyright/baseline.json"
 # can tighten later to "recommended"
 typeCheckingMode = "standard"
 
+# Many deps (osgeo/GDAL, dask, fiona) require C libs not available in CI
+reportMissingImports = false
+
 [dependency-groups]
 dev = [
     "basedpyright",
