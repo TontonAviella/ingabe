@@ -28,10 +28,11 @@ jobs:
             --set app.cache-from=type=gha \
             --set app.cache-to=type=gha,mode=max \
             --set qgis-processing.cache-from=type=gha \
+            --set qgis-processing.cache-to=type=gha,mode=max \
             --set app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000 \
             --file docker-compose.yml \
             --load
-        timeout-minutes: 25
+        timeout-minutes: 45
 
       - name: Run tests
         run: docker compose run app pytest -xvs -n auto
