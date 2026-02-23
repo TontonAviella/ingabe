@@ -5,7 +5,7 @@
 # Secrets (marked `sync: false`) must be set manually in the Render dashboard.
 # PostGIS: enable manually on mundi-db in the Render dashboard after creation.
 #
-# Estimated cost: ~$41.50/month (Hobby platform $0 + 5 services)
+# Estimated cost: ~$48.50/month (Hobby platform $0 + 6 services)
 
 # ---------------------------------------------------------------------------
 # Environment variable groups (simple key/value only)
@@ -204,6 +204,30 @@ services:
           property: connectionString
       - key: RENDER_SERVICE
         value: dagster-daemon
+    autoDeploy: true
+
+  # ── NozaLabs landing page (Next.js + Clerk auth) ──
+  # Domains: app.nozalabs.rw (primary)
+  # After sign-in → redirects to Ingabe GIS at gis.nozalabs.rw
+  - type: web
+    name: noza-web
+    runtime: docker
+    plan: starter
+    region: oregon
+    dockerfilePath: ./noza-web/Dockerfile
+    dockerContext: ./noza-web
+    envVars:
+      - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: NEXT_PUBLIC_CLERK_SIGN_IN_URL
+        value: /sign-in
+      - key: NEXT_PUBLIC_CLERK_SIGN_UP_URL
+        value: /sign-up
+      - key: NEXT_PUBLIC_INGABE_URL
+        value: https://gis.nozalabs.rw
+    healthCheckPath: /
     autoDeploy: true
 
   # ── Redis ──
