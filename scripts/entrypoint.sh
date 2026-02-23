@@ -1,18 +1,17 @@
 #!/bin/bash
-set -e
 
 SERVICE="${RENDER_SERVICE:-app}"
 
 echo "=== Entrypoint starting: SERVICE=$SERVICE ==="
 echo "=== PORT=${PORT:-8000} ==="
 echo "=== POSTGRES_HOST=${POSTGRES_HOST:-NOT SET} ==="
-echo "=== DATABASE_URL set: $([ -n "$DATABASE_URL" ] && echo 'yes' || echo 'no') ==="
 echo "=== MUNDI_AUTH_MODE=${MUNDI_AUTH_MODE:-NOT SET} ==="
-echo "=== CLERK_SECRET_KEY set: $([ -n "$CLERK_SECRET_KEY" ] && echo 'yes' || echo 'no') ==="
+echo "=== Python: $(python3 --version 2>&1) ==="
 
 case "$SERVICE" in
   app)
-    echo "Ensuring PostGIS extension exists..."
+    # Step 1: PostGIS extension (non-fatal)
+    echo "Step 1: Ensuring PostGIS extension exists..."
     python3 -c "
 import os, psycopg2
 conn = psycopg2.connect(
@@ -26,17 +25,29 @@ conn.autocommit = True
 conn.cursor().execute('CREATE EXTENSION IF NOT EXISTS postgis')
 conn.close()
 print('PostGIS extension ready')
-" || echo "Warning: could not enable PostGIS (may already exist)"
+" && echo "Step 1: OK" || echo "Step 1: WARNING - PostGIS check failed (continuing)"
 
-    echo "Running Alembic migrations..."
-    if alembic upgrade head; then
-      echo "Alembic migrations completed successfully."
-    else
-      echo "WARNING: Alembic migrations failed (exit $?). Continuing anyway — migrations may already be applied."
-    fi
+    # Step 2: Alembic migrations (non-fatal)
+    echo "Step 2: Running Alembic migrations..."
+    alembic upgrade head && echo "Step 2: OK" || echo "Step 2: WARNING - Alembic failed (continuing)"
 
-    echo "Starting app server on port ${PORT:-8000}..."
-    exec uvicorn src.wsgi:app --host 0.0.0.0 --port "${PORT:-8000}"
+    # Step 3: Verify Python imports work
+    echo "Step 3: Testing Python imports..."
+    python3 -c "
+import sys
+try:
+    print('  Importing src.wsgi...')
+    import src.wsgi
+    print('  src.wsgi imported OK')
+    print('  App routes:', len(src.wsgi.app.routes))
+except Exception as e:
+    print(f'  IMPORT ERROR: {type(e).__name__}: {e}', file=sys.stderr)
+    sys.exit(1)
+" && echo "Step 3: OK" || { echo "Step 3: FAILED - app import error"; exit 1; }
+
+    # Step 4: Start uvicorn
+    echo "Step 4: Starting uvicorn on port ${PORT:-8000}..."
+    exec uvicorn src.wsgi:app --host 0.0.0.0 --port "${PORT:-8000}" --log-level info
     ;;
   dagster-daemon)
     echo "Starting Dagster daemon..."
