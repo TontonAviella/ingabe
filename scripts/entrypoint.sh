@@ -27,7 +27,7 @@ print('PostGIS extension ready')
     ;;
   dagster-daemon)
     echo "Starting Dagster daemon..."
-    exec dagster-daemon run -w /app/dagster_home/workspace.yaml
+    exec dagster-daemon run -w /app/workspace.yaml
     ;;
   *)
     echo "Unknown service: $SERVICE"

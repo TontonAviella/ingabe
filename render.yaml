@@ -197,7 +197,7 @@ services:
           name: mundi-db
           property: password
       - key: DAGSTER_HOME
-        value: /app/dagster_home
+        value: /app
       - key: DAGSTER_PG_URL
         fromDatabase:
           name: mundi-db
