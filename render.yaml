@@ -8,7 +8,7 @@
 # Estimated cost: ~$45/month (Hobby platform $0 + 6 starter services)
 
 # ---------------------------------------------------------------------------
-# Environment variable groups
+# Environment variable groups (simple key/value only)
 # ---------------------------------------------------------------------------
 envVarGroups:
   - name: mundi-shared
@@ -59,46 +59,6 @@ envVarGroups:
       - key: OTEL_EXPORTER_OTLP_HEADERS
         sync: false
 
-  - name: mundi-db-conn
-    envVars:
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: mundi-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: mundi-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: mundi-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: mundi-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: mundi-db
-          property: password
-      - key: DATABASE_URL
-        fromDatabase:
-          name: mundi-db
-          property: connectionString
-
-  - name: mundi-redis-conn
-    envVars:
-      - key: REDIS_HOST
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: host
-      - key: REDIS_PORT
-        fromService:
-          name: mundi-redis
-          type: redis
-          property: port
-
 # ---------------------------------------------------------------------------
 # Databases
 # ---------------------------------------------------------------------------
@@ -124,8 +84,42 @@ services:
     envVars:
       - fromGroup: mundi-shared
       - fromGroup: mundi-secrets
-      - fromGroup: mundi-db-conn
-      - fromGroup: mundi-redis-conn
+      # Database (fromDatabase must be inline, not in groups)
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: mundi-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: mundi-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: mundi-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: mundi-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: mundi-db
+          property: password
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mundi-db
+          property: connectionString
+      # Redis (fromService must be inline, not in groups)
+      - key: REDIS_HOST
+        fromService:
+          name: mundi-redis
+          type: redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          name: mundi-redis
+          type: redis
+          property: port
       # App config
       - key: MUNDI_AUTH_MODE
         value: edit
@@ -178,7 +172,27 @@ services:
     envVars:
       - fromGroup: mundi-shared
       - fromGroup: mundi-secrets
-      - fromGroup: mundi-db-conn
+      # Database
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: mundi-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: mundi-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: mundi-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: mundi-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: mundi-db
+          property: password
       - key: DAGSTER_HOME
         value: /app/dagster_home
       - key: DAGSTER_PG_URL
@@ -201,7 +215,27 @@ services:
     envVars:
       - fromGroup: mundi-shared
       - fromGroup: mundi-secrets
-      - fromGroup: mundi-db-conn
+      # Database
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: mundi-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: mundi-db
+          property: port
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: mundi-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: mundi-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: mundi-db
+          property: password
       - key: DAGSTER_HOME
         value: /app/dagster_home
       - key: DAGSTER_PG_URL
