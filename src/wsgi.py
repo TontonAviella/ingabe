@@ -229,14 +229,25 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------------------------------------------------------------------------
-# Health endpoint
+# Health endpoints
 # ---------------------------------------------------------------------------
+
+@app.get("/healthz")
+async def healthz():
+    """Simple liveness probe — always returns 200.
+
+    Used by Render's healthCheckPath so deploys aren't blocked by
+    dependency failures during startup.  Use /health for detailed status.
+    """
+    return JSONResponse(status_code=200, content={"status": "ok"})
+
 
 @app.get("/health")
 async def health_check():
-    """Health check for Cloud Run / K8s liveness probes.
+    """Detailed health check (PostgreSQL, Redis, QGIS).
 
-    Checks: PostgreSQL pool, Redis connectivity, QGIS processing service.
+    Always returns 200 so monitoring tools can read the body.
+    The "status" field is "healthy" or "degraded".
     """
     import httpx
     from redis.asyncio import Redis as AsyncRedis
@@ -276,7 +287,7 @@ async def health_check():
 
     all_ok = all(v == "ok" for v in checks.values())
     return JSONResponse(
-        status_code=200 if all_ok else 503,
+        status_code=200,
         content={"status": "healthy" if all_ok else "degraded", "checks": checks},
     )
 

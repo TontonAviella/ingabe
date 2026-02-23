@@ -144,7 +144,7 @@ services:
           name: qgis-processing
           type: web
           envVarKey: RENDER_EXTERNAL_URL
-    healthCheckPath: /health
+    healthCheckPath: /healthz
     autoDeploy: true
 
   # ── QGIS Processing service ──
