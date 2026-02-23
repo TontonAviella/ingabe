@@ -26,6 +26,8 @@ RUN printf "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=%s\nNEXT_PUBLIC_CLERK_SIGN_IN_URL=
     "$NEXT_PUBLIC_CLERK_SIGN_UP_URL" \
     "$NEXT_PUBLIC_INGABE_URL" > .env.production
 
+# Limit Node memory for Render starter build plan
+ENV NODE_OPTIONS="--max-old-space-size=512"
 RUN npm run build
 
 # ── Production ──
@@ -34,12 +36,13 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
+RUN mkdir -p ./public
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
-EXPOSE 3000
-ENV PORT=3000
+EXPOSE 10000
+ENV PORT=10000
 ENV HOSTNAME="0.0.0.0"
 CMD ["node", "server.js"]

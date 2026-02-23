@@ -1,0 +1,12 @@
+node_modules
+.next
+.env
+.env.local
+.env.production
+.git
+.gitignore
+.dockerignore
+.npm-cache
+.clerk
+Dockerfile
+README.md
