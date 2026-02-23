@@ -5,7 +5,7 @@
 # Secrets (marked `sync: false`) must be set manually in the Render dashboard.
 # PostGIS: enable manually on mundi-db in the Render dashboard after creation.
 #
-# Estimated cost: ~$45/month (Hobby platform $0 + 6 starter services)
+# Estimated cost: ~$41.50/month (Hobby platform $0 + 5 services)
 
 # ---------------------------------------------------------------------------
 # Environment variable groups (simple key/value only)
@@ -161,48 +161,8 @@ services:
     healthCheckPath: /health
     autoDeploy: true
 
-  # ── Dagster webserver (pipeline UI) ──
-  - type: web
-    name: dagster-webserver
-    runtime: docker
-    plan: starter
-    region: oregon
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    envVars:
-      - fromGroup: mundi-shared
-      - fromGroup: mundi-secrets
-      # Database
-      - key: POSTGRES_HOST
-        fromDatabase:
-          name: mundi-db
-          property: host
-      - key: POSTGRES_PORT
-        fromDatabase:
-          name: mundi-db
-          property: port
-      - key: POSTGRES_DB
-        fromDatabase:
-          name: mundi-db
-          property: database
-      - key: POSTGRES_USER
-        fromDatabase:
-          name: mundi-db
-          property: user
-      - key: POSTGRES_PASSWORD
-        fromDatabase:
-          name: mundi-db
-          property: password
-      - key: DAGSTER_HOME
-        value: /app/dagster_home
-      - key: DAGSTER_PG_URL
-        fromDatabase:
-          name: mundi-db
-          property: connectionString
-      - key: RENDER_SERVICE
-        value: dagster-webserver
-    healthCheckPath: /dagster_health
-    autoDeploy: true
+  # dagster-webserver removed — monitor via logs and Grafana (OTEL)
+  # dagster run list / dagster run logs <run_id>
 
   # ── Dagster daemon (schedule/sensor runner) ──
   - type: worker

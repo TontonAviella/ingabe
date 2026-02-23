@@ -42,6 +42,7 @@ try:
     )
 
     from src.pipelines import (
+        hooks,
         lakehouse_assets,
         raster_assets,
         resources,
@@ -223,30 +224,37 @@ if HAS_DAGSTER:
         raster_job=raster_processing_job,
     )
 
+    # ─── Attach failure/success hooks to all jobs ───────────────────────────
+    all_jobs = [
+        raster_processing_job,
+        vector_processing_job,
+        iceberg_compaction_job,
+        snapshot_expiry_job,
+        table_optimization_job,
+        cache_warmup_job,
+        rwanda_bootstrap_job,
+        rwanda_ingestion_job,
+        rwanda_ndvi_job,
+        rwanda_ml_job,
+        nightly_field_ndvi_job,
+        weekly_crop_classification_job,
+        weekly_anomaly_scan_job,
+        weekly_yield_risk_job,
+        weekly_drought_scan_job,
+        weekly_phenology_job,
+        nightly_cache_cleanup_job,
+        nightly_parcel_ndvi_job,
+        daily_weather_ingest_job,
+    ]
+    hooked_jobs = [
+        job.with_hooks({hooks.notify_on_failure, hooks.log_on_success})
+        for job in all_jobs
+    ]
+
     # ─── Define Dagster Definitions ────────────────────────────────────────
     defs = Definitions(
         assets=all_assets,
-        jobs=[
-            raster_processing_job,
-            vector_processing_job,
-            iceberg_compaction_job,
-            snapshot_expiry_job,
-            table_optimization_job,
-            cache_warmup_job,
-            rwanda_bootstrap_job,
-            rwanda_ingestion_job,
-            rwanda_ndvi_job,
-            rwanda_ml_job,
-            nightly_field_ndvi_job,
-            weekly_crop_classification_job,
-            weekly_anomaly_scan_job,
-            weekly_yield_risk_job,
-            weekly_drought_scan_job,
-            weekly_phenology_job,
-            nightly_cache_cleanup_job,
-            nightly_parcel_ndvi_job,
-            daily_weather_ingest_job,
-        ],
+        jobs=hooked_jobs,
         sensors=[
             s3_upload_sensor,
             failed_cog_retry_sensor,

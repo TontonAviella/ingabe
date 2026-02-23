@@ -220,42 +220,8 @@ services:
   #     - S3_BUCKET=test-bucket
 
   # --- Dagster pipeline orchestration ---
-  dagster-webserver:
-    image: "${APP_IMAGE:-mundi-public:local}"
-    container_name: mundi-dagster-webserver
-    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/dagster_home/workspace.yaml
-    ports:
-      - "3000:3000"
-    depends_on:
-      postgresdb:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    environment:
-      - DAGSTER_HOME=/app/dagster_home
-      - DAGSTER_PG_URL=postgresql://${POSTGRES_USER:-mundiuser}:${POSTGRES_PASSWORD:-changeme}@${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/dagster
-      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
-      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
-      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
-      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
-      - S3_BUCKET=${S3_BUCKET:-test-bucket}
-      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
-      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
-      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
-      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
-      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
-      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
-      - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
-      - CDSAPI_KEY=${CDSAPI_KEY:-}
-    volumes:
-      - ./src:/app/src
-      - dagster-home:/app/dagster_home
-      - ./dagster.yaml:/app/dagster_home/dagster.yaml
-      - ./workspace.yaml:/app/dagster_home/workspace.yaml
-      - ingabe-cache:/tmp/ingabe_cache
+  # dagster-webserver removed — monitor via: dagster run list / dagster run logs <run_id>
+  # Failure alerts sent via Dagster hooks (see src/pipelines/__init__.py)
 
   dagster-daemon:
     image: "${APP_IMAGE:-mundi-public:local}"
