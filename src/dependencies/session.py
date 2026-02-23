@@ -232,19 +232,14 @@ async def _authenticate_clerk(token: str) -> ClerkUserContext:
 
 def verify_session(session_required: bool = True):
     async def _verify_session(request: Request = None) -> Optional[UserContext]:
-        # --- Clerk mode ---
+        # --- Clerk mode: validate token if present ---
         if _is_clerk_enabled():
             token = _extract_token_from_request(request) if request else None
             if token:
                 return await _authenticate_clerk(token)
-            if session_required:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required",
-                )
-            return None
+            # No token — fall through to legacy mode if configured
 
-        # --- Legacy mode (no Clerk) ---
+        # --- Legacy mode (fallback when no Clerk token) ---
         auth_mode = os.environ.get("MUNDI_AUTH_MODE")
         if auth_mode == "edit":
             return LegacyUserContext()
@@ -255,11 +250,18 @@ def verify_session(session_required: bool = True):
                     detail="Authentication required",
                 )
             return None
-        else:
+
+        # Clerk enabled but no token and no legacy mode
+        if _is_clerk_enabled() and session_required:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Set CLERK_SECRET_KEY for Clerk auth, or MUNDI_AUTH_MODE for legacy mode",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
             )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Set CLERK_SECRET_KEY for Clerk auth, or MUNDI_AUTH_MODE for legacy mode",
+        )
 
     return _verify_session
 
