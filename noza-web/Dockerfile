@@ -12,11 +12,19 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build args become env vars at build time
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# NEXT_PUBLIC_* vars must exist at build time (inlined by webpack).
+# Render passes env vars at runtime only, so we write .env.production
+# from ARGs with sensible defaults.
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xvc2luZy1tb2NjYXNpbi0xMS5jbGVyay5hY2NvdW50cy5kZXYk
 ARG NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
 ARG NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
-ARG NEXT_PUBLIC_INGABE_URL=https://mundi-app.onrender.com
+ARG NEXT_PUBLIC_INGABE_URL=https://gis.nozalabs.rw
+
+RUN printf "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=%s\nNEXT_PUBLIC_CLERK_SIGN_IN_URL=%s\nNEXT_PUBLIC_CLERK_SIGN_UP_URL=%s\nNEXT_PUBLIC_INGABE_URL=%s\n" \
+    "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+    "$NEXT_PUBLIC_CLERK_SIGN_IN_URL" \
+    "$NEXT_PUBLIC_CLERK_SIGN_UP_URL" \
+    "$NEXT_PUBLIC_INGABE_URL" > .env.production
 
 RUN npm run build
 
