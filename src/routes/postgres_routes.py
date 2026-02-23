@@ -628,6 +628,7 @@ async def get_map_style(
 )
 @heavy_limit
 async def upload_layer(
+    request: Request,
     original_map_id: str,
     forked_map: MundiMap = Depends(forked_map_by_user),
     file: UploadFile = File(...),
