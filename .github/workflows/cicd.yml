@@ -5,10 +5,18 @@ on:
     branches: [main]
     paths-ignore:
       - 'docs/**'
+      - '*.md'
+      - 'Dockerfile.base'
+      - 'noza-web/**'
+      - '.github/workflows/build-base-image.yml'
   pull_request:
     types: [opened, synchronize, reopened]
     paths-ignore:
       - 'docs/**'
+      - '*.md'
+      - 'Dockerfile.base'
+      - 'noza-web/**'
+      - '.github/workflows/build-base-image.yml'
 
 permissions:
   contents: read

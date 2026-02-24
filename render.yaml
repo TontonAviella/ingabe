@@ -18,7 +18,7 @@ envVarGroups:
       - key: S3_DEFAULT_REGION
         value: auto
       - key: OPENAI_MODEL
-        value: gpt-4.1-nano
+        value: deepseek/deepseek-v3.2
       - key: CDSAPI_URL
         value: https://cds.climate.copernicus.eu/api
       - key: OTEL_SERVICE_NAME
@@ -148,6 +148,7 @@ services:
     autoDeploy: true
 
   # ── QGIS Processing service ──
+  # autoDeploy disabled to save pipeline minutes — deploy manually from dashboard
   - type: web
     name: qgis-processing
     runtime: docker
@@ -159,7 +160,7 @@ services:
       - key: PYTHONUNBUFFERED
         value: "1"
     healthCheckPath: /health
-    autoDeploy: true
+    autoDeploy: false
 
   # dagster-webserver removed — monitor via logs and Grafana (OTEL)
   # dagster run list / dagster run logs <run_id>
@@ -204,7 +205,8 @@ services:
           property: connectionString
       - key: RENDER_SERVICE
         value: dagster-daemon
-    autoDeploy: true
+    # autoDeploy disabled to save pipeline minutes — deploy manually from dashboard
+    autoDeploy: false
 
   # ── NozaLabs landing page (Next.js + Clerk auth) ──
   # Domains: app.nozalabs.rw (primary)
@@ -228,7 +230,8 @@ services:
       - key: NEXT_PUBLIC_INGABE_URL
         value: https://gis.nozalabs.rw
     healthCheckPath: /
-    autoDeploy: true
+    # autoDeploy disabled to save pipeline minutes — deploy manually from dashboard
+    autoDeploy: false
 
   # ── Redis ──
   - type: redis
