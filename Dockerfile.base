@@ -139,8 +139,9 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
 
 # MapLibre Node bindings
 COPY --from=maplibre-builder /opt/maplibre-native/platform/node/*.tgz /tmp/
-RUN npm install --production --ignore-scripts /tmp/*.tgz \
-    && npm install --production sharp @mapbox/geo-viewport \
+RUN npm cache clean --force \
+    && npm install --omit=dev --ignore-scripts /tmp/*.tgz \
+    && npm install --omit=dev sharp @mapbox/geo-viewport \
     && rm -rf /tmp/*.tgz
 
 # Environment
