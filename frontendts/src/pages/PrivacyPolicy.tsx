@@ -23,7 +23,7 @@ export default function PrivacyPolicy() {
       </p>
       <h3>Chat Messages</h3>
       <p>
-        Conversations with the AI assistant (Kue) are stored to maintain chat history within your projects. Messages are sent to OpenAI for
+        Conversations with the AI assistant (Sage) are stored to maintain chat history within your projects. Messages are sent to OpenAI for
         processing and are subject to{' '}
         <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer">
           OpenAI's privacy policy

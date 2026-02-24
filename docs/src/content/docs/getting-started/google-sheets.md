@@ -73,5 +73,5 @@ feature.
 ![Clicking on the Shanghai point reveals its attributes, including "weather: sunny". (timestamp 01:05)](../../../assets/cloud-sources/selected-csv-feature.jpg)
 
 Your Google Sheets data is now a fully functional vector layer in Mundi. You can
-style it, use it in geoprocessing tools, or query it with Kue, Mundi's AI
+style it, use it in geoprocessing tools, or query it with Sage, Mundi's AI
 assistant.

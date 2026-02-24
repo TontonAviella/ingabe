@@ -23,7 +23,7 @@ Asset groups:
 
 These assets integrate with the existing lakehouse manager and DuckDB
 query infrastructure.  The rwanda_precompute group runs on cron schedules
-so that Kue (the LLM assistant) can read results from DuckDB instantly.
+so that Sage (the LLM assistant) can read results from DuckDB instantly.
 """
 
 import json
@@ -1142,7 +1142,7 @@ def nightly_parcel_ndvi(
     metadata->>'rwanda_parcels' = true, extracts individual feature
     geometries, and runs Sentinel Hub per-parcel at 10m native resolution.
 
-    Results go into ndvi_parcel_cache for Kue to read instantly.
+    Results go into ndvi_parcel_cache for Sage to read instantly.
     """
     import math
     import uuid
@@ -1596,7 +1596,7 @@ def weekly_anomaly_scan(
     anomaly detection per district, and writes alerts to the
     anomaly_alerts_cache table.
 
-    Kue reads this table via GET /rwanda/ml/anomalies/alerts and
+    Sage reads this table via GET /rwanda/ml/anomalies/alerts and
     the get_anomaly_alerts tool — users see results instantly.
     """
     from src.services.ml_inference import get_ml_service
@@ -1715,7 +1715,7 @@ def weekly_yield_risk(
     (populated by nightly_field_ndvi), runs Mann-Kendall trend + Theil-Sen
     slope per district, and writes risk assessments to yield_risk_cache.
 
-    Kue reads this table via the get_yield_risk tool.
+    Sage reads this table via the get_yield_risk tool.
     """
     from src.services.ml_inference import get_ml_service
 
@@ -1981,7 +1981,7 @@ def daily_weather_ingest(
     Results are aggregated to each of the 30 Rwanda districts using
     bounding-box zonal statistics and written to weather_daily_cache.
 
-    Kue reads this table via the get_weather_stats tool.
+    Sage reads this table via the get_weather_stats tool.
     """
     from src.services.weather_service import get_weather_service
 
@@ -2146,7 +2146,7 @@ def daily_weather_ingest(
     description=(
         "Pre-compute ESRI 10m Annual LULC 2024 land-cover zonal statistics for every "
         "Rwanda admin boundary (district, sector, cell).  Results are cached in "
-        "DuckDB for instant querying by Kue.  Connected-component analysis for "
+        "DuckDB for instant querying by Sage.  Connected-component analysis for "
         "largest cropland regions is done on-the-fly per user query."
     ),
 )

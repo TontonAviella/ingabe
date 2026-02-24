@@ -248,7 +248,7 @@ export default function VersionVisualization({
 
   const getNodePresentation = useCallback(
     (node: MapNode) => {
-      const editor: string = node.fork_reason == 'ai_edit' ? 'Kue' : 'You';
+      const editor: string = node.fork_reason == 'ai_edit' ? 'Sage' : 'You';
       const icon: React.ReactNode =
         node.fork_reason == 'ai_edit' ? <Brain className="w-4 h-4 text-black" /> : <User className="w-4 h-4 text-black" />;
       const color: string = node.map_id === currentMapId ? 'bg-green-400' : 'bg-gray-300';
@@ -327,7 +327,7 @@ export default function VersionVisualization({
           <div className="flex-4 flex justify-between text-halfway-sm-xs">
             <div className="flex items-baseline">
               <span className="text-gray-400 text-halfway-sm-xs" title={new Date(node.created_on).toLocaleString()}>
-                <span className="text-gray-200">{node.fork_reason == 'ai_edit' ? 'Kue, ' : 'You, '}</span>
+                <span className="text-gray-200">{node.fork_reason == 'ai_edit' ? 'Sage, ' : 'You, '}</span>
                 {formatShortRelativeTime(node.created_on)}
               </span>
             </div>
@@ -500,7 +500,7 @@ export default function VersionVisualization({
                 <div className="flex-4 flex justify-end items-center">
                   {activeActions.length > 0 ? (
                     <div className="text-halfway-sm-xs text-gray-400 whitespace-nowrap">
-                      <span className="text-gray-300 text-right">Kue is thinking...</span>
+                      <span className="text-gray-300 text-right">Sage is thinking...</span>
                     </div>
                   ) : null}
                 </div>

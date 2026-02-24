@@ -361,7 +361,7 @@ If documentation generation fails, this indicates the database connection detail
                   </div>
                   <div className="ml-3">
                     <p className="text-sm text-blue-700 dark:text-blue-200">
-                      <strong>Have questions?</strong> Open any map that is connected to this PostGIS database, and Kue will be able to
+                      <strong>Have questions?</strong> Open any map that is connected to this PostGIS database, and Sage will be able to
                       answer questions based on this article.
                     </p>
                   </div>

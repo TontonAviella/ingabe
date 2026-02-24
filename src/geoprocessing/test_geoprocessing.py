@@ -186,12 +186,12 @@ async def test_chat_completions(
             assert "created_at" in sent_msg
             assert sent_msg["conversation_id"] == conversation_id
 
-            # Kue is thinking
+            # Sage is thinking
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             # Assistant response with tool call
@@ -261,11 +261,11 @@ async def test_chat_completions(
 
             # loops once
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "active"
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             # Adding layer to map
@@ -313,10 +313,10 @@ async def test_chat_completions(
                 assert layer_metadata["geometry_type"] == "multipolygon"
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             assistant_msg = websocket.receive_json()

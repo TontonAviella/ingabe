@@ -1,11 +1,11 @@
 ---
 title: Create maps from email
 description: Send or forward any email with spatial data attachments (like
-  GeoPackage, Shapefile, or GeoTIFF) to map@mundi.ai, and our AI agent, Kue, will
+  GeoPackage, Shapefile, or GeoTIFF) to map@mundi.ai, and our AI agent, Sage, will
   automatically create and reply with a shareable web map.
 ---
 
-You can send or forward any email with spatial data to `map@mundi.ai` and Kue
+You can send or forward any email with spatial data to `map@mundi.ai` and Sage
 will [make a web map](/getting-started/making-your-first-map/)
 and reply to you with a shareable web link. For example, if
 your coworker emails you a `.gpkg` and a GeoTIFF, you can forward that email to
@@ -46,13 +46,13 @@ simply forward the email directly to Mundi's AI agent.
 
 ### AI agent responds with a map
 
-After about a minute, Kue will reply in the same email thread. This reply includes a
+After about a minute, Sage will reply in the same email thread. This reply includes a
 brief summary of the actions taken, a static map preview for quick reference, and
 most importantly, a link to the fully interactive web map.
 
 ![The reply email from Mundi showing a map preview and a link to the project.](../../../assets/email/response.jpg)
 
-In this case, Kue not only mapped the data but also interpreted the original
+In this case, Sage not only mapped the data but also interpreted the original
 request ("see what the deepest wells are here") and automatically highlighted
 the deepest wells on the map.
 
@@ -72,7 +72,7 @@ they can view and interact with the data themselves.
 
 ### Supported formats
 
-Kue can receive via email
+Sage can receive via email
 [any vector or raster format that you can upload normally to Mundi](/getting-started/uploading-files/),
 including:
 

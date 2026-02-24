@@ -149,5 +149,5 @@ except Exception as e:
     sys.exit(1)
 
 logger.info("=== Weather ingest complete! ===")
-logger.info("Kue can now answer weather questions via get_weather_stats tool.")
+logger.info("Sage can now answer weather questions via get_weather_stats tool.")
 logger.info("REST endpoint: GET /api/rwanda/weather/daily")

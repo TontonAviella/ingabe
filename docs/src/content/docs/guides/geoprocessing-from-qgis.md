@@ -1,9 +1,9 @@
 ---
-title: Geoprocessing with Kue and QGIS
-description: Learn how to use Kue, Mundi's AI agent, to perform QGIS geoprocessing tasks like reprojecting and buffering layers using natural language commands.
+title: Geoprocessing with Sage and QGIS
+description: Learn how to use Sage, Mundi's AI agent, to perform QGIS geoprocessing tasks like reprojecting and buffering layers using natural language commands.
 ---
 
-Mundi's AI agent, Kue, is integrated with [QGIS's](https://qgis.org/) geoprocessing
+Mundi's AI agent, Sage, is integrated with [QGIS's](https://qgis.org/) geoprocessing
 algorithms. This means you can use QGIS's 300+ algorithms from Mundi.
 
 This tutorial demonstrates how to perform a common two-step geoprocessing
@@ -31,15 +31,15 @@ feet). When hovering over a vector layer in the layer list, you'll see
 the layer's CRS.
 
 
-We can ask Kue to handle the reprojection for us. Mundi cloud uses frontier models
+We can ask Sage to handle the reprojection for us. Mundi cloud uses frontier models
 that are intelligent enough to select the CRS for you, but depending on your local model
 choice, you may need to request the EPSG code specifically.
 
-1.  In the Kue chat box, type a request to reproject the layer.
+1.  In the Sage chat box, type a request to reproject the layer.
 
     > can you reproject barcelona beaches to a local crs?
 
-2.  Kue will identify the correct QGIS algorithm (`native:reprojectlayer`)
+2.  Sage will identify the correct QGIS algorithm (`native:reprojectlayer`)
     and execute it, choosing **EPSG:32631 (UTM Zone 31N)** as the
     appropriate local CRS for Barcelona.
 
@@ -52,14 +52,14 @@ choice, you may need to request the EPSG code specifically.
 With the layer now in a projected CRS, we can create a buffer using metric
 units.
 
-1.  Ask Kue to buffer the newly reprojected layer. You can refer to the
+1.  Ask Sage to buffer the newly reprojected layer. You can refer to the
     layer by its name.
     > can you buffer the beaches by 100 meters?
 
-2.  Kue will run the QGIS `native:buffer` algorithm.
+2.  Sage will run the QGIS `native:buffer` algorithm.
 
 3.  A new polygon layer named "Beaches Buffered 100m" is created and added to
-    the map. Kue also applies a semi-transparent blue fill style for clear
+    the map. Sage also applies a semi-transparent blue fill style for clear
     visualization.
 
 ![The final map showing the original linestrings and the new semi-transparent 100-meter buffer polygon.](../../../assets/geoprocessing/buffers.png)

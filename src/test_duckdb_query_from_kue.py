@@ -141,16 +141,16 @@ async def test_chat_completions(
             assert msg1["role"] == "user"
             assert msg1["content"] == "Count how many cafes have name=Starbucks"
 
-            # Message 2: Kue is thinking (start)
+            # Message 2: Sage is thinking (start)
             msg2 = websocket.receive_json()
             assert msg2["ephemeral"]
-            assert msg2["action"] == "Kue is thinking..."
+            assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
 
-            # Message 3: Kue is thinking (completed)
+            # Message 3: Sage is thinking (completed)
             msg3 = websocket.receive_json()
             assert msg3["ephemeral"]
-            assert msg3["action"] == "Kue is thinking..."
+            assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
 
             # Message 4: Assistant message with tool call
@@ -219,13 +219,13 @@ async def test_chat_completions(
             # Message 7: Final thinking (start)
             msg7 = websocket.receive_json()
             assert msg7["ephemeral"]
-            assert msg7["action"] == "Kue is thinking..."
+            assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
 
             # Message 8: Final thinking (completed)
             msg8 = websocket.receive_json()
             assert msg8["ephemeral"]
-            assert msg8["action"] == "Kue is thinking..."
+            assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
 
             # Message 9: Final assistant response
@@ -316,16 +316,16 @@ async def test_chat_completions_with_error(
             assert msg1["role"] == "user"
             assert msg1["content"] == "Run an invalid SQL query that will fail"
 
-            # Message 2: Kue is thinking (start)
+            # Message 2: Sage is thinking (start)
             msg2 = websocket.receive_json()
             assert msg2["ephemeral"]
-            assert msg2["action"] == "Kue is thinking..."
+            assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
 
-            # Message 3: Kue is thinking (completed)
+            # Message 3: Sage is thinking (completed)
             msg3 = websocket.receive_json()
             assert msg3["ephemeral"]
-            assert msg3["action"] == "Kue is thinking..."
+            assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
 
             # Message 4: Assistant message with tool call
@@ -380,13 +380,13 @@ async def test_chat_completions_with_error(
             # Message 7: Final thinking (start)
             msg7 = websocket.receive_json()
             assert msg7["ephemeral"]
-            assert msg7["action"] == "Kue is thinking..."
+            assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
 
             # Message 8: Final thinking (completed)
             msg8 = websocket.receive_json()
             assert msg8["ephemeral"]
-            assert msg8["action"] == "Kue is thinking..."
+            assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
 
             # Message 9: Final assistant response

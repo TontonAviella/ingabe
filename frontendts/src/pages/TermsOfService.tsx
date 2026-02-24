@@ -42,7 +42,7 @@ export default function TermsOfService() {
 
       <h2>6. AI Assistant</h2>
       <p>
-        The AI assistant (Kue) uses third-party language models. AI-generated outputs may contain errors. You are responsible for verifying
+        The AI assistant (Sage) uses third-party language models. AI-generated outputs may contain errors. You are responsible for verifying
         the accuracy of any AI-generated analysis, statistics, or geoprocessing results before relying on them for decisions.
       </p>
 

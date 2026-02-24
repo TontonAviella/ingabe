@@ -77,7 +77,7 @@ daily_parcel_sync = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# ─── Rwanda pre-compute schedules (populate DuckDB cache for Kue) ────────
+# ─── Rwanda pre-compute schedules (populate DuckDB cache for Sage) ────────
 
 nightly_field_ndvi_schedule = ScheduleDefinition(
     name="nightly_field_ndvi",

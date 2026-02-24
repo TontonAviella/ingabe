@@ -143,7 +143,7 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "ml": "true"},
     )
 
-    # Rwanda pre-compute jobs (scheduled — results cached in DuckDB for Kue)
+    # Rwanda pre-compute jobs (scheduled — results cached in DuckDB for Sage)
     nightly_field_ndvi_job = define_asset_job(
         name="nightly_field_ndvi_job",
         description="Nightly NDVI field stats via Sentinel Hub → DuckDB cache",

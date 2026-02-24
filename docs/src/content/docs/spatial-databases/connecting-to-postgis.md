@@ -58,15 +58,15 @@ relationships, etc. It includes diagrams explaining the how different tables rel
 
 ### Creating layers from PostGIS queries
 
-Once connected, you can ask Kue, the AI assistant in Mundi, to create new map layers that source
+Once connected, you can ask Sage, the AI assistant in Mundi, to create new map layers that source
 spatial data from the connected PostGIS database.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 can you add a layer for the wellbores from my postgis database?
 :::
 
 
-![Kue request to add new layer](../../../assets/postgis/request_add_layer.jpg)
+![Sage request to add new layer](../../../assets/postgis/request_add_layer.jpg)
 
 This creates a dynamic layer in Mundi that continuously pulls data from your PostGIS database:
 
@@ -95,7 +95,7 @@ database, and schema all stay the same.
 
 ![ngrok PostGIS connection details](../../../assets/ngrok/ngrok-add-connection.jpg)
 
-Once the connection loads, you'll be able to ask Kue to create layers and execute SQL queries. Map tiles
+Once the connection loads, you'll be able to ask Sage to create layers and execute SQL queries. Map tiles
 are served through the tunnel from your local database, which may slow down your computer depending on how many
 rows are in your tables.
 

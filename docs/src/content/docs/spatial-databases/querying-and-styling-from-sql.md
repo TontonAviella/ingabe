@@ -34,9 +34,9 @@ Once you've [created your first map](/getting-started/making-your-first-map/), y
 The database is from the [Norwegian Offshore Directorate](https://www.sodir.no/en/) and is licensed under the [Norwegian Licence for Open Government Data](https://data.norge.no/nlod/en).
 :::
 
-### Example requests to Kue
+### Example requests to Sage
 
-To get a better sense of what Kue can do, try asking:
+To get a better sense of what Sage can do, try asking:
 - **what companies control the most pipelines?**
 - **add all of the pipelines and style by in service status with labels**
 - **add all of ConocoPhillips fields**
@@ -56,13 +56,13 @@ relationships, etc. It includes diagrams explaining how different tables relate 
 
 Between looking at the documentation and adding new layers, you can ask questions about the database. This could be as narrow as "tell me the attributes for this feature" or as broad as "list all of the companies mentioned in the database."
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 what are the top 10 companies that appear most among all the tables?
 :::
 
 ![Asking Mundi questions about your database](../../../assets/postgis-guide/asking-questions.jpg)
 
-**Kue's SQL from this request**
+**Sage's SQL from this request**
 ```sql
 WITH all_counts AS (
   SELECT lh.cmpnpdidcompany AS cmp, COUNT(*) AS cnt
@@ -81,9 +81,9 @@ ORDER BY occurrences DESC
 LIMIT 10;
 ```
 
-### Reviewing Kue's SQL
+### Reviewing Sage's SQL
 
-You can open the dropdowns in the chat on the right to review Kue's SQL and learn more about what it is trying to do. If the dropdown is red then it means the action failed.
+You can open the dropdowns in the chat on the right to review Sage's SQL and learn more about what it is trying to do. If the dropdown is red then it means the action failed.
 Failed actions are common, and not indicative of a problem.
 
 ![A SQL dropdown opened](../../../assets/postgis-guide/sql-dropdown.jpg)
@@ -94,21 +94,21 @@ Left clicking on a feature highlights its attributes in the bottom left portion 
 
 ![Selecting a feature inside Mundi](../../../assets/postgis-guide/selecting.jpg)
 
-:::note[Kue can see your selected features]
-Kue knows when you select a feature and can see that feature's attributes / primary ID. **Kue can**: change only that feature's symbology, search for nearby features, or query tables relating to that feature.
+:::note[Sage can see your selected features]
+Sage knows when you select a feature and can see that feature's attributes / primary ID. **Sage can**: change only that feature's symbology, search for nearby features, or query tables relating to that feature.
 :::
 
 ## Creating layers from PostGIS queries
 
-Once connected, you can ask Kue, the AI assistant in Mundi, to create new map layers that source
+Once connected, you can ask Sage, the AI assistant in Mundi, to create new map layers that source
 spatial data from the connected PostGIS database.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 can you add a layer for the wellbores from my postgis database?
 :::
 
 
-![Kue request to add new layer](../../../assets/postgis/request_add_layer.jpg)
+![Sage request to add new layer](../../../assets/postgis/request_add_layer.jpg)
 
 This creates a dynamic layer in Mundi that continuously pulls data from your PostGIS database:
 
@@ -117,58 +117,58 @@ This creates a dynamic layer in Mundi that continuously pulls data from your Pos
 
 ## Using symbology to analyze data
 
-Kue is capable of adjusting a layer's symbology to make it easier to interpret the data. This is possible with the size of layers, conditional symbology, graduated symbology, and with labels.
+Sage is capable of adjusting a layer's symbology to make it easier to interpret the data. This is possible with the size of layers, conditional symbology, graduated symbology, and with labels.
 
-You can both specifically ask Kue to change symbology in a certain way (for example, turn the polygon layer blue or label the points with their name) and ask it to generally style a layer (for example, style the pipeline by its diameter).
+You can both specifically ask Sage to change symbology in a certain way (for example, turn the polygon layer blue or label the points with their name) and ask it to generally style a layer (for example, style the pipeline by its diameter).
 
 ### Prompting tips
 
-Mundi uses the strongest AI models available, so there is no need for any special prompting. You can either enter general requests which Kue will then try to best satisfy or be as specific as you would like, which it will also handle.
+Mundi uses the strongest AI models available, so there is no need for any special prompting. You can either enter general requests which Sage will then try to best satisfy or be as specific as you would like, which it will also handle.
 
-For general requests, Kue will do what it thinks best fits your goal. For example, if you ask Kue to "style the parks based on how many visitors they get in a year", it might decide to label the parks with visitor count and give a color gradient where light is fewer visitors and dark is more.
+For general requests, Sage will do what it thinks best fits your goal. For example, if you ask Sage to "style the parks based on how many visitors they get in a year", it might decide to label the parks with visitor count and give a color gradient where light is fewer visitors and dark is more.
 
-You can also be as specific as you would like with any part of your prompt. Using the previous example, if you want Kue to label the parks with their name and to use a green color gradient where dark green is fewer visitors and light green is more, you just have to mention that.
+You can also be as specific as you would like with any part of your prompt. Using the previous example, if you want Sage to label the parks with their name and to use a green color gradient where dark green is fewer visitors and light green is more, you just have to mention that.
 
 ### Graduated symbology
 
-One of the most powerful ways that Kue can easily make analysis understandable is through graduated symbology. This can be done to show, for example, a progression through time, a concentration, or any other gradient.
+One of the most powerful ways that Sage can easily make analysis understandable is through graduated symbology. This can be done to show, for example, a progression through time, a concentration, or any other gradient.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 apply a graduated style to the fields based on the year they were discovered and label each field with the year
 :::
 
-![Kue creating graduated symbology from a layer in PostGIS](../../../assets/postgis-guide/graduated-symbology.jpg)
+![Sage creating graduated symbology from a layer in PostGIS](../../../assets/postgis-guide/graduated-symbology.jpg)
 
 ### Conditional symbology
 
-If you want to show different groups of data you can use conditional symbology. If you ask Kue to style based on an attribute that is not a scale but instead are discrete, it will create conditional symbology based on the attributes. So attribute A will be red, attribute B will be blue, and so on.
+If you want to show different groups of data you can use conditional symbology. If you ask Sage to style based on an attribute that is not a scale but instead are discrete, it will create conditional symbology based on the attributes. So attribute A will be red, attribute B will be blue, and so on.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 style each field based on its majority shareholder and label them with the majority shareholder
 :::
 
-![Kue creating conditional symbology from a layer in PostGIS](../../../assets/postgis-guide/conditional-symbology.jpg)
+![Sage creating conditional symbology from a layer in PostGIS](../../../assets/postgis-guide/conditional-symbology.jpg)
 
 ## Adding labels to data
 
 You can label a layer based on any attribute.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 label the pipelines based on their in service status
 :::
 
-![Kue creating labels for layers from PostGIS](../../../assets/postgis-guide/labels.jpg)
+![Sage creating labels for layers from PostGIS](../../../assets/postgis-guide/labels.jpg)
 
 ## Combining analysis requests with symbology
-If you have multiple layers from your spatial database and want to see how they interact, Kue can run complex SQL to combine them, find a new insight, and make the insight visual via symbology.
+If you have multiple layers from your spatial database and want to see how they interact, Sage can run complex SQL to combine them, find a new insight, and make the insight visual via symbology.
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 please merge the collisions and super output area as a polygon and style it by how many collisions they have relative to their area
 :::
 
-![Kue creating and styling new layers from PostGIS](../../../assets/postgis-guide/sql-symbology.jpg)
+![Sage creating and styling new layers from PostGIS](../../../assets/postgis-guide/sql-symbology.jpg)
 
-**Kue's SQL**
+**Sage's SQL**
 ```sql
 SELECT
   m.fid AS id,

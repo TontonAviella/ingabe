@@ -114,11 +114,11 @@ async def test_message_simple_response(
             assert sent_msg["conversation_id"] == conversation_id
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             msg = websocket.receive_json()
             assert (
                 msg["ephemeral"]
-                and msg["action"] == "Kue is thinking..."
+                and msg["action"] == "Sage is thinking..."
                 and msg["status"] == "completed"
             )
 
@@ -268,11 +268,11 @@ async def test_sequential_response_handling(
             assert sent_msg["conversation_id"] == conversation_id
 
             msg = websocket.receive_json()
-            assert msg["ephemeral"] and msg["action"] == "Kue is thinking..."
+            assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             msg = websocket.receive_json()
             assert (
                 msg["ephemeral"]
-                and msg["action"] == "Kue is thinking..."
+                and msg["action"] == "Sage is thinking..."
                 and msg["status"] == "completed"
             )
 

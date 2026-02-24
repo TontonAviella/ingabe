@@ -134,12 +134,12 @@ async def test_chat_completions(
 
             receive_json = websocket.receive_json()
             assert receive_json["ephemeral"]
-            assert receive_json["action"] == "Kue is thinking..."
+            assert receive_json["action"] == "Sage is thinking..."
             assert receive_json["status"] == "active"
 
             receive_json = websocket.receive_json()
             assert receive_json["ephemeral"]
-            assert receive_json["action"] == "Kue is thinking..."
+            assert receive_json["action"] == "Sage is thinking..."
             assert receive_json["status"] == "completed"
 
             receive_json = websocket.receive_json()

@@ -155,13 +155,13 @@ async def test_set_layer_style_via_chat_completion(
 
             msg2 = websocket.receive_json()
             assert msg2["ephemeral"] is True
-            assert msg2["action"] == "Kue is thinking..."
+            assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
             assert msg2["updates"]["style_json"] is False
 
             msg3 = websocket.receive_json()
             assert msg3["ephemeral"] is True
-            assert msg3["action"] == "Kue is thinking..."
+            assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
             assert msg3["updates"]["style_json"] is False
 
@@ -192,13 +192,13 @@ async def test_set_layer_style_via_chat_completion(
 
             msg7 = websocket.receive_json()
             assert msg7["ephemeral"] is True
-            assert msg7["action"] == "Kue is thinking..."
+            assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
             assert msg7["updates"]["style_json"] is False
 
             msg8 = websocket.receive_json()
             assert msg8["ephemeral"] is True
-            assert msg8["action"] == "Kue is thinking..."
+            assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
             assert msg8["updates"]["style_json"] is False
 

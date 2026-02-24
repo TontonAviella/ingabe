@@ -16,8 +16,8 @@
 """openEO service for server-side batch processing on CDSE.
 
 This service is used ONLY by Dagster scheduled assets — never called
-directly by Kue or user-facing endpoints. Batch jobs run 5-30 minutes
-and results are cached in DuckDB + S3 for instant Kue access.
+directly by Sage or user-facing endpoints. Batch jobs run 5-30 minutes
+and results are cached in DuckDB + S3 for instant Sage access.
 
 Environment variables:
     OPENEO_CLIENT_ID:      CDSE OAuth client ID

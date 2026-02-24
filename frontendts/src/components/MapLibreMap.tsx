@@ -698,7 +698,7 @@ export default function MapLibreMap({
           type: 'Point' as const,
           coordinates: [position.lng, position.lat],
         },
-        properties: { user: 'Kue', abbrev: 'Kue', color: '#ff69b4', actionId },
+        properties: { user: 'Sage', abbrev: 'Sage', color: '#ff69b4', actionId },
       });
     });
 
@@ -1232,7 +1232,7 @@ export default function MapLibreMap({
       map_id: mapId,
       ephemeral: true,
       action_id: actionId,
-      action: 'Sending message to Kue...',
+      action: 'Sending message to Sage...',
       timestamp: new Date().toISOString(),
       completed_at: null,
       layer_id: null,
@@ -1547,7 +1547,7 @@ export default function MapLibreMap({
         >
           <Input
             className={`flex-1 border-none shadow-none !bg-transparent focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-            placeholder={lastUserMsg || 'Type in for Kue to do something...'}
+            placeholder={lastUserMsg || 'Type in for Sage to do something...'}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -1560,7 +1560,7 @@ export default function MapLibreMap({
                 </span>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Kue can see your selected feature</p>
+                <p>Sage can see your selected feature</p>
               </TooltipContent>
             </Tooltip>
           )}

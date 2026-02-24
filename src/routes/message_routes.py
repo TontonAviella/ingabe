@@ -110,7 +110,7 @@ async def _ensure_rwanda_postgis_connection(
     """Auto-provision an internal PostGIS connection for Rwanda data.
 
     Creates a project_postgres_connections row pointing to the app's own
-    database so Kue can use new_layer_from_postgis to create layers from
+    database so Sage can use new_layer_from_postgis to create layers from
     rwanda_district_boundaries, rwanda_cell_boundaries, etc.
 
     Returns the connection ID, or None on failure.
@@ -1181,7 +1181,7 @@ async def process_chat_interaction_task(
                     tool.get("function", {}).pop("strict", None)
 
             # Replace the thinking ephemeral updates with context manager
-            async with kue_ephemeral_action(conversation.id, "Kue is thinking..."):
+            async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
                 chat_completions_args = await chat_args.get_args(
                     user_id, "send_map_message_async"
                 )
@@ -2592,7 +2592,7 @@ async def process_chat_interaction_task(
                                             for r in _rows
                                         ],
                                     }
-                                    # Auto-provision PostGIS connection so Kue can create map layers
+                                    # Auto-provision PostGIS connection so Sage can create map layers
                                     _pgc_id = await _ensure_rwanda_postgis_connection(
                                         conn, current_project_id, user_id,
                                     )
@@ -3024,7 +3024,7 @@ async def process_chat_interaction_task(
                                             f"ON d.{_pg_col} = v.name"
                                         )
 
-                                        # --- Create the layer directly (bypass Kue) ---
+                                        # --- Create the layer directly (bypass Sage) ---
                                         _layer_id = generate_id(prefix="L")
                                         _layer_name = f"{_level.title()} Agri Indices"
 
@@ -3676,7 +3676,7 @@ async def process_chat_interaction_task(
                                             for r in _rows
                                         ],
                                     }
-                                    # Auto-provision PostGIS connection so Kue can create map layers
+                                    # Auto-provision PostGIS connection so Sage can create map layers
                                     _pgc_id = await _ensure_rwanda_postgis_connection(
                                         conn, current_project_id, user_id,
                                     )

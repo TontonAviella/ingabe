@@ -142,12 +142,12 @@ async def test_download_from_openstreetmap_layers_created(
 
                     msg2 = websocket.receive_json()
                     assert msg2["ephemeral"]
-                    assert msg2["action"] == "Kue is thinking..."
+                    assert msg2["action"] == "Sage is thinking..."
                     assert msg2["status"] == "active"
 
                     msg3 = websocket.receive_json()
                     assert msg3["ephemeral"]
-                    assert msg3["action"] == "Kue is thinking..."
+                    assert msg3["action"] == "Sage is thinking..."
                     assert msg3["status"] == "completed"
 
                     msg4 = websocket.receive_json()
@@ -188,12 +188,12 @@ async def test_download_from_openstreetmap_layers_created(
 
                     msg8 = websocket.receive_json()
                     assert msg8["ephemeral"]
-                    assert msg8["action"] == "Kue is thinking..."
+                    assert msg8["action"] == "Sage is thinking..."
                     assert msg8["status"] == "active"
 
                     msg9 = websocket.receive_json()
                     assert msg9["ephemeral"]
-                    assert msg9["action"] == "Kue is thinking..."
+                    assert msg9["action"] == "Sage is thinking..."
                     assert msg9["status"] == "completed"
 
                     msg10 = websocket.receive_json()

@@ -3,7 +3,7 @@ title: Creating your first map with Mundi
 description: Learn how to create your first map in Mundi with sample data and basic visualization.
 ---
 
-Mundi is an open-source web GIS. At its core is **Kue**, an AI agent that works alongside you in the map editor.
+Mundi is an open-source web GIS. At its core is **Sage**, an AI agent that works alongside you in the map editor.
 
 This guide will walk you through the entire process of creating your first map, from a blank slate to a fully styled and saved project.
 
@@ -55,25 +55,25 @@ Before styling, it's helpful to understand the data you're working with. Mundi's
 2.  The attribute table will open. Here, you can type a natural language query into the search bar. For example, to find all points within Albuquerque, you can type:
     > *only show me the points that are in albuquerque*
 
-3.  Kue will translate your request into a SQL query and filter the table accordingly, showing you only the relevant records.
+3.  Sage will translate your request into a SQL query and filter the table accordingly, showing you only the relevant records.
 
 ![Attribute table with natural language query](../../../assets/first-map/attribute-table-llm.png)
 
 ## Styling your map with natural language
 
-This is where Kue truly shines. Instead of navigating complex symbology menus, you can just describe how you want your map to look.
+This is where Sage truly shines. Instead of navigating complex symbology menus, you can just describe how you want your map to look.
 
-1.  In the Kue chat prompt at the bottom of the screen, type a styling request. Let's style the points based on the county they are in.
+1.  In the Sage chat prompt at the bottom of the screen, type a styling request. Let's style the points based on the county they are in.
     > *can you style the point of diversions based on the county*
 
-    Kue will analyze the data, identify the "county" attribute, and apply a categorized style with different colors for different counties.
+    Sage will analyze the data, identify the "county" attribute, and apply a categorized style with different colors for different counties.
 
 ![Symbology after first prompt](../../../assets/first-map/symbology1.png)
 
-2.  You can iterate and refine the style. In the initial result, many counties were left gray. We can ask Kue to improve this:
+2.  You can iterate and refine the style. In the initial result, many counties were left gray. We can ask Sage to improve this:
     > *great. lots of the counties are gray, I think you should list out more counties in new mexico for the symbology*
 
-    Kue will update the color palette to include more counties, giving you a much more informative and visually appealing map.
+    Sage will update the color palette to include more counties, giving you a much more informative and visually appealing map.
 
 ![Symbology after second prompt](../../../assets/first-map/symbology.png)
 

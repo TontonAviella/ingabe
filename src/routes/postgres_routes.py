@@ -475,7 +475,7 @@ async def get_map_description(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You must own this map to access map description",
             )
-        # Auto-provision the internal Rwanda PostGIS connection so Kue
+        # Auto-provision the internal Rwanda PostGIS connection so Sage
         # always sees it and can create layers from admin boundary tables.
         from src.routes.message_routes import _ensure_rwanda_postgis_connection
         await _ensure_rwanda_postgis_connection(

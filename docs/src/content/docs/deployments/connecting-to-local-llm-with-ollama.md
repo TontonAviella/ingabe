@@ -1,6 +1,6 @@
 ---
 title: Connecting to a local LLM with Ollama
-description: Self-hosted Mundi can connect to any local LLM. This tutorial connects Kue to Gemma3-1B on a MacBook Pro
+description: Self-hosted Mundi can connect to any local LLM. This tutorial connects Sage to Gemma3-1B on a MacBook Pro
 ---
 
 [Mundi](https://mundi.ai/) is an open source web GIS that can connect to local language models when
@@ -121,7 +121,7 @@ see a message that the database migrations have completed successfully.
 
 ### Test the connection in Mundi
 
-Now you can interact with Kue, Mundi's AI assistant, which is now powered by
+Now you can interact with Sage, Mundi's AI assistant, which is now powered by
 your local LLM.
 
 Open your web browser and navigate to `http://localhost:8000`.
@@ -130,22 +130,22 @@ If you don't already have a map with data you want to investigate, upload a new 
 file like a GeoPackage. In this example, we'll use a file that contains OpenStreetMap data
 of cafes in Barcelona. You can just drag the file onto the map.
 
-Then, ask Kue any question relating to your data:
+Then, ask Sage any question relating to your data:
 
-:::tip[Request to Kue]
+:::tip[Request to Sage]
 can you tell me about the barcelona cafes layer?
 :::
 
-Kue can then analyze the layer using your local Ollama model and provide a
+Sage can then analyze the layer using your local Ollama model and provide a
 detailed summary, including the layer type, geometry, feature count, and
 more. If your LLM model supports it, it can call tools to analyze the data
 as well, like QGIS geoprocessing algorithms.
 
-![Kue's response detailing the Barcelona cafes layer](../../../assets/ollama/llm-response.jpg)
+![Sage's response detailing the Barcelona cafes layer](../../../assets/ollama/llm-response.jpg)
 
-## Critically evaluating Kue's response
+## Critically evaluating Sage's response
 
-Mundi's AI agent, Kue, gives the following response, which is at about
+Mundi's AI agent, Sage, gives the following response, which is at about
 the quality we would expect from a local 1B-parameter model:
 
 > Okay, let's dive into the details about the "Barcelona Cafes" layer
