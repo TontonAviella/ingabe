@@ -137,12 +137,13 @@ RUN dpkgArch="$(dpkg --print-architecture)" && \
     dpkg -i /tmp/libpng.deb && \
     rm /tmp/*.deb && rm -rf /var/lib/apt/lists/*
 
-# MapLibre Node bindings
+# MapLibre Node bindings — single npm install to avoid "idealTree already exists" bug
 COPY --from=maplibre-builder /opt/maplibre-native/platform/node/*.tgz /tmp/
-RUN npm cache clean --force \
-    && npm install --omit=dev --ignore-scripts /tmp/*.tgz \
-    && npm install --omit=dev sharp @mapbox/geo-viewport \
-    && rm -rf /tmp/*.tgz
+RUN rm -rf /root/.npm/_cacache /root/.npm/_locks /root/.npm/_logs \
+    && cd /tmp && npm init -y \
+    && npm install --omit=dev --ignore-scripts /tmp/*.tgz sharp @mapbox/geo-viewport \
+    && cp -r /tmp/node_modules /node_modules \
+    && rm -rf /tmp/*.tgz /tmp/node_modules /tmp/package.json /tmp/package-lock.json
 
 # Environment
 ENV DISPLAY=:99 \
