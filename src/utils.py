@@ -46,7 +46,7 @@ _session = aioboto3.Session()
 _clients = {}
 
 
-async def get_async_s3_client(signature_version: str = "s3"):
+async def get_async_s3_client(signature_version: str = "s3v4"):
     loop = asyncio.get_running_loop()
     key = (loop, signature_version)
     if key not in _clients:
