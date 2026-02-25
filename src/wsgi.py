@@ -218,7 +218,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://*.arcgisonline.com https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com; "
-            "connect-src 'self' https://*.arcgisonline.com https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://isdasoil.s3.amazonaws.com ws: wss:; "
+            "connect-src 'self' https://*.arcgisonline.com https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com ws: wss:; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'none'"
         )
