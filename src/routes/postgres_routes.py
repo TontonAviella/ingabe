@@ -784,8 +784,10 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         local_input = os.path.join(tmp_dir, f"{layer_id}{file_ext}")
         local_cog = os.path.join(tmp_dir, f"{layer_id}.cog.tif")
 
-        s3 = await get_async_s3_client()
+        s3 = await get_async_s3_client(signature_version="s3v4")
+        logger.info("Background COG: downloading %s/%s for %s", bucket_name, s3_key, layer_id)
         await s3.download_file(bucket_name, s3_key, local_input)
+        logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
 
         loop = asyncio.get_running_loop()
         if DASK_AVAILABLE:

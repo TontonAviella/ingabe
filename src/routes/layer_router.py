@@ -679,7 +679,21 @@ async def get_raster_xyz_tile(
     # --- Cache miss: render from COG -------------------------------------
     # prefer COG key from metadata when present; fall back to original s3_key
     metadata = layer.metadata_dict or {}
-    s3_key = metadata.get("cog_key") or layer.s3_key
+    cog_key = metadata.get("cog_key")
+
+    if not cog_key:
+        # No COG yet — return a transparent tile immediately instead of
+        # trying to read the raw raster (which times out on Render's 30s proxy).
+        # The frontend can retry later once background COG generation completes.
+        buf = io.BytesIO()
+        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        return Response(
+            content=buf.getvalue(),
+            media_type="image/png",
+            headers={**_tile_headers, "X-COG-Status": "pending", "Cache-Control": "no-cache"},
+        )
+
+    s3_key = cog_key
 
     bucket = get_bucket_name()
     s3 = await get_async_s3_client(signature_version="s3v4")
