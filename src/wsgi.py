@@ -386,16 +386,15 @@ async def get_favicon_dark_svg():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Catch-all for unhandled exceptions — return detail for /api/ routes."""
+    """Catch-all for unhandled exceptions — log traceback, return JSON for /api/."""
     import traceback
-    tb = traceback.format_exc()
-    logging.getLogger("src").error(f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}\n{tb}")
+    logging.getLogger("src").error(
+        "Unhandled %s on %s %s: %s\n%s",
+        type(exc).__name__, request.method, request.url.path, exc, traceback.format_exc(),
+    )
     if request.url.path.startswith("/api/"):
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"{type(exc).__name__}: {str(exc)}"},
-        )
-    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.exception_handler(StarletteHTTPException)

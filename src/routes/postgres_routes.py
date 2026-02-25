@@ -706,7 +706,7 @@ async def upload_layer(
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Upload error: {type(e).__name__}: {str(e)}"
+            detail="Upload failed due to an internal error",
         )
 
 
