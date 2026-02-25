@@ -29,7 +29,7 @@ def generate_id(length=12, prefix=""):
 @lru_cache
 def get_s3_client():
     config = boto3.session.Config(
-        signature_version="s3",
+        signature_version="s3v4",
     )
     return boto3.Session().client(
         "s3",

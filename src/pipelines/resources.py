@@ -44,7 +44,7 @@ class S3Resource(ConfigurableResource):
     @contextmanager
     def get_client(self):
         """Get a boto3 S3 client."""
-        config = boto3.session.Config(signature_version="s3")
+        config = boto3.session.Config(signature_version="s3v4")
         client = boto3.client(
             "s3",
             endpoint_url=self.endpoint_url,
