@@ -834,6 +834,39 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
 
 
 @router.post(
+    "/{map_id}/layers/{layer_id}/generate-cog",
+    operation_id="generate_cog_for_layer",
+)
+async def generate_cog_for_layer(
+    layer_id: str,
+    background_tasks: BackgroundTasks,
+    mundi_map: MundiMap = Depends(edit_map),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Trigger COG generation for an existing raster layer that lacks a COG."""
+    from src.structures import async_read_conn
+
+    async with async_read_conn("generate_cog") as conn:
+        row = await conn.fetchrow(
+            "SELECT layer_id, type, s3_key, metadata FROM map_layers WHERE layer_id = $1",
+            layer_id,
+        )
+    if not row:
+        raise HTTPException(404, f"Layer {layer_id} not found")
+    if row["type"] != "raster":
+        raise HTTPException(400, "Only raster layers support COG generation")
+
+    metadata = {}
+    if row["metadata"]:
+        metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+    if metadata.get("cog_key"):
+        return {"status": "already_exists", "cog_key": metadata["cog_key"]}
+
+    background_tasks.add_task(_background_generate_cog, layer_id, row["s3_key"])
+    return {"status": "generating", "layer_id": layer_id}
+
+
+@router.post(
     "/{map_id}/upload-complete",
     response_model=LayerUploadResponse,
     operation_id="complete_layer_upload",
