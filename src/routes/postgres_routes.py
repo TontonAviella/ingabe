@@ -667,25 +667,41 @@ async def upload_layer(
     subprocess.run(["open", "https://app.mundi.ai/project/PGJSkB1zj7fT/M4NzE8rk4FZS"])
     ```
     """
-    layer_result = await internal_upload_layer(
-        map_id=forked_map.id,
-        file=file,
-        layer_name=layer_name,
-        add_layer_to_map=add_layer_to_map,
-        user_id=session.get_user_id(),
-        project_id=forked_map.project_id,
-    )
-    assert layer_result is not None
+    try:
+        import time
+        start_time = time.time()
+        logger.info(f"Upload started: file={file.filename}, user={session.get_user_id()}")
 
-    return LayerUploadResponse(
-        dag_child_map_id=forked_map.id,
-        dag_parent_map_id=original_map_id,
-        id=layer_result.id,
-        name=layer_result.name,
-        type=layer_result.type,
-        url=layer_result.url,
-        message=layer_result.message,
-    )
+        layer_result = await internal_upload_layer(
+            map_id=forked_map.id,
+            file=file,
+            layer_name=layer_name,
+            add_layer_to_map=add_layer_to_map,
+            user_id=session.get_user_id(),
+            project_id=forked_map.project_id,
+        )
+
+        elapsed = time.time() - start_time
+        logger.info(f"Upload completed in {elapsed:.2f}s: layer={layer_result.id if layer_result else None}")
+        assert layer_result is not None
+
+        return LayerUploadResponse(
+            dag_child_map_id=forked_map.id,
+            dag_parent_map_id=original_map_id,
+            id=layer_result.id,
+            name=layer_result.name,
+            type=layer_result.type,
+            url=layer_result.url,
+            message=layer_result.message,
+        )
+    except Exception as e:
+        import traceback
+        elapsed = time.time() - start_time
+        logger.error(
+            f"Upload failed after {elapsed:.2f}s for file={file.filename}: {str(e)}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise
 
 
 CLOUD_NATIVE_EXTS = {".pmtiles", ".tif"}
