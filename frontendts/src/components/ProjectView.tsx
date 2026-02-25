@@ -370,59 +370,85 @@ export default function ProjectView() {
   }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData]);
 
   // Helper function to upload a single file with progress tracking
+  // Uses 3-step presigned URL flow to bypass server timeout limits:
+  //   1. POST /upload-presign → get presigned PUT URL + forked map
+  //   2. PUT file directly to S3/R2 (unlimited time, progress tracked)
+  //   3. POST /upload-complete → server processes the uploaded file
   const uploadFile = useMutation({
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 
-      const formData = new FormData();
-      formData.append('file', file);
+      const token = await getJwt();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      return new Promise((resolve, reject) => {
+      // Step 1: Get presigned URL and fork the map
+      const presignRes = await fetch(
+        `/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`,
+        { method: 'POST', headers },
+      );
+      if (!presignRes.ok) {
+        const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
+        throw new Error(err.detail || 'Failed to get upload URL');
+      }
+      const presign = await presignRes.json() as {
+        upload_url: string;
+        s3_key: string;
+        layer_id: string;
+        dag_child_map_id: string;
+        dag_parent_map_id: string;
+      };
+
+      // Step 2: Upload file directly to S3/R2 via presigned PUT URL
+      await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
 
-        // Track upload progress
         xhr.upload.addEventListener('progress', (event) => {
           if (event.lengthComputable) {
-            const progress = Math.round((event.loaded / event.total) * 100);
+            // Reserve last 5% for server-side processing
+            const progress = Math.round((event.loaded / event.total) * 95);
             setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress } : f)));
           }
         });
 
-        // Handle completion
         xhr.addEventListener('load', () => {
           if (xhr.status >= 200 && xhr.status < 300) {
-            const response = JSON.parse(xhr.responseText);
-            resolve(response);
+            resolve();
           } else {
-            // Handle HTTP error status (like 400)
-            let errorMessage = `Upload failed: ${xhr.statusText}`;
-
-            // Try to parse error from response body
-            try {
-              const errorResponse = JSON.parse(xhr.responseText);
-              if (errorResponse.detail) {
-                errorMessage = errorResponse.detail;
-              }
-            } catch {
-              // Keep the default error message if parsing fails
-            }
-
-            reject(new Error(errorMessage));
+            reject(new Error(`S3 upload failed (HTTP ${xhr.status})`));
           }
         });
 
-        // Handle network errors
         xhr.addEventListener('error', () => {
           reject(new Error('Upload failed due to network error'));
         });
 
-        xhr.open('POST', `/api/maps/${versionId}/layers`);
-        // Attach Clerk Bearer token for auth
-        getJwt().then((token) => {
-          if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-          xhr.send(formData);
-        });
+        xhr.open('PUT', presign.upload_url);
+        xhr.send(file);
       });
+
+      // Step 3: Tell the server to process the uploaded file
+      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
+
+      const completeRes = await fetch(
+        `/api/maps/${presign.dag_child_map_id}/upload-complete`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            s3_key: presign.s3_key,
+            layer_id: presign.layer_id,
+            filename: file.name,
+            add_layer_to_map: true,
+          }),
+        },
+      );
+      if (!completeRes.ok) {
+        const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
+        throw new Error(err.detail || 'Processing failed after upload');
+      }
+
+      return await completeRes.json();
     },
     onSuccess: (response, { fileId }) => {
       toast.success(`Layer "${response.name}" uploaded successfully! Navigating to new map...`);
@@ -467,12 +493,12 @@ export default function ProjectView() {
     (acceptedFiles: File[]) => {
       if (!versionId || acceptedFiles.length === 0) return;
 
-      const maxFileSize = 500 * 1024 * 1024; // 500MB in bytes
+      const maxFileSize = 5 * 1024 * 1024 * 1024; // 5GB in bytes
 
       // Filter out files that are too large
       const validFiles = acceptedFiles.filter((file) => {
         if (file.size > maxFileSize) {
-          toast.error(`File "${file.name}" is too large. Files over 500MB aren't supported yet.`);
+          toast.error(`File "${file.name}" is too large. Files over 5GB aren't supported yet.`);
           return false;
         }
         return true;

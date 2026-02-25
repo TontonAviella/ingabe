@@ -710,6 +710,189 @@ async def upload_layer(
         )
 
 
+class PresignUploadResponse(DAGEditOperationResponse):
+    """Response for the presign endpoint — gives the browser a URL to PUT directly to S3."""
+    upload_url: str = Field(description="Presigned PUT URL for direct browser upload to S3")
+    s3_key: str = Field(description="S3 object key where the file will be stored")
+    layer_id: str = Field(description="Pre-allocated layer ID")
+
+
+class CompleteUploadRequest(BaseModel):
+    """Request body for the upload-complete endpoint."""
+    s3_key: str = Field(description="S3 key where the file was uploaded")
+    layer_id: str = Field(description="Layer ID returned by presign")
+    filename: str = Field(description="Original filename (used for format detection)")
+    layer_name: Optional[str] = Field(default=None, description="Display name for the layer")
+    add_layer_to_map: bool = Field(default=True)
+
+
+@router.post(
+    "/{original_map_id}/upload-presign",
+    response_model=PresignUploadResponse,
+    operation_id="presign_layer_upload",
+    summary="Get presigned URL for direct S3 upload",
+)
+async def presign_layer_upload(
+    original_map_id: str,
+    filename: str,
+    forked_map: MundiMap = Depends(forked_map_by_user),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Return a presigned PUT URL so the browser can upload directly to S3.
+
+    This bypasses the server for large files, avoiding Render's 30-second
+    proxy timeout. After the browser finishes uploading, call
+    ``POST /{map_id}/upload-complete`` to finalise processing.
+    """
+    user_id = session.get_user_id()
+    file_ext = os.path.splitext(filename)[1].lower() or ".bin"
+    layer_id = generate_id(prefix="L")
+    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+    bucket_name = get_bucket_name()
+
+    s3_client = await get_async_s3_client()
+    upload_url = await s3_client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket_name, "Key": s3_key},
+        ExpiresIn=3600,
+    )
+
+    return PresignUploadResponse(
+        dag_child_map_id=forked_map.id,
+        dag_parent_map_id=original_map_id,
+        upload_url=upload_url,
+        s3_key=s3_key,
+        layer_id=layer_id,
+    )
+
+
+@router.post(
+    "/{map_id}/upload-complete",
+    response_model=LayerUploadResponse,
+    operation_id="complete_layer_upload",
+    summary="Finalise a presigned upload",
+)
+async def complete_layer_upload(
+    map_id: str,
+    body: CompleteUploadRequest,
+    mundi_map: MundiMap = Depends(edit_map),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Finalise a layer that was uploaded directly to S3 via presigned URL.
+
+    Downloads the file from S3 to a temp path, runs format-specific
+    preprocessing + create_layers, and returns the same response shape
+    as the regular upload endpoint.
+    """
+    from src.upload.base import UploadContext
+    from src.upload.registry import get_handler, get_layer_type
+    from boto3.s3.transfer import TransferConfig
+
+    user_id = session.get_user_id()
+    bucket_name = get_bucket_name()
+    s3_client = await get_async_s3_client()
+
+    filename = body.filename
+    file_ext = os.path.splitext(filename)[1].lower() or ".bin"
+    layer_name = body.layer_name or os.path.splitext(filename)[0]
+
+    import shutil
+    from src.utils import s3_op
+    from src.structures import get_async_db_connection
+
+    # Download the already-uploaded file from S3 to a temp path
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmp_dir, f"{body.layer_id}{file_ext}")
+    try:
+        one_shot = TransferConfig(multipart_threshold=5 * 1024 * 1024 * 1024)
+        await s3_op(
+            s3_client.download_file(bucket_name, body.s3_key, tmp_path, Config=one_shot),
+            "download", f"layer {body.layer_id}",
+        )
+
+        file_size = os.path.getsize(tmp_path)
+
+        async with get_async_db_connection() as conn:
+            ctx = UploadContext(
+                map_id=map_id,
+                layer_id=body.layer_id,
+                layer_name=layer_name,
+                file_basename=os.path.splitext(filename)[0],
+                user_id=user_id,
+                project_id=mundi_map.project_id,
+                temp_file_path=tmp_path,
+                file_ext=file_ext,
+                file_size_bytes=file_size,
+                s3_key=body.s3_key,
+                metadata_dict={"original_filename": filename},
+                conn=conn,
+                bucket_name=bucket_name,
+            )
+
+            handler = get_handler(file_ext)
+            result = await handler.preprocess(ctx)
+
+            # If preprocessing changed the file, re-upload the new version
+            upload_path = result.updated_temp_file_path or tmp_path
+            upload_key = result.updated_s3_key or body.s3_key
+            if result.updated_temp_file_path or result.updated_s3_key:
+                ctx.s3_key = upload_key
+                await s3_op(
+                    s3_client.upload_file(upload_path, bucket_name, upload_key, Config=one_shot),
+                    "re-upload", f"layer {body.layer_id}",
+                )
+
+            async with conn.transaction():
+                result = await handler.create_layers(ctx, result)
+
+                if body.add_layer_to_map and result.created_layer_ids:
+                    map_data = await conn.fetchrow(
+                        "SELECT layers FROM user_mundiai_maps WHERE id = $1", map_id,
+                    )
+                    current_layers = (map_data["layers"] if map_data and map_data["layers"] else [])
+                    await conn.execute(
+                        """
+                        UPDATE user_mundiai_maps
+                        SET layers = $1, last_edited = CURRENT_TIMESTAMP
+                        WHERE id = $2
+                        """,
+                        current_layers + result.created_layer_ids,
+                        map_id,
+                    )
+
+        if result.temp_dir_to_cleanup:
+            shutil.rmtree(result.temp_dir_to_cleanup, ignore_errors=True)
+
+        if not result.created_layer_ids:
+            raise HTTPException(status_code=400, detail="No features found in uploaded file.")
+
+        primary_id = result.created_layer_ids[0]
+        layer_type = get_layer_type(file_ext)
+        url_map = {
+            "vector": f"/api/layer/{primary_id}.pmtiles",
+            "point_cloud": f"/api/layer/{primary_id}.laz",
+            "raster": f"/api/layer/{primary_id}.cog.tif",
+        }
+
+        return LayerUploadResponse(
+            dag_child_map_id=map_id,
+            dag_parent_map_id=map_id,  # already on the forked map
+            id=primary_id,
+            name=result.first_layer_name or layer_name,
+            type=result.layer_type,
+            url=result.first_layer_url or url_map.get(layer_type, f"/api/layer/{primary_id}.pmtiles"),
+            message="Layer added successfully",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error("upload-complete failed for %s: %s\n%s", body.layer_id, e, traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Processing failed after upload")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 CLOUD_NATIVE_EXTS = {".pmtiles", ".tif"}
 RASTER_EXTS = {".tif", ".jpg", ".jpeg", ".png", ".dem"}
 VECTOR_EXTS = {".pmtiles", ".geojson", ".fgb", ".gpkg", ".shp", ".csv"}
