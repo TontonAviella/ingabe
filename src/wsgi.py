@@ -384,6 +384,20 @@ async def get_favicon_dark_svg():
     return FileResponse("frontendts/dist/favicon-dark.svg")
 
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all for unhandled exceptions — return detail for /api/ routes."""
+    import traceback
+    tb = traceback.format_exc()
+    logging.getLogger("src").error(f"Unhandled {type(exc).__name__} on {request.method} {request.url.path}: {exc}\n{tb}")
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"{type(exc).__name__}: {str(exc)}"},
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+
+
 @app.exception_handler(StarletteHTTPException)
 async def spa_server(request: Request, exc: StarletteHTTPException):
     # Don't handle API 404s - let them bubble up as real 404s
