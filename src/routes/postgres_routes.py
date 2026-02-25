@@ -7,6 +7,7 @@ import aiohttp
 import fiona
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     HTTPException,
     status,
     Request,
@@ -766,6 +767,72 @@ async def presign_layer_upload(
     )
 
 
+async def _background_generate_cog(layer_id: str, s3_key: str):
+    """Generate COG in the background after upload-complete returns.
+
+    Downloads the raw raster from S3, converts to COG via Dask/GDAL,
+    uploads the COG, and updates the layer metadata with the cog_key.
+    """
+    from src.upload.dask_raster import DASK_AVAILABLE, RasterPipeline
+    from src.structures import get_async_db_connection
+    import shutil
+
+    bucket_name = get_bucket_name()
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        file_ext = os.path.splitext(s3_key)[1] or ".tif"
+        local_input = os.path.join(tmp_dir, f"{layer_id}{file_ext}")
+        local_cog = os.path.join(tmp_dir, f"{layer_id}.cog.tif")
+
+        s3 = await get_async_s3_client()
+        await s3.download_file(bucket_name, s3_key, local_input)
+
+        loop = asyncio.get_running_loop()
+        if DASK_AVAILABLE:
+            try:
+                await loop.run_in_executor(None, RasterPipeline.create_cog, local_input, local_cog)
+                logger.info("Background COG generated via Dask for %s", layer_id)
+            except Exception as dask_err:
+                logger.warning("Dask COG failed for %s, falling back to gdalwarp: %s", layer_id, dask_err)
+                proc = await asyncio.create_subprocess_exec(
+                    "gdalwarp", "-of", "COG", local_input, local_cog,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await proc.communicate()
+                if proc.returncode != 0:
+                    logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
+                    return
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                "gdalwarp", "-of", "COG", local_input, local_cog,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
+                return
+
+        cog_key = f"cog/layer/{layer_id}.cog.tif"
+        await s3.upload_file(local_cog, bucket_name, cog_key)
+
+        async with get_async_db_connection() as conn:
+            row = await conn.fetchrow("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+            metadata = {}
+            if row and row["metadata"]:
+                import json as _json
+                metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+            metadata["cog_key"] = cog_key
+            await conn.execute(
+                "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                json.dumps(metadata), layer_id,
+            )
+        logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
+    except Exception as e:
+        logger.error("Background COG generation failed for %s: %s", layer_id, e)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @router.post(
     "/{map_id}/upload-complete",
     response_model=LayerUploadResponse,
@@ -775,6 +842,7 @@ async def presign_layer_upload(
 async def complete_layer_upload(
     map_id: str,
     body: CompleteUploadRequest,
+    background_tasks: BackgroundTasks,
     mundi_map: MundiMap = Depends(edit_map),
     session: UserContext = Depends(verify_session_required),
 ):
@@ -873,6 +941,10 @@ async def complete_layer_upload(
             "point_cloud": f"/api/layer/{primary_id}.laz",
             "raster": f"/api/layer/{primary_id}.cog.tif",
         }
+
+        # Kick off background COG generation for raster uploads
+        if layer_type == "raster":
+            background_tasks.add_task(_background_generate_cog, primary_id, body.s3_key)
 
         return LayerUploadResponse(
             dag_child_map_id=map_id,
