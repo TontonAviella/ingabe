@@ -1025,6 +1025,7 @@ export default function MapLibreMap({
     queryKey: ['mapStyle', mapId, styleUpdateCounter],
     queryFn: async () => {
       const url = new URL(`/api/maps/${mapId}/style.json`, window.location.origin);
+      url.searchParams.set('only_show_inline_sources', 'true');
       const response = await apiFetch(url.toString());
       if (!response.ok) {
         throw new Error(`Failed to fetch style: ${response.statusText}`);
