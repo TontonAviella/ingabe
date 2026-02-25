@@ -177,7 +177,7 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
         if raise_http:
             raise HTTPException(
                 status_code=http_status.HTTP_502_BAD_GATEWAY,
-                detail="Storage service temporarily unavailable",
+                detail=f"Storage error ({operation}{ctx}): {exc}",
             )
         raise RuntimeError(f"Storage service temporarily unavailable: {exc}") from exc
 
