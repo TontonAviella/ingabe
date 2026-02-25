@@ -694,14 +694,20 @@ async def upload_layer(
             url=layer_result.url,
             message=layer_result.message,
         )
+    except HTTPException:
+        raise  # Let FastAPI handle HTTP exceptions normally
     except Exception as e:
         import traceback
         elapsed = time.time() - start_time
+        tb = traceback.format_exc()
         logger.error(
             f"Upload failed after {elapsed:.2f}s for file={file.filename}: {str(e)}\n"
-            f"Traceback:\n{traceback.format_exc()}"
+            f"Traceback:\n{tb}"
         )
-        raise
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload error: {type(e).__name__}: {str(e)}"
+        )
 
 
 CLOUD_NATIVE_EXTS = {".pmtiles", ".tif"}
