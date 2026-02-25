@@ -864,6 +864,22 @@ async def generate_cog_for_layer(
     if metadata.get("cog_key"):
         return {"status": "already_exists", "cog_key": metadata["cog_key"]}
 
+    # Check if COG already exists in S3 (e.g. uploaded manually) but DB not updated
+    expected_cog_key = f"cog/layer/{layer_id}.cog.tif"
+    try:
+        s3 = await get_async_s3_client(signature_version="s3v4")
+        await s3.head_object(Bucket=get_bucket_name(), Key=expected_cog_key)
+        # COG exists in S3 — just update DB metadata
+        metadata["cog_key"] = expected_cog_key
+        async with async_conn("generate_cog_update") as conn:
+            await conn.execute(
+                "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                json.dumps(metadata), layer_id,
+            )
+        return {"status": "linked_existing", "cog_key": expected_cog_key}
+    except Exception:
+        pass  # COG not in S3 yet, generate it
+
     background_tasks.add_task(_background_generate_cog, layer_id, row["s3_key"])
     return {"status": "generating", "layer_id": layer_id}
 
