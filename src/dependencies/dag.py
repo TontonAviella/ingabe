@@ -49,7 +49,7 @@ async def forked_map(
         source_map = await conn.fetchrow(
             """
             SELECT m.id, m.project_id, m.title, m.description, m.layers, m.basemap,
-                   p.owner_uuid AS project_owner, p.editor_uuids, p.viewer_uuids
+                   p.owner_uuid, p.editor_uuids, p.viewer_uuids
             FROM user_mundiai_maps m
             JOIN user_mundiai_projects p ON p.id = m.project_id
             WHERE m.id = $1 AND m.soft_deleted_at IS NULL
@@ -140,7 +140,7 @@ async def get_map(
         row = await conn.fetchrow(
             """
             SELECT m.*,
-                   p.owner_uuid AS project_owner, p.editor_uuids,
+                   p.owner_uuid, p.editor_uuids,
                    p.viewer_uuids, p.link_accessible
             FROM user_mundiai_maps m
             JOIN user_mundiai_projects p ON p.id = m.project_id
@@ -257,7 +257,7 @@ async def edit_map(
         row = await conn.fetchrow(
             """
             SELECT m.*,
-                   p.owner_uuid AS project_owner, p.editor_uuids
+                   p.owner_uuid, p.editor_uuids
             FROM user_mundiai_maps m
             JOIN user_mundiai_projects p ON p.id = m.project_id
             WHERE m.id = $1 AND m.soft_deleted_at IS NULL
