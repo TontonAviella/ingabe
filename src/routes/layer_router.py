@@ -25,10 +25,6 @@ from src.dependencies.redis_client import get_redis_client
 import tempfile
 import asyncio
 import io
-from PIL import Image
-from rio_tiler.io import Reader
-from rio_tiler.colormap import cmap
-from rio_tiler.errors import TileOutsideBounds
 
 from src.utils import (
     get_bucket_name,
@@ -36,7 +32,56 @@ from src.utils import (
     s3_op,
 )
 import subprocess
-from src.upload.dask_raster import DASK_AVAILABLE, RasterPipeline
+
+# Heavy libraries (GDAL, rio-tiler, PIL, dask) are lazy-loaded inside the
+# functions that need them to keep startup memory under ~250 MB.
+# On a 512 MB Render instance, eager imports push baseline to ~420 MB and
+# cause frequent OOM kills.
+_rio_tiler_loaded = False
+_Reader = None
+_cmap = None
+_TileOutsideBounds = None
+_Image = None
+_DASK_AVAILABLE = None
+_RasterPipeline = None
+
+
+def _ensure_rio_tiler():
+    """Lazy-load rio-tiler (+ GDAL/rasterio) on first raster tile request."""
+    global _rio_tiler_loaded, _Reader, _cmap, _TileOutsideBounds, _Image
+    if _rio_tiler_loaded:
+        return
+    from PIL import Image as _PILImage
+    from rio_tiler.io import Reader as _RioReader
+    from rio_tiler.colormap import cmap as _rio_cmap
+    from rio_tiler.errors import TileOutsideBounds as _RioTileOOB
+    _Image = _PILImage
+    _Reader = _RioReader
+    _cmap = _rio_cmap
+    _TileOutsideBounds = _RioTileOOB
+    _rio_tiler_loaded = True
+
+
+def _ensure_pil():
+    """Lazy-load PIL for transparent tile generation."""
+    global _Image
+    if _Image is not None:
+        return
+    from PIL import Image as _PILImage
+    _Image = _PILImage
+
+
+def _get_dask():
+    """Lazy-load dask raster pipeline on first COG generation."""
+    global _DASK_AVAILABLE, _RasterPipeline
+    if _DASK_AVAILABLE is not None:
+        return _DASK_AVAILABLE, _RasterPipeline
+    from src.upload.dask_raster import DASK_AVAILABLE as _DA, RasterPipeline as _RP
+    _DASK_AVAILABLE = _DA
+    _RasterPipeline = _RP
+    return _DASK_AVAILABLE, _RasterPipeline
+
+
 from src.tile_cache import tile_cache
 from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
@@ -130,12 +175,13 @@ async def get_layer_cog_tif(
                         )
 
                         # Try Dask pipeline first, fall back to GDAL subprocess
-                        if DASK_AVAILABLE:
+                        _dask_ok, _RP = _get_dask()
+                        if _dask_ok:
                             try:
                                 loop = asyncio.get_running_loop()
                                 await loop.run_in_executor(
                                     None,
-                                    RasterPipeline.create_cog,
+                                    _RP.create_cog,
                                     local_input_file,
                                     local_cog_file,
                                 )
@@ -689,8 +735,9 @@ async def get_raster_xyz_tile(
         # No COG yet — return a transparent tile immediately instead of
         # trying to read the raw raster (which times out on Render's 30s proxy).
         # The frontend can retry later once background COG generation completes.
+        _ensure_pil()
         buf = io.BytesIO()
-        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
         return Response(
             content=buf.getvalue(),
             media_type="image/png",
@@ -710,8 +757,10 @@ async def get_raster_xyz_tile(
     # Without this, MapLibre firing 20-50 concurrent tile requests causes
     # rio-tiler's synchronous HTTP+GDAL reads to starve the event loop,
     # leading to Render's 30s proxy timeout → 502.
+    _ensure_rio_tiler()
+
     def _render_tile() -> bytes:
-        with Reader(asset_url) as src:
+        with _Reader(asset_url) as src:
             img = src.tile(x, y, z)
 
             if "raster_value_stats_b1" in metadata:
@@ -720,7 +769,7 @@ async def get_raster_xyz_tile(
 
                 img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
 
-                cm = cmap.get("spectral_r")
+                cm = _cmap.get("spectral_r")
                 return img.render(img_format="PNG", colormap=cm)
             else:
                 return img.render(img_format="PNG")
@@ -738,10 +787,10 @@ async def get_raster_xyz_tile(
             media_type="image/png",
             headers=_tile_headers,
         )
-    except TileOutsideBounds:
+    except _TileOutsideBounds:
         # Expected: tile coords outside raster extent — transparent tile, cached
         buf = io.BytesIO()
-        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
         empty_png = buf.getvalue()
         await tile_cache.put(layer.layer_id, z, x, y, empty_png)
         return Response(
@@ -759,7 +808,7 @@ async def get_raster_xyz_tile(
             exc_info=True
         )
         buf = io.BytesIO()
-        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
         return Response(
             content=buf.getvalue(),
             media_type="image/png",

@@ -5,7 +5,6 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from PIL import Image
 
 from src.tile_cache import tile_cache
 from src.worldcover import render_tile
@@ -20,6 +19,7 @@ _EMPTY_PNG: bytes | None = None
 def _transparent_tile() -> bytes:
     global _EMPTY_PNG
     if _EMPTY_PNG is None:
+        from PIL import Image
         buf = io.BytesIO()
         Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
         _EMPTY_PNG = buf.getvalue()

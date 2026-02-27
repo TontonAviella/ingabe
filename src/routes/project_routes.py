@@ -20,7 +20,6 @@ from src.dependencies.base_map import BaseMapProvider, get_base_map_provider
 from typing import List, Optional, Sequence, cast
 import logging
 from datetime import datetime
-from PIL import Image
 from src.dependencies.redis_client import get_redis_client
 import asyncio
 from botocore.exceptions import ClientError
@@ -697,6 +696,7 @@ async def get_project_social_preview(
                 style_json=style_json,
             )
 
+            from PIL import Image
             img = Image.open(io.BytesIO(render_response.body))
             webp_buffer = io.BytesIO()
             img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
