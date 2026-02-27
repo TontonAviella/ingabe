@@ -52,6 +52,10 @@ one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
 # This prevents OOM issues when many maps load simultaneously
 SOCIAL_RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
 
+# Semaphore for raster tile rendering — prevents event-loop starvation
+# when MapLibre fires 20-50 concurrent tile requests on zoom/pan.
+RASTER_TILE_SEMAPHORE = asyncio.Semaphore(6)  # Max 6 concurrent COG reads
+
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
@@ -702,7 +706,11 @@ async def get_raster_xyz_tile(
         "presigned URL", f"raster tile {s3_key}",
     )
 
-    try:
+    # Render tile in a thread pool to avoid blocking the async event loop.
+    # Without this, MapLibre firing 20-50 concurrent tile requests causes
+    # rio-tiler's synchronous HTTP+GDAL reads to starve the event loop,
+    # leading to Render's 30s proxy timeout → 502.
+    def _render_tile() -> bytes:
         with Reader(asset_url) as src:
             img = src.tile(x, y, z)
 
@@ -713,10 +721,14 @@ async def get_raster_xyz_tile(
                 img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
 
                 cm = cmap.get("spectral_r")
-                content = img.render(img_format="PNG", colormap=cm)
+                return img.render(img_format="PNG", colormap=cm)
             else:
-                # png has alpha support; expect newer rio-tiler which returns bytes
-                content = img.render(img_format="PNG")
+                return img.render(img_format="PNG")
+
+    try:
+        async with RASTER_TILE_SEMAPHORE:
+            loop = asyncio.get_running_loop()
+            content = await loop.run_in_executor(None, _render_tile)
 
         # Store in Redis for subsequent requests
         await tile_cache.put(layer.layer_id, z, x, y, content)
