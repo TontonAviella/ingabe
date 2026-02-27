@@ -97,9 +97,6 @@ from src.dependencies.pydantic_tools import (
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# DuckDB cache file populated by Dagster scheduled assets (rwanda_assets.py)
-_DUCKDB_CACHE_PATH = "/tmp/ingabe_cache/cache.duckdb"
-
 # Fixed connection ID for the internal Rwanda PostGIS connection
 _RWANDA_INTERNAL_CONN_ID = "CRwandaIntDB"
 
@@ -2360,46 +2357,37 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_ndvi_stats":
                             try:
-                                import duckdb as _duckdb
                                 from datetime import date as _date, datetime as _datetime, timedelta as _td
 
-                                # ── 1. Query DuckDB cache (populated by nightly Dagster job) ──
+                                # ── 1. Query PostgreSQL cache (populated by nightly Dagster job) ──
                                 _cached_rows: list = []
                                 try:
-                                    _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                    _conn.execute(
-                                        "CREATE TABLE IF NOT EXISTS ndvi_field_cache ("
-                                        "district VARCHAR, week_start DATE, mean_ndvi DOUBLE, "
-                                        "std_ndvi DOUBLE, min_ndvi DOUBLE, max_ndvi DOUBLE, "
-                                        "valid_pixels INTEGER, computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                    )
                                     _district = tool_args.get("district")
                                     if _district:
-                                        _cached_rows = _conn.execute(
+                                        _cached_rows = await conn.fetch(
                                             "SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels "
-                                            "FROM ndvi_field_cache WHERE district = ? "
+                                            "FROM ndvi_field_cache WHERE district = $1 "
                                             "ORDER BY week_start DESC LIMIT 50",
-                                            [_district],
-                                        ).fetchall()
+                                            _district,
+                                        )
                                     else:
-                                        _cached_rows = _conn.execute(
+                                        _cached_rows = await conn.fetch(
                                             "SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels "
                                             "FROM ndvi_field_cache ORDER BY week_start DESC, district LIMIT 200"
-                                        ).fetchall()
-                                    _conn.close()
+                                        )
                                 except Exception:
-                                    logger.debug("DuckDB NDVI cache not available, will try real-time Sentinel Hub")
+                                    logger.debug("PostgreSQL NDVI cache not available, will try real-time Sentinel Hub")
 
                                 _ndvi_stats: list = []
-                                _source = "duckdb_cache"
+                                _source = "postgres_cache"
                                 for r in _cached_rows:
                                     _ndvi_stats.append({
-                                        "district": r[0], "week_start": str(r[1]) if r[1] else None,
-                                        "mean_ndvi": round(r[2], 4) if r[2] else None,
-                                        "std_ndvi": round(r[3], 4) if r[3] else None,
-                                        "min_ndvi": round(r[4], 4) if r[4] else None,
-                                        "max_ndvi": round(r[5], 4) if r[5] else None,
-                                        "valid_pixels": r[6],
+                                        "district": r["district"], "week_start": str(r["week_start"]) if r["week_start"] else None,
+                                        "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                                        "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                                        "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                                        "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                                        "valid_pixels": r["valid_pixels"],
                                         "source": "sentinel_hub_cache",
                                     })
 
@@ -2543,51 +2531,43 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_cell_ndvi_stats":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS ndvi_cell_cache ("
-                                    "cell_name VARCHAR, district_name VARCHAR, week_start DATE, "
-                                    "mean_ndvi DOUBLE, std_ndvi DOUBLE, min_ndvi DOUBLE, "
-                                    "max_ndvi DOUBLE, valid_pixels INTEGER, "
-                                    "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _cell = tool_args.get("cell_name")
                                 _district = tool_args.get("district")
                                 _where = []
                                 _params: list = []
+                                _pidx = 1
                                 if _cell:
-                                    _where.append("cell_name ILIKE ?")
+                                    _where.append(f"cell_name ILIKE ${_pidx}")
                                     _params.append(f"%{_cell}%")
+                                    _pidx += 1
                                 if _district:
-                                    _where.append("district_name ILIKE ?")
+                                    _where.append(f"district_name ILIKE ${_pidx}")
                                     _params.append(f"%{_district}%")
+                                    _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT cell_name, district_name, week_start, "
                                     f"mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels "
                                     f"FROM ndvi_cell_cache {_where_sql} "
                                     f"ORDER BY computed_at DESC LIMIT 100",
-                                    _params,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "cell_ndvi_stats": [
                                             {
-                                                "cell_name": r[0],
-                                                "district_name": r[1],
-                                                "week_start": str(r[2]) if r[2] else None,
-                                                "mean_ndvi": round(r[3], 4) if r[3] else None,
-                                                "std_ndvi": round(r[4], 4) if r[4] else None,
-                                                "min_ndvi": round(r[5], 4) if r[5] else None,
-                                                "max_ndvi": round(r[6], 4) if r[6] else None,
-                                                "valid_pixels": r[7],
+                                                "cell_name": r["cell_name"],
+                                                "district_name": r["district_name"],
+                                                "week_start": str(r["week_start"]) if r["week_start"] else None,
+                                                "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                                                "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                                                "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                                                "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                                                "valid_pixels": r["valid_pixels"],
                                             }
                                             for r in _rows
                                         ],
@@ -2661,53 +2641,45 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_parcel_ndvi_stats":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS ndvi_parcel_cache ("
-                                    "parcel_id VARCHAR, parcel_name VARCHAR, layer_id VARCHAR, "
-                                    "week_start DATE, mean_ndvi DOUBLE, std_ndvi DOUBLE, "
-                                    "min_ndvi DOUBLE, max_ndvi DOUBLE, valid_pixels INTEGER, "
-                                    "area_ha DOUBLE, computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _parcel = tool_args.get("parcel_name")
                                 _layer = tool_args.get("layer_id")
                                 _where = []
                                 _params_p: list = []
+                                _pidx = 1
                                 if _parcel:
-                                    _where.append("parcel_name ILIKE ?")
+                                    _where.append(f"parcel_name ILIKE ${_pidx}")
                                     _params_p.append(f"%{_parcel}%")
+                                    _pidx += 1
                                 if _layer:
-                                    _where.append("layer_id = ?")
+                                    _where.append(f"layer_id = ${_pidx}")
                                     _params_p.append(_layer)
+                                    _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT parcel_id, parcel_name, layer_id, week_start, "
                                     f"mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels, area_ha "
                                     f"FROM ndvi_parcel_cache {_where_sql} "
                                     f"ORDER BY computed_at DESC LIMIT 100",
-                                    _params_p,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params_p,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "parcel_ndvi_stats": [
                                             {
-                                                "parcel_id": r[0],
-                                                "parcel_name": r[1],
-                                                "layer_id": r[2],
-                                                "week_start": str(r[3]) if r[3] else None,
-                                                "mean_ndvi": round(r[4], 4) if r[4] else None,
-                                                "std_ndvi": round(r[5], 4) if r[5] else None,
-                                                "min_ndvi": round(r[6], 4) if r[6] else None,
-                                                "max_ndvi": round(r[7], 4) if r[7] else None,
-                                                "valid_pixels": r[8],
-                                                "area_ha": r[9],
+                                                "parcel_id": r["parcel_id"],
+                                                "parcel_name": r["parcel_name"],
+                                                "layer_id": r["layer_id"],
+                                                "week_start": str(r["week_start"]) if r["week_start"] else None,
+                                                "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                                                "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                                                "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                                                "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                                                "valid_pixels": r["valid_pixels"],
+                                                "area_ha": r["area_ha"],
                                             }
                                             for r in _rows
                                         ],
@@ -2715,7 +2687,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "parcel_ndvi_stats": [],
                                         "message": (
                                             "No parcel NDVI data yet. Upload field boundaries "
@@ -2736,13 +2708,12 @@ async def process_chat_interaction_task(
                             )
 
                         elif function_name == "get_agri_indices":
-                            # Cache-first multi-index query: DuckDB cache → Sentinel Hub on miss
+                            # Cache-first multi-index query: PostgreSQL cache → Sentinel Hub on miss
                             try:
                                 from src.services.sentinel_hub_service import (
                                     get_sentinel_hub_service as _get_sh,
                                     AGRI_INDEX_NAMES as _AGRI_INDICES,
                                 )
-                                import duckdb as _duckdb
                                 import numpy as _np
                                 from datetime import datetime as _datetime, timedelta as _td
 
@@ -2800,61 +2771,44 @@ async def process_chat_interaction_task(
                                         "message": f"No {_level} boundaries found matching filters.",
                                     }
                                 else:
-                                    # ---- Step 1: Check DuckDB cache ----
-                                    _cache_conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                    _cache_conn.execute(
-                                        "CREATE TABLE IF NOT EXISTS agri_indices_cache ("
-                                        "admin_level VARCHAR NOT NULL, "
-                                        "admin_name VARCHAR NOT NULL, "
-                                        "parent_name VARCHAR, "
-                                        "week_start DATE NOT NULL, "
-                                        "ndvi_mean DOUBLE, ndvi_std DOUBLE, "
-                                        "evi_mean DOUBLE, evi_std DOUBLE, "
-                                        "ndwi_mean DOUBLE, ndwi_std DOUBLE, "
-                                        "savi_mean DOUBLE, savi_std DOUBLE, "
-                                        "ndre_mean DOUBLE, ndre_std DOUBLE, "
-                                        "ndbi_mean DOUBLE, ndbi_std DOUBLE, "
-                                        "valid_pixels INTEGER, "
-                                        "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                    )
-
+                                    # ---- Step 1: Check PostgreSQL cache ----
                                     _admin_names = [r["name"] for r in _admin_rows]
                                     _cutoff = (_datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
 
                                     # Query cache for fresh rows
-                                    _placeholders = ", ".join(["?"] * len(_admin_names))
-                                    _cached_rows = _cache_conn.execute(
+                                    _placeholders = ", ".join([f"${i+2}" for i in range(len(_admin_names))])
+                                    _cached_rows = await conn.fetch(
                                         f"SELECT admin_name, parent_name, week_start, "
                                         f"ndvi_mean, ndvi_std, evi_mean, evi_std, "
                                         f"ndwi_mean, ndwi_std, savi_mean, savi_std, "
                                         f"ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
                                         f"valid_pixels, computed_at "
                                         f"FROM agri_indices_cache "
-                                        f"WHERE admin_level = ? "
-                                        f"AND admin_name IN ({_placeholders}) "
-                                        f"AND computed_at >= ? "
+                                        f"WHERE admin_level = $1 "
+                                        f"AND admin_name = ANY(${len(_admin_names) + 2}::text[]) "
+                                        f"AND computed_at >= ${len(_admin_names) + 3} "
                                         f"ORDER BY computed_at DESC",
-                                        [_level] + _admin_names + [_cutoff],
-                                    ).fetchall()
+                                        _level, _admin_names, _cutoff,
+                                    )
 
                                     # Build set of cached names (dedup: keep most recent per name)
                                     _cached_by_name: dict = {}
                                     for _cr in _cached_rows:
-                                        _cname = _cr[0]
+                                        _cname = _cr["admin_name"]
                                         if _cname not in _cached_by_name:
                                             _cached_by_name[_cname] = {
                                                 "admin_level": _level,
                                                 "name": _cname,
-                                                "district": _cr[1] if _cr[1] else None,
-                                                "date_from": str(_cr[2]),
+                                                "district": _cr["parent_name"] if _cr["parent_name"] else None,
+                                                "date_from": str(_cr["week_start"]),
                                                 "date_to": _date_to,
-                                                "ndvi_mean": _cr[3], "ndvi_std": _cr[4],
-                                                "evi_mean": _cr[5], "evi_std": _cr[6],
-                                                "ndwi_mean": _cr[7], "ndwi_std": _cr[8],
-                                                "savi_mean": _cr[9], "savi_std": _cr[10],
-                                                "ndre_mean": _cr[11], "ndre_std": _cr[12],
-                                                "ndbi_mean": _cr[13], "ndbi_std": _cr[14],
-                                                "valid_pixels": _cr[15],
+                                                "ndvi_mean": _cr["ndvi_mean"], "ndvi_std": _cr["ndvi_std"],
+                                                "evi_mean": _cr["evi_mean"], "evi_std": _cr["evi_std"],
+                                                "ndwi_mean": _cr["ndwi_mean"], "ndwi_std": _cr["ndwi_std"],
+                                                "savi_mean": _cr["savi_mean"], "savi_std": _cr["savi_std"],
+                                                "ndre_mean": _cr["ndre_mean"], "ndre_std": _cr["ndre_std"],
+                                                "ndbi_mean": _cr["ndbi_mean"], "ndbi_std": _cr["ndbi_std"],
+                                                "valid_pixels": _cr["valid_pixels"],
                                                 "source": "cache",
                                             }
 
@@ -2923,36 +2877,32 @@ async def process_chat_interaction_task(
                                                     _row["source"] = "sentinel_hub_realtime"
                                                     _results.append(_row)
 
-                                                    # ---- Step 4: Write back to DuckDB cache ----
+                                                    # ---- Step 4: Write back to PostgreSQL cache ----
                                                     try:
-                                                        _cache_conn.execute(
+                                                        await conn.execute(
                                                             "INSERT INTO agri_indices_cache "
                                                             "(admin_level, admin_name, parent_name, week_start, "
                                                             "ndvi_mean, ndvi_std, evi_mean, evi_std, "
                                                             "ndwi_mean, ndwi_std, savi_mean, savi_std, "
                                                             "ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
-                                                            "valid_pixels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                                            [
-                                                                _level,
-                                                                _name,
-                                                                _parent,
-                                                                _date_from,
-                                                                _row.get("ndvi_mean"), _row.get("ndvi_std"),
-                                                                _row.get("evi_mean"), _row.get("evi_std"),
-                                                                _row.get("ndwi_mean"), _row.get("ndwi_std"),
-                                                                _row.get("savi_mean"), _row.get("savi_std"),
-                                                                _row.get("ndre_mean"), _row.get("ndre_std"),
-                                                                _row.get("ndbi_mean"), _row.get("ndbi_std"),
-                                                                _total_px,
-                                                            ],
+                                                            "valid_pixels) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                                                            _level,
+                                                            _name,
+                                                            _parent,
+                                                            _date_from,
+                                                            _row.get("ndvi_mean"), _row.get("ndvi_std"),
+                                                            _row.get("evi_mean"), _row.get("evi_std"),
+                                                            _row.get("ndwi_mean"), _row.get("ndwi_std"),
+                                                            _row.get("savi_mean"), _row.get("savi_std"),
+                                                            _row.get("ndre_mean"), _row.get("ndre_std"),
+                                                            _row.get("ndbi_mean"), _row.get("ndbi_std"),
+                                                            _total_px,
                                                         )
                                                     except Exception as _ce:
                                                         logger.warning("Cache write failed for %s: %s", _name, _ce)
 
                                                 except Exception as _e:
                                                     _errors.append(f"{_name}: {str(_e)}")
-
-                                    _cache_conn.close()
 
                                     # Sort results by name for consistent output
                                     _results.sort(key=lambda r: r.get("name", ""))
@@ -3175,9 +3125,6 @@ async def process_chat_interaction_task(
 
                         elif function_name == "query_worldcover_stats":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
                                 _wc_query_type = tool_args.get("query_type", "land_cover")
                                 _wc_district = tool_args.get("district")
                                 _wc_sector = tool_args.get("sector")
@@ -3240,7 +3187,6 @@ async def process_chat_interaction_task(
                                 if _wc_query_type == "largest_cropland":
                                     # On-the-fly connected-component analysis
                                     # for the SPECIFIC boundary the user asks about.
-                                    _conn.close()  # don't need DuckDB for this
 
                                     import asyncpg as _asyncpg
                                     import numpy as _np
@@ -3417,7 +3363,6 @@ async def process_chat_interaction_task(
                                     # land_cover: area breakdown by class
                                     if _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
                                         # On-the-fly zonal stats for bbox
-                                        _conn.close()
 
                                         import numpy as _np
                                         from rasterio.merge import merge as _rio_merge
@@ -3477,21 +3422,25 @@ async def process_chat_interaction_task(
                                                 _vrt.close()
                                                 _raw.close()
                                     else:
-                                        # Pre-computed admin stats from DuckDB
+                                        # Pre-computed admin stats from PostgreSQL
                                         _sql = "SELECT admin_level, admin_name, district_name, class_name, area_hectares FROM worldcover_admin_stats"
                                         _where = []
                                         _params = []
+                                        _pidx = 1
 
                                         # Filter by most specific admin level provided
                                         if _wc_cell:
-                                            _where.append("admin_level = 'cell' AND LOWER(admin_name) = LOWER(?)")
+                                            _where.append(f"admin_level = 'cell' AND LOWER(admin_name) = LOWER(${_pidx})")
                                             _params.append(_wc_cell)
+                                            _pidx += 1
                                         elif _wc_sector:
-                                            _where.append("admin_level = 'sector' AND LOWER(admin_name) = LOWER(?)")
+                                            _where.append(f"admin_level = 'sector' AND LOWER(admin_name) = LOWER(${_pidx})")
                                             _params.append(_wc_sector)
+                                            _pidx += 1
                                         elif _wc_district:
-                                            _where.append("admin_level = 'district' AND LOWER(admin_name) = LOWER(?)")
+                                            _where.append(f"admin_level = 'district' AND LOWER(admin_name) = LOWER(${_pidx})")
                                             _params.append(_wc_district)
+                                            _pidx += 1
                                         else:
                                             # Default: district-level summary
                                             _where.append("admin_level = 'district'")
@@ -3499,8 +3448,7 @@ async def process_chat_interaction_task(
                                         if _where:
                                             _sql += " WHERE " + " AND ".join(_where)
                                         _sql += " ORDER BY area_hectares DESC"
-                                        _rows = _conn.execute(_sql, _params).fetchall()
-                                        _conn.close()
+                                        _rows = await conn.fetch(_sql, *_params)
 
                                         if _rows:
                                             tool_result = {
@@ -3509,9 +3457,9 @@ async def process_chat_interaction_task(
                                                 "count": len(_rows),
                                                 "data": [
                                                     {
-                                                        "admin_level": r[0], "admin_name": r[1],
-                                                        "district": r[2], "class_name": r[3],
-                                                        "area_hectares": r[4],
+                                                        "admin_level": r["admin_level"], "admin_name": r["admin_name"],
+                                                        "district": r["district_name"], "class_name": r["class_name"],
+                                                        "area_hectares": r["area_hectares"],
                                                     }
                                                     for r in _rows
                                                 ],
@@ -3539,15 +3487,6 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_crop_classifications":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS crop_classification_cache ("
-                                    "district VARCHAR, class_label VARCHAR, area_ha DOUBLE, "
-                                    "pixel_count INTEGER, confidence DOUBLE, job_id VARCHAR, "
-                                    "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _district = tool_args.get("district")
                                 _cc_lat = tool_args.get("lat")
                                 _cc_lon = tool_args.get("lon")
@@ -3580,27 +3519,26 @@ async def process_chat_interaction_task(
                                     except Exception as _rg_err:
                                         logger.warning("Reverse-geocode failed for crop classifications: %s", _rg_err)
                                 if _district:
-                                    _rows = _conn.execute(
+                                    _rows = await conn.fetch(
                                         "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
-                                        "FROM crop_classification_cache WHERE district = ? "
+                                        "FROM crop_classification_cache WHERE district = $1 "
                                         "ORDER BY computed_at DESC LIMIT 50",
-                                        [_district],
-                                    ).fetchall()
+                                        _district,
+                                    )
                                 else:
-                                    _rows = _conn.execute(
+                                    _rows = await conn.fetch(
                                         "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
                                         "FROM crop_classification_cache ORDER BY computed_at DESC LIMIT 50"
-                                    ).fetchall()
-                                _conn.close()
+                                    )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "classifications": [
-                                            {"district": r[0], "class_label": r[1], "area_ha": r[2],
-                                             "pixel_count": r[3], "confidence": r[4], "job_id": r[5]}
+                                            {"district": r["district"], "class_label": r["class_label"], "area_ha": r["area_ha"],
+                                             "pixel_count": r["pixel_count"], "confidence": r["confidence"], "job_id": r["job_id"]}
                                             for r in _rows
                                         ],
                                     }
@@ -3619,7 +3557,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "classifications": [],
                                         "message": "No classification data yet — Dagster weekly schedule populates this cache",
                                     }
@@ -3637,42 +3575,34 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_anomaly_alerts":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS anomaly_alerts_cache ("
-                                    "district VARCHAR, h3_index VARCHAR, parcel_id VARCHAR, "
-                                    "anomaly_date DATE, observed_ndvi DOUBLE, expected_ndvi DOUBLE, "
-                                    "z_score DOUBLE, severity VARCHAR, "
-                                    "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _where = []
                                 _params = []
+                                _pidx = 1
                                 if tool_args.get("severity"):
-                                    _where.append("severity = ?")
+                                    _where.append(f"severity = ${_pidx}")
                                     _params.append(tool_args["severity"])
+                                    _pidx += 1
                                 if tool_args.get("district"):
-                                    _where.append("district = ?")
+                                    _where.append(f"district = ${_pidx}")
                                     _params.append(tool_args["district"])
+                                    _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT district, anomaly_date, observed_ndvi, expected_ndvi, "
                                     f"z_score, severity FROM anomaly_alerts_cache {_where_sql} "
                                     f"ORDER BY z_score ASC LIMIT 30",
-                                    _params,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "alerts": [
-                                            {"district": r[0], "date": str(r[1]) if r[1] else None,
-                                             "observed_ndvi": r[2], "expected_ndvi": r[3],
-                                             "z_score": round(r[4], 3) if r[4] else None, "severity": r[5]}
+                                            {"district": r["district"], "date": str(r["anomaly_date"]) if r["anomaly_date"] else None,
+                                             "observed_ndvi": r["observed_ndvi"], "expected_ndvi": r["expected_ndvi"],
+                                             "z_score": round(r["z_score"], 3) if r["z_score"] else None, "severity": r["severity"]}
                                             for r in _rows
                                         ],
                                     }
@@ -3693,7 +3623,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "alerts": [],
                                         "message": "No anomaly alerts yet — Dagster weekly schedule populates this cache",
                                     }
@@ -3711,37 +3641,26 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_yield_risk":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS yield_risk_cache ("
-                                    "district VARCHAR, risk_level VARCHAR, risk_description VARCHAR, "
-                                    "trend_slope DOUBLE, kendall_tau DOUBLE, latest_ndvi DOUBLE, "
-                                    "mean_ndvi DOUBLE, seasonal_deviation DOUBLE, observations INTEGER, "
-                                    "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _district = tool_args.get("district")
-                                _where = "WHERE district = ?" if _district else ""
+                                _where = "WHERE district = $1" if _district else ""
                                 _params = [_district] if _district else []
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT district, risk_level, risk_description, trend_slope, "
                                     f"kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation, observations "
                                     f"FROM yield_risk_cache {_where} "
                                     f"ORDER BY computed_at DESC LIMIT 50",
-                                    _params,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "assessments": [
-                                            {"district": r[0], "risk_level": r[1], "risk_description": r[2],
-                                             "trend_slope": r[3], "kendall_tau": r[4], "latest_ndvi": r[5],
-                                             "mean_ndvi": r[6], "seasonal_deviation": r[7], "observations": r[8]}
+                                            {"district": r["district"], "risk_level": r["risk_level"], "risk_description": r["risk_description"],
+                                             "trend_slope": r["trend_slope"], "kendall_tau": r["kendall_tau"], "latest_ndvi": r["latest_ndvi"],
+                                             "mean_ndvi": r["mean_ndvi"], "seasonal_deviation": r["seasonal_deviation"], "observations": r["observations"]}
                                             for r in _rows
                                         ],
                                     }
@@ -3761,7 +3680,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "assessments": [],
                                         "message": "No yield risk data yet — Dagster weekly schedule populates this cache",
                                     }
@@ -3779,42 +3698,35 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_drought_status":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS drought_cache ("
-                                    "district VARCHAR, drought_status VARCHAR, current_vci DOUBLE, "
-                                    "latest_ndvi DOUBLE, latest_ndwi DOUBLE, drought_period_count INTEGER, "
-                                    "description VARCHAR, computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _where = []
                                 _params = []
+                                _pidx = 1
                                 if tool_args.get("district"):
-                                    _where.append("district = ?")
+                                    _where.append(f"district = ${_pidx}")
                                     _params.append(tool_args["district"])
+                                    _pidx += 1
                                 if tool_args.get("status"):
-                                    _where.append("drought_status = ?")
+                                    _where.append(f"drought_status = ${_pidx}")
                                     _params.append(tool_args["status"])
+                                    _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT district, drought_status, current_vci, latest_ndvi, "
                                     f"latest_ndwi, drought_period_count, description "
                                     f"FROM drought_cache {_where_sql} "
                                     f"ORDER BY current_vci ASC LIMIT 50",
-                                    _params,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "districts": [
-                                            {"district": r[0], "drought_status": r[1], "vci": r[2],
-                                             "latest_ndvi": r[3], "latest_ndwi": r[4],
-                                             "drought_period_count": r[5], "description": r[6]}
+                                            {"district": r["district"], "drought_status": r["drought_status"], "vci": r["current_vci"],
+                                             "latest_ndvi": r["latest_ndvi"], "latest_ndwi": r["latest_ndwi"],
+                                             "drought_period_count": r["drought_period_count"], "description": r["description"]}
                                             for r in _rows
                                         ],
                                     }
@@ -3834,7 +3746,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "districts": [],
                                         "message": "No drought data yet — Dagster weekly schedule populates this cache",
                                     }
@@ -3852,43 +3764,35 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_crop_growth_stage":
                             try:
-                                import duckdb as _duckdb
-
-                                _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                _conn.execute(
-                                    "CREATE TABLE IF NOT EXISTS phenology_cache ("
-                                    "district VARCHAR, current_stage VARCHAR, peak_ndvi DOUBLE, "
-                                    "peak_date VARCHAR, green_up_start VARCHAR, senescence_start VARCHAR, "
-                                    "harvest_date VARCHAR, observations INTEGER, "
-                                    "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                )
                                 _where = []
                                 _params = []
+                                _pidx = 1
                                 if tool_args.get("district"):
-                                    _where.append("district = ?")
+                                    _where.append(f"district = ${_pidx}")
                                     _params.append(tool_args["district"])
+                                    _pidx += 1
                                 if tool_args.get("stage"):
-                                    _where.append("current_stage = ?")
+                                    _where.append(f"current_stage = ${_pidx}")
                                     _params.append(tool_args["stage"])
+                                    _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                _rows = _conn.execute(
+                                _rows = await conn.fetch(
                                     f"SELECT district, current_stage, peak_ndvi, peak_date, "
                                     f"green_up_start, senescence_start, harvest_date, observations "
                                     f"FROM phenology_cache {_where_sql} "
                                     f"ORDER BY computed_at DESC LIMIT 50",
-                                    _params,
-                                ).fetchall()
-                                _conn.close()
+                                    *_params,
+                                )
 
                                 if _rows:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "count": len(_rows),
                                         "districts": [
-                                            {"district": r[0], "current_stage": r[1], "peak_ndvi": r[2],
-                                             "peak_date": r[3], "green_up_start": r[4],
-                                             "senescence_start": r[5], "harvest_date": r[6], "observations": r[7]}
+                                            {"district": r["district"], "current_stage": r["current_stage"], "peak_ndvi": r["peak_ndvi"],
+                                             "peak_date": r["peak_date"], "green_up_start": r["green_up_start"],
+                                             "senescence_start": r["senescence_start"], "harvest_date": r["harvest_date"], "observations": r["observations"]}
                                             for r in _rows
                                         ],
                                     }
@@ -3908,7 +3812,7 @@ async def process_chat_interaction_task(
                                 else:
                                     tool_result = {
                                         "status": "success",
-                                        "source": "duckdb_cache",
+                                        "source": "postgres_cache",
                                         "districts": [],
                                         "message": "No phenology data yet — Dagster weekly schedule populates this cache",
                                     }
@@ -3926,62 +3830,55 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_weather_stats":
                             try:
-                                import duckdb as _duckdb
                                 from datetime import date as _date, timedelta as _td
 
-                                # ── 1. Query AgERA5 cache (DuckDB) ──
+                                # ── 1. Query AgERA5 cache (PostgreSQL) ──
                                 _agera5_rows: list = []
                                 try:
-                                    _conn = _duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
-                                    _conn.execute(
-                                        "CREATE TABLE IF NOT EXISTS weather_daily_cache ("
-                                        "district VARCHAR, observation_date DATE, "
-                                        "temperature_mean DOUBLE, temperature_max DOUBLE, "
-                                        "temperature_min DOUBLE, precipitation DOUBLE, "
-                                        "solar_radiation DOUBLE, "
-                                        "computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-                                    )
                                     _where = []
                                     _params: list = []
+                                    _pidx = 1
                                     if tool_args.get("district"):
-                                        _where.append("district = ?")
+                                        _where.append(f"district = ${_pidx}")
                                         _params.append(tool_args["district"])
+                                        _pidx += 1
                                     if tool_args.get("date_from"):
-                                        _where.append("observation_date >= ?")
+                                        _where.append(f"observation_date >= ${_pidx}")
                                         _params.append(tool_args["date_from"])
+                                        _pidx += 1
                                     if tool_args.get("date_to"):
-                                        _where.append("observation_date <= ?")
+                                        _where.append(f"observation_date <= ${_pidx}")
                                         _params.append(tool_args["date_to"])
+                                        _pidx += 1
                                     if not tool_args.get("date_from") and not tool_args.get("date_to"):
                                         _where.append("observation_date >= CURRENT_DATE - INTERVAL '30 days'")
                                     _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-                                    _agera5_rows = _conn.execute(
+                                    _agera5_rows = await conn.fetch(
                                         f"SELECT district, observation_date, temperature_mean, "
                                         f"temperature_max, temperature_min, precipitation, "
                                         f"solar_radiation "
                                         f"FROM weather_daily_cache {_where_sql} "
                                         f"ORDER BY observation_date DESC, district LIMIT 500",
-                                        _params,
-                                    ).fetchall()
-                                    _conn.close()
+                                        *_params,
+                                    )
                                 except Exception:
-                                    logger.debug("DuckDB cache not available, will use Open-Meteo only")
+                                    logger.debug("PostgreSQL cache not available, will use Open-Meteo only")
 
                                 # Build result list from AgERA5
                                 _agera5_dates: set = set()
                                 _weather_stats: list = []
                                 for r in _agera5_rows:
-                                    _dt = str(r[1]) if r[1] else None
+                                    _dt = str(r["observation_date"]) if r["observation_date"] else None
                                     if _dt:
                                         _agera5_dates.add(_dt)
                                     _weather_stats.append({
-                                        "district": r[0],
+                                        "district": r["district"],
                                         "date": _dt,
-                                        "temperature_mean_c": r[2],
-                                        "temperature_max_c": r[3],
-                                        "temperature_min_c": r[4],
-                                        "precipitation_mm_day": r[5],
-                                        "solar_radiation_mj_m2_day": r[6],
+                                        "temperature_mean_c": r["temperature_mean"],
+                                        "temperature_max_c": r["temperature_max"],
+                                        "temperature_min_c": r["temperature_min"],
+                                        "precipitation_mm_day": r["precipitation"],
+                                        "solar_radiation_mj_m2_day": r["solar_radiation"],
                                         "source": "agera5",
                                     })
 

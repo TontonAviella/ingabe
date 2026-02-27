@@ -51,9 +51,6 @@ from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
 logger = logging.getLogger(__name__)
 
-# DuckDB cache file populated by Dagster scheduled assets (rwanda_assets.py)
-_DUCKDB_CACHE_PATH = "/tmp/ingabe_cache/cache.duckdb"
-
 rwanda_router = APIRouter()
 
 
@@ -1053,53 +1050,40 @@ async def get_latest_classifications(
     limit: int = Query(100, ge=1, le=10000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get latest pre-computed crop classifications from DuckDB cache.
+    """Get latest pre-computed crop classifications from PostgreSQL cache.
 
     These are populated by Dagster scheduled assets (weekly).
     Returns instantly from local cache — no remote API calls.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            # Build query with optional district filter
+            where_clauses = []
+            params = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
 
-        # Create table if not exists (first run before Dagster populates)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS crop_classification_cache (
-                district VARCHAR,
-                class_label VARCHAR,
-                area_ha DOUBLE,
-                pixel_count INTEGER,
-                confidence DOUBLE,
-                job_id VARCHAR,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT district, class_label, area_ha, pixel_count, confidence,
+                       job_id, computed_at
+                FROM crop_classification_cache
+                {where_sql}
+                ORDER BY computed_at DESC
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        # Build query with optional district filter
-        where_clauses = []
-        params = []
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT district, class_label, area_ha, pixel_count, confidence,
-                   job_id, computed_at
-            FROM crop_classification_cache
-            {where_sql}
-            ORDER BY computed_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Classification cache will be populated by weekly Dagster schedule",
                 "district_filter": district,
@@ -1120,14 +1104,14 @@ async def get_latest_classifications(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "district_filter": district,
             "count": len(results),
             "results": results,
         }
     except Exception as e:
-        logger.error("DuckDB classification query failed: %s", e)
+        logger.error("PostgreSQL classification query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1144,56 +1128,43 @@ async def get_anomaly_alerts(
     limit: int = Query(50, ge=1, le=1000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get latest anomaly alerts from DuckDB cache.
+    """Get latest anomaly alerts from PostgreSQL cache.
 
     Pre-computed by Dagster weekly anomaly scan.
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params = []
+            param_idx = 1
+            if severity:
+                where_clauses.append(f"severity = ${param_idx}")
+                params.append(severity)
+                param_idx += 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS anomaly_alerts_cache (
-                district VARCHAR,
-                h3_index VARCHAR,
-                parcel_id VARCHAR,
-                anomaly_date DATE,
-                observed_ndvi DOUBLE,
-                expected_ndvi DOUBLE,
-                z_score DOUBLE,
-                severity VARCHAR,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT district, h3_index, parcel_id, anomaly_date,
+                       observed_ndvi, expected_ndvi, z_score, severity, computed_at
+                FROM anomaly_alerts_cache
+                {where_sql}
+                ORDER BY z_score ASC, computed_at DESC
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params = []
-        if severity:
-            where_clauses.append("severity = ?")
-            params.append(severity)
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT district, h3_index, parcel_id, anomaly_date,
-                   observed_ndvi, expected_ndvi, z_score, severity, computed_at
-            FROM anomaly_alerts_cache
-            {where_sql}
-            ORDER BY z_score ASC, computed_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Anomaly alerts will be populated by weekly Dagster schedule",
                 "severity_filter": severity,
@@ -1217,7 +1188,7 @@ async def get_anomaly_alerts(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "severity_filter": severity,
             "district_filter": district,
@@ -1225,7 +1196,7 @@ async def get_anomaly_alerts(
             "alerts": alerts,
         }
     except Exception as e:
-        logger.error("DuckDB anomaly alert query failed: %s", e)
+        logger.error("PostgreSQL anomaly alert query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1241,55 +1212,40 @@ async def get_yield_risk_latest(
     limit: int = Query(50, ge=1, le=1000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get latest yield risk assessments from DuckDB cache.
+    """Get latest yield risk assessments from PostgreSQL cache.
 
     Pre-computed by Dagster weekly yield risk job (Mann-Kendall trend analysis).
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS yield_risk_cache (
-                district VARCHAR,
-                risk_level VARCHAR,
-                risk_description VARCHAR,
-                trend_slope DOUBLE,
-                kendall_tau DOUBLE,
-                latest_ndvi DOUBLE,
-                mean_ndvi DOUBLE,
-                seasonal_deviation DOUBLE,
-                observations INTEGER,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT district, risk_level, risk_description, trend_slope,
+                       kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation,
+                       observations, computed_at
+                FROM yield_risk_cache
+                {where_sql}
+                ORDER BY risk_level DESC, computed_at DESC
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params = []
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT district, risk_level, risk_description, trend_slope,
-                   kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation,
-                   observations, computed_at
-            FROM yield_risk_cache
-            {where_sql}
-            ORDER BY risk_level DESC, computed_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Yield risk cache will be populated by weekly Dagster schedule",
                 "district_filter": district,
@@ -1313,14 +1269,14 @@ async def get_yield_risk_latest(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "district_filter": district,
             "count": len(assessments),
             "assessments": assessments,
         }
     except Exception as e:
-        logger.error("DuckDB yield risk query failed: %s", e)
+        logger.error("PostgreSQL yield risk query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1341,55 +1297,43 @@ async def get_drought_status(
     limit: int = Query(50, ge=1, le=1000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get latest drought status from DuckDB cache.
+    """Get latest drought status from PostgreSQL cache.
 
     Pre-computed by Dagster weekly drought scan (VCI + NDWI analysis).
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
+            if drought_status:
+                where_clauses.append(f"drought_status = ${param_idx}")
+                params.append(drought_status)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS drought_cache (
-                district VARCHAR,
-                drought_status VARCHAR,
-                current_vci DOUBLE,
-                latest_ndvi DOUBLE,
-                latest_ndwi DOUBLE,
-                drought_period_count INTEGER,
-                description VARCHAR,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT district, drought_status, current_vci, latest_ndvi,
+                       latest_ndwi, drought_period_count, description, computed_at
+                FROM drought_cache
+                {where_sql}
+                ORDER BY current_vci ASC, computed_at DESC
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params = []
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-        if drought_status:
-            where_clauses.append("drought_status = ?")
-            params.append(drought_status)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT district, drought_status, current_vci, latest_ndvi,
-                   latest_ndwi, drought_period_count, description, computed_at
-            FROM drought_cache
-            {where_sql}
-            ORDER BY current_vci ASC, computed_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Drought cache will be populated by weekly Dagster schedule",
                 "district_filter": district,
@@ -1412,7 +1356,7 @@ async def get_drought_status(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "district_filter": district,
             "status_filter": drought_status,
@@ -1420,7 +1364,7 @@ async def get_drought_status(
             "districts": districts,
         }
     except Exception as e:
-        logger.error("DuckDB drought status query failed: %s", e)
+        logger.error("PostgreSQL drought status query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1439,57 +1383,44 @@ async def get_phenology_stages(
     limit: int = Query(50, ge=1, le=1000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get latest crop growth stage analysis from DuckDB cache.
+    """Get latest crop growth stage analysis from PostgreSQL cache.
 
     Pre-computed by Dagster weekly phenology job (NDVI curve analysis).
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
+            if stage:
+                where_clauses.append(f"current_stage = ${param_idx}")
+                params.append(stage)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS phenology_cache (
-                district VARCHAR,
-                current_stage VARCHAR,
-                peak_ndvi DOUBLE,
-                peak_date DATE,
-                green_up_start DATE,
-                senescence_start DATE,
-                harvest_date DATE,
-                observations INTEGER,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT district, current_stage, peak_ndvi, peak_date,
+                       green_up_start, senescence_start, harvest_date,
+                       observations, computed_at
+                FROM phenology_cache
+                {where_sql}
+                ORDER BY computed_at DESC
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params = []
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-        if stage:
-            where_clauses.append("current_stage = ?")
-            params.append(stage)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT district, current_stage, peak_ndvi, peak_date,
-                   green_up_start, senescence_start, harvest_date,
-                   observations, computed_at
-            FROM phenology_cache
-            {where_sql}
-            ORDER BY computed_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Phenology cache will be populated by weekly Dagster schedule",
                 "district_filter": district,
@@ -1513,7 +1444,7 @@ async def get_phenology_stages(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "district_filter": district,
             "stage_filter": stage,
@@ -1521,7 +1452,7 @@ async def get_phenology_stages(
             "districts": districts,
         }
     except Exception as e:
-        logger.error("DuckDB phenology query failed: %s", e)
+        logger.error("PostgreSQL phenology query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1542,66 +1473,55 @@ async def get_weather_daily(
     limit: int = Query(200, ge=1, le=10000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get daily weather statistics from DuckDB cache.
+    """Get daily weather statistics from PostgreSQL cache.
 
     Pre-computed by Dagster daily_weather_ingest from Copernicus AgERA5.
     Returns temperature (mean/max/min C), precipitation (mm/day),
     and solar radiation (MJ/m2/day) per district per day.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params: list = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
+            if date_from:
+                where_clauses.append(f"observation_date >= ${param_idx}")
+                params.append(date_from)
+                param_idx += 1
+            if date_to:
+                where_clauses.append(f"observation_date <= ${param_idx}")
+                params.append(date_to)
+                param_idx += 1
+            if not date_from and not date_to:
+                where_clauses.append(
+                    "observation_date >= CURRENT_DATE - INTERVAL '30 days'"
+                )
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS weather_daily_cache (
-                district VARCHAR,
-                observation_date DATE,
-                temperature_mean DOUBLE,
-                temperature_max DOUBLE,
-                temperature_min DOUBLE,
-                precipitation DOUBLE,
-                solar_radiation DOUBLE,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            where_sql = (
+                f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
             )
-        """)
+            query = f"""
+                SELECT district, observation_date, temperature_mean,
+                       temperature_max, temperature_min, precipitation,
+                       solar_radiation, computed_at
+                FROM weather_daily_cache
+                {where_sql}
+                ORDER BY observation_date DESC, district
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params: list = []
-        if district:
-            where_clauses.append("district = ?")
-            params.append(district)
-        if date_from:
-            where_clauses.append("observation_date >= ?")
-            params.append(date_from)
-        if date_to:
-            where_clauses.append("observation_date <= ?")
-            params.append(date_to)
-        if not date_from and not date_to:
-            where_clauses.append(
-                "observation_date >= CURRENT_DATE - INTERVAL '30 days'"
-            )
-
-        where_sql = (
-            f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        )
-        query = f"""
-            SELECT district, observation_date, temperature_mean,
-                   temperature_max, temperature_min, precipitation,
-                   solar_radiation, computed_at
-            FROM weather_daily_cache
-            {where_sql}
-            ORDER BY observation_date DESC, district
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "data_source": "Copernicus AgERA5",
                 "status": "awaiting_dagster_population",
                 "message": (
@@ -1627,7 +1547,7 @@ async def get_weather_daily(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "data_source": "Copernicus AgERA5 (sis-agrometeorological-indicators)",
             "status": "ok",
             "district_filter": district,
@@ -1636,7 +1556,7 @@ async def get_weather_daily(
             "observations": observations,
         }
     except Exception as e:
-        logger.error("DuckDB weather query failed: %s", e)
+        logger.error("PostgreSQL weather query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1656,59 +1576,46 @@ async def get_cell_ndvi_stats(
     limit: int = Query(100, ge=1, le=5000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get cell-level (ADM4) NDVI statistics from DuckDB cache.
+    """Get cell-level (ADM4) NDVI statistics from PostgreSQL cache.
 
     Pre-computed nightly by Dagster from Sentinel Hub at ~12 km² resolution.
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params: list = []
+            param_idx = 1
+            if cell_name:
+                where_clauses.append(f"cell_name ILIKE ${param_idx}")
+                params.append(f"%{cell_name}%")
+                param_idx += 1
+            if district:
+                # Use exact match (case-insensitive) to avoid cross-country
+                # false positives. E.g. "Kigali" should not match Uganda districts.
+                where_clauses.append(f"LOWER(district_name) = LOWER(${param_idx})")
+                params.append(district)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS ndvi_cell_cache (
-                cell_name VARCHAR,
-                district_name VARCHAR,
-                week_start DATE,
-                mean_ndvi DOUBLE,
-                std_ndvi DOUBLE,
-                min_ndvi DOUBLE,
-                max_ndvi DOUBLE,
-                valid_pixels INTEGER,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT cell_name, district_name, week_start,
+                       mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
+                       valid_pixels, computed_at
+                FROM ndvi_cell_cache
+                {where_sql}
+                ORDER BY computed_at DESC, cell_name
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params: list = []
-        if cell_name:
-            where_clauses.append("cell_name ILIKE ?")
-            params.append(f"%{cell_name}%")
-        if district:
-            # Use exact match (case-insensitive) to avoid cross-country
-            # false positives. E.g. "Kigali" should not match Uganda districts.
-            where_clauses.append("LOWER(district_name) = LOWER(?)")
-            params.append(district)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT cell_name, district_name, week_start,
-                   mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                   valid_pixels, computed_at
-            FROM ndvi_cell_cache
-            {where_sql}
-            ORDER BY computed_at DESC, cell_name
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_dagster_population",
                 "message": "Cell NDVI cache will be populated by nightly Dagster schedule",
                 "cell_filter": cell_name,
@@ -1732,7 +1639,7 @@ async def get_cell_ndvi_stats(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "cell_filter": cell_name,
             "district_filter": district,
@@ -1740,7 +1647,7 @@ async def get_cell_ndvi_stats(
             "cells": cells,
         }
     except Exception as e:
-        logger.error("DuckDB cell NDVI query failed: %s", e)
+        logger.error("PostgreSQL cell NDVI query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
@@ -1757,60 +1664,45 @@ async def get_parcel_ndvi_stats(
     limit: int = Query(100, ge=1, le=5000),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Get parcel-level NDVI statistics from DuckDB cache.
+    """Get parcel-level NDVI statistics from PostgreSQL cache.
 
     Pre-computed nightly by Dagster from Sentinel Hub at 10m native resolution
     for user-uploaded field boundaries tagged as rwanda_parcels.
     Returns instantly from local cache.
     """
-    import duckdb
+    from src.structures import get_async_db_connection
 
     try:
-        conn = duckdb.connect(database=_DUCKDB_CACHE_PATH, read_only=False)
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params: list = []
+            param_idx = 1
+            if parcel_name:
+                where_clauses.append(f"parcel_name ILIKE ${param_idx}")
+                params.append(f"%{parcel_name}%")
+                param_idx += 1
+            if layer_id:
+                where_clauses.append(f"layer_id = ${param_idx}")
+                params.append(layer_id)
+                param_idx += 1
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS ndvi_parcel_cache (
-                parcel_id VARCHAR,
-                parcel_name VARCHAR,
-                layer_id VARCHAR,
-                week_start DATE,
-                mean_ndvi DOUBLE,
-                std_ndvi DOUBLE,
-                min_ndvi DOUBLE,
-                max_ndvi DOUBLE,
-                valid_pixels INTEGER,
-                area_ha DOUBLE,
-                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+            where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            query = f"""
+                SELECT parcel_id, parcel_name, layer_id, week_start,
+                       mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
+                       valid_pixels, area_ha, computed_at
+                FROM ndvi_parcel_cache
+                {where_sql}
+                ORDER BY computed_at DESC, parcel_name
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
 
-        where_clauses = []
-        params: list = []
-        if parcel_name:
-            where_clauses.append("parcel_name ILIKE ?")
-            params.append(f"%{parcel_name}%")
-        if layer_id:
-            where_clauses.append("layer_id = ?")
-            params.append(layer_id)
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT parcel_id, parcel_name, layer_id, week_start,
-                   mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                   valid_pixels, area_ha, computed_at
-            FROM ndvi_parcel_cache
-            {where_sql}
-            ORDER BY computed_at DESC, parcel_name
-            LIMIT ?
-        """
-        params.append(limit)
-
-        rows = conn.execute(query, params).fetchall()
-        conn.close()
+            rows = await pg_conn.fetch(query, *params)
 
         if not rows:
             return {
-                "source": "duckdb_cache",
+                "source": "postgres_cache",
                 "status": "awaiting_data",
                 "message": (
                     "No parcel NDVI data yet. Upload field boundaries through Mundi UI "
@@ -1840,7 +1732,7 @@ async def get_parcel_ndvi_stats(
         ]
 
         return {
-            "source": "duckdb_cache",
+            "source": "postgres_cache",
             "status": "ok",
             "parcel_filter": parcel_name,
             "layer_filter": layer_id,
@@ -1848,7 +1740,7 @@ async def get_parcel_ndvi_stats(
             "parcels": parcels,
         }
     except Exception as e:
-        logger.error("DuckDB parcel NDVI query failed: %s", e)
+        logger.error("PostgreSQL parcel NDVI query failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",

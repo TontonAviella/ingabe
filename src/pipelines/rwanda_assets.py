@@ -21,9 +21,10 @@ Asset groups:
   - rwanda_ndvi:        Process satellite imagery into NDVI observations
   - rwanda_precompute:  Scheduled pre-computation (NDVI cache, classification, anomalies)
 
-These assets integrate with the existing lakehouse manager and DuckDB
-query infrastructure.  The rwanda_precompute group runs on cron schedules
-so that Sage (the LLM assistant) can read results from DuckDB instantly.
+These assets integrate with the existing lakehouse manager. Cache tables
+(agri_indices, ndvi_field, crop_classification, anomaly_alerts, etc.)
+are stored in PostgreSQL for shared multi-session access. DuckDB is still
+used for analytical workloads (worldcover_admin_stats, H3 aggregation).
 """
 
 import json
@@ -533,10 +534,7 @@ def rwanda_crop_classification(context: AssetExecutionContext) -> dict[str, Any]
     return {"status": "ready", "ml_available": status["ml_ready"]}
 
 
-# ─── Pre-compute assets (scheduled, results cached in DuckDB) ────────────
-
-
-DUCKDB_CACHE_PATH = "/tmp/ingabe_cache/cache.duckdb"
+# ─── Pre-compute assets (scheduled, results cached in PostgreSQL) ────────────
 
 # Rwanda admin districts for systematic field NDVI scanning
 RWANDA_DISTRICTS = [
@@ -549,123 +547,6 @@ RWANDA_DISTRICTS = [
 ]
 
 
-def _ensure_cache_tables(duckdb_conn) -> None:
-    """Create DuckDB cache tables if they don't exist."""
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS ndvi_field_cache (
-            district VARCHAR,
-            week_start DATE,
-            mean_ndvi DOUBLE,
-            std_ndvi DOUBLE,
-            min_ndvi DOUBLE,
-            max_ndvi DOUBLE,
-            valid_pixels INTEGER,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS crop_classification_cache (
-            district VARCHAR,
-            class_label VARCHAR,
-            area_ha DOUBLE,
-            pixel_count INTEGER,
-            confidence DOUBLE,
-            job_id VARCHAR,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS anomaly_alerts_cache (
-            district VARCHAR,
-            h3_index VARCHAR,
-            parcel_id VARCHAR,
-            anomaly_date DATE,
-            observed_ndvi DOUBLE,
-            expected_ndvi DOUBLE,
-            z_score DOUBLE,
-            severity VARCHAR,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS yield_risk_cache (
-            district VARCHAR,
-            risk_level VARCHAR,
-            risk_description VARCHAR,
-            trend_slope DOUBLE,
-            kendall_tau DOUBLE,
-            latest_ndvi DOUBLE,
-            mean_ndvi DOUBLE,
-            seasonal_deviation DOUBLE,
-            observations INTEGER,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS drought_cache (
-            district VARCHAR,
-            drought_status VARCHAR,
-            current_vci DOUBLE,
-            latest_ndvi DOUBLE,
-            latest_ndwi DOUBLE,
-            drought_period_count INTEGER,
-            description VARCHAR,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS phenology_cache (
-            district VARCHAR,
-            current_stage VARCHAR,
-            peak_ndvi DOUBLE,
-            peak_date VARCHAR,
-            green_up_start VARCHAR,
-            senescence_start VARCHAR,
-            harvest_date VARCHAR,
-            observations INTEGER,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS ndvi_cell_cache (
-            cell_name VARCHAR,
-            district_name VARCHAR,
-            week_start DATE,
-            mean_ndvi DOUBLE,
-            std_ndvi DOUBLE,
-            min_ndvi DOUBLE,
-            max_ndvi DOUBLE,
-            valid_pixels INTEGER,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS weather_daily_cache (
-            district VARCHAR,
-            observation_date DATE,
-            temperature_mean DOUBLE,
-            temperature_max DOUBLE,
-            temperature_min DOUBLE,
-            precipitation DOUBLE,
-            solar_radiation DOUBLE,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    duckdb_conn.execute("""
-        CREATE TABLE IF NOT EXISTS ndvi_parcel_cache (
-            parcel_id VARCHAR,
-            parcel_name VARCHAR,
-            layer_id VARCHAR,
-            week_start DATE,
-            mean_ndvi DOUBLE,
-            std_ndvi DOUBLE,
-            min_ndvi DOUBLE,
-            max_ndvi DOUBLE,
-            valid_pixels INTEGER,
-            area_ha DOUBLE,
-            computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
 
 
 @asset(
@@ -674,7 +555,6 @@ def _ensure_cache_tables(duckdb_conn) -> None:
 )
 def nightly_field_ndvi(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
     postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Pre-warm district-level agri indices cache via Sentinel Hub.
@@ -770,44 +650,44 @@ def nightly_field_ndvi(
                 if "ndvi" in iv:
                     total_pixels += iv["ndvi"].get("valid_pixels", 0)
 
-            with duckdb.get_connection() as conn:
-                _ensure_cache_tables(conn)
-
-                # Write to agri_indices_cache (primary cache for get_agri_indices tool)
-                conn.execute(
-                    """
-                    INSERT INTO agri_indices_cache
-                        (admin_level, admin_name, parent_name, week_start,
-                         ndvi_mean, ndvi_std, evi_mean, evi_std,
-                         ndwi_mean, ndwi_std, savi_mean, savi_std,
-                         ndre_mean, ndre_std, ndbi_mean, ndbi_std,
-                         valid_pixels)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        "district", district, None, week_start,
-                        index_stats.get("ndvi_mean"), index_stats.get("ndvi_std"),
-                        index_stats.get("evi_mean"), index_stats.get("evi_std"),
-                        index_stats.get("ndwi_mean"), index_stats.get("ndwi_std"),
-                        index_stats.get("savi_mean"), index_stats.get("savi_std"),
-                        index_stats.get("ndre_mean"), index_stats.get("ndre_std"),
-                        index_stats.get("ndbi_mean"), index_stats.get("ndbi_std"),
-                        total_pixels,
-                    ],
-                )
-
-                # Write to ndvi_field_cache (backward compat for weekly analytics)
-                ndvi_mean = index_stats.get("ndvi_mean")
-                ndvi_std = index_stats.get("ndvi_std")
-                if ndvi_mean is not None:
-                    conn.execute(
+            with postgres.get_sync_connection() as pg_conn:
+                with pg_conn.cursor() as cur:
+                    # Write to agri_indices_cache (primary cache for get_agri_indices tool)
+                    cur.execute(
                         """
-                        INSERT INTO ndvi_field_cache
-                            (district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO agri_indices_cache
+                            (admin_level, admin_name, parent_name, week_start,
+                             ndvi_mean, ndvi_std, evi_mean, evi_std,
+                             ndwi_mean, ndwi_std, savi_mean, savi_std,
+                             ndre_mean, ndre_std, ndbi_mean, ndbi_std,
+                             valid_pixels)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        [district, week_start, ndvi_mean, ndvi_std, ndvi_mean, ndvi_mean, total_pixels],
+                        (
+                            "district", district, None, week_start,
+                            index_stats.get("ndvi_mean"), index_stats.get("ndvi_std"),
+                            index_stats.get("evi_mean"), index_stats.get("evi_std"),
+                            index_stats.get("ndwi_mean"), index_stats.get("ndwi_std"),
+                            index_stats.get("savi_mean"), index_stats.get("savi_std"),
+                            index_stats.get("ndre_mean"), index_stats.get("ndre_std"),
+                            index_stats.get("ndbi_mean"), index_stats.get("ndbi_std"),
+                            total_pixels,
+                        ),
                     )
+
+                    # Write to ndvi_field_cache (backward compat for weekly analytics)
+                    ndvi_mean = index_stats.get("ndvi_mean")
+                    ndvi_std = index_stats.get("ndvi_std")
+                    if ndvi_mean is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO ndvi_field_cache
+                                (district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (district, week_start, ndvi_mean, ndvi_std, ndvi_mean, ndvi_mean, total_pixels),
+                        )
+                pg_conn.commit()
 
             rows_written += 1
             context.log.info(
@@ -835,18 +715,18 @@ def nightly_field_ndvi(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Nightly: purge stale DuckDB cache entries older than 30 days",
+    description="Nightly: purge stale PostgreSQL cache entries older than 30 days",
 )
 def nightly_cache_cleanup(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
 ) -> dict[str, Any]:
-    """Purge stale cache entries to keep DuckDB lean.
+    """Purge stale cache entries to keep PostgreSQL lean.
 
     Runs nightly at 2:30 AM UTC.  Deletes rows older than 30 days from:
       - agri_indices_cache (sector/cell entries accumulate via cache-on-first-request)
       - ndvi_field_cache (district rows from nightly pre-warm)
-      - weather_district_cache (daily weather data)
+      - weather_daily_cache (daily weather data)
 
     This prevents unbounded growth while keeping enough history for the
     weekly analytics jobs (anomaly scan, yield risk, drought, phenology)
@@ -855,31 +735,33 @@ def nightly_cache_cleanup(
     purge_days = 30
     tables_purged: dict = {}
 
-    with duckdb.get_connection() as conn:
-        _ensure_cache_tables(conn)
-
-        for table, ts_col in [
-            ("agri_indices_cache", "computed_at"),
-            ("ndvi_field_cache", "computed_at"),
-            ("weather_district_cache", "fetched_at"),
-            ("anomaly_alerts_cache", "detected_at"),
-            ("yield_risk_cache", "computed_at"),
-            ("drought_alerts_cache", "detected_at"),
-            ("phenology_cache", "computed_at"),
-        ]:
-            try:
-                before = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                conn.execute(
-                    f"DELETE FROM {table} WHERE {ts_col} < CURRENT_DATE - INTERVAL '{purge_days} days'"
-                )
-                after = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                deleted = before - after
-                if deleted > 0:
-                    tables_purged[table] = deleted
-                    context.log.info("Purged %d rows from %s", deleted, table)
-            except Exception as e:
-                # Table may not exist yet — that's fine
-                context.log.debug("Skipping %s: %s", table, e)
+    with postgres.get_sync_connection() as pg_conn:
+        with pg_conn.cursor() as cur:
+            for table, ts_col in [
+                ("agri_indices_cache", "computed_at"),
+                ("ndvi_field_cache", "computed_at"),
+                ("weather_daily_cache", "computed_at"),
+                ("anomaly_alerts_cache", "computed_at"),
+                ("yield_risk_cache", "computed_at"),
+                ("drought_cache", "computed_at"),
+                ("phenology_cache", "computed_at"),
+            ]:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    before = cur.fetchone()[0]
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE {ts_col} < CURRENT_DATE - INTERVAL '{purge_days} days'"
+                    )
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    after = cur.fetchone()[0]
+                    deleted = before - after
+                    if deleted > 0:
+                        tables_purged[table] = deleted
+                        context.log.info("Purged %d rows from %s", deleted, table)
+                except Exception as e:
+                    # Table may not exist yet — that's fine
+                    context.log.debug("Skipping %s: %s", table, e)
+        pg_conn.commit()
 
     context.log.info("Cache cleanup done: %s", tables_purged)
     return {
@@ -895,7 +777,6 @@ def nightly_cache_cleanup(
 )
 def nightly_ndvi_vector_tiles(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
     postgres: PostgresResource,
     s3: S3Resource,
 ) -> dict[str, Any]:
@@ -921,41 +802,43 @@ def nightly_ndvi_vector_tiles(
     import os
     import tempfile
 
-    # Read latest NDVI cache from DuckDB
+    # Read latest NDVI cache from PostgreSQL
     try:
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                # District-level NDVI (latest per district)
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
+                    FROM ndvi_field_cache
+                    WHERE (district, week_start) IN (
+                        SELECT district, MAX(week_start) FROM ndvi_field_cache
+                        GROUP BY district
+                    )
+                """)
+                district_rows = cur.fetchall()
 
-            # District-level NDVI (latest per district)
-            district_rows = conn.execute("""
-                SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
-                FROM ndvi_field_cache
-                WHERE (district, week_start) IN (
-                    SELECT district, MAX(week_start) FROM ndvi_field_cache
-                    GROUP BY district
-                )
-            """).fetchall()
+                # Cell-level NDVI (latest per cell)
+                cur.execute("""
+                    SELECT cell_name, district_name, week_start,
+                           mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
+                    FROM ndvi_cell_cache
+                    WHERE (cell_name, week_start) IN (
+                        SELECT cell_name, MAX(week_start) FROM ndvi_cell_cache
+                        GROUP BY cell_name
+                    )
+                """)
+                cell_rows = cur.fetchall()
 
-            # Cell-level NDVI (latest per cell)
-            cell_rows = conn.execute("""
-                SELECT cell_name, district_name, week_start,
-                       mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
-                FROM ndvi_cell_cache
-                WHERE (cell_name, week_start) IN (
-                    SELECT cell_name, MAX(week_start) FROM ndvi_cell_cache
-                    GROUP BY cell_name
-                )
-            """).fetchall()
-
-            # Crop classification (latest)
-            crop_rows = conn.execute("""
-                SELECT district, class_label, area_ha, pixel_count, confidence
-                FROM crop_classification_cache
-                WHERE computed_at = (SELECT MAX(computed_at) FROM crop_classification_cache)
-            """).fetchall()
+                # Crop classification (latest)
+                cur.execute("""
+                    SELECT district, class_label, area_ha, pixel_count, confidence
+                    FROM crop_classification_cache
+                    WHERE computed_at = (SELECT MAX(computed_at) FROM crop_classification_cache)
+                """)
+                crop_rows = cur.fetchall()
 
     except Exception as e:
-        context.log.warning("DuckDB read failed: %s", e)
+        context.log.warning("PostgreSQL read failed: %s", e)
         district_rows, cell_rows, crop_rows = [], [], []
 
     if not district_rows and not cell_rows:
@@ -1129,11 +1012,10 @@ def nightly_ndvi_vector_tiles(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Nightly: compute parcel-level NDVI for user-uploaded fields → DuckDB cache",
+    description="Nightly: compute parcel-level NDVI for user-uploaded fields → PostgreSQL cache",
 )
 def nightly_parcel_ndvi(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
     postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Compute NDVI statistics for user-uploaded parcel boundaries.
@@ -1293,20 +1175,21 @@ def nightly_parcel_ndvi(
                         f"{layer_id}/{parcel_name}",
                     ))
 
-                    with duckdb.get_connection() as conn:
-                        _ensure_cache_tables(conn)
-                        conn.execute(
-                            """
-                            INSERT INTO ndvi_parcel_cache
-                                (parcel_id, parcel_name, layer_id, week_start,
+                    with postgres.get_sync_connection() as pg_conn:
+                        with pg_conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                INSERT INTO ndvi_parcel_cache
+                                    (parcel_id, parcel_name, layer_id, week_start,
+                                     mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
+                                     valid_pixels, area_ha)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (parcel_id, parcel_name, str(layer_id), week_start,
                                  mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                                 valid_pixels, area_ha)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            [parcel_id, parcel_name, str(layer_id), week_start,
-                             mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
-                             total_pixels, area_ha],
-                        )
+                                 total_pixels, area_ha),
+                            )
+                        pg_conn.commit()
 
                     total_parcels += 1
 
@@ -1333,19 +1216,19 @@ def nightly_parcel_ndvi(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: run openEO crop classification → DuckDB + S3 cache",
+    description="Weekly: run openEO crop classification → PostgreSQL + S3 cache",
 )
 def weekly_crop_classification(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
     s3: S3Resource,
 ) -> dict[str, Any]:
-    """Submit openEO batch classification job and cache results in DuckDB.
+    """Submit openEO batch classification job and cache results in PostgreSQL.
 
     Runs Sunday 3 AM UTC.  Submits a server-side Random Forest classification
     job on CDSE using 4-month Sentinel-2 composites.  When the job finishes,
     downloads the GeoTIFF result, uploads to S3, and writes per-district
-    classification summaries to the DuckDB crop_classification_cache table.
+    classification summaries to the PostgreSQL crop_classification_cache table.
 
     Note: openEO batch jobs take 5-30 minutes.  This asset polls until
     completion or timeout (max 45 minutes).
@@ -1545,26 +1428,26 @@ def weekly_crop_classification(
                 "job_id": job_id,
             })
 
-        # Write classification results to DuckDB cache
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
+        # Write classification results to PostgreSQL cache
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                # Clear old results before inserting new ones
+                cur.execute("DELETE FROM crop_classification_cache WHERE job_id = %s", (job_id,))
 
-            # Clear old results before inserting new ones
-            conn.execute("DELETE FROM crop_classification_cache WHERE job_id = ?", [job_id])
-
-            for row in classification_rows:
-                conn.execute(
-                    """
-                    INSERT INTO crop_classification_cache
-                        (district, class_label, area_ha, pixel_count, confidence, job_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    [row["district"], row["class_label"], row["area_ha"],
-                     row["pixel_count"], row["confidence"], row["job_id"]],
-                )
+                for row in classification_rows:
+                    cur.execute(
+                        """
+                        INSERT INTO crop_classification_cache
+                            (district, class_label, area_ha, pixel_count, confidence, job_id)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (row["district"], row["class_label"], row["area_ha"],
+                         row["pixel_count"], row["confidence"], row["job_id"]),
+                    )
+            pg_conn.commit()
 
         context.log.info(
-            "Wrote %d classification rows to DuckDB cache", len(classification_rows)
+            "Wrote %d classification rows to PostgreSQL cache", len(classification_rows)
         )
 
         return {
@@ -1583,11 +1466,11 @@ def weekly_crop_classification(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: scan Iceberg NDVI data for anomalies → DuckDB alerts cache",
+    description="Weekly: scan NDVI cache for anomalies → PostgreSQL alerts cache",
 )
 def weekly_anomaly_scan(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Detect NDVI anomalies across Rwanda using z-score analysis.
 
@@ -1604,17 +1487,17 @@ def weekly_anomaly_scan(
     ml = get_ml_service()
 
     try:
-        # Read recent NDVI cache data from DuckDB
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
-
-            # Get NDVI time series per district (last 8 weeks)
-            rows = conn.execute("""
-                SELECT district, week_start, mean_ndvi
-                FROM ndvi_field_cache
-                WHERE week_start >= CURRENT_DATE - INTERVAL '56 days'
-                ORDER BY district, week_start
-            """).fetchall()
+        # Read recent NDVI cache data from PostgreSQL
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                # Get NDVI time series per district (last 8 weeks)
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi
+                    FROM ndvi_field_cache
+                    WHERE week_start >= CURRENT_DATE - INTERVAL '56 days'
+                    ORDER BY district, week_start
+                """)
+                rows = cur.fetchall()
 
         if not rows:
             context.log.info("No NDVI cache data available — skipping anomaly scan")
@@ -1654,27 +1537,28 @@ def weekly_anomaly_scan(
             if not anomalies:
                 continue
 
-            # Write alerts to DuckDB cache
-            with duckdb.get_connection() as conn:
-                _ensure_cache_tables(conn)
-                for anomaly in anomalies:
-                    severity = "high" if anomaly.get("z_score", 0) < -3.0 else "moderate"
-                    conn.execute(
-                        """
-                        INSERT INTO anomaly_alerts_cache
-                            (district, anomaly_date, observed_ndvi, expected_ndvi,
-                             z_score, severity)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        [
-                            district,
-                            anomaly.get("date"),
-                            anomaly.get("value"),
-                            anomaly.get("running_mean"),
-                            anomaly.get("z_score"),
-                            severity,
-                        ],
-                    )
+            # Write alerts to PostgreSQL cache
+            with postgres.get_sync_connection() as pg_conn:
+                with pg_conn.cursor() as cur:
+                    for anomaly in anomalies:
+                        severity = "high" if anomaly.get("z_score", 0) < -3.0 else "moderate"
+                        cur.execute(
+                            """
+                            INSERT INTO anomaly_alerts_cache
+                                (district, anomaly_date, observed_ndvi, expected_ndvi,
+                                 z_score, severity)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                district,
+                                anomaly.get("date"),
+                                anomaly.get("value"),
+                                anomaly.get("running_mean"),
+                                anomaly.get("z_score"),
+                                severity,
+                            ),
+                        )
+                pg_conn.commit()
 
             alert_count = len(anomalies)
             total_alerts += alert_count
@@ -1703,11 +1587,11 @@ def weekly_anomaly_scan(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: run yield risk prediction per district → DuckDB cache",
+    description="Weekly: run yield risk prediction per district → PostgreSQL cache",
 )
 def weekly_yield_risk(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Predict yield risk per district using Mann-Kendall trend analysis.
 
@@ -1722,15 +1606,15 @@ def weekly_yield_risk(
     ml = get_ml_service()
 
     try:
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
-
-            rows = conn.execute("""
-                SELECT district, week_start, mean_ndvi
-                FROM ndvi_field_cache
-                WHERE week_start >= CURRENT_DATE - INTERVAL '90 days'
-                ORDER BY district, week_start
-            """).fetchall()
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi
+                    FROM ndvi_field_cache
+                    WHERE week_start >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY district, week_start
+                """)
+                rows = cur.fetchall()
 
         if not rows:
             context.log.info("No NDVI cache data — skipping yield risk")
@@ -1758,27 +1642,28 @@ def weekly_yield_risk(
                 context.log.warning("Yield risk failed for %s: %s", district, risk["error"])
                 continue
 
-            with duckdb.get_connection() as conn:
-                _ensure_cache_tables(conn)
-                conn.execute(
-                    """
-                    INSERT INTO yield_risk_cache
-                        (district, risk_level, risk_description, trend_slope,
-                         kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation, observations)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        district,
-                        risk.get("risk_level"),
-                        risk.get("risk_description"),
-                        risk.get("trend_slope"),
-                        risk.get("kendall_tau"),
-                        risk.get("latest_ndvi"),
-                        risk.get("mean_ndvi"),
-                        risk.get("seasonal_deviation"),
-                        risk.get("observations"),
-                    ],
-                )
+            with postgres.get_sync_connection() as pg_conn:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO yield_risk_cache
+                            (district, risk_level, risk_description, trend_slope,
+                             kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation, observations)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            district,
+                            risk.get("risk_level"),
+                            risk.get("risk_description"),
+                            risk.get("trend_slope"),
+                            risk.get("kendall_tau"),
+                            risk.get("latest_ndvi"),
+                            risk.get("mean_ndvi"),
+                            risk.get("seasonal_deviation"),
+                            risk.get("observations"),
+                        ),
+                    )
+                pg_conn.commit()
 
             assessed += 1
             results.append({"district": district, "risk_level": risk.get("risk_level")})
@@ -1793,11 +1678,11 @@ def weekly_yield_risk(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: drought detection per district → DuckDB cache",
+    description="Weekly: drought detection per district → PostgreSQL cache",
 )
 def weekly_drought_scan(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Detect drought conditions per district using VCI + NDWI analysis.
 
@@ -1810,15 +1695,15 @@ def weekly_drought_scan(
     ml = get_ml_service()
 
     try:
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
-
-            rows = conn.execute("""
-                SELECT district, week_start, mean_ndvi
-                FROM ndvi_field_cache
-                WHERE week_start >= CURRENT_DATE - INTERVAL '90 days'
-                ORDER BY district, week_start
-            """).fetchall()
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi
+                    FROM ndvi_field_cache
+                    WHERE week_start >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY district, week_start
+                """)
+                rows = cur.fetchall()
 
         if not rows:
             context.log.info("No NDVI cache data — skipping drought scan")
@@ -1844,25 +1729,26 @@ def weekly_drought_scan(
             if "error" in drought:
                 continue
 
-            with duckdb.get_connection() as conn:
-                _ensure_cache_tables(conn)
-                conn.execute(
-                    """
-                    INSERT INTO drought_cache
-                        (district, drought_status, current_vci, latest_ndvi,
-                         latest_ndwi, drought_period_count, description)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        district,
-                        drought.get("drought_status"),
-                        drought.get("current_vci"),
-                        drought.get("latest_ndvi"),
-                        drought.get("latest_ndwi"),
-                        drought.get("drought_period_count"),
-                        drought.get("description"),
-                    ],
-                )
+            with postgres.get_sync_connection() as pg_conn:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO drought_cache
+                            (district, drought_status, current_vci, latest_ndvi,
+                             latest_ndwi, drought_period_count, description)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            district,
+                            drought.get("drought_status"),
+                            drought.get("current_vci"),
+                            drought.get("latest_ndvi"),
+                            drought.get("latest_ndwi"),
+                            drought.get("drought_period_count"),
+                            drought.get("description"),
+                        ),
+                    )
+                pg_conn.commit()
 
             scanned += 1
             results.append({"district": district, "status": drought.get("drought_status")})
@@ -1878,11 +1764,11 @@ def weekly_drought_scan(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: crop phenology analysis per district → DuckDB cache",
+    description="Weekly: crop phenology analysis per district → PostgreSQL cache",
 )
 def weekly_phenology(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
+    postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Identify crop growth stages per district from NDVI phenology curves.
 
@@ -1895,15 +1781,15 @@ def weekly_phenology(
     ml = get_ml_service()
 
     try:
-        with duckdb.get_connection() as conn:
-            _ensure_cache_tables(conn)
-
-            rows = conn.execute("""
-                SELECT district, week_start, mean_ndvi
-                FROM ndvi_field_cache
-                WHERE week_start >= CURRENT_DATE - INTERVAL '180 days'
-                ORDER BY district, week_start
-            """).fetchall()
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi
+                    FROM ndvi_field_cache
+                    WHERE week_start >= CURRENT_DATE - INTERVAL '180 days'
+                    ORDER BY district, week_start
+                """)
+                rows = cur.fetchall()
 
         if not rows:
             context.log.info("No NDVI cache data — skipping phenology")
@@ -1929,26 +1815,27 @@ def weekly_phenology(
             if "error" in pheno:
                 continue
 
-            with duckdb.get_connection() as conn:
-                _ensure_cache_tables(conn)
-                conn.execute(
-                    """
-                    INSERT INTO phenology_cache
-                        (district, current_stage, peak_ndvi, peak_date,
-                         green_up_start, senescence_start, harvest_date, observations)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        district,
-                        pheno.get("current_stage"),
-                        pheno.get("peak_ndvi"),
-                        pheno.get("peak_date"),
-                        pheno.get("green_up_start"),
-                        pheno.get("senescence_start"),
-                        pheno.get("harvest_date"),
-                        pheno.get("observations"),
-                    ],
-                )
+            with postgres.get_sync_connection() as pg_conn:
+                with pg_conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO phenology_cache
+                            (district, current_stage, peak_ndvi, peak_date,
+                             green_up_start, senescence_start, harvest_date, observations)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            district,
+                            pheno.get("current_stage"),
+                            pheno.get("peak_ndvi"),
+                            pheno.get("peak_date"),
+                            pheno.get("green_up_start"),
+                            pheno.get("senescence_start"),
+                            pheno.get("harvest_date"),
+                            pheno.get("observations"),
+                        ),
+                    )
+                pg_conn.commit()
 
             analyzed += 1
             results.append({"district": district, "stage": pheno.get("current_stage")})
@@ -1963,11 +1850,10 @@ def weekly_phenology(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Daily: ingest AgERA5 weather data per district -> DuckDB cache",
+    description="Daily: ingest AgERA5 weather data per district -> PostgreSQL cache",
 )
 def daily_weather_ingest(
     context: AssetExecutionContext,
-    duckdb: DuckDBResource,
     postgres: PostgresResource,
 ) -> dict[str, Any]:
     """Download AgERA5 agrometeorological indicators and aggregate to districts.
@@ -2001,17 +1887,15 @@ def daily_weather_ingest(
     start_date = today - timedelta(days=LOOKBACK_DAYS)
     end_date = today - timedelta(days=LATENCY_DAYS)
 
-    # Ensure cache tables exist
-    with duckdb.get_connection() as conn:
-        _ensure_cache_tables(conn)
-
     # Find which dates are already cached
-    with duckdb.get_connection() as conn:
-        cached_dates_raw = conn.execute(
-            "SELECT DISTINCT observation_date FROM weather_daily_cache "
-            "WHERE observation_date >= ? AND observation_date <= ?",
-            [str(start_date), str(end_date)],
-        ).fetchall()
+    with postgres.get_sync_connection() as pg_conn:
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT observation_date FROM weather_daily_cache "
+                "WHERE observation_date >= %s AND observation_date <= %s",
+                (str(start_date), str(end_date)),
+            )
+            cached_dates_raw = cur.fetchall()
     cached_dates = {row[0] for row in cached_dates_raw}
 
     # Build list of missing dates
@@ -2091,9 +1975,9 @@ def daily_weather_ingest(
             context.log.warning("No district stats for %s", target_date)
             continue
 
-        # Write to DuckDB cache
+        # Write to PostgreSQL cache
         insert_params = [
-            [
+            (
                 stats.get("district"),
                 stats.get("date"),
                 stats.get("temperature_mean"),
@@ -2101,20 +1985,22 @@ def daily_weather_ingest(
                 stats.get("temperature_min"),
                 stats.get("precipitation"),
                 stats.get("solar_radiation"),
-            ]
+            )
             for stats in district_stats
         ]
 
-        with duckdb.get_connection() as conn:
-            conn.executemany(
-                """
-                INSERT INTO weather_daily_cache
-                    (district, observation_date, temperature_mean, temperature_max,
-                     temperature_min, precipitation, solar_radiation)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                insert_params,
-            )
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO weather_daily_cache
+                        (district, observation_date, temperature_mean, temperature_max,
+                         temperature_min, precipitation, solar_radiation)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    insert_params,
+                )
+            pg_conn.commit()
             total_rows_written += len(insert_params)
 
         dates_processed += 1
