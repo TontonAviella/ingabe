@@ -458,6 +458,285 @@ class STACService:
         )
 
 
+    # ------------------------------------------------------------------
+    # Bbox-windowed NDVI from COG bands (for admin boundary analysis)
+    # ------------------------------------------------------------------
+
+    def compute_ndvi_for_bbox(
+        self,
+        item_result: dict,
+        bbox: List[float],
+        max_pixels: int = 1024,
+    ) -> Dict[str, Any]:
+        """Compute NDVI statistics for a specific bounding box from a STAC item.
+
+        Unlike compute_ndvi_from_item (center 512x512), this reads only the
+        pixels inside the given bbox, making it efficient for admin boundaries.
+
+        Args:
+            item_result: STAC item dict with assets.B04.href and assets.B08.href
+            bbox: [west, south, east, north] in WGS84
+            max_pixels: Maximum dimension to read (downscales if larger)
+
+        Returns:
+            Dict with mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixel_count
+        """
+        if not _RASTERIO_AVAILABLE:
+            return {"error": "rasterio not available"}
+
+        assets = item_result.get("assets", {})
+        if "B04" not in assets or "B08" not in assets:
+            return {"error": "Missing B04 or B08 bands in STAC item"}
+
+        from rasterio.warp import transform_bounds
+        from rasterio.windows import from_bounds
+
+        b04_href = assets["B04"]["href"]
+        b08_href = assets["B08"]["href"]
+        start_time = time.time()
+
+        try:
+            with RasterioEnv(
+                GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
+                GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+                CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+                GDAL_HTTP_MAX_RETRY="3",
+                GDAL_HTTP_RETRY_DELAY="1",
+            ):
+                with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
+                    # Transform bbox from WGS84 to the raster's CRS
+                    dst_crs = b04_src.crs
+                    left, bottom, right, top = transform_bounds(
+                        "EPSG:4326", dst_crs, *bbox,
+                    )
+
+                    # Compute window from projected bounds
+                    window = from_bounds(left, bottom, right, top, b04_src.transform)
+
+                    # Clamp to raster extent
+                    window = window.intersection(
+                        Window(0, 0, b04_src.width, b04_src.height)
+                    )
+                    if window.width <= 0 or window.height <= 0:
+                        return {"error": "Bbox does not intersect this scene"}
+
+                    # Determine output size (downsample large areas)
+                    out_height = min(int(window.height), max_pixels)
+                    out_width = min(int(window.width), max_pixels)
+
+                    b04_data = b04_src.read(
+                        1, window=window,
+                        out_shape=(out_height, out_width),
+                    ).astype(np.float32)
+                    b08_data = b08_src.read(
+                        1, window=window,
+                        out_shape=(out_height, out_width),
+                    ).astype(np.float32)
+
+            # Compute NDVI
+            denominator = b08_data + b04_data
+            ndvi = np.where(denominator != 0, (b08_data - b04_data) / denominator, 0.0)
+
+            # Mask no-data and out-of-range values
+            valid_mask = (ndvi >= -1.0) & (ndvi <= 1.0) & np.isfinite(ndvi)
+            # Also mask zero-reflectance pixels (likely no-data)
+            valid_mask &= (b04_data > 0) | (b08_data > 0)
+            valid_ndvi = ndvi[valid_mask]
+
+            if len(valid_ndvi) == 0:
+                return {
+                    "error": "No valid NDVI pixels in bbox",
+                    "source_item_id": item_result.get("id"),
+                    "download_time_sec": round(time.time() - start_time, 2),
+                }
+
+            return {
+                "mean_ndvi": round(float(np.mean(valid_ndvi)), 4),
+                "std_ndvi": round(float(np.std(valid_ndvi)), 4),
+                "min_ndvi": round(float(np.min(valid_ndvi)), 4),
+                "max_ndvi": round(float(np.max(valid_ndvi)), 4),
+                "valid_pixel_count": int(len(valid_ndvi)),
+                "source_item_id": item_result.get("id"),
+                "datetime": item_result.get("datetime"),
+                "cloud_cover": item_result.get("cloud_cover"),
+                "download_time_sec": round(time.time() - start_time, 2),
+            }
+
+        except Exception as e:
+            logger.warning("NDVI bbox computation failed for %s: %s", item_result.get("id"), e)
+            return {
+                "error": str(e),
+                "source_item_id": item_result.get("id"),
+                "download_time_sec": round(time.time() - start_time, 2),
+            }
+
+    def compute_admin_ndvi(
+        self,
+        bbox: List[float],
+        days: int = 90,
+        max_cloud_cover: float = 15.0,
+        max_scenes: int = 12,
+    ) -> Dict[str, Any]:
+        """Compute NDVI time-series for an admin boundary bbox from STAC COGs.
+
+        Searches for recent Sentinel-2 scenes covering the bbox, then reads
+        B04/B08 bands via HTTP range requests and computes NDVI statistics.
+
+        Args:
+            bbox: [west, south, east, north] in WGS84
+            days: How many days back to search (default 90)
+            max_cloud_cover: Maximum cloud cover percentage
+            max_scenes: Maximum number of scenes to process
+
+        Returns:
+            Dict with time-ordered NDVI observations
+        """
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
+        datetime_range = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+
+        # Search for imagery covering the bbox
+        search_results = self.search_imagery(
+            bbox=bbox,
+            datetime_range=datetime_range,
+            max_cloud_cover=max_cloud_cover,
+            limit=max_scenes,
+        )
+
+        if "error" in search_results:
+            return search_results
+
+        # Compute NDVI for each scene
+        observations: List[Dict[str, Any]] = []
+        for item in search_results.get("items", []):
+            assets = item.get("assets", {})
+            if "B04" in assets and "B08" in assets:
+                result = self.compute_ndvi_for_bbox(item, bbox)
+                if "error" not in result:
+                    observations.append(result)
+
+        observations.sort(key=lambda x: x.get("datetime", ""))
+
+        return {
+            "source": "stac_cog_realtime",
+            "catalog": self.catalog_name,
+            "bbox": bbox,
+            "datetime_range": datetime_range,
+            "scene_count": len(observations),
+            "observations": observations,
+        }
+
+    def compute_drought_indicators(
+        self,
+        bbox: List[float],
+        days: int = 90,
+        max_cloud_cover: float = 15.0,
+    ) -> Dict[str, Any]:
+        """Compute drought indicators from STAC COG NDVI time-series.
+
+        Uses Vegetation Condition Index (VCI) as the primary drought indicator:
+            VCI = (NDVI_current - NDVI_min) / (NDVI_max - NDVI_min) × 100
+
+        VCI thresholds (standard WMO interpretation):
+            < 10:  Extreme drought
+            10-20: Severe drought
+            20-35: Moderate drought
+            35-50: Mild drought / Watch
+            > 50:  No drought
+
+        Args:
+            bbox: [west, south, east, north] in WGS84
+            days: How many days back for historical range
+            max_cloud_cover: Maximum cloud cover percentage
+
+        Returns:
+            Dict with drought_status, VCI, latest NDVI, and time-series
+        """
+        ts_result = self.compute_admin_ndvi(
+            bbox=bbox, days=days, max_cloud_cover=max_cloud_cover,
+        )
+
+        if "error" in ts_result:
+            return ts_result
+
+        observations = ts_result.get("observations", [])
+        if len(observations) < 2:
+            return {
+                "error": "Insufficient cloud-free scenes for drought analysis",
+                "scene_count": len(observations),
+                "source": "stac_cog_realtime",
+            }
+
+        # Extract NDVI values
+        ndvi_values = [obs["mean_ndvi"] for obs in observations]
+        ndvi_min = min(ndvi_values)
+        ndvi_max = max(ndvi_values)
+        latest_ndvi = ndvi_values[-1]
+
+        # Compute VCI
+        ndvi_range = ndvi_max - ndvi_min
+        if ndvi_range > 0.01:
+            vci = round((latest_ndvi - ndvi_min) / ndvi_range * 100, 1)
+        else:
+            # Very narrow range — vegetation is stable
+            vci = 50.0
+
+        # Classify drought status
+        if vci < 10:
+            drought_status = "extreme_drought"
+            description = (
+                f"VCI={vci}% indicates extreme drought. "
+                f"Current NDVI ({latest_ndvi:.3f}) is near the historical minimum ({ndvi_min:.3f})."
+            )
+        elif vci < 20:
+            drought_status = "severe_drought"
+            description = (
+                f"VCI={vci}% indicates severe drought. "
+                f"Vegetation health is significantly below normal."
+            )
+        elif vci < 35:
+            drought_status = "moderate_drought"
+            description = (
+                f"VCI={vci}% indicates moderate drought. "
+                f"Vegetation health is below normal levels."
+            )
+        elif vci < 50:
+            drought_status = "mild_drought"
+            description = (
+                f"VCI={vci}% indicates mild drought or drought watch. "
+                f"Vegetation health is slightly below average."
+            )
+        else:
+            drought_status = "no_drought"
+            description = (
+                f"VCI={vci}% indicates no drought. "
+                f"Vegetation health is normal or above average (NDVI={latest_ndvi:.3f})."
+            )
+
+        # Detect declining trend
+        trend_slope = None
+        if len(ndvi_values) >= 3:
+            x = np.arange(len(ndvi_values), dtype=np.float64)
+            y = np.array(ndvi_values, dtype=np.float64)
+            slope, _ = np.polyfit(x, y, 1)
+            trend_slope = round(float(slope), 6)
+            if trend_slope < -0.01:
+                description += " NDVI shows a declining trend."
+
+        return {
+            "source": "stac_cog_realtime",
+            "drought_status": drought_status,
+            "current_vci": vci,
+            "latest_ndvi": round(latest_ndvi, 4),
+            "ndvi_min_90d": round(ndvi_min, 4),
+            "ndvi_max_90d": round(ndvi_max, 4),
+            "trend_slope": trend_slope,
+            "description": description,
+            "scene_count": len(observations),
+            "observations": observations,
+        }
+
+
 # Module-level singleton
 _stac_service: Optional[STACService] = None
 

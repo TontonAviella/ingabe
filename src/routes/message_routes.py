@@ -2525,15 +2525,85 @@ async def process_chat_interaction_task(
                                             "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
                                         )
                                 else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "ndvi_stats": [],
-                                        "message": (
-                                            "No NDVI data available. DuckDB cache is empty and Sentinel Hub "
-                                            "real-time query returned no results (possibly due to cloud cover). "
-                                            "The nightly Dagster job populates this cache automatically."
-                                        ),
-                                    }
+                                    # ── 4. STAC COG fallback (free, no API key) ──
+                                    _stac_stats: list = []
+                                    try:
+                                        from src.services.stac_service import get_stac_service as _get_stac_ndvi
+
+                                        _stac_ndvi = _get_stac_ndvi()
+                                        _stac_district = tool_args.get("district")
+
+                                        if _stac_district:
+                                            _stac_bbox_rows = await conn.fetch(
+                                                "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                                                "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
+                                                _stac_district,
+                                            )
+                                        else:
+                                            _stac_bbox_rows = await conn.fetch(
+                                                "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                                                "FROM rwanda_district_boundaries ORDER BY district LIMIT 10"
+                                            )
+
+                                        for _sbr in _stac_bbox_rows:
+                                            _s_bbox = [float(_sbr["bbox_west"]), float(_sbr["bbox_south"]),
+                                                       float(_sbr["bbox_east"]), float(_sbr["bbox_north"])]
+                                            _stac_ts = await asyncio.get_event_loop().run_in_executor(
+                                                None, lambda bb=_s_bbox: _stac_ndvi.compute_admin_ndvi(bb, days=30, max_scenes=4),
+                                            )
+                                            if "error" not in _stac_ts:
+                                                for _obs in _stac_ts.get("observations", []):
+                                                    _stac_stats.append({
+                                                        "district": _sbr["district"],
+                                                        "week_start": _obs.get("datetime", "")[:10] if _obs.get("datetime") else None,
+                                                        "mean_ndvi": _obs.get("mean_ndvi"),
+                                                        "std_ndvi": _obs.get("std_ndvi"),
+                                                        "min_ndvi": _obs.get("min_ndvi"),
+                                                        "max_ndvi": _obs.get("max_ndvi"),
+                                                        "valid_pixels": _obs.get("valid_pixel_count"),
+                                                        "source": "stac_cog_realtime",
+                                                    })
+                                    except Exception as _stac_ndvi_err:
+                                        logger.warning("STAC NDVI fallback failed: %s", _stac_ndvi_err)
+
+                                    if _stac_stats:
+                                        tool_result = {
+                                            "status": "success",
+                                            "source": "stac_cog_realtime",
+                                            "count": len(_stac_stats),
+                                            "cached_records": 0,
+                                            "realtime_records": len(_stac_stats),
+                                            "note": (
+                                                "NDVI computed in real-time from Sentinel-2 COGs via STAC (free, no API key). "
+                                                "Values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
+                                                "0.1-0.3 = sparse vegetation, <0.1 = bare soil."
+                                            ),
+                                            "ndvi_stats": _stac_stats,
+                                        }
+                                        _pgc_id = await _ensure_rwanda_postgis_connection(
+                                            conn, current_project_id, user_id,
+                                        )
+                                        if _pgc_id:
+                                            tool_result["postgis_connection_id"] = _pgc_id
+                                            tool_result["kue_instructions"] = (
+                                                "To visualise these NDVI stats on the map, call new_layer_from_postgis with "
+                                                f"postgis_connection_id='{_pgc_id}'. IMPORTANT: the query MUST return columns named 'id' and 'geom'. "
+                                                "Available tables: rwanda_district_boundaries (district, geom), "
+                                                "rwanda_cell_boundaries (cell_id, cell_name, district_name, geom). "
+                                                "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                                                "Then call add_layer_to_map and set_layer_style to colour districts by NDVI. "
+                                                "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                                            )
+                                    else:
+                                        tool_result = {
+                                            "status": "success",
+                                            "ndvi_stats": [],
+                                            "message": (
+                                                "No NDVI data available. Cache is empty, Sentinel Hub unreachable, "
+                                                "and STAC COG query found no cloud-free scenes. "
+                                                "The nightly Dagster job populates this cache automatically."
+                                            ),
+                                        }
                             except Exception as e:
                                 logger.exception("get_ndvi_stats tool failed")
                                 tool_result = {"status": "error", "error": str(e)}
@@ -3761,12 +3831,95 @@ async def process_chat_interaction_task(
                                             "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
                                         )
                                 else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "source": "postgres_cache",
-                                        "districts": [],
-                                        "message": "No drought data yet — Dagster weekly schedule populates this cache",
-                                    }
+                                    # ── STAC COG real-time fallback ──
+                                    # Cache is empty — compute drought from Sentinel-2 COGs
+                                    try:
+                                        from src.services.stac_service import get_stac_service as _get_stac
+
+                                        _stac = _get_stac()
+                                        _drought_district = tool_args.get("district")
+
+                                        # Get district bboxes from PostGIS
+                                        if _drought_district:
+                                            _bbox_rows = await conn.fetch(
+                                                "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                                                "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
+                                                _drought_district,
+                                            )
+                                        else:
+                                            _bbox_rows = await conn.fetch(
+                                                "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                                                "FROM rwanda_district_boundaries ORDER BY district"
+                                            )
+
+                                        _stac_districts = []
+                                        for _br in _bbox_rows:
+                                            _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
+                                                       float(_br["bbox_east"]), float(_br["bbox_north"])]
+                                            _drought_result = await asyncio.get_event_loop().run_in_executor(
+                                                None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
+                                            )
+                                            if "error" not in _drought_result:
+                                                _stac_districts.append({
+                                                    "district": _br["district"],
+                                                    "drought_status": _drought_result.get("drought_status"),
+                                                    "vci": _drought_result.get("current_vci"),
+                                                    "latest_ndvi": _drought_result.get("latest_ndvi"),
+                                                    "latest_ndwi": None,
+                                                    "drought_period_count": None,
+                                                    "description": _drought_result.get("description"),
+                                                    "trend_slope": _drought_result.get("trend_slope"),
+                                                    "scene_count": _drought_result.get("scene_count"),
+                                                })
+                                            else:
+                                                logger.debug("STAC drought failed for %s: %s", _br["district"], _drought_result.get("error"))
+                                            # Limit to 5 districts for real-time (avoid timeout)
+                                            if not _drought_district and len(_stac_districts) >= 5:
+                                                break
+
+                                        if _stac_districts:
+                                            tool_result = {
+                                                "status": "success",
+                                                "source": "stac_cog_realtime",
+                                                "count": len(_stac_districts),
+                                                "note": (
+                                                    "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
+                                                    "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
+                                                    "20-35=moderate, 35-50=mild, >50=no drought."
+                                                ),
+                                                "districts": _stac_districts,
+                                            }
+                                            _pgc_id = await _ensure_rwanda_postgis_connection(
+                                                conn, current_project_id, user_id,
+                                            )
+                                            if _pgc_id:
+                                                tool_result["postgis_connection_id"] = _pgc_id
+                                                tool_result["kue_instructions"] = (
+                                                    "To visualise drought status on the map, call new_layer_from_postgis with "
+                                                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                                                    "Available tables: rwanda_district_boundaries (district, geom). "
+                                                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                                                    "Then add_layer_to_map and set_layer_style to colour by drought status. "
+                                                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                                                )
+                                        else:
+                                            tool_result = {
+                                                "status": "success",
+                                                "source": "stac_cog_realtime",
+                                                "districts": [],
+                                                "message": (
+                                                    "Could not compute drought indicators — insufficient cloud-free "
+                                                    "Sentinel-2 scenes in the last 90 days for this area."
+                                                ),
+                                            }
+                                    except Exception as _stac_err:
+                                        logger.warning("STAC drought fallback failed: %s", _stac_err)
+                                        tool_result = {
+                                            "status": "success",
+                                            "source": "postgres_cache",
+                                            "districts": [],
+                                            "message": "No drought data yet — Dagster weekly schedule populates this cache",
+                                        }
                             except Exception as e:
                                 logger.exception("get_drought_status tool failed")
                                 tool_result = {"status": "error", "error": str(e)}
