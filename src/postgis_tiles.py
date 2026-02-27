@@ -99,24 +99,41 @@ async def fetch_mvt_tile(
             detail=f"PostGIS layer {layer.name} contains unsafe column name: {e}",
         )
 
+    # At low zoom levels, simplify geometries to avoid query timeouts.
+    # The tolerance is in Web Mercator metres — roughly 1 pixel worth.
+    # At z7 a tile is ~1.2 km/px, at z10 ~150 m/px, at z14 ~10 m/px.
+    if z <= 8:
+        simplify_tolerance = 4096 * 20037508.34 * 2 / (4096 * (1 << z))  # ~1px in metres
+        simplify_expr = f"ST_Simplify(ST_MakeValid(ST_Transform(t.geom, 3857)), {simplify_tolerance:.1f})"
+    elif z <= 12:
+        simplify_tolerance = 20037508.34 * 2 / (4096 * (1 << z))
+        simplify_expr = f"ST_Simplify(ST_MakeValid(ST_Transform(t.geom, 3857)), {simplify_tolerance:.1f})"
+    else:
+        simplify_expr = "ST_MakeValid(ST_Transform(t.geom, 3857))"
+
     mvt_query = f"""
         WITH
         bounds_webmerc AS (
             SELECT ST_TileEnvelope($1, $2, $3) AS wm_geom
         ),
-        transformed AS (
-            SELECT {", ".join([f"t.{name}" for name in safe_names])}, ST_Transform(t.geom, 3857) AS geom
-            FROM ({layer.postgis_query}) t
+        bounds_4326 AS (
+            SELECT ST_Transform(ST_TileEnvelope($1, $2, $3), 4326) AS geom_4326
+        ),
+        filtered AS (
+            SELECT {", ".join([f"t.{name}" for name in safe_names])}, t.geom
+            FROM ({layer.postgis_query}) t, bounds_4326 b
+            WHERE t.geom && b.geom_4326
         ),
         candidates AS (
-            SELECT {", ".join([f"t.{name}" for name in safe_names])}, ST_MakeValid(t.geom) AS geom
-            FROM transformed t, bounds_webmerc b
-            WHERE t.geom && b.wm_geom
-                AND ST_Intersects(t.geom, b.wm_geom)
+            SELECT {", ".join([f"f.{name}" for name in safe_names])},
+                   {simplify_expr.replace('t.geom', 'f.geom')} AS geom
+            FROM filtered f
         ),
         mvtgeom AS (
-            SELECT {", ".join([f"c.{name}" for name in safe_names])}, ST_AsMVTGeom(c.geom, b.wm_geom::box2d) AS geom
+            SELECT {", ".join([f"c.{name}" for name in safe_names])},
+                   ST_AsMVTGeom(c.geom, b.wm_geom::box2d) AS geom
             FROM candidates c, bounds_webmerc b
+            WHERE c.geom IS NOT NULL
         )
         SELECT ST_AsMVT(mvtgeom, '{MVT_LAYER_NAME}', 4096, 'geom', 'id') FROM mvtgeom
         """
@@ -125,7 +142,9 @@ async def fetch_mvt_tile(
     # Wrap in explicit transaction so SET LOCAL is properly scoped
     try:
         async with conn.transaction():
-            await conn.execute("SET LOCAL statement_timeout = '10000'")  # 10 seconds in ms
+            # Low zoom tiles process more features — allow more time
+            timeout_ms = 20000 if z <= 10 else 10000
+            await conn.execute(f"SET LOCAL statement_timeout = '{timeout_ms}'")
             result = await conn.fetchval(mvt_query, z, x, y)
 
         # --- Cache the result in Redis ---
