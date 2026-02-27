@@ -178,7 +178,7 @@ async def _ensure_rwanda_postgis_connection(
             "| district_name | text | Parent district |\n"
             "| geom | geometry(MultiPolygon, 4326) | Sector boundary |\n\n"
             "### rwanda_cell_boundaries\n"
-            "All Rwanda cells (smallest admin unit) with polygon geometries.\n"
+            "All ~2,148 Rwanda cells with polygon geometries.\n"
             "| Column | Type | Description |\n"
             "|--------|------|-------------|\n"
             "| cell_id | integer | Primary key |\n"
@@ -186,19 +186,36 @@ async def _ensure_rwanda_postgis_connection(
             "| sector_name | text | Parent sector |\n"
             "| district_name | text | Parent district |\n"
             "| geom | geometry(MultiPolygon, 4326) | Cell boundary |\n\n"
+            "### rwanda_village_boundaries\n"
+            "All ~14,815 Rwanda villages with polygon geometries.\n"
+            "| Column | Type | Description |\n"
+            "|--------|------|-------------|\n"
+            "| village_id | integer | Primary key |\n"
+            "| village_name | text | Village name |\n"
+            "| cell_name | text | Parent cell |\n"
+            "| sector_name | text | Parent sector |\n"
+            "| district_name | text | Parent district |\n"
+            "| geom | geometry(MultiPolygon, 4326) | Village boundary |\n\n"
+            "### Admin hierarchy\n"
+            "District (30) → Sector (~416) → Cell (~2,148) → Village (~14,815)\n\n"
             "### Usage with new_layer_from_postgis\n"
             "Queries MUST return columns named `id` and `geom`.\n"
             "Example: `SELECT cell_id AS id, cell_name, sector_name, "
             "district_name, geom FROM rwanda_cell_boundaries "
             "WHERE district_name = 'Nyagatare'`\n"
+            "Example: `SELECT village_id AS id, village_name, cell_name, "
+            "sector_name, district_name, geom FROM rwanda_village_boundaries "
+            "WHERE district_name = 'Gasabo'`\n"
         )
         _summary_id = "SRwandaAdmin"
         await conn.execute(
             """
             INSERT INTO project_postgres_summary
             (id, connection_id, friendly_name, summary_md, table_count)
-            VALUES ($1, $2, $3, $4, 3)
-            ON CONFLICT (id) DO NOTHING
+            VALUES ($1, $2, $3, $4, 4)
+            ON CONFLICT (id) DO UPDATE
+            SET summary_md = EXCLUDED.summary_md,
+                table_count = EXCLUDED.table_count
             """,
             _summary_id,
             _RWANDA_INTERNAL_CONN_ID,
