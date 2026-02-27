@@ -1917,3 +1917,357 @@ async def vector_tiles_status(
         "vector_tiles_enabled": any(v.get("available") for v in layers.values()),
         "layers": layers,
     }
+
+
+# ── Admin: one-shot cache backfill ──────────────────────────────────────
+# Triggers Sentinel Hub + ML pipeline to populate empty cache tables
+# after a DuckDB → PostgreSQL migration.  Requires auth.
+
+@rwanda_router.post(
+    "/rwanda/admin/backfill-caches",
+    operation_id="rwanda_admin_backfill_caches",
+)
+async def admin_backfill_caches(
+    session: UserContext = Depends(verify_session_required),
+):
+    """One-shot backfill of all Rwanda analytics cache tables.
+
+    Runs nightly_field_ndvi (NDVI + agri indices for 30 districts),
+    then drought, anomaly, yield-risk, phenology, and weather.
+    Designed to be called once after cache migration.
+    """
+    import asyncio
+
+    results: dict = {}
+
+    # Run the heavy Sentinel Hub job in a thread to avoid blocking
+    def _run_field_ndvi():
+        """Run nightly_field_ndvi asset logic synchronously."""
+        import json as _json
+        from datetime import datetime, timedelta
+
+        import numpy as _np
+
+        from src.services.sentinel_hub_service import (
+            get_sentinel_hub_service,
+            AGRI_INDEX_NAMES,
+        )
+        from src.structures import get_sync_db_connection
+
+        sh = get_sentinel_hub_service()
+        if sh is None or not sh.is_configured():
+            return {"status": "skipped", "reason": "sentinel_hub_unavailable"}
+
+        with get_sync_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT district, ST_AsGeoJSON(geom) FROM rwanda_district_boundaries ORDER BY district"
+                )
+                district_rows = cur.fetchall()
+
+        if not district_rows:
+            return {"status": "skipped", "reason": "no_district_boundaries"}
+
+        now = datetime.utcnow()
+        date_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+        date_to = now.strftime("%Y-%m-%d")
+        week_start = date_from
+        written = 0
+        errors = []
+
+        for district, geom_geojson in district_rows:
+            if not geom_geojson:
+                continue
+            try:
+                geometry = _json.loads(geom_geojson)
+                stats = sh.get_agri_stats(
+                    geometry=geometry,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+                if "error" in stats:
+                    errors.append(district)
+                    continue
+
+                intervals = stats.get("intervals", [])
+                if not intervals:
+                    continue
+
+                index_stats: dict = {}
+                total_pixels = 0
+                for idx_name in AGRI_INDEX_NAMES:
+                    means = [
+                        iv[idx_name]["mean"]
+                        for iv in intervals
+                        if idx_name in iv and iv[idx_name].get("valid_pixels", 0) > 0
+                    ]
+                    if means:
+                        index_stats[f"{idx_name}_mean"] = round(float(_np.mean(means)), 4)
+                        index_stats[f"{idx_name}_std"] = round(float(_np.std(means)), 4)
+                    else:
+                        index_stats[f"{idx_name}_mean"] = None
+                        index_stats[f"{idx_name}_std"] = None
+
+                for iv in intervals:
+                    if "ndvi" in iv:
+                        total_pixels += iv["ndvi"].get("valid_pixels", 0)
+
+                with get_sync_db_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO agri_indices_cache
+                                (admin_level, admin_name, parent_name, week_start,
+                                 ndvi_mean, ndvi_std, evi_mean, evi_std,
+                                 ndwi_mean, ndwi_std, savi_mean, savi_std,
+                                 ndre_mean, ndre_std, ndbi_mean, ndbi_std,
+                                 valid_pixels)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                "district", district, None, week_start,
+                                index_stats.get("ndvi_mean"), index_stats.get("ndvi_std"),
+                                index_stats.get("evi_mean"), index_stats.get("evi_std"),
+                                index_stats.get("ndwi_mean"), index_stats.get("ndwi_std"),
+                                index_stats.get("savi_mean"), index_stats.get("savi_std"),
+                                index_stats.get("ndre_mean"), index_stats.get("ndre_std"),
+                                index_stats.get("ndbi_mean"), index_stats.get("ndbi_std"),
+                                total_pixels,
+                            ),
+                        )
+                        cur.execute(
+                            """INSERT INTO ndvi_field_cache
+                                (district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                district, week_start,
+                                index_stats.get("ndvi_mean"),
+                                index_stats.get("ndvi_std"),
+                                index_stats.get("ndvi_mean"),  # min approx
+                                index_stats.get("ndvi_mean"),  # max approx
+                                total_pixels,
+                            ),
+                        )
+                    pg_conn.commit()
+                written += 1
+                logger.info("Backfill NDVI: %s done (NDVI=%.3f)", district, index_stats.get("ndvi_mean", 0) or 0)
+            except Exception as e:
+                logger.warning("Backfill NDVI failed for %s: %s", district, e)
+                errors.append(district)
+
+        return {"status": "ok", "districts": written, "errors": errors}
+
+    def _run_derived_caches():
+        """Run drought, anomaly, yield-risk, phenology from ndvi_field_cache."""
+        from src.services.ml_inference import get_ml_service
+        from src.structures import get_sync_db_connection
+
+        ml = get_ml_service()
+        results = {}
+
+        with get_sync_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT district, week_start, mean_ndvi
+                    FROM ndvi_field_cache
+                    WHERE week_start >= CURRENT_DATE - INTERVAL '90 days'
+                    ORDER BY district, week_start
+                """)
+                rows = cur.fetchall()
+
+        if not rows:
+            return {"status": "no_ndvi_data"}
+
+        # Group by district
+        district_series: dict = {}
+        for district, week_start, mean_ndvi in rows:
+            if district not in district_series:
+                district_series[district] = []
+            district_series[district].append({
+                "date": str(week_start),
+                "mean_ndvi": float(mean_ndvi) if mean_ndvi else 0.0,
+            })
+
+        # Drought
+        drought_count = 0
+        for district, ts in district_series.items():
+            if len(ts) < 3:
+                continue
+            try:
+                drought = ml.detect_drought(ts)
+                if "error" in drought:
+                    continue
+                with get_sync_db_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO drought_cache
+                                (district, drought_status, current_vci, latest_ndvi,
+                                 latest_ndwi, drought_period_count, description)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                            (district, drought.get("drought_status"), drought.get("current_vci"),
+                             drought.get("latest_ndvi"), drought.get("latest_ndwi"),
+                             drought.get("drought_period_count"), drought.get("description")),
+                        )
+                    pg_conn.commit()
+                drought_count += 1
+            except Exception as e:
+                logger.warning("Drought backfill failed for %s: %s", district, e)
+        results["drought"] = drought_count
+
+        # Yield risk
+        yield_count = 0
+        for district, ts in district_series.items():
+            if len(ts) < 3:
+                continue
+            try:
+                risk = ml.predict_yield_risk(ts)
+                if "error" in risk:
+                    continue
+                with get_sync_db_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO yield_risk_cache
+                                (district, risk_level, risk_description, trend_slope,
+                                 kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation, observations)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (district, risk.get("risk_level"), risk.get("risk_description"),
+                             risk.get("trend_slope"), risk.get("kendall_tau"),
+                             risk.get("latest_ndvi"), risk.get("mean_ndvi"),
+                             risk.get("seasonal_deviation"), risk.get("observations")),
+                        )
+                    pg_conn.commit()
+                yield_count += 1
+            except Exception as e:
+                logger.warning("Yield risk backfill failed for %s: %s", district, e)
+        results["yield_risk"] = yield_count
+
+        # Anomaly
+        anomaly_count = 0
+        for district, ts in district_series.items():
+            if len(ts) < 5:
+                continue
+            try:
+                anomalies = ml.detect_anomalies(ts)
+                if "error" in anomalies or not anomalies.get("anomalies"):
+                    continue
+                with get_sync_db_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        for a in anomalies["anomalies"]:
+                            cur.execute(
+                                """INSERT INTO anomaly_alerts_cache
+                                    (district, anomaly_date, observed_ndvi, expected_ndvi,
+                                     z_score, severity)
+                                VALUES (%s, %s, %s, %s, %s, %s)""",
+                                (district, a.get("date"), a.get("observed"), a.get("expected"),
+                                 a.get("z_score"), a.get("severity")),
+                            )
+                    pg_conn.commit()
+                anomaly_count += 1
+            except Exception as e:
+                logger.warning("Anomaly backfill failed for %s: %s", district, e)
+        results["anomalies"] = anomaly_count
+
+        # Phenology
+        pheno_count = 0
+        for district, ts in district_series.items():
+            if len(ts) < 5:
+                continue
+            try:
+                pheno = ml.analyze_crop_phenology(ts)
+                if "error" in pheno:
+                    continue
+                with get_sync_db_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        cur.execute(
+                            """INSERT INTO phenology_cache
+                                (district, current_stage, peak_ndvi, peak_date,
+                                 green_up_start, senescence_start, harvest_date, observations)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (district, pheno.get("current_stage"), pheno.get("peak_ndvi"),
+                             pheno.get("peak_date"), pheno.get("green_up_start"),
+                             pheno.get("senescence_start"), pheno.get("harvest_date"),
+                             pheno.get("observations")),
+                        )
+                    pg_conn.commit()
+                pheno_count += 1
+            except Exception as e:
+                logger.warning("Phenology backfill failed for %s: %s", district, e)
+        results["phenology"] = pheno_count
+
+        return results
+
+    def _run_weather():
+        """Backfill weather from Open-Meteo (free, no API key needed)."""
+        from src.services.weather_service import get_weather_service
+        from src.structures import get_sync_db_connection
+
+        ws = get_weather_service()
+        if ws is None:
+            return {"status": "skipped", "reason": "weather_service_unavailable"}
+
+        # Get district centroids from PostGIS
+        with get_sync_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT district, ST_Y(ST_Centroid(geom)), ST_X(ST_Centroid(geom)) "
+                    "FROM rwanda_district_boundaries ORDER BY district"
+                )
+                districts = cur.fetchall()
+
+        if not districts:
+            return {"status": "skipped", "reason": "no_district_boundaries"}
+
+        # Build centroid list for Open-Meteo bulk request
+        centroids = [
+            {"district": d, "lat": lat, "lon": lon}
+            for d, lat, lon in districts
+        ]
+
+        try:
+            records = ws.fetch_openmeteo_districts(centroids, past_days=10)
+        except Exception as e:
+            logger.warning("Open-Meteo fetch failed: %s", e)
+            return {"status": "error", "reason": str(e)}
+
+        if not records:
+            return {"status": "no_data"}
+
+        written = 0
+        with get_sync_db_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                for rec in records:
+                    try:
+                        cur.execute(
+                            """INSERT INTO weather_daily_cache
+                                (district, observation_date, temperature_mean, temperature_max,
+                                 temperature_min, precipitation, solar_radiation)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING""",
+                            (
+                                rec["district"], rec["date"],
+                                rec.get("temperature_mean"),
+                                rec.get("temperature_max"),
+                                rec.get("temperature_min"),
+                                rec.get("precipitation"),
+                                rec.get("solar_radiation"),
+                            ),
+                        )
+                        written += 1
+                    except Exception as e:
+                        logger.warning("Weather insert failed for %s/%s: %s", rec["district"], rec["date"], e)
+            pg_conn.commit()
+
+        return {"records": written, "districts": len(districts)}
+
+    # Run all backfills sequentially in a thread pool
+    loop = asyncio.get_running_loop()
+
+    logger.info("Starting cache backfill — NDVI + agri indices for 30 districts...")
+    results["ndvi"] = await loop.run_in_executor(None, _run_field_ndvi)
+
+    logger.info("Starting derived caches (drought, yield risk, anomaly, phenology)...")
+    results["derived"] = await loop.run_in_executor(None, _run_derived_caches)
+
+    logger.info("Starting weather backfill...")
+    results["weather"] = await loop.run_in_executor(None, _run_weather)
+
+    logger.info("Cache backfill complete: %s", results)
+    return results

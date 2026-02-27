@@ -19,6 +19,7 @@ from src.database.pool import (  # noqa: F401
     async_read_conn,
     get_async_db_connection,
     get_async_read_connection,
+    get_sync_db_connection,
     tracer,
 )
 

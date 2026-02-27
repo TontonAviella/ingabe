@@ -149,3 +149,32 @@ def async_conn(span_name: Optional[str] = None) -> AsyncDatabaseConnection:
 def async_read_conn(span_name: Optional[str] = None) -> AsyncDatabaseConnection:
     """Read-only connection with OpenTelemetry span, routed to the replica."""
     return AsyncDatabaseConnection(f"pg:ro {span_name}", readonly=True)
+
+
+# ---------------------------------------------------------------------------
+# Synchronous connection (for thread-pool work in FastAPI endpoints)
+# ---------------------------------------------------------------------------
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def get_sync_db_connection():
+    """Yield a synchronous psycopg2 connection using the same env vars as the async pool.
+
+    Intended for ``run_in_executor`` blocks where async connections are unavailable.
+    The connection is auto-closed on exit.
+    """
+    import psycopg2
+
+    conn = psycopg2.connect(
+        host=os.environ["POSTGRES_HOST"],
+        port=int(os.environ.get("POSTGRES_PORT", "5432")),
+        database=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
