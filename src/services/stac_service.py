@@ -62,7 +62,15 @@ SENTINEL2_COLLECTIONS = {
 }
 
 # Band names to extract from STAC items
-_USEFUL_ASSETS = {"visual", "B04", "B08", "B03", "B02", "SCL", "thumbnail"}
+_USEFUL_ASSETS = {
+    "visual", "thumbnail",
+    # Sentinel-2 band names (Copernicus STAC / other catalogs)
+    "B02", "B03", "B04", "B08", "SCL",
+    # Earth Search v1 common names
+    "red", "nir", "green", "blue", "scl",
+    "coastal", "rededge1", "rededge2", "rededge3",
+    "nir08", "nir09", "swir16", "swir22",
+}
 
 
 class STACService:
@@ -254,14 +262,17 @@ class STACService:
             }
 
         assets = item_result.get("assets", {})
-        if "B04" not in assets or "B08" not in assets:
+        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
+        red_key = "B04" if "B04" in assets else ("red" if "red" in assets else None)
+        nir_key = "B08" if "B08" in assets else ("nir" if "nir" in assets else None)
+        if red_key is None or nir_key is None:
             return {
-                "error": "Missing B04 or B08 bands in STAC item",
+                "error": "Missing red/B04 or nir/B08 bands in STAC item",
                 "source_item_id": item_result.get("id"),
             }
 
-        b04_href = assets["B04"]["href"]
-        b08_href = assets["B08"]["href"]
+        b04_href = assets[red_key]["href"]
+        b08_href = assets[nir_key]["href"]
 
         start_time = time.time()
 
@@ -466,7 +477,7 @@ class STACService:
         self,
         item_result: dict,
         bbox: List[float],
-        max_pixels: int = 1024,
+        max_pixels: int = 256,
     ) -> Dict[str, Any]:
         """Compute NDVI statistics for a specific bounding box from a STAC item.
 
@@ -485,14 +496,17 @@ class STACService:
             return {"error": "rasterio not available"}
 
         assets = item_result.get("assets", {})
-        if "B04" not in assets or "B08" not in assets:
-            return {"error": "Missing B04 or B08 bands in STAC item"}
+        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
+        red_key = "B04" if "B04" in assets else ("red" if "red" in assets else None)
+        nir_key = "B08" if "B08" in assets else ("nir" if "nir" in assets else None)
+        if red_key is None or nir_key is None:
+            return {"error": "Missing red/B04 or nir/B08 bands in STAC item"}
 
         from rasterio.warp import transform_bounds
         from rasterio.windows import from_bounds
 
-        b04_href = assets["B04"]["href"]
-        b08_href = assets["B08"]["href"]
+        b04_href = assets[red_key]["href"]
+        b08_href = assets[nir_key]["href"]
         start_time = time.time()
 
         try:
@@ -574,7 +588,7 @@ class STACService:
         self,
         bbox: List[float],
         days: int = 90,
-        max_cloud_cover: float = 15.0,
+        max_cloud_cover: float = 50.0,
         max_scenes: int = 12,
     ) -> Dict[str, Any]:
         """Compute NDVI time-series for an admin boundary bbox from STAC COGs.
@@ -607,10 +621,13 @@ class STACService:
             return search_results
 
         # Compute NDVI for each scene
+        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
         observations: List[Dict[str, Any]] = []
         for item in search_results.get("items", []):
             assets = item.get("assets", {})
-            if "B04" in assets and "B08" in assets:
+            has_bands = (("B04" in assets and "B08" in assets)
+                         or ("red" in assets and "nir" in assets))
+            if has_bands:
                 result = self.compute_ndvi_for_bbox(item, bbox)
                 if "error" not in result:
                     observations.append(result)
@@ -630,7 +647,7 @@ class STACService:
         self,
         bbox: List[float],
         days: int = 90,
-        max_cloud_cover: float = 15.0,
+        max_cloud_cover: float = 50.0,
     ) -> Dict[str, Any]:
         """Compute drought indicators from STAC COG NDVI time-series.
 
@@ -654,6 +671,7 @@ class STACService:
         """
         ts_result = self.compute_admin_ndvi(
             bbox=bbox, days=days, max_cloud_cover=max_cloud_cover,
+            max_scenes=4,  # Limit to 4 scenes to stay within timeout (~20s each)
         )
 
         if "error" in ts_result:

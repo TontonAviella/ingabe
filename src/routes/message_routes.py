@@ -3873,8 +3873,8 @@ async def process_chat_interaction_task(
                                                 })
                                             else:
                                                 logger.debug("STAC drought failed for %s: %s", _br["district"], _drought_result.get("error"))
-                                            # Limit to 5 districts for real-time (avoid timeout)
-                                            if not _drought_district and len(_stac_districts) >= 5:
+                                            # Limit to 3 districts for real-time (each takes ~60-80s)
+                                            if not _drought_district and len(_stac_districts) >= 3:
                                                 break
 
                                         if _stac_districts:
