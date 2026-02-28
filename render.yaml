@@ -23,6 +23,10 @@ envVarGroups:
         value: https://cds.climate.copernicus.eu/api
       - key: OTEL_SERVICE_NAME
         value: ingabe
+      - key: VITE_POSTHOG_KEY
+        value: phx_Yg7ygvFeNwJQmGvuA8oS1R9vI77aAZYJmtVIaYpNOKgdgkM
+      - key: VITE_POSTHOG_HOST
+        value: https://us.i.posthog.com
 
   - name: mundi-secrets
     envVars:
