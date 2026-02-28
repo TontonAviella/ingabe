@@ -24,7 +24,7 @@ envVarGroups:
       - key: OTEL_SERVICE_NAME
         value: ingabe
       - key: VITE_POSTHOG_KEY
-        value: phx_Yg7ygvFeNwJQmGvuA8oS1R9vI77aAZYJmtVIaYpNOKgdgkM
+        value: phc_W7tOZXWc5oPtpiYyyINii49GodL1NgyS6z30pNW8aTP
       - key: VITE_POSTHOG_HOST
         value: https://us.i.posthog.com
 
