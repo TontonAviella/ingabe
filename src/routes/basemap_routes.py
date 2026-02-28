@@ -95,15 +95,25 @@ async def render_basemap(
 
     style_json = await base_map.get_base_style(basemap)
 
-    response, _ = await render_map_internal(
-        map_id=f"basemap_{basemap}",
-        bbox="-10,29.75,30,70",
-        width=256,
-        height=256,
-        renderer="mbgl",
-        bgcolor="white",
-        style_json=json.dumps(style_json),
-    )
+    try:
+        response, _ = await render_map_internal(
+            map_id=f"basemap_{basemap}",
+            bbox="-10,29.75,30,70",
+            width=256,
+            height=256,
+            renderer="mbgl",
+            bgcolor="white",
+            style_json=json.dumps(style_json),
+        )
+    except Exception as e:
+        logger.warning("Basemap render failed for %s (falling back to placeholder): %s", basemap, e)
+        # 1x1 transparent PNG — prevents 502 cascade on resource-limited hosts
+        return Response(
+            content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+                    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx"
+                    b"\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n\xb4\x00\x00\x00\x00IEND\xaeB`\x82",
+            media_type="image/png",
+        )
 
     try:
         await s3.put_object(Bucket=bucket, Key=s3_key, Body=response.body)
