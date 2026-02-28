@@ -111,7 +111,13 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
       .then((res) => res.json())
       .then((data) => {
         if (cancelled) return;
-        setColumns(data.field_names ?? []);
+        const allNames: string[] = data.field_names ?? [];
+        const firstRow = data.data?.[0]?.attributes;
+        if (firstRow) {
+          setColumns(allNames.filter((name: string) => typeof firstRow[name] === 'number'));
+        } else {
+          setColumns(allNames);
+        }
       })
       .catch(() => {
         if (!cancelled) setColumns([]);
