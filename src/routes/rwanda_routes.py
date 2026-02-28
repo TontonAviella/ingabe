@@ -1514,6 +1514,126 @@ async def get_weather_daily(
         )
 
 
+# ─── Emissions data endpoints ────────────────────────────────────────────
+
+
+@rwanda_router.get(
+    "/rwanda/emissions/annual",
+    operation_id="get_rwanda_emissions_annual",
+)
+async def get_emissions_annual(
+    district: Optional[str] = Query(None, description="Filter by district name"),
+    year: Optional[int] = Query(None, description="Filter by specific year"),
+    year_from: Optional[int] = Query(None, description="Start year"),
+    year_to: Optional[int] = Query(None, description="End year"),
+    emission_type: Optional[str] = Query(None, description="Gas type: CH4, N2O, CO2, NH3"),
+    sector: Optional[str] = Query(None, description="Sector: AGS, ENF, MNM, AWB"),
+    limit: int = Query(500, ge=1, le=10000),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Get annual emissions statistics from PostgreSQL cache.
+
+    Pre-computed by Dagster annual_emissions_ingest from EDGAR v8.0 (JRC).
+    Returns total emissions in tonnes per district per year, broken down
+    by gas type and agriculture sector.
+    """
+    from src.structures import get_async_db_connection
+
+    try:
+        async with get_async_db_connection() as pg_conn:
+            where_clauses = []
+            params: list = []
+            param_idx = 1
+            if district:
+                where_clauses.append(f"district = ${param_idx}")
+                params.append(district)
+                param_idx += 1
+            if year is not None:
+                where_clauses.append(f"year = ${param_idx}")
+                params.append(year)
+                param_idx += 1
+            if year_from is not None:
+                where_clauses.append(f"year >= ${param_idx}")
+                params.append(year_from)
+                param_idx += 1
+            if year_to is not None:
+                where_clauses.append(f"year <= ${param_idx}")
+                params.append(year_to)
+                param_idx += 1
+            if emission_type:
+                where_clauses.append(f"emission_type = ${param_idx}")
+                params.append(emission_type)
+                param_idx += 1
+            if sector:
+                where_clauses.append(f"sector = ${param_idx}")
+                params.append(sector)
+                param_idx += 1
+            if not year and not year_from and not year_to:
+                # Default: last 5 years
+                where_clauses.append("year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 6")
+
+            where_sql = (
+                f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            )
+            query = f"""
+                SELECT district, year, emission_type, sector, sector_label,
+                       total_tonnes, mean_flux_kg_m2_s, grid_cells,
+                       source_version, computed_at
+                FROM emissions_annual_cache
+                {where_sql}
+                ORDER BY year DESC, district, emission_type, sector
+                LIMIT ${param_idx}
+            """
+            params.append(limit)
+
+            rows = await pg_conn.fetch(query, *params)
+
+        if not rows:
+            return {
+                "source": "postgres_cache",
+                "data_source": "EDGAR v8.0 (JRC)",
+                "status": "awaiting_dagster_population",
+                "message": (
+                    "Emissions cache will be populated by annual_emissions_ingest "
+                    "Dagster asset. Trigger it manually or wait for scheduled run."
+                ),
+                "district_filter": district,
+                "emissions": [],
+            }
+
+        emissions = [
+            {
+                "district": r[0],
+                "year": r[1],
+                "emission_type": r[2],
+                "sector": r[3],
+                "sector_label": r[4],
+                "total_tonnes": round(r[5], 2) if r[5] else None,
+                "mean_flux_kg_m2_s": r[6],
+                "grid_cells": r[7],
+                "source_version": r[8],
+                "computed_at": str(r[9]) if r[9] else None,
+            }
+            for r in rows
+        ]
+
+        return {
+            "source": "postgres_cache",
+            "data_source": "EDGAR v8.0 (Emissions Database for Global Atmospheric Research, JRC)",
+            "status": "ok",
+            "district_filter": district,
+            "year_range": f"{year_from or 'last_5y'}/{year_to or 'latest'}",
+            "count": len(emissions),
+            "emissions": emissions,
+        }
+    except Exception as e:
+        logger.error("PostgreSQL emissions query failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Cache query failed: {e}",
+        )
+
+
 # ─── Cell-level and parcel-level NDVI endpoints ──────────────────────────
 
 

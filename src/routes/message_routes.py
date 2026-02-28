@@ -4157,6 +4157,111 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "get_emissions_stats":
+                            try:
+                                # ── Query emissions_annual_cache (PostgreSQL) ──
+                                _em_where: list = []
+                                _em_params: list = []
+                                _em_pidx = 1
+                                if tool_args.get("district"):
+                                    _em_where.append(f"district = ${_em_pidx}")
+                                    _em_params.append(tool_args["district"])
+                                    _em_pidx += 1
+                                if tool_args.get("year"):
+                                    _em_where.append(f"year = ${_em_pidx}")
+                                    _em_params.append(int(tool_args["year"]))
+                                    _em_pidx += 1
+                                if tool_args.get("year_from"):
+                                    _em_where.append(f"year >= ${_em_pidx}")
+                                    _em_params.append(int(tool_args["year_from"]))
+                                    _em_pidx += 1
+                                if tool_args.get("year_to"):
+                                    _em_where.append(f"year <= ${_em_pidx}")
+                                    _em_params.append(int(tool_args["year_to"]))
+                                    _em_pidx += 1
+                                if tool_args.get("emission_type"):
+                                    _em_where.append(f"emission_type = ${_em_pidx}")
+                                    _em_params.append(tool_args["emission_type"])
+                                    _em_pidx += 1
+                                if tool_args.get("sector"):
+                                    _em_where.append(f"sector = ${_em_pidx}")
+                                    _em_params.append(tool_args["sector"])
+                                    _em_pidx += 1
+                                if not tool_args.get("year") and not tool_args.get("year_from") and not tool_args.get("year_to"):
+                                    _em_where.append("year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 6")
+
+                                _em_where_sql = f"WHERE {' AND '.join(_em_where)}" if _em_where else ""
+                                _em_rows = await conn.fetch(
+                                    f"SELECT district, year, emission_type, sector, "
+                                    f"sector_label, total_tonnes, grid_cells "
+                                    f"FROM emissions_annual_cache {_em_where_sql} "
+                                    f"ORDER BY year DESC, district, emission_type, sector "
+                                    f"LIMIT 500",
+                                    *_em_params,
+                                )
+
+                                _emissions_stats: list = []
+                                for r in _em_rows:
+                                    _emissions_stats.append({
+                                        "district": r["district"],
+                                        "year": r["year"],
+                                        "emission_type": r["emission_type"],
+                                        "sector": r["sector"],
+                                        "sector_label": r["sector_label"],
+                                        "total_tonnes": round(r["total_tonnes"], 2) if r["total_tonnes"] else None,
+                                        "grid_cells": r["grid_cells"],
+                                    })
+
+                                if _emissions_stats:
+                                    tool_result = {
+                                        "status": "success",
+                                        "source": "EDGAR v8.0 (JRC)",
+                                        "count": len(_emissions_stats),
+                                        "note": (
+                                            "EDGAR v8.0 emissions data from the Joint Research Centre. "
+                                            "Values are total tonnes per district per year. "
+                                            "Sectors: AGS=Agricultural soils, ENF=Enteric fermentation, "
+                                            "MNM=Manure management, AWB=Agricultural waste burning."
+                                        ),
+                                        "emissions_stats": _emissions_stats,
+                                    }
+                                    _pgc_id = await _ensure_rwanda_postgis_connection(
+                                        conn, current_project_id, user_id,
+                                    )
+                                    if _pgc_id:
+                                        tool_result["postgis_connection_id"] = _pgc_id
+                                        tool_result["kue_instructions"] = (
+                                            "To visualise emissions data on the map, call new_layer_from_postgis with "
+                                            f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                                            "Join emissions_annual_cache with rwanda_district_boundaries on district. "
+                                            "Example: SELECT ROW_NUMBER() OVER() AS id, e.district, e.total_tonnes, e.emission_type, "
+                                            "e.year, b.geom FROM emissions_annual_cache e JOIN rwanda_district_boundaries b "
+                                            "ON e.district = b.district WHERE e.emission_type = 'CH4' AND e.year = 2022 "
+                                            "Then add_layer_to_map and set_layer_style to colour by total_tonnes. "
+                                            "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                                        )
+                                else:
+                                    tool_result = {
+                                        "status": "success",
+                                        "emissions_stats": [],
+                                        "message": (
+                                            "No emissions data available. The emissions_annual_cache table "
+                                            "may not be populated yet. Trigger the annual_emissions_ingest "
+                                            "Dagster asset to load EDGAR data."
+                                        ),
+                                    }
+                            except Exception as e:
+                                logger.exception("get_emissions_stats tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "add_land_cover_layer":
                             # Add ESRI 10m LULC 2024 land cover as a raster overlay
                             try:

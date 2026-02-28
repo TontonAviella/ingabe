@@ -896,5 +896,45 @@
         "required": []
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_emissions_stats",
+      "description": "Read annual greenhouse gas and air pollutant emissions from the PostgreSQL cache. Data comes from EDGAR v8.0 (JRC, 0.1 degree resolution, updated annually by Dagster). Returns per-district annual emissions in tonnes for agriculture-related gases. Sectors: AGS (agricultural soils / fertilizers), ENF (enteric fermentation / livestock), MNM (manure management), AWB (agricultural waste burning). Use when the user asks about emissions, greenhouse gases, methane, CH4, N2O, CO2, NH3, fertilizer emissions, livestock emissions, or agricultural pollution for Rwanda districts.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Filter to a specific district name (e.g. Musanze, Gasabo, Bugesera)"
+          },
+          "year": {
+            "type": "integer",
+            "description": "Filter to a specific year (e.g. 2022)"
+          },
+          "year_from": {
+            "type": "integer",
+            "description": "Start year for range filter (default: 5 years ago)"
+          },
+          "year_to": {
+            "type": "integer",
+            "description": "End year for range filter (default: latest available)"
+          },
+          "emission_type": {
+            "type": "string",
+            "enum": ["CH4", "N2O", "CO2", "NH3"],
+            "description": "Filter by gas: CH4 (methane), N2O (nitrous oxide), CO2 (carbon dioxide), NH3 (ammonia)"
+          },
+          "sector": {
+            "type": "string",
+            "enum": ["AGS", "ENF", "MNM", "AWB"],
+            "description": "Filter by agriculture sector: AGS (agricultural soils), ENF (enteric fermentation), MNM (manure management), AWB (agricultural waste burning)"
+          }
+        },
+        "required": []
+      }
+    }
   }
 ]

@@ -2023,6 +2023,210 @@ def daily_weather_ingest(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# EDGAR Emissions Annual Ingest
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description="Annual: ingest EDGAR emissions data per district -> PostgreSQL cache",
+)
+def annual_emissions_ingest(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+) -> dict[str, Any]:
+    """Download EDGAR gridded emissions and aggregate to Rwanda districts.
+
+    Runs yearly (or manually).  Downloads 0.1° gridmaps for 4 greenhouse
+    gases (CH4, N2O, CO2, NH3) across 4 agriculture sectors (AGS, ENF,
+    MNM, AWB) for the 5 most recent available years.
+
+    Results are aggregated to each of the 30 Rwanda districts using
+    bounding-box zonal statistics with SUM aggregation (emissions are
+    cumulative) and written to emissions_annual_cache.
+
+    Sage reads this table via the get_emissions_stats tool.
+    """
+    from src.services.emissions_service import (
+        VALID_COMBOS,
+        get_emissions_service,
+    )
+
+    es = get_emissions_service()
+    if es is None:
+        context.log.error("EmissionsService unavailable")
+        return {"status": "error", "reason": "service_unavailable"}
+
+    # EDGAR v8.0 covers up to 2022; fetch last 5 available years
+    current_year = datetime.utcnow().year
+    edgar_latest = min(current_year - 2, 2022)  # EDGAR has ~2-year latency
+    years = list(range(edgar_latest - 4, edgar_latest + 1))
+
+    # Find which combos are already cached
+    cached_combos: set = set()
+    try:
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT district, year, emission_type, sector "
+                    "FROM emissions_annual_cache "
+                    "WHERE year >= %s AND year <= %s",
+                    (years[0], years[-1]),
+                )
+                for row in cur.fetchall():
+                    cached_combos.add((row[0], row[1], row[2], row[3]))
+    except Exception:
+        context.log.warning("emissions_annual_cache table may not exist yet")
+
+    # Get district bounding boxes from PostGIS
+    try:
+        district_rows = postgres.execute_query("""
+            SELECT district, bbox_west, bbox_south, bbox_east, bbox_north
+            FROM rwanda_district_boundaries
+            ORDER BY district
+        """)
+    except Exception:
+        district_rows = []
+
+    if not district_rows:
+        context.log.warning(
+            "No district boundaries — run rwanda_admin_boundaries first"
+        )
+        return {"status": "skipped", "reason": "no_district_boundaries"}
+
+    district_geometries = [
+        {
+            "district": row[0],
+            "bbox": (row[1], row[2], row[3], row[4]),
+        }
+        for row in district_rows
+    ]
+    district_names = {row[0] for row in district_rows}
+
+    total_rows_written = 0
+    combos_processed = 0
+    combos_skipped = 0
+    errors_list: list[str] = []
+
+    # Build list of valid combos (not every gas × sector exists)
+    all_combos = [
+        (etype, sector)
+        for etype, sectors in VALID_COMBOS.items()
+        for sector in sectors
+    ]
+    total_combos = len(years) * len(all_combos)
+
+    for year in years:
+        for emission_type, sector in all_combos:
+                # Check if all districts are already cached for this combo
+                all_cached = all(
+                    (d, year, emission_type, sector) in cached_combos
+                    for d in district_names
+                )
+                if all_cached:
+                    combos_skipped += 1
+                    continue
+
+                context.log.info(
+                    "Downloading EDGAR %s/%s/%d (%d/%d combos done)",
+                    emission_type, sector, year,
+                    combos_processed, total_combos,
+                )
+
+                try:
+                    grid_data = es.download_edgar_gridmap(
+                        emission_type, sector, year
+                    )
+                except Exception as exc:
+                    context.log.warning(
+                        "Download failed for %s/%s/%d: %s",
+                        emission_type, sector, year, exc,
+                    )
+                    errors_list.append(f"{emission_type}/{sector}/{year}: {exc}")
+                    continue
+
+                if "error" in grid_data and "values" not in grid_data:
+                    context.log.warning(
+                        "EDGAR download failed: %s/%s/%d: %s",
+                        emission_type, sector, year, grid_data.get("error"),
+                    )
+                    errors_list.append(
+                        f"{emission_type}/{sector}/{year}: {grid_data.get('error')}"
+                    )
+                    continue
+
+                # Aggregate to districts
+                district_stats = es.aggregate_to_districts(
+                    grid_data, district_geometries
+                )
+
+                if not district_stats:
+                    context.log.warning(
+                        "No district stats for %s/%s/%d",
+                        emission_type, sector, year,
+                    )
+                    continue
+
+                # Write to PostgreSQL cache with ON CONFLICT DO UPDATE
+                insert_params = [
+                    (
+                        s["district"],
+                        s["year"],
+                        s["emission_type"],
+                        s["sector"],
+                        s.get("sector_label"),
+                        s.get("total_tonnes"),
+                        s.get("mean_flux_kg_m2_s"),
+                        s.get("grid_cells"),
+                        s.get("source_version"),
+                    )
+                    for s in district_stats
+                ]
+
+                with postgres.get_sync_connection() as pg_conn:
+                    with pg_conn.cursor() as cur:
+                        cur.executemany(
+                            """
+                            INSERT INTO emissions_annual_cache
+                                (district, year, emission_type, sector,
+                                 sector_label, total_tonnes, mean_flux_kg_m2_s,
+                                 grid_cells, source_version)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (district, year, emission_type, sector)
+                            DO UPDATE SET
+                                sector_label = EXCLUDED.sector_label,
+                                total_tonnes = EXCLUDED.total_tonnes,
+                                mean_flux_kg_m2_s = EXCLUDED.mean_flux_kg_m2_s,
+                                grid_cells = EXCLUDED.grid_cells,
+                                source_version = EXCLUDED.source_version,
+                                computed_at = NOW()
+                            """,
+                            insert_params,
+                        )
+                    pg_conn.commit()
+                    total_rows_written += len(insert_params)
+
+                combos_processed += 1
+                context.log.info(
+                    "Emissions cache: wrote %d rows for %s/%s/%d",
+                    len(insert_params), emission_type, sector, year,
+                )
+
+    context.log.info(
+        "Emissions ingest complete: %d combos processed, %d skipped, %d rows written",
+        combos_processed, combos_skipped, total_rows_written,
+    )
+    return {
+        "status": "ok",
+        "combos_processed": combos_processed,
+        "combos_skipped": combos_skipped,
+        "total_rows": total_rows_written,
+        "years": years,
+        "errors": errors_list if errors_list else None,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # WorldCover Land-Cover Zonal Statistics
 # ═══════════════════════════════════════════════════════════════════════════
 

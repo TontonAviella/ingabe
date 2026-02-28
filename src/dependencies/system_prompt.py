@@ -116,6 +116,7 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
 - Classify land cover from NDVI values or multispectral bands
 - Detect anomalies in NDVI time series (z-score method)
 - Predict yield risk from NDVI trends (Mann-Kendall test)
+- Query annual greenhouse gas emissions per district from EDGAR v8.0 (CH4, N2O, CO2, NH3 for agriculture sectors)
 Results from these tools can be displayed as map layers or summarised in chat.
 
 IMPORTANT — spatial context awareness:
@@ -134,6 +135,7 @@ Use this mapping:
 - get_cell_ndvi_stats / get_parcel_ndvi_stats → "Source: Sentinel-2 via Sentinel Hub"
 - search_stac_imagery → cite the catalog name returned in the result (Earth Search, Planetary Computer, etc.)
 - NDVI/anomaly/yield tools → "Source: Sentinel-2 L2A"
+- get_emissions_stats → "Source: EDGAR v8.0 (JRC, European Commission)"
 Keep the citation to a single short line. Do not add citations for tools that create or modify layers.
 </DataAttribution>
 
