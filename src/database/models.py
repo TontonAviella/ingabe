@@ -37,6 +37,16 @@ if TYPE_CHECKING:
 Base = declarative_base()
 
 
+# ---------------------------------------------------------------------------
+# Layer type constants — use these instead of raw strings for comparisons.
+# ---------------------------------------------------------------------------
+
+LAYER_TYPE_VECTOR = "vector"
+LAYER_TYPE_RASTER = "raster"
+LAYER_TYPE_POSTGIS = "postgis"
+LAYER_TYPE_POINT_CLOUD = "point_cloud"
+
+
 class User(Base):
     """Clerk-provisioned user mapping Clerk ID → internal UUID."""
 
@@ -170,7 +180,7 @@ class MapLayer(Base):
     s3_key = Column(String)
     type: Mapped[str] = mapped_column(
         String, nullable=False
-    )  # 'vector', 'raster', 'postgis', 'point_cloud'
+    )  # LAYER_TYPE_VECTOR, LAYER_TYPE_RASTER, LAYER_TYPE_POSTGIS, LAYER_TYPE_POINT_CLOUD
     raster_cog_url = Column(String)  # DEPRECATED: unused field, can be NULL
     postgis_connection_id = Column(
         String(12), ForeignKey("project_postgres_connections.id")
@@ -221,7 +231,7 @@ class MapLayer(Base):
 
         @asynccontextmanager
         async def _source_context():
-            if self.type == "postgis":
+            if self.type == LAYER_TYPE_POSTGIS:
                 if not self.postgis_connection_id or not self.postgis_query:
                     raise ValueError(
                         f"PostGIS layer {self.layer_id} missing connection_id or query"

@@ -128,60 +128,11 @@ async def _lookup_admin_geometry(
 ) -> Optional[dict]:
     """Look up a GeoJSON geometry from Rwanda admin boundary tables in PostGIS.
 
-    Priority: cell > sector > district (most specific wins).
-    Returns GeoJSON geometry dict, or None if not found.
+    Delegates to the shared admin_boundaries service which handles caching,
+    read-replica routing, and sector fallback via cell union.
     """
-    import json as _json
-    from src.structures import get_async_db_connection
-
-    if not (district or sector or cell):
-        return None
-
-    async with get_async_db_connection() as conn:
-        try:
-            if cell:
-                row = await conn.fetchrow(
-                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_cell_boundaries "
-                    "WHERE LOWER(cell_name) = LOWER($1) LIMIT 1",
-                    cell,
-                )
-                if row and row[0]:
-                    return _json.loads(row[0])
-
-            if sector:
-                try:
-                    row = await conn.fetchrow(
-                        "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_sector_boundaries "
-                        "WHERE LOWER(sector_name) = LOWER($1) LIMIT 1",
-                        sector,
-                    )
-                    if row and row[0]:
-                        return _json.loads(row[0])
-                except Exception:
-                    try:
-                        row = await conn.fetchrow(
-                            "SELECT ST_AsGeoJSON(ST_Union(geom))::text FROM rwanda_cell_boundaries "
-                            "WHERE LOWER(sector_name) = LOWER($1)",
-                            sector,
-                        )
-                        if row and row[0]:
-                            return _json.loads(row[0])
-                    except Exception:
-                        pass
-
-            if district:
-                row = await conn.fetchrow(
-                    "SELECT ST_AsGeoJSON(geom)::text FROM rwanda_district_boundaries "
-                    "WHERE LOWER(district) = LOWER($1) LIMIT 1",
-                    district,
-                )
-                if row and row[0]:
-                    return _json.loads(row[0])
-
-        except Exception as e:
-            logger.warning("Admin geometry lookup failed: %s", e)
-
-    return None
+    from src.services.admin_boundaries import lookup_admin_geometry
+    return await lookup_admin_geometry(district=district, sector=sector, cell=cell)
 
 
 @rwanda_router.post(

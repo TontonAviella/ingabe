@@ -1,7 +1,7 @@
-"""Tests for ESA WorldCover 2021 integration.
+"""Tests for ESRI 10m Annual Land Use Land Cover integration.
 
 Three tiers:
-  1. Unit tests — pure logic (tile IDs, grid snapping, LUT correctness)
+  1. Unit tests — pure logic (tile URLs, LUT correctness)
   2. Integration tests — endpoint + DB + map_service style pipeline
   3. Remote tests — actual S3 COG reads via render_tile (marked @pytest.mark.remote)
 """
@@ -19,8 +19,6 @@ from src.worldcover import (
     get_tile_urls,
     get_rwanda_tile_urls,
     render_tile,
-    _tile_id,
-    _snap_to_grid,
 )
 
 
@@ -33,64 +31,32 @@ KIGALI_Z, KIGALI_X, KIGALI_Y = 10, 596, 517
 # 1. Unit tests — tile URL resolution
 # ===========================================================================
 
-class TestTileId:
-    def test_positive_lat_lon(self):
-        assert _tile_id(0, 27) == "N00E027"
-
-    def test_negative_lat(self):
-        assert _tile_id(-3, 27) == "S03E027"
-
-    def test_negative_lon(self):
-        assert _tile_id(48, -3) == "N48W003"
-
-    def test_both_negative(self):
-        assert _tile_id(-12, -75) == "S12W075"
-
-
-class TestSnapToGrid:
-    def test_floor_exact(self):
-        assert _snap_to_grid(27.0, 3, snap_floor=True) == 27
-
-    def test_floor_fractional(self):
-        assert _snap_to_grid(28.8, 3, snap_floor=True) == 27
-
-    def test_ceil_exact(self):
-        assert _snap_to_grid(30.0, 3, snap_floor=False) == 30
-
-    def test_ceil_fractional(self):
-        assert _snap_to_grid(30.9, 3, snap_floor=False) == 33
-
-    def test_negative_floor(self):
-        assert _snap_to_grid(-2.85, 3, snap_floor=True) == -3
-
-    def test_negative_ceil(self):
-        assert _snap_to_grid(-1.05, 3, snap_floor=False) == 0
-
-
 class TestGetTileUrls:
-    def test_rwanda_bbox(self):
-        urls = get_tile_urls((28.8, -2.85, 30.9, -1.05))
+    def test_rwanda_zones(self):
+        urls = get_tile_urls(["35M", "36M"])
         assert len(urls) == 2
-        assert any("S03E027" in u for u in urls)
-        assert any("S03E030" in u for u in urls)
+        assert any("35M" in u for u in urls)
+        assert any("36M" in u for u in urls)
 
-    def test_single_tile(self):
-        urls = get_tile_urls((28.0, -2.0, 29.0, -1.0))
+    def test_single_zone(self):
+        urls = get_tile_urls(["35M"])
         assert len(urls) == 1
-        assert "S03E027" in urls[0]
+        assert "35M" in urls[0]
 
     def test_url_format(self):
-        urls = get_tile_urls((28.8, -2.85, 30.9, -1.05))
+        urls = get_tile_urls(["35M", "36M"])
         for url in urls:
-            assert url.startswith("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/")
-            assert url.endswith("_Map.tif")
+            assert url.startswith("https://io-10m-annual-lulc.s3.us-west-2.amazonaws.com/")
+            assert url.endswith(".tif")
 
     def test_rwanda_convenience(self):
-        assert get_rwanda_tile_urls() == get_tile_urls((28.8, -2.85, 30.9, -1.05))
+        urls = get_rwanda_tile_urls()
+        assert len(urls) == 2
+        assert urls == get_tile_urls(["35M", "36M"])
 
-    def test_multi_tile_bbox(self):
-        urls = get_tile_urls((0.0, 0.0, 9.0, 9.0))
-        assert len(urls) == 9
+    def test_custom_year(self):
+        urls = get_tile_urls(["35M"], year=2023)
+        assert "2023" in urls[0]
 
 
 # ===========================================================================
@@ -99,11 +65,11 @@ class TestGetTileUrls:
 
 class TestColormaps:
     def test_worldcover_classes_count(self):
-        assert len(WORLDCOVER_CLASSES) == 11
+        assert len(WORLDCOVER_CLASSES) == 9
 
     def test_cropland_value(self):
-        assert 40 in WORLDCOVER_CLASSES
-        assert WORLDCOVER_CLASSES[40] == "Cropland"
+        assert 5 in WORLDCOVER_CLASSES
+        assert WORLDCOVER_CLASSES[5] == "Crops"
 
     def test_lut_shape(self):
         assert LUT_ALL.shape == (256, 4)
@@ -121,14 +87,14 @@ class TestColormaps:
     def test_lut_all_nodata_transparent(self):
         assert LUT_ALL[0][3] == 0
 
-    def test_lut_cropland_highlights_40(self):
-        rgba = LUT_CROPLAND[40]
+    def test_lut_cropland_highlights_5(self):
+        rgba = LUT_CROPLAND[5]
         assert rgba[3] == 255
         assert rgba[1] > rgba[0]  # green > red
 
     def test_lut_cropland_mutes_others(self):
         for val in WORLDCOVER_CLASSES:
-            if val == 40:
+            if val == 5:
                 continue
             rgba = LUT_CROPLAND[val]
             assert rgba[3] < 255, f"Class {val} should be semi-transparent in cropland mode"
@@ -168,9 +134,9 @@ async def test_worldcover_tile_invalid_mode(client):
 
 @pytest.mark.remote
 class TestRenderTileRealData:
-    """Tests that actually read ESA WorldCover COGs from S3.
+    """Tests that actually read ESRI LULC COGs from S3.
 
-    These require network access to esa-worldcover.s3.eu-central-1.amazonaws.com.
+    These require network access to io-10m-annual-lulc.s3.us-west-2.amazonaws.com.
     Run with: pytest -xvs -m remote src/test_worldcover.py
     """
 
@@ -385,7 +351,7 @@ async def test_worldcover_layer_appears_in_map_style(auth_client):
     assert "/api/worldcover/{z}/{x}/{y}.png" in tile_url
     assert "mode=cropland" in tile_url
     assert worldcover_source["tileSize"] == 256
-    assert worldcover_source.get("maxzoom") == 16
+    assert worldcover_source.get("maxzoom") == 14
 
     # 5. Verify the raster layer entry exists in the style layers
     layers = style_json.get("layers", [])

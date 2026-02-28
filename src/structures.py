@@ -13,8 +13,6 @@ from src.database.pool import (  # noqa: F401
     IS_RUNNING_PYTEST,
     AsyncDatabaseConnection,
     _build_postgres_url,
-    _get_async_connection_pool,
-    _get_async_read_pool,
     async_conn,
     async_read_conn,
     get_async_db_connection,

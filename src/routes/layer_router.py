@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse, Response, RedirectResponse
 from src.dependencies.db_pool import get_pooled_connection
 from src.dependencies.dag import get_layer
 from pydantic import BaseModel, Field
-from src.database.models import MapLayer
+from src.database.models import MapLayer, LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
 from src.dependencies.session import (
     verify_session_required,
     session_user_id,
@@ -119,7 +119,7 @@ async def get_layer_cog_tif(
     layer: MapLayer = Depends(get_layer),
 ):
     # Check if layer is a raster type
-    if layer.type != "raster":
+    if layer.type != LAYER_TYPE_RASTER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a raster type. COG can only be generated from raster data.",
@@ -432,7 +432,7 @@ async def get_layer_pmtiles(
     layer: MapLayer = Depends(get_layer),
 ):
     # Check if layer is a vector type
-    if layer.type != "vector":
+    if layer.type != LAYER_TYPE_VECTOR:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a vector type. PMTiles can only be generated from vector data.",
@@ -594,7 +594,7 @@ async def get_layer_laz(
     request: Request,
     layer: MapLayer = Depends(get_layer),
 ):
-    if layer.type != "point_cloud":
+    if layer.type != LAYER_TYPE_POINT_CLOUD:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a point cloud type",
@@ -693,7 +693,7 @@ async def get_raster_xyz_tile(
     request: Request,
     layer: MapLayer = Depends(get_layer),
 ):
-    if layer.type != "raster":
+    if layer.type != LAYER_TYPE_RASTER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a raster type",
@@ -960,7 +960,7 @@ async def get_layer_geojson(
     layer: MapLayer = Depends(get_layer),
 ):
     # ─── PostGIS layers: execute query and return GeoJSON directly ────────
-    if layer.type == "postgis" and layer.postgis_connection_id and layer.postgis_query:
+    if layer.type == LAYER_TYPE_POSTGIS and layer.postgis_connection_id and layer.postgis_query:
         async with async_conn("geojson") as conn:
             connection_details = await conn.fetchrow(
                 """
@@ -1009,7 +1009,7 @@ async def get_layer_geojson(
         )
 
     # Check if layer is a vector type
-    if layer.type != "vector":
+    if layer.type != LAYER_TYPE_VECTOR:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a vector type. GeoJSON format is only available for vector and PostGIS data.",
@@ -1124,7 +1124,7 @@ async def get_layer_column_stats(
         return [mn + step * i for i in range(k + 1)]
 
     # ── PostGIS path ───────────────────────────────────────────────────────
-    if layer.type == "postgis" and layer.postgis_connection_id and layer.postgis_query:
+    if layer.type == LAYER_TYPE_POSTGIS and layer.postgis_connection_id and layer.postgis_query:
         async with async_conn("geojson") as conn:
             connection_details = await conn.fetchrow(
                 """
@@ -1194,7 +1194,7 @@ async def get_layer_column_stats(
         )
 
     # ── Vector (FlatGeoBuf / GeoJSON) path ────────────────────────────────
-    if layer.type != "vector":
+    if layer.type != LAYER_TYPE_VECTOR:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="column-stats is only supported for vector and PostGIS layers",

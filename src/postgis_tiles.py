@@ -1,11 +1,10 @@
 import logging
-import os
 import re
 
 import asyncpg
 from fastapi import HTTPException, status
 from typing import List
-from src.database.models import MapLayer
+from src.database.models import LAYER_TYPE_POSTGIS, MapLayer
 import redis.exceptions
 
 logger = logging.getLogger(__name__)
@@ -20,29 +19,7 @@ MVT_LAYER_NAME = "reprojectedfgb"
 # MVT tile cache TTL in seconds (default: 5 minutes)
 _MVT_CACHE_TTL = 300
 
-# Lazy-initialized async Redis client for MVT caching
-_async_redis = None
-
-
-def _get_async_redis():
-    """Return a lazily-initialized async Redis client for MVT tile caching.
-
-    Returns None if Redis is unavailable or not configured.
-    Binary mode (no decode_responses) for storing raw MVT bytes.
-    """
-    global _async_redis
-    if _async_redis is None:
-        try:
-            from redis.asyncio import Redis as AsyncRedis
-            _async_redis = AsyncRedis(
-                host=os.environ.get("REDIS_HOST", "localhost"),
-                port=int(os.environ.get("REDIS_PORT", 6379)),
-                decode_responses=False,
-            )
-        except Exception as e:
-            logger.warning("Failed to initialize Redis client for MVT caching: %s", e)
-            return None
-    return _async_redis
+from src.dependencies.redis_client import get_async_redis as _get_async_redis
 
 
 def _validate_column_name(name: str) -> str:
@@ -61,7 +38,7 @@ async def fetch_mvt_tile(
     layer: MapLayer, conn: asyncpg.Connection, z: int, x: int, y: int
 ) -> bytes:
     # Check if layer is a PostGIS type
-    if layer.type != "postgis":
+    if layer.type != LAYER_TYPE_POSTGIS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is not a PostGIS type. MVT tiles can only be generated from PostGIS data.",

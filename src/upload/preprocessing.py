@@ -18,6 +18,7 @@ from src.upload.models import (
     MetadataUpdates,
     PointCloudPreprocessResult,
 )
+from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -186,7 +187,7 @@ async def get_layer_bounds_and_metadata(
     metadata_updates = MetadataUpdates()
 
     try:
-        if layer_type == "raster":
+        if layer_type == LAYER_TYPE_RASTER:
             # Use GDAL for raster bounds extraction
             ds = gdal.Open(ogr_source)
             if ds:
@@ -234,7 +235,7 @@ async def get_layer_bounds_and_metadata(
 
                 ds = None
 
-        elif layer_type == "vector":
+        elif layer_type == LAYER_TYPE_VECTOR:
             # Use Fiona for vector bounds and metadata extraction
             open_kwargs = {}
             if dataset_layer is not None:

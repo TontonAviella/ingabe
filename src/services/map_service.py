@@ -23,6 +23,7 @@ from src.utils import get_bucket_name, get_async_s3_client, generate_id, s3_op
 from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
+from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -177,7 +178,7 @@ async def internal_upload_layer(
 
         layer_type = get_layer_type(file_ext)
         if not file_ext:
-            file_ext = ".tif" if layer_type == "raster" else ".geojson"
+            file_ext = ".tif" if layer_type == LAYER_TYPE_RASTER else ".geojson"
 
         metadata_dict = {"original_filename": filename}
         layer_id = generate_id(prefix="L")
@@ -271,10 +272,10 @@ async def internal_upload_layer(
             url=result.first_layer_url
             or (
                 f"/api/layer/{result.created_layer_ids[0]}.pmtiles"
-                if result.layer_type == "vector"
+                if result.layer_type == LAYER_TYPE_VECTOR
                 else (
                     f"/api/layer/{result.created_layer_ids[0]}.laz"
-                    if result.layer_type == "point_cloud"
+                    if result.layer_type == LAYER_TYPE_POINT_CLOUD
                     else f"/api/layer/{result.created_layer_ids[0]}.cog.tif"
                 )
             ),
@@ -322,10 +323,10 @@ async def get_map_style_internal(
                 layer_ids,
             )
 
-        vector_layers = [layer for layer in all_layers if layer["type"] == "vector"]
+        vector_layers = [layer for layer in all_layers if layer["type"] == LAYER_TYPE_VECTOR]
         # Filter for raster layers; the .cog.tif endpoint handles generation if needed
-        raster_layers = [layer for layer in all_layers if layer["type"] == "raster"]
-        postgis_layers = [layer for layer in all_layers if layer["type"] == "postgis"]
+        raster_layers = [layer for layer in all_layers if layer["type"] == LAYER_TYPE_RASTER]
+        postgis_layers = [layer for layer in all_layers if layer["type"] == LAYER_TYPE_POSTGIS]
 
         def get_geometry_order(layer):
             geom_type = layer.get("geometry_type") or ""
@@ -593,7 +594,7 @@ async def get_map_style_internal(
                 style_json["layers"].append(ml_layer)
 
     for layer in postgis_layers:
-        if layer["type"] == "postgis":
+        if layer["type"] == LAYER_TYPE_POSTGIS:
             layer_id = layer["layer_id"]
 
             # Add cache-busting parameter using last_edited timestamp

@@ -5,6 +5,7 @@ and missing MUNDI_AUTH_MODE configuration.
 """
 
 import pytest
+from unittest.mock import patch
 
 
 @pytest.mark.anyio
@@ -49,12 +50,13 @@ async def test_invalid_bearer_token_returns_401(client, env_override):
         CLERK_SECRET_KEY="test_secret",
         CLERK_ISSUER="https://test.clerk.accounts.dev",
     ):
-        resp = await client.post(
-            "/api/maps/create",
-            json={"title": "test"},
-            headers={"Authorization": "Bearer invalid.token.here"},
-        )
-        assert resp.status_code == 401
+        with patch("src.dependencies.session._fetch_jwks", return_value={"keys": []}):
+            resp = await client.post(
+                "/api/maps/create",
+                json={"title": "test"},
+                headers={"Authorization": "Bearer invalid.token.here"},
+            )
+            assert resp.status_code == 401
 
 
 @pytest.mark.anyio

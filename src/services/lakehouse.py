@@ -44,6 +44,7 @@ except ImportError:
 from src.duckdb import get_lakehouse_connection
 from src.structures import get_async_db_connection
 from src.utils import get_bucket_name, get_async_s3_client
+from src.database.models import LAYER_TYPE_VECTOR
 
 logger = logging.getLogger(__name__)
 
@@ -516,7 +517,7 @@ class LakehouseManager:
                     detail=f"Layer {layer_id} not found"
                 )
 
-            if layer["type"] != "vector":
+            if layer["type"] != LAYER_TYPE_VECTOR:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Only vector layers can be converted to Iceberg tables"

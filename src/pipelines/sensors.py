@@ -9,6 +9,7 @@ import logging
 from dagster import RunRequest, SensorEvaluationContext, sensor
 
 from src.pipelines.resources import PostgresResource, S3Resource
+from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
                 latest_timestamp = created_on_str
 
             # Determine which assets to trigger based on layer type
-            if layer_type == "raster":
+            if layer_type == LAYER_TYPE_RASTER:
                 # Trigger raster processing pipeline
                 run_requests.append(
                     RunRequest(
@@ -81,7 +82,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
                         job_name="raster_processing_job",
                         tags={
                             "layer_id": layer_id,
-                            "layer_type": "raster",
+                            "layer_type": LAYER_TYPE_RASTER,
                             "s3_key": s3_key,
                             "trigger": "s3_upload_sensor",
                         },
@@ -89,7 +90,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
                 )
                 context.log.info(f"Triggered raster pipeline for layer {layer_id}")
 
-            elif layer_type == "vector":
+            elif layer_type == LAYER_TYPE_VECTOR:
                 # Trigger vector processing pipeline
                 run_requests.append(
                     RunRequest(
@@ -97,7 +98,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
                         job_name="vector_processing_job",
                         tags={
                             "layer_id": layer_id,
-                            "layer_type": "vector",
+                            "layer_type": LAYER_TYPE_VECTOR,
                             "s3_key": s3_key,
                             "trigger": "s3_upload_sensor",
                         },
@@ -105,7 +106,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
                 )
                 context.log.info(f"Triggered vector pipeline for layer {layer_id}")
 
-            elif layer_type == "point_cloud":
+            elif layer_type == LAYER_TYPE_POINT_CLOUD:
                 # Point cloud processing (not fully implemented yet)
                 context.log.info(f"Point cloud upload detected: {layer_id} (skipping)")
             else:

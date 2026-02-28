@@ -68,6 +68,13 @@ def get_bucket_name():
     return os.environ["S3_BUCKET"]
 
 
+async def close_s3_clients() -> None:
+    """Close all cached async S3 clients. Call during shutdown."""
+    for client in _clients.values():
+        await client.close()
+    _clients.clear()
+
+
 async def process_zip_with_shapefile(zip_file_path):
     temp_dir = tempfile.mkdtemp()
 

@@ -284,19 +284,36 @@ async def test_chat_completions(
             assert msg["ephemeral"] and msg["action"] == "Adding layer to map..."
             assert msg["status"] == "active"
 
-            # handle racing
-            msg1 = websocket.receive_json()
-            msg2 = websocket.receive_json()
+            # handle racing — add_layer_to_map completion, auto-zoom
+            # ephemeral(s), and tool response can arrive in any order
+            pending_messages = []
+            for _ in range(6):  # collect up to 6 messages (generous)
+                pending_messages.append(websocket.receive_json())
+                # Stop once we have both the tool response and the
+                # "Adding layer" completed ephemeral
+                has_tool = any(
+                    m.get("role") == "tool" and m.get("tool_response", {}).get("id") == "call_2"
+                    for m in pending_messages
+                )
+                has_add_done = any(
+                    m.get("ephemeral") and m.get("action") == "Adding layer to map..." and m.get("status") == "completed"
+                    for m in pending_messages
+                )
+                if has_tool and has_add_done:
+                    break
 
-            messages = [msg1, msg2]
-
-            ephemeral_msg = next((m for m in messages if m.get("ephemeral")), None)
+            ephemeral_msg = next(
+                (m for m in pending_messages
+                 if m.get("ephemeral") and m.get("action") == "Adding layer to map..." and m.get("status") == "completed"),
+                None,
+            )
             assert ephemeral_msg is not None
-            assert ephemeral_msg["action"] == "Adding layer to map..."
-            assert ephemeral_msg["status"] == "completed"
             assert ephemeral_msg["updates"]["style_json"]
 
-            tool_msg = next((m for m in messages if m.get("role") == "tool"), None)
+            tool_msg = next(
+                (m for m in pending_messages if m.get("role") == "tool"),
+                None,
+            )
             assert tool_msg is not None
             assert tool_msg["tool_response"]["id"] == "call_2"
             assert tool_msg["tool_response"]["status"] == "success"
@@ -343,8 +360,23 @@ async def test_chat_completions(
                 )
                 assert "Buffered Beaches" in response.text
                 assert "Geometry Type: multipolygon" in response.text
-                assert "-98.0536" in response.text
-                assert "-58.7340" in response.text
-                assert "102.3725" in response.text
-                assert "141.4905" in response.text
+                assert "Dataset Bounds:" in response.text
+                # Verify bounds are in the Barcelona region (not degenerate)
+                import re
+                bounds_match = re.search(
+                    r"Dataset Bounds: ([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)",
+                    response.text,
+                )
+                assert bounds_match is not None, (
+                    f"Dataset Bounds not found in response: {response.text}"
+                )
+                minx, miny, maxx, maxy = (
+                    float(bounds_match.group(i)) for i in range(1, 5)
+                )
+                # Buffered Barcelona beaches should still be in the
+                # general Mediterranean region (roughly 0-4°E, 39-43°N)
+                assert -1 < minx < 3, f"minx {minx} outside expected range"
+                assert 39 < miny < 42, f"miny {miny} outside expected range"
+                assert 2 < maxx < 5, f"maxx {maxx} outside expected range"
+                assert 41 < maxy < 44, f"maxy {maxy} outside expected range"
                 assert "lifeguard" in response.text

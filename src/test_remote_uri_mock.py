@@ -98,6 +98,60 @@ def mock_esri_requests(monkeypatch):
     )
 
 
+@pytest.fixture
+def mock_remote_geojson_download(monkeypatch):
+    """Mock HTTP download for remote GeoJSON so we use the local fixture."""
+    import aiohttp
+
+    fixture_path = os.path.join(
+        os.path.dirname(__file__), "..", "test_fixtures", "airports.geojson"
+    )
+    with open(fixture_path, "rb") as f:
+        fixture_content = f.read()
+
+    real_init = aiohttp.ClientSession.__init__
+    real_get = aiohttp.ClientSession._request
+
+    class MockResponse:
+        def __init__(self, content):
+            self.status = 200
+            self._content = content
+
+        async def read(self):
+            return self._content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    original_get = aiohttp.ClientSession.get
+
+    def patched_get(self, url, **kwargs):
+        if "airports.geojson" in url or "github.com" in url:
+            return MockResponse(fixture_content)
+        return original_get(self, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "get", patched_get)
+
+    # Also bypass URL validation for this URL
+    from src.services import map_service as ms
+
+    real_validate = ms.validate_remote_url
+
+    def patched_validate(url, source_type):
+        if "airports.geojson" in url or "github.com" in url:
+            return url
+        return real_validate(url, source_type)
+
+    monkeypatch.setattr(ms, "validate_remote_url", patched_validate)
+    monkeypatch.setattr(
+        "src.routes.postgres_routes.validate_remote_url", patched_validate
+    )
+
+
+@pytest.mark.usefixtures("mock_remote_geojson_download")
 @pytest.mark.anyio
 @pytest.mark.timeout(120)
 async def test_remote_file_with_pmtiles_generation(auth_client):

@@ -144,9 +144,9 @@ async def test_update_basemap_with_invalid_name(auth_client, expected_basemaps):
     assert style_response.status_code == 200
 
     style_data = style_response.json()
-    # Invalid basemap should stay as requested but provider defaults to first available
+    # Invalid basemap should stay as requested but provider falls back to openstreetmap
     assert style_data["metadata"]["current_basemap"] == "nonexistent"
-    assert style_data["name"] == expected_basemaps["default_style_name"]
+    assert style_data["name"] == "OpenStreetMap"
 
 
 @pytest.mark.anyio

@@ -233,9 +233,9 @@ def pytest_xdist_auto_num_workers(config):
 @pytest.fixture
 def expected_basemaps():
     return {
-        "available_styles": ["openstreetmap", "openfreemap"],
-        "first_style": "openstreetmap",
-        "default_style_name": "OpenStreetMap",
+        "available_styles": ["esri_satellite", "openstreetmap", "openfreemap"],
+        "first_style": "esri_satellite",
+        "default_style_name": "Esri Satellite",
     }
 
 

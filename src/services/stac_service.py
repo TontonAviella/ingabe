@@ -61,6 +61,13 @@ SENTINEL2_COLLECTIONS = {
     "cdse": "SENTINEL-2",
 }
 
+# Drought status constants (WMO VCI thresholds)
+DROUGHT_EXTREME = "extreme_drought"
+DROUGHT_SEVERE = "severe_drought"
+DROUGHT_MODERATE = "moderate_drought"
+DROUGHT_MILD = "mild_drought"
+DROUGHT_NONE = "no_drought"
+
 # Band names to extract from STAC items
 _USEFUL_ASSETS = {
     "visual", "thumbnail",
@@ -79,6 +86,55 @@ class STACService:
     Uses pystac-client when available (vendor-agnostic, same API for all catalogs).
     Falls back to raw HTTP requests if pystac-client is not installed.
     """
+
+    @staticmethod
+    def _resolve_band_keys(assets: dict) -> tuple:
+        """Resolve red/NIR band keys across naming conventions.
+
+        Returns (red_key, nir_key) — either may be None if not found.
+        Supports B04/B08 (Copernicus) and red/nir (Earth Search).
+        """
+        red_key = "B04" if "B04" in assets else ("red" if "red" in assets else None)
+        nir_key = "B08" if "B08" in assets else ("nir" if "nir" in assets else None)
+        return red_key, nir_key
+
+    @staticmethod
+    def _compute_ndvi_stats(
+        b04_data: np.ndarray,
+        b08_data: np.ndarray,
+        exclude_zero_reflectance: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Compute NDVI statistics from red and NIR band arrays.
+
+        Returns dict with mean/std/min/max NDVI and valid_pixel_count,
+        or None if no valid pixels.
+        """
+        denominator = b08_data + b04_data
+        ndvi = np.where(denominator != 0, (b08_data - b04_data) / denominator, 0.0)
+
+        valid_mask = (ndvi >= -1.0) & (ndvi <= 1.0) & np.isfinite(ndvi)
+        if exclude_zero_reflectance:
+            valid_mask &= (b04_data > 0) | (b08_data > 0)
+        valid_ndvi = ndvi[valid_mask]
+
+        if len(valid_ndvi) == 0:
+            return None
+
+        return {
+            "mean_ndvi": round(float(np.mean(valid_ndvi)), 4),
+            "std_ndvi": round(float(np.std(valid_ndvi)), 4),
+            "min_ndvi": round(float(np.min(valid_ndvi)), 4),
+            "max_ndvi": round(float(np.max(valid_ndvi)), 4),
+            "valid_pixel_count": int(len(valid_ndvi)),
+            "_valid_ndvi": valid_ndvi,  # for downstream classification
+        }
+
+    @staticmethod
+    def _date_range(days: int = 30) -> str:
+        """Build an ISO 8601 date range string ending today."""
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
+        return f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
 
     def __init__(self, catalog_name: str = "earth_search"):
         self.catalog_name = catalog_name
@@ -126,13 +182,30 @@ class STACService:
         if collections is None:
             collections = [SENTINEL2_COLLECTIONS[self.catalog_name]]
         if datetime_range is None:
-            end = datetime.utcnow()
-            start = end - timedelta(days=30)
-            datetime_range = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+            datetime_range = self._date_range(30)
 
         if self._pystac_client is not None:
             return self._search_pystac(bbox, datetime_range, collections, max_cloud_cover, limit)
         return self._search_http(bbox, datetime_range, collections, max_cloud_cover, limit)
+
+    def _wrap_search_results(
+        self,
+        results: List[Dict[str, Any]],
+        collections: List[str],
+        bbox: List[float],
+        datetime_range: str,
+        max_cloud_cover: float,
+    ) -> Dict[str, Any]:
+        """Build the standard search response envelope."""
+        return {
+            "catalog": self.catalog_name,
+            "collections": collections,
+            "bbox": bbox,
+            "datetime_range": datetime_range,
+            "max_cloud_cover": max_cloud_cover,
+            "matched": len(results),
+            "items": results,
+        }
 
     def _search_pystac(
         self,
@@ -171,15 +244,7 @@ class STACService:
                     },
                 })
 
-            return {
-                "catalog": self.catalog_name,
-                "collections": collections,
-                "bbox": bbox,
-                "datetime_range": datetime_range,
-                "max_cloud_cover": max_cloud_cover,
-                "matched": len(results),
-                "items": results,
-            }
+            return self._wrap_search_results(results, collections, bbox, datetime_range, max_cloud_cover)
         except Exception as e:
             logger.exception("pystac-client search failed: %s", e)
             # Fall back to raw HTTP
@@ -229,15 +294,7 @@ class STACService:
                     },
                 })
 
-            return {
-                "catalog": self.catalog_name,
-                "collections": collections,
-                "bbox": bbox,
-                "datetime_range": datetime_range,
-                "max_cloud_cover": max_cloud_cover,
-                "matched": len(results),
-                "items": results,
-            }
+            return self._wrap_search_results(results, collections, bbox, datetime_range, max_cloud_cover)
         except Exception as e:
             logger.exception("STAC HTTP search failed: %s", e)
             return {"error": str(e), "catalog": self.catalog_name}
@@ -262,9 +319,7 @@ class STACService:
             }
 
         assets = item_result.get("assets", {})
-        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
-        red_key = "B04" if "B04" in assets else ("red" if "red" in assets else None)
-        nir_key = "B08" if "B08" in assets else ("nir" if "nir" in assets else None)
+        red_key, nir_key = self._resolve_band_keys(assets)
         if red_key is None or nir_key is None:
             return {
                 "error": "Missing red/B04 or nir/B08 bands in STAC item",
@@ -311,42 +366,22 @@ class STACService:
                     except Exception:
                         pass
 
-            # Compute NDVI with proper handling of division by zero
-            denominator = b08_data + b04_data
-            ndvi = np.where(
-                denominator != 0,
-                (b08_data - b04_data) / denominator,
-                0.0,
-            )
+            stats = self._compute_ndvi_stats(b04_data, b08_data)
 
-            # Mask invalid values (sentinel values, no-data)
-            valid_mask = (ndvi >= -1.0) & (ndvi <= 1.0) & np.isfinite(ndvi)
-            valid_ndvi = ndvi[valid_mask]
-
-            if len(valid_ndvi) == 0:
+            if stats is None:
                 return {
                     "error": "No valid NDVI pixels found",
                     "source_item_id": item_result.get("id"),
                     "download_time_sec": round(time.time() - start_time, 2),
                 }
 
-            # Compute statistics
-            mean_ndvi = float(np.mean(valid_ndvi))
-            std_ndvi = float(np.std(valid_ndvi))
-            min_ndvi = float(np.min(valid_ndvi))
-            max_ndvi = float(np.max(valid_ndvi))
-
             # Classify using ml_inference thresholds
-            classification = self._classify_ndvi_pixels(valid_ndvi)
+            classification = self._classify_ndvi_pixels(stats.pop("_valid_ndvi"))
 
             download_time = time.time() - start_time
 
             return {
-                "mean_ndvi": round(mean_ndvi, 4),
-                "std_ndvi": round(std_ndvi, 4),
-                "min_ndvi": round(min_ndvi, 4),
-                "max_ndvi": round(max_ndvi, 4),
-                "valid_pixel_count": int(len(valid_ndvi)),
+                **stats,
                 "classification": classification,
                 "bbox_computed": bbox_computed,
                 "source_item_id": item_result.get("id"),
@@ -412,11 +447,12 @@ class STACService:
         if "error" in search_results:
             return search_results
 
-        # Compute NDVI for each scene with B04+B08
+        # Compute NDVI for each scene with red+NIR bands
         ndvi_timeseries = []
         for item in search_results.get("items", []):
             assets = item.get("assets", {})
-            if "B04" in assets and "B08" in assets:
+            red_key, nir_key = self._resolve_band_keys(assets)
+            if red_key and nir_key:
                 ndvi_result = self.compute_ndvi_from_item(item)
                 if "error" not in ndvi_result:
                     ndvi_timeseries.append(ndvi_result)
@@ -496,9 +532,7 @@ class STACService:
             return {"error": "rasterio not available"}
 
         assets = item_result.get("assets", {})
-        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
-        red_key = "B04" if "B04" in assets else ("red" if "red" in assets else None)
-        nir_key = "B08" if "B08" in assets else ("nir" if "nir" in assets else None)
+        red_key, nir_key = self._resolve_band_keys(assets)
         if red_key is None or nir_key is None:
             return {"error": "Missing red/B04 or nir/B08 bands in STAC item"}
 
@@ -547,29 +581,18 @@ class STACService:
                         out_shape=(out_height, out_width),
                     ).astype(np.float32)
 
-            # Compute NDVI
-            denominator = b08_data + b04_data
-            ndvi = np.where(denominator != 0, (b08_data - b04_data) / denominator, 0.0)
+            stats = self._compute_ndvi_stats(b04_data, b08_data, exclude_zero_reflectance=True)
 
-            # Mask no-data and out-of-range values
-            valid_mask = (ndvi >= -1.0) & (ndvi <= 1.0) & np.isfinite(ndvi)
-            # Also mask zero-reflectance pixels (likely no-data)
-            valid_mask &= (b04_data > 0) | (b08_data > 0)
-            valid_ndvi = ndvi[valid_mask]
-
-            if len(valid_ndvi) == 0:
+            if stats is None:
                 return {
                     "error": "No valid NDVI pixels in bbox",
                     "source_item_id": item_result.get("id"),
                     "download_time_sec": round(time.time() - start_time, 2),
                 }
 
+            stats.pop("_valid_ndvi", None)
             return {
-                "mean_ndvi": round(float(np.mean(valid_ndvi)), 4),
-                "std_ndvi": round(float(np.std(valid_ndvi)), 4),
-                "min_ndvi": round(float(np.min(valid_ndvi)), 4),
-                "max_ndvi": round(float(np.max(valid_ndvi)), 4),
-                "valid_pixel_count": int(len(valid_ndvi)),
+                **stats,
                 "source_item_id": item_result.get("id"),
                 "datetime": item_result.get("datetime"),
                 "cloud_cover": item_result.get("cloud_cover"),
@@ -605,9 +628,7 @@ class STACService:
         Returns:
             Dict with time-ordered NDVI observations
         """
-        end = datetime.utcnow()
-        start = end - timedelta(days=days)
-        datetime_range = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+        datetime_range = self._date_range(days)
 
         # Search for imagery covering the bbox
         search_results = self.search_imagery(
@@ -621,13 +642,11 @@ class STACService:
             return search_results
 
         # Compute NDVI for each scene
-        # Support both naming conventions: B04/B08 (Copernicus) and red/nir (Earth Search)
         observations: List[Dict[str, Any]] = []
         for item in search_results.get("items", []):
             assets = item.get("assets", {})
-            has_bands = (("B04" in assets and "B08" in assets)
-                         or ("red" in assets and "nir" in assets))
-            if has_bands:
+            red_key, nir_key = self._resolve_band_keys(assets)
+            if red_key and nir_key:
                 result = self.compute_ndvi_for_bbox(item, bbox)
                 if "error" not in result:
                     observations.append(result)
@@ -701,31 +720,31 @@ class STACService:
 
         # Classify drought status
         if vci < 10:
-            drought_status = "extreme_drought"
+            drought_status = DROUGHT_EXTREME
             description = (
                 f"VCI={vci}% indicates extreme drought. "
                 f"Current NDVI ({latest_ndvi:.3f}) is near the historical minimum ({ndvi_min:.3f})."
             )
         elif vci < 20:
-            drought_status = "severe_drought"
+            drought_status = DROUGHT_SEVERE
             description = (
                 f"VCI={vci}% indicates severe drought. "
                 f"Vegetation health is significantly below normal."
             )
         elif vci < 35:
-            drought_status = "moderate_drought"
+            drought_status = DROUGHT_MODERATE
             description = (
                 f"VCI={vci}% indicates moderate drought. "
                 f"Vegetation health is below normal levels."
             )
         elif vci < 50:
-            drought_status = "mild_drought"
+            drought_status = DROUGHT_MILD
             description = (
                 f"VCI={vci}% indicates mild drought or drought watch. "
                 f"Vegetation health is slightly below average."
             )
         else:
-            drought_status = "no_drought"
+            drought_status = DROUGHT_NONE
             description = (
                 f"VCI={vci}% indicates no drought. "
                 f"Vegetation health is normal or above average (NDVI={latest_ndvi:.3f})."

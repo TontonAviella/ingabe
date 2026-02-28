@@ -163,8 +163,12 @@ async def lifespan(app: FastAPI):
     _configure_app_logging()
 
     yield
-    # Cleanup: close all PostGIS connection pools
+    # Cleanup: close all connection pools and shared clients
     await close_all_pools()
+    from src.dependencies.redis_client import close_async_redis
+    await close_async_redis()
+    from src.utils import close_s3_clients
+    await close_s3_clients()
 
 
 app = FastAPI(
@@ -210,9 +214,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         # Prevent MIME-type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
-        # Clickjacking protection
-        response.headers["X-Frame-Options"] = "DENY"
+        # Clickjacking protection (skip if endpoint already set its own)
+        if "X-Frame-Options" not in response.headers:
+            response.headers["X-Frame-Options"] = "DENY"
         # Basic CSP — allow self and known external tile/API sources
+        # Skip if endpoint already set a custom CSP (e.g. embed route)
+        if "Content-Security-Policy" in response.headers:
+            return response
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; "
@@ -250,41 +258,41 @@ async def health_check():
     Always returns 200 so monitoring tools can read the body.
     The "status" field is "healthy" or "degraded".
     """
+    import asyncio
     import httpx
-    from redis.asyncio import Redis as AsyncRedis
 
-    checks = {}
+    async def _check_postgres() -> str:
+        try:
+            from src.structures import async_read_conn
+            async with async_read_conn("health_check") as conn:
+                await conn.fetchval("SELECT 1")
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
 
-    # 1. PostgreSQL
-    try:
-        from src.structures import async_read_conn
-        async with async_read_conn("health_check") as conn:
-            await conn.fetchval("SELECT 1")
-        checks["postgres"] = "ok"
-    except Exception as e:
-        checks["postgres"] = f"error: {e}"
+    async def _check_redis() -> str:
+        try:
+            from src.dependencies.redis_client import get_async_redis_for_ping
+            redis_client = await get_async_redis_for_ping()
+            await redis_client.ping()
+            await redis_client.aclose()
+            return "ok"
+        except Exception as e:
+            return f"error: {e}"
 
-    # 2. Redis
-    try:
-        redis_client = AsyncRedis(
-            host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
-            decode_responses=True,
-        )
-        await redis_client.ping()
-        await redis_client.aclose()
-        checks["redis"] = "ok"
-    except Exception as e:
-        checks["redis"] = f"error: {e}"
+    async def _check_qgis() -> str:
+        qgis_url = os.environ.get("QGIS_PROCESSING_URL", "http://qgis-processing:8817")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(f"{qgis_url}/health")
+                return "ok" if resp.status_code == 200 else f"status {resp.status_code}"
+        except Exception as e:
+            return f"error: {e}"
 
-    # 3. QGIS Processing
-    qgis_url = os.environ.get("QGIS_PROCESSING_URL", "http://qgis-processing:8817")
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{qgis_url}/health")
-            checks["qgis"] = "ok" if resp.status_code == 200 else f"status {resp.status_code}"
-    except Exception as e:
-        checks["qgis"] = f"error: {e}"
+    pg, redis_r, qgis = await asyncio.gather(
+        _check_postgres(), _check_redis(), _check_qgis(),
+    )
+    checks = {"postgres": pg, "redis": redis_r, "qgis": qgis}
 
     all_ok = all(v == "ok" for v in checks.values())
     return JSONResponse(
@@ -393,8 +401,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         "Unhandled %s on %s %s: %s\n%s",
         type(exc).__name__, request.method, request.url.path, exc, traceback.format_exc(),
     )
-    if request.url.path.startswith("/api/"):
-        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 

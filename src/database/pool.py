@@ -94,6 +94,7 @@ class AsyncDatabaseConnection:
 
     def __init__(self, span_name: Optional[str] = None, readonly: bool = False):
         self.conn: Optional[asyncpg.Connection] = None
+        self._pool: Optional[asyncpg.Pool] = None
         self.span: Optional[trace.Span] = None
         self.span_name: Optional[str] = span_name
         self.readonly: bool = readonly
@@ -107,10 +108,10 @@ class AsyncDatabaseConnection:
             self.conn = await asyncpg.connect(_build_postgres_url())
         else:
             if self.readonly:
-                pool = await _get_async_read_pool()
+                self._pool = await _get_async_read_pool()
             else:
-                pool = await _get_async_connection_pool()
-            self.conn = await pool.acquire()
+                self._pool = await _get_async_connection_pool()
+            self.conn = await self._pool.acquire()
         return self.conn
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -118,11 +119,7 @@ class AsyncDatabaseConnection:
             if IS_RUNNING_PYTEST:
                 await self.conn.close()
             else:
-                if self.readonly:
-                    pool = await _get_async_read_pool()
-                else:
-                    pool = await _get_async_connection_pool()
-                await pool.release(self.conn)
+                await self._pool.release(self.conn)
         if self.span:
             self.span.end()
 
@@ -167,13 +164,7 @@ def get_sync_db_connection():
     """
     import psycopg2
 
-    conn = psycopg2.connect(
-        host=os.environ["POSTGRES_HOST"],
-        port=int(os.environ.get("POSTGRES_PORT", "5432")),
-        database=os.environ["POSTGRES_DB"],
-        user=os.environ["POSTGRES_USER"],
-        password=os.environ["POSTGRES_PASSWORD"],
-    )
+    conn = psycopg2.connect(dsn=_build_postgres_url())
     try:
         yield conn
     finally:

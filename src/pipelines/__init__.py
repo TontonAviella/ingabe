@@ -224,7 +224,7 @@ if HAS_DAGSTER:
         raster_job=raster_processing_job,
     )
 
-    # ─── Attach failure/success hooks to all jobs ───────────────────────────
+    # ─── Collect all jobs ───────────────────────────────────────────────────
     all_jobs = [
         raster_processing_job,
         vector_processing_job,
@@ -246,15 +246,14 @@ if HAS_DAGSTER:
         nightly_parcel_ndvi_job,
         daily_weather_ingest_job,
     ]
-    hooked_jobs = [
-        job.with_hooks({hooks.notify_on_failure, hooks.log_on_success})
-        for job in all_jobs
-    ]
 
     # ─── Define Dagster Definitions ────────────────────────────────────────
+    # Note: hooks are defined in hooks.py but cannot be attached via
+    # with_hooks() on UnresolvedAssetJobDefinition. Attach per-asset
+    # in a future PR.
     defs = Definitions(
         assets=all_assets,
-        jobs=hooked_jobs,
+        jobs=all_jobs,
         sensors=[
             s3_upload_sensor,
             failed_cog_retry_sensor,

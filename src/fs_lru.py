@@ -7,6 +7,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from src.structures import get_async_read_connection
 from src.utils import get_async_s3_client, get_bucket_name
+from src.database.models import LAYER_TYPE_POSTGIS
 
 
 class FileCache:
@@ -206,7 +207,7 @@ class LayerCache:
             if not layer:
                 raise KeyError(f"Layer {layer_id} not found")
 
-            if layer["type"] == "postgis":
+            if layer["type"] == LAYER_TYPE_POSTGIS:
                 raise KeyError(
                     f"PostGIS layer {layer_id} cannot be pulled as individual vector file"
                 )

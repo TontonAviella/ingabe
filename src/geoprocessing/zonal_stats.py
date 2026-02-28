@@ -14,6 +14,7 @@ from fastapi import HTTPException, status
 
 from src.fs_lru import layer_cache
 from src.structures import get_async_read_connection
+from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_POSTGIS
 
 logger = logging.getLogger(__name__)
 
@@ -90,20 +91,20 @@ async def compute_zonal_statistics(
         )
 
     # Validate layer types
-    if raster_layer["type"] != "raster":
+    if raster_layer["type"] != LAYER_TYPE_RASTER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Layer {raster_layer_id} is not a raster layer (type: {raster_layer['type']})",
         )
 
-    if zones_layer["type"] == "raster":
+    if zones_layer["type"] == LAYER_TYPE_RASTER:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Zones layer {zones_layer_id} must be a vector layer, not raster",
         )
 
     # PostGIS layers not yet supported - would require streaming features
-    if zones_layer["type"] == "postgis":
+    if zones_layer["type"] == LAYER_TYPE_POSTGIS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"PostGIS zones layer {zones_layer_id} not yet supported. Please export to vector file first.",

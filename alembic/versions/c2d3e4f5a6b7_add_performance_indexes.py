@@ -23,6 +23,7 @@ def upgrade() -> None:
         "ix_projects_owner_uuid",
         "user_mundiai_projects",
         ["owner_uuid"],
+        if_not_exists=True,
     )
 
     # Maps: fast lookup by project and DAG traversal
@@ -30,16 +31,19 @@ def upgrade() -> None:
         "ix_maps_project_id",
         "user_mundiai_maps",
         ["project_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_maps_parent_map_id",
         "user_mundiai_maps",
         ["parent_map_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_maps_owner_uuid",
         "user_mundiai_maps",
         ["owner_uuid"],
+        if_not_exists=True,
     )
 
     # Layers: fast lookup by owner
@@ -47,6 +51,7 @@ def upgrade() -> None:
         "ix_layers_owner_uuid",
         "map_layers",
         ["owner_uuid"],
+        if_not_exists=True,
     )
 
     # Map-layer-styles: fast lookup by layer and style
@@ -54,6 +59,7 @@ def upgrade() -> None:
         "ix_map_layer_styles_style_id",
         "map_layer_styles",
         ["style_id"],
+        if_not_exists=True,
     )
 
     # Layer styles: fast lookup by layer
@@ -61,6 +67,7 @@ def upgrade() -> None:
         "ix_layer_styles_layer_id",
         "layer_styles",
         ["layer_id"],
+        if_not_exists=True,
     )
 
     # Chat messages: fast lookup by conversation and map
@@ -68,11 +75,13 @@ def upgrade() -> None:
         "ix_chat_messages_conversation_id",
         "chat_completion_messages",
         ["conversation_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_chat_messages_map_id",
         "chat_completion_messages",
         ["map_id"],
+        if_not_exists=True,
     )
 
     # Conversations: fast lookup by project and owner
@@ -80,11 +89,13 @@ def upgrade() -> None:
         "ix_conversations_project_id",
         "conversations",
         ["project_id"],
+        if_not_exists=True,
     )
     op.create_index(
         "ix_conversations_owner_uuid",
         "conversations",
         ["owner_uuid"],
+        if_not_exists=True,
     )
 
     # PostGIS connections: fast lookup by project
@@ -92,6 +103,7 @@ def upgrade() -> None:
         "ix_postgres_connections_project_id",
         "project_postgres_connections",
         ["project_id"],
+        if_not_exists=True,
     )
 
     # PostGIS summaries: fast lookup by connection
@@ -99,17 +111,18 @@ def upgrade() -> None:
         "ix_postgres_summaries_connection_id",
         "project_postgres_summary",
         ["connection_id"],
+        if_not_exists=True,
     )
 
     # Soft-delete partial indexes for common queries
     op.execute(
-        "CREATE INDEX ix_projects_active ON user_mundiai_projects (id) WHERE soft_deleted_at IS NULL"
+        "CREATE INDEX IF NOT EXISTS ix_projects_active ON user_mundiai_projects (id) WHERE soft_deleted_at IS NULL"
     )
     op.execute(
-        "CREATE INDEX ix_maps_active ON user_mundiai_maps (id) WHERE soft_deleted_at IS NULL"
+        "CREATE INDEX IF NOT EXISTS ix_maps_active ON user_mundiai_maps (id) WHERE soft_deleted_at IS NULL"
     )
     op.execute(
-        "CREATE INDEX ix_conversations_active ON conversations (id) WHERE soft_deleted_at IS NULL"
+        "CREATE INDEX IF NOT EXISTS ix_conversations_active ON conversations (id) WHERE soft_deleted_at IS NULL"
     )
 
 

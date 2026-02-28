@@ -17,7 +17,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map
 from src.dependencies.rate_limiter import heavy_limit
-from src.database.models import MundiMap, MapLayer
+from src.database.models import MundiMap, MapLayer, LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 from src.dependencies.session import (
     verify_session_required,
     verify_session_optional,
@@ -994,7 +994,7 @@ async def complete_layer_upload(
         }
 
         # Kick off background COG generation for raster uploads
-        if layer_type == "raster":
+        if layer_type == LAYER_TYPE_RASTER:
             background_tasks.add_task(_background_generate_cog, primary_id, body.s3_key)
 
         return LayerUploadResponse(
@@ -1146,7 +1146,7 @@ async def add_remote_layer(
         )
 
     # external vector sources are converted to local files
-    if layer_type == "vector" and not is_cloud_native:
+    if layer_type == LAYER_TYPE_VECTOR and not is_cloud_native:
         with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as t:
             out_path = t.name
         os.remove(out_path)
@@ -1203,11 +1203,11 @@ async def add_remote_layer(
         if is_cloud_native:
             li = await get_layer_bounds_and_metadata(processing_source, layer_type, url)
             bounds = li.bounds
-            geometry_type = li.geometry_type if layer_type == "vector" else "raster"
+            geometry_type = li.geometry_type if layer_type == LAYER_TYPE_VECTOR else "raster"
             feature_count = li.feature_count
             metadata.update(li.metadata_updates.model_dump(exclude_none=True))
             layer_result = None
-        elif layer_type == "vector":
+        elif layer_type == LAYER_TYPE_VECTOR:
             layer_result = await process_vector_layer_common(
                 layer_id,
                 processing_source,
@@ -1244,14 +1244,14 @@ async def add_remote_layer(
                 layer_type,
                 json.dumps(metadata),
                 bounds,
-                geometry_type if layer_type == "vector" else None,
+                geometry_type if layer_type == LAYER_TYPE_VECTOR else None,
                 feature_count,
                 forked_map.id,
                 url,
             )
 
             if (
-                layer_type == "vector"
+                layer_type == LAYER_TYPE_VECTOR
                 and geometry_type != "unknown"
                 and not is_cloud_native
             ):
@@ -1296,7 +1296,7 @@ async def add_remote_layer(
 
     layer_url = (
         f"/api/layer/{layer_id}.pmtiles"
-        if layer_type == "vector"
+        if layer_type == LAYER_TYPE_VECTOR
         else f"/api/layer/{layer_id}.cog.tif"
     )
 

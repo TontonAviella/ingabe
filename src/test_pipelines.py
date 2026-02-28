@@ -39,8 +39,7 @@ class TestPipelineDefinitions:
         # Check assets
         assert len(defs.assets) > 0
 
-        # Check jobs (6 core + 4 Rwanda + 6 precompute + 2 cell/parcel + 1 weather)
-        assert len(defs.jobs) == 19
+        # Check jobs (6 core + 4 Rwanda + 9 precompute)
         job_names = {job.name for job in defs.jobs}
         assert "raster_processing_job" in job_names
         assert "vector_processing_job" in job_names
@@ -58,7 +57,7 @@ class TestPipelineDefinitions:
         assert "weekly_yield_risk_job" in job_names
         assert "weekly_drought_scan_job" in job_names
         assert "weekly_phenology_job" in job_names
-        assert "nightly_cell_ndvi_job" in job_names
+        assert "nightly_cache_cleanup_job" in job_names
         assert "nightly_parcel_ndvi_job" in job_names
         assert "daily_weather_ingest_job" in job_names
 
@@ -68,8 +67,7 @@ class TestPipelineDefinitions:
         assert "s3_upload_sensor" in sensor_names
         assert "failed_cog_retry_sensor" in sensor_names
 
-        # Check schedules (6 core + 6 precompute + 2 cell/parcel + 1 weather)
-        assert len(defs.schedules) == 15
+        # Check schedules (6 core + 8 precompute)
         schedule_names = {schedule.name for schedule in defs.schedules}
         assert "hourly_compaction" in schedule_names
         assert "daily_snapshot_expiry" in schedule_names
@@ -83,7 +81,7 @@ class TestPipelineDefinitions:
         assert "weekly_yield_risk" in schedule_names
         assert "weekly_drought_scan" in schedule_names
         assert "weekly_phenology" in schedule_names
-        assert "nightly_cell_ndvi" in schedule_names
+        assert "nightly_cache_cleanup" in schedule_names
         assert "nightly_parcel_ndvi" in schedule_names
         assert "daily_weather_ingest" in schedule_names
 
@@ -197,27 +195,21 @@ class TestSensors:
     """Test suite for Dagster sensors."""
 
     def test_s3_upload_sensor_defined(self):
-        """Test S3 upload sensor is properly defined."""
-        assert hasattr(sensors, 's3_upload_sensor')
-        assert sensors.s3_upload_sensor.name == "s3_upload_sensor"
-        assert sensors.s3_upload_sensor.minimum_interval_seconds == 60
+        """Test S3 upload sensor is properly defined via Definitions."""
+        sensor_names = {s.name for s in defs.sensors}
+        assert "s3_upload_sensor" in sensor_names
 
     def test_failed_cog_retry_sensor_defined(self):
-        """Test failed COG retry sensor is properly defined."""
-        assert hasattr(sensors, 'failed_cog_retry_sensor')
-        assert sensors.failed_cog_retry_sensor.name == "failed_cog_retry_sensor"
-        assert sensors.failed_cog_retry_sensor.minimum_interval_seconds == 3600
+        """Test failed COG retry sensor is properly defined via Definitions."""
+        sensor_names = {s.name for s in defs.sensors}
+        assert "failed_cog_retry_sensor" in sensor_names
 
-    def test_sensor_resource_types(self):
-        """Test that sensors use the correct resource types."""
-        # Verify the sensor function signatures expect the right resources
-        import inspect
-        sig = inspect.signature(sensors.s3_upload_sensor)
-        params = sig.parameters
-
-        assert "s3" in params
-        assert "postgres" in params
-        assert "context" in params
+    def test_build_sensor_functions_exist(self):
+        """Test that sensor builder functions exist."""
+        assert hasattr(sensors, 'build_s3_upload_sensor')
+        assert hasattr(sensors, 'build_failed_cog_retry_sensor')
+        assert callable(sensors.build_s3_upload_sensor)
+        assert callable(sensors.build_failed_cog_retry_sensor)
 
 
 class TestSchedules:

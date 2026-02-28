@@ -48,29 +48,7 @@ def _enabled() -> bool:
     return os.environ.get("TILE_CACHE_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
-# ---------------------------------------------------------------------------
-# Async Redis client (lazy singleton)
-# ---------------------------------------------------------------------------
-
-_async_redis = None
-
-
-def _get_async_redis():
-    """Return a lazily-initialised ``redis.asyncio.Redis`` client.
-
-    Binary mode (no ``decode_responses``) so raw PNG bytes are stored
-    without encoding overhead.  The client is created once and reused.
-    """
-    global _async_redis
-    if _async_redis is None:
-        from redis.asyncio import Redis as AsyncRedis
-
-        _async_redis = AsyncRedis(
-            host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
-            decode_responses=False,
-        )
-    return _async_redis
+from src.dependencies.redis_client import get_async_redis as _get_async_redis
 
 
 class TileCache:
