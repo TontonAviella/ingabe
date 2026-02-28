@@ -135,16 +135,6 @@ async def fetch_mvt_tile(
         except Exception as e:
             logger.error("Unexpected error during MVT cache get for %s: %s", cache_key, e)
 
-    # Validate every column name against whitelist before interpolation
-    raw_names: List[str] = layer.postgis_attribute_column_list + ["id"]
-    try:
-        safe_names = [_validate_column_name(n) for n in raw_names]
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"PostGIS layer {layer.name} contains unsafe column name: {e}",
-        )
-
     # --- Enrichment CTE (optional) ---
     enrich_cte = ""
     enrich_col_names: list[str] = []
@@ -175,6 +165,20 @@ async def fetch_mvt_tile(
             enrich_select_filtered = ""
             enrich_select_candidates = ""
             enrich_select_mvt = ""
+
+    # Build base column list from PostGIS source, excluding enrichment columns
+    # (enrichment columns come from the CTE join, not the source table).
+    enrich_col_set = set(enrich_col_names)
+    raw_names: List[str] = [
+        c for c in (layer.postgis_attribute_column_list or []) if c not in enrich_col_set
+    ] + ["id"]
+    try:
+        safe_names = [_validate_column_name(n) for n in raw_names]
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"PostGIS layer {layer.name} contains unsafe column name: {e}",
+        )
 
     # At low zoom levels, simplify geometries to avoid query timeouts.
     # The tolerance is in Web Mercator metres — roughly 1 pixel worth.

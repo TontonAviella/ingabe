@@ -1485,19 +1485,11 @@ async def enrich_layer(
                 *insert_params,
             )
 
-        # Append column_name to postgis_attribute_column_list if not present
-        current_cols = layer.postgis_attribute_column_list or []
-        if metric_key not in current_cols:
-            new_cols = current_cols + [metric_key]
-            await conn.execute(
-                """
-                UPDATE map_layers
-                SET postgis_attribute_column_list = $1, last_edited = NOW()
-                WHERE layer_id = $2
-                """,
-                new_cols,
-                layer.layer_id,
-            )
+        # Update last_edited to bust ETag/browser cache
+        await conn.execute(
+            "UPDATE map_layers SET last_edited = NOW() WHERE layer_id = $1",
+            layer.layer_id,
+        )
 
     # Invalidate tile cache so new tiles include enrichment data
     await tile_cache.invalidate_layer(layer.layer_id)
