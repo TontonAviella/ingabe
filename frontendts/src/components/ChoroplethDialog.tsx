@@ -1,6 +1,6 @@
 import { apiFetch } from '@mundi/ee';
 import { Loader2 } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -94,9 +94,35 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
   const [method, setMethod] = useState<'quantile' | 'equal_interval'>('quantile');
   const [k, setK] = useState(5);
   const [palette, setPalette] = useState('Blues');
+  const [columns, setColumns] = useState<string[]>([]);
+  const [columnsLoading, setColumnsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [stats, setStats] = useState<ColumnStatsResponse | null>(null);
   const [previewColors, setPreviewColors] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setColumnsLoading(true);
+    setColumns([]);
+    setColumn('');
+    setStats(null);
+    apiFetch(`/api/layer/${layerId}/attributes?limit=1`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setColumns(data.field_names ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setColumns([]);
+      })
+      .finally(() => {
+        if (!cancelled) setColumnsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, layerId]);
 
   const computeBreaks = async () => {
     const col = column.trim();
@@ -153,15 +179,31 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
           {/* Column */}
           <div className="space-y-1">
             <Label htmlFor="choropleth-column">Numeric column</Label>
-            <Input
+            <select
               id="choropleth-column"
-              placeholder="e.g. population, value, rate"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
               value={column}
+              disabled={columnsLoading}
               onChange={(e) => {
                 setColumn(e.target.value);
                 setStats(null);
               }}
-            />
+            >
+              {columnsLoading ? (
+                <option value="">Loading columns…</option>
+              ) : columns.length === 0 ? (
+                <option value="">No columns found</option>
+              ) : (
+                <>
+                  <option value="">Select a column</option>
+                  {columns.map((col) => (
+                    <option key={col} value={col}>
+                      {col}
+                    </option>
+                  ))}
+                </>
+              )}
+            </select>
           </div>
 
           {/* Method + k side-by-side */}
