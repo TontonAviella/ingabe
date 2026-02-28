@@ -383,15 +383,15 @@ export default function ProjectView() {
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
       // Step 1: Get presigned URL and fork the map
-      const presignRes = await fetch(
-        `/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`,
-        { method: 'POST', headers },
-      );
+      const presignRes = await fetch(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
+        method: 'POST',
+        headers,
+      });
       if (!presignRes.ok) {
         const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
         throw new Error(err.detail || 'Failed to get upload URL');
       }
-      const presign = await presignRes.json() as {
+      const presign = (await presignRes.json()) as {
         upload_url: string;
         s3_key: string;
         layer_id: string;
@@ -430,19 +430,16 @@ export default function ProjectView() {
       // Step 3: Tell the server to process the uploaded file
       setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
 
-      const completeRes = await fetch(
-        `/api/maps/${presign.dag_child_map_id}/upload-complete`,
-        {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            s3_key: presign.s3_key,
-            layer_id: presign.layer_id,
-            filename: file.name,
-            add_layer_to_map: true,
-          }),
-        },
-      );
+      const completeRes = await fetch(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          s3_key: presign.s3_key,
+          layer_id: presign.layer_id,
+          filename: file.name,
+          add_layer_to_map: true,
+        }),
+      });
       if (!completeRes.ok) {
         const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
         throw new Error(err.detail || 'Processing failed after upload');
