@@ -1128,8 +1128,9 @@ const LayerList: React.FC<LayerListProps> = ({
               const source = map.getSource(layerId);
               if (source && 'setTiles' in source) {
                 const ts = Date.now();
+                const origin = window.location.origin;
                 (source as { setTiles: (tiles: string[]) => void }).setTiles([
-                  `/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
+                  `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
                 ]);
               }
             }}
