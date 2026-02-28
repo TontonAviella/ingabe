@@ -1,6 +1,6 @@
 import { apiFetch } from '@mundi/ee';
 import { Loader2 } from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -79,17 +79,42 @@ interface ColumnStatsResponse {
   max: number;
 }
 
+interface AvailableMetric {
+  key: string;
+  label: string;
+  category: string;
+  description: string;
+  source: string;
+  computed: boolean;
+}
+
 export interface ChoroplethDialogProps {
   layerId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Called when user clicks Apply — passes the MapLibre step expression. */
   onApply: (layerId: string, column: string, expression: unknown[]) => void;
+  /** Called after enrichment completes so parent can reload tiles. */
+  onEnrichmentComplete?: (layerId: string) => void;
 }
+
+// ─── Category icons (text-based) ────────────────────────────────────────────
+
+const CATEGORY_LABELS: Record<string, string> = {
+  'Land Cover': 'Land Cover',
+  Vegetation: 'Vegetation',
+  Weather: 'Weather',
+};
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
-export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, open, onOpenChange, onApply }) => {
+export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
+  layerId,
+  open,
+  onOpenChange,
+  onApply,
+  onEnrichmentComplete,
+}) => {
   const [column, setColumn] = useState('');
   const [method, setMethod] = useState<'quantile' | 'equal_interval'>('quantile');
   const [k, setK] = useState(5);
@@ -100,17 +125,17 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
   const [stats, setStats] = useState<ColumnStatsResponse | null>(null);
   const [previewColors, setPreviewColors] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
+  // Enrichment metrics state
+  const [availableMetrics, setAvailableMetrics] = useState<AvailableMetric[]>([]);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [enriching, setEnriching] = useState<string | null>(null);
+
+  const fetchColumns = useCallback(() => {
     setColumnsLoading(true);
     setColumns([]);
-    setColumn('');
-    setStats(null);
     apiFetch(`/api/layer/${layerId}/attributes?limit=1`)
       .then((res) => res.json())
       .then((data) => {
-        if (cancelled) return;
         const allNames: string[] = data.field_names ?? [];
         const firstRow = data.data?.[0]?.attributes;
         if (firstRow) {
@@ -119,16 +144,61 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
           setColumns(allNames);
         }
       })
-      .catch(() => {
-        if (!cancelled) setColumns([]);
+      .catch(() => setColumns([]))
+      .finally(() => setColumnsLoading(false));
+  }, [layerId]);
+
+  const fetchMetrics = useCallback(() => {
+    setMetricsLoading(true);
+    apiFetch(`/api/layer/${layerId}/available-metrics`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Failed to fetch metrics');
+        return res.json();
       })
-      .finally(() => {
-        if (!cancelled) setColumnsLoading(false);
+      .then((data) => setAvailableMetrics(data.metrics ?? []))
+      .catch(() => setAvailableMetrics([]))
+      .finally(() => setMetricsLoading(false));
+  }, [layerId]);
+
+  useEffect(() => {
+    if (!open) return;
+    setColumn('');
+    setStats(null);
+    fetchColumns();
+    fetchMetrics();
+  }, [open, layerId, fetchColumns, fetchMetrics]);
+
+  const handleEnrich = async (metricKey: string) => {
+    setEnriching(metricKey);
+    try {
+      const res = await apiFetch(`/api/layer/${layerId}/enrich`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ metric: metricKey }),
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, layerId]);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? res.statusText);
+      }
+      const data = await res.json();
+      toast.success(`Computed ${data.column_name} for ${data.feature_count} features`);
+
+      // Refresh columns and metrics
+      fetchColumns();
+      fetchMetrics();
+
+      // Auto-select the enriched column
+      setColumn(data.column_name);
+      setStats(null);
+
+      // Notify parent to reload tiles
+      onEnrichmentComplete?.(layerId);
+    } catch (e: unknown) {
+      toast.error(`Enrichment failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setEnriching(null);
+    }
+  };
 
   const computeBreaks = async () => {
     const col = column.trim();
@@ -174,6 +244,14 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
     }
   };
 
+  // Group metrics by category
+  const metricsByCategory = availableMetrics.reduce<Record<string, AvailableMetric[]>>((acc, m) => {
+    const cat = m.category;
+    if (!acc[cat]) acc[cat] = [];
+    acc[cat].push(m);
+    return acc;
+  }, {});
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -182,6 +260,59 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
         </DialogHeader>
 
         <div className="space-y-4 py-2">
+          {/* ── Compute a metric (enrichment) ──────────────────────────── */}
+          {availableMetrics.length > 0 && (
+            <div className="space-y-2">
+              <Label>Compute a metric</Label>
+              <p className="text-xs text-muted-foreground">
+                Generate values for each feature on-the-fly, then use as a column below.
+              </p>
+              <div className="space-y-2">
+                {Object.entries(metricsByCategory).map(([category, metrics]) => (
+                  <div key={category}>
+                    <p className="mb-1 text-xs font-medium text-muted-foreground">
+                      {CATEGORY_LABELS[category] ?? category}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {metrics.map((m) => (
+                        <Button
+                          key={m.key}
+                          variant={m.computed ? 'secondary' : 'outline'}
+                          size="sm"
+                          className="h-7 text-xs"
+                          disabled={enriching !== null}
+                          onClick={() => {
+                            if (m.computed) {
+                              // Already computed — just select it
+                              setColumn(m.key);
+                              setStats(null);
+                            } else {
+                              handleEnrich(m.key);
+                            }
+                          }}
+                        >
+                          {enriching === m.key ? (
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          ) : null}
+                          {m.label}
+                          {m.computed ? ' \u2713' : ''}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {metricsLoading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Loading metrics...
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Separator ───────────────────────────────────────────────── */}
+          {availableMetrics.length > 0 && <div className="border-t border-border" />}
+
           {/* Column */}
           <div className="space-y-1">
             <Label htmlFor="choropleth-column">Numeric column</Label>
@@ -196,7 +327,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({ layerId, ope
               }}
             >
               {columnsLoading ? (
-                <option value="">Loading columns…</option>
+                <option value="">Loading columns...</option>
               ) : columns.length === 0 ? (
                 <option value="">No columns found</option>
               ) : (

@@ -403,6 +403,23 @@ class MapLayerStyle(Base):
     style = relationship("LayerStyle", back_populates="map_layer_styles")
 
 
+class LayerEnrichment(Base):
+    """Computed metric values for layer features (on-the-fly choropleth)."""
+
+    __tablename__ = "layer_enrichments"
+
+    id: int = Column(Integer, primary_key=True, autoincrement=True)
+    layer_id: str = Column(
+        String(12), ForeignKey("map_layers.layer_id", ondelete="CASCADE"), nullable=False
+    )
+    feature_id: int = Column(Integer, nullable=False)
+    column_name: str = Column(String(63), nullable=False)
+    value: float = Column(Float)
+    computed_at: datetime = Column(
+        TIMESTAMP(timezone=True), server_default=func.current_timestamp()
+    )
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 

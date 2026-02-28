@@ -1120,6 +1120,19 @@ const LayerList: React.FC<LayerListProps> = ({
               onLayerChoropleth(layerId, column, expression);
               setChoroplethLayerId(null);
             }}
+            onEnrichmentComplete={(layerId) => {
+              // Force MapLibre to reload vector tiles for this layer
+              // by updating the tile URL with a new cache-busting timestamp
+              const map = mapRef?.current;
+              if (!map) return;
+              const source = map.getSource(layerId);
+              if (source && 'setTiles' in source) {
+                const ts = Date.now();
+                (source as { setTiles: (tiles: string[]) => void }).setTiles([
+                  `/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
+                ]);
+              }
+            }}
           />
         )}
       </CardFooter>

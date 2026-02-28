@@ -85,6 +85,7 @@ def _get_dask():
 from src.tile_cache import tile_cache
 from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
+from src.services.enrichment_service import AVAILABLE_METRICS, compute_metric
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
@@ -866,6 +867,7 @@ async def get_layer_mvt_tile(
             headers=_mvt_headers_base,
         )
 
+    enrichments = None
     async with async_conn("mvt") as conn:
         # Get PostGIS connection details (authorization handled by get_layer)
         connection_details = await conn.fetchrow(
@@ -883,6 +885,14 @@ async def get_layer_mvt_tile(
                 detail="PostGIS connection not found",
             )
 
+        # Fetch enrichments from app DB (if any exist for this layer)
+        enrich_rows = await conn.fetch(
+            "SELECT feature_id, column_name, value FROM layer_enrichments WHERE layer_id = $1",
+            layer.layer_id,
+        )
+        if enrich_rows:
+            enrichments = enrich_rows
+
     # ST_TileEnvelope requires PostGIS 3.0.0 which was 2019... so
     try:
         # some geometries just aren't valid, so make them valid.
@@ -898,7 +908,7 @@ async def get_layer_mvt_tile(
                         return "disconnect"
 
             fetchval_task = asyncio.create_task(
-                fetch_mvt_tile(layer, postgis_conn, z, x, y)
+                fetch_mvt_tile(layer, postgis_conn, z, x, y, enrichments=enrichments)
             )
             disconnect_task = asyncio.create_task(watch_disconnect())
 
@@ -1123,6 +1133,37 @@ async def get_layer_column_stats(
         step = (mx - mn) / k
         return [mn + step * i for i in range(k + 1)]
 
+    # ── Enrichment column path (values stored in app DB) ─────────────────
+    if layer.type == LAYER_TYPE_POSTGIS and column in AVAILABLE_METRICS:
+        async with async_conn("column_stats_enrichment") as conn:
+            rows = await conn.fetch(
+                """
+                SELECT value AS v FROM layer_enrichments
+                WHERE layer_id = $1 AND column_name = $2 AND value IS NOT NULL
+                ORDER BY value
+                """,
+                layer.layer_id,
+                column,
+            )
+        values = [float(r["v"]) for r in rows]
+        if not values:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No enrichment data for column '{column}'. Compute it first via POST /enrich.",
+            )
+        if method == "quantile":
+            breaks = _quantile_breaks(values, k)
+        else:
+            breaks = _equal_interval_breaks(values, k)
+        return ColumnStatsResponse(
+            column=column,
+            method=method,
+            k=k,
+            breaks=[round(b, 6) for b in breaks],
+            min=round(min(values), 6),
+            max=round(max(values), 6),
+        )
+
     # ── PostGIS path ───────────────────────────────────────────────────────
     if layer.type == LAYER_TYPE_POSTGIS and layer.postgis_connection_id and layer.postgis_query:
         async with async_conn("geojson") as conn:
@@ -1250,6 +1291,221 @@ async def get_layer_column_stats(
         breaks=[round(b, 6) for b in breaks],
         min=round(min(raw_values), 6),
         max=round(max(raw_values), 6),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment endpoints (on-the-fly choropleth metrics)
+# ---------------------------------------------------------------------------
+
+
+class AvailableMetricResponse(BaseModel):
+    key: str
+    label: str
+    category: str
+    description: str
+    source: str
+    computed: bool = False
+
+
+class AvailableMetricsResponse(BaseModel):
+    metrics: list[AvailableMetricResponse]
+
+
+class EnrichRequest(BaseModel):
+    metric: str
+
+
+class EnrichResponse(BaseModel):
+    column_name: str
+    feature_count: int
+    status: str
+
+
+@layer_router.get(
+    "/layer/{layer_id}/available-metrics",
+    operation_id="get_layer_available_metrics",
+    response_model=AvailableMetricsResponse,
+    summary="List metrics available for on-the-fly choropleth enrichment",
+)
+async def get_layer_available_metrics(
+    layer: MapLayer = Depends(get_layer),
+):
+    """Return available enrichment metrics for a polygon/multipolygon layer."""
+    if layer.geometry_type and layer.geometry_type.lower() not in (
+        "polygon", "multipolygon",
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrichment metrics are only available for polygon layers",
+        )
+
+    # Check which metrics have already been computed
+    computed_cols: set[str] = set()
+    async with async_conn("available_metrics") as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT column_name FROM layer_enrichments WHERE layer_id = $1",
+            layer.layer_id,
+        )
+        computed_cols = {r["column_name"] for r in rows}
+
+    metrics = []
+    for m in AVAILABLE_METRICS.values():
+        metrics.append(AvailableMetricResponse(
+            key=m.key,
+            label=m.label,
+            category=m.category,
+            description=m.description,
+            source=m.source,
+            computed=m.key in computed_cols,
+        ))
+
+    return AvailableMetricsResponse(metrics=metrics)
+
+
+@layer_router.post(
+    "/layer/{layer_id}/enrich",
+    operation_id="enrich_layer",
+    response_model=EnrichResponse,
+    summary="Compute an on-the-fly metric for layer features",
+)
+async def enrich_layer(
+    body: EnrichRequest,
+    layer: MapLayer = Depends(get_layer),
+):
+    """Compute a metric for all features in a polygon layer and store in app DB.
+
+    If the metric has already been computed, returns immediately.
+    Otherwise, fetches geometries from external PostGIS, computes the metric,
+    and upserts results into ``layer_enrichments``.
+    """
+    metric_key = body.metric
+
+    if metric_key not in AVAILABLE_METRICS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown metric: {metric_key}. Available: {list(AVAILABLE_METRICS.keys())}",
+        )
+
+    if layer.geometry_type and layer.geometry_type.lower() not in (
+        "polygon", "multipolygon",
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrichment is only available for polygon layers",
+        )
+
+    if layer.type != LAYER_TYPE_POSTGIS or not layer.postgis_connection_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enrichment is only available for PostGIS layers",
+        )
+
+    # Check if already computed
+    async with async_conn("enrich_check") as conn:
+        existing = await conn.fetchval(
+            "SELECT COUNT(*) FROM layer_enrichments WHERE layer_id = $1 AND column_name = $2",
+            layer.layer_id,
+            metric_key,
+        )
+        if existing and existing > 0:
+            return EnrichResponse(
+                column_name=metric_key,
+                feature_count=existing,
+                status="ready",
+            )
+
+    # Fetch feature geometries from external PostGIS
+    async with async_conn("enrich_conn") as conn:
+        connection_details = await conn.fetchrow(
+            """
+            SELECT connection_uri
+            FROM project_postgres_connections
+            WHERE id = $1 AND soft_deleted_at IS NULL
+            """,
+            layer.postgis_connection_id,
+        )
+
+    if not connection_details:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="PostGIS connection not found",
+        )
+
+    async with get_pooled_connection(
+        connection_details["connection_uri"]
+    ) as postgis_conn:
+        rows = await postgis_conn.fetch(
+            f'SELECT id, ST_AsGeoJSON(geom) AS geom FROM ({layer.postgis_query}) sub'
+        )
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Layer has no features",
+        )
+
+    features = []
+    for r in rows:
+        features.append({
+            "id": r["id"],
+            "geom": json.loads(r["geom"]),
+        })
+
+    # Compute the metric
+    try:
+        values = await compute_metric(metric_key, features)
+    except Exception as e:
+        logger.exception("Enrichment computation failed for %s on layer %s", metric_key, layer.layer_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Metric computation failed: {e}",
+        )
+
+    # Batch upsert into layer_enrichments
+    async with async_conn("enrich_upsert") as conn:
+        insert_values = []
+        insert_params = []
+        param_idx = 1
+        for fid, val in values.items():
+            insert_values.append(
+                f"(${param_idx}, ${param_idx + 1}, ${param_idx + 2}, ${param_idx + 3})"
+            )
+            insert_params.extend([layer.layer_id, fid, metric_key, val])
+            param_idx += 4
+
+        if insert_values:
+            await conn.execute(
+                f"""
+                INSERT INTO layer_enrichments (layer_id, feature_id, column_name, value)
+                VALUES {", ".join(insert_values)}
+                ON CONFLICT (layer_id, feature_id, column_name)
+                DO UPDATE SET value = EXCLUDED.value, computed_at = NOW()
+                """,
+                *insert_params,
+            )
+
+        # Append column_name to postgis_attribute_column_list if not present
+        current_cols = layer.postgis_attribute_column_list or []
+        if metric_key not in current_cols:
+            new_cols = current_cols + [metric_key]
+            await conn.execute(
+                """
+                UPDATE map_layers
+                SET postgis_attribute_column_list = $1, last_edited = NOW()
+                WHERE layer_id = $2
+                """,
+                new_cols,
+                layer.layer_id,
+            )
+
+    # Invalidate tile cache so new tiles include enrichment data
+    await tile_cache.invalidate_layer(layer.layer_id)
+
+    return EnrichResponse(
+        column_name=metric_key,
+        feature_count=len(values),
+        status="ready",
     )
 
 
