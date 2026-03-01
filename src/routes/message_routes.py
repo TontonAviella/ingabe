@@ -3806,17 +3806,44 @@ async def process_chat_interaction_task(
                                 )
 
                                 if _rows:
+                                    _districts_out = []
+                                    for r in _rows:
+                                        _d = {
+                                            "district": r["district"],
+                                            "drought_status": r["drought_status"],
+                                            "vci": r["current_vci"],
+                                            "latest_ndvi": r["latest_ndvi"],
+                                            "latest_ndwi": r["latest_ndwi"],
+                                            "drought_period_count": r["drought_period_count"],
+                                            "description": r["description"],
+                                        }
+                                        # Flag insufficient_data so the LLM doesn't
+                                        # fabricate a drought claim
+                                        if r["drought_status"] == "insufficient_data":
+                                            _d["note"] = (
+                                                "Not enough historical data to assess "
+                                                "drought for this district yet."
+                                            )
+                                        _districts_out.append(_d)
                                     tool_result = {
                                         "status": "success",
                                         "source": "postgres_cache",
                                         "count": len(_rows),
-                                        "districts": [
-                                            {"district": r["district"], "drought_status": r["drought_status"], "vci": r["current_vci"],
-                                             "latest_ndvi": r["latest_ndvi"], "latest_ndwi": r["latest_ndwi"],
-                                             "drought_period_count": r["drought_period_count"], "description": r["description"]}
-                                            for r in _rows
-                                        ],
+                                        "districts": _districts_out,
                                     }
+                                    # If ALL districts have insufficient data, add a
+                                    # top-level note so the LLM knows not to claim drought
+                                    if all(
+                                        d["drought_status"] == "insufficient_data"
+                                        for d in _districts_out
+                                    ):
+                                        tool_result["note"] = (
+                                            "All queried districts have insufficient "
+                                            "historical NDVI data (<8 weeks) to compute "
+                                            "a reliable drought index. Do NOT report "
+                                            "drought status — instead tell the user that "
+                                            "not enough data has been collected yet."
+                                        )
                                     _pgc_id = await _ensure_rwanda_postgis_connection(
                                         conn, current_project_id, user_id,
                                     )

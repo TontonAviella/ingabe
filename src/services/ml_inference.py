@@ -501,7 +501,7 @@ class CropClassifier:
             if entry.get("mean_ndvi") is not None:
                 dates.append(entry.get("date", "unknown"))
                 ndvi_vals.append(float(entry["mean_ndvi"]))
-                ndwi_vals.append(float(entry.get("mean_ndwi", 0.0)))
+                ndwi_vals.append(float(entry["mean_ndwi"]) if entry.get("mean_ndwi") is not None else 0.0)
 
         if len(ndvi_vals) < 3:
             return {"error": "Need at least 3 observations for drought detection"}
@@ -509,11 +509,52 @@ class CropClassifier:
         ndvi = np.array(ndvi_vals)
         ndwi = np.array(ndwi_vals)
 
+        # ── Minimum-history safeguard ──
+        # VCI requires a multi-year baseline to be meaningful. With <8 weeks
+        # the min/max are local extremes, causing false positives (e.g.
+        # VCI=0% when current week happens to be the local minimum).
+        if len(ndvi) < 8:
+            return {
+                "method": "vci_ndwi_drought",
+                "observations": len(ndvi),
+                "drought_status": "insufficient_data",
+                "description": (
+                    f"Only {len(ndvi)} weeks of NDVI history available — need "
+                    f"at least 8 weeks for reliable VCI drought detection"
+                ),
+                "latest_ndvi": round(float(ndvi[-1]), 4),
+                "latest_ndwi": round(float(ndwi[-1]), 4) if np.any(ndwi != 0) else None,
+                "current_vci": None,
+                "drought_periods": [],
+                "drought_period_count": 0,
+            }
+
         # ── Vegetation Condition Index (VCI) ──
         # VCI = (NDVI_current - NDVI_min) / (NDVI_max - NDVI_min) × 100
         # VCI < 35 → drought, VCI < 20 → severe drought (standard WMO threshold)
         ndvi_min, ndvi_max = float(ndvi.min()), float(ndvi.max())
         ndvi_range = ndvi_max - ndvi_min if ndvi_max != ndvi_min else 1e-8
+
+        # ── Narrow-range safeguard ──
+        # If NDVI variation is <0.05 across the window, there's no meaningful
+        # seasonal signal — VCI becomes noise. Classify as normal.
+        if (ndvi_max - ndvi_min) < 0.05:
+            return {
+                "method": "vci_ndwi_drought",
+                "observations": len(ndvi),
+                "drought_status": "normal",
+                "description": (
+                    f"NDVI range too narrow ({ndvi_min:.4f}–{ndvi_max:.4f}) "
+                    f"for meaningful VCI — vegetation is stable"
+                ),
+                "current_vci": None,
+                "latest_ndvi": round(float(ndvi[-1]), 4),
+                "latest_ndwi": round(float(ndwi[-1]), 4) if np.any(ndwi != 0) else None,
+                "ndvi_range": {"min": round(ndvi_min, 4), "max": round(ndvi_max, 4)},
+                "drought_periods": [],
+                "drought_period_count": 0,
+            }
+
         vci = ((ndvi[-1] - ndvi_min) / ndvi_range) * 100.0
 
         # ── Drought severity classification ──
