@@ -1111,46 +1111,46 @@ const LayerList: React.FC<LayerListProps> = ({
         />
 
         {/* Choropleth classification dialog */}
-        {choroplethLayerId && onLayerChoropleth && (() => {
-          const choroplethLayer = currentMapData.layers?.find((l) => l.id === choroplethLayerId);
-          return (
-            <ChoroplethDialog
-              layerId={choroplethLayerId}
-              open={choroplethLayerId !== null}
-              onOpenChange={(open) => {
-                if (!open) setChoroplethLayerId(null);
-              }}
-              onApply={(layerId, column, expression) => {
-                onLayerChoropleth(layerId, column, expression);
-                setChoroplethLayerId(null);
-              }}
-              onEnrichmentComplete={(layerId) => {
-                // Force MapLibre to reload vector tiles for this layer
-                const map = mapRef?.current;
-                if (!map) return;
-                const source = map.getSource(layerId);
-                if (source && 'setTiles' in source) {
-                  // MVT source — update tile URL with cache-busting timestamp
-                  const ts = Date.now();
-                  const origin = window.location.origin;
-                  (source as { setTiles: (tiles: string[]) => void }).setTiles([
-                    `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
-                  ]);
-                } else if (source && 'setUrl' in source) {
-                  // PMTiles source — reload with cache-busting param
-                  const ts = Date.now();
-                  const origin = window.location.origin;
-                  (source as { setUrl: (url: string) => void }).setUrl(
-                    `${origin}/api/layer/${layerId}/tiles.pmtiles?v=${ts}`,
-                  );
-                }
-              }}
-              featureCount={choroplethLayer?.feature_count}
-              layerBounds={choroplethLayer?.bounds}
-              onPieChart={onShowPieChart}
-            />
-          );
-        })()}
+        {choroplethLayerId &&
+          onLayerChoropleth &&
+          (() => {
+            const choroplethLayer = currentMapData.layers?.find((l) => l.id === choroplethLayerId);
+            return (
+              <ChoroplethDialog
+                layerId={choroplethLayerId}
+                open={choroplethLayerId !== null}
+                onOpenChange={(open) => {
+                  if (!open) setChoroplethLayerId(null);
+                }}
+                onApply={(layerId, column, expression) => {
+                  onLayerChoropleth(layerId, column, expression);
+                  setChoroplethLayerId(null);
+                }}
+                onEnrichmentComplete={(layerId) => {
+                  // Force MapLibre to reload vector tiles for this layer
+                  const map = mapRef?.current;
+                  if (!map) return;
+                  const source = map.getSource(layerId);
+                  if (source && 'setTiles' in source) {
+                    // MVT source — update tile URL with cache-busting timestamp
+                    const ts = Date.now();
+                    const origin = window.location.origin;
+                    (source as { setTiles: (tiles: string[]) => void }).setTiles([
+                      `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
+                    ]);
+                  } else if (source && 'setUrl' in source) {
+                    // PMTiles source — reload with cache-busting param
+                    const ts = Date.now();
+                    const origin = window.location.origin;
+                    (source as { setUrl: (url: string) => void }).setUrl(`${origin}/api/layer/${layerId}/tiles.pmtiles?v=${ts}`);
+                  }
+                }}
+                featureCount={choroplethLayer?.feature_count}
+                layerBounds={choroplethLayer?.bounds}
+                onPieChart={onShowPieChart}
+              />
+            );
+          })()}
       </CardFooter>
     </Card>
   );

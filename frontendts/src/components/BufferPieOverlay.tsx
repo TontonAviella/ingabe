@@ -1,4 +1,4 @@
-import { Map as MLMap, Marker } from 'maplibre-gl';
+import { Marker, Map as MLMap } from 'maplibre-gl';
 import React, { useEffect, useRef } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { Cell, Pie, PieChart, Tooltip } from 'recharts';
@@ -73,14 +73,7 @@ function PieContent({ slices, onRemove }: { slices: PieSlice[]; onRemove?: () =>
             const x = cx + radius * Math.cos(-midAngle * RADIAN);
             const y = cy + radius * Math.sin(-midAngle * RADIAN);
             return (
-              <text
-                x={x}
-                y={y}
-                fill="white"
-                textAnchor="middle"
-                dominantBaseline="central"
-                style={{ fontSize: 10, fontWeight: 600 }}
-              >
+              <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" style={{ fontSize: 10, fontWeight: 600 }}>
                 {`${(percent * 100).toFixed(0)}%`}
               </text>
             );

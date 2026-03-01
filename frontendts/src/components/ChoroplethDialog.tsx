@@ -373,11 +373,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
                   This layer has a single feature. Land Cover metrics will be shown as a pie chart.
                 </p>
               </div>
-              <Button
-                className="w-full"
-                onClick={handleBatchEnrich}
-                disabled={batchEnriching}
-              >
+              <Button className="w-full" onClick={handleBatchEnrich} disabled={batchEnriching}>
                 {batchEnriching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PieChartIcon className="mr-2 h-4 w-4" />}
                 Compute All Land Cover
               </Button>
@@ -390,9 +386,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
                 ))}
               </div>
               <div className="border-t border-border" />
-              <p className="text-xs text-muted-foreground">
-                Or use the standard choropleth workflow below:
-              </p>
+              <p className="text-xs text-muted-foreground">Or use the standard choropleth workflow below:</p>
             </div>
           )}
 
@@ -400,15 +394,11 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
           {availableMetrics.length > 0 && (
             <div className="space-y-2">
               <Label>Compute a metric</Label>
-              <p className="text-xs text-muted-foreground">
-                Generate values for each feature on-the-fly, then use as a column below.
-              </p>
+              <p className="text-xs text-muted-foreground">Generate values for each feature on-the-fly, then use as a column below.</p>
               <div className="space-y-2">
                 {Object.entries(metricsByCategory).map(([category, metrics]) => (
                   <div key={category}>
-                    <p className="mb-1 text-xs font-medium text-muted-foreground">
-                      {CATEGORY_LABELS[category] ?? category}
-                    </p>
+                    <p className="mb-1 text-xs font-medium text-muted-foreground">{CATEGORY_LABELS[category] ?? category}</p>
                     <div className="flex flex-wrap gap-1.5">
                       {metrics.map((m) => {
                         const isSelected = m.computed && column === m.key;
@@ -433,9 +423,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
                               }
                             }}
                           >
-                            {enriching === m.key ? (
-                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                            ) : null}
+                            {enriching === m.key ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
                             {m.label}
                             {m.computed && !isSelected ? ' \u2713' : ''}
                           </Button>
