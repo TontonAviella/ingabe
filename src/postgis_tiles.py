@@ -22,6 +22,10 @@ MVT_LAYER_NAME = "reprojectedfgb"
 _MVT_CACHE_TTL = 300
 
 from src.dependencies.redis_client import get_async_redis as _get_async_redis
+from src.services.enrichment_service import AVAILABLE_METRICS
+
+# Column names that are enrichment metrics — never exist in the PostGIS source
+_ENRICHMENT_METRIC_KEYS = frozenset(AVAILABLE_METRICS.keys())
 
 
 def _validate_column_name(name: str) -> str:
@@ -168,9 +172,12 @@ async def fetch_mvt_tile(
 
     # Build base column list from PostGIS source, excluding enrichment columns
     # (enrichment columns come from the CTE join, not the source table).
-    enrich_col_set = set(enrich_col_names)
+    # Also exclude all known metric keys as a safety net — even if no enrichments
+    # are present, a previously-corrupted postgis_attribute_column_list might
+    # still reference them.
+    exclude = set(enrich_col_names) | _ENRICHMENT_METRIC_KEYS
     raw_names: List[str] = [
-        c for c in (layer.postgis_attribute_column_list or []) if c not in enrich_col_set
+        c for c in (layer.postgis_attribute_column_list or []) if c not in exclude
     ] + ["id"]
     try:
         safe_names = [_validate_column_name(n) for n in raw_names]
