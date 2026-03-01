@@ -181,6 +181,13 @@ AVAILABLE_METRICS: Dict[str, MetricDefinition] = {
         description="Mean temperature over last 10 days",
         source="Open-Meteo",
     ),
+    "wind_speed_ms": MetricDefinition(
+        key="wind_speed_ms",
+        label="Wind Speed (m/s)",
+        category="Weather",
+        description="Mean wind speed at 10m over last 10 days",
+        source="Open-Meteo",
+    ),
     "yield_forecast_tha": MetricDefinition(
         key="yield_forecast_tha",
         label="Yield Forecast (t/ha)",
@@ -320,7 +327,7 @@ def _compute_weather_metric(
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lats}&longitude={lons}"
-        f"&daily=temperature_2m_mean,precipitation_sum"
+        f"&daily=temperature_2m_mean,precipitation_sum,wind_speed_10m_max"
         f"&past_days={past_days}"
         f"&timezone=Africa/Kigali"
         f"&forecast_days=1"
@@ -353,6 +360,10 @@ def _compute_weather_metric(
         elif metric_key == "temp_mean":
             temps = daily.get("temperature_2m_mean", [])
             vals = [v for v in temps if v is not None]
+            results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+        elif metric_key == "wind_speed_ms":
+            winds = daily.get("wind_speed_10m_max", [])
+            vals = [v for v in winds if v is not None]
             results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
 
     return results
@@ -639,7 +650,7 @@ async def compute_metric(
         return await loop.run_in_executor(
             None, _compute_lulc_metrics, features, metric_key
         )
-    elif metric_key in ("rainfall_mm", "temp_mean"):
+    elif metric_key in ("rainfall_mm", "temp_mean", "wind_speed_ms"):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, _compute_weather_metric, features, metric_key

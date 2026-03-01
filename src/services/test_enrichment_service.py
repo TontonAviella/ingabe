@@ -355,8 +355,8 @@ class TestComputeMetricDispatch:
         for key in expected_keys:
             assert key in AVAILABLE_METRICS, f"{key} not in AVAILABLE_METRICS"
 
-        # Also verify total count is 22 (4 LULC + 2 weather + 15 veg/emis/soil + 1 yield)
-        assert len(AVAILABLE_METRICS) == 22
+        # Also verify total count is 23 (4 LULC + 3 weather + 15 veg/emis/soil + 1 yield)
+        assert len(AVAILABLE_METRICS) == 23
 
 
 # ---------------------------------------------------------------------------

@@ -398,11 +398,11 @@ class TestEnrichmentIntegration:
         assert result[1] == 3.5
 
     def test_metric_registered(self):
-        """yield_forecast_tha is in AVAILABLE_METRICS, total count = 22."""
+        """yield_forecast_tha is in AVAILABLE_METRICS, total count = 23."""
         assert "yield_forecast_tha" in AVAILABLE_METRICS
         assert AVAILABLE_METRICS["yield_forecast_tha"].category == "Agriculture"
         assert AVAILABLE_METRICS["yield_forecast_tha"].source == "DSSAT + Sentinel-2"
-        assert len(AVAILABLE_METRICS) == 22
+        assert len(AVAILABLE_METRICS) == 23
 
 
 # ---------------------------------------------------------------------------
