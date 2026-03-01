@@ -300,13 +300,17 @@ def _compute_lulc_metrics(
 # Weather computation (Open-Meteo, reuses weather_service pattern)
 # ---------------------------------------------------------------------------
 
+_OPEN_METEO_BATCH_SIZE = 50
+
+
 def _compute_weather_metric(
     features: List[Dict[str, Any]],
     metric_key: str,
 ) -> Dict[int, float]:
     """Compute weather metric for each feature centroid via Open-Meteo.
 
-    Uses centroids of feature geometries for bulk Open-Meteo request.
+    Uses centroids of feature geometries, batched into chunks of 50 to stay
+    within Open-Meteo's bulk request limit (~100 coordinates).
     Returns {feature_id: value}.
     """
     from shapely.geometry import shape
@@ -320,51 +324,55 @@ def _compute_weather_metric(
     if not centroids:
         return {}
 
-    lats = ",".join(str(c["lat"]) for c in centroids)
-    lons = ",".join(str(c["lon"]) for c in centroids)
-
     past_days = 10
-    url = (
-        f"https://api.open-meteo.com/v1/forecast?"
-        f"latitude={lats}&longitude={lons}"
-        f"&daily=temperature_2m_mean,precipitation_sum,wind_speed_10m_max"
-        f"&past_days={past_days}"
-        f"&timezone=Africa/Kigali"
-        f"&forecast_days=1"
-    )
-
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        logger.error("Open-Meteo request failed: %s", e)
-        return {}
-
-    # Single location returns dict, multi returns list
-    if isinstance(data, dict) and "daily" in data:
-        data = [data]
-
     results: Dict[int, float] = {}
-    for idx, centroid in enumerate(centroids):
-        fid = centroid["id"]
-        if idx >= len(data):
-            break
 
-        daily = data[idx].get("daily", {})
+    for batch_start in range(0, len(centroids), _OPEN_METEO_BATCH_SIZE):
+        batch = centroids[batch_start:batch_start + _OPEN_METEO_BATCH_SIZE]
 
-        if metric_key == "rainfall_mm":
-            precip = daily.get("precipitation_sum", [])
-            vals = [v for v in precip if v is not None]
-            results[fid] = round(sum(vals), 1) if vals else 0.0
-        elif metric_key == "temp_mean":
-            temps = daily.get("temperature_2m_mean", [])
-            vals = [v for v in temps if v is not None]
-            results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
-        elif metric_key == "wind_speed_ms":
-            winds = daily.get("wind_speed_10m_max", [])
-            vals = [v for v in winds if v is not None]
-            results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+        lats = ",".join(str(c["lat"]) for c in batch)
+        lons = ",".join(str(c["lon"]) for c in batch)
+
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lats}&longitude={lons}"
+            f"&daily=temperature_2m_mean,precipitation_sum,wind_speed_10m_max"
+            f"&past_days={past_days}"
+            f"&timezone=Africa/Kigali"
+            f"&forecast_days=0"
+        )
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            logger.error("Open-Meteo batch request failed (offset %d): %s", batch_start, e)
+            continue
+
+        # Single location returns dict, multi returns list
+        if isinstance(data, dict) and "daily" in data:
+            data = [data]
+
+        for idx, centroid in enumerate(batch):
+            fid = centroid["id"]
+            if idx >= len(data):
+                break
+
+            daily = data[idx].get("daily", {})
+
+            if metric_key == "rainfall_mm":
+                precip = daily.get("precipitation_sum", [])
+                vals = [v for v in precip if v is not None]
+                results[fid] = round(sum(vals), 1) if vals else 0.0
+            elif metric_key == "temp_mean":
+                temps = daily.get("temperature_2m_mean", [])
+                vals = [v for v in temps if v is not None]
+                results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+            elif metric_key == "wind_speed_ms":
+                winds = daily.get("wind_speed_10m_max", [])
+                vals = [v for v in winds if v is not None]
+                results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
 
     return results
 

@@ -61,11 +61,12 @@ function interpolateColors(palette: string[], k: number): string[] {
  *   ]
  */
 function buildStepExpression(column: string, breaks: number[], colors: string[]): unknown[] {
-  const expr: unknown[] = ['step', ['get', column], colors[0]];
+  const step: unknown[] = ['step', ['get', column], colors[0]];
   for (let i = 1; i < colors.length; i++) {
-    expr.push(breaks[i], colors[i]);
+    step.push(breaks[i], colors[i]);
   }
-  return expr;
+  // Wrap: if feature has the property → use step expression; otherwise → semi-transparent gray
+  return ['case', ['has', column], step, 'rgba(128,128,128,0.3)'];
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -291,30 +292,37 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
                       {CATEGORY_LABELS[category] ?? category}
                     </p>
                     <div className="flex flex-wrap gap-1.5">
-                      {metrics.map((m) => (
-                        <Button
-                          key={m.key}
-                          variant={m.computed ? 'secondary' : 'outline'}
-                          size="sm"
-                          className="h-7 text-xs"
-                          disabled={enriching !== null}
-                          onClick={() => {
-                            if (m.computed) {
-                              // Already computed — just select it
-                              setColumn(m.key);
-                              setStats(null);
-                            } else {
-                              handleEnrich(m.key);
-                            }
-                          }}
-                        >
-                          {enriching === m.key ? (
-                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                          ) : null}
-                          {m.label}
-                          {m.computed ? ' \u2713' : ''}
-                        </Button>
-                      ))}
+                      {metrics.map((m) => {
+                        const isSelected = m.computed && column === m.key;
+                        return (
+                          <Button
+                            key={m.key}
+                            variant={isSelected ? 'default' : m.computed ? 'secondary' : 'outline'}
+                            size="sm"
+                            className={`h-7 text-xs${isSelected ? ' ring-2 ring-ring ring-offset-1 ring-offset-background' : ''}`}
+                            disabled={enriching !== null}
+                            onClick={() => {
+                              if (m.computed) {
+                                // Toggle: clicking the already-selected metric deselects it
+                                if (isSelected) {
+                                  setColumn('');
+                                } else {
+                                  setColumn(m.key);
+                                }
+                                setStats(null);
+                              } else {
+                                handleEnrich(m.key);
+                              }
+                            }}
+                          >
+                            {enriching === m.key ? (
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            ) : null}
+                            {m.label}
+                            {m.computed && !isSelected ? ' \u2713' : ''}
+                          </Button>
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
