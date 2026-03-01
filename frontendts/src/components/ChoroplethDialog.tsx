@@ -62,8 +62,13 @@ function interpolateColors(palette: string[], k: number): string[] {
  */
 function buildStepExpression(column: string, breaks: number[], colors: string[]): unknown[] {
   const step: unknown[] = ['step', ['get', column], colors[0]];
+  let lastBreak = -Infinity;
   for (let i = 1; i < colors.length; i++) {
-    step.push(breaks[i], colors[i]);
+    // MapLibre requires strictly ascending break values — skip duplicates
+    if (breaks[i] > lastBreak) {
+      step.push(breaks[i], colors[i]);
+      lastBreak = breaks[i];
+    }
   }
   // Wrap: if feature has the property → use step expression; otherwise → semi-transparent gray
   return ['case', ['has', column], step, 'rgba(128,128,128,0.3)'];

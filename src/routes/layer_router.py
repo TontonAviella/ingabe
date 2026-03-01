@@ -1332,9 +1332,8 @@ async def get_layer_available_metrics(
     layer: MapLayer = Depends(get_layer),
 ):
     """Return available enrichment metrics for a polygon/multipolygon layer."""
-    if layer.geometry_type and layer.geometry_type.lower() not in (
-        "polygon", "multipolygon",
-    ):
+    _POLYGON_TYPES = ("polygon", "multipolygon", "curvepolygon", "multisurface", "geometrycollection")
+    if layer.geometry_type and layer.geometry_type.lower() not in _POLYGON_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Enrichment metrics are only available for polygon layers",
@@ -1395,10 +1394,10 @@ async def enrich_layer(
             detail="Enrichment is only available for polygon layers",
         )
 
-    if layer.type != LAYER_TYPE_POSTGIS or not layer.postgis_connection_id:
+    if layer.type not in (LAYER_TYPE_POSTGIS, LAYER_TYPE_VECTOR):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Enrichment is only available for PostGIS layers",
+            detail="Enrichment is only available for PostGIS and vector layers",
         )
 
     # Check if already computed
@@ -1415,42 +1414,66 @@ async def enrich_layer(
                 status="ready",
             )
 
-    # Fetch feature geometries from external PostGIS
-    async with async_conn("enrich_conn") as conn:
-        connection_details = await conn.fetchrow(
-            """
-            SELECT connection_uri
-            FROM project_postgres_connections
-            WHERE id = $1 AND soft_deleted_at IS NULL
-            """,
-            layer.postgis_connection_id,
-        )
-
-    if not connection_details:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="PostGIS connection not found",
-        )
-
-    async with get_pooled_connection(
-        connection_details["connection_uri"]
-    ) as postgis_conn:
-        rows = await postgis_conn.fetch(
-            f'SELECT id, ST_AsGeoJSON(geom) AS geom FROM ({layer.postgis_query}) sub'
-        )
-
-    if not rows:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Layer has no features",
-        )
-
     features = []
-    for r in rows:
-        features.append({
-            "id": r["id"],
-            "geom": json.loads(r["geom"]),
-        })
+
+    if layer.type == LAYER_TYPE_POSTGIS:
+        # Fetch feature geometries from external PostGIS
+        if not layer.postgis_connection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PostGIS layer missing connection",
+            )
+        async with async_conn("enrich_conn") as conn:
+            connection_details = await conn.fetchrow(
+                """
+                SELECT connection_uri
+                FROM project_postgres_connections
+                WHERE id = $1 AND soft_deleted_at IS NULL
+                """,
+                layer.postgis_connection_id,
+            )
+
+        if not connection_details:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PostGIS connection not found",
+            )
+
+        async with get_pooled_connection(
+            connection_details["connection_uri"]
+        ) as postgis_conn:
+            rows = await postgis_conn.fetch(
+                f'SELECT id, ST_AsGeoJSON(geom) AS geom FROM ({layer.postgis_query}) sub'
+            )
+
+        for r in rows:
+            features.append({
+                "id": r["id"],
+                "geom": json.loads(r["geom"]),
+            })
+
+    elif layer.type == LAYER_TYPE_VECTOR:
+        # Fetch feature geometries from S3-stored vector file
+        if not layer.s3_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Vector layer missing S3 key",
+            )
+        import fiona
+        s3_client = await get_async_s3_client()
+        bucket = get_bucket_name()
+        resp = await s3_op(s3_client.get_object, Bucket=bucket, Key=layer.s3_key)
+        body = await resp["Body"].read()
+
+        suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            tmp.write(body)
+            tmp.flush()
+            with fiona.open(tmp.name) as collection:
+                for fid, feat in enumerate(collection, start=1):
+                    geom = feat.get("geometry")
+                    if geom:
+                        features.append({"id": fid, "geom": dict(geom)})
 
     # Compute the metric
     try:
