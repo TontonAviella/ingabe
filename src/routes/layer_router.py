@@ -1462,13 +1462,13 @@ async def enrich_layer(
         import fiona
         s3_client = await get_async_s3_client()
         bucket = get_bucket_name()
-        resp = await s3_op(s3_client.get_object, Bucket=bucket, Key=layer.s3_key)
-        body = await resp["Body"].read()
 
         suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
         with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-            tmp.write(body)
-            tmp.flush()
+            await s3_op(
+                s3_client.download_file(bucket, layer.s3_key, tmp.name),
+                "download", f"layer {layer.layer_id}",
+            )
             with fiona.open(tmp.name) as collection:
                 for fid, feat in enumerate(collection, start=1):
                     geom = feat.get("geometry")
