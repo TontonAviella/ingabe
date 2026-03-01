@@ -271,12 +271,12 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>Choropleth Classification</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
           {/* ── Compute a metric (enrichment) ──────────────────────────── */}
           {availableMetrics.length > 0 && (
             <div className="space-y-2">
