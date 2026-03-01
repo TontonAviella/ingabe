@@ -1134,7 +1134,7 @@ async def get_layer_column_stats(
         return [mn + step * i for i in range(k + 1)]
 
     # ── Enrichment column path (values stored in app DB) ─────────────────
-    if layer.type == LAYER_TYPE_POSTGIS and column in AVAILABLE_METRICS:
+    if column in AVAILABLE_METRICS:
         async with async_conn("column_stats_enrichment") as conn:
             rows = await conn.fetch(
                 """
@@ -1386,9 +1386,8 @@ async def enrich_layer(
             detail=f"Unknown metric: {metric_key}. Available: {list(AVAILABLE_METRICS.keys())}",
         )
 
-    if layer.geometry_type and layer.geometry_type.lower() not in (
-        "polygon", "multipolygon",
-    ):
+    _POLYGON_TYPES = ("polygon", "multipolygon", "curvepolygon", "multisurface", "geometrycollection")
+    if layer.geometry_type and layer.geometry_type.lower() not in _POLYGON_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Enrichment is only available for polygon layers",
@@ -1513,6 +1512,64 @@ async def enrich_layer(
             "UPDATE map_layers SET last_edited = NOW() WHERE layer_id = $1",
             layer.layer_id,
         )
+
+    # For vector layers, write enrichment values back into the source file
+    # so that PMTiles regeneration includes the metric column in tile features.
+    if layer.type == LAYER_TYPE_VECTOR and layer.s3_key:
+        import fiona
+        import shutil
+
+        s3_enrich = await get_async_s3_client()
+        bucket_enrich = get_bucket_name()
+        suffix_enrich = os.path.splitext(layer.s3_key)[1] or ".fgb"
+        tmpdir = tempfile.mkdtemp()
+        try:
+            src_path = os.path.join(tmpdir, f"source{suffix_enrich}")
+            dst_path = os.path.join(tmpdir, f"enriched{suffix_enrich}")
+            await s3_op(
+                s3_enrich.download_file(bucket_enrich, layer.s3_key, src_path),
+                "download", f"enrich write-back {layer.layer_id}",
+            )
+            with fiona.open(src_path) as src:
+                schema = src.schema.copy()
+                schema["properties"][metric_key] = "float"
+                with fiona.open(dst_path, "w", driver=src.driver, crs=src.crs, schema=schema) as dst:
+                    for fid, feat in enumerate(src, start=1):
+                        props = dict(feat["properties"])
+                        props[metric_key] = values.get(fid)
+                        dst.write({"geometry": feat["geometry"], "properties": props})
+
+            # Upload enriched file, replacing the original
+            await s3_op(
+                s3_enrich.upload_file(dst_path, bucket_enrich, layer.s3_key),
+                "upload", f"enriched layer {layer.layer_id}",
+            )
+
+            # Clear pmtiles_key so next tile request triggers lazy regeneration
+            async with async_conn("enrich_clear_pmtiles") as conn:
+                row = await conn.fetchrow(
+                    "SELECT metadata FROM map_layers WHERE layer_id = $1",
+                    layer.layer_id,
+                )
+                if row and row["metadata"]:
+                    raw = row["metadata"]
+                    meta = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                    old_pmtiles = meta.pop("pmtiles_key", None)
+                    await conn.execute(
+                        "UPDATE map_layers SET metadata = $1::jsonb WHERE layer_id = $2",
+                        json.dumps(meta), layer.layer_id,
+                    )
+                    if old_pmtiles:
+                        try:
+                            await s3_enrich.delete_object(Bucket=bucket_enrich, Key=old_pmtiles)
+                        except Exception:
+                            logger.warning("Failed to delete old PMTiles %s", old_pmtiles, exc_info=True)
+
+            logger.info("Wrote enrichment '%s' back to vector file for layer %s", metric_key, layer.layer_id)
+        except Exception:
+            logger.warning("Failed to write enrichment to vector file for %s", layer.layer_id, exc_info=True)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     # Invalidate tile cache so new tiles include enrichment data
     await tile_cache.invalidate_layer(layer.layer_id)
