@@ -104,6 +104,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   'Land Cover': 'Land Cover',
   Vegetation: 'Vegetation',
   Weather: 'Weather',
+  Emissions: 'Emissions',
+  Soil: 'Soil',
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────

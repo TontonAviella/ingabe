@@ -69,6 +69,104 @@ AVAILABLE_METRICS: Dict[str, MetricDefinition] = {
         description="Mean NDVI from Sentinel-2 (last 30 days)",
         source="Sentinel Hub Statistical API",
     ),
+    "evi_mean": MetricDefinition(
+        key="evi_mean",
+        label="EVI Mean",
+        category="Vegetation",
+        description="Enhanced Vegetation Index from Sentinel-2 (last 30 days)",
+        source="Sentinel Hub Statistical API",
+    ),
+    "ndwi_mean": MetricDefinition(
+        key="ndwi_mean",
+        label="NDWI Mean",
+        category="Vegetation",
+        description="Normalized Difference Water Index from Sentinel-2 (last 30 days)",
+        source="Sentinel Hub Statistical API",
+    ),
+    "savi_mean": MetricDefinition(
+        key="savi_mean",
+        label="SAVI Mean",
+        category="Vegetation",
+        description="Soil-Adjusted Vegetation Index from Sentinel-2 (last 30 days)",
+        source="Sentinel Hub Statistical API",
+    ),
+    "ndre_mean": MetricDefinition(
+        key="ndre_mean",
+        label="NDRE Mean",
+        category="Vegetation",
+        description="Normalized Difference Red Edge Index from Sentinel-2 (last 30 days)",
+        source="Sentinel Hub Statistical API",
+    ),
+    "ndbi_mean": MetricDefinition(
+        key="ndbi_mean",
+        label="NDBI Mean",
+        category="Vegetation",
+        description="Normalized Difference Built-up Index from Sentinel-2 (last 30 days)",
+        source="Sentinel Hub Statistical API",
+    ),
+    "ch4_emissions": MetricDefinition(
+        key="ch4_emissions",
+        label="CH4 (tonnes/yr)",
+        category="Emissions",
+        description="Methane emissions from agriculture (EDGAR v8.0)",
+        source="EDGAR",
+    ),
+    "n2o_emissions": MetricDefinition(
+        key="n2o_emissions",
+        label="N2O (tonnes/yr)",
+        category="Emissions",
+        description="Nitrous oxide emissions from agriculture (EDGAR v8.0)",
+        source="EDGAR",
+    ),
+    "co2_emissions": MetricDefinition(
+        key="co2_emissions",
+        label="CO2 (tonnes/yr)",
+        category="Emissions",
+        description="Carbon dioxide emissions from agriculture (EDGAR v8.0)",
+        source="EDGAR",
+    ),
+    "soil_ph": MetricDefinition(
+        key="soil_ph",
+        label="Soil pH",
+        category="Soil",
+        description="Soil acidity/alkalinity (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
+    "soil_nitrogen": MetricDefinition(
+        key="soil_nitrogen",
+        label="Nitrogen (g/kg)",
+        category="Soil",
+        description="Total nitrogen content (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
+    "soil_phosphorus": MetricDefinition(
+        key="soil_phosphorus",
+        label="Phosphorus (ppm)",
+        category="Soil",
+        description="Extractable phosphorus (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
+    "soil_potassium": MetricDefinition(
+        key="soil_potassium",
+        label="Potassium (ppm)",
+        category="Soil",
+        description="Extractable potassium (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
+    "soil_organic_carbon": MetricDefinition(
+        key="soil_organic_carbon",
+        label="Organic Carbon (g/kg)",
+        category="Soil",
+        description="Soil organic carbon content (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
+    "soil_clay": MetricDefinition(
+        key="soil_clay",
+        label="Clay Content (%)",
+        category="Soil",
+        description="Clay fraction of soil (iSDAsoil 30m, 0-20cm)",
+        source="iSDAsoil",
+    ),
     "rainfall_mm": MetricDefinition(
         key="rainfall_mm",
         label="Rainfall (mm)",
@@ -254,25 +352,42 @@ def _compute_weather_metric(
 
 
 # ---------------------------------------------------------------------------
-# NDVI computation (Sentinel Hub, reuses sentinel_hub_service pattern)
+# Vegetation index computation (Sentinel Hub, reuses sentinel_hub_service)
 # ---------------------------------------------------------------------------
 
-async def _compute_ndvi_metric(
+# Map metric keys to the index name returned by get_agri_stats()
+_AGRI_INDEX_MAP = {
+    "ndvi_mean": "ndvi",
+    "evi_mean": "evi",
+    "ndwi_mean": "ndwi",
+    "savi_mean": "savi",
+    "ndre_mean": "ndre",
+    "ndbi_mean": "ndbi",
+}
+
+
+async def _compute_agri_index_metric(
     features: List[Dict[str, Any]],
+    index_name: str,
 ) -> Dict[int, float]:
-    """Compute mean NDVI for each feature via Sentinel Hub Statistical API.
+    """Compute mean of a vegetation index for each feature via Sentinel Hub.
 
     Uses asyncio.Semaphore to limit concurrency to 3 concurrent requests.
-    Returns {feature_id: ndvi_mean}.
+    The get_agri_stats() call returns all 6 indices in one request — we
+    just extract the one we need.
+
+    Args:
+        features: Feature dicts with 'id' and 'geom'.
+        index_name: One of ndvi, evi, ndwi, savi, ndre, ndbi.
+
+    Returns:
+        {feature_id: mean_value}
     """
-    from src.services.sentinel_hub_service import (
-        get_sentinel_hub_service,
-        AGRI_INDEX_NAMES,
-    )
+    from src.services.sentinel_hub_service import get_sentinel_hub_service
 
     sh = get_sentinel_hub_service()
     if sh is None:
-        logger.warning("Sentinel Hub service not available, skipping NDVI")
+        logger.warning("Sentinel Hub service not available, skipping %s", index_name)
         return {}
 
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
@@ -285,7 +400,6 @@ async def _compute_ndvi_metric(
         fid = feat["id"]
         async with semaphore:
             try:
-                # get_agri_stats is synchronous — run in thread
                 stats = await asyncio.get_event_loop().run_in_executor(
                     None,
                     lambda: sh.get_agri_stats(
@@ -295,21 +409,157 @@ async def _compute_ndvi_metric(
                     ),
                 )
                 intervals = stats.get("intervals", [])
-                ndvi_means = [
-                    iv["ndvi"]["mean"]
+                means = [
+                    iv[index_name]["mean"]
                     for iv in intervals
-                    if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
+                    if index_name in iv and iv[index_name].get("valid_pixels", 0) > 0
                 ]
-                if ndvi_means:
-                    results[fid] = round(float(np.mean(ndvi_means)), 4)
+                if means:
+                    results[fid] = round(float(np.mean(means)), 4)
                 else:
                     results[fid] = 0.0
             except Exception as e:
-                logger.warning("NDVI computation failed for feature %d: %s", fid, e)
+                logger.warning("%s computation failed for feature %d: %s", index_name, fid, e)
                 results[fid] = 0.0
 
     tasks = [_fetch_one(feat) for feat in features]
     await asyncio.gather(*tasks)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Emissions computation (EDGAR)
+# ---------------------------------------------------------------------------
+
+# Map metric keys to EDGAR emission types
+_EMISSIONS_MAP = {
+    "ch4_emissions": "CH4",
+    "n2o_emissions": "N2O",
+    "co2_emissions": "CO2",
+}
+
+
+def _compute_emissions_metric(
+    features: List[Dict[str, Any]],
+    emission_type: str,
+) -> Dict[int, float]:
+    """Compute total emissions for each feature centroid via EDGAR grid lookup.
+
+    Downloads the EDGAR grid for the latest available year (2022) and sums
+    across all agriculture sectors for the given emission type.
+
+    Args:
+        features: Feature dicts with 'id' and 'geom'.
+        emission_type: One of CH4, N2O, CO2.
+
+    Returns:
+        {feature_id: total_tonnes_per_year}
+    """
+    from shapely.geometry import shape
+
+    from src.services.emissions_service import VALID_COMBOS, get_emissions_service
+
+    svc = get_emissions_service()
+    if svc is None:
+        logger.warning("Emissions service not available")
+        return {}
+
+    year = 2022  # latest EDGAR year
+    sectors = VALID_COMBOS.get(emission_type, [])
+
+    # Download grids for all valid sectors and sum them
+    combined_grid = None
+    grid_lats = None
+    grid_lons = None
+
+    for sector in sectors:
+        grid_data = svc.download_edgar_gridmap(emission_type, sector, year)
+        if "error" in grid_data:
+            logger.warning("EDGAR grid %s/%s: %s", emission_type, sector, grid_data["error"])
+            continue
+        values = grid_data.get("values")
+        if values is None:
+            continue
+        if combined_grid is None:
+            combined_grid = np.copy(values).astype(np.float64)
+            grid_lats = grid_data["lats"]
+            grid_lons = grid_data["lons"]
+        else:
+            # Sum across sectors (same grid shape)
+            combined_grid += values.astype(np.float64)
+
+    if combined_grid is None or grid_lats is None or grid_lons is None:
+        logger.warning("No EDGAR data available for %s", emission_type)
+        return {feat["id"]: 0.0 for feat in features}
+
+    results: Dict[int, float] = {}
+    for feat in features:
+        fid = feat["id"]
+        try:
+            geom = shape(feat["geom"])
+            c = geom.centroid
+            # Find nearest grid cell
+            lat_idx = int(np.argmin(np.abs(grid_lats - c.y)))
+            lon_idx = int(np.argmin(np.abs(grid_lons - c.x)))
+            val = float(combined_grid[lat_idx, lon_idx])
+            results[fid] = round(val, 2) if np.isfinite(val) else 0.0
+        except Exception as e:
+            logger.warning("Emissions lookup failed for feature %d: %s", fid, e)
+            results[fid] = 0.0
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Soil property computation (iSDAsoil)
+# ---------------------------------------------------------------------------
+
+# Map metric keys to iSDAsoil property names
+_SOIL_PROPERTY_MAP = {
+    "soil_ph": "ph",
+    "soil_nitrogen": "nitrogen_total",
+    "soil_phosphorus": "phosphorous_extractable",
+    "soil_potassium": "potassium_extractable",
+    "soil_organic_carbon": "carbon_organic",
+    "soil_clay": "clay_content",
+}
+
+
+def _compute_soil_metric(
+    features: List[Dict[str, Any]],
+    soil_property: str,
+) -> Dict[int, float]:
+    """Compute a soil property value for each feature centroid via iSDAsoil.
+
+    Args:
+        features: Feature dicts with 'id' and 'geom'.
+        soil_property: iSDAsoil property name (e.g. 'ph', 'nitrogen_total').
+
+    Returns:
+        {feature_id: value}
+    """
+    from shapely.geometry import shape
+
+    from src.services.isdasoil_service import query_soil_point
+
+    results: Dict[int, float] = {}
+    for feat in features:
+        fid = feat["id"]
+        try:
+            geom = shape(feat["geom"])
+            c = geom.centroid
+            resp = query_soil_point(lon=c.x, lat=c.y, properties=[soil_property])
+            if resp.get("status") != "success":
+                results[fid] = 0.0
+                continue
+            props = resp.get("properties", {})
+            prop_data = props.get(soil_property, {})
+            val = prop_data.get("value")
+            results[fid] = round(float(val), 2) if val is not None else 0.0
+        except Exception as e:
+            logger.warning("Soil query failed for feature %d: %s", fid, e)
+            results[fid] = 0.0
 
     return results
 
@@ -348,7 +598,20 @@ async def compute_metric(
         return await loop.run_in_executor(
             None, _compute_weather_metric, features, metric_key
         )
-    elif metric_key == "ndvi_mean":
-        return await _compute_ndvi_metric(features)
+    elif metric_key in _AGRI_INDEX_MAP:
+        index_name = _AGRI_INDEX_MAP[metric_key]
+        return await _compute_agri_index_metric(features, index_name)
+    elif metric_key in _EMISSIONS_MAP:
+        emission_type = _EMISSIONS_MAP[metric_key]
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, _compute_emissions_metric, features, emission_type
+        )
+    elif metric_key in _SOIL_PROPERTY_MAP:
+        soil_property = _SOIL_PROPERTY_MAP[metric_key]
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, _compute_soil_metric, features, soil_property
+        )
     else:
         raise ValueError(f"No compute function for metric: {metric_key}")
