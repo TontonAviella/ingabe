@@ -14,6 +14,7 @@ Create Date: 2026-03-01 00:00:00.000000
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import text
 
 # revision identifiers, used by Alembic.
 revision: str = "c4d5e6f7a8b9"
@@ -37,11 +38,12 @@ def upgrade() -> None:
     conn = op.get_bind()
     for key in _METRIC_KEYS:
         conn.execute(
-            op.inline_literal(
-                f"UPDATE map_layers "
-                f"SET postgis_attribute_column_list = array_remove(postgis_attribute_column_list, '{key}') "
-                f"WHERE postgis_attribute_column_list @> ARRAY['{key}']"
-            )
+            text(
+                "UPDATE map_layers "
+                "SET postgis_attribute_column_list = array_remove(postgis_attribute_column_list, CAST(:key AS varchar)) "
+                "WHERE postgis_attribute_column_list @> ARRAY[CAST(:key AS varchar)]"
+            ),
+            {"key": key},
         )
 
 
