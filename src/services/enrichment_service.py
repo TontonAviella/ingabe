@@ -181,6 +181,13 @@ AVAILABLE_METRICS: Dict[str, MetricDefinition] = {
         description="Mean temperature over last 10 days",
         source="Open-Meteo",
     ),
+    "yield_forecast_tha": MetricDefinition(
+        key="yield_forecast_tha",
+        label="Yield Forecast (t/ha)",
+        category="Agriculture",
+        description="DSSAT crop yield forecast with Sentinel-2 data assimilation (current season)",
+        source="DSSAT + Sentinel-2",
+    ),
 }
 
 # ESRI LULC class values → metric key mapping
@@ -565,6 +572,45 @@ def _compute_soil_metric(
 
 
 # ---------------------------------------------------------------------------
+# Yield forecast computation (DSSAT + Sentinel-2 assimilation)
+# ---------------------------------------------------------------------------
+
+def _compute_yield_forecast(
+    features: List[Dict[str, Any]],
+    crop_type: str = "maize",
+    season: Optional[str] = None,
+) -> Dict[int, float]:
+    """Compute DSSAT yield forecast for each feature centroid.
+
+    Auto-detects current season from date if not specified.
+    Returns {feature_id: yield_tha}.
+    """
+    from shapely.geometry import shape
+
+    from src.services.dssat_service import run_dssat_with_assimilation
+
+    results: Dict[int, float] = {}
+    for feat in features:
+        fid = feat["id"]
+        try:
+            geom = shape(feat["geom"])
+            c = geom.centroid
+            result = run_dssat_with_assimilation(
+                lat=c.y,
+                lon=c.x,
+                crop_type=crop_type,
+                season=season,
+                geom=feat["geom"],
+            )
+            results[fid] = result.get("yield_tha", 0.0)
+        except Exception as e:
+            logger.warning("Yield forecast failed for feature %d: %s", fid, e)
+            results[fid] = 0.0
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -612,6 +658,11 @@ async def compute_metric(
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, _compute_soil_metric, features, soil_property
+        )
+    elif metric_key == "yield_forecast_tha":
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, _compute_yield_forecast, features
         )
     else:
         raise ValueError(f"No compute function for metric: {metric_key}")

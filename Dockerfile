@@ -13,9 +13,9 @@ FROM ${BASE_IMAGE} AS python-builder
 COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Install development headers for building Python packages
+# Install development headers for building Python packages + gfortran for DSSAT
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-dev build-essential \
+        python3-dev build-essential gfortran \
         libdbus-1-dev libdbus-glib-1-dev pkg-config \
         libgirepository1.0-dev libcairo2-dev \
     && rm -rf /var/lib/apt/lists/*

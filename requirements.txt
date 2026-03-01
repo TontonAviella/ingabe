@@ -46,6 +46,7 @@ decorator==5.1.1
 deprecated==1.2.18
 distro==1.8.0
 dnspython==2.7.0
+DSSATTools>=1.2
 duckdb==1.2.2
 email-validator==2.2.0
 exactextract==0.2.2
