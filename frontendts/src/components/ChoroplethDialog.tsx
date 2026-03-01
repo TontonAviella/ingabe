@@ -1,11 +1,12 @@
 import { apiFetch } from '@mundi/ee';
-import { Loader2 } from 'lucide-react';
+import { Loader2, PieChartIcon } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import type { PieChartData } from './BufferPieOverlay';
 
 // ─── Palette interpolation ──────────────────────────────────────────────────
 
@@ -102,7 +103,21 @@ export interface ChoroplethDialogProps {
   onApply: (layerId: string, column: string, expression: unknown[]) => void;
   /** Called after enrichment completes so parent can reload tiles. */
   onEnrichmentComplete?: (layerId: string) => void;
+  /** Feature count from MapLayer — when 1, enables pie chart mode. */
+  featureCount?: number;
+  /** Layer bounds [west, south, east, north] — used to compute centroid for pie chart. */
+  layerBounds?: number[];
+  /** Called when pie chart data is ready (single-feature mode). */
+  onPieChart?: (layerId: string, data: PieChartData) => void;
 }
+
+/** ESRI LULC legend colors for pie slices. */
+const LULC_SLICE_COLORS: Record<string, { label: string; color: string }> = {
+  cropland_pct: { label: 'Cropland', color: '#e8d74d' },
+  forest_pct: { label: 'Forest', color: '#397d49' },
+  built_pct: { label: 'Built Area', color: '#c4281b' },
+  rangeland_pct: { label: 'Rangeland', color: '#a8ab73' },
+};
 
 // ─── Category icons (text-based) ────────────────────────────────────────────
 
@@ -123,6 +138,9 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   onOpenChange,
   onApply,
   onEnrichmentComplete,
+  featureCount,
+  layerBounds,
+  onPieChart,
 }) => {
   const [column, setColumn] = useState('');
   const [method, setMethod] = useState<'quantile' | 'equal_interval'>('quantile');
@@ -138,6 +156,9 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   const [availableMetrics, setAvailableMetrics] = useState<AvailableMetric[]>([]);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [enriching, setEnriching] = useState<string | null>(null);
+  const [batchEnriching, setBatchEnriching] = useState(false);
+
+  const isPieMode = featureCount === 1 && onPieChart != null;
 
   const fetchColumns = useCallback(() => {
     setColumnsLoading(true);
@@ -287,6 +308,46 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
     }
   };
 
+  const handleBatchEnrich = async () => {
+    if (!layerBounds || layerBounds.length < 4) {
+      toast.error('Layer bounds not available');
+      return;
+    }
+    setBatchEnriching(true);
+    try {
+      const res = await apiFetch(`/api/layer/${layerId}/enrich-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail ?? res.statusText);
+      }
+      const data: { metrics: Record<string, number>; feature_count: number } = await res.json();
+
+      // Build pie chart data from the response
+      const center: [number, number] = [
+        (layerBounds[0] + layerBounds[2]) / 2, // lng
+        (layerBounds[1] + layerBounds[3]) / 2, // lat
+      ];
+      const slices = Object.entries(data.metrics)
+        .filter(([key]) => key in LULC_SLICE_COLORS)
+        .map(([key, value]) => ({
+          name: LULC_SLICE_COLORS[key].label,
+          value,
+          color: LULC_SLICE_COLORS[key].color,
+        }));
+
+      onPieChart?.(layerId, { center, slices });
+      toast.success('Land Cover pie chart ready');
+      onOpenChange(false);
+    } catch (e: unknown) {
+      toast.error(`Batch enrichment failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBatchEnriching(false);
+    }
+  };
+
   // Group metrics by category
   const metricsByCategory = availableMetrics.reduce<Record<string, AvailableMetric[]>>((acc, m) => {
     const cat = m.category;
@@ -303,6 +364,38 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
         </DialogHeader>
 
         <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
+          {/* ── Pie chart mode banner (single-feature layers) ────────── */}
+          {isPieMode && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                <p className="text-xs text-amber-200">
+                  <PieChartIcon className="mr-1 inline h-3 w-3" />
+                  This layer has a single feature. Land Cover metrics will be shown as a pie chart.
+                </p>
+              </div>
+              <Button
+                className="w-full"
+                onClick={handleBatchEnrich}
+                disabled={batchEnriching}
+              >
+                {batchEnriching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PieChartIcon className="mr-2 h-4 w-4" />}
+                Compute All Land Cover
+              </Button>
+              <div className="flex flex-wrap gap-2">
+                {Object.values(LULC_SLICE_COLORS).map((s) => (
+                  <div key={s.label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="inline-block h-3 w-3 rounded-sm" style={{ backgroundColor: s.color }} />
+                    {s.label}
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-border" />
+              <p className="text-xs text-muted-foreground">
+                Or use the standard choropleth workflow below:
+              </p>
+            </div>
+          )}
+
           {/* ── Compute a metric (enrichment) ──────────────────────────── */}
           {availableMetrics.length > 0 && (
             <div className="space-y-2">

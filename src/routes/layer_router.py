@@ -85,7 +85,7 @@ def _get_dask():
 from src.tile_cache import tile_cache
 from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
-from src.services.enrichment_service import AVAILABLE_METRICS, compute_metric
+from src.services.enrichment_service import AVAILABLE_METRICS, compute_metric, compute_all_lulc_metrics, _LULC_CLASS_MAP
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
@@ -1577,6 +1577,176 @@ async def enrich_layer(
     return EnrichResponse(
         column_name=metric_key,
         feature_count=len(values),
+        status="ready",
+    )
+
+
+class EnrichBatchResponse(BaseModel):
+    metrics: dict[str, float]
+    feature_count: int
+    status: str
+
+
+@layer_router.post(
+    "/layer/{layer_id}/enrich-batch",
+    operation_id="enrich_layer_batch",
+    response_model=EnrichBatchResponse,
+    summary="Compute all Land Cover metrics in one pass",
+)
+async def enrich_layer_batch(
+    layer: MapLayer = Depends(get_layer),
+):
+    """Compute all 4 LULC metrics in a single COG read and store results.
+
+    Returns aggregated metric values (useful for single-feature buffer layers
+    where a pie chart is more informative than a choropleth).
+    """
+    _POLYGON_TYPES = ("polygon", "multipolygon", "curvepolygon", "multisurface", "geometrycollection")
+    if layer.geometry_type and layer.geometry_type.lower() not in _POLYGON_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch enrichment is only available for polygon layers",
+        )
+
+    if layer.type not in (LAYER_TYPE_POSTGIS, LAYER_TYPE_VECTOR):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch enrichment is only available for PostGIS and vector layers",
+        )
+
+    # Check if all 4 LULC metrics already computed
+    lulc_keys = list(_LULC_CLASS_MAP.keys())
+    async with async_conn("enrich_batch_check") as conn:
+        existing = await conn.fetch(
+            """
+            SELECT column_name, feature_id, value
+            FROM layer_enrichments
+            WHERE layer_id = $1 AND column_name = ANY($2::text[])
+            """,
+            layer.layer_id,
+            lulc_keys,
+        )
+        existing_columns = set(r["column_name"] for r in existing)
+        if existing_columns >= set(lulc_keys) and existing:
+            # All already computed — return aggregated values
+            metrics = {}
+            for key in lulc_keys:
+                vals = [r["value"] for r in existing if r["column_name"] == key]
+                metrics[key] = round(sum(vals) / len(vals), 2) if vals else 0.0
+            return EnrichBatchResponse(
+                metrics=metrics,
+                feature_count=len(set(r["feature_id"] for r in existing)),
+                status="ready",
+            )
+
+    # Fetch feature geometries (same logic as enrich_layer)
+    features = []
+
+    if layer.type == LAYER_TYPE_POSTGIS:
+        if not layer.postgis_connection_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PostGIS layer missing connection",
+            )
+        async with async_conn("enrich_batch_conn") as conn:
+            connection_details = await conn.fetchrow(
+                """
+                SELECT connection_uri
+                FROM project_postgres_connections
+                WHERE id = $1 AND soft_deleted_at IS NULL
+                """,
+                layer.postgis_connection_id,
+            )
+        if not connection_details:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PostGIS connection not found",
+            )
+        async with get_pooled_connection(connection_details["connection_uri"]) as postgis_conn:
+            rows = await postgis_conn.fetch(
+                f'SELECT id, ST_AsGeoJSON(geom) AS geom FROM ({layer.postgis_query}) sub'
+            )
+        for r in rows:
+            features.append({"id": r["id"], "geom": json.loads(r["geom"])})
+
+    elif layer.type == LAYER_TYPE_VECTOR:
+        if not layer.s3_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Vector layer missing S3 key",
+            )
+        import fiona
+        s3_client = await get_async_s3_client()
+        bucket = get_bucket_name()
+        suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
+        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+            await s3_op(
+                s3_client.download_file(bucket, layer.s3_key, tmp.name),
+                "download", f"layer {layer.layer_id}",
+            )
+            with fiona.open(tmp.name) as collection:
+                for fid, feat in enumerate(collection, start=1):
+                    geom = feat.get("geometry")
+                    if geom:
+                        features.append({"id": fid, "geom": dict(geom)})
+
+    if not features:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No features found in layer",
+        )
+
+    # Compute all LULC metrics in one pass
+    try:
+        loop = asyncio.get_event_loop()
+        all_values = await loop.run_in_executor(None, compute_all_lulc_metrics, features)
+    except Exception as e:
+        logger.exception("Batch enrichment failed for layer %s", layer.layer_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch metric computation failed: {e}",
+        )
+
+    # Batch upsert all metrics into layer_enrichments
+    async with async_conn("enrich_batch_upsert") as conn:
+        insert_values = []
+        insert_params = []
+        param_idx = 1
+        for metric_key, fid_vals in all_values.items():
+            for fid, val in fid_vals.items():
+                insert_values.append(
+                    f"(${param_idx}, ${param_idx + 1}, ${param_idx + 2}, ${param_idx + 3})"
+                )
+                insert_params.extend([layer.layer_id, fid, metric_key, val])
+                param_idx += 4
+
+        if insert_values:
+            await conn.execute(
+                f"""
+                INSERT INTO layer_enrichments (layer_id, feature_id, column_name, value)
+                VALUES {", ".join(insert_values)}
+                ON CONFLICT (layer_id, feature_id, column_name)
+                DO UPDATE SET value = EXCLUDED.value, computed_at = NOW()
+                """,
+                *insert_params,
+            )
+
+        await conn.execute(
+            "UPDATE map_layers SET last_edited = NOW() WHERE layer_id = $1",
+            layer.layer_id,
+        )
+
+    await tile_cache.invalidate_layer(layer.layer_id)
+
+    # Build aggregated response (average across all features per metric)
+    metrics = {}
+    for key, fid_vals in all_values.items():
+        vals = list(fid_vals.values())
+        metrics[key] = round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    return EnrichBatchResponse(
+        metrics=metrics,
+        feature_count=len(features),
         status="ready",
     )
 

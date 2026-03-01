@@ -296,6 +296,93 @@ def _compute_lulc_metrics(
     return results
 
 
+def compute_all_lulc_metrics(
+    features: List[Dict[str, Any]],
+) -> Dict[str, Dict[int, float]]:
+    """Compute all 4 land cover percentages in one COG read.
+
+    Reads COGs once for the full layer extent, then masks each feature
+    individually, computing cropland/forest/built/rangeland in a single pass.
+
+    Returns:
+        Dict mapping metric_key → {feature_id: percentage}
+    """
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.features import geometry_mask
+    from rasterio.merge import merge
+    from rasterio.transform import from_bounds
+    from rasterio.vrt import WarpedVRT
+    from shapely.geometry import shape
+
+    from src.worldcover import get_rwanda_tile_urls
+
+    # Compute bounding box of all features
+    all_bounds = []
+    for feat in features:
+        geom = shape(feat["geom"])
+        all_bounds.append(geom.bounds)
+
+    west = min(b[0] for b in all_bounds)
+    south = min(b[1] for b in all_bounds)
+    east = max(b[2] for b in all_bounds)
+    north = max(b[3] for b in all_bounds)
+
+    # Open COGs as WarpedVRT in EPSG:4326
+    tile_urls = get_rwanda_tile_urls()
+    datasets = []
+    raw_datasets = []
+    try:
+        for url in tile_urls:
+            ds = rasterio.open(url)
+            vrt = WarpedVRT(ds, crs="EPSG:4326", resampling=Resampling.nearest)
+            datasets.append(vrt)
+            raw_datasets.append(ds)
+
+        mosaic, mosaic_transform = merge(
+            datasets,
+            bounds=(west, south, east, north),
+            resampling=Resampling.nearest,
+            nodata=0,
+        )
+    finally:
+        for vrt in datasets:
+            vrt.close()
+        for ds in raw_datasets:
+            ds.close()
+
+    data = mosaic[0]  # (h, w) uint8
+    h, w = data.shape
+    transform = from_bounds(west, south, east, north, w, h)
+
+    results: Dict[str, Dict[int, float]] = {key: {} for key in _LULC_CLASS_MAP}
+
+    for feat in features:
+        fid = feat["id"]
+        geom_dict = feat["geom"]
+        try:
+            mask = geometry_mask(
+                [geom_dict],
+                out_shape=(h, w),
+                transform=transform,
+                invert=True,
+            )
+            masked_pixels = data[mask]
+            total = int(np.count_nonzero(masked_pixels > 0))
+            for key, class_val in _LULC_CLASS_MAP.items():
+                if total == 0:
+                    results[key][fid] = 0.0
+                else:
+                    count = int(np.count_nonzero(masked_pixels == class_val))
+                    results[key][fid] = round(count / total * 100, 2)
+        except Exception as e:
+            logger.warning("LULC mask failed for feature %d: %s", fid, e)
+            for key in _LULC_CLASS_MAP:
+                results[key][fid] = 0.0
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Weather computation (Open-Meteo, reuses weather_service pattern)
 # ---------------------------------------------------------------------------
