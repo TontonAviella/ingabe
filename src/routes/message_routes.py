@@ -3905,15 +3905,30 @@ async def process_chat_interaction_task(
                                                 break
 
                                         if _stac_districts:
+                                            # Check if all STAC results lack sufficient data
+                                            _all_insufficient = all(
+                                                d["drought_status"] == "insufficient_data"
+                                                for d in _stac_districts
+                                            )
+                                            if _all_insufficient:
+                                                _stac_note = (
+                                                    "Not enough cloud-free Sentinel-2 scenes to compute "
+                                                    "a reliable drought index. Do NOT report drought "
+                                                    "status — tell the user there is insufficient data. "
+                                                    "The weekly Dagster pipeline will accumulate enough "
+                                                    "history over time for accurate VCI analysis."
+                                                )
+                                            else:
+                                                _stac_note = (
+                                                    "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
+                                                    "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
+                                                    "20-35=moderate, 35-50=mild, >50=no drought."
+                                                )
                                             tool_result = {
                                                 "status": "success",
                                                 "source": "stac_cog_realtime",
                                                 "count": len(_stac_districts),
-                                                "note": (
-                                                    "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
-                                                    "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
-                                                    "20-35=moderate, 35-50=mild, >50=no drought."
-                                                ),
+                                                "note": _stac_note,
                                                 "districts": _stac_districts,
                                             }
                                             _pgc_id = await _ensure_rwanda_postgis_connection(

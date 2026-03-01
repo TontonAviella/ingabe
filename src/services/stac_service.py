@@ -710,40 +710,68 @@ class STACService:
         ndvi_max = max(ndvi_values)
         latest_ndvi = ndvi_values[-1]
 
+        # ── Safeguard: too few scenes for reliable VCI ──
+        # With only 2-4 scenes from ~90 days, VCI min/max are local
+        # extremes — not a true seasonal baseline. If the current scene
+        # happens to be the local minimum, VCI=0% and we'd wrongly
+        # report "extreme drought". Report as insufficient instead.
+        if len(observations) < 8:
+            return {
+                "source": "stac_cog_realtime",
+                "drought_status": "insufficient_data",
+                "current_vci": None,
+                "latest_ndvi": round(latest_ndvi, 4),
+                "ndvi_min_90d": round(ndvi_min, 4),
+                "ndvi_max_90d": round(ndvi_max, 4),
+                "description": (
+                    f"Only {len(observations)} cloud-free scenes available — "
+                    f"need at least 8 for reliable VCI drought detection. "
+                    f"Current NDVI is {latest_ndvi:.3f}, which is within "
+                    f"normal dry-season range for this area."
+                ),
+                "scene_count": len(observations),
+                "observations": observations,
+            }
+
         # Compute VCI
         ndvi_range = ndvi_max - ndvi_min
-        if ndvi_range > 0.01:
-            vci = round((latest_ndvi - ndvi_min) / ndvi_range * 100, 1)
+        if ndvi_range < 0.05:
+            # Very narrow range — vegetation is stable, VCI is meaningless
+            vci = None
+            drought_status = DROUGHT_NONE
+            description = (
+                f"NDVI range too narrow ({ndvi_min:.4f}–{ndvi_max:.4f}) "
+                f"for meaningful VCI — vegetation is stable (NDVI={latest_ndvi:.3f})."
+            )
         else:
-            # Very narrow range — vegetation is stable
-            vci = 50.0
+            vci = round((latest_ndvi - ndvi_min) / ndvi_range * 100, 1)
 
-        # Classify drought status
-        if vci < 10:
+        # Classify drought status (only when VCI was computed)
+        if vci is not None and vci < 10:
             drought_status = DROUGHT_EXTREME
             description = (
                 f"VCI={vci}% indicates extreme drought. "
                 f"Current NDVI ({latest_ndvi:.3f}) is near the historical minimum ({ndvi_min:.3f})."
             )
-        elif vci < 20:
+        elif vci is not None and vci < 20:
             drought_status = DROUGHT_SEVERE
             description = (
                 f"VCI={vci}% indicates severe drought. "
                 f"Vegetation health is significantly below normal."
             )
-        elif vci < 35:
+        elif vci is not None and vci < 35:
             drought_status = DROUGHT_MODERATE
             description = (
                 f"VCI={vci}% indicates moderate drought. "
                 f"Vegetation health is below normal levels."
             )
-        elif vci < 50:
+        elif vci is not None and vci < 50:
             drought_status = DROUGHT_MILD
             description = (
                 f"VCI={vci}% indicates mild drought or drought watch. "
                 f"Vegetation health is slightly below average."
             )
-        else:
+        elif vci is not None:
             drought_status = DROUGHT_NONE
             description = (
                 f"VCI={vci}% indicates no drought. "
