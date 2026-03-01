@@ -1122,16 +1122,23 @@ const LayerList: React.FC<LayerListProps> = ({
             }}
             onEnrichmentComplete={(layerId) => {
               // Force MapLibre to reload vector tiles for this layer
-              // by updating the tile URL with a new cache-busting timestamp
               const map = mapRef?.current;
               if (!map) return;
               const source = map.getSource(layerId);
               if (source && 'setTiles' in source) {
+                // MVT source — update tile URL with cache-busting timestamp
                 const ts = Date.now();
                 const origin = window.location.origin;
                 (source as { setTiles: (tiles: string[]) => void }).setTiles([
                   `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
                 ]);
+              } else if (source && 'setUrl' in source) {
+                // PMTiles source — reload with cache-busting param
+                const ts = Date.now();
+                const origin = window.location.origin;
+                (source as { setUrl: (url: string) => void }).setUrl(
+                  `${origin}/api/layer/${layerId}/tiles.pmtiles?v=${ts}`,
+                );
               }
             }}
           />

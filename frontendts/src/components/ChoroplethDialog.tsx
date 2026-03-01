@@ -211,11 +211,31 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
       fetchMetrics();
 
       // Auto-select the enriched column
-      setColumn(data.column_name);
+      const col = data.column_name as string;
+      setColumn(col);
       setStats(null);
 
       // Notify parent to reload tiles
       onEnrichmentComplete?.(layerId);
+
+      // Auto-compute breaks and apply choropleth
+      try {
+        const params = new URLSearchParams({ column: col, method, k: String(k) });
+        const statsRes = await apiFetch(`/api/layer/${layerId}/column-stats?${params}`);
+        if (statsRes.ok) {
+          const statsData: ColumnStatsResponse = await statsRes.json();
+          const colors = interpolateColors(PALETTES[palette], statsData.k);
+          setStats(statsData);
+          setPreviewColors(colors);
+          // Auto-apply the choropleth expression
+          const expr = buildStepExpression(statsData.column, statsData.breaks, colors);
+          onApply(layerId, statsData.column, expr);
+          toast.success('Choropleth applied automatically');
+          onOpenChange(false);
+        }
+      } catch {
+        // Breaks computation failed — user can still do it manually
+      }
     } catch (e: unknown) {
       toast.error(`Enrichment failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

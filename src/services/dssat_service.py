@@ -48,15 +48,6 @@ _CROP_CALENDARS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
 }
 
-# DSSAT crop code mapping
-_DSSAT_CROP_MAP = {
-    "maize": "Maize",
-    "rice": "Rice",
-    "beans": "Drybean",
-    "sorghum": "Sorghum",
-    "wheat": "Wheat",
-}
-
 # Beer-Lambert extinction coefficient for NDVI→LAI conversion
 _K_EXT = 0.5
 
@@ -206,9 +197,10 @@ def _build_soil_profile(lat: float, lon: float) -> Optional[Any]:
     """Query iSDAsoil and convert to DSSAT SoilProfile via pedotransfer.
 
     Returns DSSATTools.SoilProfile or None if unavailable.
+    Uses DSSATTools v3 API (SoilProfile + SoilLayer).
     """
     try:
-        from DSSATTools import SoilProfile, TabularSubsection
+        from DSSATTools import SoilLayer, SoilProfile
     except ImportError:
         logger.warning("DSSATTools not available — cannot build soil profile")
         return None
@@ -231,7 +223,6 @@ def _build_soil_profile(lat: float, lon: float) -> Optional[Any]:
     sand = props.get("sand_content", {}).get("value")
     oc = props.get("carbon_organic", {}).get("value")
     ph = props.get("ph", {}).get("value")
-    bd = props.get("bulk_density", {}).get("value")
     ntot = props.get("nitrogen_total", {}).get("value")
     cec = props.get("cation_exchange_capacity", {}).get("value")
 
@@ -246,25 +237,33 @@ def _build_soil_profile(lat: float, lon: float) -> Optional[Any]:
         organic_carbon_g_kg=float(oc),
     )
 
-    # Build DSSAT soil profile with single 0-20cm layer
-    profile_data = {
-        "SLB": [20],      # Bottom depth (cm)
-        "SLLL": [pt["SLLL"]],
-        "SDUL": [pt["SDUL"]],
-        "SSAT": [pt["SSAT"]],
-        "SRGF": [1.0],    # Root growth factor
-        "SBDM": [pt["SBDM"]],
-        "SLOC": [pt["SLOC"]],
-        "SLCL": [pt["SLCL"]],
-        "SLSI": [pt["SLSI"]],
-        "SLNI": [round(float(ntot) / 10.0, 3) if ntot else 0.1],  # g/kg → %
-        "SLHW": [round(float(ph), 1) if ph else 6.0],
-        "SCEC": [round(float(cec), 1) if cec else 15.0],
-    }
+    # Build single 0-20cm SoilLayer (DSSATTools v3)
+    layer = SoilLayer(
+        slb=20,
+        slll=pt["SLLL"],
+        sdul=pt["SDUL"],
+        ssat=pt["SSAT"],
+        srgf=1.0,
+        sbdm=pt["SBDM"],
+        sloc=pt["SLOC"],
+        slcl=pt["SLCL"],
+        slsi=pt["SLSI"],
+        slni=round(float(ntot) / 10.0, 3) if ntot else 0.1,
+        slhw=round(float(ph), 1) if ph else 6.0,
+        scec=round(float(cec), 1) if cec else 15.0,
+    )
 
-    soil_profile = SoilProfile(default_class="SIL")
-    for key, values in profile_data.items():
-        soil_profile.add_layer({key: values[0]})
+    # DSSATTools v3: SoilProfile requires table + surface parameters
+    soil_profile = SoilProfile(
+        table=[layer],
+        name="ISDA000001",
+        salb=0.13,   # Albedo (typical tropical)
+        slu1=6.0,    # Stage 1 evaporation limit (mm)
+        sldr=0.4,    # Drainage rate (fraction/day)
+        slro=76.0,   # Runoff curve number
+        slnf=1.0,    # N mineralisation factor
+        slpf=1.0,    # Photosynthesis factor
+    )
 
     return soil_profile
 
@@ -279,18 +278,16 @@ def _build_weather(
     date_from: str,
     date_to: str,
 ) -> Optional[Any]:
-    """Fetch NASA POWER daily data and build DSSAT Weather object.
+    """Fetch NASA POWER daily data and build DSSAT WeatherStation object.
 
     Falls back to Open-Meteo if POWER fails.
-    Returns DSSATTools.Weather or None.
+    Returns DSSATTools.WeatherStation or None (v3 API).
     """
     try:
-        from DSSATTools import Weather
+        from DSSATTools import WeatherRecord, WeatherStation
     except ImportError:
         logger.warning("DSSATTools not available — cannot build weather")
         return None
-
-    import pandas as pd
 
     from src.services.nasa_power_service import fetch_power_daily_with_fallback
 
@@ -299,24 +296,35 @@ def _build_weather(
         logger.warning("No weather data available for %.4f, %.4f", lat, lon)
         return None
 
-    df = pd.DataFrame({
-        "DATE": pd.to_datetime(data["dates"]),
-        "TMAX": data["TMAX"],
-        "TMIN": data["TMIN"],
-        "RAIN": data["RAIN"],
-        "SRAD": data["SRAD"],
-    })
+    records = []
+    for i, date_str in enumerate(data["dates"]):
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        srad = data["SRAD"][i] if data.get("SRAD") else 15.0
+        tmax = data["TMAX"][i] if data.get("TMAX") else 28.0
+        tmin = data["TMIN"][i] if data.get("TMIN") else 16.0
+        rain = data["RAIN"][i] if data.get("RAIN") else 0.0
+        if any(v is None for v in (srad, tmax, tmin, rain)):
+            continue
+        records.append(WeatherRecord(
+            date=dt,
+            srad=float(srad),
+            tmax=float(tmax),
+            tmin=float(tmin),
+            rain=float(rain),
+        ))
 
-    weather = Weather(
-        df,
-        pars={
-            "TMAX": "TMAX",
-            "TMIN": "TMIN",
-            "RAIN": "RAIN",
-            "SRAD": "SRAD",
-        },
+    if not records:
+        logger.warning("No valid weather records for %.4f, %.4f", lat, lon)
+        return None
+
+    weather = WeatherStation(
+        table=records,
         lat=lat,
-        lon=lon,
+        long=lon,
+        insi="MWST",
     )
 
     return weather
@@ -326,22 +334,32 @@ def _build_weather(
 # Crop management builder
 # ---------------------------------------------------------------------------
 
-def _build_management(
+def _build_treatment_components(
     crop_type: str,
     season: str,
     planting_year: int,
-) -> Optional[Any]:
-    """Build DSSAT Management object with Rwanda-appropriate defaults.
+    soil: Any,
+    weather: Any,
+) -> Optional[Dict[str, Any]]:
+    """Build DSSAT v3 treatment components with Rwanda-appropriate defaults.
 
     Fertilizer: 50 kg/ha N (DAP at planting) + 50 kg/ha N (urea at 30 DAP)
     — matches RAB (Rwanda Agriculture Board) recommendations for smallholders.
 
-    Returns DSSATTools.Management or None.
+    Returns dict with field, cultivar, planting, simulation_controls, fertilizer
+    or None if unavailable.
     """
     try:
-        from DSSATTools import Management
+        from DSSATTools.filex import (
+            Fertilizer,
+            FertilizerEvent,
+            Field,
+            Planting,
+            SCGeneral,
+            SimulationControls,
+        )
     except ImportError:
-        logger.warning("DSSATTools not available — cannot build management")
+        logger.warning("DSSATTools not available — cannot build treatment components")
         return None
 
     calendar = _CROP_CALENDARS.get(crop_type, _CROP_CALENDARS["maize"])
@@ -350,24 +368,58 @@ def _build_management(
         logger.warning("No calendar for %s season %s", crop_type, season)
         return None
 
-    planting_date = f"{planting_year}-{season_cal['planting']}"
+    planting_str = f"{planting_year}-{season_cal['planting']}"
+    planting_dt = datetime.strptime(planting_str, "%Y-%m-%d").date()
 
-    man = Management(
-        planting_date=planting_date,
-        harvested_dap=season_cal["harvest_dap"],
-    )
+    # Simulation start: 1 day before planting
+    from datetime import timedelta
+    sdate = planting_dt - timedelta(days=1)
 
-    # RAB smallholder fertilizer: 50 kg/ha N at planting + 50 kg/ha N at 30 DAP
-    man.fertilizers = {
-        "table": [
-            {"FDATE": planting_date, "FMCD": "FE005", "FACD": "AP001",
-             "FDEP": 10, "FAMN": 50, "FAMP": 0, "FAMK": 0},
-            {"FDATE": str(30), "FMCD": "FE001", "FACD": "AP002",
-             "FDEP": 5, "FAMN": 50, "FAMP": 0, "FAMK": 0},
-        ]
+    # Crop cultivar (v3 crop objects)
+    from DSSATTools.crop import Maize, Rice, Sorghum, Wheat
+    _CROP_CLASS_MAP = {
+        "maize": (Maize, "IB0012"),      # PIO 3382 — medium maturity tropical
+        "rice": (Rice, "IB0001"),
+        "beans": (Maize, "IB0012"),       # Fallback: DSSAT DryBean not always available
+        "sorghum": (Sorghum, "IB0001"),
+        "wheat": (Wheat, "IB0001"),
     }
 
-    return man
+    crop_cls, cultivar_code = _CROP_CLASS_MAP.get(crop_type, (Maize, "IB0012"))
+    try:
+        cultivar = crop_cls(cultivar_code)
+    except Exception as e:
+        logger.warning("Failed to create crop cultivar %s/%s: %s", crop_type, cultivar_code, e)
+        return None
+
+    # Field links soil and weather to the treatment
+    field = Field(id_field="MUNDI001", wsta=weather, id_soil=soil)
+
+    # Planting details
+    planting = Planting(
+        pdate=planting_dt,
+        ppop=6.0,     # Plants per m² (typical maize density)
+        plrs=75.0,    # Row spacing (cm)
+        pldp=5,       # Planting depth (cm)
+    )
+
+    # Simulation controls
+    sc = SimulationControls(general=SCGeneral(sdate=sdate))
+
+    # RAB smallholder fertilizer: 50 kg/ha N at planting + 50 kg/ha N at 30 DAP
+    fert_date_2 = planting_dt + timedelta(days=30)
+    fertilizer = Fertilizer(table=[
+        FertilizerEvent(fdate=planting_dt, fmcd="FE005", facd="AP001", fdep=10, famn=50),
+        FertilizerEvent(fdate=fert_date_2, fmcd="FE001", facd="AP002", fdep=5, famn=50),
+    ])
+
+    return {
+        "field": field,
+        "cultivar": cultivar,
+        "planting": planting,
+        "simulation_controls": sc,
+        "fertilizer": fertilizer,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -423,15 +475,13 @@ def run_dssat_with_assimilation(
     else:
         planting_year = now.year
 
-    dssat_crop = _DSSAT_CROP_MAP.get(crop_type, "Maize")
     calendar = _CROP_CALENDARS[crop_type][season]
 
-    # Date range for weather: 30 days before planting → planting + harvest_dap
+    # Date range for weather: start of planting month → planting + harvest_dap + 15
     planting_str = f"{planting_year}-{calendar['planting']}"
     date_from = f"{planting_year}-{calendar['planting'].split('-')[0]}-01"
     harvest_dap = calendar["harvest_dap"]
 
-    # Calculate weather end date
     from datetime import timedelta
     planting_dt = datetime.strptime(planting_str, "%Y-%m-%d")
     end_dt = planting_dt + timedelta(days=harvest_dap + 15)
@@ -450,27 +500,36 @@ def run_dssat_with_assimilation(
     if weather is None:
         return _error_result(crop_type, season, "Weather data unavailable")
 
-    # 3. Build management
-    management = _build_management(crop_type, season, planting_year)
-    if management is None:
-        return _error_result(crop_type, season, "Management setup failed")
+    # 3. Build treatment components (v3 API: field, cultivar, planting, sc, fertilizer)
+    components = _build_treatment_components(crop_type, season, planting_year, soil, weather)
+    if components is None:
+        return _error_result(crop_type, season, "Treatment setup failed")
 
-    # 4. Run DSSAT
+    # 4. Run DSSAT (v3 API: run_treatment)
     try:
         dssat = DSSAT()
-        dssat.setup(crop=dssat_crop)
-        dssat.run(soil, weather, management)
-        output = dssat.output
+        dssat.run_treatment(
+            field=components["field"],
+            cultivar=components["cultivar"],
+            planting=components["planting"],
+            simulation_controls=components["simulation_controls"],
+            fertilizer=components["fertilizer"],
+        )
 
-        if output is None or output.empty:
+        tables = dssat.output_tables
+        if not tables or "PlantGro" not in tables:
+            dssat.close()
             return _error_result(crop_type, season, "DSSAT produced no output")
 
-        # HWAM = harvest weight at maturity (kg/ha)
-        baseline_kg_ha = float(output["HWAM"].iloc[-1])
+        plant_gro = tables["PlantGro"]
+
+        # GWAD = grain weight above ground, dry (kg/ha)
+        baseline_kg_ha = float(plant_gro["GWAD"].iloc[-1])
         baseline_tha = baseline_kg_ha / 1000.0
 
         # Get simulated LAI values for assimilation
-        sim_lai_values = output.get("LAID")
+        sim_lai_values = plant_gro.get("LAID")
+        dssat.close()
     except Exception as e:
         logger.error("DSSAT simulation failed: %s", e)
         return _error_result(crop_type, season, f"DSSAT error: {e}")
