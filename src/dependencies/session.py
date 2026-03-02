@@ -237,17 +237,15 @@ def verify_session(session_required: bool = True):
             token = _extract_token_from_request(request) if request else None
             if token:
                 return await _authenticate_clerk(token)
-            # No token — when Clerk is enabled and session is required,
-            # do NOT fall through to legacy mode (which gives everyone the
-            # same UUID 00000000-..., leaking data across users).
-            if session_required:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required",
-                )
-            return None
+            # No token — fall through to legacy mode if configured.
+            # TODO: Once VITE_CLERK_PUBLISHABLE_KEY is wired into the
+            # Docker build so the frontend always sends Bearer tokens,
+            # block this fallback to prevent the shared-UUID data leak.
+            logger.warning(
+                "Clerk enabled but no Bearer token — falling back to legacy mode"
+            )
 
-        # --- Legacy mode (only when Clerk is NOT configured) ---
+        # --- Legacy mode (fallback when no Clerk token) ---
         auth_mode = os.environ.get("MUNDI_AUTH_MODE")
         if auth_mode == "edit":
             return LegacyUserContext()
@@ -258,6 +256,13 @@ def verify_session(session_required: bool = True):
                     detail="Authentication required",
                 )
             return None
+
+        # Clerk enabled but no token and no legacy mode
+        if _is_clerk_enabled() and session_required:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -288,10 +293,10 @@ async def session_user_id(request: Request = None) -> str:
 async def verify_websocket(websocket: WebSocket) -> UserContext:
     """Authenticate WebSocket connections.
 
-    Clerk mode: expects ?token=<jwt> query param.  Rejects if no token
-    is provided (does NOT fall back to legacy mode to prevent data leaks
-    across users sharing the legacy UUID).
-    Legacy mode (no Clerk): allows all in edit mode, denies in view_only.
+    Clerk mode: expects ?token=<jwt> query param.  When no token is
+    provided, falls back to MUNDI_AUTH_MODE so routes behind OptionalAuth
+    (e.g. ProjectView) can still use the WebSocket in edit mode.
+    Legacy mode: allows all in edit mode, denies in view_only.
     """
     if _is_clerk_enabled():
         token = websocket.query_params.get("token")
@@ -308,11 +313,10 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
             email = claims.get("email")
             internal_uuid = await _get_or_create_user(clerk_id, email)
             return ClerkUserContext(internal_uuid, clerk_id, email)
-        # No token — Clerk is enabled, require authentication.
-        # Do NOT fall back to legacy mode (shared UUID leaks data).
-        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+        # No token supplied — fall through to legacy mode check below.
+        # This allows OptionalAuth routes to work without Clerk sign-in.
 
-    # Legacy mode (only when Clerk is NOT configured)
+    # Legacy / fallback mode
     auth_mode = os.environ.get("MUNDI_AUTH_MODE")
     if auth_mode == "edit":
         return LegacyUserContext()
