@@ -73,8 +73,8 @@ def get_lakehouse_connection() -> duckdb.DuckDBPyConnection:
         DuckDB connection with spatial and iceberg extensions enabled.
     """
     con = duckdb.connect(":memory:")
-    # Cap DuckDB memory to avoid OOM on constrained instances (Render starter=512MB)
-    con.execute("SET memory_limit='150MB';")
+    # Cap DuckDB memory to avoid OOM (standard plan=2GB, shared with app+pools)
+    con.execute("SET memory_limit='256MB';")
     con.execute("SET threads=1;")
 
     # Load extensions (install is a no-op if already cached on disk from Dockerfile)
@@ -111,7 +111,7 @@ async def execute_duckdb_query(
 
         def query_func():
             con = duckdb.connect(":memory:")
-            con.execute("SET memory_limit='150MB';")
+            con.execute("SET memory_limit='256MB';")
             con.execute("SET threads=1;")
             con.install_extension("spatial")
             con.load_extension("spatial")

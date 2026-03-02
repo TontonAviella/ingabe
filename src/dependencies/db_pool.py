@@ -10,8 +10,8 @@ from urllib.parse import parse_qs, urlparse
 logger = logging.getLogger(__name__)
 
 # Maximum number of connection pools to keep alive.
-# Reduced to save memory on starter instances (512MB).
-MAX_POOLS = 5
+# Standard plan (2GB) can handle more concurrent PostGIS connections.
+MAX_POOLS = 10
 
 # Store pools by connection URI, with last-access timestamp
 _connection_pools: Dict[str, Tuple[asyncpg.Pool, float]] = {}
@@ -63,7 +63,7 @@ async def get_or_create_pool(connection_uri: str) -> asyncpg.Pool:
             ssl_param = ssl_context
 
         pool = await asyncpg.create_pool(
-            connection_uri, ssl=ssl_param, min_size=1, max_size=5, command_timeout=60
+            connection_uri, ssl=ssl_param, min_size=1, max_size=8, command_timeout=60
         )
         _connection_pools[connection_uri] = (pool, time.monotonic())
         return pool
