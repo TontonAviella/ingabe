@@ -81,7 +81,7 @@ services:
   - type: web
     name: mundi-app
     runtime: docker
-    plan: starter
+    plan: standard
     region: oregon
     dockerfilePath: ./Dockerfile
     dockerContext: .

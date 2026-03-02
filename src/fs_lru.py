@@ -158,8 +158,8 @@ class FileCache:
 class LayerCache:
     def __init__(self):
         self.file_cache = FileCache(
-            cache_dir="/cache", max_size=1024 * 1024 * 128
-        )  # 128 MiB
+            cache_dir="/cache", max_size=1024 * 1024 * 64
+        )  # 64 MiB — reduced from 128 to save memory on starter instances
 
     @asynccontextmanager
     async def layer_filename(self, layer_id: str):

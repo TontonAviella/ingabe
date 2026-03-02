@@ -73,12 +73,14 @@ def get_lakehouse_connection() -> duckdb.DuckDBPyConnection:
         DuckDB connection with spatial and iceberg extensions enabled.
     """
     con = duckdb.connect(":memory:")
+    # Cap DuckDB memory to avoid OOM on constrained instances (Render starter=512MB)
+    con.execute("SET memory_limit='150MB';")
+    con.execute("SET threads=1;")
 
-    # Install and load spatial extension
+    # Load extensions (install is a no-op if already cached on disk from Dockerfile)
     con.install_extension("spatial")
     con.load_extension("spatial")
 
-    # Install and load iceberg extension
     con.install_extension("iceberg")
     con.load_extension("iceberg")
 
@@ -109,29 +111,33 @@ async def execute_duckdb_query(
 
         def query_func():
             con = duckdb.connect(":memory:")
-            # Extensions are cached locally
+            con.execute("SET memory_limit='150MB';")
+            con.execute("SET threads=1;")
             con.install_extension("spatial")
             con.load_extension("spatial")
 
-            # Create table from cached parquet file
-            con.execute(f"""
-                CREATE OR REPLACE TABLE {layer_id} AS
-                SELECT * FROM ST_Read('{gpkg_path}');
-            """)
+            try:
+                # Create table from cached geopackage file
+                con.execute(f"""
+                    CREATE OR REPLACE TABLE {layer_id} AS
+                    SELECT * FROM ST_Read('{gpkg_path}');
+                """)
 
-            cursor = con.execute(sql_query)
-            headers = [col[0] for col in cursor.description]
-            rows = cursor.fetchall()[:max_n_rows]
-            result_json = json.loads(json.dumps(rows))
+                cursor = con.execute(sql_query)
+                headers = [col[0] for col in cursor.description]
+                rows = cursor.fetchall()[:max_n_rows]
+                result_json = json.loads(json.dumps(rows))
 
-            return {
-                "status": "success",
-                "duration_ms": 1000 * (time.time() - start_time),
-                "result": result_json,
-                "headers": headers,
-                "row_count": len(rows),
-                "query": sql_query,
-            }
+                return {
+                    "status": "success",
+                    "duration_ms": 1000 * (time.time() - start_time),
+                    "result": result_json,
+                    "headers": headers,
+                    "row_count": len(rows),
+                    "query": sql_query,
+                }
+            finally:
+                con.close()
 
         loop = asyncio.get_running_loop()
         try:

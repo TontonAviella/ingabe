@@ -8,6 +8,7 @@ be injected into PostGIS tile queries as a VALUES CTE.
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
 import urllib.request
@@ -267,6 +268,7 @@ def _compute_lulc_metrics(
             ds.close()
 
     data = mosaic[0]  # (h, w) uint8
+    del mosaic  # Free the full mosaic array immediately
     h, w = data.shape
     transform = from_bounds(west, south, east, north, w, h)
 
@@ -293,6 +295,8 @@ def _compute_lulc_metrics(
             logger.warning("LULC mask failed for feature %d: %s", fid, e)
             results[fid] = 0.0
 
+    del data  # Free raster array
+    gc.collect()  # Reclaim memory from large numpy arrays
     return results
 
 
@@ -352,6 +356,7 @@ def compute_all_lulc_metrics(
             ds.close()
 
     data = mosaic[0]  # (h, w) uint8
+    del mosaic  # Free the full mosaic array immediately
     h, w = data.shape
     transform = from_bounds(west, south, east, north, w, h)
 
@@ -380,6 +385,8 @@ def compute_all_lulc_metrics(
             for key in _LULC_CLASS_MAP:
                 results[key][fid] = 0.0
 
+    del data  # Free raster array
+    gc.collect()  # Reclaim memory from large numpy arrays
     return results
 
 
@@ -621,6 +628,9 @@ def _compute_emissions_metric(
             logger.warning("Emissions lookup failed for feature %d: %s", fid, e)
             results[fid] = 0.0
 
+    # Free large grid arrays
+    del combined_grid, grid_lats, grid_lons
+    gc.collect()
     return results
 
 
