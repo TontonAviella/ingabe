@@ -1566,13 +1566,39 @@ async def enrich_layer(
                             logger.warning("Failed to delete old PMTiles %s", old_pmtiles, exc_info=True)
 
             logger.info("Wrote enrichment '%s' back to vector file for layer %s", metric_key, layer.layer_id)
+
+            # Eagerly regenerate PMTiles so the enrichment column appears in
+            # tile features immediately (choropleth expressions like
+            # ['get', 'cropland_pct'] need the property in the vector tiles).
+            try:
+                from src.upload.pmtiles import generate_pmtiles_from_ogr_source
+
+                new_pmtiles_key = await generate_pmtiles_from_ogr_source(
+                    layer.layer_id,
+                    dst_path,
+                    layer.feature_count or 1,
+                    str(layer.owner_uuid),
+                )
+                logger.info(
+                    "Eagerly regenerated PMTiles for layer %s -> %s",
+                    layer.layer_id,
+                    new_pmtiles_key,
+                )
+            except Exception:
+                logger.warning(
+                    "Eager PMTiles regen failed for %s; will lazy-regen on next tile request",
+                    layer.layer_id,
+                    exc_info=True,
+                )
         except Exception:
             logger.warning("Failed to write enrichment to vector file for %s", layer.layer_id, exc_info=True)
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # Invalidate tile cache so new tiles include enrichment data
+    # Invalidate caches so new tiles/queries include enrichment data
     await tile_cache.invalidate_layer(layer.layer_id)
+    from src.fs_lru import layer_cache
+    layer_cache().invalidate_layer(layer.layer_id)
 
     return EnrichResponse(
         column_name=metric_key,

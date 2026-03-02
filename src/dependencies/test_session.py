@@ -28,7 +28,7 @@ async def test_view_only_cannot_create_map(client, env_override):
 @pytest.mark.anyio
 async def test_edit_mode_allows_request(client, env_override):
     """edit mode allows write operations (legacy single-user)."""
-    with env_override(MUNDI_AUTH_MODE="edit"):
+    with env_override(MUNDI_AUTH_MODE="edit", CLERK_SECRET_KEY=None):
         resp = await client.post(
             "/api/maps/create", json={"title": "auth test map"}
         )
