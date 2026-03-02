@@ -207,8 +207,17 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
       setOverrides(next);
 
       applyOverrides(map, next);
+
+      // Persist to DB (fire-and-forget, non-blocking)
+      apiFetch(`/api/maps/${mapId}/layer/${layerId}/overrides`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ choroplethExpression: expression, choroplethColumn: column }),
+      }).catch(() => {
+        // Non-critical — overrides are in-memory anyway
+      });
     },
-    [map, isMapReady, applyOverrides],
+    [map, mapId, isMapReady, applyOverrides],
   );
 
   /**

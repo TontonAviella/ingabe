@@ -19,10 +19,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _can_access_project(project_row, user_id: str) -> bool:
-    """Check if user can access a project (owner, editor, or viewer)."""
+    """Check if user can access a project (owner, editor, or viewer).
+
+    NOTE: link_accessible is intentionally NOT checked here. That flag
+    controls unauthenticated/embed access and must not grant every
+    authenticated user blanket access to another user's project.
+    """
     if str(project_row["owner_uuid"]) == user_id:
-        return True
-    if project_row.get("link_accessible"):
         return True
     editors = project_row.get("editor_uuids") or []
     viewers = project_row.get("viewer_uuids") or []
