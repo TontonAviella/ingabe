@@ -1,7 +1,7 @@
 import { apiFetch } from '@mundi/ee';
 import { useQuery } from '@tanstack/react-query';
 import legendSymbol, { type RenderElement } from 'legend-symbol-ts';
-import { useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
+import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
 import { StyleBridge } from '../lib/StyleBridge';
 import { BasemapControl } from './BasemapControl';
 
@@ -242,7 +242,7 @@ export default function MapLibreMap({
   // Incremented each time the map is destroyed/recreated so dependent effects
   // (controls, basemap, click handler) re-attach to the new map instance.
   const [mapInstanceId, setMapInstanceId] = useState(0);
-  const [hasZoomed, setHasZoomed] = useState(false);
+  // hasZoomed is tracked via hasZoomedRef (line ~1087) to avoid triggering setStyle re-runs
   const [layerSymbols, setLayerSymbols] = useState<{
     [layerId: string]: JSX.Element;
   }>({});
@@ -253,6 +253,7 @@ export default function MapLibreMap({
 
   const {
     overrides: paintOverrides,
+    overridesRef: paintOverridesRef,
     setLayerOpacity,
     setLayerColor,
     setLayerChoropleth,
@@ -1081,7 +1082,16 @@ export default function MapLibreMap({
     };
   }, [availableBasemaps, currentBasemap, basemapDisplayNames, handleBasemapChange, mapInstanceId]);
 
-  // Separate effect to handle style updates when styleData changes
+  // Track whether initial zoom has been performed — using a ref avoids
+  // re-triggering the setStyle effect when this flag changes.
+  const hasZoomedRef = useRef(false);
+
+  // Apply the map style when styleData changes.
+  // IMPORTANT: We inject paint overrides (choropleth, color, opacity) into the
+  // style JSON *before* calling setStyle() so they survive the MapLibre diff.
+  // Previously, overrides set via setPaintProperty were wiped on every setStyle()
+  // call, and the styledata replay had a race condition with the diff engine.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paintOverridesRef is a stable ref read inside the effect
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !styleData) return;
@@ -1091,9 +1101,14 @@ export default function MapLibreMap({
       // if the style spec has no projection field, losing any globe toggle the user set.
       const currentProjection = map.getProjection();
 
+      // Deep-clone the style so we don't mutate the TanStack Query cache,
+      // then inject any active paint overrides (choropleth expressions, colors,
+      // opacity) directly into the layer paint properties.
+      const style = JSON.parse(JSON.stringify(styleData));
+      injectOverridesIntoStyle(style, paintOverridesRef.current);
+
       // Update the style using setStyle
-      map.setStyle(styleData);
-      loadLegendSymbols(map);
+      map.setStyle(style);
 
       // Re-apply non-mercator projection after the style finishes loading
       if (currentProjection?.type && currentProjection.type !== 'mercator') {
@@ -1103,9 +1118,7 @@ export default function MapLibreMap({
       }
 
       // If we haven't zoomed yet, zoom to the style's center and zoom level
-      // setStyle on purpose does not reset the zoom/center, but it's nice to load a map
-      // and be correctly positioned on the data
-      if (!hasZoomed) {
+      if (!hasZoomedRef.current) {
         if (styleData.center && styleData.zoom !== undefined) {
           map.jumpTo({
             center: styleData.center,
@@ -1114,13 +1127,22 @@ export default function MapLibreMap({
             bearing: styleData.bearing || 0,
           });
         }
-        setHasZoomed(true);
+        hasZoomedRef.current = true;
       }
     } catch (err) {
       console.error('Error updating style:', err);
       addError('Failed to update map style: ' + (err instanceof Error ? err.message : String(err)), true);
     }
-  }, [styleData, addError, loadLegendSymbols, hasZoomed]); // Update when styleData changes
+  }, [styleData, addError]); // Only re-run when actual style data changes
+
+  // Load legend symbols separately — depends on mapData but should NOT
+  // trigger a full setStyle() call (which wipes paint overrides).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: styleData guard ensures map has a style
+  useEffect(() => {
+    const map = localMapRef.current;
+    if (!map || !styleData) return;
+    loadLegendSymbols(map);
+  }, [loadLegendSymbols, styleData]);
 
   // Refresh deck.gl overlay when 3D agri layers appear/change
   // biome-ignore lint/correctness/useExhaustiveDependencies: pointCloudLayers handled in map load

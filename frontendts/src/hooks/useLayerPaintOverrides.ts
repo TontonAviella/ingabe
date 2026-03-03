@@ -46,6 +46,48 @@ interface UseLayerPaintOverridesOptions {
   isMapReady: boolean;
 }
 
+/**
+ * Inject paint overrides directly into a MapLibre style JSON object.
+ * This ensures overrides survive `setStyle()` calls by being part of the
+ * style itself, rather than relying on post-`setStyle()` `setPaintProperty` calls.
+ *
+ * The input style is mutated in-place — callers should deep-clone first.
+ */
+export function injectOverridesIntoStyle(style: Record<string, unknown>, currentOverrides: PaintOverrides): void {
+  const layers = style.layers as Array<Record<string, unknown>> | undefined;
+  if (!layers) return;
+
+  for (const [layerId, override] of Object.entries(currentOverrides)) {
+    for (const sl of layers) {
+      if (!sl.source) continue;
+      const src = sl.source as string;
+      if (src !== layerId && !src.endsWith(`-${layerId}`)) continue;
+
+      const paint = ((sl.paint as Record<string, unknown>) ??= {});
+      const layerType = sl.type as string;
+
+      // Opacity
+      if (override.opacity !== undefined) {
+        const prop = OPACITY_PROP[layerType];
+        if (prop) paint[prop] = override.opacity;
+      }
+
+      // Choropleth expression (fill layers only, takes priority over solid color)
+      if (layerType === 'fill' && override.choroplethExpression !== undefined) {
+        paint['fill-color'] = override.choroplethExpression;
+      } else if (override.color !== undefined) {
+        const colorPropMap: Record<string, string> = {
+          fill: 'fill-color',
+          line: 'line-color',
+          circle: 'circle-color',
+        };
+        const cp = colorPropMap[layerType];
+        if (cp) paint[cp] = override.color;
+      }
+    }
+  }
+}
+
 export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaintOverridesOptions) {
   const [overrides, setOverrides] = useState<PaintOverrides>({});
   // Keep a ref so the styledata replay closure always has current overrides
@@ -73,6 +115,12 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
         return src === layerId || src.endsWith(`-${layerId}`);
       });
 
+      if (matchingLayers.length === 0 && (override.choroplethExpression || override.color || override.opacity !== undefined)) {
+        console.warn('[paintOverrides] No matching layers for source', layerId, '— available sources:', [
+          ...new Set(style.layers.filter((sl) => 'source' in sl).map((sl) => (sl as any).source)),
+        ]);
+      }
+
       for (const styleLayer of matchingLayers) {
         // Apply opacity
         if (override.opacity !== undefined) {
@@ -80,8 +128,8 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
           if (prop) {
             try {
               currentMap.setPaintProperty(styleLayer.id, prop, override.opacity);
-            } catch {
-              // Layer may have been removed mid-replay
+            } catch (e) {
+              console.warn('[paintOverrides] setPaintProperty opacity failed:', styleLayer.id, e);
             }
           }
         }
@@ -91,8 +139,8 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
         if (styleLayer.type === 'fill' && override.choroplethExpression !== undefined) {
           try {
             currentMap.setPaintProperty(styleLayer.id, 'fill-color', override.choroplethExpression);
-          } catch {
-            // Layer may have been removed
+          } catch (e) {
+            console.warn('[paintOverrides] setPaintProperty choropleth failed:', styleLayer.id, e);
           }
         } else if (override.color !== undefined) {
           const colorPropMap: Record<string, string> = {
@@ -104,8 +152,8 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
           if (colorProp) {
             try {
               currentMap.setPaintProperty(styleLayer.id, colorProp, override.color);
-            } catch {
-              // Layer may have been removed
+            } catch (e) {
+              console.warn('[paintOverrides] setPaintProperty color failed:', styleLayer.id, e);
             }
           }
         }
@@ -246,5 +294,5 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
     [map, mapId, isMapReady, applyOverrides],
   );
 
-  return { overrides, setLayerOpacity, setLayerColor, setLayerChoropleth, loadOverrides };
+  return { overrides, overridesRef, setLayerOpacity, setLayerColor, setLayerChoropleth, loadOverrides };
 }

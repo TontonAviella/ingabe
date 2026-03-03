@@ -251,6 +251,9 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
           // Auto-apply the choropleth expression
           const expr = buildStepExpression(statsData.column, statsData.breaks, colors);
           onApply(layerId, statsData.column, expr);
+          // Re-apply after a short delay to survive any async tile-reload
+          // that resets paint properties (e.g. setTiles/setUrl triggers).
+          setTimeout(() => onApply(layerId, statsData.column, expr), 500);
           toast.success('Choropleth applied automatically');
           onOpenChange(false);
         }
