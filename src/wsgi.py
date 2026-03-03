@@ -292,6 +292,53 @@ app.add_middleware(RequestIdMetricsMiddleware)
 
 
 # ---------------------------------------------------------------------------
+# Cache-Control middleware (CDN & browser caching)
+# ---------------------------------------------------------------------------
+
+class CacheControlMiddleware(BaseHTTPMiddleware):
+    """Set Cache-Control headers for static assets, tiles, and API responses."""
+
+    # Immutable hashed assets (Vite adds content hash to filenames)
+    _IMMUTABLE_PREFIXES = ("/assets/",)
+    # Tile responses — cache at CDN, short browser cache
+    _TILE_SUFFIXES = (".mvt", ".pmtiles", ".pbf", ".png", ".webp")
+    # Favicons / static images — moderate cache
+    _STATIC_FILES = ("/favicon-light.svg", "/favicon-dark.svg")
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response: Response = await call_next(request)
+        path = request.url.path
+
+        # Don't cache error responses
+        if response.status_code >= 400:
+            return response
+
+        # Vite hashed assets — immutable, long cache
+        if any(path.startswith(p) for p in self._IMMUTABLE_PREFIXES):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return response
+
+        # Tile responses — CDN caches 1h, browser caches 5min
+        if any(path.endswith(s) for s in self._TILE_SUFFIXES):
+            response.headers["Cache-Control"] = "public, max-age=300, s-maxage=3600"
+            return response
+
+        # Static files — CDN caches 1d, browser caches 1h
+        if path in self._STATIC_FILES:
+            response.headers["Cache-Control"] = "public, max-age=3600, s-maxage=86400"
+            return response
+
+        # API responses — no cache by default
+        if path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+
+        return response
+
+
+app.add_middleware(CacheControlMiddleware)
+
+
+# ---------------------------------------------------------------------------
 # Health endpoints
 # ---------------------------------------------------------------------------
 

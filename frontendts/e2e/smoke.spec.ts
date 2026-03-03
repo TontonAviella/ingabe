@@ -47,6 +47,39 @@ test.describe('Smoke Tests', () => {
   });
 });
 
+test.describe('Health & Monitoring', () => {
+  test('healthz probe returns 200', async ({ request }) => {
+    const response = await request.get('/healthz');
+    expect(response.status()).toBe(200);
+    const body = await response.json();
+    expect(body.status).toBe('ok');
+  });
+
+  test('readiness probe returns 200 when DB is up', async ({ request }) => {
+    const response = await request.get('/ready');
+    expect(response.status()).toBe(200);
+    const body = await response.json();
+    expect(body.ready).toBe(true);
+  });
+
+  test('metrics endpoint returns Prometheus format', async ({ request }) => {
+    const response = await request.get('/metrics');
+    expect(response.status()).toBe(200);
+    const text = await response.text();
+    expect(text).toContain('http_requests_total');
+    expect(text).toContain('http_request_errors_total');
+  });
+
+  test('detailed health check returns service statuses', async ({ request }) => {
+    const response = await request.get('/health');
+    expect([200, 503]).toContain(response.status());
+    const body = await response.json();
+    expect(body.checks).toBeDefined();
+    expect(body.checks.postgres).toBeDefined();
+    expect(body.checks.redis).toBeDefined();
+  });
+});
+
 test.describe('Project View (unauthenticated)', () => {
   test('project route renders without crashing', async ({ page }) => {
     // ProjectView uses OptionalAuth, so it should render even without auth

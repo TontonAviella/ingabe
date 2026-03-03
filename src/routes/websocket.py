@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from collections import defaultdict, deque
@@ -65,8 +66,7 @@ class EphemeralErrorNotificationPayload(ConversationRelatedPayload):
 router = APIRouter()
 
 # Subscriber registry for WebSocket notifications by conversation_id
-# (user_id, conversation_id) -> set[asyncio.Queue[str]]
-# each queue can handle: EphemeralErrorNotificationPayload | EphemeralNotificationPayload
+# conversation_id -> set[asyncio.Queue]
 subscribers_by_conversation = defaultdict(set)
 subscribers_lock = asyncio.Lock()
 
@@ -77,10 +77,173 @@ DISCONNECT_TTL = 30.0  # Keep disconnected user data for 30 seconds
 MAX_MISSED_MESSAGES = 100  # Limit buffer size per user per conversation
 
 CHAT_CH = "chat_completion_messages_notify"
+REDIS_WS_CHANNEL = "ws:ephemeral"  # Redis Pub/Sub channel for cross-worker ephemeral messages
 chat_q: asyncio.Queue[str] = asyncio.Queue()
-# Initialize listener task at module level
+# Initialize listener tasks at module level
 _listener_task: asyncio.Task | None = None
+_redis_sub_task: asyncio.Task | None = None
 
+
+# ---------------------------------------------------------------------------
+# Redis Pub/Sub for cross-worker WebSocket message routing
+# ---------------------------------------------------------------------------
+
+async def _get_redis_pubsub():
+    """Create a Redis Pub/Sub connection for subscribing."""
+    try:
+        from redis.asyncio import Redis as AsyncRedis
+        redis = AsyncRedis(
+            host=os.environ.get("REDIS_HOST", "localhost"),
+            port=int(os.environ.get("REDIS_PORT", 6379)),
+            decode_responses=True,
+        )
+        return redis
+    except Exception:
+        logger.debug("Redis not available for Pub/Sub", exc_info=True)
+        return None
+
+
+async def _publish_to_redis(payload_json: str) -> bool:
+    """Publish a message to Redis Pub/Sub for cross-worker distribution.
+
+    Returns True if published successfully, False otherwise.
+    """
+    try:
+        from redis.asyncio import Redis as AsyncRedis
+        redis = AsyncRedis(
+            host=os.environ.get("REDIS_HOST", "localhost"),
+            port=int(os.environ.get("REDIS_PORT", 6379)),
+            decode_responses=True,
+        )
+        try:
+            await redis.publish(REDIS_WS_CHANNEL, payload_json)
+            return True
+        finally:
+            await redis.aclose()
+    except Exception:
+        logger.debug("Failed to publish to Redis Pub/Sub (falling back to local)", exc_info=True)
+        return False
+
+
+async def _redis_pubsub_listener():
+    """Subscribe to Redis Pub/Sub and distribute ephemeral messages to local WebSocket queues.
+
+    Each uvicorn worker runs this task independently. When an ephemeral message
+    is published to Redis by any worker, all workers receive it and distribute
+    to their local WebSocket connections.
+    """
+    reconnect_delay = 1
+    max_reconnect_delay = 30
+
+    while True:
+        redis = None
+        pubsub = None
+        try:
+            redis = await _get_redis_pubsub()
+            if redis is None:
+                await asyncio.sleep(10)
+                continue
+
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(REDIS_WS_CHANNEL)
+            logger.info("Redis Pub/Sub subscriber connected to channel: %s", REDIS_WS_CHANNEL)
+            reconnect_delay = 1
+
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                payload_json = message["data"]
+                try:
+                    await _distribute_from_json(payload_json)
+                except Exception:
+                    logger.exception("Error distributing Redis Pub/Sub message")
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Redis Pub/Sub subscriber error: %s", e)
+        finally:
+            if pubsub is not None:
+                with suppress(Exception):
+                    await pubsub.unsubscribe(REDIS_WS_CHANNEL)
+                    await pubsub.aclose()
+            if redis is not None:
+                with suppress(Exception):
+                    await redis.aclose()
+
+        logger.info("Redis Pub/Sub reconnecting in %ds...", reconnect_delay)
+        await asyncio.sleep(reconnect_delay)
+        reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+
+# ---------------------------------------------------------------------------
+# Local distribution helpers
+# ---------------------------------------------------------------------------
+
+def _parse_payload(payload_dict: dict) -> ConversationRelatedPayload:
+    """Parse a dict into the appropriate payload model."""
+    if payload_dict.get("ephemeral"):
+        if "error_message" in payload_dict:
+            return EphemeralErrorNotificationPayload(**payload_dict)
+        return EphemeralNotificationPayload(**payload_dict)
+    return ChatCompletionReferenceNotificationPayload(**payload_dict)
+
+
+async def _distribute_to_local(conversation_id: int, parsed_payload: ConversationRelatedPayload):
+    """Distribute a parsed payload to local in-memory subscriber queues
+    and buffer for recently disconnected users.
+    """
+    now = time.time()
+
+    # Store messages for recently disconnected users who might reconnect
+    users_to_remove = []
+    for (
+        user_id,
+        disconnected_conversation_id,
+    ), user_data in recently_disconnected_users.items():
+        if now - user_data["disconnect_time"] > DISCONNECT_TTL:
+            users_to_remove.append((user_id, disconnected_conversation_id))
+            continue
+
+        if disconnected_conversation_id == conversation_id:
+            missed_messages = user_data["missed_messages"]
+            missed_messages.append((now, parsed_payload))
+            while len(missed_messages) > MAX_MISSED_MESSAGES:
+                missed_messages.popleft()
+
+    for user_key in users_to_remove:
+        del recently_disconnected_users[user_key]
+
+    # Broadcast to live subscribers on this worker
+    async with subscribers_lock:
+        queues = list(subscribers_by_conversation.get(conversation_id, []))
+    for q in queues:
+        q.put_nowait(parsed_payload)
+
+
+async def _distribute_from_json(payload_json: str):
+    """Parse JSON and distribute to local subscribers."""
+    payload_dict = json.loads(payload_json)
+    parsed_payload = _parse_payload(payload_dict)
+    assert parsed_payload.conversation_id, "conversation_id is required"
+    await _distribute_to_local(parsed_payload.conversation_id, parsed_payload)
+
+
+async def _publish_and_distribute(payload: ConversationRelatedPayload):
+    """Publish an ephemeral payload via Redis Pub/Sub for cross-worker delivery.
+
+    Falls back to local-only distribution if Redis is unavailable.
+    """
+    payload_json = payload.model_dump_json()
+    published = await _publish_to_redis(payload_json)
+    if not published:
+        # Redis unavailable — distribute locally only (single-worker fallback)
+        await _distribute_to_local(payload.conversation_id, payload)
+
+
+# ---------------------------------------------------------------------------
+# Startup / lifecycle
+# ---------------------------------------------------------------------------
 
 def start_chat_listener():
     global _listener_task
@@ -92,9 +255,18 @@ def start_chat_listener():
     return _listener_task
 
 
+def start_redis_subscriber():
+    global _redis_sub_task
+
+    if _redis_sub_task is None or _redis_sub_task.done():
+        _redis_sub_task = asyncio.create_task(_redis_pubsub_listener())
+
+    return _redis_sub_task
+
+
 @router.on_event("startup")
 async def startup_listener():
-    global _listener_task
+    global _listener_task, _redis_sub_task
 
     # Cancel and await previous listener task if exists
     if _listener_task is not None and not _listener_task.done():
@@ -104,8 +276,10 @@ async def startup_listener():
         except asyncio.CancelledError:
             pass
 
-    # Start new listener task
+    # Start PG listener
     start_chat_listener()
+    # Start Redis Pub/Sub subscriber for cross-worker ephemeral messages
+    start_redis_subscriber()
     # Start cleanup task for recently disconnected users
     asyncio.create_task(cleanup_recently_disconnected_users())
 
@@ -336,62 +510,13 @@ async def ws_conversation_chat(
 
 
 async def _broadcast_payload(payload: str):
+    """Handle PostgreSQL NOTIFY payloads — distribute to local subscribers.
+
+    Each worker has its own PG LISTEN connection, so this already works
+    across multiple workers without Redis.
+    """
     try:
-        # Parse the payload to determine its type
-        parsed_payload_dict: dict = json.loads(payload)
-
-        parsed_payload: ConversationRelatedPayload | None = None
-        if parsed_payload_dict.get("ephemeral"):
-            if "error_message" in parsed_payload_dict:
-                parsed_payload = EphemeralErrorNotificationPayload(
-                    **parsed_payload_dict
-                )
-            else:
-                parsed_payload = EphemeralNotificationPayload(**parsed_payload_dict)
-        else:
-            # It's a chat completion reference notification
-            parsed_payload = ChatCompletionReferenceNotificationPayload(
-                **parsed_payload_dict
-            )
-
-        # payload only contains like id, conversation_id, and ephemeral
-        # if its ephemeral it has other stuff
-        assert parsed_payload.conversation_id, "conversation_id is required"
-
-        now = time.time()
-
-        # Store messages for recently disconnected users who might reconnect to this specific conversation
-        users_to_remove = []
-        for (
-            user_id,
-            disconnected_conversation_id,
-        ), user_data in recently_disconnected_users.items():
-            # Clean up users who disconnected too long ago
-            if now - user_data["disconnect_time"] > DISCONNECT_TTL:
-                users_to_remove.append((user_id, disconnected_conversation_id))
-                continue
-
-            # Only store messages for users who were disconnected from this specific conversation
-            if disconnected_conversation_id == parsed_payload.conversation_id:
-                # Add message to their missed messages buffer
-                missed_messages = user_data["missed_messages"]
-                missed_messages.append((now, parsed_payload))
-
-                # Limit buffer size
-                while len(missed_messages) > MAX_MISSED_MESSAGES:
-                    missed_messages.popleft()
-
-        # Remove expired users
-        for user_key in users_to_remove:
-            del recently_disconnected_users[user_key]
-
-        # Broadcast to live subscribers
-        async with subscribers_lock:
-            queues = list(
-                subscribers_by_conversation.get(parsed_payload.conversation_id, [])
-            )
-        for q in queues:
-            q.put_nowait(parsed_payload)
+        await _distribute_from_json(payload)
     except Exception:
         logger.exception("Error broadcasting payload")
         raise
@@ -409,6 +534,8 @@ async def kue_ephemeral_action(
     Async context manager for ephemeral actions.
     Sends a websocket message with the action when entering,
     and automatically removes it when exiting the context.
+
+    Uses Redis Pub/Sub for cross-worker delivery (falls back to local if Redis unavailable).
     """
     payload = EphemeralNotificationPayload(
         conversation_id=conversation_id,
@@ -429,37 +556,8 @@ async def kue_ephemeral_action(
     await asyncio.sleep(0.05)
 
     try:
-        # Store for recently disconnected users from this specific conversation
-        now = time.time()
-        users_to_remove = []
-        for (
-            user_id,
-            disconnected_conversation_id,
-        ), user_data in recently_disconnected_users.items():
-            # Clean up users who disconnected too long ago
-            if now - user_data["disconnect_time"] > DISCONNECT_TTL:
-                users_to_remove.append((user_id, disconnected_conversation_id))
-                continue
-
-            # Only store messages for users who were disconnected from this specific conversation
-            if disconnected_conversation_id == conversation_id:
-                # Add message to their missed messages buffer
-                missed_messages = user_data["missed_messages"]
-                missed_messages.append((now, payload))
-
-                # Limit buffer size
-                while len(missed_messages) > MAX_MISSED_MESSAGES:
-                    missed_messages.popleft()
-
-        # Remove expired users
-        for user_key in users_to_remove:
-            del recently_disconnected_users[user_key]
-
-        # Broadcast to live subscribers
-        async with subscribers_lock:
-            queues = list(subscribers_by_conversation.get(conversation_id, []))
-        for q in queues:
-            q.put_nowait(payload)
+        # Publish via Redis for cross-worker delivery (falls back to local)
+        await _publish_and_distribute(payload)
 
         # Yield control back to the caller
         yield payload
@@ -470,43 +568,16 @@ async def kue_ephemeral_action(
         finished_payload.status = "completed"
         finished_payload.completed_at = datetime.now(timezone.utc)
 
-        # Store completion for recently disconnected users from this specific conversation
-        now = time.time()
-        users_to_remove = []
-        for (
-            user_id,
-            disconnected_conversation_id,
-        ), user_data in recently_disconnected_users.items():
-            # Clean up users who disconnected too long ago
-            if now - user_data["disconnect_time"] > DISCONNECT_TTL:
-                users_to_remove.append((user_id, disconnected_conversation_id))
-                continue
-
-            # Only store messages for users who were disconnected from this specific conversation
-            if disconnected_conversation_id == conversation_id:
-                # Add message to their missed messages buffer
-                missed_messages = user_data["missed_messages"]
-                missed_messages.append((now, finished_payload))
-
-                # Limit buffer size
-                while len(missed_messages) > MAX_MISSED_MESSAGES:
-                    missed_messages.popleft()
-
-        # Remove expired users
-        for user_key in users_to_remove:
-            del recently_disconnected_users[user_key]
-
-        # Broadcast to live subscribers
-        async with subscribers_lock:
-            queues = list(subscribers_by_conversation.get(conversation_id, []))
-        for q in queues:
-            q.put_nowait(finished_payload)
+        # Publish completion via Redis for cross-worker delivery
+        await _publish_and_distribute(finished_payload)
 
 
 async def kue_notify_error(conversation_id: int, error_message: str):
     """
     Send an ephemeral error notification to the client.
     Unlike kue_ephemeral_action, this is not a context manager and sends a single error message.
+
+    Uses Redis Pub/Sub for cross-worker delivery (falls back to local if Redis unavailable).
     """
     payload = EphemeralErrorNotificationPayload(
         conversation_id=conversation_id,
@@ -517,34 +588,5 @@ async def kue_notify_error(conversation_id: int, error_message: str):
         status="error",
     )
 
-    # Store for recently disconnected users from this specific conversation
-    now = time.time()
-    users_to_remove = []
-    for (
-        user_id,
-        disconnected_conversation_id,
-    ), user_data in recently_disconnected_users.items():
-        # Clean up users who disconnected too long ago
-        if now - user_data["disconnect_time"] > DISCONNECT_TTL:
-            users_to_remove.append((user_id, disconnected_conversation_id))
-            continue
-
-        # Only store messages for users who were disconnected from this specific conversation
-        if disconnected_conversation_id == conversation_id:
-            # Add message to their missed messages buffer
-            missed_messages = user_data["missed_messages"]
-            missed_messages.append((now, payload))
-
-            # Limit buffer size
-            while len(missed_messages) > MAX_MISSED_MESSAGES:
-                missed_messages.popleft()
-
-    # Remove expired users
-    for user_key in users_to_remove:
-        del recently_disconnected_users[user_key]
-
-    # Broadcast to live subscribers
-    async with subscribers_lock:
-        queues = list(subscribers_by_conversation.get(conversation_id, []))
-    for q in queues:
-        q.put_nowait(payload)
+    # Publish via Redis for cross-worker delivery (falls back to local)
+    await _publish_and_distribute(payload)

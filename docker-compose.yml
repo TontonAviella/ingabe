@@ -50,7 +50,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
       - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ingabe}
       - PYTHONUNBUFFERED=1
@@ -311,6 +311,51 @@ services:
       retries: 5
       start_period: 120s
 
+  # --- Monitoring stack (Prometheus + Grafana + Tempo) ---
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: mundi-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: mundi-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    container_name: mundi-tempo
+    ports:
+      - "3200:3200"   # Tempo API
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./monitoring/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    restart: unless-stopped
+
   # --- Database backup (pg_dump → gzip → S3/MinIO) ---
   backup:
     image: alpine:3.21
@@ -351,3 +396,6 @@ volumes:
   dagster-home:
   superset-home:
   ingabe-cache:
+  prometheus-data:
+  grafana-data:
+  tempo-data:

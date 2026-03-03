@@ -53,3 +53,40 @@ jobs:
       - name: Run tests
         run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
         timeout-minutes: 10
+
+      - name: Start services for E2E
+        run: |
+          docker compose up -d app
+          # Wait for the app to be healthy
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/healthz > /dev/null 2>&1; then
+              echo "App is healthy"
+              break
+            fi
+            echo "Waiting for app to start... ($i/30)"
+            sleep 2
+          done
+        timeout-minutes: 5
+
+      - name: Install Playwright browsers
+        working-directory: frontendts
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E smoke tests
+        working-directory: frontendts
+        run: npx playwright test --reporter=github
+        env:
+          E2E_BASE_URL: http://localhost:8000
+        timeout-minutes: 5
+
+      - name: Upload E2E artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontendts/test-results/
+          retention-days: 7
+
+      - name: Stop services
+        if: always()
+        run: docker compose down

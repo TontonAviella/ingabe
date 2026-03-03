@@ -6,6 +6,28 @@
 # PostGIS: enable manually on mundi-db in the Render dashboard after creation.
 #
 # Estimated cost: ~$48.50/month (Hobby platform $0 + 6 services)
+#
+# Multi-region deployment strategy:
+# ─────────────────────────────────
+# Primary region: Oregon (us-west-2) — closest to infrastructure
+# For Africa/Rwanda users, deploy a second instance:
+#   1. Create a second Blueprint Instance in Render Dashboard
+#   2. Set region to Frankfurt (eu-central-1) — closest to Rwanda
+#   3. Point the domain (e.g., eu.gis.nozalabs.rw) to the Frankfurt instance
+#   4. Use Cloudflare or similar CDN with geo-routing:
+#      - Africa/Europe → Frankfurt instance
+#      - Americas → Oregon instance
+#   5. Both instances share the same database (cross-region reads via
+#      connection pooling — PgBouncer recommended for production)
+#
+# CDN configuration:
+# ─────────────────
+# Static assets and tiles benefit from CDN caching. The app sets Cache-Control
+# headers automatically:
+#   - /assets/* (Vite hashed): immutable, 1 year
+#   - Tile responses (.mvt, .pmtiles): 5min browser, 1h CDN (s-maxage)
+#   - Favicons: 1h browser, 1d CDN
+# Configure Cloudflare/Render CDN to respect these headers.
 
 # ---------------------------------------------------------------------------
 # Environment variable groups (simple key/value only)
