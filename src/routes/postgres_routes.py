@@ -621,6 +621,76 @@ async def get_map_style(
     )
 
 
+# ── Paint override persistence (choropleth, color, opacity) ─────────────
+
+
+class PaintOverridePayload(BaseModel):
+    opacity: Optional[float] = None
+    color: Optional[str] = None
+    choroplethExpression: Optional[list] = None
+    choroplethColumn: Optional[str] = None
+
+
+@router.patch(
+    "/{map_id}/layer/{layer_id}/overrides",
+    operation_id="upsert_layer_paint_overrides",
+    summary="Persist paint overrides (choropleth, color, opacity) for a layer on a map",
+)
+async def upsert_paint_overrides(
+    map_id: str,
+    layer_id: str,
+    payload: PaintOverridePayload,
+    session: UserContext = Depends(verify_session_required),
+):
+    data = payload.model_dump(exclude_none=True)
+    if not data:
+        return {"ok": True}
+
+    async with get_async_db_connection() as conn:
+        # Merge new keys into existing overrides (if any)
+        existing = await conn.fetchval(
+            "SELECT overrides_json FROM layer_paint_overrides WHERE map_id = $1 AND layer_id = $2",
+            map_id,
+            layer_id,
+        )
+        merged = json.loads(existing) if existing else {}
+        merged.update(data)
+
+        await conn.execute(
+            """
+            INSERT INTO layer_paint_overrides (map_id, layer_id, overrides_json, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (map_id, layer_id)
+            DO UPDATE SET overrides_json = $3, updated_at = NOW()
+            """,
+            map_id,
+            layer_id,
+            json.dumps(merged),
+        )
+    return {"ok": True}
+
+
+@router.get(
+    "/{map_id}/layer-overrides",
+    operation_id="get_all_layer_paint_overrides",
+    summary="Get all persisted paint overrides for every layer on a map",
+)
+async def get_all_paint_overrides(
+    map_id: str,
+    session: UserContext = Depends(verify_session_optional),
+):
+    async with get_async_db_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT layer_id, overrides_json FROM layer_paint_overrides WHERE map_id = $1",
+            map_id,
+        )
+    result = {}
+    for row in rows:
+        parsed = json.loads(row["overrides_json"]) if isinstance(row["overrides_json"], str) else row["overrides_json"]
+        result[row["layer_id"]] = parsed
+    return result
+
+
 @router.post(
     "/{original_map_id}/layers",
     response_model=LayerUploadResponse,

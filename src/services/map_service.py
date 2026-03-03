@@ -619,6 +619,57 @@ async def get_map_style_internal(
                 for ml_layer in json.loads(layer["maplibre_layers"]):
                     style_json["layers"].append(ml_layer)
 
+    # ── Inject persisted paint overrides (choropleth, color, opacity) ──────
+    # These are saved per (map_id, layer_id) via the PATCH overrides endpoint.
+    # Injecting them here ensures ALL users see choropleth colors on map load.
+    async with async_conn("get_map_style_internal.paint_overrides") as conn:
+        override_rows = await conn.fetch(
+            "SELECT layer_id, overrides_json FROM layer_paint_overrides WHERE map_id = $1",
+            map_id,
+        )
+    if override_rows:
+        _OPACITY_PROP = {
+            "fill": "fill-opacity", "line": "line-opacity", "circle": "circle-opacity",
+            "symbol": "icon-opacity", "raster": "raster-opacity",
+            "fill-extrusion": "fill-extrusion-opacity", "heatmap": "heatmap-opacity",
+        }
+        _COLOR_PROP = {"fill": "fill-color", "line": "line-color", "circle": "circle-color"}
+
+        overrides_by_layer = {}
+        for row in override_rows:
+            ov = row["overrides_json"] if isinstance(row["overrides_json"], dict) else json.loads(row["overrides_json"])
+            overrides_by_layer[row["layer_id"]] = ov
+
+        for sl in style_json.get("layers", []):
+            src = sl.get("source")
+            if not src:
+                continue
+            # Match layer by source name (same logic as frontend injectOverridesIntoStyle)
+            ov = overrides_by_layer.get(src)
+            if not ov:
+                # Check suffix match
+                for lid, candidate in overrides_by_layer.items():
+                    if src.endswith(f"-{lid}"):
+                        ov = candidate
+                        break
+            if not ov:
+                continue
+
+            paint = sl.setdefault("paint", {})
+            layer_type = sl.get("type", "")
+
+            if ov.get("opacity") is not None:
+                prop = _OPACITY_PROP.get(layer_type)
+                if prop:
+                    paint[prop] = ov["opacity"]
+
+            if layer_type == "fill" and ov.get("choroplethExpression") is not None:
+                paint["fill-color"] = ov["choroplethExpression"]
+            elif ov.get("color") is not None:
+                prop = _COLOR_PROP.get(layer_type)
+                if prop:
+                    paint[prop] = ov["color"]
+
     # We use globe
     style_json["projection"] = {
         "type": "globe",
