@@ -456,8 +456,14 @@ def _compute_weather_metric(
     if not centroids:
         return {f["id"]: 0.0 for f in features}
 
+    from src.circuit_breaker import open_meteo_cb
+
     past_days = 10
     results: Dict[int, float] = {}
+
+    if not open_meteo_cb.can_execute():
+        logger.warning("Open-Meteo circuit breaker OPEN — skipping weather metric '%s'", metric_key)
+        return {f["id"]: 0.0 for f in features}
 
     for batch_start in range(0, len(centroids), _OPEN_METEO_BATCH_SIZE):
         batch = centroids[batch_start:batch_start + _OPEN_METEO_BATCH_SIZE]
@@ -478,7 +484,9 @@ def _compute_weather_metric(
             req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
+            open_meteo_cb.record_success()
         except Exception as e:
+            open_meteo_cb.record_failure()
             logger.error("Open-Meteo batch request failed (offset %d): %s", batch_start, e)
             continue
 

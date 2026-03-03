@@ -52,10 +52,11 @@ async def _get_async_connection_pool() -> asyncpg.Pool:
     if _async_connection_pool is None:
         async with _async_pool_lock:
             if _async_connection_pool is None:
+                _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "25"))
                 _async_connection_pool = await asyncpg.create_pool(
                     dsn=_build_postgres_url(),
-                    min_size=1,
-                    max_size=10,
+                    min_size=2,
+                    max_size=_pool_max,
                 )
     return _async_connection_pool  # type: ignore[return-value]
 
@@ -74,10 +75,11 @@ async def _get_async_read_pool() -> asyncpg.Pool:
                     "POSTGRES_READ_PORT",
                     os.environ.get("POSTGRES_PORT", "5432"),
                 )
+                _read_pool_max = int(os.environ.get("DB_READ_POOL_MAX_SIZE", "25"))
                 _async_read_pool = await asyncpg.create_pool(
                     dsn=_build_postgres_url(host=read_host, port=read_port),
-                    min_size=1,
-                    max_size=10,
+                    min_size=2,
+                    max_size=_read_pool_max,
                 )
     return _async_read_pool  # type: ignore[return-value]
 

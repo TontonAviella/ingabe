@@ -68,7 +68,7 @@ envVarGroups:
 # ---------------------------------------------------------------------------
 databases:
   - name: mundi-db
-    plan: basic-256mb
+    plan: starter
     postgresMajorVersion: 15
     ipAllowList: []
 
@@ -148,8 +148,22 @@ services:
           name: qgis-processing
           type: web
           envVarKey: RENDER_EXTERNAL_URL
+      # Scaling & performance tuning
+      - key: WEB_CONCURRENCY
+        value: "4"
+      - key: DB_POOL_MAX_SIZE
+        value: "25"
+      - key: DB_READ_POOL_MAX_SIZE
+        value: "25"
+      - key: LOG_FORMAT
+        value: json
     healthCheckPath: /healthz
     autoDeploy: true
+    scaling:
+      minInstances: 1
+      maxInstances: 3
+      targetMemoryPercent: 80
+      targetCPUPercent: 70
 
   # ── QGIS Processing service ──
   # autoDeploy disabled to save pipeline minutes — deploy manually from dashboard

@@ -163,20 +163,41 @@ export async function getJwt(): Promise<string | undefined> {
 }
 
 // ── fetchMaybeAuth ──────────────────────────────────────────────────────
+
+/** Default request timeout in milliseconds (30 seconds). */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Drop-in fetch() replacement with:
+ * - Clerk Bearer token injection
+ * - Request timeout via AbortController (30s default)
+ * - Single-retry on 401 with fresh token
+ */
 export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const doFetch = (fetchInit?: RequestInit) => {
+    // Wire up timeout via AbortController (skip if caller already set a signal)
+    if (fetchInit?.signal) return fetch(input, fetchInit);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+    return fetch(input, { ...fetchInit, signal: controller.signal }).finally(() =>
+      clearTimeout(timeoutId),
+    );
+  };
+
   if (!CLERK_PUBLISHABLE_KEY) {
-    return fetch(input, init);
+    return doFetch(init);
   }
 
   const token = await getJwt();
   if (!token) {
-    return fetch(input, init);
+    return doFetch(init);
   }
 
   const headers = new Headers(init?.headers);
   headers.set('Authorization', `Bearer ${token}`);
   const hasRetriedBefore = headers.has('X-Retry-After-401');
-  const response = await fetch(input, { ...init, headers });
+  const response = await doFetch({ ...init, headers });
 
   // If we get 401 Unauthorized, token might have expired mid-operation.
   // Retry once with a fresh token (Clerk auto-refreshes expired tokens).
@@ -187,7 +208,7 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
       const retryHeaders = new Headers(init?.headers);
       retryHeaders.set('Authorization', `Bearer ${freshToken}`);
       retryHeaders.set('X-Retry-After-401', 'true'); // Prevent infinite retry
-      return fetch(input, { ...init, headers: retryHeaders });
+      return doFetch({ ...init, headers: retryHeaders });
     }
   }
 

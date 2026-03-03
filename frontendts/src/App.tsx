@@ -2,7 +2,7 @@ import { cogProtocol } from '@geomatico/maplibre-cog-protocol';
 import { ApiKeys } from '@mundi/ee';
 import maplibregl from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
-import { lazy, Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import * as reactRouterDom from 'react-router-dom';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { AppSidebar } from '@/components/app-sidebar';
@@ -112,14 +112,44 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
+      retry: 3,
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15000),
+      staleTime: 30_000, // 30s — data stays fresh for 30s before background refetch
+      gcTime: 5 * 60_000, // 5min — unused cache entries garbage-collected after 5min
+      networkMode: 'online', // pause queries when browser goes offline
+    },
+    mutations: {
+      retry: 1,
+      networkMode: 'online',
     },
   },
 });
+
+function OfflineBanner() {
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  useEffect(() => {
+    const goOffline = () => setIsOffline(true);
+    const goOnline = () => setIsOffline(false);
+    window.addEventListener('offline', goOffline);
+    window.addEventListener('online', goOnline);
+    return () => {
+      window.removeEventListener('offline', goOffline);
+      window.removeEventListener('online', goOnline);
+    };
+  }, []);
+  if (!isOffline) return null;
+  return (
+    <div className="fixed top-0 left-0 right-0 z-[9999] bg-destructive text-destructive-foreground text-center py-2 text-sm font-medium">
+      You are offline. Some features may be unavailable.
+    </div>
+  );
+}
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <Provider>
+        <OfflineBanner />
         <AppContent />
         <Toaster />
       </Provider>

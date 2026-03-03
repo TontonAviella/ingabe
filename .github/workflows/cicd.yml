@@ -53,4 +53,3 @@ jobs:
       - name: Run tests
         run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
         timeout-minutes: 10
-        continue-on-error: true  # TODO: fix pre-existing test failures, then remove this

@@ -46,8 +46,9 @@ except Exception as e:
 " && echo "Step 3: OK" || { echo "Step 3: FAILED - app import error"; exit 1; }
 
     # Step 4: Start uvicorn
-    echo "Step 4: Starting uvicorn on port ${PORT:-8000}..."
-    exec uvicorn src.wsgi:app --host 0.0.0.0 --port "${PORT:-8000}" --log-level info
+    WORKERS="${WEB_CONCURRENCY:-4}"
+    echo "Step 4: Starting uvicorn on port ${PORT:-8000} with $WORKERS workers..."
+    exec uvicorn src.wsgi:app --host 0.0.0.0 --port "${PORT:-8000}" --workers "$WORKERS" --log-level info
     ;;
   dagster-daemon)
     echo "Starting Dagster daemon..."

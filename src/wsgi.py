@@ -2,6 +2,8 @@ import logging
 import logging.config
 import os
 import sys
+import time
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,14 +106,22 @@ def _configure_app_logging():
     overriding whatever uvicorn left behind.
     """
     log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    log_format = os.environ.get("LOG_FORMAT", "json")  # "json" or "text"
+
+    if log_format == "json":
+        formatter_config = {
+            "()": "src.logging_json.JsonFormatter",
+        }
+    else:
+        formatter_config = {
+            "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
+        }
 
     logging.config.dictConfig({
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
-            "standard": {
-                "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
-            },
+            "standard": formatter_config,
         },
         "handlers": {
             "stderr": {
@@ -238,6 +248,50 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 
 # ---------------------------------------------------------------------------
+# Request ID + Metrics middleware
+# ---------------------------------------------------------------------------
+
+# In-memory request metrics (per-worker, aggregated at /metrics)
+_request_count = 0
+_request_errors = 0
+_request_latency_sum = 0.0
+_request_latency_count = 0
+_active_requests = 0
+
+
+class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
+    """Attach X-Request-ID for distributed tracing and collect request metrics."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        global _request_count, _request_errors, _request_latency_sum, _request_latency_count, _active_requests
+
+        # Generate or propagate request ID
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
+        request.state.request_id = request_id
+
+        _active_requests += 1
+        _request_count += 1
+        start = time.monotonic()
+        try:
+            response: Response = await call_next(request)
+            if response.status_code >= 500:
+                _request_errors += 1
+            response.headers["X-Request-ID"] = request_id
+            return response
+        except Exception:
+            _request_errors += 1
+            raise
+        finally:
+            elapsed = time.monotonic() - start
+            _request_latency_sum += elapsed
+            _request_latency_count += 1
+            _active_requests -= 1
+
+
+app.add_middleware(RequestIdMetricsMiddleware)
+
+
+# ---------------------------------------------------------------------------
 # Health endpoints
 # ---------------------------------------------------------------------------
 
@@ -249,6 +303,57 @@ async def healthz():
     dependency failures during startup.  Use /health for detailed status.
     """
     return JSONResponse(status_code=200, content={"status": "ok"})
+
+
+@app.get("/ready")
+async def readiness():
+    """Readiness probe — returns 200 only when critical dependencies are up."""
+    try:
+        from src.structures import async_read_conn
+        async with async_read_conn("readiness") as conn:
+            await conn.fetchval("SELECT 1")
+        return JSONResponse(status_code=200, content={"ready": True})
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"ready": False, "error": str(e)})
+
+
+@app.get("/metrics")
+async def metrics():
+    """Lightweight metrics endpoint for monitoring (Prometheus-compatible text format)."""
+    import asyncio
+    from src.database.pool import _async_connection_pool, _async_read_pool
+
+    lines = []
+    # Request metrics
+    lines.append(f"# HELP http_requests_total Total HTTP requests")
+    lines.append(f"# TYPE http_requests_total counter")
+    lines.append(f"http_requests_total {_request_count}")
+    lines.append(f"# HELP http_request_errors_total Total HTTP 5xx errors")
+    lines.append(f"# TYPE http_request_errors_total counter")
+    lines.append(f"http_request_errors_total {_request_errors}")
+    lines.append(f"# HELP http_requests_active Currently active requests")
+    lines.append(f"# TYPE http_requests_active gauge")
+    lines.append(f"http_requests_active {_active_requests}")
+
+    if _request_latency_count > 0:
+        avg_latency = _request_latency_sum / _request_latency_count
+        lines.append(f"# HELP http_request_duration_seconds_avg Average request duration")
+        lines.append(f"# TYPE http_request_duration_seconds_avg gauge")
+        lines.append(f"http_request_duration_seconds_avg {avg_latency:.4f}")
+
+    # Database pool metrics
+    if _async_connection_pool:
+        lines.append(f"# HELP db_pool_size Current write pool size")
+        lines.append(f"# TYPE db_pool_size gauge")
+        lines.append(f"db_pool_size {_async_connection_pool.get_size()}")
+        lines.append(f"db_pool_free {_async_connection_pool.get_idle_size()}")
+        lines.append(f"db_pool_max {_async_connection_pool.get_max_size()}")
+    if _async_read_pool:
+        lines.append(f"db_read_pool_size {_async_read_pool.get_size()}")
+        lines.append(f"db_read_pool_free {_async_read_pool.get_idle_size()}")
+
+    body = "\n".join(lines) + "\n"
+    return Response(content=body, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/health")
@@ -294,9 +399,13 @@ async def health_check():
     )
     checks = {"postgres": pg, "redis": redis_r, "qgis": qgis}
 
+    pg_ok = pg == "ok"
     all_ok = all(v == "ok" for v in checks.values())
+    # If Postgres is down, the app can't serve requests — return 503 so
+    # load balancers route traffic to healthy instances
+    status_code = 200 if pg_ok else 503
     return JSONResponse(
-        status_code=200,
+        status_code=status_code,
         content={"status": "healthy" if all_ok else "degraded", "checks": checks},
     )
 
@@ -397,11 +506,16 @@ async def get_favicon_dark_svg():
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch-all for unhandled exceptions — log traceback, return JSON for /api/."""
     import traceback
+    request_id = getattr(request.state, "request_id", "unknown")
     logging.getLogger("src").error(
-        "Unhandled %s on %s %s: %s\n%s",
-        type(exc).__name__, request.method, request.url.path, exc, traceback.format_exc(),
+        "Unhandled %s on %s %s [req=%s]: %s\n%s",
+        type(exc).__name__, request.method, request.url.path, request_id,
+        exc, traceback.format_exc(),
     )
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "request_id": request_id},
+    )
 
 
 @app.exception_handler(StarletteHTTPException)
