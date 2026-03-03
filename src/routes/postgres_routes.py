@@ -640,7 +640,7 @@ async def upsert_paint_overrides(
     map_id: str,
     layer_id: str,
     payload: PaintOverridePayload,
-    session: UserContext = Depends(verify_session_required),
+    map: MundiMap = Depends(edit_map),
 ):
     data = payload.model_dump(exclude_none=True)
     if not data:
@@ -677,7 +677,7 @@ async def upsert_paint_overrides(
 )
 async def get_all_paint_overrides(
     map_id: str,
-    session: UserContext = Depends(verify_session_optional),
+    map: MundiMap = Depends(get_map),
 ):
     async with get_async_db_connection() as conn:
         rows = await conn.fetch(

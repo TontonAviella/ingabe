@@ -232,11 +232,21 @@ def _compute_lulc_metrics(
 
     target_class = _LULC_CLASS_MAP[metric_key]
 
+    # Filter out features with NULL/empty geometries
+    valid_features = [f for f in features if f.get("geom")]
+    if not valid_features:
+        return {f["id"]: 0.0 for f in features}
+
     # Compute bounding box of all features
     all_bounds = []
-    for feat in features:
+    for feat in valid_features:
         geom = shape(feat["geom"])
+        if geom.is_empty:
+            continue
         all_bounds.append(geom.bounds)
+
+    if not all_bounds:
+        return {f["id"]: 0.0 for f in features}
 
     west = min(b[0] for b in all_bounds)
     south = min(b[1] for b in all_bounds)
@@ -272,9 +282,10 @@ def _compute_lulc_metrics(
     h, w = data.shape
     transform = from_bounds(west, south, east, north, w, h)
 
-    results: Dict[int, float] = {}
+    # Pre-fill results with 0.0 for features with NULL/empty geometry
+    results: Dict[int, float] = {f["id"]: 0.0 for f in features if f not in valid_features}
 
-    for feat in features:
+    for feat in valid_features:
         fid = feat["id"]
         geom_dict = feat["geom"]
         try:
@@ -321,11 +332,29 @@ def compute_all_lulc_metrics(
 
     from src.worldcover import get_rwanda_tile_urls
 
+    # Filter out features with NULL/empty geometries
+    valid_features = [f for f in features if f.get("geom")]
+
+    zero_results: Dict[str, Dict[int, float]] = {key: {} for key in _LULC_CLASS_MAP}
+    if not valid_features:
+        for f in features:
+            for key in _LULC_CLASS_MAP:
+                zero_results[key][f["id"]] = 0.0
+        return zero_results
+
     # Compute bounding box of all features
     all_bounds = []
-    for feat in features:
+    for feat in valid_features:
         geom = shape(feat["geom"])
+        if geom.is_empty:
+            continue
         all_bounds.append(geom.bounds)
+
+    if not all_bounds:
+        for f in features:
+            for key in _LULC_CLASS_MAP:
+                zero_results[key][f["id"]] = 0.0
+        return zero_results
 
     west = min(b[0] for b in all_bounds)
     south = min(b[1] for b in all_bounds)
@@ -360,9 +389,14 @@ def compute_all_lulc_metrics(
     h, w = data.shape
     transform = from_bounds(west, south, east, north, w, h)
 
+    # Pre-fill 0.0 for features with NULL/empty geometry
     results: Dict[str, Dict[int, float]] = {key: {} for key in _LULC_CLASS_MAP}
+    for f in features:
+        if f not in valid_features:
+            for key in _LULC_CLASS_MAP:
+                results[key][f["id"]] = 0.0
 
-    for feat in features:
+    for feat in valid_features:
         fid = feat["id"]
         geom_dict = feat["geom"]
         try:
@@ -411,12 +445,16 @@ def _compute_weather_metric(
 
     centroids = []
     for feat in features:
+        if not feat.get("geom"):
+            continue
         geom = shape(feat["geom"])
+        if geom.is_empty:
+            continue
         c = geom.centroid
         centroids.append({"id": feat["id"], "lat": round(c.y, 4), "lon": round(c.x, 4)})
 
     if not centroids:
-        return {}
+        return {f["id"]: 0.0 for f in features}
 
     past_days = 10
     results: Dict[int, float] = {}

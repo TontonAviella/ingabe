@@ -622,11 +622,16 @@ async def get_map_style_internal(
     # ── Inject persisted paint overrides (choropleth, color, opacity) ──────
     # These are saved per (map_id, layer_id) via the PATCH overrides endpoint.
     # Injecting them here ensures ALL users see choropleth colors on map load.
-    async with async_conn("get_map_style_internal.paint_overrides") as conn:
-        override_rows = await conn.fetch(
-            "SELECT layer_id, overrides_json FROM layer_paint_overrides WHERE map_id = $1",
-            map_id,
-        )
+    override_rows = []
+    try:
+        async with async_conn("get_map_style_internal.paint_overrides") as conn:
+            override_rows = await conn.fetch(
+                "SELECT layer_id, overrides_json FROM layer_paint_overrides WHERE map_id = $1",
+                map_id,
+            )
+    except Exception:
+        # Table may not exist yet if migration hasn't run — degrade gracefully
+        logger.debug("layer_paint_overrides query failed (table may not exist yet)", exc_info=True)
     if override_rows:
         _OPACITY_PROP = {
             "fill": "fill-opacity", "line": "line-opacity", "circle": "circle-opacity",

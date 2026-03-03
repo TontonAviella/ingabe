@@ -1131,27 +1131,31 @@ const LayerList: React.FC<LayerListProps> = ({
                   const map = mapRef?.current;
                   if (!map) return;
 
-                  // Distinguish MVT (tiles array) vs PMTiles (url) by checking
-                  // the style spec source definition.  VectorTileSource always
-                  // exposes both setTiles() and setUrl() methods regardless of
-                  // the underlying source type, so checking 'setTiles' in source
-                  // is unreliable.
-                  const ts = Date.now();
-                  const origin = window.location.origin;
-                  const styleSrc = map.getStyle()?.sources?.[layerId] as Record<string, unknown> | undefined;
-                  const source = map.getSource(layerId);
-                  if (!source) return;
+                  try {
+                    // Distinguish MVT (tiles array) vs PMTiles (url) by checking
+                    // the style spec source definition.  VectorTileSource always
+                    // exposes both setTiles() and setUrl() methods regardless of
+                    // the underlying source type, so checking 'setTiles' in source
+                    // is unreliable.
+                    const ts = Date.now();
+                    const origin = window.location.origin;
+                    const styleSrc = map.getStyle()?.sources?.[layerId] as Record<string, unknown> | undefined;
+                    const source = map.getSource(layerId);
+                    if (!source) return;
 
-                  if (styleSrc && 'tiles' in styleSrc) {
-                    // MVT source — update tile URL with cache-busting timestamp
-                    (source as unknown as { setTiles: (tiles: string[]) => void }).setTiles([
-                      `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
-                    ]);
-                  } else if ('setUrl' in source) {
-                    // PMTiles source — reload with pmtiles:// protocol prefix
-                    (source as unknown as { setUrl: (url: string) => void }).setUrl(
-                      `pmtiles://${origin}/api/layer/${layerId}.pmtiles?v=${ts}`,
-                    );
+                    if (styleSrc && 'tiles' in styleSrc) {
+                      // MVT source — update tile URL with cache-busting timestamp
+                      (source as unknown as { setTiles: (tiles: string[]) => void }).setTiles([
+                        `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
+                      ]);
+                    } else if ('setUrl' in source) {
+                      // PMTiles source — reload with pmtiles:// protocol prefix
+                      (source as unknown as { setUrl: (url: string) => void }).setUrl(
+                        `pmtiles://${origin}/api/layer/${layerId}.pmtiles?v=${ts}`,
+                      );
+                    }
+                  } catch (err) {
+                    console.warn('[enrichment] tile reload failed for layer', layerId, err);
                   }
                 }}
                 featureCount={choroplethLayer?.feature_count}
