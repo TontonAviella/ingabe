@@ -215,11 +215,16 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   const handleEnrich = async (metricKey: string) => {
     setEnriching(metricKey);
     try {
+      // Enrichment can take minutes for soil/emissions metrics — use a 5-minute timeout
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 300_000);
       const res = await apiFetch(`/api/layer/${layerId}/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ metric: metricKey }),
+        signal: controller.signal,
       });
+      clearTimeout(tid);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail ?? res.statusText);

@@ -634,15 +634,22 @@ def _compute_emissions_metric(
     year = 2022  # latest EDGAR year
     sectors = VALID_COMBOS.get(emission_type, [])
 
-    # Download grids for all valid sectors and sum them
+    # Download grids for all valid sectors concurrently and sum them
+    from concurrent.futures import ThreadPoolExecutor
+
     combined_grid = None
     grid_lats = None
     grid_lons = None
 
-    for sector in sectors:
-        grid_data = svc.download_edgar_gridmap(emission_type, sector, year)
+    def _download_sector(sector: str):
+        return svc.download_edgar_gridmap(emission_type, sector, year)
+
+    with ThreadPoolExecutor(max_workers=min(len(sectors), 4)) as pool:
+        grid_results = list(pool.map(_download_sector, sectors))
+
+    for i, grid_data in enumerate(grid_results):
         if "error" in grid_data:
-            logger.warning("EDGAR grid %s/%s: %s", emission_type, sector, grid_data["error"])
+            logger.warning("EDGAR grid %s/%s: %s", emission_type, sectors[i], grid_data["error"])
             continue
         values = grid_data.get("values")
         if values is None:
@@ -652,7 +659,6 @@ def _compute_emissions_metric(
             grid_lats = grid_data["lats"]
             grid_lons = grid_data["lons"]
         else:
-            # Sum across sectors (same grid shape)
             combined_grid += values.astype(np.float64)
 
     if combined_grid is None or grid_lats is None or grid_lons is None:
@@ -699,7 +705,11 @@ def _compute_soil_metric(
     features: List[Dict[str, Any]],
     soil_property: str,
 ) -> Dict[int, float]:
-    """Compute a soil property value for each feature centroid via iSDAsoil.
+    """Compute a soil property value for each feature centroid via iSDAsoil COGs.
+
+    Instead of calling query_soil_point() per feature (which opens the COG each
+    time), we open the COG once and read small windows for all centroids. This
+    reduces N HTTP connections to 1 with N range-reads inside the same session.
 
     Args:
         features: Feature dicts with 'id' and 'geom'.
@@ -708,27 +718,87 @@ def _compute_soil_metric(
     Returns:
         {feature_id: value}
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    import rasterio
+    from pyproj import Transformer
+    from rasterio.env import Env as RasterioEnv
+    from rasterio.windows import from_bounds
     from shapely.geometry import shape
 
-    from src.services.isdasoil_service import query_soil_point
+    from src.services.isdasoil_service import SOIL_PROPERTIES, _cog_url
 
-    results: Dict[int, float] = {}
+    prop_info = SOIL_PROPERTIES.get(soil_property)
+    if prop_info is None:
+        logger.warning("Unknown soil property: %s", soil_property)
+        return {feat["id"]: 0.0 for feat in features}
+
+    url = _cog_url(soil_property)
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    transform_fn = prop_info["transform"]
+    buffer_m = 150.0
+    depth_band = 0  # 0-20 cm
+
+    # Pre-compute centroids
+    centroids = []
     for feat in features:
-        fid = feat["id"]
         try:
             geom = shape(feat["geom"])
             c = geom.centroid
-            resp = query_soil_point(lon=c.x, lat=c.y, properties=[soil_property])
-            if resp.get("status") != "success":
-                results[fid] = 0.0
-                continue
-            props = resp.get("properties", {})
-            prop_data = props.get(soil_property, {})
-            val = prop_data.get("value")
-            results[fid] = round(float(val), 2) if val is not None else 0.0
+            centroids.append((feat["id"], c.x, c.y))
         except Exception as e:
-            logger.warning("Soil query failed for feature %d: %s", fid, e)
-            results[fid] = 0.0
+            logger.warning("Bad geometry for feature %d: %s", feat["id"], e)
+            centroids.append((feat["id"], None, None))
+
+    results: Dict[int, float] = {}
+
+    def _read_feature(src, fid: int, lon: float, lat: float) -> tuple:
+        """Read a single feature's soil value from the already-open COG."""
+        try:
+            cx, cy = transformer.transform(lon, lat)
+            window = from_bounds(
+                cx - buffer_m, cy - buffer_m, cx + buffer_m, cy + buffer_m,
+                src.transform,
+            )
+            data = src.read(window=window)
+            band = data[depth_band].astype(np.float64)
+            valid = band[band > 0]
+            if len(valid) == 0:
+                return fid, 0.0
+            raw_val = float(np.mean(valid))
+            return fid, round(float(transform_fn(raw_val)), 2)
+        except Exception as e:
+            logger.warning("Soil read failed for feature %d: %s", fid, e)
+            return fid, 0.0
+
+    try:
+        with RasterioEnv(
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+            GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
+        ):
+            with rasterio.open(url) as src:
+                # Use threads for concurrent HTTP range-reads within the same COG
+                valid_centroids = [
+                    (fid, lon, lat) for fid, lon, lat in centroids
+                    if lon is not None
+                ]
+                with ThreadPoolExecutor(max_workers=min(len(valid_centroids), 8)) as pool:
+                    futures = [
+                        pool.submit(_read_feature, src, fid, lon, lat)
+                        for fid, lon, lat in valid_centroids
+                    ]
+                    for future in futures:
+                        fid, val = future.result()
+                        results[fid] = val
+
+        # Fill in features with bad geometry
+        for fid, lon, lat in centroids:
+            if fid not in results:
+                results[fid] = 0.0
+    except Exception as e:
+        logger.error("Failed to open soil COG %s: %s", url, e)
+        return {feat["id"]: 0.0 for feat in features}
 
     return results
 
