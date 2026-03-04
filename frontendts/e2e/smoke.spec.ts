@@ -5,7 +5,11 @@ test.describe('Smoke Tests', () => {
     await page.goto('/');
     // Either we get redirected to Clerk sign-in, or we see the maps list
     await expect(
-      page.locator('text=Sign in').or(page.locator('text=Projects')).or(page.locator('text=New Project')),
+      page
+        .locator('text=Sign in')
+        .or(page.locator('text=Projects'))
+        .or(page.locator('text=New Project'))
+        .first(),
     ).toBeVisible({ timeout: 15_000 });
   });
 
