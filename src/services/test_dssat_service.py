@@ -529,16 +529,19 @@ class TestE2ESoilPipeline:
 
     def test_soil_profile_data_reaches_dssat(self):
         """Verify soil data flows through _build_soil_profile correctly:
-        iSDAsoil response → pedotransfer → SoilProfile construction."""
+        iSDAsoil response → pedotransfer → SoilLayer/SoilProfile construction (v3 API)."""
         from src.services.dssat_service import _build_soil_profile
 
-        # Mock DSSATTools classes
-        mock_profile = MagicMock()
-        added_layers = []
-        mock_profile.add_layer = lambda layer_data: added_layers.append(layer_data)
+        # Capture SoilLayer constructor kwargs (v3 API)
+        captured_layer_args = {}
+
+        def capture_soil_layer(**kwargs):
+            captured_layer_args.update(kwargs)
+            return MagicMock()
 
         mock_dssat_module = MagicMock()
-        mock_dssat_module.SoilProfile.return_value = mock_profile
+        mock_dssat_module.SoilLayer.side_effect = capture_soil_layer
+        mock_dssat_module.SoilProfile.return_value = MagicMock()
 
         with patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}), \
              patch("src.services.isdasoil_service.query_soil_point",
@@ -546,33 +549,26 @@ class TestE2ESoilPipeline:
             result = _build_soil_profile(-2.60, 29.60)
 
         assert result is not None
-        # Should have called add_layer for each soil property
-        assert len(added_layers) > 0
 
-        # Verify pedotransfer values were passed through
+        # Verify pedotransfer values were passed to SoilLayer
         pt = pedotransfer_saxton_rawls(
             _RWANDA_SOIL["clay_pct"],
             _RWANDA_SOIL["sand_pct"],
             _RWANDA_SOIL["oc_g_kg"],
         )
 
-        # Check that the layer data contains correct pedotransfer values
-        all_keys = {}
-        for layer in added_layers:
-            all_keys.update(layer)
-
-        assert all_keys["SLLL"] == pt["SLLL"]
-        assert all_keys["SDUL"] == pt["SDUL"]
-        assert all_keys["SSAT"] == pt["SSAT"]
-        assert all_keys["SBDM"] == pt["SBDM"]
-        assert all_keys["SLOC"] == pt["SLOC"]
-        assert all_keys["SLCL"] == pt["SLCL"]
+        assert captured_layer_args["slll"] == pt["SLLL"]
+        assert captured_layer_args["sdul"] == pt["SDUL"]
+        assert captured_layer_args["ssat"] == pt["SSAT"]
+        assert captured_layer_args["sbdm"] == pt["SBDM"]
+        assert captured_layer_args["sloc"] == pt["SLOC"]
+        assert captured_layer_args["slcl"] == pt["SLCL"]
         # Nitrogen: 2.0 g/kg → 0.2%
-        assert all_keys["SLNI"] == pytest.approx(0.2, abs=0.01)
+        assert captured_layer_args["slni"] == pytest.approx(0.2, abs=0.01)
         # pH passes through directly
-        assert all_keys["SLHW"] == pytest.approx(5.5, abs=0.1)
+        assert captured_layer_args["slhw"] == pytest.approx(5.5, abs=0.1)
         # CEC passes through directly
-        assert all_keys["SCEC"] == pytest.approx(20.0, abs=0.1)
+        assert captured_layer_args["scec"] == pytest.approx(20.0, abs=0.1)
 
 
 class TestE2EWeatherPipeline:
@@ -637,22 +633,24 @@ class TestE2EWeatherPipeline:
         assert result["TMAX"] == [27.0, 28.0]
 
     def test_weather_flows_to_dssat_dataframe(self):
-        """Weather dict → _build_weather → DSSAT Weather object receives
-        correctly formatted DataFrame."""
+        """Weather dict → _build_weather → DSSAT WeatherStation receives
+        correctly formatted WeatherRecords (v3 API)."""
         from src.services.dssat_service import _build_weather
 
-        mock_weather_obj = MagicMock()
+        captured_records = []
+        captured_station_args = {}
+
+        def capture_record(**kwargs):
+            captured_records.append(kwargs)
+            return MagicMock()
+
+        def capture_station(**kwargs):
+            captured_station_args.update(kwargs)
+            return MagicMock()
+
         mock_dssat_module = MagicMock()
-        captured_args = {}
-
-        def capture_weather_init(df, pars, lat, lon):
-            captured_args["df"] = df
-            captured_args["pars"] = pars
-            captured_args["lat"] = lat
-            captured_args["lon"] = lon
-            return mock_weather_obj
-
-        mock_dssat_module.Weather.side_effect = capture_weather_init
+        mock_dssat_module.WeatherRecord.side_effect = capture_record
+        mock_dssat_module.WeatherStation.side_effect = capture_station
 
         with patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}), \
              patch("src.services.nasa_power_service.fetch_power_daily_with_fallback") as mock_fetch:
@@ -666,13 +664,13 @@ class TestE2EWeatherPipeline:
             result = _build_weather(-2.60, 29.60, "2024-09-15", "2024-09-17")
 
         assert result is not None
-        df = captured_args["df"]
-        assert len(df) == 3
-        assert list(df.columns) == ["DATE", "TMAX", "TMIN", "RAIN", "SRAD"]
-        assert df["TMAX"].iloc[0] == 27.0
-        assert df["RAIN"].iloc[2] == 0.0
-        assert captured_args["lat"] == -2.60
-        assert captured_args["lon"] == 29.60
+        # 3 dates → 3 WeatherRecords
+        assert len(captured_records) == 3
+        assert captured_records[0]["tmax"] == 27.0
+        assert captured_records[2]["rain"] == 0.0
+        # WeatherStation receives lat/lon
+        assert captured_station_args["lat"] == -2.60
+        assert captured_station_args["long"] == 29.60
 
 
 class TestE2EManagementPipeline:
