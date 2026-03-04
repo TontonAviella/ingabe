@@ -121,10 +121,14 @@ class AsyncDatabaseConnection:
                 self._pool = await _get_async_connection_pool()
             self.conn = await self._pool.acquire()
 
-        # Set RLS context so row-level security policies can filter by user
+        # Set RLS context so row-level security policies can filter by user.
+        # IMPORTANT: is_local must be false (session-level) so the setting
+        # persists across implicit transactions in asyncpg.  With true
+        # (transaction-local), the value is lost after this execute() call
+        # and the subsequent query would never see it.
         if self.user_id:
             await self.conn.execute(
-                "SELECT set_config('app.user_id', $1, true)", self.user_id
+                "SELECT set_config('app.user_id', $1, false)", self.user_id
             )
 
         return self.conn
