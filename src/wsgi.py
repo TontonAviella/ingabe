@@ -372,26 +372,26 @@ async def metrics():
 
     lines = []
     # Request metrics
-    lines.append(f"# HELP http_requests_total Total HTTP requests")
-    lines.append(f"# TYPE http_requests_total counter")
+    lines.append("# HELP http_requests_total Total HTTP requests")
+    lines.append("# TYPE http_requests_total counter")
     lines.append(f"http_requests_total {_request_count}")
-    lines.append(f"# HELP http_request_errors_total Total HTTP 5xx errors")
-    lines.append(f"# TYPE http_request_errors_total counter")
+    lines.append("# HELP http_request_errors_total Total HTTP 5xx errors")
+    lines.append("# TYPE http_request_errors_total counter")
     lines.append(f"http_request_errors_total {_request_errors}")
-    lines.append(f"# HELP http_requests_active Currently active requests")
-    lines.append(f"# TYPE http_requests_active gauge")
+    lines.append("# HELP http_requests_active Currently active requests")
+    lines.append("# TYPE http_requests_active gauge")
     lines.append(f"http_requests_active {_active_requests}")
 
     if _request_latency_count > 0:
         avg_latency = _request_latency_sum / _request_latency_count
-        lines.append(f"# HELP http_request_duration_seconds_avg Average request duration")
-        lines.append(f"# TYPE http_request_duration_seconds_avg gauge")
+        lines.append("# HELP http_request_duration_seconds_avg Average request duration")
+        lines.append("# TYPE http_request_duration_seconds_avg gauge")
         lines.append(f"http_request_duration_seconds_avg {avg_latency:.4f}")
 
     # Database pool metrics
     if _async_connection_pool:
-        lines.append(f"# HELP db_pool_size Current write pool size")
-        lines.append(f"# TYPE db_pool_size gauge")
+        lines.append("# HELP db_pool_size Current write pool size")
+        lines.append("# TYPE db_pool_size gauge")
         lines.append(f"db_pool_size {_async_connection_pool.get_size()}")
         lines.append(f"db_pool_free {_async_connection_pool.get_idle_size()}")
         lines.append(f"db_pool_max {_async_connection_pool.get_max_size()}")

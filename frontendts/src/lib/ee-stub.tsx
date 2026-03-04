@@ -180,9 +180,7 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-    return fetch(input, { ...fetchInit, signal: controller.signal }).finally(() =>
-      clearTimeout(timeoutId),
-    );
+    return fetch(input, { ...fetchInit, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   };
 
   if (!CLERK_PUBLISHABLE_KEY) {
