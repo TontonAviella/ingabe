@@ -423,17 +423,34 @@ const LayerList: React.FC<LayerListProps> = ({
                       'zoom-to-layer': {
                         label: 'Zoom to layer',
                         disabled: false,
-                        action: (layerId) => {
+                        action: async (layerId) => {
                           const layer = currentMapData.layers?.find((l) => l.id === layerId);
                           if (!layer) {
                             toast.error('Layer not found');
                             return;
                           }
-                          if (layer.bounds && layer.bounds.length === 4 && mapRef.current) {
+                          let bounds = layer.bounds;
+                          // If bounds missing, fetch/compute them from the backend
+                          if (!bounds || bounds.length !== 4) {
+                            try {
+                              const res = await apiFetch(`/api/layer/${layerId}/bounds`);
+                              if (res.ok) {
+                                const data = await res.json();
+                                bounds = data.bounds;
+                                // Update the cached layer data so next click is instant
+                                if (bounds && bounds.length === 4) {
+                                  layer.bounds = bounds;
+                                }
+                              }
+                            } catch {
+                              // fall through to error below
+                            }
+                          }
+                          if (bounds && bounds.length === 4 && mapRef.current) {
                             mapRef.current.fitBounds(
                               [
-                                [layer.bounds[0], layer.bounds[1]],
-                                [layer.bounds[2], layer.bounds[3]],
+                                [bounds[0], bounds[1]],
+                                [bounds[2], bounds[3]],
                               ],
                               { padding: 50, animate: true },
                             );

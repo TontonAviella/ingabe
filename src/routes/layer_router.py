@@ -1963,3 +1963,135 @@ async def update_layer(
         layer_id=layer.layer_id,
         name=update_data.name,
     )
+
+
+@layer_router.get(
+    "/layer/{layer_id}/bounds",
+    operation_id="get_layer_bounds",
+    summary="Get or compute layer bounds",
+)
+async def get_layer_bounds(
+    layer: MapLayer = Depends(get_layer),
+):
+    """Return [xmin, ymin, xmax, ymax] bounds for a layer.
+
+    If bounds are already stored in the DB, return them immediately.
+    Otherwise, compute them from the source data, persist them, and return.
+    """
+    # Fast path: bounds already exist
+    if layer.bounds and len(layer.bounds) == 4:
+        return {"bounds": list(layer.bounds)}
+
+    bounds = None
+
+    if layer.type == LAYER_TYPE_VECTOR and layer.s3_key:
+        bounds = await _compute_vector_bounds(layer)
+    elif layer.type == LAYER_TYPE_POSTGIS and layer.postgis_query:
+        bounds = await _compute_postgis_bounds(layer)
+    elif layer.type == LAYER_TYPE_RASTER and layer.s3_key:
+        bounds = await _compute_raster_bounds(layer)
+
+    if bounds and len(bounds) == 4:
+        # Persist so future lookups are instant
+        async with get_async_db_connection() as conn:
+            await conn.execute(
+                "UPDATE map_layers SET bounds = $1 WHERE layer_id = $2",
+                bounds,
+                layer.layer_id,
+            )
+        return {"bounds": bounds}
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Could not compute bounds for this layer",
+    )
+
+
+async def _compute_vector_bounds(layer: MapLayer) -> list | None:
+    """Compute bounds from a vector file stored in S3."""
+    try:
+        import fiona
+        from pyproj import Transformer
+
+        s3_client = await get_async_s3_client()
+        bucket = get_bucket_name()
+        with tempfile.NamedTemporaryFile(suffix=os.path.splitext(layer.s3_key)[1]) as tmp:
+            await s3_op(
+                s3_client.download_file(bucket, layer.s3_key, tmp.name),
+                "download", f"bounds for {layer.layer_id}",
+            )
+            with fiona.open(tmp.name) as src:
+                b = src.bounds  # (xmin, ymin, xmax, ymax)
+                if src.crs and str(src.crs.to_epsg()) != "4326":
+                    t = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
+                    x1, y1 = t.transform(b[0], b[1])
+                    x2, y2 = t.transform(b[2], b[3])
+                    return [x1, y1, x2, y2]
+                return [b[0], b[1], b[2], b[3]]
+    except Exception as e:
+        logger.warning("Failed to compute vector bounds for %s: %s", layer.layer_id, e)
+        return None
+
+
+async def _compute_postgis_bounds(layer: MapLayer) -> list | None:
+    """Compute bounds from a PostGIS query using ST_Extent."""
+    try:
+        from src.dependencies.postgres_connection import PostgresConnectionManager
+
+        mgr = PostgresConnectionManager()
+        pg = await mgr.connect_to_postgres(layer.postgis_connection_id)
+        try:
+            q = layer.postgis_query
+            row = await pg.fetchrow(
+                f"""
+                WITH ext AS (
+                    SELECT ST_Extent(geom) AS e,
+                           (SELECT ST_SRID(geom) FROM ({q}) s2 WHERE geom IS NOT NULL LIMIT 1) AS srid
+                    FROM ({q}) s WHERE geom IS NOT NULL
+                )
+                SELECT
+                    CASE WHEN srid = 4326 THEN ST_XMin(e) ELSE ST_XMin(ST_Transform(ST_SetSRID(e, srid), 4326)) END AS xmin,
+                    CASE WHEN srid = 4326 THEN ST_YMin(e) ELSE ST_YMin(ST_Transform(ST_SetSRID(e, srid), 4326)) END AS ymin,
+                    CASE WHEN srid = 4326 THEN ST_XMax(e) ELSE ST_XMax(ST_Transform(ST_SetSRID(e, srid), 4326)) END AS xmax,
+                    CASE WHEN srid = 4326 THEN ST_YMax(e) ELSE ST_YMax(ST_Transform(ST_SetSRID(e, srid), 4326)) END AS ymax
+                FROM ext WHERE e IS NOT NULL
+                """
+            )
+            if row and all(v is not None for v in row):
+                return [float(row["xmin"]), float(row["ymin"]), float(row["xmax"]), float(row["ymax"])]
+        finally:
+            await pg.close()
+    except Exception as e:
+        logger.warning("Failed to compute PostGIS bounds for %s: %s", layer.layer_id, e)
+    return None
+
+
+async def _compute_raster_bounds(layer: MapLayer) -> list | None:
+    """Compute bounds from a raster COG in S3."""
+    try:
+        import rasterio
+        from pyproj import Transformer
+
+        s3_client = await get_async_s3_client()
+        bucket = get_bucket_name()
+        url = await s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": layer.s3_key},
+            ExpiresIn=300,
+        )
+        loop = asyncio.get_event_loop()
+
+        def _read():
+            with rasterio.open(url) as src:
+                b = src.bounds
+                if src.crs and src.crs.to_epsg() != 4326:
+                    t = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
+                    x1, y1 = t.transform(b.left, b.bottom)
+                    x2, y2 = t.transform(b.right, b.top)
+                    return [x1, y1, x2, y2]
+                return [b.left, b.bottom, b.right, b.top]
+
+        return await loop.run_in_executor(None, _read)
+    except Exception as e:
+        logger.warning("Failed to compute raster bounds for %s: %s", layer.layer_id, e)
+        return None
