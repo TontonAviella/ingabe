@@ -226,13 +226,13 @@ class TestDSSATRun:
         from src.services.dssat_service import run_dssat_with_assimilation
 
         mock_output = pd.DataFrame({
-            "HWAM": [3500.0],  # 3500 kg/ha = 3.5 t/ha
+            "GWAD": [3500.0],  # 3500 kg/ha = 3.5 t/ha
             "LAID": [3.2],
         })
 
-        # Create a mock DSSAT instance whose .output is our DataFrame
+        # Create a mock DSSAT instance whose .output_tables has our DataFrame
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
 
         # Create a mock DSSATTools module with a DSSAT class
         mock_dssat_module = MagicMock()
@@ -240,7 +240,7 @@ class TestDSSATRun:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
             result = run_dssat_with_assimilation(-1.95, 29.05, crop_type="maize", season="A")
 
@@ -676,63 +676,77 @@ class TestE2EWeatherPipeline:
 
 
 class TestE2EManagementPipeline:
-    """Verify crop calendar → management object data flow."""
+    """Verify crop calendar → treatment components data flow."""
 
-    def test_management_season_a_maize(self):
-        """Maize Season A 2024: planting 2024-09-15, harvest at 120 DAP,
-        with RAB fertilizer schedule."""
-        from src.services.dssat_service import _build_management
+    def test_treatment_season_a_maize(self):
+        """Maize Season A 2024: planting 2024-09-15, with RAB fertilizer."""
+        from src.services.dssat_service import _build_treatment_components
 
-        mock_man = MagicMock()
-        mock_dssat_module = MagicMock()
-        captured_args = {}
+        mock_soil = MagicMock()
+        mock_weather = MagicMock()
 
-        def capture_management_init(**kwargs):
-            captured_args.update(kwargs)
-            return mock_man
+        # Mock DSSATTools.filex and DSSATTools.crop submodules
+        mock_filex = MagicMock()
+        mock_crop = MagicMock()
+        captured_planting_args = {}
 
-        mock_dssat_module.Management.side_effect = capture_management_init
+        def capture_planting_init(**kwargs):
+            captured_planting_args.update(kwargs)
+            return MagicMock()
 
-        with patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
-            result = _build_management("maize", "A", 2024)
+        mock_filex.Planting.side_effect = capture_planting_init
 
-        assert result is not None
-        assert captured_args["planting_date"] == "2024-09-15"
-        assert captured_args["harvested_dap"] == 120
-
-        # Verify fertilizer schedule was set
-        fert = mock_man.fertilizers
-        assert fert is not None
-
-    def test_management_season_b_beans(self):
-        """Beans Season B 2024: planting 2024-02-15, harvest at 90 DAP."""
-        from src.services.dssat_service import _build_management
-
-        mock_man = MagicMock()
-        mock_dssat_module = MagicMock()
-        captured_args = {}
-
-        def capture_management_init(**kwargs):
-            captured_args.update(kwargs)
-            return mock_man
-
-        mock_dssat_module.Management.side_effect = capture_management_init
-
-        with patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
-            result = _build_management("beans", "B", 2024)
+        with patch.dict("sys.modules", {
+            "DSSATTools": MagicMock(),
+            "DSSATTools.filex": mock_filex,
+            "DSSATTools.crop": mock_crop,
+        }):
+            result = _build_treatment_components("maize", "A", 2024, mock_soil, mock_weather)
 
         assert result is not None
-        assert captured_args["planting_date"] == "2024-02-15"
-        assert captured_args["harvested_dap"] == 90
+        assert "field" in result
+        assert "cultivar" in result
+        assert "planting" in result
+        assert "fertilizer" in result
+        # Planting date should be 2024-09-15
+        from datetime import date
+        assert captured_planting_args["pdate"] == date(2024, 9, 15)
 
-    def test_management_invalid_season_returns_none(self):
+    def test_treatment_season_b_beans(self):
+        """Beans Season B 2024: planting 2024-02-15."""
+        from src.services.dssat_service import _build_treatment_components
+
+        mock_filex = MagicMock()
+        mock_crop = MagicMock()
+        captured_planting_args = {}
+
+        def capture_planting_init(**kwargs):
+            captured_planting_args.update(kwargs)
+            return MagicMock()
+
+        mock_filex.Planting.side_effect = capture_planting_init
+
+        with patch.dict("sys.modules", {
+            "DSSATTools": MagicMock(),
+            "DSSATTools.filex": mock_filex,
+            "DSSATTools.crop": mock_crop,
+        }):
+            result = _build_treatment_components("beans", "B", 2024, MagicMock(), MagicMock())
+
+        assert result is not None
+        from datetime import date
+        assert captured_planting_args["pdate"] == date(2024, 2, 15)
+
+    def test_treatment_invalid_season_returns_none(self):
         """Invalid season for a crop returns None."""
-        from src.services.dssat_service import _build_management
+        from src.services.dssat_service import _build_treatment_components
 
-        mock_dssat_module = MagicMock()
-
-        with patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
-            result = _build_management("wheat", "B", 2024)
+        with patch.dict("sys.modules", {
+            "DSSATTools": MagicMock(),
+            "DSSATTools.filex": MagicMock(),
+            "DSSATTools.crop": MagicMock(),
+        }):
+            result = _build_treatment_components("wheat", "B", 2024, MagicMock(), MagicMock())
 
         # Wheat has no Season B → should return None
         assert result is None
@@ -750,17 +764,17 @@ class TestE2EFullPipeline:
 
         # DSSAT output: realistic maize yield for Rwanda smallholder
         mock_output = pd.DataFrame({
-            "HWAM": [3200.0],     # 3200 kg/ha (typical Rwanda maize)
+            "GWAD": [3200.0],     # 3200 kg/ha (typical Rwanda maize)
             "LAID": [3.5],        # Peak LAI
         })
 
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
 
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
 
-        # Let the real _build_soil_profile, _build_weather, _build_management
+        # Let the real _build_soil_profile, _build_weather, _build_treatment_components
         # run with mocked DSSATTools classes
         mock_soil_profile = MagicMock()
         mock_weather = MagicMock()
@@ -768,7 +782,7 @@ class TestE2EFullPipeline:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=mock_soil_profile), \
              patch("src.services.dssat_service._build_weather", return_value=mock_weather), \
-             patch("src.services.dssat_service._build_management", return_value=mock_management), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=mock_management), \
              patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
             result = run_dssat_with_assimilation(
                 lat=-2.60, lon=29.60,
@@ -789,14 +803,14 @@ class TestE2EFullPipeline:
         from src.services.dssat_service import run_dssat_with_assimilation
 
         # DSSAT gives 2800 kg/ha baseline with moderate simulated LAI
-        # DSSAT output has one row per timestep; HWAM is final harvest weight
+        # DSSAT output has one row per timestep; GWAD is grain weight at harvest
         mock_output = pd.DataFrame({
-            "HWAM": [0.0, 0.0, 2800.0],
+            "GWAD": [0.0, 0.0, 2800.0],
             "LAID": [2.5, 3.0, 2.8],  # Moderate simulated LAI
         })
 
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
 
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
@@ -815,7 +829,7 @@ class TestE2EFullPipeline:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {
                  "DSSATTools": mock_dssat_module,
                  "src.services.sentinel_hub_service": MagicMock(
@@ -845,12 +859,12 @@ class TestE2EFullPipeline:
 
         # DSSAT gives optimistic 4500 kg/ha with high simulated LAI
         mock_output = pd.DataFrame({
-            "HWAM": [0.0, 0.0, 4500.0],
+            "GWAD": [0.0, 0.0, 4500.0],
             "LAID": [4.0, 4.5, 4.2],  # High simulated LAI
         })
 
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
 
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
@@ -868,7 +882,7 @@ class TestE2EFullPipeline:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {
                  "DSSATTools": mock_dssat_module,
                  "src.services.sentinel_hub_service": MagicMock(
@@ -996,11 +1010,11 @@ class TestE2EAssimilationAccuracy:
         from src.services.dssat_service import run_dssat_with_assimilation
 
         mock_output = pd.DataFrame({
-            "HWAM": [0.0, 0.0, 3000.0],
+            "GWAD": [0.0, 0.0, 3000.0],
             "LAID": [2.0, 2.5, 2.0],  # sim LAI mean = 2.167
         })
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
 
@@ -1019,7 +1033,7 @@ class TestE2EAssimilationAccuracy:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {
                  "DSSATTools": mock_dssat_module,
                  "src.services.sentinel_hub_service": MagicMock(
@@ -1141,18 +1155,18 @@ class TestE2ERwandaYieldPlausibility:
         from src.services.dssat_service import run_dssat_with_assimilation
 
         mock_output = pd.DataFrame({
-            "HWAM": [yield_kg_ha],
+            "GWAD": [yield_kg_ha],
             "LAID": [3.0],
         })
 
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {"DSSATTools": mock_dssat_module}):
             result = run_dssat_with_assimilation(
                 lat=-2.60, lon=29.60,
@@ -1171,11 +1185,11 @@ class TestE2ERwandaYieldPlausibility:
 
         # High baseline yield
         mock_output = pd.DataFrame({
-            "HWAM": [0.0, 5000.0],  # 5.0 t/ha
+            "GWAD": [0.0, 5000.0],  # 5.0 t/ha
             "LAID": [1.0, 1.0],     # Very low sim LAI → high ratio → clamped
         })
         mock_dssat_instance = MagicMock()
-        mock_dssat_instance.output = mock_output
+        mock_dssat_instance.output_tables = {"PlantGro": mock_output}
         mock_dssat_module = MagicMock()
         mock_dssat_module.DSSAT.return_value = mock_dssat_instance
 
@@ -1188,7 +1202,7 @@ class TestE2ERwandaYieldPlausibility:
 
         with patch("src.services.dssat_service._build_soil_profile", return_value=MagicMock()), \
              patch("src.services.dssat_service._build_weather", return_value=MagicMock()), \
-             patch("src.services.dssat_service._build_management", return_value=MagicMock()), \
+             patch("src.services.dssat_service._build_treatment_components", return_value=MagicMock()), \
              patch.dict("sys.modules", {
                  "DSSATTools": mock_dssat_module,
                  "src.services.sentinel_hub_service": MagicMock(
