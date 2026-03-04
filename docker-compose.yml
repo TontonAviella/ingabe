@@ -50,7 +50,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
       - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo:4318}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ingabe}
       - PYTHONUNBUFFERED=1
@@ -312,6 +312,8 @@ services:
       start_period: 120s
 
   # --- Monitoring stack (Prometheus + Grafana + Tempo) ---
+  # To enable OTEL tracing to Tempo, set in your .env or shell:
+  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: mundi-prometheus
