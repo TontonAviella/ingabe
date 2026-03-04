@@ -136,67 +136,100 @@ async def _ensure_rwanda_postgis_connection(
                     "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s",
                     project_id, existing["soft_deleted_at"] is not None,
                 )
-            return _RWANDA_INTERNAL_CONN_ID
+        else:
+            pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
+            pg_port = os.environ.get("POSTGRES_PORT", "5432")
+            pg_db = os.environ.get("POSTGRES_DB", "mundidb")
+            pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
+            pg_pass = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+            uri = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}?sslmode=disable"
 
-        pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
-        pg_port = os.environ.get("POSTGRES_PORT", "5432")
-        pg_db = os.environ.get("POSTGRES_DB", "mundidb")
-        pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
-        pg_pass = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
-        uri = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}?sslmode=disable"
+            await conn.execute(
+                """
+                INSERT INTO project_postgres_connections
+                (id, project_id, user_id, connection_uri, connection_name)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                _RWANDA_INTERNAL_CONN_ID,
+                project_id,
+                user_id,
+                uri,
+                "Rwanda Agriculture (internal)",
+            )
+            logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
+                         _RWANDA_INTERNAL_CONN_ID, project_id)
 
-        await conn.execute(
+        # Dynamically count which Rwanda admin tables actually exist
+        _RWANDA_TABLES = [
+            "rwanda_district_boundaries",
+            "rwanda_sector_boundaries",
+            "rwanda_cell_boundaries",
+            "rwanda_village_boundaries",
+        ]
+        existing_tables = await conn.fetch(
             """
-            INSERT INTO project_postgres_connections
-            (id, project_id, user_id, connection_uri, connection_name)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (id) DO NOTHING
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = ANY($1::text[])
             """,
-            _RWANDA_INTERNAL_CONN_ID,
-            project_id,
-            user_id,
-            uri,
-            "Rwanda Agriculture (internal)",
+            _RWANDA_TABLES,
         )
+        _table_count = len(existing_tables)
 
-        # Also insert a schema summary so the LLM knows about the tables
-        _summary_md = (
-            "## Rwanda Administrative Boundaries\n\n"
-            "### rwanda_district_boundaries\n"
-            "All 30 Rwanda districts with polygon geometries.\n"
-            "| Column | Type | Description |\n"
-            "|--------|------|-------------|\n"
-            "| gid | integer | Primary key |\n"
-            "| district | text | District name (e.g. 'Nyagatare', 'Bugesera') |\n"
-            "| geom | geometry(MultiPolygon, 4326) | District boundary |\n\n"
-            "### rwanda_sector_boundaries\n"
-            "All Rwanda sectors with polygon geometries.\n"
-            "| Column | Type | Description |\n"
-            "|--------|------|-------------|\n"
-            "| gid | integer | Primary key |\n"
-            "| sector_name | text | Sector name |\n"
-            "| district_name | text | Parent district |\n"
-            "| geom | geometry(MultiPolygon, 4326) | Sector boundary |\n\n"
-            "### rwanda_cell_boundaries\n"
-            "All ~2,148 Rwanda cells with polygon geometries.\n"
-            "| Column | Type | Description |\n"
-            "|--------|------|-------------|\n"
-            "| cell_id | integer | Primary key |\n"
-            "| cell_name | text | Cell name |\n"
-            "| sector_name | text | Parent sector |\n"
-            "| district_name | text | Parent district |\n"
-            "| geom | geometry(MultiPolygon, 4326) | Cell boundary |\n\n"
-            "### rwanda_village_boundaries\n"
-            "All ~14,815 Rwanda villages with polygon geometries.\n"
-            "| Column | Type | Description |\n"
-            "|--------|------|-------------|\n"
-            "| village_id | integer | Primary key |\n"
-            "| village_name | text | Village name |\n"
-            "| cell_name | text | Parent cell |\n"
-            "| sector_name | text | Parent sector |\n"
-            "| district_name | text | Parent district |\n"
-            "| geom | geometry(MultiPolygon, 4326) | Village boundary |\n\n"
-            "### Admin hierarchy\n"
+        # Build schema summary including only tables that actually exist
+        _existing_set = {r["table_name"] for r in existing_tables}
+        _summary_parts = ["## Rwanda Administrative Boundaries\n"]
+
+        if "rwanda_district_boundaries" in _existing_set:
+            _summary_parts.append(
+                "### rwanda_district_boundaries\n"
+                "All 30 Rwanda districts with polygon geometries.\n"
+                "| Column | Type | Description |\n"
+                "|--------|------|-------------|\n"
+                "| gid | integer | Primary key |\n"
+                "| district | text | District name (e.g. 'Nyagatare', 'Bugesera') |\n"
+                "| geom | geometry(MultiPolygon, 4326) | District boundary |\n"
+            )
+        if "rwanda_sector_boundaries" in _existing_set:
+            _summary_parts.append(
+                "### rwanda_sector_boundaries\n"
+                "All Rwanda sectors with polygon geometries.\n"
+                "| Column | Type | Description |\n"
+                "|--------|------|-------------|\n"
+                "| gid | integer | Primary key |\n"
+                "| sector_name | text | Sector name |\n"
+                "| district_name | text | Parent district |\n"
+                "| geom | geometry(MultiPolygon, 4326) | Sector boundary |\n"
+            )
+        if "rwanda_cell_boundaries" in _existing_set:
+            _summary_parts.append(
+                "### rwanda_cell_boundaries\n"
+                "All ~2,148 Rwanda cells with polygon geometries.\n"
+                "| Column | Type | Description |\n"
+                "|--------|------|-------------|\n"
+                "| cell_id | integer | Primary key |\n"
+                "| cell_name | text | Cell name |\n"
+                "| sector_name | text | Parent sector |\n"
+                "| district_name | text | Parent district |\n"
+                "| geom | geometry(MultiPolygon, 4326) | Cell boundary |\n"
+            )
+        if "rwanda_village_boundaries" in _existing_set:
+            _summary_parts.append(
+                "### rwanda_village_boundaries\n"
+                "All ~14,815 Rwanda villages with polygon geometries.\n"
+                "| Column | Type | Description |\n"
+                "|--------|------|-------------|\n"
+                "| village_id | integer | Primary key |\n"
+                "| village_name | text | Village name |\n"
+                "| cell_name | text | Parent cell |\n"
+                "| sector_name | text | Parent sector |\n"
+                "| district_name | text | Parent district |\n"
+                "| geom | geometry(MultiPolygon, 4326) | Village boundary |\n"
+            )
+
+        _summary_parts.append(
+            "\n### Admin hierarchy\n"
             "District (30) → Sector (~416) → Cell (~2,148) → Village (~14,815)\n\n"
             "### Usage with new_layer_from_postgis\n"
             "Queries MUST return columns named `id` and `geom`.\n"
@@ -207,24 +240,25 @@ async def _ensure_rwanda_postgis_connection(
             "sector_name, district_name, geom FROM rwanda_village_boundaries "
             "WHERE district_name = 'Gasabo'`\n"
         )
-        _summary_id = "SRwandaAdmin"
+        _summary_md = "\n".join(_summary_parts)
+
+        # Always upsert summary so table_count stays accurate
         await conn.execute(
             """
             INSERT INTO project_postgres_summary
             (id, connection_id, friendly_name, summary_md, table_count)
-            VALUES ($1, $2, $3, $4, 4)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (id) DO UPDATE
             SET summary_md = EXCLUDED.summary_md,
                 table_count = EXCLUDED.table_count
             """,
-            _summary_id,
+            "SRwandaAdmin",
             _RWANDA_INTERNAL_CONN_ID,
             "Rwanda Administrative Boundaries",
             _summary_md,
+            _table_count,
         )
 
-        logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
-                     _RWANDA_INTERNAL_CONN_ID, project_id)
         return _RWANDA_INTERNAL_CONN_ID
     except Exception:
         logger.exception("Failed to auto-provision Rwanda PostGIS connection")
