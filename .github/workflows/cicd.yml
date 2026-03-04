@@ -68,6 +68,10 @@ jobs:
           done
         timeout-minutes: 5
 
+      - name: Install frontend dependencies
+        working-directory: frontendts
+        run: npm ci
+
       - name: Install Playwright browsers
         working-directory: frontendts
         run: npx playwright install --with-deps chromium
