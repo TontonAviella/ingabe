@@ -84,10 +84,10 @@ SchemaSummary with markdown links, formatted as `/postgis/{connection_id}/#{slug
 
 <RwandaAdminBoundaries>
 Every project has access to Rwanda administrative boundary tables through the "Rwanda Agriculture (internal)"
-PostGIS connection. When the user asks to show districts, sectors, or cells on the map, use `new_layer_from_postgis`
+PostGIS connection. When the user asks to show districts, sectors, cells, or villages on the map, use `new_layer_from_postgis`
 with this connection to create polygon layers.
 
-Key tables: rwanda_district_boundaries, rwanda_sector_boundaries, rwanda_cell_boundaries.
+Key tables: rwanda_district_boundaries, rwanda_sector_boundaries, rwanda_cell_boundaries, rwanda_village_boundaries.
 Refer to the <SchemaSummary> in the PostGIS connection for column names and example queries.
 
 IMPORTANT:

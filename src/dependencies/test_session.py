@@ -65,3 +65,49 @@ async def test_get_projects_requires_auth(client, env_override):
     with env_override(MUNDI_AUTH_MODE="view_only"):
         resp = await client.get("/api/projects/")
         assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Clerk fallback blocking tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_clerk_no_token_blocked_by_default(client, env_override):
+    """When Clerk is enabled but no Bearer token is sent, return 401 (not legacy fallback)."""
+    with env_override(
+        CLERK_SECRET_KEY="test_secret",
+        MUNDI_AUTH_MODE="edit",
+        CLERK_ALLOW_LEGACY_FALLBACK=None,
+    ):
+        resp = await client.post("/api/maps/create", json={"title": "test"})
+        assert resp.status_code == 401
+        assert "Bearer token missing" in resp.json().get("detail", "")
+
+
+@pytest.mark.anyio
+async def test_clerk_legacy_fallback_allowed_with_env(client, env_override):
+    """CLERK_ALLOW_LEGACY_FALLBACK=true restores old behavior during migration."""
+    with env_override(
+        CLERK_SECRET_KEY="test_secret",
+        MUNDI_AUTH_MODE="edit",
+        CLERK_ALLOW_LEGACY_FALLBACK="true",
+    ):
+        resp = await client.post(
+            "/api/maps/create", json={"title": "fallback test"}
+        )
+        assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_clerk_not_enabled_still_works(client, env_override):
+    """When Clerk is NOT configured, legacy mode works normally (no regression)."""
+    with env_override(
+        CLERK_SECRET_KEY=None,
+        MUNDI_AUTH_MODE="edit",
+        CLERK_ALLOW_LEGACY_FALLBACK=None,
+    ):
+        resp = await client.post(
+            "/api/maps/create", json={"title": "legacy test"}
+        )
+        assert resp.status_code == 200

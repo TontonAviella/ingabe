@@ -139,7 +139,7 @@ async def get_map(
     """Get a map the user can access (owner, editor, or viewer)."""
     user_id = session.get_user_id()
 
-    async with async_read_conn("get_map") as conn:
+    async with async_read_conn("get_map", user_id=user_id) as conn:
         row = await conn.fetchrow(
             """
             SELECT m.*,
@@ -166,7 +166,7 @@ async def get_layer(
     """Get a layer, verifying the caller owns it or has project access."""
     user_id = session.get_user_id()
 
-    async with async_read_conn("get_layer") as conn:
+    async with async_read_conn("get_layer", user_id=user_id) as conn:
         layer_row = await conn.fetchrow(
             """
             SELECT *
@@ -206,7 +206,7 @@ async def get_project(
     """Get a project the user can access (owner, editor, viewer, or link-accessible)."""
     user_id = session.get_user_id()
 
-    async with async_read_conn("get_project") as conn:
+    async with async_read_conn("get_project", user_id=user_id) as conn:
         project_row = await conn.fetchrow(
             """
             SELECT *

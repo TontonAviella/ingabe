@@ -94,12 +94,18 @@ class AsyncDatabaseConnection:
     Set ``readonly=True`` to route to the read replica when configured.
     """
 
-    def __init__(self, span_name: Optional[str] = None, readonly: bool = False):
+    def __init__(
+        self,
+        span_name: Optional[str] = None,
+        readonly: bool = False,
+        user_id: Optional[str] = None,
+    ):
         self.conn: Optional[asyncpg.Connection] = None
         self._pool: Optional[asyncpg.Pool] = None
         self.span: Optional[trace.Span] = None
         self.span_name: Optional[str] = span_name
         self.readonly: bool = readonly
+        self.user_id: Optional[str] = user_id
 
     async def __aenter__(self) -> asyncpg.Connection:
         current_span = trace.get_current_span()
@@ -114,10 +120,23 @@ class AsyncDatabaseConnection:
             else:
                 self._pool = await _get_async_connection_pool()
             self.conn = await self._pool.acquire()
+
+        # Set RLS context so row-level security policies can filter by user
+        if self.user_id:
+            await self.conn.execute(
+                "SELECT set_config('app.user_id', $1, true)", self.user_id
+            )
+
         return self.conn
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.conn is not None:
+            # Reset RLS context before releasing connection back to pool
+            if self.user_id and not IS_RUNNING_PYTEST:
+                try:
+                    await self.conn.execute("RESET app.user_id")
+                except Exception:
+                    pass  # Connection may already be broken
             if IS_RUNNING_PYTEST:
                 await self.conn.close()
             else:
@@ -140,14 +159,18 @@ def get_async_read_connection() -> AsyncDatabaseConnection:
     return AsyncDatabaseConnection(readonly=True)
 
 
-def async_conn(span_name: Optional[str] = None) -> AsyncDatabaseConnection:
+def async_conn(
+    span_name: Optional[str] = None, user_id: Optional[str] = None,
+) -> AsyncDatabaseConnection:
     """Write connection with OpenTelemetry span."""
-    return AsyncDatabaseConnection(f"pg {span_name}")
+    return AsyncDatabaseConnection(f"pg {span_name}", user_id=user_id)
 
 
-def async_read_conn(span_name: Optional[str] = None) -> AsyncDatabaseConnection:
+def async_read_conn(
+    span_name: Optional[str] = None, user_id: Optional[str] = None,
+) -> AsyncDatabaseConnection:
     """Read-only connection with OpenTelemetry span, routed to the replica."""
-    return AsyncDatabaseConnection(f"pg:ro {span_name}", readonly=True)
+    return AsyncDatabaseConnection(f"pg:ro {span_name}", readonly=True, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------

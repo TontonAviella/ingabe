@@ -187,8 +187,7 @@ async def _ensure_rwanda_postgis_connection(
                 "All 30 Rwanda districts with polygon geometries.\n"
                 "| Column | Type | Description |\n"
                 "|--------|------|-------------|\n"
-                "| gid | integer | Primary key |\n"
-                "| district | text | District name (e.g. 'Nyagatare', 'Bugesera') |\n"
+                "| district | text | District name (primary key, e.g. 'Nyagatare', 'Bugesera') |\n"
                 "| geom | geometry(MultiPolygon, 4326) | District boundary |\n"
             )
         if "rwanda_sector_boundaries" in _existing_set:
@@ -197,7 +196,7 @@ async def _ensure_rwanda_postgis_connection(
                 "All Rwanda sectors with polygon geometries.\n"
                 "| Column | Type | Description |\n"
                 "|--------|------|-------------|\n"
-                "| gid | integer | Primary key |\n"
+                "| sector_id | integer | Primary key |\n"
                 "| sector_name | text | Sector name |\n"
                 "| district_name | text | Parent district |\n"
                 "| geom | geometry(MultiPolygon, 4326) | Sector boundary |\n"
@@ -233,10 +232,15 @@ async def _ensure_rwanda_postgis_connection(
             "District (30) → Sector (~416) → Cell (~2,148) → Village (~14,815)\n\n"
             "### Usage with new_layer_from_postgis\n"
             "Queries MUST return columns named `id` and `geom`.\n"
-            "Example: `SELECT cell_id AS id, cell_name, sector_name, "
+            "Example (districts): `SELECT district AS id, geom "
+            "FROM rwanda_district_boundaries`\n"
+            "Example (sectors): `SELECT sector_id AS id, sector_name, "
+            "district_name, geom FROM rwanda_sector_boundaries "
+            "WHERE district_name = 'Nyagatare'`\n"
+            "Example (cells): `SELECT cell_id AS id, cell_name, sector_name, "
             "district_name, geom FROM rwanda_cell_boundaries "
             "WHERE district_name = 'Nyagatare'`\n"
-            "Example: `SELECT village_id AS id, village_name, cell_name, "
+            "Example (villages): `SELECT village_id AS id, village_name, cell_name, "
             "sector_name, district_name, geom FROM rwanda_village_boundaries "
             "WHERE district_name = 'Gasabo'`\n"
         )
@@ -2013,6 +2017,10 @@ async def process_chat_interaction_task(
                                 "postgis_connection_id"
                             )
                             sql_query = tool_args.get("sql_query")
+
+                            # Validate query for SQL injection before any execution
+                            if sql_query:
+                                sql_query = validate_sql_query(sql_query)
 
                             if not postgis_connection_id or not sql_query:
                                 tool_result = {
