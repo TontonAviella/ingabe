@@ -20,10 +20,13 @@ def upgrade() -> None:
     # -- user_mundiai_projects --
     op.execute("ALTER TABLE user_mundiai_projects ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE user_mundiai_projects FORCE ROW LEVEL SECURITY")
+    # NOTE: coalesce(current_setting(...), '') = '' handles BOTH cases:
+    #   1. Setting never set (returns NULL) → coalesce → '' → bypass
+    #   2. Setting RESET on pooled connection (returns '') → bypass
     op.execute("""
         CREATE POLICY tenant_isolation_projects ON user_mundiai_projects
         USING (
-            current_setting('app.user_id', true) IS NULL
+            coalesce(current_setting('app.user_id', true), '') = ''
             OR owner_uuid::text = current_setting('app.user_id', true)
             OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
             OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
@@ -36,7 +39,7 @@ def upgrade() -> None:
     op.execute("""
         CREATE POLICY tenant_isolation_conversations ON conversations
         USING (
-            current_setting('app.user_id', true) IS NULL
+            coalesce(current_setting('app.user_id', true), '') = ''
             OR owner_uuid::text = current_setting('app.user_id', true)
             OR project_id IN (
                 SELECT id FROM user_mundiai_projects

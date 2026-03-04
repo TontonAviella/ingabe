@@ -124,3 +124,29 @@ async def test_no_user_id_bypasses_rls(rls_conn):
         "SELECT id FROM user_mundiai_projects WHERE id = $1", project_id
     )
     assert row is not None
+
+
+@pytest.mark.anyio
+async def test_empty_string_after_pool_reuse_bypasses_rls(rls_conn):
+    """After set_config + RESET (pool reuse), app.user_id is '' not NULL — must still bypass."""
+    owner_id = str(uuid.uuid4())
+    project_id = f"P-{uuid.uuid4().hex[:12]}"
+
+    await rls_conn.execute(
+        """
+        INSERT INTO user_mundiai_projects (id, owner_uuid, maps)
+        VALUES ($1, $2, '{}')
+        """,
+        project_id,
+        uuid.UUID(owner_id),
+    )
+
+    # Simulate pool reuse: set a user_id, then RESET (leaves '' not NULL)
+    await rls_conn.execute(
+        "SELECT set_config('app.user_id', $1, true)", str(uuid.uuid4())
+    )
+    await rls_conn.execute("RESET app.user_id")
+    row = await rls_conn.fetchrow(
+        "SELECT id FROM user_mundiai_projects WHERE id = $1", project_id
+    )
+    assert row is not None
