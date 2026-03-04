@@ -1501,12 +1501,13 @@ async def process_chat_interaction_task(
 
                                                     # Calculate bounds with proper SRID handling
                                                     # ST_Extent returns BOX2D with SRID 0, so we need to set the SRID before transforming
+                                                    # Treat SRID 0 (unset) as 4326 since most geospatial data without explicit SRID is WGS84
                                                     bounds_result = await pg.fetchrow(
                                                         f"""
                                                         WITH extent_data AS (
                                                             SELECT
                                                                 ST_Extent(geom) as extent_geom,
-                                                                (SELECT ST_SRID(geom) FROM ({query}) AS sub2 WHERE geom IS NOT NULL LIMIT 1) as original_srid
+                                                                COALESCE(NULLIF((SELECT ST_SRID(geom) FROM ({query}) AS sub2 WHERE geom IS NOT NULL LIMIT 1), 0), 4326) as original_srid
                                                             FROM ({query}) AS sub
                                                             WHERE geom IS NOT NULL
                                                         )
@@ -1542,8 +1543,8 @@ async def process_chat_interaction_task(
                                                     )
 
                                                     if bounds_result and all(
-                                                        v is not None
-                                                        for v in bounds_result
+                                                        bounds_result[k] is not None
+                                                        for k in ("xmin", "ymin", "xmax", "ymax")
                                                     ):
                                                         bounds = [
                                                             float(

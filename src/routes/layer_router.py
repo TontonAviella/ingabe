@@ -2046,7 +2046,7 @@ async def _compute_postgis_bounds(layer: MapLayer) -> list | None:
                 f"""
                 WITH ext AS (
                     SELECT ST_Extent(geom) AS e,
-                           (SELECT ST_SRID(geom) FROM ({q}) s2 WHERE geom IS NOT NULL LIMIT 1) AS srid
+                           COALESCE(NULLIF((SELECT ST_SRID(geom) FROM ({q}) s2 WHERE geom IS NOT NULL LIMIT 1), 0), 4326) AS srid
                     FROM ({q}) s WHERE geom IS NOT NULL
                 )
                 SELECT
@@ -2057,7 +2057,7 @@ async def _compute_postgis_bounds(layer: MapLayer) -> list | None:
                 FROM ext WHERE e IS NOT NULL
                 """
             )
-            if row and all(v is not None for v in row):
+            if row and all(row[k] is not None for k in ("xmin", "ymin", "xmax", "ymax")):
                 return [float(row["xmin"]), float(row["ymin"]), float(row["xmax"]), float(row["ymax"])]
         finally:
             await pg.close()
