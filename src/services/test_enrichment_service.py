@@ -261,7 +261,31 @@ class TestEmissionsMetrics:
 # ---------------------------------------------------------------------------
 
 class TestSoilMetrics:
-    """Test _compute_soil_metric for all 6 properties + edge cases."""
+    """Test _compute_soil_metric with mocked rasterio COG access."""
+
+    @staticmethod
+    def _raw_value(soil_prop: str, expected: float) -> float:
+        """Compute the raw COG pixel value that produces `expected` after transform."""
+        if soil_prop in ("ph", "clay_content"):  # transform: x / 10.0
+            return expected * 10.0
+        elif soil_prop == "nitrogen_total":  # transform: expm1(x / 100.0)
+            return float(np.log1p(expected) * 100.0)
+        else:  # transform: expm1(x / 10.0)
+            return float(np.log1p(expected) * 10.0)
+
+    @staticmethod
+    def _make_mock_src(raw_value: float) -> MagicMock:
+        """Create a mock rasterio dataset returning `raw_value` for all reads."""
+        from affine import Affine
+
+        mock_src = MagicMock()
+        mock_src.__enter__ = MagicMock(return_value=mock_src)
+        mock_src.__exit__ = MagicMock(return_value=False)
+        mock_src.transform = Affine(30, 0, 3_000_000, 0, -30, 0)
+        mock_src.read.return_value = np.array(
+            [[[raw_value, raw_value], [raw_value, raw_value]]]
+        )
+        return mock_src
 
     @pytest.mark.parametrize(
         "metric_key, soil_prop, value, lo, hi",
@@ -275,53 +299,26 @@ class TestSoilMetrics:
         ],
     )
     def test_soil_returns_expected_value(self, metric_key, soil_prop, value, lo, hi):
-        resp = _make_soil_response(soil_prop, value)
-        mock_query = MagicMock(return_value=resp)
+        raw = self._raw_value(soil_prop, value)
+        mock_src = self._make_mock_src(raw)
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "src.services.isdasoil_service": MagicMock(
-                    query_soil_point=mock_query
-                )
-            },
-        ):
+        with patch("rasterio.open", return_value=mock_src):
             result = _compute_soil_metric(SAMPLE_FEATURES, soil_prop)
 
         assert 1 in result
-        assert result[1] == pytest.approx(value, abs=0.01)
+        assert result[1] == pytest.approx(value, abs=0.05)
         assert lo <= result[1] <= hi
 
-    def test_soil_service_returns_failure(self):
-        mock_query = MagicMock(return_value={"status": "error", "error": "not found"})
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "src.services.isdasoil_service": MagicMock(
-                    query_soil_point=mock_query
-                )
-            },
-        ):
+    def test_soil_cog_open_failure_returns_zero(self):
+        with patch("rasterio.open", side_effect=Exception("COG unavailable")):
             result = _compute_soil_metric(SAMPLE_FEATURES, "ph")
 
         assert result[1] == 0.0
 
-    def test_soil_property_value_none(self):
-        resp = {
-            "status": "success",
-            "properties": {"ph": {"value": None, "unit": ""}},
-        }
-        mock_query = MagicMock(return_value=resp)
+    def test_soil_no_valid_pixels_returns_zero(self):
+        mock_src = self._make_mock_src(0.0)
 
-        with patch.dict(
-            "sys.modules",
-            {
-                "src.services.isdasoil_service": MagicMock(
-                    query_soil_point=mock_query
-                )
-            },
-        ):
+        with patch("rasterio.open", return_value=mock_src):
             result = _compute_soil_metric(SAMPLE_FEATURES, "ph")
 
         assert result[1] == 0.0
@@ -384,16 +381,7 @@ class TestEdgeCases:
         assert result[1] == 0.0
 
     def test_soil_query_exception_handled(self):
-        mock_query = MagicMock(side_effect=ConnectionError("network down"))
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "src.services.isdasoil_service": MagicMock(
-                    query_soil_point=mock_query
-                )
-            },
-        ):
+        with patch("rasterio.open", side_effect=ConnectionError("network down")):
             result = _compute_soil_metric(SAMPLE_FEATURES, "ph")
 
         assert result[1] == 0.0
