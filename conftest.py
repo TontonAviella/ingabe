@@ -147,8 +147,13 @@ def _migrations_done():
 
 @pytest.fixture(scope="function")
 def sync_client(_migrations_done):
-    with TestClient(app) as client:
-        yield client
+    client = TestClient(app)
+    client.__enter__()
+    yield client
+    try:
+        client.__exit__(None, None, None)
+    except RuntimeError:
+        pass  # Starlette TestClient teardown race with closed event loop
 
 
 @pytest.fixture(scope="function")
