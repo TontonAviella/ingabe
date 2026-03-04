@@ -11,7 +11,9 @@ test.describe('Smoke Tests', () => {
 
   test('404 page renders for unknown routes', async ({ page }) => {
     await page.goto('/this-route-does-not-exist');
-    await expect(page.locator('text=not found').or(page.locator('text=404'))).toBeVisible({
+    await expect(
+      page.locator('text=not found').or(page.locator('text=404')).first(),
+    ).toBeVisible({
       timeout: 10_000,
     });
   });
