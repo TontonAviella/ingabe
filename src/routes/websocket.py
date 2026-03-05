@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 from src.dependencies.session import UserContext, verify_websocket
 from src.database.models import Conversation, MundiChatCompletionMessage
 from src.structures import (
+    async_conn,
     get_async_db_connection,
     convert_mundi_message_to_sanitized,
     _build_postgres_url,
@@ -369,7 +370,7 @@ async def get_websocket_conversation(
     """Get conversation for WebSocket with proper authentication"""
     user_id = user_context.get_user_id()
 
-    async with get_async_db_connection() as conn:
+    async with async_conn("get_ws_conversation", user_id=user_id) as conn:
         conversation = await conn.fetchrow(
             """
             SELECT id, project_id, owner_uuid, title, created_at, updated_at, soft_deleted_at
@@ -469,7 +470,7 @@ async def ws_conversation_chat(
                 continue
             # Get the full message from the database using the id from notification
             ccref_notification: ChatCompletionReferenceNotificationPayload = payload
-            async with get_async_db_connection() as conn:
+            async with async_conn("ws_msg_lookup", user_id=user_id) as conn:
                 message = await conn.fetchrow(
                     """
                     SELECT * FROM chat_completion_messages

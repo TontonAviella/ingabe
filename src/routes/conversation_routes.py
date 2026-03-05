@@ -38,7 +38,7 @@ async def create_conversation(
     session: UserContext = Depends(verify_session_required),
 ):
     user_id = session.get_user_id()
-    async with async_conn("create_conversation") as conn:
+    async with async_conn("create_conversation", user_id=user_id) as conn:
         project_row = await conn.fetchrow(
             """
             SELECT id
@@ -84,7 +84,7 @@ async def list_conversations(
     """List all conversations for the current user in a specific project"""
     user_id = session.get_user_id()
 
-    async with async_read_conn("list_conversations") as conn:
+    async with async_read_conn("list_conversations", user_id=user_id) as conn:
         rows = await conn.fetch(
             """
             SELECT c.id, c.project_id, c.owner_uuid, c.title, c.created_at, c.updated_at,

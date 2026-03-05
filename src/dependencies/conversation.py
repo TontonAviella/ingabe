@@ -10,7 +10,7 @@ async def get_conversation(
 ) -> Conversation:
     user_id = session.get_user_id()
 
-    async with async_conn("get_conversation") as conn:
+    async with async_conn("get_conversation", user_id=user_id) as conn:
         conversation = await conn.fetchrow(
             """
             SELECT id, project_id, owner_uuid, title, created_at, updated_at, soft_deleted_at
@@ -41,7 +41,7 @@ async def get_or_create_conversation(
 ) -> Conversation:
     user_id = session.get_user_id()
 
-    async with async_conn("get_or_create_conversation") as conn:
+    async with async_conn("get_or_create_conversation", user_id=user_id) as conn:
         # Handle NEW conversation creation
         if conversation_id == "NEW":
             # Get project_id from map

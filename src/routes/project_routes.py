@@ -115,7 +115,7 @@ async def list_user_projects(
     # Calculate offset for pagination
     offset = (page - 1) * limit
 
-    async with get_async_db_connection() as conn:
+    async with get_async_db_connection(user_id=user_id) as conn:
         # Get total count for pagination
         total_items = await conn.fetchval(
             """

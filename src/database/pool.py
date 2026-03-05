@@ -153,9 +153,9 @@ class AsyncDatabaseConnection:
 # Public convenience helpers
 # ---------------------------------------------------------------------------
 
-def get_async_db_connection() -> AsyncDatabaseConnection:
+def get_async_db_connection(user_id: Optional[str] = None) -> AsyncDatabaseConnection:
     """Return a write connection to the primary database."""
-    return AsyncDatabaseConnection()
+    return AsyncDatabaseConnection(user_id=user_id)
 
 
 def get_async_read_connection() -> AsyncDatabaseConnection:
