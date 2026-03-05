@@ -455,7 +455,7 @@ async def get_map_description(
         get_postgres_connection_manager
     ),
 ):
-    async with get_async_db_connection() as conn:
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
         # First check if the map exists and is accessible
         map_result = await conn.fetchrow(
             """

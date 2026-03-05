@@ -356,7 +356,8 @@ async def get_all_conversation_messages(
     conversation_id: int,
     session: UserContext,
 ) -> List[MundiChatCompletionMessage]:
-    async with async_conn("get_all_conversation_messages") as conn:
+    user_id = session.get_user_id()
+    async with async_conn("get_all_conversation_messages", user_id=user_id) as conn:
         db_messages = await conn.fetch(
             """
             SELECT ccm.*
@@ -4661,7 +4662,7 @@ async def send_map_message(
         current_messages, description_text, body.selected_feature
     )
 
-    async with async_conn("send_map_message.update_messages") as conn:
+    async with async_conn("send_map_message.update_messages", user_id=user_id) as conn:
         # Add any generated system messages to the database
         for system_msg in system_messages:
             system_message = ChatCompletionSystemMessageParam(
