@@ -1440,6 +1440,28 @@ async def enrich_layer(
                 status="ready",
             )
 
+    # Check if a background task already failed
+    _fail_key = f"enrich:fail:{layer.layer_id}:{metric_key}"
+    _run_key = f"enrich:run:{layer.layer_id}:{metric_key}"
+    loop = asyncio.get_running_loop()
+    fail_msg = await loop.run_in_executor(None, redis.get, _fail_key)
+    if fail_msg:
+        # Clear the failure so user can retry
+        await loop.run_in_executor(None, redis.delete, _fail_key)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Enrichment failed: {fail_msg.decode() if isinstance(fail_msg, bytes) else fail_msg}",
+        )
+
+    # Check if a background task is already running (prevent duplicate spawns)
+    already_running = await loop.run_in_executor(None, redis.get, _run_key)
+    if already_running:
+        return EnrichResponse(
+            column_name=metric_key,
+            feature_count=0,
+            status="computing",
+        )
+
     # Validate prerequisites synchronously before spawning background task
     if layer.type == LAYER_TYPE_POSTGIS:
         if not layer.postgis_connection_id:
@@ -1453,6 +1475,9 @@ async def enrich_layer(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Vector layer missing S3 key",
             )
+
+    # Mark as running (TTL 10 min — safety net if task crashes without cleanup)
+    await loop.run_in_executor(None, lambda: redis.set(_run_key, "1", ex=600))
 
     # Kick off background task — returns immediately
     asyncio.create_task(
@@ -1660,8 +1685,20 @@ async def _enrich_background(
 
         logger.info("Background enrichment completed: %s on layer %s (%d features)", metric_key, layer_id, len(values))
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Background enrichment failed for %s on layer %s", metric_key, layer_id)
+        # Store failure so the polling endpoint can report it
+        try:
+            _fail_key = f"enrich:fail:{layer_id}:{metric_key}"
+            redis.set(_fail_key, str(exc)[:200], ex=300)  # 5 min TTL
+        except Exception:
+            pass
+    finally:
+        # Always clear the running guard
+        try:
+            redis.delete(f"enrich:run:{layer_id}:{metric_key}")
+        except Exception:
+            pass
 
 
 class EnrichBatchResponse(BaseModel):
