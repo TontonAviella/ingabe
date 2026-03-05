@@ -158,6 +158,128 @@ async def generate_pmtiles_from_ogr_source(
         return pmtiles_key
 
 
+async def generate_pmtiles_for_postgis_layer(
+    layer_id: str,
+    postgis_connection_id: str,
+    query: str,
+    feature_count: int,
+    user_id: str,
+    project_id: str,
+) -> str:
+    """Generate PMTiles from a PostGIS query result and store in S3.
+
+    Pipeline: PostGIS → ogr2ogr (FlatGeoBuf) → Tippecanoe → PMTiles → S3.
+    Returns the S3 key of the uploaded PMTiles file.
+    """
+    if feature_count <= 0:
+        raise ValueError("Cannot generate PMTiles for layer with no features")
+
+    # Look up the connection URI
+    async with get_async_db_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT connection_uri FROM project_postgres_connections WHERE id = $1",
+            postgis_connection_id,
+        )
+    if not row:
+        raise ValueError(f"PostGIS connection {postgis_connection_id} not found")
+    connection_uri = row["connection_uri"]
+
+    bucket_name = get_bucket_name()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        reprojected_file = os.path.join(temp_dir, "reprojected.fgb")
+        local_output_file = os.path.join(temp_dir, f"layer_{layer_id}.pmtiles")
+
+        # Export PostGIS query result to FlatGeoBuf via ogr2ogr
+        ogr_cmd = [
+            "ogr2ogr",
+            "-f", "FlatGeobuf",
+            "-t_srs", "EPSG:4326",
+            "-nlt", "PROMOTE_TO_MULTI",
+            "-skipfailures",
+            "-nln", "reprojectedfgb",
+            reprojected_file,
+            f"PG:{connection_uri}",
+            "-sql", query,
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *ogr_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise Exception(
+                f"ogr2ogr PostGIS export failed: {(stderr or b'').decode('utf-8', errors='ignore')}"
+            )
+
+        # Run tippecanoe to generate PMTiles
+        tippecanoe_cmd = [
+            "tippecanoe",
+            "-o", local_output_file,
+            "-q",
+            "-zg",
+            "--drop-densest-as-needed",
+            "-l", "reprojectedfgb",
+            reprojected_file,
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *tippecanoe_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            err_text = (stderr or b"").decode("utf-8", errors="ignore")
+            if (
+                "Can't guess maxzoom (-zg) without at least two distinct feature locations"
+                in err_text
+            ):
+                pmtiles_ogr_cmd = [
+                    "ogr2ogr", "-f", "PMTiles",
+                    local_output_file, reprojected_file,
+                ]
+                process2 = await asyncio.create_subprocess_exec(
+                    *pmtiles_ogr_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout2, stderr2 = await process2.communicate()
+                if process2.returncode != 0:
+                    raise Exception(
+                        f"ogr2ogr PMTiles fallback failed: {(stderr2 or b'').decode('utf-8', errors='ignore')}"
+                    )
+            else:
+                raise Exception(
+                    f"tippecanoe command failed with exit code {process.returncode}: {err_text}"
+                )
+
+        # Upload to S3
+        pmtiles_key = f"pmtiles/{user_id}/{project_id}/{layer_id}.pmtiles"
+        s3 = await get_async_s3_client()
+        await s3.upload_file(
+            local_output_file, bucket_name, pmtiles_key, Config=one_shot_config
+        )
+
+        # Update layer metadata with pmtiles_key (atomic JSONB merge)
+        async with get_async_db_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE map_layers
+                SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
+                WHERE layer_id = $2
+                """,
+                json.dumps({"pmtiles_key": pmtiles_key}),
+                layer_id,
+            )
+
+        return pmtiles_key
+
+
 async def process_vector_layer_common(
     layer_id: str,
     ogr_source: str,

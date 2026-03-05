@@ -432,11 +432,11 @@ async def get_layer_pmtiles(
     request: Request,
     layer: MapLayer = Depends(get_layer),
 ):
-    # Check if layer is a vector type
-    if layer.type != LAYER_TYPE_VECTOR:
+    # Check if layer is a vector or postgis type
+    if layer.type not in (LAYER_TYPE_VECTOR, LAYER_TYPE_POSTGIS):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Layer is not a vector type. PMTiles can only be generated from vector data.",
+            detail="Layer is not a vector or PostGIS type. PMTiles can only be generated from vector data.",
         )
 
     if layer.remote_url and layer.remote_url.endswith(".pmtiles"):
@@ -475,27 +475,53 @@ async def get_layer_pmtiles(
                     pmtiles_key = row["metadata"]["pmtiles_key"]
 
             if not pmtiles_key:
-                # Download the source file and generate PMTiles
-                from src.upload.pmtiles import generate_pmtiles_from_ogr_source
+                feature_count = layer.feature_count or 1
 
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    local_file = os.path.join(temp_dir, "source")
-                    s3_dl = await get_async_s3_client()
-                    await s3_op(s3_dl.download_file(bucket_name, layer.s3_key, local_file),
-                                "download", f"PMTiles source {layer.layer_id}")
+                if layer.type == LAYER_TYPE_POSTGIS:
+                    # PostGIS layer: generate PMTiles from the query
+                    from src.upload.pmtiles import generate_pmtiles_for_postgis_layer
 
-                    feature_count = layer.feature_count or 1
-                    pmtiles_key = await generate_pmtiles_from_ogr_source(
+                    # Look up project_id via source_map_id
+                    _project_id = "unknown"
+                    if layer.source_map_id:
+                        async with get_async_db_connection() as _conn:
+                            project_row = await _conn.fetchrow(
+                                "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+                                layer.source_map_id,
+                            )
+                            if project_row:
+                                _project_id = project_row["project_id"]
+
+                    pmtiles_key = await generate_pmtiles_for_postgis_layer(
                         layer.layer_id,
-                        local_file,
+                        layer.postgis_connection_id,
+                        layer.postgis_query,
                         feature_count,
                         str(layer.owner_uuid),
+                        _project_id,
                     )
-                    logger.info(
-                        "Lazy PMTiles generated for layer %s -> %s",
-                        layer.layer_id,
-                        pmtiles_key,
-                    )
+                else:
+                    # Vector layer: download S3 source file and generate
+                    from src.upload.pmtiles import generate_pmtiles_from_ogr_source
+
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        local_file = os.path.join(temp_dir, "source")
+                        s3_dl = await get_async_s3_client()
+                        await s3_op(s3_dl.download_file(bucket_name, layer.s3_key, local_file),
+                                    "download", f"PMTiles source {layer.layer_id}")
+
+                        pmtiles_key = await generate_pmtiles_from_ogr_source(
+                            layer.layer_id,
+                            local_file,
+                            feature_count,
+                            str(layer.owner_uuid),
+                        )
+
+                logger.info(
+                    "Lazy PMTiles generated for layer %s -> %s",
+                    layer.layer_id,
+                    pmtiles_key,
+                )
         except HTTPException:
             raise
         except Exception as e:
@@ -1374,9 +1400,10 @@ async def enrich_layer(
 ):
     """Compute a metric for all features in a polygon layer and store in app DB.
 
-    If the metric has already been computed, returns immediately.
-    Otherwise, fetches geometries from external PostGIS, computes the metric,
-    and upserts results into ``layer_enrichments``.
+    Returns immediately with ``status="computing"`` and runs the heavy work
+    in a background task so the event loop stays free (no WebSocket drops).
+    The frontend polls by re-calling this endpoint — the "already computed"
+    check returns ``status="ready"`` once the background task finishes.
     """
     metric_key = body.metric
 
@@ -1413,198 +1440,228 @@ async def enrich_layer(
                 status="ready",
             )
 
-    features = []
-
+    # Validate prerequisites synchronously before spawning background task
     if layer.type == LAYER_TYPE_POSTGIS:
-        # Fetch feature geometries from external PostGIS
         if not layer.postgis_connection_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="PostGIS layer missing connection",
             )
-        async with async_conn("enrich_conn") as conn:
-            connection_details = await conn.fetchrow(
-                """
-                SELECT connection_uri
-                FROM project_postgres_connections
-                WHERE id = $1 AND soft_deleted_at IS NULL
-                """,
-                layer.postgis_connection_id,
-            )
-
-        if not connection_details:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="PostGIS connection not found",
-            )
-
-        async with get_pooled_connection(
-            connection_details["connection_uri"]
-        ) as postgis_conn:
-            rows = await postgis_conn.fetch(
-                f'SELECT id, ST_AsGeoJSON(geom) AS geom FROM ({layer.postgis_query}) sub'
-            )
-
-        for r in rows:
-            features.append({
-                "id": r["id"],
-                "geom": json.loads(r["geom"]),
-            })
-
     elif layer.type == LAYER_TYPE_VECTOR:
-        # Fetch feature geometries from S3-stored vector file
         if not layer.s3_key:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Vector layer missing S3 key",
             )
-        import fiona
-        s3_client = await get_async_s3_client()
-        bucket = get_bucket_name()
 
-        suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
-        with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-            await s3_op(
-                s3_client.download_file(bucket, layer.s3_key, tmp.name),
-                "download", f"layer {layer.layer_id}",
-            )
-            with fiona.open(tmp.name) as collection:
-                for fid, feat in enumerate(collection, start=1):
-                    geom = feat.get("geometry")
-                    if geom:
-                        features.append({"id": fid, "geom": dict(geom)})
-
-    # Compute the metric
-    try:
-        values = await compute_metric(metric_key, features)
-    except Exception as e:
-        logger.exception("Enrichment computation failed for %s on layer %s", metric_key, layer.layer_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Metric computation failed: {e}",
+    # Kick off background task — returns immediately
+    asyncio.create_task(
+        _enrich_background(
+            layer_id=layer.layer_id,
+            layer_type=layer.type,
+            metric_key=metric_key,
+            postgis_connection_id=layer.postgis_connection_id,
+            postgis_query=layer.postgis_query,
+            s3_key=layer.s3_key,
+            feature_count=layer.feature_count,
+            owner_uuid=str(layer.owner_uuid),
         )
-
-    # Batch upsert into layer_enrichments
-    async with async_conn("enrich_upsert") as conn:
-        insert_values = []
-        insert_params = []
-        param_idx = 1
-        for fid, val in values.items():
-            insert_values.append(
-                f"(${param_idx}, ${param_idx + 1}, ${param_idx + 2}, ${param_idx + 3})"
-            )
-            insert_params.extend([layer.layer_id, fid, metric_key, val])
-            param_idx += 4
-
-        if insert_values:
-            await conn.execute(
-                f"""
-                INSERT INTO layer_enrichments (layer_id, feature_id, column_name, value)
-                VALUES {", ".join(insert_values)}
-                ON CONFLICT (layer_id, feature_id, column_name)
-                DO UPDATE SET value = EXCLUDED.value, computed_at = NOW()
-                """,
-                *insert_params,
-            )
-
-        # Update last_edited to bust ETag/browser cache
-        await conn.execute(
-            "UPDATE map_layers SET last_edited = NOW() WHERE layer_id = $1",
-            layer.layer_id,
-        )
-
-    # For vector layers, write enrichment values back into the source file
-    # so that PMTiles regeneration includes the metric column in tile features.
-    if layer.type == LAYER_TYPE_VECTOR and layer.s3_key:
-        import fiona
-        import shutil
-
-        s3_enrich = await get_async_s3_client()
-        bucket_enrich = get_bucket_name()
-        suffix_enrich = os.path.splitext(layer.s3_key)[1] or ".fgb"
-        tmpdir = tempfile.mkdtemp()
-        try:
-            src_path = os.path.join(tmpdir, f"source{suffix_enrich}")
-            dst_path = os.path.join(tmpdir, f"enriched{suffix_enrich}")
-            await s3_op(
-                s3_enrich.download_file(bucket_enrich, layer.s3_key, src_path),
-                "download", f"enrich write-back {layer.layer_id}",
-            )
-            with fiona.open(src_path) as src:
-                schema = src.schema.copy()
-                schema["properties"][metric_key] = "float"
-                with fiona.open(dst_path, "w", driver=src.driver, crs=src.crs, schema=schema) as dst:
-                    for fid, feat in enumerate(src, start=1):
-                        props = dict(feat["properties"])
-                        props[metric_key] = values.get(fid)
-                        dst.write({"geometry": feat["geometry"], "properties": props})
-
-            # Upload enriched file, replacing the original
-            await s3_op(
-                s3_enrich.upload_file(dst_path, bucket_enrich, layer.s3_key),
-                "upload", f"enriched layer {layer.layer_id}",
-            )
-
-            # Clear pmtiles_key so next tile request triggers lazy regeneration
-            async with async_conn("enrich_clear_pmtiles") as conn:
-                row = await conn.fetchrow(
-                    "SELECT metadata FROM map_layers WHERE layer_id = $1",
-                    layer.layer_id,
-                )
-                if row and row["metadata"]:
-                    raw = row["metadata"]
-                    meta = json.loads(raw) if isinstance(raw, str) else dict(raw)
-                    old_pmtiles = meta.pop("pmtiles_key", None)
-                    await conn.execute(
-                        "UPDATE map_layers SET metadata = $1::jsonb WHERE layer_id = $2",
-                        json.dumps(meta), layer.layer_id,
-                    )
-                    if old_pmtiles:
-                        try:
-                            await s3_enrich.delete_object(Bucket=bucket_enrich, Key=old_pmtiles)
-                        except Exception:
-                            logger.warning("Failed to delete old PMTiles %s", old_pmtiles, exc_info=True)
-
-            logger.info("Wrote enrichment '%s' back to vector file for layer %s", metric_key, layer.layer_id)
-
-            # Eagerly regenerate PMTiles so the enrichment column appears in
-            # tile features immediately (choropleth expressions like
-            # ['get', 'cropland_pct'] need the property in the vector tiles).
-            try:
-                from src.upload.pmtiles import generate_pmtiles_from_ogr_source
-
-                new_pmtiles_key = await generate_pmtiles_from_ogr_source(
-                    layer.layer_id,
-                    dst_path,
-                    layer.feature_count or 1,
-                    str(layer.owner_uuid),
-                )
-                logger.info(
-                    "Eagerly regenerated PMTiles for layer %s -> %s",
-                    layer.layer_id,
-                    new_pmtiles_key,
-                )
-            except Exception:
-                logger.warning(
-                    "Eager PMTiles regen failed for %s; will lazy-regen on next tile request",
-                    layer.layer_id,
-                    exc_info=True,
-                )
-        except Exception:
-            logger.warning("Failed to write enrichment to vector file for %s", layer.layer_id, exc_info=True)
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-    # Invalidate caches so new tiles/queries include enrichment data
-    await tile_cache.invalidate_layer(layer.layer_id)
-    from src.fs_lru import layer_cache
-    layer_cache().invalidate_layer(layer.layer_id)
+    )
 
     return EnrichResponse(
         column_name=metric_key,
-        feature_count=len(values),
-        status="ready",
+        feature_count=0,
+        status="computing",
     )
+
+
+async def _enrich_background(
+    *,
+    layer_id: str,
+    layer_type: str,
+    metric_key: str,
+    postgis_connection_id: str | None,
+    postgis_query: str | None,
+    s3_key: str | None,
+    feature_count: int | None,
+    owner_uuid: str,
+) -> None:
+    """Background enrichment task. Fetches geometries, computes metric, stores results.
+
+    Never raises — all exceptions are logged so the event loop is never interrupted.
+    """
+    try:
+        features = []
+
+        if layer_type == LAYER_TYPE_POSTGIS:
+            async with async_conn("enrich_conn") as conn:
+                connection_details = await conn.fetchrow(
+                    """
+                    SELECT connection_uri
+                    FROM project_postgres_connections
+                    WHERE id = $1 AND soft_deleted_at IS NULL
+                    """,
+                    postgis_connection_id,
+                )
+
+            if not connection_details:
+                logger.error("Enrichment background: PostGIS connection %s not found", postgis_connection_id)
+                return
+
+            async with get_pooled_connection(
+                connection_details["connection_uri"]
+            ) as postgis_conn:
+                await postgis_conn.execute("SET statement_timeout = '300000'")  # 5 min
+                rows = await postgis_conn.fetch(
+                    f'SELECT id, ST_AsGeoJSON(ST_Simplify(geom, 0.001)) AS geom FROM ({postgis_query}) sub'
+                )
+
+            for r in rows:
+                geom_json = r["geom"]
+                if geom_json:
+                    features.append({
+                        "id": r["id"],
+                        "geom": json.loads(geom_json),
+                    })
+
+        elif layer_type == LAYER_TYPE_VECTOR:
+            import fiona
+            s3_client = await get_async_s3_client()
+            bucket = get_bucket_name()
+
+            suffix = os.path.splitext(s3_key)[1] or ".fgb"
+            with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+                await s3_op(
+                    s3_client.download_file(bucket, s3_key, tmp.name),
+                    "download", f"layer {layer_id}",
+                )
+                with fiona.open(tmp.name) as collection:
+                    for fid, feat in enumerate(collection, start=1):
+                        geom = feat.get("geometry")
+                        if geom:
+                            features.append({"id": fid, "geom": dict(geom)})
+
+        if not features:
+            logger.warning("Enrichment background: no features for layer %s", layer_id)
+            return
+
+        # Compute the metric
+        values = await compute_metric(metric_key, features)
+
+        # Batch upsert into layer_enrichments
+        async with async_conn("enrich_upsert") as conn:
+            insert_values = []
+            insert_params = []
+            param_idx = 1
+            for fid, val in values.items():
+                insert_values.append(
+                    f"(${param_idx}, ${param_idx + 1}, ${param_idx + 2}, ${param_idx + 3})"
+                )
+                insert_params.extend([layer_id, fid, metric_key, val])
+                param_idx += 4
+
+            if insert_values:
+                await conn.execute(
+                    f"""
+                    INSERT INTO layer_enrichments (layer_id, feature_id, column_name, value)
+                    VALUES {", ".join(insert_values)}
+                    ON CONFLICT (layer_id, feature_id, column_name)
+                    DO UPDATE SET value = EXCLUDED.value, computed_at = NOW()
+                    """,
+                    *insert_params,
+                )
+
+            # Update last_edited to bust ETag/browser cache
+            await conn.execute(
+                "UPDATE map_layers SET last_edited = NOW() WHERE layer_id = $1",
+                layer_id,
+            )
+
+        # For vector layers, write enrichment values back into the source file
+        if layer_type == LAYER_TYPE_VECTOR and s3_key:
+            import fiona
+            import shutil
+
+            s3_enrich = await get_async_s3_client()
+            bucket_enrich = get_bucket_name()
+            suffix_enrich = os.path.splitext(s3_key)[1] or ".fgb"
+            tmpdir = tempfile.mkdtemp()
+            try:
+                src_path = os.path.join(tmpdir, f"source{suffix_enrich}")
+                dst_path = os.path.join(tmpdir, f"enriched{suffix_enrich}")
+                await s3_op(
+                    s3_enrich.download_file(bucket_enrich, s3_key, src_path),
+                    "download", f"enrich write-back {layer_id}",
+                )
+                with fiona.open(src_path) as src:
+                    schema = src.schema.copy()
+                    schema["properties"][metric_key] = "float"
+                    with fiona.open(dst_path, "w", driver=src.driver, crs=src.crs, schema=schema) as dst:
+                        for fid, feat in enumerate(src, start=1):
+                            props = dict(feat["properties"])
+                            props[metric_key] = values.get(fid)
+                            dst.write({"geometry": feat["geometry"], "properties": props})
+
+                await s3_op(
+                    s3_enrich.upload_file(dst_path, bucket_enrich, s3_key),
+                    "upload", f"enriched layer {layer_id}",
+                )
+
+                async with async_conn("enrich_clear_pmtiles") as conn:
+                    row = await conn.fetchrow(
+                        "SELECT metadata FROM map_layers WHERE layer_id = $1",
+                        layer_id,
+                    )
+                    if row and row["metadata"]:
+                        raw = row["metadata"]
+                        meta = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                        old_pmtiles = meta.pop("pmtiles_key", None)
+                        await conn.execute(
+                            "UPDATE map_layers SET metadata = $1::jsonb WHERE layer_id = $2",
+                            json.dumps(meta), layer_id,
+                        )
+                        if old_pmtiles:
+                            try:
+                                await s3_enrich.delete_object(Bucket=bucket_enrich, Key=old_pmtiles)
+                            except Exception:
+                                logger.warning("Failed to delete old PMTiles %s", old_pmtiles, exc_info=True)
+
+                logger.info("Wrote enrichment '%s' back to vector file for layer %s", metric_key, layer_id)
+
+                try:
+                    from src.upload.pmtiles import generate_pmtiles_from_ogr_source
+
+                    new_pmtiles_key = await generate_pmtiles_from_ogr_source(
+                        layer_id,
+                        dst_path,
+                        feature_count or 1,
+                        owner_uuid,
+                    )
+                    logger.info(
+                        "Eagerly regenerated PMTiles for layer %s -> %s",
+                        layer_id,
+                        new_pmtiles_key,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Eager PMTiles regen failed for %s; will lazy-regen on next tile request",
+                        layer_id,
+                        exc_info=True,
+                    )
+            except Exception:
+                logger.warning("Failed to write enrichment to vector file for %s", layer_id, exc_info=True)
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+
+        # Invalidate caches so new tiles/queries include enrichment data
+        await tile_cache.invalidate_layer(layer_id)
+        from src.fs_lru import layer_cache
+        layer_cache().invalidate_layer(layer_id)
+
+        logger.info("Background enrichment completed: %s on layer %s (%d features)", metric_key, layer_id, len(values))
+
+    except Exception:
+        logger.exception("Background enrichment failed for %s on layer %s", metric_key, layer_id)
 
 
 class EnrichBatchResponse(BaseModel):

@@ -213,7 +213,7 @@ async def test_format_mismatch_error(test_map_with_layers, auth_client):
     # Test requesting PMTiles for raster layer (should fail)
     response = await auth_client.get(f"/api/layer/{raster_layer_id}.pmtiles")
     assert response.status_code == 400, "Should return 400 for format mismatch"
-    assert "not a vector type" in response.text.lower(), (
+    assert "not a vector" in response.text.lower(), (
         "Error message should mention type mismatch"
     )
 

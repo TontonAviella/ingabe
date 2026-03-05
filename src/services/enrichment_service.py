@@ -707,9 +707,9 @@ def _compute_soil_metric(
 ) -> Dict[int, float]:
     """Compute a soil property value for each feature centroid via iSDAsoil COGs.
 
-    Instead of calling query_soil_point() per feature (which opens the COG each
-    time), we open the COG once and read small windows for all centroids. This
-    reduces N HTTP connections to 1 with N range-reads inside the same session.
+    Reads the COG **once** for the bounding box of all centroids, then samples
+    each centroid from the in-memory array. This turns N HTTP range-requests
+    into a single read — critical for large layers (14K+ features).
 
     Args:
         features: Feature dicts with 'id' and 'geom'.
@@ -718,8 +718,6 @@ def _compute_soil_metric(
     Returns:
         {feature_id: value}
     """
-    from concurrent.futures import ThreadPoolExecutor
-
     import rasterio
     from pyproj import Transformer
     from rasterio.env import Env as RasterioEnv
@@ -736,40 +734,34 @@ def _compute_soil_metric(
     url = _cog_url(soil_property)
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
     transform_fn = prop_info["transform"]
-    buffer_m = 150.0
     depth_band = 0  # 0-20 cm
+    buffer_m = 300.0  # padding around bounding box
 
-    # Pre-compute centroids
-    centroids = []
+    # Pre-compute centroids in EPSG:3857 (COG native CRS)
+    centroids: List[tuple] = []  # (fid, cx_3857, cy_3857)
     for feat in features:
         try:
             geom = shape(feat["geom"])
             c = geom.centroid
-            centroids.append((feat["id"], c.x, c.y))
+            cx, cy = transformer.transform(c.x, c.y)
+            centroids.append((feat["id"], cx, cy))
         except Exception as e:
             logger.warning("Bad geometry for feature %d: %s", feat["id"], e)
             centroids.append((feat["id"], None, None))
 
-    results: Dict[int, float] = {}
+    valid_centroids = [(fid, cx, cy) for fid, cx, cy in centroids if cx is not None]
+    if not valid_centroids:
+        return {feat["id"]: 0.0 for feat in features}
 
-    def _read_feature(src, fid: int, lon: float, lat: float) -> tuple:
-        """Read a single feature's soil value from the already-open COG."""
-        try:
-            cx, cy = transformer.transform(lon, lat)
-            window = from_bounds(
-                cx - buffer_m, cy - buffer_m, cx + buffer_m, cy + buffer_m,
-                src.transform,
-            )
-            data = src.read(window=window)
-            band = data[depth_band].astype(np.float64)
-            valid = band[band > 0]
-            if len(valid) == 0:
-                return fid, 0.0
-            raw_val = float(np.mean(valid))
-            return fid, round(float(transform_fn(raw_val)), 2)
-        except Exception as e:
-            logger.warning("Soil read failed for feature %d: %s", fid, e)
-            return fid, 0.0
+    # Bounding box in EPSG:3857
+    all_cx = [cx for _, cx, _ in valid_centroids]
+    all_cy = [cy for _, _, cy in valid_centroids]
+    bbox_west = min(all_cx) - buffer_m
+    bbox_south = min(all_cy) - buffer_m
+    bbox_east = max(all_cx) + buffer_m
+    bbox_north = max(all_cy) + buffer_m
+
+    results: Dict[int, float] = {}
 
     try:
         with RasterioEnv(
@@ -778,27 +770,42 @@ def _compute_soil_metric(
             GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
         ):
             with rasterio.open(url) as src:
-                # Use threads for concurrent HTTP range-reads within the same COG
-                valid_centroids = [
-                    (fid, lon, lat) for fid, lon, lat in centroids
-                    if lon is not None
-                ]
-                with ThreadPoolExecutor(max_workers=min(len(valid_centroids), 8)) as pool:
-                    futures = [
-                        pool.submit(_read_feature, src, fid, lon, lat)
-                        for fid, lon, lat in valid_centroids
-                    ]
-                    for future in futures:
-                        fid, val = future.result()
-                        results[fid] = val
+                # Single read for the entire bounding box
+                window = from_bounds(bbox_west, bbox_south, bbox_east, bbox_north, src.transform)
+                data = src.read(window=window)  # (bands, h, w)
+                win_transform = src.window_transform(window)
 
-        # Fill in features with bad geometry
-        for fid, lon, lat in centroids:
-            if fid not in results:
-                results[fid] = 0.0
+                band = data[depth_band].astype(np.float64)
+
+                # Sample each centroid from the in-memory array
+                for fid, cx, cy in valid_centroids:
+                    try:
+                        # Convert 3857 coords to pixel coords within the window
+                        col, row = ~win_transform * (cx, cy)
+                        col, row = int(round(col)), int(round(row))
+                        if 0 <= row < band.shape[0] and 0 <= col < band.shape[1]:
+                            raw_val = band[row, col]
+                            if raw_val > 0:
+                                results[fid] = round(float(transform_fn(raw_val)), 2)
+                            else:
+                                results[fid] = 0.0
+                        else:
+                            results[fid] = 0.0
+                    except Exception as e:
+                        logger.warning("Soil sample failed for feature %d: %s", fid, e)
+                        results[fid] = 0.0
+
+        del data, band
+        gc.collect()
+
     except Exception as e:
-        logger.error("Failed to open soil COG %s: %s", url, e)
+        logger.error("Failed to read soil COG %s: %s", url, e)
         return {feat["id"]: 0.0 for feat in features}
+
+    # Fill in features with bad geometry
+    for fid, cx, cy in centroids:
+        if fid not in results:
+            results[fid] = 0.0
 
     return results
 

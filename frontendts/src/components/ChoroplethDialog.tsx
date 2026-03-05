@@ -215,21 +215,40 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   const handleEnrich = async (metricKey: string) => {
     setEnriching(metricKey);
     try {
-      // Enrichment can take minutes for soil/emissions metrics — use a 5-minute timeout
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 300_000);
       const res = await apiFetch(`/api/layer/${layerId}/enrich`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ metric: metricKey }),
-        signal: controller.signal,
       });
-      clearTimeout(tid);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail ?? res.statusText);
       }
-      const data = await res.json();
+      let data = await res.json();
+
+      // Backend may return status: "computing" for async enrichment — poll until ready
+      if (data.status === 'computing') {
+        toast.info('Computing enrichment in background…');
+        const maxAttempts = 60; // 5 minutes with 5s interval
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise((r) => setTimeout(r, 5000));
+          const pollRes = await apiFetch(`/api/layer/${layerId}/enrich`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ metric: metricKey }),
+          });
+          if (!pollRes.ok) {
+            const err = await pollRes.json().catch(() => ({ detail: pollRes.statusText }));
+            throw new Error(err.detail ?? pollRes.statusText);
+          }
+          data = await pollRes.json();
+          if (data.status !== 'computing') break;
+        }
+        if (data.status === 'computing') {
+          throw new Error('Enrichment is still processing. Please try again shortly.');
+        }
+      }
+
       toast.success(`Computed ${data.column_name} for ${data.feature_count} features`);
 
       // Refresh columns and metrics

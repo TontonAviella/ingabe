@@ -949,6 +949,37 @@ async def run_geoprocessing_tool(
             }
 
 
+async def _generate_postgis_pmtiles_background(
+    layer_id: str,
+    postgis_connection_id: str,
+    query: str,
+    feature_count: int,
+    user_id: str,
+    project_id: str,
+) -> None:
+    """Fire-and-forget wrapper for PostGIS PMTiles generation.
+
+    Never raises — all exceptions are logged and swallowed so the chat
+    flow is never interrupted.
+    """
+    try:
+        from src.upload.pmtiles import generate_pmtiles_for_postgis_layer
+
+        pmtiles_key = await generate_pmtiles_for_postgis_layer(
+            layer_id, postgis_connection_id, query,
+            feature_count, user_id, project_id,
+        )
+        logger.info(
+            "Background PMTiles generation completed for PostGIS layer %s -> %s",
+            layer_id, pmtiles_key,
+        )
+    except Exception:
+        logger.warning(
+            "Background PMTiles generation failed for PostGIS layer %s",
+            layer_id, exc_info=True,
+        )
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -1757,6 +1788,15 @@ async def process_chat_interaction_task(
                                             }
                                             if bounds and len(bounds) == 4:
                                                 tool_result["bounds"] = bounds
+
+                                            # Kick off background PMTiles generation
+                                            if feature_count and feature_count > 0:
+                                                asyncio.create_task(
+                                                    _generate_postgis_pmtiles_background(
+                                                        layer_id, postgis_connection_id, query,
+                                                        feature_count, user_id, current_project_id,
+                                                    )
+                                                )
                                         except HTTPException as e:
                                             tool_result = {
                                                 "status": "error",

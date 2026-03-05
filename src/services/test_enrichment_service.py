@@ -277,6 +277,14 @@ class TestSoilMetrics:
     def _make_mock_src(raw_value: float) -> MagicMock:
         """Create a mock rasterio dataset returning `raw_value` for all reads."""
         from affine import Affine
+        from pyproj import Transformer
+        from shapely.geometry import shape
+
+        # Compute the centroid in EPSG:3857 so window_transform maps it
+        # to pixel (1, 1) in the 2×2 mock array.
+        transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        geom = shape(SAMPLE_FEATURES[0]["geom"])
+        cx, cy = transformer.transform(geom.centroid.x, geom.centroid.y)
 
         mock_src = MagicMock()
         mock_src.__enter__ = MagicMock(return_value=mock_src)
@@ -284,6 +292,10 @@ class TestSoilMetrics:
         mock_src.transform = Affine(30, 0, 3_000_000, 0, -30, 0)
         mock_src.read.return_value = np.array(
             [[[raw_value, raw_value], [raw_value, raw_value]]]
+        )
+        # window_transform: Affine that maps centroid → pixel (1, 1)
+        mock_src.window_transform.return_value = Affine(
+            600, 0, cx - 600, 0, -600, cy + 600
         )
         return mock_src
 
