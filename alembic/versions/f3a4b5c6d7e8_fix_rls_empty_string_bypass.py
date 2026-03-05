@@ -1,11 +1,11 @@
-"""fix RLS policies to handle empty-string after connection pool RESET
+"""fix RLS policies: use CASE WHEN to prevent ''::uuid cast error
 
-After RESET app.user_id on a pooled connection, current_setting returns ''
-(empty string) instead of NULL. The original IS NULL check failed to bypass
-RLS for unauthenticated/background queries on reused connections.
+PostgreSQL does NOT short-circuit OR in policy expressions — the query
+planner may evaluate ''::uuid even when the coalesce bypass is TRUE,
+causing "invalid input syntax for type uuid" errors (production 500s).
 
-Fix: use coalesce(current_setting(...), '') = '' which handles both NULL
-and empty string.
+Fix: wrap in CASE WHEN so the uuid casts are never evaluated when
+app.user_id is NULL or '' (migrations/background/pool-reuse).
 
 Revision ID: f3a4b5c6d7e8
 Revises: e6f7a8b9c0d1
@@ -24,31 +24,37 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Drop and recreate the projects policy with coalesce fix
+    # Drop and recreate the projects policy with CASE WHEN fix
     op.execute("DROP POLICY IF EXISTS tenant_isolation_projects ON user_mundiai_projects")
     op.execute("""
         CREATE POLICY tenant_isolation_projects ON user_mundiai_projects
         USING (
-            coalesce(current_setting('app.user_id', true), '') = ''
-            OR owner_uuid::text = current_setting('app.user_id', true)
-            OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
-            OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+            CASE
+                WHEN coalesce(current_setting('app.user_id', true), '') = '' THEN true
+                ELSE
+                    owner_uuid::text = current_setting('app.user_id', true)
+                    OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
+                    OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+            END
         )
     """)
 
-    # Drop and recreate the conversations policy with coalesce fix
+    # Drop and recreate the conversations policy with CASE WHEN fix
     op.execute("DROP POLICY IF EXISTS tenant_isolation_conversations ON conversations")
     op.execute("""
         CREATE POLICY tenant_isolation_conversations ON conversations
         USING (
-            coalesce(current_setting('app.user_id', true), '') = ''
-            OR owner_uuid::text = current_setting('app.user_id', true)
-            OR project_id IN (
-                SELECT id FROM user_mundiai_projects
-                WHERE owner_uuid::text = current_setting('app.user_id', true)
-                   OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
-                   OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
-            )
+            CASE
+                WHEN coalesce(current_setting('app.user_id', true), '') = '' THEN true
+                ELSE
+                    owner_uuid::text = current_setting('app.user_id', true)
+                    OR project_id IN (
+                        SELECT id FROM user_mundiai_projects
+                        WHERE owner_uuid::text = current_setting('app.user_id', true)
+                           OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
+                           OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+                    )
+            END
         )
     """)
 

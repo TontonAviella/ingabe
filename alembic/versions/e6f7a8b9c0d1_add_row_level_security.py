@@ -20,16 +20,18 @@ def upgrade() -> None:
     # -- user_mundiai_projects --
     op.execute("ALTER TABLE user_mundiai_projects ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE user_mundiai_projects FORCE ROW LEVEL SECURITY")
-    # NOTE: coalesce(current_setting(...), '') = '' handles BOTH cases:
-    #   1. Setting never set (returns NULL) → coalesce → '' → bypass
-    #   2. Setting RESET on pooled connection (returns '') → bypass
+    # CASE WHEN guarantees the uuid casts are never evaluated when
+    # app.user_id is NULL or '' (PostgreSQL does NOT short-circuit OR).
     op.execute("""
         CREATE POLICY tenant_isolation_projects ON user_mundiai_projects
         USING (
-            coalesce(current_setting('app.user_id', true), '') = ''
-            OR owner_uuid::text = current_setting('app.user_id', true)
-            OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
-            OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+            CASE
+                WHEN coalesce(current_setting('app.user_id', true), '') = '' THEN true
+                ELSE
+                    owner_uuid::text = current_setting('app.user_id', true)
+                    OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
+                    OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+            END
         )
     """)
 
@@ -39,14 +41,17 @@ def upgrade() -> None:
     op.execute("""
         CREATE POLICY tenant_isolation_conversations ON conversations
         USING (
-            coalesce(current_setting('app.user_id', true), '') = ''
-            OR owner_uuid::text = current_setting('app.user_id', true)
-            OR project_id IN (
-                SELECT id FROM user_mundiai_projects
-                WHERE owner_uuid::text = current_setting('app.user_id', true)
-                   OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
-                   OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
-            )
+            CASE
+                WHEN coalesce(current_setting('app.user_id', true), '') = '' THEN true
+                ELSE
+                    owner_uuid::text = current_setting('app.user_id', true)
+                    OR project_id IN (
+                        SELECT id FROM user_mundiai_projects
+                        WHERE owner_uuid::text = current_setting('app.user_id', true)
+                           OR current_setting('app.user_id', true)::uuid = ANY(editor_uuids)
+                           OR current_setting('app.user_id', true)::uuid = ANY(viewer_uuids)
+                    )
+            END
         )
     """)
 
