@@ -5,6 +5,10 @@ on the app.user_id session variable set via set_config().
 
 Uses synchronous psycopg2 connections to avoid asyncio event-loop
 conflicts with pytest-xdist and the session-scoped anyio backend.
+
+IMPORTANT: PostgreSQL superusers bypass RLS even with FORCE ROW LEVEL
+SECURITY.  CI connects as the 'postgres' superuser, so we SET ROLE to
+a non-superuser to actually exercise the policies.
 """
 
 import uuid
@@ -16,9 +20,27 @@ from src.database.pool import _build_postgres_url
 
 @pytest.fixture
 def rls_conn():
-    """Provide a synchronous psycopg2 connection for direct RLS testing."""
+    """Provide a psycopg2 connection using a non-superuser role for RLS testing."""
     conn = psycopg2.connect(_build_postgres_url())
+    conn.autocommit = True
+    cur = conn.cursor()
+
+    # Create a non-superuser role (superusers bypass RLS unconditionally)
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rls_test_role') THEN
+                CREATE ROLE rls_test_role NOLOGIN;
+            END IF;
+        END $$
+    """)
+    cur.execute("GRANT USAGE ON SCHEMA public TO rls_test_role")
+    cur.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO rls_test_role")
+    cur.execute("GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO rls_test_role")
+
     conn.autocommit = False
+    cur.execute("SET ROLE rls_test_role")
+
     try:
         yield conn
     finally:
