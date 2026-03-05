@@ -29,7 +29,7 @@ def rls_conn():
 def test_owner_sees_own_project(rls_conn):
     """Project owner can see their project when RLS is active."""
     owner_id = str(uuid.uuid4())
-    project_id = f"P-{uuid.uuid4().hex[:12]}"
+    project_id = f"P{uuid.uuid4().hex[:11]}"
 
     cur = rls_conn.cursor()
     cur.execute(
@@ -49,7 +49,7 @@ def test_other_user_cannot_see_project(rls_conn):
     """A different user cannot see a project they have no access to."""
     owner_id = str(uuid.uuid4())
     other_id = str(uuid.uuid4())
-    project_id = f"P-{uuid.uuid4().hex[:12]}"
+    project_id = f"P{uuid.uuid4().hex[:11]}"
 
     cur = rls_conn.cursor()
     cur.execute(
@@ -68,12 +68,12 @@ def test_editor_can_see_project(rls_conn):
     """An editor listed in editor_uuids can see the project."""
     owner_id = str(uuid.uuid4())
     editor_id = str(uuid.uuid4())
-    project_id = f"P-{uuid.uuid4().hex[:12]}"
+    project_id = f"P{uuid.uuid4().hex[:11]}"
 
     cur = rls_conn.cursor()
     cur.execute(
-        "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, maps) VALUES (%s, %s, %s, '{}')",
-        (project_id, owner_id, [editor_id]),
+        "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, maps) VALUES (%s, %s, ARRAY[%s]::uuid[], '{}')",
+        (project_id, owner_id, editor_id),
     )
 
     # Set RLS context to the editor
@@ -86,7 +86,7 @@ def test_editor_can_see_project(rls_conn):
 def test_no_user_id_bypasses_rls(rls_conn):
     """When app.user_id is not set (migrations/background), all rows visible."""
     owner_id = str(uuid.uuid4())
-    project_id = f"P-{uuid.uuid4().hex[:12]}"
+    project_id = f"P{uuid.uuid4().hex[:11]}"
 
     cur = rls_conn.cursor()
     cur.execute(
@@ -104,7 +104,7 @@ def test_no_user_id_bypasses_rls(rls_conn):
 def test_empty_string_after_pool_reuse_bypasses_rls(rls_conn):
     """After set_config + RESET (pool reuse), app.user_id is '' not NULL — must still bypass."""
     owner_id = str(uuid.uuid4())
-    project_id = f"P-{uuid.uuid4().hex[:12]}"
+    project_id = f"P{uuid.uuid4().hex[:11]}"
 
     cur = rls_conn.cursor()
     cur.execute(
