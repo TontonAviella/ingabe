@@ -539,7 +539,7 @@ async def get_map_style_internal(
 
             async def _gen_url(key: str) -> str:
                 return await s3_op(
-                    s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": key}, ExpiresIn=180),
+                    s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": key}, ExpiresIn=3600),
                     "presigned URL", f"PMTiles {key}",
                 )
 
@@ -565,7 +565,7 @@ async def get_map_style_internal(
             bucket_name = get_bucket_name()
             s3_client = await get_async_s3_client()
             presigned_url = await s3_op(
-                s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=180),
+                s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=3600),
                 "presigned URL", f"PMTiles {pmtiles_key}",
             )
             style_json["sources"][layer_id] = {
@@ -611,7 +611,7 @@ async def get_map_style_internal(
 
             async def _gen_postgis_url(key: str) -> str:
                 return await s3_op(
-                    _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=180),
+                    _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=3600),
                     "presigned URL", f"PMTiles {key}",
                 )
 
@@ -623,37 +623,20 @@ async def get_map_style_internal(
         if layer["type"] == LAYER_TYPE_POSTGIS:
             layer_id = layer["layer_id"]
 
-            # Check if PMTiles are available for this PostGIS layer
-            metadata = layer.get("metadata") or {}
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            pmtiles_key = metadata.get("pmtiles_key")
+            # Always use real-time MVT tiles for PostGIS layers.
+            # MVT tiles dynamically join enrichment data (temp_mean, etc.)
+            # via CTE, which static PMTiles cannot include.
+            cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
+            tile_url = f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.mvt"
+            if cache_param:
+                tile_url += f"?{cache_param}"
 
-            if pmtiles_key:
-                # Serve pre-computed PMTiles instead of real-time MVT
-                if layer_id in postgis_presigned:
-                    style_json["sources"][layer_id] = {
-                        "type": "vector",
-                        "url": f"pmtiles://{postgis_presigned[layer_id]}",
-                    }
-                else:
-                    style_json["sources"][layer_id] = {
-                        "type": "vector",
-                        "url": f"pmtiles:///api/layer/{layer_id}.pmtiles",
-                    }
-            else:
-                # Fallback: real-time MVT tiles from PostGIS
-                cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
-                tile_url = f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.mvt"
-                if cache_param:
-                    tile_url += f"?{cache_param}"
-
-                style_json["sources"][layer_id] = {
-                    "type": "vector",
-                    "tiles": [tile_url],
-                    "minzoom": 0,
-                    "maxzoom": 18,
-                }
+            style_json["sources"][layer_id] = {
+                "type": "vector",
+                "tiles": [tile_url],
+                "minzoom": 0,
+                "maxzoom": 18,
+            }
 
             # Check if override_layers is not None
             if override_layers is not None and layer_id in override_layers:
