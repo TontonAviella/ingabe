@@ -201,6 +201,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   // Merge computed enrichment metrics into the column list (they live in the
   // app DB, not in the OGR source, so the /attributes endpoint won't include them).
   useEffect(() => {
+    if (columnsLoading) return;
     const computedKeys = availableMetrics.filter((m) => m.computed).map((m) => m.key);
     if (computedKeys.length === 0) return;
     setColumns((prev) => {
@@ -210,7 +211,7 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
       }
       return merged.length !== prev.length ? merged : prev;
     });
-  }, [availableMetrics]);
+  }, [availableMetrics, columnsLoading]);
 
   const handleEnrich = async (metricKey: string) => {
     setEnriching(metricKey);

@@ -243,10 +243,15 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
       if (!map || !isMapReady) return;
 
       const { color: _c, ...rest } = overridesRef.current[layerId] ?? {};
+      // Boost fill-opacity so choropleth colors are clearly visible on the map.
+      // Default LLM styles use 0.3 opacity which makes classification colors
+      // nearly invisible on satellite basemaps.
+      const opacity = rest.opacity !== undefined && rest.opacity >= 0.7 ? rest.opacity : 0.8;
       const next: PaintOverrides = {
         ...overridesRef.current,
         [layerId]: {
           ...rest,
+          opacity,
           choroplethExpression: expression,
           choroplethColumn: column,
         },
@@ -260,7 +265,7 @@ export function useLayerPaintOverrides({ map, mapId, isMapReady }: UseLayerPaint
       apiFetch(`/api/maps/${mapId}/layer/${layerId}/overrides`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ choroplethExpression: expression, choroplethColumn: column }),
+        body: JSON.stringify({ choroplethExpression: expression, choroplethColumn: column, opacity }),
       }).catch(() => {
         // Non-critical — overrides are in-memory anyway
       });
