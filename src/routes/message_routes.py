@@ -2474,6 +2474,90 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "create_management_zones":
+                            try:
+                                from src.services.precision_ag_service import create_management_zones
+
+                                result_data = await asyncio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: create_management_zones(
+                                        geometry=tool_args.get("geometry"),
+                                        num_zones=tool_args.get("num_zones", 3),
+                                        date_from=tool_args.get("date_from"),
+                                        date_to=tool_args.get("date_to"),
+                                    ),
+                                )
+                                if "error" in result_data:
+                                    tool_result = {"status": "error", "error": result_data["error"]}
+                                else:
+                                    tool_result = {"status": "success", "management_zones": result_data}
+                            except Exception as e:
+                                logger.exception("create_management_zones failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "create_prescription_map":
+                            try:
+                                from src.services.precision_ag_service import create_prescription_map
+
+                                result_data = await asyncio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: create_prescription_map(
+                                        geometry=tool_args.get("geometry"),
+                                        crop_type=tool_args.get("crop_type", "maize"),
+                                        num_zones=tool_args.get("num_zones", 3),
+                                    ),
+                                )
+                                if "error" in result_data:
+                                    tool_result = {"status": "error", "error": result_data["error"]}
+                                else:
+                                    tool_result = {"status": "success", "prescription_map": result_data}
+                            except Exception as e:
+                                logger.exception("create_prescription_map failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "create_soil_sampling_plan":
+                            try:
+                                from src.services.precision_ag_service import create_soil_sampling_plan
+
+                                result_data = await asyncio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: create_soil_sampling_plan(
+                                        geometry=tool_args.get("geometry"),
+                                        num_zones=tool_args.get("num_zones", 3),
+                                    ),
+                                )
+                                if "error" in result_data:
+                                    tool_result = {"status": "error", "error": result_data["error"]}
+                                else:
+                                    tool_result = {"status": "success", "sampling_plan": result_data}
+                            except Exception as e:
+                                logger.exception("create_soil_sampling_plan failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "get_ndvi_stats":
                             try:
                                 from datetime import date as _date, datetime as _datetime, timedelta as _td
@@ -2965,18 +3049,17 @@ async def process_chat_interaction_task(
                                     _cutoff = (_datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
 
                                     # Query cache for fresh rows
-                                    _placeholders = ", ".join([f"${i+2}" for i in range(len(_admin_names))])
                                     _cached_rows = await conn.fetch(
-                                        f"SELECT admin_name, parent_name, week_start, "
-                                        f"ndvi_mean, ndvi_std, evi_mean, evi_std, "
-                                        f"ndwi_mean, ndwi_std, savi_mean, savi_std, "
-                                        f"ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
-                                        f"valid_pixels, computed_at "
-                                        f"FROM agri_indices_cache "
-                                        f"WHERE admin_level = $1 "
-                                        f"AND admin_name = ANY(${len(_admin_names) + 2}::text[]) "
-                                        f"AND computed_at >= ${len(_admin_names) + 3} "
-                                        f"ORDER BY computed_at DESC",
+                                        "SELECT admin_name, parent_name, week_start, "
+                                        "ndvi_mean, ndvi_std, evi_mean, evi_std, "
+                                        "ndwi_mean, ndwi_std, savi_mean, savi_std, "
+                                        "ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
+                                        "valid_pixels, computed_at "
+                                        "FROM agri_indices_cache "
+                                        "WHERE admin_level = $1 "
+                                        "AND admin_name = ANY($2::text[]) "
+                                        "AND computed_at >= $3 "
+                                        "ORDER BY computed_at DESC",
                                         _level, _admin_names, _cutoff,
                                     )
 

@@ -481,7 +481,7 @@
     "type": "function",
     "function": {
       "name": "get_field_health",
-      "description": "Get real-time vegetation health statistics for a field polygon using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. Use when the user asks about crop health, vegetation status, or field monitoring for a specific area.",
+      "description": "Get real-time vegetation health statistics for a specific polygon/area using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. PREFERRED tool when the user asks about NDVI, crop health, vegetation, or field monitoring for a specific area, buffer zone, field, or any polygon that is NOT an admin boundary. Use the geometry from an existing layer on the map (buffer, drawn polygon, uploaded field boundary).",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -631,7 +631,7 @@
     "type": "function",
     "function": {
       "name": "get_agri_indices",
-      "description": "Get REAL-TIME agricultural vegetation indices from Sentinel-2 satellite imagery via Sentinel Hub. Computes 6 indices in one call: NDVI (vegetation health), EVI (enhanced vegetation), NDWI (water content), SAVI (soil-adjusted vegetation), NDRE (nitrogen/chlorophyll), NDBI (built-up index). Works at district, sector (ADM3), or cell (ADM4) level. Uses SCL cloud masking for accurate results. Use when the user asks about vegetation analysis, crop monitoring, agricultural indices, EVI, NDWI, SAVI, NDRE, NDBI, or wants multi-index analysis at any admin level.",
+      "description": "Get REAL-TIME agricultural vegetation indices for Rwanda ADMINISTRATIVE BOUNDARIES only (districts, sectors, cells). Computes 6 indices: NDVI, EVI, NDWI, SAVI, NDRE, NDBI. Only use when the user explicitly asks for district/sector/cell level analysis. Do NOT use for custom areas, buffers, fields, or drawn polygons — use get_field_health instead for those.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -934,6 +934,85 @@
           }
         },
         "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_management_zones",
+      "description": "Create NDVI-based management zones for a field or farm polygon. Divides the area into productivity zones (Low/Medium/High) using satellite vegetation data and K-means clustering. Returns zone polygons as a map layer with NDVI statistics per zone. Use when the user asks about management zones, productivity mapping, variable-rate zones, or field zoning.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field boundary"
+          },
+          "num_zones": {
+            "type": "integer",
+            "description": "Number of zones to create (2-5, default 3)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date ISO 8601 (default: 30 days ago)"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date ISO 8601 (default: today)"
+          }
+        },
+        "required": ["geometry"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_prescription_map",
+      "description": "Create a variable-rate fertilizer prescription map for a field. Combines NDVI management zones with iSDAsoil data and Rwanda Agriculture Board crop-specific baseline rates. Returns zone polygons with N/P/K recommendations in kg/ha. Use when the user asks about fertilizer recommendations, prescription maps, or variable-rate application.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field boundary"
+          },
+          "crop_type": {
+            "type": "string",
+            "enum": ["maize", "beans", "rice", "wheat", "sorghum", "potato", "cassava"],
+            "description": "Crop type for baseline fertilizer rates (default: maize)"
+          },
+          "num_zones": {
+            "type": "integer",
+            "description": "Number of management zones (2-5, default 3)"
+          }
+        },
+        "required": ["geometry"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "create_soil_sampling_plan",
+      "description": "Create an optimized soil sampling plan for a field. Places 1-2 sampling points per NDVI management zone at representative locations. Returns point locations with sampling instructions and priority. Use when the user asks about soil testing, soil sampling, or where to collect soil samples.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field boundary"
+          },
+          "num_zones": {
+            "type": "integer",
+            "description": "Number of management zones for stratification (2-5, default 3)"
+          }
+        },
+        "required": ["geometry"]
       }
     }
   }
