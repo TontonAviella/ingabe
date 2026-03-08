@@ -250,6 +250,12 @@ export default function MapLibreMap({
   const [assistantExpanded, setAssistantExpanded] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
   const [pieOverlays, setPieOverlays] = useState<Map<string, PieChartData>>(new Map());
+  const [sceneInfo, setSceneInfo] = useState<{
+    scene_date: string | null;
+    cloud_cover: number | null;
+    scenes_available: number;
+  } | null>(null);
+  const [isSentinel2Active, setIsSentinel2Active] = useState(false);
 
   const {
     overrides: paintOverrides,
@@ -404,6 +410,8 @@ export default function MapLibreMap({
     'esri-topo',
     'carto-dark',
     'carto-voyager',
+    'sentinel2-live',
+    'ndvi-map',
     // OpenFreeMap vector style uses these source IDs:
     'ne2_shaded',
     'openmaptiles',
@@ -471,7 +479,11 @@ export default function MapLibreMap({
           }
         }
 
-        // 5. Persist basemap choice to DB (fire-and-forget, don't block UI)
+        // 5. Track Sentinel-2 Live for scene info overlay
+        setIsSentinel2Active(newBasemap === 'sentinel2_live' || newBasemap === 'ndvi_map');
+        if (newBasemap !== 'sentinel2_live' && newBasemap !== 'ndvi_map') setSceneInfo(null);
+
+        // 6. Persist basemap choice to DB (fire-and-forget, don't block UI)
         apiFetch(`/api/maps/${urlMapId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -1368,6 +1380,56 @@ export default function MapLibreMap({
     }
   }, [handleBasemapChange]);
 
+  // Detect sentinel2_live basemap from initial style load
+  useEffect(() => {
+    setIsSentinel2Active(currentBasemap === 'sentinel2_live' || currentBasemap === 'ndvi_map');
+    if (currentBasemap !== 'sentinel2_live') setSceneInfo(null);
+  }, [currentBasemap]);
+
+  // Fetch scene info when Sentinel-2 Live basemap is active
+  useEffect(() => {
+    const map = localMapRef.current;
+    if (!map || !isSentinel2Active) return;
+
+    let cancelled = false;
+    let debounceTimer: ReturnType<typeof setTimeout>;
+
+    const fetchSceneInfo = () => {
+      const bounds = map.getBounds();
+      if (!bounds) return;
+
+      const params = new URLSearchParams({
+        west: bounds.getWest().toFixed(4),
+        south: bounds.getSouth().toFixed(4),
+        east: bounds.getEast().toFixed(4),
+        north: bounds.getNorth().toFixed(4),
+        collection: 'sentinel-2-l2a',
+      });
+
+      apiFetch(`/api/satellite/scene-info?${params}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (!cancelled) setSceneInfo(data);
+        })
+        .catch(() => {});
+    };
+
+    const onMoveEnd = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(fetchSceneInfo, 500);
+    };
+
+    // Fetch immediately + on map move
+    fetchSceneInfo();
+    map.on('moveend', onMoveEnd);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(debounceTimer);
+      map.off('moveend', onMoveEnd);
+    };
+  }, [isSentinel2Active, mapInstanceId]);
+
   // Effect to log when attribute table is opened/closed
   useEffect(() => {
     if (showAttributeTable && selectedLayer) {
@@ -1400,6 +1462,23 @@ export default function MapLibreMap({
     <>
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
+
+        {/* Sentinel-2 scene info badge */}
+        {isSentinel2Active && sceneInfo?.scene_date && (
+          <div className="absolute bottom-8 left-28 z-10 bg-black/70 text-white text-xs px-3 py-1.5 rounded-md backdrop-blur-sm pointer-events-none flex items-center gap-2">
+            <span className="font-semibold">
+              Captured: {new Date(sceneInfo.scene_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+            {sceneInfo.cloud_cover != null && (
+              <span className="text-white/70">
+                | Cloud: {Math.round(sceneInfo.cloud_cover)}%
+              </span>
+            )}
+            <span className="text-white/50">
+              | {sceneInfo.scenes_available} scene{sceneInfo.scenes_available !== 1 ? 's' : ''} in range
+            </span>
+          </div>
+        )}
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (

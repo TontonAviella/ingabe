@@ -84,7 +84,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
 
   qgis-processing:
     restart: unless-stopped

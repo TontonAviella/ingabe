@@ -9,6 +9,9 @@ for new Sentinel-2 L2A scenes over Rwanda and invalidates the tile cache.
 
 import json
 import logging
+import math
+import threading
+import urllib.request
 
 import requests
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
@@ -197,6 +200,42 @@ def build_failed_cog_retry_sensor(raster_job):
     return failed_cog_retry_sensor
 
 
+def _warm_satellite_cache(base_url: str = "http://localhost:8000"):
+    """Pre-fetch all satellite tiles covering Rwanda at z8-z13 for both TRUE-COLOR and NDVI.
+
+    Runs synchronously — designed to be called in a background thread.
+    Takes ~15-20 minutes to complete (~5,500 tiles).
+    """
+    west, south, east, north = 28.86, -2.84, 30.90, -1.05
+    layers = ["TRUE-COLOR", "NDVI"]
+    cached = 0
+
+    def _lng_to_x(lng: float, z: int) -> int:
+        return int((lng + 180) / 360 * (1 << z))
+
+    def _lat_to_y(lat: float, z: int) -> int:
+        r = math.radians(lat)
+        return int((1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2 * (1 << z))
+
+    for layer in layers:
+        for z in range(8, 14):
+            x0, x1 = _lng_to_x(west, z), _lng_to_x(east, z)
+            y0, y1 = _lat_to_y(north, z), _lat_to_y(south, z)
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    url = (
+                        f"{base_url}/api/satellite/{z}/{x}/{y}.png"
+                        f"?layer={layer}&collection=sentinel-2-l2a"
+                    )
+                    try:
+                        urllib.request.urlopen(url, timeout=30)
+                        cached += 1
+                    except Exception:
+                        pass
+
+    logger.info("Satellite cache warming complete: %d tiles cached", cached)
+
+
 def build_satellite_scene_sensor():
     """Factory that creates a sensor to detect new Sentinel-2 scenes over Rwanda.
 
@@ -315,6 +354,14 @@ def build_satellite_scene_sensor():
                 context.log.info("Published satellite update notification")
         except Exception as e:
             context.log.warning(f"Failed to invalidate cache / publish notification: {e}")
+
+        # Re-warm tile cache in background thread (non-blocking)
+        try:
+            t = threading.Thread(target=_warm_satellite_cache, daemon=True)
+            t.start()
+            context.log.info("Started background cache warming thread")
+        except Exception as e:
+            context.log.warning(f"Failed to start cache warming: {e}")
 
         # Update cursor to latest scene datetime
         context.update_cursor(latest_dt)

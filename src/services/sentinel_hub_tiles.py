@@ -79,6 +79,67 @@ async def get_access_token() -> str:
     return _cached_token
 
 
+# Sentinel Hub Catalog API (STAC)
+_SH_CATALOG_URL = "https://services.sentinel-hub.com/api/v1/catalog/1.0.0/search"
+
+
+async def search_catalog(
+    bbox_wgs84: tuple[float, float, float, float],
+    *,
+    collection: str = "sentinel-2-l2a",
+    date_from: str = "",
+    date_to: str = "",
+) -> list[dict]:
+    """Search Sentinel Hub Catalog for scenes covering a WGS84 bounding box.
+
+    Returns a list of scene dicts with 'datetime' and 'cloud_cover' fields,
+    sorted by cloud cover ascending (clearest first).
+    """
+    token = await get_access_token()
+
+    search_body: dict = {
+        "collections": [collection],
+        "bbox": list(bbox_wgs84),
+        "limit": 5,
+        "fields": {
+            "include": [
+                "properties.datetime",
+                "properties.eo:cloud_cover",
+            ],
+        },
+    }
+    if date_from and date_to:
+        search_body["datetime"] = f"{date_from}T00:00:00Z/{date_to}T23:59:59Z"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            _SH_CATALOG_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=search_body,
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                logger.warning("Catalog search failed %d: %s", resp.status, body[:200])
+                return []
+            data = await resp.json()
+
+    results = []
+    for feat in data.get("features", []):
+        props = feat.get("properties", {})
+        results.append({
+            "datetime": props.get("datetime", ""),
+            "cloud_cover": props.get("eo:cloud_cover"),
+        })
+
+    # Sort by cloud cover (clearest first) to match leastCC mosaicking
+    results.sort(key=lambda s: s.get("cloud_cover") or 100)
+    return results
+
+
 def tile_bbox_3857(z: int, x: int, y: int) -> tuple[float, float, float, float]:
     """Convert XYZ tile coordinates to EPSG:3857 bounding box.
 
@@ -175,37 +236,23 @@ function evaluatePixel(s) {
 }""",
 }
 
-# Sentinel-2 L2A — 30-day median composites with SCL cloud masking
-# Uses ORBIT mosaicking to combine multiple cloud-free passes into clean tiles.
-# SCL classes 4-7 = vegetation, bare soil, water, snow (cloud-free pixels).
-# Bands: B02=blue, B03=green, B04=red, B05=rededge, B08=nir, SCL=scene class
+# Sentinel-2 L2A — SIMPLE mosaicking (most-recent cloud-free scene)
+# Uses mostRecent mosaickingOrder + maxCloudCoverage filter in the API,
+# so evalscripts only need to render a single pixel — much faster than ORBIT.
+# Bands: B02=blue, B03=green, B04=red, B05=rededge, B08=nir
 _S2_EVALSCRIPTS: dict[str, str] = {
     "TRUE-COLOR": """//VERSION=3
 function setup() {
   return {
     input: [{ bands: ["B04","B03","B02","dataMask"], units: "REFLECTANCE" }],
-    output: { bands: 4 },
-    mosaicking: "ORBIT"
+    output: { bands: 4 }
   };
 }
-function median(arr) {
-  arr.sort(function(a,b){return a-b});
-  var m = Math.floor(arr.length/2);
-  return arr.length % 2 ? arr[m] : (arr[m-1]+arr[m])/2;
-}
-function evaluatePixel(samples) {
-  var vR=[],vG=[],vB=[];
-  for (var i=0; i<samples.length; i++) {
-    var s = samples[i];
-    if (!s.dataMask) continue;
-    var bright = (s.B04+s.B03+s.B02)/3;
-    if (bright > 0.3) continue;
-    vR.push(s.B04); vG.push(s.B03); vB.push(s.B02);
-  }
-  if (!vR.length) return [0,0,0,0];
-  var r=median(vR), g=median(vG), b=median(vB);
-  var gain=3.5, sat=1.2;
-  var avg=(r+g+b)/3*(1-sat);
+function evaluatePixel(s) {
+  if (!s.dataMask) return [0,0,0,0];
+  var gain = 3.5, sat = 1.2;
+  var r = s.B04, g = s.B03, b = s.B02;
+  var avg = (r+g+b)/3*(1-sat);
   return [
     Math.min(1, avg+gain*r*sat),
     Math.min(1, avg+gain*g*sat),
@@ -215,90 +262,66 @@ function evaluatePixel(samples) {
     "NDVI": """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B04","B08","dataMask"], units: "REFLECTANCE" }],
-    output: { bands: 4 },
-    mosaicking: "ORBIT"
+    input: [{ bands: ["B04","B08","SCL","dataMask"] }],
+    output: { bands: 4 }
   };
 }
-function median(arr) {
-  arr.sort(function(a,b){return a-b});
-  var m = Math.floor(arr.length/2);
-  return arr.length % 2 ? arr[m] : (arr[m-1]+arr[m])/2;
-}
-function evaluatePixel(samples) {
-  var vR=[],vN=[];
-  for (var i=0; i<samples.length; i++) {
-    var s = samples[i];
-    if (!s.dataMask) continue;
-    if ((s.B04+s.B08)/2 > 0.4) continue;
-    vR.push(s.B04); vN.push(s.B08);
-  }
-  if (!vR.length) return [0,0,0,0];
-  var red=median(vR), nir=median(vN);
-  var ndvi = (nir - red) / (nir + red);
+function evaluatePixel(s) {
+  if (!s.dataMask) return [0,0,0,0];
+  // Mask clouds/snow/shadow via Scene Classification Layer
+  if (s.SCL==3||s.SCL==8||s.SCL==9||s.SCL==10||s.SCL==11) return [0,0,0,0];
+  var ndvi = (s.B08 - s.B04) / (s.B08 + s.B04 + 1e-10);
+  // Continuous red-orange-yellow-green ramp (0→1)
+  // Anchors: 0.0=red, 0.3=orange, 0.5=yellow, 0.7=light-green, 1.0=dark-green
+  var t = Math.max(0, Math.min(1, ndvi));
   var r, g, b;
-  if (ndvi < -0.2) { r = 0.6; g = 0.6; b = 0.6; }
-  else if (ndvi < 0.0) { r = 0.7; g = 0.4; b = 0.2; }
-  else if (ndvi < 0.15) { r = 0.9; g = 0.6; b = 0.2; }
-  else if (ndvi < 0.3) { r = 1.0; g = 0.9; b = 0.2; }
-  else if (ndvi < 0.5) { r = 0.5; g = 0.8; b = 0.1; }
-  else if (ndvi < 0.7) { r = 0.1; g = 0.7; b = 0.1; }
-  else { r = 0.0; g = 0.4; b = 0.0; }
+  if (t < 0.2) {
+    var f = t / 0.2;
+    r = 0.78 + f * 0.17; g = 0.13 + f * 0.30; b = 0.07 + f * 0.0;
+  } else if (t < 0.35) {
+    var f = (t - 0.2) / 0.15;
+    r = 0.95 - f * 0.05; g = 0.43 + f * 0.37; b = 0.07 + f * 0.05;
+  } else if (t < 0.5) {
+    var f = (t - 0.35) / 0.15;
+    r = 0.90 - f * 0.42; g = 0.80 + f * 0.05; b = 0.12 - f * 0.02;
+  } else if (t < 0.65) {
+    var f = (t - 0.5) / 0.15;
+    r = 0.48 - f * 0.28; g = 0.85 - f * 0.10; b = 0.10 - f * 0.02;
+  } else if (t < 0.8) {
+    var f = (t - 0.65) / 0.15;
+    r = 0.20 - f * 0.12; g = 0.75 - f * 0.15; b = 0.08 - f * 0.02;
+  } else {
+    var f = (t - 0.8) / 0.2;
+    r = 0.08 - f * 0.06; g = 0.60 - f * 0.22; b = 0.06 - f * 0.02;
+  }
   return [r, g, b, 1];
 }""",
     "FALSE-COLOR": """//VERSION=3
 function setup() {
   return {
     input: [{ bands: ["B03","B04","B08","dataMask"], units: "REFLECTANCE" }],
-    output: { bands: 4 },
-    mosaicking: "ORBIT"
+    output: { bands: 4 }
   };
 }
-function median(arr) {
-  arr.sort(function(a,b){return a-b});
-  var m = Math.floor(arr.length/2);
-  return arr.length % 2 ? arr[m] : (arr[m-1]+arr[m])/2;
-}
-function evaluatePixel(samples) {
-  var vG=[],vR=[],vN=[];
-  for (var i=0; i<samples.length; i++) {
-    var s = samples[i];
-    if (!s.dataMask) continue;
-    if ((s.B04+s.B03)/2 > 0.3) continue;
-    vG.push(s.B03); vR.push(s.B04); vN.push(s.B08);
-  }
-  if (!vG.length) return [0,0,0,0];
-  var gain=2.5;
+function evaluatePixel(s) {
+  if (!s.dataMask) return [0,0,0,0];
+  var gain = 2.5;
   return [
-    Math.min(1, gain*median(vN)),
-    Math.min(1, gain*median(vR)),
-    Math.min(1, gain*median(vG)), 1
+    Math.min(1, gain*s.B08),
+    Math.min(1, gain*s.B04),
+    Math.min(1, gain*s.B03), 1
   ];
 }""",
     "NDRE": """//VERSION=3
 function setup() {
   return {
     input: [{ bands: ["B05","B08","dataMask"], units: "REFLECTANCE" }],
-    output: { bands: 4 },
-    mosaicking: "ORBIT"
+    output: { bands: 4 }
   };
 }
-function median(arr) {
-  arr.sort(function(a,b){return a-b});
-  var m = Math.floor(arr.length/2);
-  return arr.length % 2 ? arr[m] : (arr[m-1]+arr[m])/2;
-}
-function evaluatePixel(samples) {
-  var vRE=[],vN=[];
-  for (var i=0; i<samples.length; i++) {
-    var s = samples[i];
-    if (!s.dataMask) continue;
-    if ((s.B05+s.B08)/2 > 0.4) continue;
-    vRE.push(s.B05); vN.push(s.B08);
-  }
-  if (!vRE.length) return [0,0,0,0];
-  var re=median(vRE), nir=median(vN);
-  var ndre = (nir - re) / (nir + re);
+function evaluatePixel(s) {
+  if (!s.dataMask) return [0,0,0,0];
+  var ndre = (s.B08 - s.B05) / (s.B08 + s.B05);
   var r, g, b;
   if (ndre < -0.1) { r = 0.5; g = 0.5; b = 0.5; }
   else if (ndre < 0.0) { r = 0.8; g = 0.2; b = 0.2; }
@@ -357,7 +380,7 @@ def build_process_payload(
     data_type = _COLLECTION_TYPES.get(collection, collection)
 
     data_filter: dict = {
-        "mosaickingOrder": "mostRecent",
+        "mosaickingOrder": "leastCC",
     }
     if date_from and date_to:
         data_filter["timeRange"] = {

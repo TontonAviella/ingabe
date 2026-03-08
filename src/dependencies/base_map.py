@@ -53,14 +53,17 @@ class OpenStreetMapProvider(BaseMapProvider):
         "esri_satellite": {
             "name": "Esri Satellite",
             "tiles": [
-                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                (
+                    f"https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}?token={os.environ['ESRI_API_KEY']}"
+                    if os.environ.get("ESRI_API_KEY")
+                    else "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                )
             ],
             "tileSize": 256,
             "attribution": "&copy; Esri, Maxar, Earthstar Geographics",
-            # Esri serves tiles up to ~z19, but coverage in rural Africa is
-            # patchy above z18.  Capping at 18 lets MapLibre overzoom (stretch
-            # the z18 tile) instead of showing "Map data not yet available".
-            "maxzoom": 18,
+            # With an API key the authenticated endpoint serves sharper tiles
+            # up to z23.  Without a key, the free public endpoint caps at z18.
+            "maxzoom": 23 if os.environ.get("ESRI_API_KEY") else 18,
         },
         "esri_topo": {
             "name": "Esri Topographic",
@@ -96,7 +99,19 @@ class OpenStreetMapProvider(BaseMapProvider):
             ],
             "tileSize": 512,
             "attribution": "&copy; Copernicus Sentinel-2 (ESA), processed by Sentinel Hub",
-            "maxzoom": 18,
+            # Sentinel-2 is 10m resolution — useful up to z14 (~10m/pixel).
+            # Beyond z14, MapLibre overzooms (stretches tiles) instead of
+            # requesting new API calls for data that can't be sharper.
+            "maxzoom": 14,
+        },
+        "ndvi_map": {
+            "name": "NDVI Vegetation",
+            "tiles": [
+                "/api/satellite/{z}/{x}/{y}.png?layer=NDVI&collection=sentinel-2-l2a"
+            ],
+            "tileSize": 512,
+            "attribution": "&copy; Copernicus Sentinel-2 NDVI (ESA), processed by Sentinel Hub",
+            "maxzoom": 14,
         },
     }
 
@@ -166,6 +181,7 @@ class OpenStreetMapProvider(BaseMapProvider):
         return [
             "esri_satellite",
             "sentinel2_live",
+            "ndvi_map",
             "openstreetmap",
             "openfreemap",
             "esri_topo",
@@ -181,6 +197,7 @@ class OpenStreetMapProvider(BaseMapProvider):
                 "https://tiles.openfreemap.org",
                 "https://demotiles.maplibre.org",
                 "https://server.arcgisonline.com",
+                "https://ibasemaps-api.arcgis.com",
                 "https://basemaps.cartocdn.com",
             ],
             "img-src": [
@@ -188,6 +205,7 @@ class OpenStreetMapProvider(BaseMapProvider):
                 "https://tiles.openfreemap.org",
                 "https://demotiles.maplibre.org",
                 "https://server.arcgisonline.com",
+                "https://ibasemaps-api.arcgis.com",
                 "https://basemaps.cartocdn.com",
             ],
             "font-src": [
@@ -203,6 +221,7 @@ class OpenStreetMapProvider(BaseMapProvider):
             "openfreemap": "OpenFreeMap",
             "esri_satellite": "Satellite",
             "sentinel2_live": "Sentinel-2 Live",
+            "ndvi_map": "NDVI Vegetation",
             "esri_topo": "Topographic",
             "carto_dark": "Dark Matter",
             "carto_voyager": "Voyager",

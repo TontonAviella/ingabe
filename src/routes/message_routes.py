@@ -2450,9 +2450,25 @@ async def process_chat_interaction_task(
                                 if sh_service is None:
                                     tool_result = {"status": "error", "error": "Sentinel Hub not available"}
                                 else:
+                                    _fh_geom = tool_args.get("geometry")
+                                    # Auto-buffer Point/MultiPoint geometries (500m) so the LLM
+                                    # doesn't need to create a buffer first.
+                                    if _fh_geom and _fh_geom.get("type") in ("Point", "MultiPoint"):
+                                        from shapely.geometry import shape as _shape, mapping as _mapping
+                                        from pyproj import Transformer as _Transformer
+                                        _pt = _shape(_fh_geom)
+                                        _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
+                                        _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
+                                        from shapely.ops import transform as _stransform
+                                        _pt_utm = _stransform(_to_utm.transform, _pt)
+                                        _buf_utm = _pt_utm.buffer(500)  # 500m radius
+                                        _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
+                                        _fh_geom = _mapping(_buf_wgs)
+                                        logger.info("get_field_health: auto-buffered Point to 500m polygon")
+
                                     result_data = await asyncio.get_event_loop().run_in_executor(
                                         None, lambda: sh_service.get_field_stats(
-                                            geometry=tool_args.get("geometry"),
+                                            geometry=_fh_geom,
                                             date_from=tool_args.get("date_from"),
                                             date_to=tool_args.get("date_to"),
                                             index=tool_args.get("index", "ndvi"),

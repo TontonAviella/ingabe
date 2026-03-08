@@ -20,6 +20,7 @@ from src.circuit_breaker import sentinel_hub_cb
 from src.services.sentinel_hub_tiles import (
     fetch_tile,
     is_configured,
+    search_catalog,
     tile_bbox_3857,
 )
 from src.tile_cache import tile_cache
@@ -34,10 +35,11 @@ _SH_SEMAPHORE = asyncio.Semaphore(8)
 
 @lru_cache(maxsize=1)
 def _transparent_tile() -> bytes:
+    """512x512 transparent PNG — must match tileSize in basemap source config."""
     from PIL import Image
 
     buf = io.BytesIO()
-    Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+    Image.new("RGBA", (512, 512), (0, 0, 0, 0)).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -67,7 +69,7 @@ async def get_satellite_tile(
     collection: str = Query("sentinel-2-l2a", description="Data collection (sentinel-2-l2a, planetscope, skysat)"),
     date_from: str = Query("", description="Start date ISO (e.g. 2025-05-01)"),
     date_to: str = Query("", description="End date ISO (e.g. 2025-05-31)"),
-    maxcc: int = Query(20, ge=0, le=100, description="Max cloud coverage %"),
+    maxcc: int = Query(100, ge=0, le=100, description="Max cloud coverage %"),
     hd: bool = Query(True, description="HD mode: 512px tiles with BICUBIC upsampling"),
 ):
     if not is_configured():
@@ -81,12 +83,12 @@ async def get_satellite_tile(
 
     tile_size = 512 if hd else 256
 
-    # Default to last 90 days for temporal composite (cloud-free median)
-    # Longer window needed in rainy season for enough clear pixels
+    # Default to last 60 days — gives enough scenes to find clear imagery
+    # even during Rwanda's rainy season (Oct-May)
     if not date_from or not date_to:
         today = date.today()
         date_to = today.isoformat()
-        date_from = (today - timedelta(days=90)).isoformat()
+        date_from = (today - timedelta(days=60)).isoformat()
 
     if not sentinel_hub_cb.can_execute():
         return Response(
@@ -146,3 +148,58 @@ async def get_satellite_tile(
 
     await tile_cache.put(cache_key, z, x, y, png_bytes, fmt="sat")
     return Response(content=png_bytes, media_type="image/png", headers=_TILE_HEADERS)
+
+
+@satellite_router.get(
+    "/satellite/scene-info",
+    operation_id="get_satellite_scene_info",
+    summary="Scene metadata for visible satellite imagery",
+    description=(
+        "Queries Sentinel Hub Catalog for the scene currently displayed "
+        "on the map (least cloudy in the date range). Returns acquisition "
+        "date, cloud cover %, and date range."
+    ),
+)
+async def get_satellite_scene_info(
+    west: float = Query(..., description="West bound (longitude)"),
+    south: float = Query(..., description="South bound (latitude)"),
+    east: float = Query(..., description="East bound (longitude)"),
+    north: float = Query(..., description="North bound (latitude)"),
+    collection: str = Query("sentinel-2-l2a"),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+):
+    if not is_configured():
+        raise HTTPException(status_code=503, detail="Sentinel Hub not configured")
+
+    # Default to same 60-day window used for tiles
+    if not date_from or not date_to:
+        today = date.today()
+        date_to = today.isoformat()
+        date_from = (today - timedelta(days=60)).isoformat()
+
+    scenes = await search_catalog(
+        bbox_wgs84=(west, south, east, north),
+        collection=collection,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    if not scenes:
+        return {
+            "scene_date": None,
+            "cloud_cover": None,
+            "date_from": date_from,
+            "date_to": date_to,
+            "scenes_available": 0,
+        }
+
+    # First scene is clearest (sorted by cloud cover in search_catalog)
+    best = scenes[0]
+    return {
+        "scene_date": best["datetime"],
+        "cloud_cover": best["cloud_cover"],
+        "date_from": date_from,
+        "date_to": date_to,
+        "scenes_available": len(scenes),
+    }
