@@ -10,6 +10,7 @@ Endpoint: GET /api/satellite/{z}/{x}/{y}.png
 import asyncio
 import io
 import logging
+from datetime import date, timedelta
 from functools import lru_cache
 
 from fastapi import APIRouter, HTTPException, Query
@@ -79,6 +80,13 @@ async def get_satellite_tile(
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
 
     tile_size = 512 if hd else 256
+
+    # Default to last 90 days for temporal composite (cloud-free median)
+    # Longer window needed in rainy season for enough clear pixels
+    if not date_from or not date_to:
+        today = date.today()
+        date_to = today.isoformat()
+        date_from = (today - timedelta(days=90)).isoformat()
 
     if not sentinel_hub_cb.can_execute():
         return Response(

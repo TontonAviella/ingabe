@@ -183,7 +183,7 @@ _S2_EVALSCRIPTS: dict[str, str] = {
     "TRUE-COLOR": """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B04","B03","B02","SCL","dataMask"], units: "REFLECTANCE" }],
+    input: [{ bands: ["B04","B03","B02","dataMask"], units: "REFLECTANCE" }],
     output: { bands: 4 },
     mosaicking: "ORBIT"
   };
@@ -197,9 +197,10 @@ function evaluatePixel(samples) {
   var vR=[],vG=[],vB=[];
   for (var i=0; i<samples.length; i++) {
     var s = samples[i];
-    if (s.dataMask && s.SCL>=4 && s.SCL<=7) {
-      vR.push(s.B04); vG.push(s.B03); vB.push(s.B02);
-    }
+    if (!s.dataMask) continue;
+    var bright = (s.B04+s.B03+s.B02)/3;
+    if (bright > 0.3) continue;
+    vR.push(s.B04); vG.push(s.B03); vB.push(s.B02);
   }
   if (!vR.length) return [0,0,0,0];
   var r=median(vR), g=median(vG), b=median(vB);
@@ -214,7 +215,7 @@ function evaluatePixel(samples) {
     "NDVI": """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B04","B08","SCL","dataMask"], units: "REFLECTANCE" }],
+    input: [{ bands: ["B04","B08","dataMask"], units: "REFLECTANCE" }],
     output: { bands: 4 },
     mosaicking: "ORBIT"
   };
@@ -228,9 +229,9 @@ function evaluatePixel(samples) {
   var vR=[],vN=[];
   for (var i=0; i<samples.length; i++) {
     var s = samples[i];
-    if (s.dataMask && s.SCL>=4 && s.SCL<=7) {
-      vR.push(s.B04); vN.push(s.B08);
-    }
+    if (!s.dataMask) continue;
+    if ((s.B04+s.B08)/2 > 0.4) continue;
+    vR.push(s.B04); vN.push(s.B08);
   }
   if (!vR.length) return [0,0,0,0];
   var red=median(vR), nir=median(vN);
@@ -248,7 +249,7 @@ function evaluatePixel(samples) {
     "FALSE-COLOR": """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B03","B04","B08","SCL","dataMask"], units: "REFLECTANCE" }],
+    input: [{ bands: ["B03","B04","B08","dataMask"], units: "REFLECTANCE" }],
     output: { bands: 4 },
     mosaicking: "ORBIT"
   };
@@ -262,9 +263,9 @@ function evaluatePixel(samples) {
   var vG=[],vR=[],vN=[];
   for (var i=0; i<samples.length; i++) {
     var s = samples[i];
-    if (s.dataMask && s.SCL>=4 && s.SCL<=7) {
-      vG.push(s.B03); vR.push(s.B04); vN.push(s.B08);
-    }
+    if (!s.dataMask) continue;
+    if ((s.B04+s.B03)/2 > 0.3) continue;
+    vG.push(s.B03); vR.push(s.B04); vN.push(s.B08);
   }
   if (!vG.length) return [0,0,0,0];
   var gain=2.5;
@@ -277,7 +278,7 @@ function evaluatePixel(samples) {
     "NDRE": """//VERSION=3
 function setup() {
   return {
-    input: [{ bands: ["B05","B08","SCL","dataMask"], units: "REFLECTANCE" }],
+    input: [{ bands: ["B05","B08","dataMask"], units: "REFLECTANCE" }],
     output: { bands: 4 },
     mosaicking: "ORBIT"
   };
@@ -291,9 +292,9 @@ function evaluatePixel(samples) {
   var vRE=[],vN=[];
   for (var i=0; i<samples.length; i++) {
     var s = samples[i];
-    if (s.dataMask && s.SCL>=4 && s.SCL<=7) {
-      vRE.push(s.B05); vN.push(s.B08);
-    }
+    if (!s.dataMask) continue;
+    if ((s.B05+s.B08)/2 > 0.4) continue;
+    vRE.push(s.B05); vN.push(s.B08);
   }
   if (!vRE.length) return [0,0,0,0];
   var re=median(vRE), nir=median(vN);
