@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     website_domain: str = Field(default="http://localhost:5173", alias="WEBSITE_DOMAIN")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    # ── Sentinel Hub (Planet Labs integration) ──────────────────────────
+    sh_client_id: str = Field(default="", alias="SH_CLIENT_ID")
+    sh_client_secret: str = Field(default="", alias="SH_CLIENT_SECRET")
+
     # ── External services ──────────────────────────────────────────────
     qgis_processing_url: Optional[str] = Field(default=None, alias="QGIS_PROCESSING_URL")
     postgis_localhost_policy: str = Field(

@@ -71,6 +71,37 @@ def _ensure_pil():
     _Image = _PILImage
 
 
+def _get_empty_tile() -> bytes:
+    """Return a pre-generated transparent 256x256 PNG tile."""
+    global _EMPTY_TILE_PNG
+    if _EMPTY_TILE_PNG is None:
+        _ensure_pil()
+        buf = io.BytesIO()
+        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        _EMPTY_TILE_PNG = buf.getvalue()
+    return _EMPTY_TILE_PNG
+
+
+import time as _time
+
+
+async def _get_presigned_url(cog_key: str) -> str:
+    """Return a presigned URL for the COG, reusing cached URLs when possible."""
+    now = _time.monotonic()
+    cached = _presigned_url_cache.get(cog_key)
+    if cached and (now - cached[0]) < _PRESIGNED_URL_TTL:
+        return cached[1]
+
+    bucket = get_bucket_name()
+    s3 = await get_async_s3_client(signature_version="s3v4")
+    url = await s3_op(
+        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": cog_key}, ExpiresIn=180),
+        "presigned URL", f"raster tile {cog_key}",
+    )
+    _presigned_url_cache[cog_key] = (now, url)
+    return url
+
+
 def _get_dask():
     """Lazy-load dask raster pipeline on first COG generation."""
     global _DASK_AVAILABLE, _RasterPipeline
@@ -100,7 +131,16 @@ SOCIAL_RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
 
 # Semaphore for raster tile rendering — prevents event-loop starvation
 # when MapLibre fires 20-50 concurrent tile requests on zoom/pan.
-RASTER_TILE_SEMAPHORE = asyncio.Semaphore(6)  # Max 6 concurrent COG reads
+# 8 vCPU Hetzner → allow more concurrent reads (default was 6, too conservative).
+RASTER_TILE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("RASTER_TILE_CONCURRENCY", "12")))
+
+# Cache presigned URLs per COG key to avoid regenerating on every tile request.
+# Presigned URLs are valid for 180s; we cache for 120s to avoid edge-case expiry.
+_presigned_url_cache: dict[str, tuple[float, str]] = {}
+_PRESIGNED_URL_TTL = 120  # seconds
+
+# Pre-generated transparent 256x256 PNG tile (avoids PIL per empty tile)
+_EMPTY_TILE_PNG: bytes | None = None
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -405,7 +445,8 @@ async def _generate_cog_subprocess(
     warp_cmd_base = [
         "gdalwarp", "-t_srs", "EPSG:3857",
         "-r", "bilinear", "-of", "COG",
-        "-co", "BLOCKSIZE=256",
+        "-co", "BLOCKSIZE=512",
+        "-multi", "-wo", "NUM_THREADS=ALL_CPUS",
     ]
     if needs_color_ramp_suffix:
         warp_cmd_base.extend(["-ot", "Float32"])
@@ -737,8 +778,10 @@ async def get_raster_xyz_tile(
         if if_none_match and if_none_match == _etag:
             return Response(status_code=304)
 
+    # Tiles are immutable once rendered (layer.last_edited changes on edit).
+    # Browser caches for 1h; nginx proxy_cache also caches for 1h.
     _tile_headers = {
-        "Cache-Control": "public, max-age=300",
+        "Cache-Control": "public, max-age=3600",
         "Access-Control-Allow-Origin": "*",
     }
     if _etag:
@@ -754,36 +797,20 @@ async def get_raster_xyz_tile(
         )
 
     # --- Cache miss: render from COG -------------------------------------
-    # prefer COG key from metadata when present; fall back to original s3_key
     metadata = layer.metadata_dict or {}
     cog_key = metadata.get("cog_key")
 
     if not cog_key:
-        # No COG yet — return a transparent tile immediately instead of
-        # trying to read the raw raster (which times out on Render's 30s proxy).
-        # The frontend can retry later once background COG generation completes.
-        _ensure_pil()
-        buf = io.BytesIO()
-        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
+        # No COG yet — return transparent tile immediately.
         return Response(
-            content=buf.getvalue(),
+            content=_get_empty_tile(),
             media_type="image/png",
             headers={**_tile_headers, "X-COG-Status": "pending", "Cache-Control": "no-cache"},
         )
 
-    s3_key = cog_key
+    # Reuse presigned URL across concurrent tile requests for the same COG
+    asset_url = await _get_presigned_url(cog_key)
 
-    bucket = get_bucket_name()
-    s3 = await get_async_s3_client(signature_version="s3v4")
-    asset_url = await s3_op(
-        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": s3_key}, ExpiresIn=180),
-        "presigned URL", f"raster tile {s3_key}",
-    )
-
-    # Render tile in a thread pool to avoid blocking the async event loop.
-    # Without this, MapLibre firing 20-50 concurrent tile requests causes
-    # rio-tiler's synchronous HTTP+GDAL reads to starve the event loop,
-    # leading to Render's 30s proxy timeout → 502.
     _ensure_rio_tiler()
 
     def _render_tile() -> bytes:
@@ -816,9 +843,7 @@ async def get_raster_xyz_tile(
         )
     except _TileOutsideBounds:
         # Expected: tile coords outside raster extent — transparent tile, cached
-        buf = io.BytesIO()
-        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
-        empty_png = buf.getvalue()
+        empty_png = _get_empty_tile()
         await tile_cache.put(layer.layer_id, z, x, y, empty_png)
         return Response(
             content=empty_png,
@@ -826,18 +851,14 @@ async def get_raster_xyz_tile(
             headers=_tile_headers,
         )
     except Exception as e:
-        # Real render error — log with full context, return transparent tile
-        # but do NOT cache (transient errors should be retried)
         error_class = type(e).__name__
         logger.error(
             "Raster tile render failed for layer=%s z=%d x=%d y=%d: %s: %s",
             layer.layer_id, z, x, y, error_class, str(e),
             exc_info=True
         )
-        buf = io.BytesIO()
-        _Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(buf, format="PNG")
         return Response(
-            content=buf.getvalue(),
+            content=_get_empty_tile(),
             media_type="image/png",
             headers=_tile_headers,
         )

@@ -1,0 +1,113 @@
+# Production override for Hetzner VPS deployment (CPX42: 8 vCPU, 16 GB RAM, 320 GB SSD)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# Note: UFW on the VPS restricts external access to ports 22, 80, 443 only.
+# The app's port 8000 (from base compose) is not reachable externally.
+
+services:
+  # --- Nginx reverse proxy (SSL termination + MinIO proxy) ---
+  nginx:
+    build: ./nginx
+    container_name: mundi-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - app
+      - minio
+    restart: unless-stopped
+    networks:
+      default:
+        # Docker-internal DNS aliases so app's S3 client resolves
+        # s3.gis.nozalabs.rw to nginx (stays in Docker network, no hairpin NAT)
+        aliases:
+          - gis.nozalabs.rw
+          - s3.gis.nozalabs.rw
+
+  # --- App: production overrides ---
+  app:
+    restart: unless-stopped
+    # 8 vCPU → 6 workers (leave headroom for GDAL subprocesses + PostGIS)
+    command: >
+      bash -c "alembic upgrade head &&
+      uvicorn src.wsgi:app --host 0.0.0.0 --port 8000
+      --workers ${WEB_CONCURRENCY:-6} --log-level info
+      --proxy-headers --forwarded-allow-ips='*'"
+    environment:
+      - WEB_CONCURRENCY=${WEB_CONCURRENCY:-6}
+      - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
+      # GDAL env vars for rio-tiler COG reads via S3/HTTP
+      - GDAL_CACHEMAX=256
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+      - GDAL_HTTP_MULTIPLEX=YES
+      - GDAL_BAND_BLOCK_CACHE=HASHSET
+      - VSI_CACHE=TRUE
+      - VSI_CACHE_SIZE=33554432
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+
+  # --- PostgreSQL: tuned for PostGIS on 16 GB host ---
+  postgresdb:
+    restart: unless-stopped
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=2GB"
+      - "-c"
+      - "effective_cache_size=4GB"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "maintenance_work_mem=512MB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "wal_buffers=64MB"
+      - "-c"
+      - "max_wal_size=2GB"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  redis:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  qgis-processing:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # mc: kept — one-shot S3 user setup (~3s, exits immediately)
+  # backup: already has restart: unless-stopped in base
+
+  # --- Disable dev-only services ---
+  dagster-daemon:
+    profiles: ["dev"]
+
+  superset:
+    profiles: ["dev"]
+
+  prometheus:
+    profiles: ["dev"]
+
+  grafana:
+    profiles: ["dev"]
+
+  tempo:
+    profiles: ["dev"]

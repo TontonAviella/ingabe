@@ -79,7 +79,12 @@ MAX_MISSED_MESSAGES = 100  # Limit buffer size per user per conversation
 
 CHAT_CH = "chat_completion_messages_notify"
 REDIS_WS_CHANNEL = "ws:ephemeral"  # Redis Pub/Sub channel for cross-worker ephemeral messages
+REDIS_SATELLITE_CHANNEL = "ws:satellite"  # Redis Pub/Sub channel for satellite scene updates
 chat_q: asyncio.Queue[str] = asyncio.Queue()
+# Global subscriber registry for satellite updates (broadcast to all connected clients)
+satellite_subscribers: set[asyncio.Queue] = set()
+satellite_subscribers_lock = asyncio.Lock()
+
 # Initialize listener tasks at module level
 _listener_task: asyncio.Task | None = None
 _redis_sub_task: asyncio.Task | None = None
@@ -146,16 +151,23 @@ async def _redis_pubsub_listener():
                 continue
 
             pubsub = redis.pubsub()
-            await pubsub.subscribe(REDIS_WS_CHANNEL)
-            logger.info("Redis Pub/Sub subscriber connected to channel: %s", REDIS_WS_CHANNEL)
+            await pubsub.subscribe(REDIS_WS_CHANNEL, REDIS_SATELLITE_CHANNEL)
+            logger.info(
+                "Redis Pub/Sub subscriber connected to channels: %s, %s",
+                REDIS_WS_CHANNEL, REDIS_SATELLITE_CHANNEL,
+            )
             reconnect_delay = 1
 
             async for message in pubsub.listen():
                 if message["type"] != "message":
                     continue
+                channel = message.get("channel", "")
                 payload_json = message["data"]
                 try:
-                    await _distribute_from_json(payload_json)
+                    if channel == REDIS_SATELLITE_CHANNEL:
+                        await _broadcast_satellite_update(payload_json)
+                    else:
+                        await _distribute_from_json(payload_json)
                 except Exception:
                     logger.exception("Error distributing Redis Pub/Sub message")
 
@@ -166,7 +178,7 @@ async def _redis_pubsub_listener():
         finally:
             if pubsub is not None:
                 with suppress(Exception):
-                    await pubsub.unsubscribe(REDIS_WS_CHANNEL)
+                    await pubsub.unsubscribe(REDIS_WS_CHANNEL, REDIS_SATELLITE_CHANNEL)
                     await pubsub.aclose()
             if redis is not None:
                 with suppress(Exception):
@@ -228,6 +240,23 @@ async def _distribute_from_json(payload_json: str):
     parsed_payload = _parse_payload(payload_dict)
     assert parsed_payload.conversation_id, "conversation_id is required"
     await _distribute_to_local(parsed_payload.conversation_id, parsed_payload)
+
+
+async def _broadcast_satellite_update(payload_json: str):
+    """Broadcast a satellite scene update to ALL connected WebSocket clients.
+
+    This is a global broadcast — not scoped to a conversation.
+    """
+    async with satellite_subscribers_lock:
+        queues = list(satellite_subscribers)
+    if not queues:
+        return
+    logger.info("Broadcasting satellite update to %d connected clients", len(queues))
+    for q in queues:
+        try:
+            q.put_nowait({"_satellite_update": True, "_raw": payload_json})
+        except asyncio.QueueFull:
+            pass
 
 
 async def _publish_and_distribute(payload: ConversationRelatedPayload):
@@ -413,6 +442,9 @@ async def ws_conversation_chat(
     queue = asyncio.Queue()
     async with subscribers_lock:
         subscribers_by_conversation[conversation_id].add(queue)
+    # Also register for global satellite updates
+    async with satellite_subscribers_lock:
+        satellite_subscribers.add(queue)
 
     # Check if this user recently disconnected from this specific conversation and replay their missed messages
     user_conversation_key = (user_id, conversation_id)
@@ -453,6 +485,14 @@ async def ws_conversation_chat(
             recv_task.cancel()
             with suppress(asyncio.CancelledError):
                 await recv_task
+
+            # Handle satellite update (global broadcast, not conversation-scoped)
+            if isinstance(payload, dict) and payload.get("_satellite_update"):
+                try:
+                    await ws.send_json(json.loads(payload["_raw"]))
+                except Exception:
+                    logger.debug("Failed to send satellite update", exc_info=True)
+                continue
 
             assert (
                 isinstance(payload, ChatCompletionReferenceNotificationPayload)
@@ -504,6 +544,8 @@ async def ws_conversation_chat(
             "missed_messages": deque(),
         }
 
+        async with satellite_subscribers_lock:
+            satellite_subscribers.discard(queue)
         async with subscribers_lock:
             subscribers_by_conversation[conversation_id].discard(queue)
             if not subscribers_by_conversation[conversation_id]:

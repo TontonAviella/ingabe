@@ -10,6 +10,7 @@ import {
   Link,
   Loader2,
   Plus,
+  Satellite,
   Server,
   Share2,
   Sheet,
@@ -24,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import { ReadyState } from 'react-use-websocket';
 import { toast } from 'sonner';
 import { AddRemoteDataSource } from '@/components/AddRemoteDataSource';
+import { AddSatelliteLayer } from '@/components/AddSatelliteLayer';
 import { ChoroplethDialog } from '@/components/ChoroplethDialog';
 import { ConnectESRIFeatureService } from '@/components/ConnectESRIFeatureService';
 import { ConnectGoogleSheets } from '@/components/ConnectGoogleSheets';
@@ -155,6 +157,7 @@ const LayerList: React.FC<LayerListProps> = ({
   const [showWFSDialog, setShowWFSDialog] = useState(false);
   const [showGoogleSheetsDialog, setShowGoogleSheetsDialog] = useState(false);
   const [showESRIDialog, setShowESRIDialog] = useState(false);
+  const [showSatelliteDialog, setShowSatelliteDialog] = useState(false);
   const [portError, setPortError] = useState<string | null>(null);
 
   // Fetch PostGIS sources (database connections) for this project
@@ -841,6 +844,10 @@ const LayerList: React.FC<LayerListProps> = ({
                   <Database className="h-4 w-4 mr-2" />
                   ESRI Feature Service
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowSatelliteDialog(true)} className="cursor-pointer">
+                  <Satellite className="h-4 w-4 mr-2" />
+                  Satellite Imagery
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </TooltipProvider>
@@ -1123,6 +1130,12 @@ const LayerList: React.FC<LayerListProps> = ({
         <ConnectESRIFeatureService
           isOpen={showESRIDialog}
           onClose={() => setShowESRIDialog(false)}
+          mapId={currentMapData?.map_id}
+          onSuccess={updateMapData}
+        />
+        <AddSatelliteLayer
+          isOpen={showSatelliteDialog}
+          onClose={() => setShowSatelliteDialog(false)}
           mapId={currentMapData?.map_id}
           onSuccess={updateMapData}
         />

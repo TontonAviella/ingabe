@@ -840,10 +840,9 @@ async def presign_layer_upload(
 async def _background_generate_cog(layer_id: str, s3_key: str):
     """Generate COG in the background after upload-complete returns.
 
-    Downloads the raw raster from S3, converts to COG via Dask/GDAL,
+    Downloads the raw raster from S3, converts to COG via gdalwarp subprocess,
     uploads the COG, and updates the layer metadata with the cog_key.
     """
-    from src.upload.dask_raster import DASK_AVAILABLE, RasterPipeline
     from src.structures import get_async_db_connection
     import shutil
 
@@ -859,30 +858,25 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         await s3.download_file(bucket_name, s3_key, local_input)
         logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
 
-        loop = asyncio.get_running_loop()
-        if DASK_AVAILABLE:
-            try:
-                await loop.run_in_executor(None, RasterPipeline.create_cog, local_input, local_cog)
-                logger.info("Background COG generated via Dask for %s", layer_id)
-            except Exception as dask_err:
-                logger.warning("Dask COG failed for %s, falling back to gdalwarp: %s", layer_id, dask_err)
-                proc = await asyncio.create_subprocess_exec(
-                    "gdalwarp", "-of", "COG", local_input, local_cog,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                )
-                _, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
-                    return
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                "gdalwarp", "-of", "COG", local_input, local_cog,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
-                return
+        # Always use gdalwarp subprocess for COG generation.
+        # The in-process Dask/rasterio path can segfault on multi-band rasters,
+        # killing the uvicorn worker.  A subprocess crash is isolated.
+        proc = await asyncio.create_subprocess_exec(
+            "gdalwarp",
+            "-of", "COG",
+            "-co", "BLOCKSIZE=512",
+            "-co", "COMPRESS=DEFLATE",
+            "-co", "OVERVIEWS=AUTO",
+            "-co", "OVERVIEW_RESAMPLING=NEAREST",
+            "-multi", "-wo", "NUM_THREADS=ALL_CPUS",
+            local_input, local_cog,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
+            return
+        logger.info("Background COG generated via gdalwarp for %s", layer_id)
 
         cog_key = f"cog/layer/{layer_id}.cog.tif"
         await s3.upload_file(local_cog, bucket_name, cog_key)
@@ -1378,6 +1372,102 @@ async def add_remote_layer(
         type=layer_type,
         url=layer_url,
         message="Remote layer processed and added successfully",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Satellite layer (Sentinel Hub / PlanetScope / SkySat)
+# ---------------------------------------------------------------------------
+
+class SatelliteLayerRequest(BaseModel):
+    name: str = Field(description="Display name for the layer (e.g. 'PlanetScope NDVI — May 2025')")
+    collection: str = Field(default="sentinel-2-l2a", description="Data collection (sentinel-2-l2a, planetscope, skysat)")
+    layer: str = Field(default="TRUE-COLOR", description="SH visualization layer (TRUE-COLOR, NDVI, FALSE-COLOR, NDRE)")
+    date_from: str = Field(description="Start date ISO (e.g. 2025-05-01)")
+    date_to: str = Field(description="End date ISO (e.g. 2025-05-31)")
+    maxcc: int = Field(default=20, ge=0, le=100, description="Max cloud coverage %")
+    bounds: Optional[List[float]] = Field(default=None, description="[west, south, east, north] in EPSG:4326")
+
+
+@router.post(
+    "/{original_map_id}/layers/satellite",
+    response_model=LayerUploadResponse,
+    operation_id="add_satellite_layer_to_map",
+    summary="Add live satellite imagery layer",
+)
+async def add_satellite_layer(
+    original_map_id: str,
+    request: SatelliteLayerRequest,
+    forked_map: MundiMap = Depends(forked_map_by_user),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Add a live satellite imagery layer from Sentinel Hub.
+
+    No file upload — tiles are fetched live from Sentinel Hub WMS and cached.
+    Supports Sentinel-2 L2A (free, 10m), PlanetScope (3.7m), and SkySat (50cm).
+    """
+    layer_id = generate_id(prefix="L")
+    style_id = generate_id(prefix="S")
+    bounds = request.bounds or [28.86, -2.84, 30.90, -1.05]  # Rwanda default
+
+    metadata = json.dumps({
+        "satellite": True,
+        "sh_collection": request.collection,
+        "sh_layer": request.layer,
+        "date_from": request.date_from,
+        "date_to": request.date_to,
+        "maxcc": request.maxcc,
+    })
+
+    async with async_conn("add_satellite_layer") as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO map_layers
+                (layer_id, owner_uuid, name, type, metadata, bounds, source_map_id,
+                 created_on, last_edited)
+                VALUES ($1, $2, $3, 'raster', $4, $5, $6,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                layer_id,
+                session.get_user_id(),
+                request.name,
+                metadata,
+                bounds,
+                forked_map.id,
+            )
+
+            await conn.execute(
+                "INSERT INTO layer_styles (style_id, layer_id, style_json, created_by, created_on) "
+                "VALUES ($1, $2, '[]', $3, CURRENT_TIMESTAMP)",
+                style_id, layer_id, session.get_user_id(),
+            )
+
+            await conn.execute(
+                "INSERT INTO map_layer_styles (map_id, layer_id, style_id) VALUES ($1, $2, $3)",
+                forked_map.id, layer_id, style_id,
+            )
+
+            map_data = await conn.fetchrow(
+                "SELECT layers FROM user_mundiai_maps WHERE id=$1", forked_map.id
+            )
+            current_layers = (
+                map_data["layers"] if map_data and map_data["layers"] else []
+            )
+            await conn.execute(
+                "UPDATE user_mundiai_maps SET layers=$1, last_edited=CURRENT_TIMESTAMP WHERE id=$2",
+                current_layers + [layer_id],
+                forked_map.id,
+            )
+
+    return LayerUploadResponse(
+        dag_child_map_id=forked_map.id,
+        dag_parent_map_id=original_map_id,
+        id=layer_id,
+        name=request.name,
+        type="raster",
+        url=f"/api/satellite/0/0/0.png?layer={request.layer}&collection={request.collection}",
+        message="Satellite imagery layer added successfully",
     )
 
 

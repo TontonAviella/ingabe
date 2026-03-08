@@ -223,6 +223,7 @@ if HAS_DAGSTER:
     failed_cog_retry_sensor = sensors.build_failed_cog_retry_sensor(
         raster_job=raster_processing_job,
     )
+    satellite_scene_sensor = sensors.build_satellite_scene_sensor()
 
     # ─── Collect all jobs ───────────────────────────────────────────────────
     all_jobs = [
@@ -257,6 +258,7 @@ if HAS_DAGSTER:
         sensors=[
             s3_upload_sensor,
             failed_cog_retry_sensor,
+            satellite_scene_sensor,
         ],
         schedules=[
             schedules.compaction_schedule,
@@ -280,7 +282,7 @@ if HAS_DAGSTER:
 
     logger.info("Dagster definitions loaded successfully")
     logger.info("Assets: %d", len(all_assets))
-    logger.info("Jobs: 18, Sensors: 2, Schedules: 14")
+    logger.info("Jobs: 18, Sensors: 3, Schedules: 14")
 
 # Export for workspace.yaml reference
 __all__ = ["defs", "HAS_DAGSTER"]

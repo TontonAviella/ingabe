@@ -298,6 +298,37 @@ export default function ProjectView() {
       try {
         const update: any = JSON.parse(lastMessage.data);
 
+        // Check if this is a satellite imagery update (global broadcast)
+        if (update && typeof update === 'object' && update.type === 'satellite_update') {
+          // Bust cache on all satellite tile sources by appending a timestamp
+          const map = mapRef.current;
+          if (map) {
+            const style = map.getStyle();
+            if (style?.sources) {
+              for (const [sourceId, source] of Object.entries(style.sources)) {
+                if (sourceId.startsWith('satellite-source-') && source.type === 'raster') {
+                  const rasterSource = map.getSource(sourceId);
+                  if (rasterSource && 'setTiles' in rasterSource) {
+                    const tiles = (source as any).tiles as string[] | undefined;
+                    if (tiles?.length) {
+                      const bustParam = `_t=${Date.now()}`;
+                      const newTiles = tiles.map((t: string) => {
+                        const sep = t.includes('?') ? '&' : '?';
+                        // Remove any existing _t param
+                        const cleaned = t.replace(/[&?]_t=\d+/, '');
+                        return `${cleaned}${sep}${bustParam}`;
+                      });
+                      (rasterSource as any).setTiles(newTiles);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          toast.success('New satellite imagery available — map updated');
+          return;
+        }
+
         // Check if this is an ephemeral action
         if (update && typeof update === 'object' && 'ephemeral' in update && update.ephemeral === true) {
           const action = update as EphemeralAction;
@@ -375,6 +406,7 @@ export default function ProjectView() {
   //   2. PUT file directly to S3/R2 (unlimited time, progress tracked)
   //   3. POST /upload-complete → server processes the uploaded file
   const uploadFile = useMutation({
+    retry: false, // Never auto-retry uploads — large files + server processing make retries destructive
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 

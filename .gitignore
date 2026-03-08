@@ -2,8 +2,9 @@
 __pycache__
 test_output
 .env
+.env.prod
 data
 src/conftest.py
 *.aux.xml
-frontendts/README.md 
+frontendts/README.md
 *.egg-info/

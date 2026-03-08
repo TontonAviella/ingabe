@@ -89,6 +89,15 @@ class OpenStreetMapProvider(BaseMapProvider):
             "attribution": "&copy; OpenStreetMap contributors &copy; CARTO",
             "maxzoom": 20,
         },
+        "sentinel2_live": {
+            "name": "Sentinel-2 Live",
+            "tiles": [
+                "/api/satellite/{z}/{x}/{y}.png?layer=TRUE-COLOR&collection=sentinel-2-l2a"
+            ],
+            "tileSize": 512,
+            "attribution": "&copy; Copernicus Sentinel-2 (ESA), processed by Sentinel Hub",
+            "maxzoom": 18,
+        },
     }
 
     async def get_base_style(self, name: Optional[str] = None) -> Dict[str, Any]:
@@ -156,6 +165,7 @@ class OpenStreetMapProvider(BaseMapProvider):
         """
         return [
             "esri_satellite",
+            "sentinel2_live",
             "openstreetmap",
             "openfreemap",
             "esri_topo",
@@ -192,6 +202,7 @@ class OpenStreetMapProvider(BaseMapProvider):
             "openstreetmap": "OpenStreetMap",
             "openfreemap": "OpenFreeMap",
             "esri_satellite": "Satellite",
+            "sentinel2_live": "Sentinel-2 Live",
             "esri_topo": "Topographic",
             "carto_dark": "Dark Matter",
             "carto_voyager": "Voyager",

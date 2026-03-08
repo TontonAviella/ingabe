@@ -2,16 +2,27 @@
 
 Implements sensors that detect new file uploads to S3/MinIO and trigger
 the appropriate processing pipelines based on file type.
+
+Also includes a satellite scene sensor that polls Sentinel Hub Catalog API
+for new Sentinel-2 L2A scenes over Rwanda and invalidates the tile cache.
 """
 
+import json
 import logging
 
-from dagster import RunRequest, SensorEvaluationContext, sensor
+import requests
+from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
 
-from src.pipelines.resources import PostgresResource, S3Resource
+from src.pipelines.resources import PostgresResource, RedisResource, S3Resource
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD
 
 logger = logging.getLogger(__name__)
+
+# Rwanda bounding box (WGS84)
+_RWANDA_BBOX = [28.86, -2.84, 30.90, -1.05]
+
+# Sentinel Hub Catalog API
+_SH_CATALOG_URL = "https://services.sentinel-hub.com/api/v1/catalog/1.0.0/search"
 
 
 def build_s3_upload_sensor(raster_job, vector_job):
@@ -184,3 +195,128 @@ def build_failed_cog_retry_sensor(raster_job):
         return run_requests
 
     return failed_cog_retry_sensor
+
+
+def build_satellite_scene_sensor():
+    """Factory that creates a sensor to detect new Sentinel-2 scenes over Rwanda.
+
+    Polls the Sentinel Hub Catalog API every 4 hours. On new scene detection:
+    1. Invalidates all cached satellite tiles in Redis
+    2. Publishes a notification to the ``ws:satellite`` Redis Pub/Sub channel
+    """
+
+    @sensor(
+        name="satellite_scene_sensor",
+        description="Detects new Sentinel-2 L2A scenes over Rwanda and invalidates tile cache",
+        minimum_interval_seconds=4 * 3600,  # Every 4 hours
+    )
+    def satellite_scene_sensor(
+        context: SensorEvaluationContext,
+        redis: RedisResource,
+    ):
+        """Poll Sentinel Hub Catalog for new S2 L2A scenes over Rwanda."""
+        import os
+        from datetime import datetime, timezone
+
+        sh_client_id = os.environ.get("SH_CLIENT_ID", "")
+        sh_client_secret = os.environ.get("SH_CLIENT_SECRET", "")
+
+        if not sh_client_id or not sh_client_secret:
+            return SkipReason("Sentinel Hub credentials not configured")
+
+        # Get OAuth2 token
+        token_url = (
+            "https://services.sentinel-hub.com/auth/realms/main/"
+            "protocol/openid-connect/token"
+        )
+        try:
+            token_resp = requests.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": sh_client_id,
+                    "client_secret": sh_client_secret,
+                },
+                timeout=15,
+            )
+            token_resp.raise_for_status()
+            access_token = token_resp.json()["access_token"]
+        except Exception as e:
+            context.log.error(f"Failed to get SH access token: {e}")
+            return SkipReason(f"Failed to get SH access token: {e}")
+
+        # Build catalog search — look for scenes from the last 7 days
+        last_cursor = context.cursor or "2020-01-01T00:00:00Z"
+
+        search_body = {
+            "collections": ["sentinel-2-l2a"],
+            "bbox": _RWANDA_BBOX,
+            "datetime": f"{last_cursor}/..".replace("+00:00", "Z"),
+            "limit": 5,
+            "fields": {
+                "include": ["properties.datetime"],
+            },
+        }
+
+        try:
+            resp = requests.post(
+                _SH_CATALOG_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=search_body,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            catalog_result = resp.json()
+        except Exception as e:
+            context.log.error(f"Sentinel Hub Catalog search failed: {e}")
+            return SkipReason(f"Catalog search failed: {e}")
+
+        features = catalog_result.get("features", [])
+        if not features:
+            context.log.debug("No new Sentinel-2 scenes over Rwanda")
+            return SkipReason("No new scenes detected")
+
+        # Find the latest scene datetime
+        latest_dt = last_cursor
+        for feat in features:
+            dt = feat.get("properties", {}).get("datetime", "")
+            if dt > latest_dt:
+                latest_dt = dt
+
+        context.log.info(
+            f"Detected {len(features)} new Sentinel-2 scene(s) over Rwanda, latest: {latest_dt}"
+        )
+
+        # Invalidate satellite tile cache + publish WebSocket notification
+        try:
+            with redis.get_client() as redis_client:
+                # Invalidate sat:* keys
+                deleted = 0
+                cursor_val = 0
+                while True:
+                    cursor_val, keys = redis_client.scan(cursor=cursor_val, match="sat:*", count=200)
+                    if keys:
+                        deleted += redis_client.delete(*keys)
+                    if cursor_val == 0:
+                        break
+                context.log.info(f"Invalidated {deleted} cached satellite tiles")
+
+                # Publish notification via Redis Pub/Sub
+                notification = json.dumps({
+                    "type": "satellite_update",
+                    "scene_count": len(features),
+                    "latest_datetime": latest_dt,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                redis_client.publish("ws:satellite", notification)
+                context.log.info("Published satellite update notification")
+        except Exception as e:
+            context.log.warning(f"Failed to invalidate cache / publish notification: {e}")
+
+        # Update cursor to latest scene datetime
+        context.update_cursor(latest_dt)
+
+    return satellite_scene_sensor

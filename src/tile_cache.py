@@ -153,6 +153,37 @@ class TileCache:
             logger.error("Unexpected error in tile cache invalidate: %s", e, exc_info=True)
             return 0
 
+    async def invalidate_satellite(self) -> int:
+        """Delete ALL cached satellite tiles (``sat:*`` keys).
+
+        Uses ``SCAN`` + ``DELETE`` to avoid blocking Redis with a single
+        large ``KEYS`` call.
+
+        Returns the number of keys deleted.
+        """
+        if not _enabled():
+            return 0
+        try:
+            client = _get_async_redis()
+            deleted = 0
+            pattern = "sat:*"
+            cursor: int = 0
+            while True:
+                cursor, keys = await client.scan(cursor=cursor, match=pattern, count=200)
+                if keys:
+                    deleted += await client.delete(*keys)
+                if cursor == 0:
+                    break
+            if deleted:
+                logger.info("tile cache: invalidated %d satellite tiles", deleted)
+            return deleted
+        except redis.exceptions.RedisError as e:
+            logger.warning("Redis error in tile cache invalidate_satellite: %s", e)
+            return 0
+        except Exception as e:
+            logger.error("Unexpected error in tile cache invalidate_satellite: %s", e, exc_info=True)
+            return 0
+
     async def invalidate_tile(self, layer_id: str, z: int, x: int, y: int) -> bool:
         """Delete a single cached tile. Returns True if the key existed."""
         if not _enabled():

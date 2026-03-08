@@ -442,6 +442,36 @@ async def get_map_style_internal(
                 )
                 continue
 
+            # Satellite imagery layers (Sentinel Hub WMS proxy)
+            if metadata.get("satellite"):
+                source_id = f"satellite-source-{layer_id}"
+                sh_layer = metadata.get("sh_layer", "TRUE-COLOR")
+                sh_collection = metadata.get("sh_collection", "sentinel-2-l2a")
+                sh_date_from = metadata.get("date_from", "")
+                sh_date_to = metadata.get("date_to", "")
+                sh_maxcc = metadata.get("maxcc", 20)
+                tile_url = (
+                    f"/api/satellite/{{z}}/{{x}}/{{y}}.png"
+                    f"?layer={sh_layer}&collection={sh_collection}"
+                    f"&date_from={sh_date_from}&date_to={sh_date_to}&maxcc={sh_maxcc}"
+                )
+                style_json["sources"][source_id] = {
+                    "type": "raster",
+                    "tiles": [tile_url],
+                    "tileSize": 512,
+                    "minzoom": 0,
+                    "maxzoom": 18,
+                }
+                style_json["layers"].append(
+                    {
+                        "id": f"raster-layer-{layer_id}",
+                        "type": "raster",
+                        "source": source_id,
+                        "paint": {"raster-opacity": 0.9},
+                    }
+                )
+                continue
+
             source_id = f"raster-source-{layer_id}"
             # Add cache-busting parameter using last_edited timestamp
             cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
@@ -496,6 +526,36 @@ async def get_map_style_internal(
                         "type": "raster",
                         "source": source_id,
                         "paint": {"raster-opacity": 0.85},
+                    }
+                )
+                continue
+
+            # Satellite imagery layers (Sentinel Hub WMS proxy)
+            if metadata.get("satellite"):
+                source_id = f"satellite-source-{layer_id}"
+                sh_layer = metadata.get("sh_layer", "TRUE-COLOR")
+                sh_collection = metadata.get("sh_collection", "sentinel-2-l2a")
+                sh_date_from = metadata.get("date_from", "")
+                sh_date_to = metadata.get("date_to", "")
+                sh_maxcc = metadata.get("maxcc", 20)
+                tile_url = (
+                    f"/api/satellite/{{z}}/{{x}}/{{y}}.png"
+                    f"?layer={sh_layer}&collection={sh_collection}"
+                    f"&date_from={sh_date_from}&date_to={sh_date_to}&maxcc={sh_maxcc}"
+                )
+                style_json["sources"][source_id] = {
+                    "type": "raster",
+                    "tiles": [tile_url],
+                    "tileSize": 512,
+                    "minzoom": 0,
+                    "maxzoom": 18,
+                }
+                style_json["layers"].append(
+                    {
+                        "id": f"raster-layer-{layer_id}",
+                        "type": "raster",
+                        "source": source_id,
+                        "paint": {"raster-opacity": 0.9},
                     }
                 )
                 continue

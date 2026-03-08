@@ -27,6 +27,7 @@ from src.routes.attribute_table import attribute_table_router
 from src.routes.lakehouse_routes import lakehouse_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
+from src.routes.sentinel_hub_router import satellite_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -236,7 +237,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://tiles.openfreemap.org; "
-            "connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com https://*.posthog.com https://*.i.posthog.com ws: wss:; "
+            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {os.environ.get('S3_ENDPOINT_URL', '')} https://*.posthog.com https://*.i.posthog.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'none'"
@@ -514,6 +515,10 @@ app.include_router(
 app.include_router(
     worldcover_router,
     tags=["WorldCover"],
+)
+app.include_router(
+    satellite_router,
+    tags=["Satellite"],
 )
 
 

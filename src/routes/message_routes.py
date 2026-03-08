@@ -956,11 +956,16 @@ async def _generate_postgis_pmtiles_background(
     feature_count: int,
     user_id: str,
     project_id: str,
+    conversation_id: int | None = None,
 ) -> None:
     """Fire-and-forget wrapper for PostGIS PMTiles generation.
 
     Never raises — all exceptions are logged and swallowed so the chat
     flow is never interrupted.
+
+    When conversation_id is provided, sends a WebSocket style_json update
+    after PMTiles is ready so the frontend refetches the style with
+    pmtiles:// URLs instead of the .mvt fallback.
     """
     try:
         from src.upload.pmtiles import generate_pmtiles_for_postgis_layer
@@ -973,6 +978,18 @@ async def _generate_postgis_pmtiles_background(
             "Background PMTiles generation completed for PostGIS layer %s -> %s",
             layer_id, pmtiles_key,
         )
+
+        # Notify frontend to refetch style.json now that PMTiles is available
+        if conversation_id is not None and pmtiles_key:
+            try:
+                async with kue_ephemeral_action(
+                    conversation_id,
+                    "Vector tiles ready",
+                    update_style_json=True,
+                ):
+                    pass  # Just need the active→completed cycle to trigger refetch
+            except Exception:
+                logger.debug("Failed to send PMTiles-ready notification", exc_info=True)
     except Exception:
         logger.warning(
             "Background PMTiles generation failed for PostGIS layer %s",
@@ -1795,6 +1812,7 @@ async def process_chat_interaction_task(
                                                     _generate_postgis_pmtiles_background(
                                                         layer_id, postgis_connection_id, query,
                                                         feature_count, user_id, current_project_id,
+                                                        conversation_id=conversation.id,
                                                     )
                                                 )
                                         except HTTPException as e:
