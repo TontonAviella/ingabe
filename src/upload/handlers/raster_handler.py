@@ -66,7 +66,7 @@ class RasterUploadHandler(BaseUploadHandler):
         Using ``gdalinfo -json`` as a subprocess is 100% isolated.
         """
         proc = await asyncio.create_subprocess_exec(
-            "gdalinfo", "-json", ctx.temp_file_path,
+            "gdalinfo", "-json", "-stats", ctx.temp_file_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -91,12 +91,15 @@ class RasterUploadHandler(BaseUploadHandler):
             bounds = [ul[0], lr[1], lr[0], ul[1]]
 
         # Extract EPSG code from CRS
+        # Use the LAST AUTHORITY["EPSG", ...] in the WKT — for projected CRS
+        # (e.g. UTM), the outermost (last) AUTHORITY is the projected SRID,
+        # while inner ones belong to the geographic CRS.
         crs_info = info.get("coordinateSystem", {})
         wkt = crs_info.get("wkt", "")
         if wkt:
-            m = re.search(r'"EPSG",\s*(\d+)', wkt)
-            if m:
-                ctx.metadata_dict["original_srid"] = int(m.group(1))
+            matches = re.findall(r'"EPSG",\s*"?(\d+)"?', wkt)
+            if matches:
+                ctx.metadata_dict["original_srid"] = int(matches[-1])
         else:
             ctx.metadata_dict["crs_missing"] = True
 

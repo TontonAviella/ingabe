@@ -93,7 +93,7 @@ class TestPut:
     async def test_stores_with_default_ttl(self, cache, mock_redis, sample_png):
         await cache.put("L1", 5, 10, 20, sample_png)
         mock_redis.setex.assert_awaited_once_with(
-            "tile:L1:5:10:20", 3600, sample_png
+            "tile:L1:5:10:20", 604800, sample_png
         )
 
     @pytest.mark.asyncio

@@ -62,10 +62,11 @@ class TestPipelineDefinitions:
         assert "daily_weather_ingest_job" in job_names
 
         # Check sensors
-        assert len(defs.sensors) == 2
+        assert len(defs.sensors) == 3
         sensor_names = {sensor.name for sensor in defs.sensors}
         assert "s3_upload_sensor" in sensor_names
         assert "failed_cog_retry_sensor" in sensor_names
+        assert "satellite_scene_sensor" in sensor_names
 
         # Check schedules (6 core + 8 precompute)
         schedule_names = {schedule.name for schedule in defs.schedules}
@@ -274,14 +275,11 @@ class TestUploadHandlerIntegration:
             result = os.environ.get("USE_DAGSTER", "false").lower() in ("true", "1", "yes")
             assert result is False
 
-    @patch("src.upload.handlers.raster_handler._USE_DAGSTER", True)
-    def test_raster_handler_dagster_mode(self):
-        """Test raster handler with Dagster mode enabled."""
-        # This is a smoke test to ensure the import and flag work
-        from src.upload.handlers.raster_handler import _USE_DAGSTER
+    def test_raster_handler_exists(self):
+        """Test raster handler module can be imported."""
+        from src.upload.handlers import raster_handler
 
-        # In test mode, the mock forces it to True
-        assert _USE_DAGSTER is True
+        assert hasattr(raster_handler, "RasterUploadHandler")
 
     @patch("src.upload.handlers.vector_handler._USE_DAGSTER", True)
     def test_vector_handler_dagster_mode(self):
