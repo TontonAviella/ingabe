@@ -157,6 +157,15 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [enriching, setEnriching] = useState<string | null>(null);
   const [batchEnriching, setBatchEnriching] = useState(false);
+  const enrichAbortRef = React.useRef<AbortController | null>(null);
+
+  // Abort any in-flight enrichment polling when the dialog closes
+  React.useEffect(() => {
+    if (!open && enrichAbortRef.current) {
+      enrichAbortRef.current.abort();
+      enrichAbortRef.current = null;
+    }
+  }, [open]);
 
   const isPieMode = featureCount === 1 && onPieChart != null;
 
@@ -214,6 +223,11 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
   }, [availableMetrics, columnsLoading]);
 
   const handleEnrich = async (metricKey: string) => {
+    // Cancel any previous enrichment polling
+    enrichAbortRef.current?.abort();
+    const abortController = new AbortController();
+    enrichAbortRef.current = abortController;
+
     setEnriching(metricKey);
     try {
       const res = await apiFetch(`/api/layer/${layerId}/enrich`, {
@@ -223,7 +237,8 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? res.statusText);
+        const d = err.detail;
+        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : res.statusText));
       }
       let data = await res.json();
 
@@ -232,7 +247,9 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
         toast.info('Computing enrichment in background…');
         const maxAttempts = 60; // 5 minutes with 5s interval
         for (let i = 0; i < maxAttempts; i++) {
+          if (abortController.signal.aborted) return;
           await new Promise((r) => setTimeout(r, 5000));
+          if (abortController.signal.aborted) return;
           const pollRes = await apiFetch(`/api/layer/${layerId}/enrich`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -240,7 +257,8 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
           });
           if (!pollRes.ok) {
             const err = await pollRes.json().catch(() => ({ detail: pollRes.statusText }));
-            throw new Error(err.detail ?? pollRes.statusText);
+            const d2 = err.detail;
+            throw new Error(typeof d2 === 'string' ? d2 : (d2 ? JSON.stringify(d2) : pollRes.statusText));
           }
           data = await pollRes.json();
           if (data.status !== 'computing') break;
@@ -305,7 +323,8 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
       const res = await apiFetch(`/api/layer/${layerId}/column-stats?${params}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? res.statusText);
+        const d = err.detail;
+        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : res.statusText));
       }
       const data: ColumnStatsResponse = await res.json();
       const colors = interpolateColors(PALETTES[palette], data.k);
@@ -349,7 +368,8 @@ export const ChoroplethDialog: React.FC<ChoroplethDialogProps> = ({
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? res.statusText);
+        const d = err.detail;
+        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : res.statusText));
       }
       const data: { metrics: Record<string, number>; feature_count: number } = await res.json();
 

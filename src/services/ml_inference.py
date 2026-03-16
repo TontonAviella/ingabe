@@ -46,8 +46,202 @@ class CropClassifier:
     """Crop type classification from satellite imagery bands.
 
     Uses spectral index thresholds (baseline), KMeans clustering (sklearn),
-    Mann-Kendall trend test, and z-score anomaly detection.
+    Mann-Kendall trend test, z-score anomaly detection, and temporal crop
+    signature matching for parcel-level crop identification.
     """
+
+    # Rwanda crop temporal signatures — derived from RAB phenological data
+    # and published literature on East African crop calendars.
+    # Each signature describes the NDVI time-series fingerprint of a crop
+    # over its growing season. Used by identify_crop_from_timeseries().
+    #
+    # Key fields:
+    #   season_length_weeks: typical growing period
+    #   peak_ndvi_range: (min, max) expected peak NDVI
+    #   peak_timing_fraction: when peak occurs as fraction of season (0=start, 1=end)
+    #   green_up_rate: NDVI increase per week during emergence
+    #   senescence_rate: NDVI decrease per week during decline
+    #   curve_shape: "sharp_peak" | "plateau" | "evergreen" | "double_peak"
+    #   perennial: whether crop stays green year-round
+    RWANDA_CROP_SIGNATURES = {
+        "maize": {
+            "season_length_weeks": (12, 18),  # ~90-120 days
+            "peak_ndvi_range": (0.65, 0.85),
+            "peak_timing_fraction": (0.5, 0.7),  # peaks around week 8-10 of 14
+            "green_up_rate": (0.03, 0.08),  # fast emergence
+            "senescence_rate": (-0.08, -0.03),  # sharp decline
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "beans": {
+            "season_length_weeks": (8, 12),  # ~60-80 days
+            "peak_ndvi_range": (0.45, 0.65),
+            "peak_timing_fraction": (0.45, 0.65),  # peaks around week 4-5 of 8
+            "green_up_rate": (0.04, 0.10),  # very fast
+            "senescence_rate": (-0.10, -0.04),  # very fast decline
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "cassava": {
+            "season_length_weeks": (36, 52),  # 9-12 months
+            "peak_ndvi_range": (0.55, 0.80),
+            "peak_timing_fraction": (0.3, 0.6),  # slow rise, long plateau
+            "green_up_rate": (0.01, 0.03),  # slow emergence
+            "senescence_rate": (-0.02, -0.005),  # very gradual decline
+            "curve_shape": "plateau",
+            "perennial": False,
+        },
+        "rice": {
+            "season_length_weeks": (14, 20),  # ~100-140 days
+            "peak_ndvi_range": (0.60, 0.80),
+            "peak_timing_fraction": (0.55, 0.75),
+            "green_up_rate": (0.03, 0.06),
+            "senescence_rate": (-0.06, -0.03),  # moderate decline
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "sorghum": {
+            "season_length_weeks": (14, 18),  # ~100-120 days
+            "peak_ndvi_range": (0.50, 0.70),
+            "peak_timing_fraction": (0.5, 0.7),
+            "green_up_rate": (0.02, 0.05),
+            "senescence_rate": (-0.05, -0.02),
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "banana": {
+            "season_length_weeks": (48, 52),  # year-round
+            "peak_ndvi_range": (0.65, 0.85),
+            "peak_timing_fraction": (0.0, 1.0),  # no distinct peak
+            "green_up_rate": (0.0, 0.01),
+            "senescence_rate": (-0.01, 0.0),
+            "curve_shape": "evergreen",
+            "perennial": True,
+        },
+        "tea": {
+            "season_length_weeks": (48, 52),
+            "peak_ndvi_range": (0.60, 0.80),
+            "peak_timing_fraction": (0.0, 1.0),
+            "green_up_rate": (0.0, 0.01),
+            "senescence_rate": (-0.01, 0.0),
+            "curve_shape": "evergreen",
+            "perennial": True,
+        },
+        "coffee": {
+            "season_length_weeks": (48, 52),
+            "peak_ndvi_range": (0.55, 0.75),
+            "peak_timing_fraction": (0.0, 1.0),
+            "green_up_rate": (0.0, 0.015),
+            "senescence_rate": (-0.015, 0.0),
+            "curve_shape": "evergreen",
+            "perennial": True,
+        },
+        "irish_potato": {
+            "season_length_weeks": (12, 16),  # ~90-110 days
+            "peak_ndvi_range": (0.55, 0.75),
+            "peak_timing_fraction": (0.45, 0.65),
+            "green_up_rate": (0.04, 0.08),
+            "senescence_rate": (-0.08, -0.03),
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "sweet_potato": {
+            "season_length_weeks": (14, 20),  # ~100-140 days
+            "peak_ndvi_range": (0.50, 0.70),
+            "peak_timing_fraction": (0.4, 0.6),
+            "green_up_rate": (0.02, 0.05),
+            "senescence_rate": (-0.04, -0.015),
+            "curve_shape": "plateau",
+            "perennial": False,
+        },
+        "wheat": {
+            "season_length_weeks": (14, 18),  # ~100-120 days
+            "peak_ndvi_range": (0.55, 0.75),
+            "peak_timing_fraction": (0.5, 0.7),
+            "green_up_rate": (0.03, 0.06),
+            "senescence_rate": (-0.06, -0.03),
+            "curve_shape": "sharp_peak",
+            "perennial": False,
+        },
+        "fallow": {
+            "season_length_weeks": (0, 52),
+            "peak_ndvi_range": (0.10, 0.25),
+            "peak_timing_fraction": (0.0, 1.0),
+            "green_up_rate": (0.0, 0.005),
+            "senescence_rate": (-0.005, 0.0),
+            "curve_shape": "flat",
+            "perennial": False,
+        },
+        # ── Intercropping / mixed farming signatures ──
+        # Common Rwanda combinations. The blended NDVI signal has
+        # distinct characteristics that differ from any single crop.
+        "maize_and_beans": {
+            "season_length_weeks": (10, 16),  # beans mature earlier, maize later
+            "peak_ndvi_range": (0.55, 0.80),  # lower than pure maize, higher than pure beans
+            "peak_timing_fraction": (0.4, 0.65),  # broader peak window
+            "green_up_rate": (0.03, 0.07),  # fast (beans pull it up early)
+            "senescence_rate": (-0.05, -0.02),  # staggered decline
+            "curve_shape": "plateau",  # wider than sharp_peak due to staggered maturity
+            "perennial": False,
+            "intercrop": True,
+            "components": ["maize", "beans"],
+        },
+        "banana_and_beans": {
+            "season_length_weeks": (48, 52),  # banana keeps it green
+            "peak_ndvi_range": (0.55, 0.80),
+            "peak_timing_fraction": (0.0, 1.0),  # seasonal bump on evergreen base
+            "green_up_rate": (0.005, 0.02),  # small seasonal pulse
+            "senescence_rate": (-0.02, -0.005),
+            "curve_shape": "evergreen_seasonal",  # new: stable base + seasonal bump
+            "perennial": True,
+            "intercrop": True,
+            "components": ["banana", "beans"],
+        },
+        "banana_and_coffee": {
+            "season_length_weeks": (48, 52),
+            "peak_ndvi_range": (0.60, 0.82),
+            "peak_timing_fraction": (0.0, 1.0),
+            "green_up_rate": (0.0, 0.01),
+            "senescence_rate": (-0.01, 0.0),
+            "curve_shape": "evergreen",
+            "perennial": True,
+            "intercrop": True,
+            "components": ["banana", "coffee"],
+        },
+        "cassava_and_beans": {
+            "season_length_weeks": (10, 52),  # beans cycle within cassava's long season
+            "peak_ndvi_range": (0.50, 0.75),
+            "peak_timing_fraction": (0.3, 0.6),
+            "green_up_rate": (0.02, 0.05),  # beans give early boost
+            "senescence_rate": (-0.03, -0.01),
+            "curve_shape": "plateau",  # cassava plateau with early beans bump
+            "perennial": False,
+            "intercrop": True,
+            "components": ["cassava", "beans"],
+        },
+        "mixed_vegetables": {
+            "season_length_weeks": (8, 20),  # kitchen garden, continuous planting
+            "peak_ndvi_range": (0.40, 0.65),
+            "peak_timing_fraction": (0.3, 0.7),
+            "green_up_rate": (0.02, 0.05),
+            "senescence_rate": (-0.04, -0.01),
+            "curve_shape": "plateau",  # multiple species smooth out peaks
+            "perennial": False,
+            "intercrop": True,
+            "components": ["vegetables"],
+        },
+        "fruit_trees_and_vegetables": {
+            "season_length_weeks": (48, 52),
+            "peak_ndvi_range": (0.50, 0.75),
+            "peak_timing_fraction": (0.0, 1.0),
+            "green_up_rate": (0.005, 0.02),
+            "senescence_rate": (-0.02, -0.005),
+            "curve_shape": "evergreen_seasonal",  # tree canopy + seasonal understory
+            "perennial": True,
+            "intercrop": True,
+            "components": ["fruit_trees", "vegetables"],
+        },
+    }
 
     # Spectral index thresholds for simple crop classification
     CROP_THRESHOLDS = {
@@ -732,6 +926,267 @@ class CropClassifier:
             "stages": stages,
         }
 
+    def identify_crop_from_timeseries(
+        self, ndvi_timeseries: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Identify the most likely crop from an NDVI time-series using
+        temporal signature matching against Rwanda crop profiles.
+
+        Extracts phenological features from the observed curve and scores
+        each crop signature by how well it matches. Returns ranked
+        predictions with confidence scores.
+
+        Args:
+            ndvi_timeseries: List of dicts with 'date' and 'mean_ndvi' keys,
+                spanning at least one growing season (ideally 4-6 months).
+
+        Returns:
+            Dictionary with top prediction, confidence, and ranked alternatives.
+        """
+        # Run phenology analysis to extract curve features
+        phenology = self.analyze_crop_phenology(ndvi_timeseries)
+        if "error" in phenology:
+            return {"error": phenology["error"]}
+
+        # Extract observed features, filtering out cloud-contaminated observations.
+        # NDVI <= 0 or sudden drops > 0.3 from neighbors are likely cloud/shadow.
+        raw_values = [
+            d.get("mean_ndvi", 0)
+            for d in ndvi_timeseries
+            if d.get("mean_ndvi") is not None
+        ]
+        # Pass 1: remove clearly invalid values (negative, zero, > 1.0)
+        valid_values = [v for v in raw_values if 0.05 < v <= 1.0]
+        if len(valid_values) < 5:
+            # Fall back to raw if too aggressive
+            valid_values = [v for v in raw_values if v is not None]
+
+        # Pass 2: remove outlier dips (likely cloud contamination)
+        # A value is suspect if it's < 50% of the median of its neighbors
+        cleaned = list(valid_values)
+        if len(cleaned) > 4:
+            median_ndvi = float(np.median(cleaned))
+            cleaned = [
+                v for v in cleaned
+                if v > median_ndvi * 0.4  # remove values < 40% of median
+            ]
+        if len(cleaned) < 5:
+            cleaned = valid_values  # fall back
+
+        arr = np.array(cleaned)
+        n = len(arr)
+
+        if n == 0:
+            return {"error": "No valid NDVI observations after filtering (all cloudy or invalid)"}
+
+        obs_peak_ndvi = float(arr.max())
+        obs_peak_idx = int(arr.argmax())
+        obs_mean_ndvi = float(arr.mean())
+        obs_std_ndvi = float(arr.std())
+
+        # Estimate season length from actual dates (not observation count)
+        # Real S2 data has cloud gaps, so n observations ≠ n*5 days
+        dates_valid = [
+            d.get("date", "")
+            for d in ndvi_timeseries
+            if d.get("mean_ndvi") is not None and d.get("date")
+        ]
+        if len(dates_valid) >= 2:
+            try:
+                from datetime import datetime as _dt
+                d0 = _dt.strptime(dates_valid[0][:10], "%Y-%m-%d")
+                d1 = _dt.strptime(dates_valid[-1][:10], "%Y-%m-%d")
+                obs_season_weeks = (d1 - d0).days / 7.0
+            except (ValueError, IndexError):
+                obs_season_weeks = n * 5.0 / 7.0  # fallback
+        else:
+            obs_season_weeks = n * 5.0 / 7.0
+
+        # Peak timing as fraction of total observation window
+        obs_peak_fraction = obs_peak_idx / max(n - 1, 1)
+
+        # Green-up rate: mean positive slope in first half
+        dndvi = np.diff(arr)
+        first_half = dndvi[: max(len(dndvi) // 2, 1)]
+        obs_green_up_rate = float(np.mean(first_half[first_half > 0])) if np.any(first_half > 0) else 0.0
+
+        # Senescence rate: mean negative slope in second half
+        second_half = dndvi[max(len(dndvi) // 2, 1) :]
+        obs_senescence_rate = float(np.mean(second_half[second_half < 0])) if np.any(second_half < 0) else 0.0
+
+        # NDVI coefficient of variation — distinguishes seasonal vs evergreen
+        obs_cv = obs_std_ndvi / (obs_mean_ndvi + 1e-8)
+
+        # Detect seasonal bump on evergreen base (intercropping signal)
+        # Evergreen base = high minimum NDVI, seasonal bump = CV between 0.05-0.15
+        obs_min_ndvi = float(arr.min())
+        has_seasonal_bump = obs_min_ndvi > 0.35 and 0.05 < obs_cv < 0.15
+
+        # Use the top quartile of observations to assess "base" greenness
+        # This helps distinguish perennials from annuals when observing
+        # across seasons (perennials stay green, annuals go bare)
+        sorted_ndvi = np.sort(arr)
+        top_quartile_mean = float(sorted_ndvi[int(n * 0.75):].mean())
+        bottom_quartile_mean = float(sorted_ndvi[:max(int(n * 0.25), 1)].mean())
+        quartile_ratio = bottom_quartile_mean / (top_quartile_mean + 1e-8)
+
+        # Curve shape classification
+        # Key insight from real data: 6-month windows cross dry/wet seasons
+        # so even perennials show CV > 0.20. Use quartile ratio instead.
+        if obs_mean_ndvi < 0.20:
+            obs_shape = "flat"  # fallow / bare soil
+        elif has_seasonal_bump and obs_mean_ndvi > 0.5:
+            obs_shape = "evergreen_seasonal"  # tree canopy + seasonal understory
+        elif quartile_ratio > 0.65 and obs_mean_ndvi > 0.4:
+            # Bottom quartile is >65% of top quartile → stays green year-round
+            obs_shape = "evergreen"
+        elif obs_cv < 0.08 and obs_mean_ndvi > 0.5:
+            obs_shape = "evergreen"
+        elif obs_cv < 0.08:
+            obs_shape = "flat"
+        elif obs_std_ndvi < 0.10:
+            obs_shape = "plateau"
+        else:
+            obs_shape = "sharp_peak"
+
+        # Score each crop signature
+        scores = {}
+        for crop_name, sig in self.RWANDA_CROP_SIGNATURES.items():
+            score = 0.0
+            max_score = 0.0
+
+            # 1. Peak NDVI match (weight: 25)
+            max_score += 25
+            peak_lo, peak_hi = sig["peak_ndvi_range"]
+            if peak_lo <= obs_peak_ndvi <= peak_hi:
+                score += 25
+            else:
+                dist = min(abs(obs_peak_ndvi - peak_lo), abs(obs_peak_ndvi - peak_hi))
+                score += max(0, 25 - dist * 100)
+
+            # 2. Season length match (weight: 20)
+            max_score += 20
+            len_lo, len_hi = sig["season_length_weeks"]
+            if len_lo <= obs_season_weeks <= len_hi:
+                score += 20
+            elif sig["perennial"]:
+                # Perennial crops match any observation window
+                score += 15
+            else:
+                dist = min(
+                    abs(obs_season_weeks - len_lo),
+                    abs(obs_season_weeks - len_hi),
+                )
+                score += max(0, 20 - dist * 2)
+
+            # 3. Peak timing match (weight: 15)
+            max_score += 15
+            pt_lo, pt_hi = sig["peak_timing_fraction"]
+            if pt_lo <= obs_peak_fraction <= pt_hi:
+                score += 15
+            else:
+                dist = min(
+                    abs(obs_peak_fraction - pt_lo),
+                    abs(obs_peak_fraction - pt_hi),
+                )
+                score += max(0, 15 - dist * 30)
+
+            # 4. Green-up rate match (weight: 15)
+            max_score += 15
+            gu_lo, gu_hi = sig["green_up_rate"]
+            if gu_lo <= obs_green_up_rate <= gu_hi:
+                score += 15
+            else:
+                dist = min(
+                    abs(obs_green_up_rate - gu_lo),
+                    abs(obs_green_up_rate - gu_hi),
+                )
+                score += max(0, 15 - dist * 200)
+
+            # 5. Curve shape match (weight: 25)
+            max_score += 25
+            if obs_shape == sig["curve_shape"]:
+                score += 25
+            elif (obs_shape == "plateau" and sig["curve_shape"] == "sharp_peak") or \
+                 (obs_shape == "sharp_peak" and sig["curve_shape"] == "plateau"):
+                score += 10  # partial match
+            elif obs_shape == "evergreen" and sig["perennial"]:
+                score += 25
+            elif obs_shape == "evergreen_seasonal" and sig["curve_shape"] == "evergreen":
+                score += 15  # close but missing the seasonal component
+            elif obs_shape == "evergreen_seasonal" and sig["curve_shape"] == "evergreen_seasonal":
+                score += 25  # exact match for intercrop pattern
+            elif obs_shape == "evergreen" and sig["curve_shape"] == "evergreen_seasonal":
+                score += 15  # seasonal bump might be masked by clouds
+            elif obs_shape == "flat" and sig["curve_shape"] == "flat":
+                score += 25
+
+            confidence = round(score / max_score * 100, 1) if max_score > 0 else 0.0
+            scores[crop_name] = {
+                "score": round(score, 1),
+                "confidence": confidence,
+            }
+
+        # Rank by confidence
+        ranked = sorted(scores.items(), key=lambda x: x[1]["confidence"], reverse=True)
+        top_crop = ranked[0][0]
+        top_confidence = ranked[0][1]["confidence"]
+
+        # Build result
+        predictions = []
+        for crop_name, data in ranked[:5]:  # top 5
+            sig = self.RWANDA_CROP_SIGNATURES[crop_name]
+            entry = {
+                "crop": crop_name,
+                "confidence": data["confidence"],
+                "season_length_typical": f"{sig['season_length_weeks'][0]}-{sig['season_length_weeks'][1]} weeks",
+                "perennial": sig["perennial"],
+            }
+            if sig.get("intercrop"):
+                entry["intercrop"] = True
+                entry["components"] = sig["components"]
+            predictions.append(entry)
+
+        # Check if top prediction is an intercrop
+        top_sig = self.RWANDA_CROP_SIGNATURES[top_crop]
+        is_intercrop = top_sig.get("intercrop", False)
+
+        # Format display name for intercrops
+        display_name = top_crop.replace("_and_", " + ").replace("_", " ").title()
+
+        result = {
+            "method": "temporal_signature_matching",
+            "predicted_crop": top_crop,
+            "display_name": display_name,
+            "confidence": top_confidence,
+            "is_intercrop": is_intercrop,
+            "predictions": predictions,
+            "observed_features": {
+                "peak_ndvi": round(obs_peak_ndvi, 4),
+                "mean_ndvi": round(obs_mean_ndvi, 4),
+                "std_ndvi": round(obs_std_ndvi, 4),
+                "min_ndvi": round(obs_min_ndvi, 4),
+                "cv": round(obs_cv, 4),
+                "season_weeks": round(obs_season_weeks, 1),
+                "peak_timing_fraction": round(obs_peak_fraction, 3),
+                "green_up_rate": round(obs_green_up_rate, 4),
+                "senescence_rate": round(obs_senescence_rate, 4),
+                "curve_shape": obs_shape,
+            },
+            "phenology": {
+                "current_stage": phenology.get("current_stage"),
+                "peak_date": phenology.get("peak_date"),
+                "green_up_start": phenology.get("green_up_start"),
+                "senescence_start": phenology.get("senescence_start"),
+            },
+            "observations": n,
+        }
+
+        if is_intercrop:
+            result["components"] = top_sig["components"]
+
+        return result
+
 
 class MLInferenceService:
     """Orchestrates ML inference for Rwanda agriculture."""
@@ -783,6 +1238,17 @@ class MLInferenceService:
         """Identify crop growth stages from NDVI phenology curve."""
         return self.crop_classifier.analyze_crop_phenology(ndvi_timeseries)
 
+    def identify_crop(
+        self, ndvi_timeseries: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Identify the most likely crop from NDVI time-series.
+
+        Matches observed phenological features against Rwanda crop temporal
+        signatures. Returns top prediction with confidence score and ranked
+        alternatives.
+        """
+        return self.crop_classifier.identify_crop_from_timeseries(ndvi_timeseries)
+
     def get_status(self) -> Dict[str, Any]:
         """Get status of available ML methods and dependencies."""
         available_methods = [
@@ -791,6 +1257,7 @@ class MLInferenceService:
             "z_score_anomaly",
             "vci_drought",
             "ndvi_phenology",
+            "crop_identification",
         ]
 
         if _SKLEARN_AVAILABLE:
@@ -807,6 +1274,7 @@ class MLInferenceService:
                 "z_score_anomaly": "Statistical anomaly detection in time series",
                 "vci_drought": "Vegetation Condition Index + NDWI drought detection (WMO standard)",
                 "ndvi_phenology": "Crop growth stage identification from NDVI curve inflection points",
+                "crop_identification": "Temporal signature matching for parcel-level crop identification (12 single crops + 6 intercrop combos)",
             },
         }
 

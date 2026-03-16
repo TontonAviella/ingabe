@@ -97,7 +97,8 @@ export const AddSatelliteLayer: React.FC<AddSatelliteLayerProps> = ({ isOpen, on
         }
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        setError(errorData.detail || response.statusText);
+        const detail = errorData.detail;
+        setError(typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : response.statusText));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Network error occurred');

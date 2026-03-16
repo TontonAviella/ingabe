@@ -36,7 +36,8 @@ import redis.exceptions
 logger = logging.getLogger(__name__)
 
 # Default TTL in seconds — can be overridden via environment variable.
-_DEFAULT_TTL = 3600  # 1 hour
+# 7 days for satellite tiles (imagery revisit is ~5 days).
+_DEFAULT_TTL = 604800  # 7 days
 
 
 def _ttl() -> int:

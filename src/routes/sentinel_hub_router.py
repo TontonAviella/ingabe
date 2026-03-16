@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 satellite_router = APIRouter(prefix="/api", tags=["Satellite"])
 
 # Limit concurrent requests to Sentinel Hub to avoid rate-limiting
-_SH_SEMAPHORE = asyncio.Semaphore(8)
+_SH_SEMAPHORE = asyncio.Semaphore(16)
 
 
 @lru_cache(maxsize=1)
@@ -44,7 +44,7 @@ def _transparent_tile() -> bytes:
 
 
 _TILE_HEADERS = {
-    "Cache-Control": "public, max-age=3600",
+    "Cache-Control": "public, max-age=604800",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Range, Content-Type",
@@ -71,6 +71,7 @@ async def get_satellite_tile(
     date_to: str = Query("", description="End date ISO (e.g. 2025-05-31)"),
     maxcc: int = Query(100, ge=0, le=100, description="Max cloud coverage %"),
     hd: bool = Query(True, description="HD mode: 512px tiles with BICUBIC upsampling"),
+    mosaic: str = Query("leastCC", description="Mosaicking order: leastCC (clearest) or mostRecent (newest)"),
 ):
     if not is_configured():
         raise HTTPException(
@@ -98,7 +99,7 @@ async def get_satellite_tile(
         )
 
     # Build cache key (include hd flag to separate 256/512 caches)
-    cache_key = f"sat-{collection}-{layer}-{date_from}-{date_to}-cc{maxcc}-{'hd' if hd else 'sd'}"
+    cache_key = f"sat-{collection}-{layer}-{date_from}-{date_to}-cc{maxcc}-{'hd' if hd else 'sd'}-{mosaic}"
 
     # Check Redis cache
     cached = await tile_cache.get(cache_key, z, x, y, fmt="sat")
@@ -119,6 +120,7 @@ async def get_satellite_tile(
                 maxcc=maxcc,
                 width=tile_size,
                 height=tile_size,
+                mosaic=mosaic,
             )
 
         if png_bytes is None:
@@ -168,6 +170,7 @@ async def get_satellite_scene_info(
     collection: str = Query("sentinel-2-l2a"),
     date_from: str = Query(""),
     date_to: str = Query(""),
+    mosaic: str = Query("leastCC", description="Mosaicking order: leastCC (clearest) or mostRecent (newest)"),
 ):
     if not is_configured():
         raise HTTPException(status_code=503, detail="Sentinel Hub not configured")
@@ -192,9 +195,13 @@ async def get_satellite_scene_info(
             "date_from": date_from,
             "date_to": date_to,
             "scenes_available": 0,
+            "mosaic": mosaic,
         }
 
-    # First scene is clearest (sorted by cloud cover in search_catalog)
+    # Sort based on mosaic mode: leastCC → by cloud cover, mostRecent → by date
+    if mosaic == "mostRecent":
+        scenes.sort(key=lambda s: s.get("datetime", ""), reverse=True)
+
     best = scenes[0]
     return {
         "scene_date": best["datetime"],
@@ -202,4 +209,5 @@ async def get_satellite_scene_info(
         "date_from": date_from,
         "date_to": date_to,
         "scenes_available": len(scenes),
+        "mosaic": mosaic,
     }

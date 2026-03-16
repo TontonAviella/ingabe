@@ -637,9 +637,23 @@ class SocialImageCacheBustedError(Exception):
 
 @project_router.get("/{project_id}/social.webp", response_class=Response)
 async def get_project_social_preview(
-    project: MundiProject = Depends(get_project),
+    project_id: str,
     base_map_provider: BaseMapProvider = Depends(get_base_map_provider),
 ):
+    # Public endpoint — thumbnails are loaded via CSS background-image which
+    # cannot send Authorization headers.  No sensitive data is exposed.
+    from src.database.pool import get_async_read_connection
+    from src.database.models import MundiProject
+
+    async with get_async_read_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM user_mundiai_projects WHERE id = $1 AND soft_deleted_at IS NULL",
+            project_id,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project = MundiProject(**dict(row))
+
     latest_map_id = project.maps[-1]
 
     # If map has no layers, stream the provider's default basemap preview directly

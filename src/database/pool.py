@@ -35,8 +35,10 @@ tracer = trace.get_tracer(__name__)
 
 def _build_postgres_url(host: Optional[str] = None, port: Optional[str] = None) -> str:
     """Build a PostgreSQL DSN from environment variables."""
+    from urllib.parse import quote_plus
+
     user = os.environ["POSTGRES_USER"]
-    password = os.environ["POSTGRES_PASSWORD"]
+    password = quote_plus(os.environ["POSTGRES_PASSWORD"])
     h = host or os.environ["POSTGRES_HOST"]
     p = port or os.environ.get("POSTGRES_PORT", "5432")
     db = os.environ["POSTGRES_DB"]

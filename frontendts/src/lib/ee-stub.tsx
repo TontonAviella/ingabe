@@ -118,18 +118,36 @@ export function ApiKeys(): React.ReactNode | null {
 // This is called outside React components (e.g. in useEffect callbacks).
 // We store the getToken function from useAuth when the Provider mounts.
 let _getTokenFn: (() => Promise<string | null>) | null = null;
+// Cached token for synchronous access (used by MapLibre transformRequest)
+let _cachedToken: string | null = null;
 
 export function _SetTokenProvider({ children }: React.PropsWithChildren) {
   const { getToken } = useAuth();
 
   useEffect(() => {
     _getTokenFn = getToken;
+    // Eagerly cache token so transformRequest has it immediately
+    getToken().then(t => { _cachedToken = t; });
+    // Refresh cached token every 50s (Clerk tokens expire ~60s)
+    const interval = setInterval(() => {
+      getToken().then(t => { _cachedToken = t; });
+    }, 50_000);
     return () => {
       _getTokenFn = null;
+      _cachedToken = null;
+      clearInterval(interval);
     };
   }, [getToken]);
 
   return <>{children}</>;
+}
+
+/**
+ * Synchronous access to the cached Clerk JWT token.
+ * Used by MapLibre's transformRequest to add Bearer tokens to tile requests.
+ */
+export function getCachedToken(): string | null {
+  return _cachedToken;
 }
 
 // ── useIsReady ──────────────────────────────────────────────────────────
@@ -156,6 +174,7 @@ export async function getJwt(): Promise<string | undefined> {
 
   if (_getTokenFn) {
     const token = await _getTokenFn();
+    _cachedToken = token;
     return token ?? undefined;
   }
 

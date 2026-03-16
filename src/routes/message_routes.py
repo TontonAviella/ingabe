@@ -2574,6 +2574,170 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "identify_parcel_crop":
+                            try:
+                                from src.services.sentinel_hub_service import get_sentinel_hub_service
+                                from src.services.ml_inference import get_ml_service
+
+                                sh_service = get_sentinel_hub_service()
+                                if sh_service is None:
+                                    tool_result = {"status": "error", "error": "Sentinel Hub not available"}
+                                else:
+                                    _ic_geom = tool_args.get("geometry")
+                                    if not _ic_geom:
+                                        tool_result = {"status": "error", "error": "geometry is required for crop identification"}
+                                        break
+                                    _ic_months = tool_args.get("months", 6)
+                                    if _ic_months < 3:
+                                        _ic_months = 3
+
+                                    # Auto-buffer Point geometries
+                                    if _ic_geom and _ic_geom.get("type") in ("Point", "MultiPoint"):
+                                        from shapely.geometry import shape as _shape, mapping as _mapping
+                                        from pyproj import Transformer as _Transformer
+                                        from shapely.ops import transform as _stransform
+                                        _pt = _shape(_ic_geom)
+                                        _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
+                                        _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
+                                        _pt_utm = _stransform(_to_utm.transform, _pt)
+                                        _buf_utm = _pt_utm.buffer(500)
+                                        _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
+                                        _ic_geom = _mapping(_buf_wgs)
+                                        logger.info("identify_parcel_crop: auto-buffered Point to 500m polygon")
+
+                                    # Step 1: Get NDVI time-series from Sentinel Hub
+                                    ts_result = await asyncio.get_event_loop().run_in_executor(
+                                        None, lambda: sh_service.get_field_timeseries(
+                                            geometry=_ic_geom,
+                                            months=_ic_months,
+                                        )
+                                    )
+                                    if "error" in ts_result:
+                                        tool_result = {"status": "error", "error": ts_result["error"]}
+                                    else:
+                                        # Convert intervals to time-series format
+                                        _ndvi_ts = []
+                                        for interval in ts_result.get("intervals", []):
+                                            _ndvi_data = interval.get("ndvi", {})
+                                            if _ndvi_data.get("mean") is not None:
+                                                _ndvi_ts.append({
+                                                    "date": interval.get("date_from", ""),
+                                                    "mean_ndvi": _ndvi_data["mean"],
+                                                })
+
+                                        if len(_ndvi_ts) < 4:
+                                            tool_result = {
+                                                "status": "error",
+                                                "error": f"Insufficient data: only {len(_ndvi_ts)} cloud-free observations "
+                                                         f"in {_ic_months} months. Need at least 4 for crop identification.",
+                                            }
+                                        else:
+                                            # Step 2: Run crop identification
+                                            ml_service = get_ml_service()
+                                            crop_result = ml_service.identify_crop(_ndvi_ts)
+                                            if "error" in crop_result:
+                                                tool_result = {"status": "error", "error": crop_result["error"]}
+                                            else:
+                                                tool_result = {"status": "success", "crop_identification": crop_result}
+                            except Exception as e:
+                                logger.exception("identify_parcel_crop failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "confirm_crop_prediction":
+                            try:
+                                from datetime import date as _cdate
+
+                                _predicted = tool_args.get("predicted_crop", "")
+                                _actual = tool_args.get("actual_crop", "")
+                                _confirmed = tool_args.get("confirmed", False)
+                                _season = tool_args.get("season")
+                                _geom = tool_args.get("geometry")
+
+                                # Auto-detect season from current date
+                                if not _season:
+                                    _today = _cdate.today()
+                                    _yr = _today.year
+                                    # Season A: Sep-Feb, Season B: Feb-Jul
+                                    if _today.month >= 9:
+                                        _season = f"{_yr + 1}A"
+                                    elif _today.month <= 2:
+                                        _season = f"{_yr}A"
+                                    else:
+                                        _season = f"{_yr}B"
+
+                                # Store feedback in PostgreSQL
+                                try:
+                                    await conn.execute(
+                                        """INSERT INTO crop_feedback
+                                           (user_id, predicted_crop, actual_crop, confirmed,
+                                            season, geometry, created_at)
+                                           VALUES ($1, $2, $3, $4, $5, $6, NOW())""",
+                                        str(user_id) if user_id else "anonymous",
+                                        _predicted,
+                                        _actual,
+                                        _confirmed,
+                                        _season,
+                                        json.dumps(_geom) if _geom else None,
+                                    )
+                                    tool_result = {
+                                        "status": "success",
+                                        "message": (
+                                            f"Thank you! Recorded: prediction was '{_predicted}', "
+                                            f"actual crop is '{_actual}' "
+                                            f"({'confirmed correct' if _confirmed else 'corrected'}). "
+                                            f"Season: {_season}. This feedback improves future predictions."
+                                        ),
+                                        "feedback": {
+                                            "predicted_crop": _predicted,
+                                            "actual_crop": _actual,
+                                            "confirmed": _confirmed,
+                                            "season": _season,
+                                        },
+                                    }
+                                except Exception as _db_err:
+                                    # Table might not exist yet — log feedback anyway
+                                    logger.warning(
+                                        "crop_feedback table not found (%s) — logging feedback",
+                                        _db_err,
+                                    )
+                                    logger.info(
+                                        "CROP_FEEDBACK: predicted=%s actual=%s confirmed=%s season=%s user=%s",
+                                        _predicted, _actual, _confirmed, _season, user_id,
+                                    )
+                                    tool_result = {
+                                        "status": "success",
+                                        "message": (
+                                            f"Feedback recorded (log): prediction '{_predicted}', "
+                                            f"actual '{_actual}' ({'correct' if _confirmed else 'corrected'}). "
+                                            f"Season: {_season}."
+                                        ),
+                                        "feedback": {
+                                            "predicted_crop": _predicted,
+                                            "actual_crop": _actual,
+                                            "confirmed": _confirmed,
+                                            "season": _season,
+                                        },
+                                    }
+                            except Exception as e:
+                                logger.exception("confirm_crop_prediction failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "get_ndvi_stats":
                             try:
                                 from datetime import date as _date, datetime as _datetime, timedelta as _td

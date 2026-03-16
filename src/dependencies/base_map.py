@@ -53,17 +53,11 @@ class OpenStreetMapProvider(BaseMapProvider):
         "esri_satellite": {
             "name": "Esri Satellite",
             "tiles": [
-                (
-                    f"https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}?token={os.environ['ESRI_API_KEY']}"
-                    if os.environ.get("ESRI_API_KEY")
-                    else "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                )
+                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
             ],
             "tileSize": 256,
             "attribution": "&copy; Esri, Maxar, Earthstar Geographics",
-            # With an API key the authenticated endpoint serves sharper tiles
-            # up to z23.  Without a key, the free public endpoint caps at z18.
-            "maxzoom": 23 if os.environ.get("ESRI_API_KEY") else 18,
+            "maxzoom": 18,
         },
         "esri_topo": {
             "name": "Esri Topographic",
@@ -128,12 +122,16 @@ class OpenStreetMapProvider(BaseMapProvider):
 
         if basemap_name == "openfreemap":
             # Fetch the OpenFreeMap vector style from their API
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    "https://tiles.openfreemap.org/styles/liberty"
-                )
-                response.raise_for_status()
-                return response.json()
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        "https://tiles.openfreemap.org/styles/liberty"
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except (httpx.TimeoutException, httpx.HTTPStatusError):
+                # Fall back to OpenStreetMap raster if OpenFreeMap is down
+                basemap_name = "openstreetmap"
 
         # Lookup raster basemap definition
         basemap_def = self._RASTER_BASEMAPS.get(basemap_name)

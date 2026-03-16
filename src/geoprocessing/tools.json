@@ -1015,5 +1015,61 @@
         "required": ["geometry"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "identify_parcel_crop",
+      "description": "Identify what crop is growing on a field parcel using Sentinel-2 NDVI time-series and temporal signature matching. Compares the observed growth curve against known Rwanda crop profiles (maize, beans, cassava, rice, sorghum, banana, tea, coffee, potato, wheat, fallow). Returns the most likely crop with confidence score and ranked alternatives. PREFERRED tool when farmer asks 'what crop is on my field?', 'can you detect what I planted?', or 'identify the crop'. Requires a polygon geometry (field boundary).",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field/parcel boundary"
+          },
+          "months": {
+            "type": "integer",
+            "description": "Number of months of NDVI history to analyze (default: 6, min: 3)"
+          }
+        },
+        "required": ["geometry"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "confirm_crop_prediction",
+      "description": "Record farmer confirmation or correction of a crop prediction. When Ingabe predicts a crop type for a parcel and the farmer says 'yes that's correct' or 'no, it's actually beans', use this tool to store the feedback as ground truth. This data improves future predictions. Use when the user confirms or corrects a crop identification result.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "geometry": {
+            "type": "object",
+            "description": "GeoJSON Polygon geometry of the field/parcel"
+          },
+          "predicted_crop": {
+            "type": "string",
+            "description": "The crop that Ingabe predicted (from identify_parcel_crop result)"
+          },
+          "actual_crop": {
+            "type": "string",
+            "description": "The actual crop the farmer confirms or corrects to"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "description": "true if farmer confirms prediction was correct, false if corrected"
+          },
+          "season": {
+            "type": "string",
+            "description": "Growing season (e.g. '2026A', '2026B'). Auto-detected if omitted."
+          }
+        },
+        "required": ["predicted_crop", "actual_crop", "confirmed"]
+      }
+    }
   }
 ]

@@ -104,6 +104,7 @@ export class BasemapControl implements IControl {
 
       // Create loading placeholder
       const loading = document.createElement('div');
+      loading.setAttribute('data-role', 'loading');
       loading.style.position = 'absolute';
       loading.style.top = '50%';
       loading.style.left = '50%';
@@ -270,10 +271,10 @@ export class BasemapControl implements IControl {
     const items = this._menu.querySelectorAll('.maplibregl-ctrl-basemap-item');
     items.forEach((item, index) => {
       const basemap = this._availableBasemaps[index];
-      const img = item.querySelector('img') as HTMLImageElement;
-      const loading = item.querySelector('div[style*="Loading"]') as HTMLElement;
+      const img = item.querySelector('img') as HTMLImageElement | null;
+      const loading = item.querySelector('div[data-role="loading"]') as HTMLElement | null;
 
-      if (img && loading) {
+      if (img && loading && basemap) {
         loading.style.display = 'block';
         loading.textContent = 'Loading...';
         loading.style.color = '#666';

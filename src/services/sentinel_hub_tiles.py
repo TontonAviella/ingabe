@@ -13,6 +13,7 @@ Environment variables (via src.config.settings):
 
 import logging
 import math
+import os
 import time
 from typing import Optional
 
@@ -22,14 +23,37 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Sentinel Hub OAuth2 token endpoint
-_SH_TOKEN_URL = (
-    "https://services.sentinel-hub.com/auth/realms/main/"
-    "protocol/openid-connect/token"
-)
+# Shared aiohttp session — reuses TCP+TLS connections across tile requests.
+# Created lazily on first use, avoids per-request connection overhead.
+_shared_session: Optional[aiohttp.ClientSession] = None
 
-# Process API endpoint
-_SH_PROCESS_URL = "https://services.sentinel-hub.com/api/v1/process"
+
+def _get_session() -> aiohttp.ClientSession:
+    """Return a shared aiohttp session, creating it if needed."""
+    global _shared_session
+    if _shared_session is None or _shared_session.closed:
+        _shared_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30),
+            connector=aiohttp.TCPConnector(limit=20, keepalive_timeout=60),
+        )
+    return _shared_session
+
+# Sentinel Hub OAuth2 token endpoint — respects SH_BASE_URL for CDSE deployments
+_SH_BASE_URL = settings.sh_base_url if hasattr(settings, "sh_base_url") else (
+    os.environ.get("SH_BASE_URL", "https://services.sentinel-hub.com")
+)
+if "dataspace.copernicus.eu" in _SH_BASE_URL:
+    _SH_TOKEN_URL = (
+        "https://identity.dataspace.copernicus.eu/auth/realms/"
+        "CDSE/protocol/openid-connect/token"
+    )
+    _SH_PROCESS_URL = f"{_SH_BASE_URL}/api/v1/process"
+else:
+    _SH_TOKEN_URL = (
+        "https://services.sentinel-hub.com/auth/realms/main/"
+        "protocol/openid-connect/token"
+    )
+    _SH_PROCESS_URL = "https://services.sentinel-hub.com/api/v1/process"
 
 # Cached token state
 _cached_token: Optional[str] = None
@@ -54,22 +78,21 @@ async def get_access_token() -> str:
     if not is_configured():
         raise RuntimeError("Sentinel Hub credentials not configured")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            _SH_TOKEN_URL,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": settings.sh_client_id,
-                "client_secret": settings.sh_client_secret,
-            },
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    f"Sentinel Hub token request failed ({resp.status}): {body}"
-                )
-            data = await resp.json()
+    session = _get_session()
+    async with session.post(
+        _SH_TOKEN_URL,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": settings.sh_client_id,
+            "client_secret": settings.sh_client_secret,
+        },
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            raise RuntimeError(
+                f"Sentinel Hub token request failed ({resp.status}): {body}"
+            )
+        data = await resp.json()
 
     _cached_token = data["access_token"]
     expires_in = data.get("expires_in", 3600)
@@ -111,21 +134,20 @@ async def search_catalog(
     if date_from and date_to:
         search_body["datetime"] = f"{date_from}T00:00:00Z/{date_to}T23:59:59Z"
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            _SH_CATALOG_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=search_body,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                logger.warning("Catalog search failed %d: %s", resp.status, body[:200])
-                return []
-            data = await resp.json()
+    session = _get_session()
+    async with session.post(
+        _SH_CATALOG_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=search_body,
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            logger.warning("Catalog search failed %d: %s", resp.status, body[:200])
+            return []
+        data = await resp.json()
 
     results = []
     for feat in data.get("features", []):
@@ -364,6 +386,7 @@ def build_process_payload(
     maxcc: int = 20,
     width: int = 512,
     height: int = 512,
+    mosaic: str = "leastCC",
 ) -> dict:
     """Build a Sentinel Hub Process API request payload.
 
@@ -376,11 +399,12 @@ def build_process_payload(
         maxcc: Maximum cloud coverage percentage.
         width: Tile width in pixels.
         height: Tile height in pixels.
+        mosaic: Mosaicking order — leastCC (clearest) or mostRecent (newest).
     """
     data_type = _COLLECTION_TYPES.get(collection, collection)
 
     data_filter: dict = {
-        "mosaickingOrder": "leastCC",
+        "mosaickingOrder": mosaic,
     }
     if date_from and date_to:
         data_filter["timeRange"] = {
@@ -433,6 +457,7 @@ async def fetch_tile(
     maxcc: int = 20,
     width: int = 512,
     height: int = 512,
+    mosaic: str = "leastCC",
 ) -> Optional[bytes]:
     """Fetch a tile from Sentinel Hub Process API.
 
@@ -449,25 +474,25 @@ async def fetch_tile(
         maxcc=maxcc,
         width=width,
         height=height,
+        mosaic=mosaic,
     )
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            _SH_PROCESS_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Accept": "image/png",
-            },
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                logger.warning(
-                    "Sentinel Hub Process API error %d: %s",
-                    resp.status,
-                    body[:300],
-                )
-                return None
-            return await resp.read()
+    session = _get_session()
+    async with session.post(
+        _SH_PROCESS_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "image/png",
+        },
+        json=payload,
+    ) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            logger.warning(
+                "Sentinel Hub Process API error %d: %s",
+                resp.status,
+                body[:300],
+            )
+            return None
+        return await resp.read()

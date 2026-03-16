@@ -220,7 +220,7 @@ export default function ProjectView() {
   }, [conversationId, wsProtocol, jwt]);
 
   // If EE is present, fetch a JWT for authenticated websockets
-  // Refresh every 50 minutes to prevent expiration (Clerk JWTs expire after ~1 hour)
+  // Clerk dev tokens expire after 60s; refresh every 45s to stay ahead.
   useEffect(() => {
     let mounted = true;
 
@@ -235,8 +235,8 @@ export default function ProjectView() {
     // Initial fetch
     refreshJwt();
 
-    // Refresh every 50 minutes (3000000ms) to stay ahead of 60-minute expiry
-    const refreshInterval = window.setInterval(refreshJwt, 50 * 60 * 1000);
+    // Refresh every 45 seconds to stay ahead of Clerk's 60-second token expiry
+    const refreshInterval = window.setInterval(refreshJwt, 45_000);
 
     return () => {
       mounted = false;
@@ -421,7 +421,8 @@ export default function ProjectView() {
       });
       if (!presignRes.ok) {
         const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
-        throw new Error(err.detail || 'Failed to get upload URL');
+        const d = err.detail;
+        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : 'Failed to get upload URL'));
       }
       const presign = (await presignRes.json()) as {
         upload_url: string;
@@ -474,7 +475,8 @@ export default function ProjectView() {
       });
       if (!completeRes.ok) {
         const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
-        throw new Error(err.detail || 'Processing failed after upload');
+        const d2 = err.detail;
+        throw new Error(typeof d2 === 'string' ? d2 : (d2 ? JSON.stringify(d2) : 'Processing failed after upload'));
       }
 
       return await completeRes.json();

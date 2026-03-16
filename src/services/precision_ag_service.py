@@ -140,15 +140,26 @@ def _bbox_from_geojson(geom: Dict[str, Any]) -> Tuple[float, float, float, float
 
 
 def _get_sh_config() -> "SHConfig":
-    """Create Sentinel Hub config from environment variables."""
+    """Create Sentinel Hub config from environment variables.
+
+    Supports both original Sentinel Hub (services.sentinel-hub.com) and
+    CDSE (sh.dataspace.copernicus.eu) via SH_BASE_URL env var.
+    """
     config = SHConfig()
     config.sh_client_id = os.environ.get("SH_CLIENT_ID", "")
     config.sh_client_secret = os.environ.get("SH_CLIENT_SECRET", "")
-    config.sh_base_url = "https://sh.dataspace.copernicus.eu"
-    config.sh_token_url = (
-        "https://identity.dataspace.copernicus.eu/auth/realms/"
-        "CDSE/protocol/openid-connect/token"
-    )
+    base_url = os.environ.get("SH_BASE_URL", "https://services.sentinel-hub.com")
+    config.sh_base_url = base_url
+    if "dataspace.copernicus.eu" in base_url:
+        config.sh_token_url = (
+            "https://identity.dataspace.copernicus.eu/auth/realms/"
+            "CDSE/protocol/openid-connect/token"
+        )
+    else:
+        config.sh_token_url = (
+            "https://services.sentinel-hub.com/auth/realms/main/"
+            "protocol/openid-connect/token"
+        )
     return config
 
 
@@ -200,14 +211,21 @@ def _download_ndvi_raster(
         width_px, height_px, bbox,
     )
 
+    # CDSE requires define_from with service_url; original SH uses collections directly
+    is_cdse = "dataspace.copernicus.eu" in config.sh_base_url
+    if is_cdse:
+        input_collection = DataCollection.SENTINEL2_L2A.define_from(
+            "sentinel2_l2a",
+            service_url=config.sh_base_url,
+        )
+    else:
+        input_collection = DataCollection.SENTINEL2_L2A
+
     request = SentinelHubRequest(
         evalscript=EVALSCRIPT_NDVI_RASTER,
         input_data=[
             SentinelHubRequest.input_data(
-                data_collection=DataCollection.SENTINEL2_L2A.define_from(
-                    "sentinel2_l2a",
-                    service_url=config.sh_base_url,
-                ),
+                data_collection=input_collection,
                 time_interval=(date_from, date_to),
                 maxcc=0.8,
             )

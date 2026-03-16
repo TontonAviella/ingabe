@@ -72,7 +72,8 @@ export const AddRemoteDataSource: React.FC<AddRemoteDataSourceProps> = ({ isOpen
         }
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        setError(errorData.detail || response.statusText);
+        const detail = errorData.detail;
+        setError(typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : response.statusText));
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Network error occurred');

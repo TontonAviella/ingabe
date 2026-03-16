@@ -201,16 +201,30 @@ def _resolve_collection(collection: Optional[str] = None) -> "DataCollection":
 
 
 def _get_sh_config() -> "SHConfig":
-    """Create Sentinel Hub config from environment variables."""
+    """Create Sentinel Hub config from environment variables.
+
+    Supports both original Sentinel Hub (services.sentinel-hub.com) and
+    CDSE (sh.dataspace.copernicus.eu) via SH_BASE_URL env var.
+    """
     config = SHConfig()
     config.sh_client_id = os.environ.get("SH_CLIENT_ID", "")
     config.sh_client_secret = os.environ.get("SH_CLIENT_SECRET", "")
-    # CDSE endpoint
-    config.sh_base_url = "https://sh.dataspace.copernicus.eu"
-    config.sh_token_url = (
-        "https://identity.dataspace.copernicus.eu/auth/realms/"
-        "CDSE/protocol/openid-connect/token"
-    )
+
+    base_url = os.environ.get("SH_BASE_URL", "https://services.sentinel-hub.com")
+    config.sh_base_url = base_url
+
+    if "dataspace.copernicus.eu" in base_url:
+        # CDSE endpoint
+        config.sh_token_url = (
+            "https://identity.dataspace.copernicus.eu/auth/realms/"
+            "CDSE/protocol/openid-connect/token"
+        )
+    else:
+        # Original Sentinel Hub (Planet)
+        config.sh_token_url = (
+            "https://services.sentinel-hub.com/auth/realms/main/"
+            "protocol/openid-connect/token"
+        )
     return config
 
 
@@ -333,6 +347,16 @@ class SentinelHubService:
             data_collection = _resolve_collection(collection)
             logger.info("SH Statistical: using collection=%s", data_collection.name)
 
+            # CDSE requires define_from with service_url; original SH uses collections directly
+            is_cdse = "dataspace.copernicus.eu" in self._config.sh_base_url
+            if is_cdse:
+                input_collection = data_collection.define_from(
+                    data_collection.name.lower(),
+                    service_url=self._config.sh_base_url,
+                )
+            else:
+                input_collection = data_collection
+
             request = SentinelHubStatistical(
                 aggregation=SentinelHubStatistical.aggregation(
                     evalscript=evalscript,
@@ -342,10 +366,7 @@ class SentinelHubService:
                 ),
                 input_data=[
                     SentinelHubStatistical.input_data(
-                        data_collection.define_from(
-                            data_collection.name.lower(),
-                            service_url=self._config.sh_base_url,
-                        ),
+                        input_collection,
                         maxcc=0.8,  # Rwanda is tropical/cloudy; allow up to 80% cloud cover
                     ),
                 ],
@@ -451,6 +472,15 @@ class SentinelHubService:
         try:
             data_collection = _resolve_collection(collection)
 
+            is_cdse = "dataspace.copernicus.eu" in self._config.sh_base_url
+            if is_cdse:
+                input_collection = data_collection.define_from(
+                    data_collection.name.lower(),
+                    service_url=self._config.sh_base_url,
+                )
+            else:
+                input_collection = data_collection
+
             request = SentinelHubStatistical(
                 aggregation=SentinelHubStatistical.aggregation(
                     evalscript=EVALSCRIPT_AGRI_INDICES,
@@ -460,10 +490,7 @@ class SentinelHubService:
                 ),
                 input_data=[
                     SentinelHubStatistical.input_data(
-                        data_collection.define_from(
-                            data_collection.name.lower(),
-                            service_url=self._config.sh_base_url,
-                        ),
+                        input_collection,
                         maxcc=0.8,
                     ),
                 ],
