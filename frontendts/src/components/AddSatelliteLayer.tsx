@@ -9,7 +9,11 @@ import { Input } from '@/components/ui/input';
 
 const COLLECTIONS = [
   { value: 'sentinel-2-l2a', label: 'Sentinel-2 L2A', description: 'Free, 10m resolution, 5-day revisit — available now' },
-  { value: 'planetscope', label: 'PlanetScope', description: '3.7m daily imagery — crop identification & field monitoring (requires BYOC import)' },
+  {
+    value: 'planetscope',
+    label: 'PlanetScope',
+    description: '3.7m daily imagery — crop identification & field monitoring (requires BYOC import)',
+  },
   { value: 'skysat', label: 'SkySat', description: '50cm on-demand — detailed field inspection (requires BYOC import)' },
 ] as const;
 
@@ -98,7 +102,7 @@ export const AddSatelliteLayer: React.FC<AddSatelliteLayerProps> = ({ isOpen, on
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const detail = errorData.detail;
-        setError(typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : response.statusText));
+        setError(typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : response.statusText);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Network error occurred');
@@ -134,7 +138,9 @@ export const AddSatelliteLayer: React.FC<AddSatelliteLayerProps> = ({ isOpen, on
             <Satellite className="h-5 w-5" />
             Add Satellite Imagery
           </DialogTitle>
-          <DialogDescription>Add live satellite imagery. Sentinel-2 provides free 10m global coverage. PlanetScope (3.7m daily) available after BYOC import.</DialogDescription>
+          <DialogDescription>
+            Add live satellite imagery. Sentinel-2 provides free 10m global coverage. PlanetScope (3.7m daily) available after BYOC import.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4 py-4">
@@ -181,11 +187,7 @@ export const AddSatelliteLayer: React.FC<AddSatelliteLayerProps> = ({ isOpen, on
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-sm font-medium">From</label>
-              <Input
-                type="date"
-                value={form.dateFrom}
-                onChange={(e) => setForm((prev) => ({ ...prev, dateFrom: e.target.value }))}
-              />
+              <Input type="date" value={form.dateFrom} onChange={(e) => setForm((prev) => ({ ...prev, dateFrom: e.target.value }))} />
             </div>
             <div className="space-y-1">
               <label className="text-sm font-medium">To</label>
@@ -209,11 +211,7 @@ export const AddSatelliteLayer: React.FC<AddSatelliteLayerProps> = ({ isOpen, on
           {/* Name override */}
           <div className="space-y-1">
             <label className="text-sm font-medium">Layer Name (optional)</label>
-            <Input
-              placeholder={autoName()}
-              value={form.name}
-              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-            />
+            <Input placeholder={autoName()} value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
           </div>
 
           {error && (

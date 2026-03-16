@@ -422,7 +422,7 @@ export default function ProjectView() {
       if (!presignRes.ok) {
         const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
         const d = err.detail;
-        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : 'Failed to get upload URL'));
+        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : 'Failed to get upload URL');
       }
       const presign = (await presignRes.json()) as {
         upload_url: string;
@@ -476,7 +476,7 @@ export default function ProjectView() {
       if (!completeRes.ok) {
         const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
         const d2 = err.detail;
-        throw new Error(typeof d2 === 'string' ? d2 : (d2 ? JSON.stringify(d2) : 'Processing failed after upload'));
+        throw new Error(typeof d2 === 'string' ? d2 : d2 ? JSON.stringify(d2) : 'Processing failed after upload');
       }
 
       return await completeRes.json();

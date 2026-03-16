@@ -477,9 +477,7 @@ export default function MapLibreMap({
         if (needsUnderlay) {
           mergedSources['basemap-underlay'] = {
             type: 'raster',
-            tiles: [
-              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            ],
+            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
             tileSize: 256,
             maxzoom: 18,
           } as SourceSpecification;
@@ -500,12 +498,7 @@ export default function MapLibreMap({
           const pushed = layer as LayerSpecification;
           // When Esri underlay is present, fade Sentinel-2 at high zoom so the
           // sharp Esri imagery shows through beyond Sentinel-2's native 10m resolution.
-          if (
-            needsUnderlay &&
-            pushed.type === 'raster' &&
-            'source' in pushed &&
-            pushed.source === 'sentinel2-live'
-          ) {
+          if (needsUnderlay && pushed.type === 'raster' && 'source' in pushed && pushed.source === 'sentinel2-live') {
             (pushed as any).paint = {
               ...(pushed as any).paint,
               'raster-opacity': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 0.25],
@@ -864,7 +857,7 @@ export default function MapLibreMap({
           if (url.startsWith('/api/') || url.startsWith(window.location.origin + '/api/')) {
             const token = getCachedToken();
             if (token) {
-              return { url, headers: { 'Authorization': `Bearer ${token}` } };
+              return { url, headers: { Authorization: `Bearer ${token}` } };
             }
           }
           return { url };
@@ -1211,13 +1204,11 @@ export default function MapLibreMap({
       // For Sentinel-2 TRUE-COLOR basemap, inject a fast Esri underlay so the
       // user sees imagery instantly while slow satellite tiles load.
       // NDVI is excluded — its green/red output is nothing like satellite imagery.
-      const hasSatelliteSource = style.sources && ('sentinel2-live' in style.sources);
+      const hasSatelliteSource = style.sources && 'sentinel2-live' in style.sources;
       if (hasSatelliteSource && !style.sources['basemap-underlay']) {
         style.sources['basemap-underlay'] = {
           type: 'raster',
-          tiles: [
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-          ],
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
           tileSize: 256,
           maxzoom: 18,
         };
@@ -1437,7 +1428,7 @@ export default function MapLibreMap({
         if (!createResp.ok) {
           const err = await createResp.json().catch(() => ({ detail: createResp.statusText }));
           const d = err.detail;
-          throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : createResp.statusText));
+          throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : createResp.statusText);
         }
         const newConv = (await createResp.json()) as Conversation;
         conversationIdToUse = newConv.id;
@@ -1479,7 +1470,7 @@ export default function MapLibreMap({
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : response.statusText));
+        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
       }
     } catch (error) {
       addError(error instanceof Error ? error.message : 'Network error', true);
@@ -1572,7 +1563,9 @@ export default function MapLibreMap({
         .then((data) => {
           if (!cancelled) setSceneInfo(data);
         })
-        .catch(() => {});
+        .catch(() => {
+          /* scene info is best-effort */
+        });
     };
 
     const onMoveEnd = () => {
@@ -1630,11 +1623,7 @@ export default function MapLibreMap({
             <span className="font-semibold">
               Captured: {new Date(sceneInfo.scene_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
             </span>
-            {sceneInfo.cloud_cover != null && (
-              <span className="text-white/70">
-                | Cloud: {Math.round(sceneInfo.cloud_cover)}%
-              </span>
-            )}
+            {sceneInfo.cloud_cover != null && <span className="text-white/70">| Cloud: {Math.round(sceneInfo.cloud_cover)}%</span>}
             <span className="text-white/50">
               | {sceneInfo.scenes_available} scene{sceneInfo.scenes_available !== 1 ? 's' : ''} in range
             </span>
@@ -1642,9 +1631,7 @@ export default function MapLibreMap({
             <button
               type="button"
               className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mosaicMode === 'leastCC'
-                  ? 'bg-emerald-500/80 text-white'
-                  : 'bg-white/10 text-white/60 hover:bg-white/20'
+                mosaicMode === 'leastCC' ? 'bg-emerald-500/80 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'
               }`}
               onClick={() => setMosaicMode('leastCC')}
               title="Show clearest (least cloudy) scene"
@@ -1654,9 +1641,7 @@ export default function MapLibreMap({
             <button
               type="button"
               className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mosaicMode === 'mostRecent'
-                  ? 'bg-blue-500/80 text-white'
-                  : 'bg-white/10 text-white/60 hover:bg-white/20'
+                mosaicMode === 'mostRecent' ? 'bg-blue-500/80 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'
               }`}
               onClick={() => setMosaicMode('mostRecent')}
               title="Show most recent scene"

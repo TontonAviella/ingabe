@@ -31,7 +31,7 @@ const EditableTitle: React.FC<EditableTitleProps> = ({ projectId, title = '', pl
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : response.statusText));
+        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
       }
 
       return response.json();

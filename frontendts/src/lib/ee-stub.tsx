@@ -127,10 +127,14 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
   useEffect(() => {
     _getTokenFn = getToken;
     // Eagerly cache token so transformRequest has it immediately
-    getToken().then(t => { _cachedToken = t; });
+    getToken().then((t) => {
+      _cachedToken = t;
+    });
     // Refresh cached token every 50s (Clerk tokens expire ~60s)
     const interval = setInterval(() => {
-      getToken().then(t => { _cachedToken = t; });
+      getToken().then((t) => {
+        _cachedToken = t;
+      });
     }, 50_000);
     return () => {
       _getTokenFn = null;
