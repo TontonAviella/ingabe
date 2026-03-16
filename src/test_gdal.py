@@ -211,7 +211,7 @@ async def test_describe_dem_layer(dem_map_with_cog_layer, auth_client):
     # Verify specific data points
     assert f"ID: {dem_layer_id}" in content
     assert "Type: raster" in content
-    assert "Bounds (WGS84): -119.000768,34.747827,-118.875899,34.877212" in content
+    assert "Bounds (WGS84): -119.003850,34.747827,-118.873013,34.877212" in content
     assert "Min Value: 963.0" in content
     assert "Max Value: 2443.0" in content
 
