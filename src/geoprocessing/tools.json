@@ -875,7 +875,7 @@
     "type": "function",
     "function": {
       "name": "get_weather_stats",
-      "description": "Read daily weather statistics from the DuckDB cache. Data comes from Copernicus AgERA5 agrometeorological indicators (0.1 degree resolution, updated daily by Dagster). Returns per-district daily temperature (mean/max/min in Celsius), precipitation (mm/day), and solar radiation (MJ/m2/day). Use when the user asks about weather, temperature, rainfall, precipitation, solar radiation, climate conditions, or growing conditions for Rwanda districts.",
+      "description": "Read daily weather statistics from the PostgreSQL cache. Data comes from Copernicus AgERA5 agrometeorological indicators (0.1 degree resolution). Returns per-district daily temperature (mean/max/min in Celsius), precipitation (mm/day), and solar radiation (MJ/m2/day). Use for HISTORICAL weather (past observations). For future weather use get_forecast instead.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -891,6 +891,54 @@
           "date_to": {
             "type": "string",
             "description": "End date in YYYY-MM-DD format (default: today)"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_forecast",
+      "description": "Get weather forecast for any location in Rwanda. Fuses 4 models — ECMWF IFS (9km), GFS (13km), ICON (11km), GraphCast AI (28km) — for consensus forecasts with risk assessment. Returns daily temperature, precipitation, wind, ET0, soil moisture, and a natural-language risk briefing. Each location gets unique interpolated values (sector-level precision). Use when the user asks about weather forecast, future weather, expected rainfall, upcoming conditions, or any forward-looking weather question.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Latitude of the location (e.g. -1.9403 for Kigali)"
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Longitude of the location (e.g. 29.8739 for Kigali)"
+          },
+          "district": {
+            "type": "string",
+            "description": "Rwanda district name — will use district centroid if lat/lon not provided"
+          },
+          "forecast_days": {
+            "type": "integer",
+            "description": "Number of days to forecast (1-16, default 10)"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_forecast_accuracy",
+      "description": "Compare weather forecast against observed AgERA5 weather data to measure accuracy. Returns MAE (Mean Absolute Error) and bias for temperature and precipitation across districts where both forecast and observation exist. Use when the user asks about forecast accuracy, model performance, how good the forecast is, or weather prediction quality.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Specific district to check accuracy for (optional — defaults to all districts)"
           }
         },
         "required": []

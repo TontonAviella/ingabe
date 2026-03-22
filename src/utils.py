@@ -191,4 +191,8 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
 
 def get_openai_client(request: Request) -> AsyncOpenAI:
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    return AsyncOpenAI(base_url=base_url)
+    extra_headers = {}
+    if "openrouter.ai" in base_url:
+        extra_headers["HTTP-Referer"] = "https://mundi.ai"
+        extra_headers["X-Title"] = "Mundi.ai"
+    return AsyncOpenAI(base_url=base_url, default_headers=extra_headers)

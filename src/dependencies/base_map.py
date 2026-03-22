@@ -178,8 +178,9 @@ class OpenStreetMapProvider(BaseMapProvider):
         """
         return [
             "esri_satellite",
-            "sentinel2_live",
-            "ndvi_map",
+            # sentinel2_live and ndvi_map disabled until SH credentials are renewed
+            # "sentinel2_live",
+            # "ndvi_map",
             "openstreetmap",
             "openfreemap",
             "esri_topo",

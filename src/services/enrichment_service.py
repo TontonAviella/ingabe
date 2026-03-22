@@ -172,22 +172,22 @@ AVAILABLE_METRICS: Dict[str, MetricDefinition] = {
         key="rainfall_mm",
         label="Rainfall (mm)",
         category="Weather",
-        description="Total precipitation over last 10 days",
-        source="Open-Meteo",
+        description="Forecast precipitation over next 3 days (NOAA HGEFS ensemble mean)",
+        source="NOAA HGEFS",
     ),
     "temp_mean": MetricDefinition(
         key="temp_mean",
         label="Temperature (C)",
         category="Weather",
-        description="Mean temperature over last 10 days",
-        source="Open-Meteo",
+        description="Forecast mean temperature over next 3 days (NOAA HGEFS ensemble mean)",
+        source="NOAA HGEFS",
     ),
     "wind_speed_ms": MetricDefinition(
         key="wind_speed_ms",
         label="Wind Speed (m/s)",
         category="Weather",
-        description="Mean wind speed at 10m over last 10 days",
-        source="Open-Meteo",
+        description="Forecast mean wind speed over next 3 days (NOAA HGEFS ensemble mean)",
+        source="NOAA HGEFS",
     ),
     "yield_forecast_tha": MetricDefinition(
         key="yield_forecast_tha",
@@ -425,23 +425,22 @@ def compute_all_lulc_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Weather computation (Open-Meteo, reuses weather_service pattern)
+# Weather computation (NOAA HGEFS ensemble via NOMADS)
 # ---------------------------------------------------------------------------
-
-_OPEN_METEO_BATCH_SIZE = 50
-
 
 def _compute_weather_metric(
     features: List[Dict[str, Any]],
     metric_key: str,
 ) -> Dict[int, float]:
-    """Compute weather metric for each feature centroid via Open-Meteo.
+    """Compute weather metric for each feature centroid via NOAA HGEFS.
 
-    Uses centroids of feature geometries, batched into chunks of 50 to stay
-    within Open-Meteo's bulk request limit (~100 coordinates).
+    Uses the NOAA forecast service with grid-cell caching — nearby features
+    sharing the same 0.25° grid cell reuse the same forecast (one NOMADS
+    fetch per unique grid cell, not per feature).
     Returns {feature_id: value}.
     """
     from shapely.geometry import shape
+    from src.services.forecast_service import get_farm_forecast
 
     centroids = []
     for feat in features:
@@ -456,63 +455,44 @@ def _compute_weather_metric(
     if not centroids:
         return {f["id"]: 0.0 for f in features}
 
-    from src.circuit_breaker import open_meteo_cb
-
-    past_days = 10
     results: Dict[int, float] = {}
 
-    if not open_meteo_cb.can_execute():
-        logger.warning("Open-Meteo circuit breaker OPEN — skipping weather metric '%s'", metric_key)
-        return {f["id"]: 0.0 for f in features}
-
-    for batch_start in range(0, len(centroids), _OPEN_METEO_BATCH_SIZE):
-        batch = centroids[batch_start:batch_start + _OPEN_METEO_BATCH_SIZE]
-
-        lats = ",".join(str(c["lat"]) for c in batch)
-        lons = ",".join(str(c["lon"]) for c in batch)
-
-        url = (
-            f"https://api.open-meteo.com/v1/forecast?"
-            f"latitude={lats}&longitude={lons}"
-            f"&daily=temperature_2m_mean,precipitation_sum,wind_speed_10m_max"
-            f"&past_days={past_days}"
-            f"&timezone=Africa/Kigali"
-            f"&forecast_days=0"
-        )
-
+    for centroid in centroids:
+        fid = centroid["id"]
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-            open_meteo_cb.record_success()
-        except Exception as e:
-            open_meteo_cb.record_failure()
-            logger.error("Open-Meteo batch request failed (offset %d): %s", batch_start, e)
-            continue
-
-        # Single location returns dict, multi returns list
-        if isinstance(data, dict) and "daily" in data:
-            data = [data]
-
-        for idx, centroid in enumerate(batch):
-            fid = centroid["id"]
-            if idx >= len(data):
-                break
-
-            daily = data[idx].get("daily", {})
+            forecast = get_farm_forecast(
+                centroid["lat"], centroid["lon"],
+                forecast_days=3, model="HGEFS",
+            )
+            daily = forecast.get("daily", [])
+            if not daily:
+                results[fid] = 0.0
+                continue
 
             if metric_key == "rainfall_mm":
-                precip = daily.get("precipitation_sum", [])
-                vals = [v for v in precip if v is not None]
+                vals = []
+                for d in daily:
+                    p = d.get("precipitation_mm")
+                    if p is not None:
+                        vals.append(p["mean"] if isinstance(p, dict) else p)
                 results[fid] = round(sum(vals), 1) if vals else 0.0
             elif metric_key == "temp_mean":
-                temps = daily.get("temperature_2m_mean", [])
-                vals = [v for v in temps if v is not None]
+                vals = []
+                for d in daily:
+                    t = d.get("temperature_mean")
+                    if t is not None:
+                        vals.append(t["mean"] if isinstance(t, dict) else t)
                 results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
             elif metric_key == "wind_speed_ms":
-                winds = daily.get("wind_speed_10m_max", [])
-                vals = [v for v in winds if v is not None]
+                vals = []
+                for d in daily:
+                    w = d.get("wind_speed_ms")
+                    if w is not None:
+                        vals.append(w["mean"] if isinstance(w, dict) else w)
                 results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+        except Exception as e:
+            logger.warning("NOAA forecast failed for feature %d: %s", fid, e)
+            results[fid] = 0.0
 
     return results
 

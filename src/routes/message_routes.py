@@ -1055,13 +1055,16 @@ async def process_chat_interaction_task(
             # Strip fields that are null/empty — providers like DeepSeek, Groq,
             # Cerebras reject null tool_calls, annotations, audio, etc.
             _STRIP_NULL_FIELDS = {"annotations", "audio", "refusal", "function_call", "tool_calls"}
+            # Always strip these regardless of value (waste tokens in history)
+            _ALWAYS_STRIP_FIELDS = {"reasoning", "reasoning_details"}
 
             openai_messages = []
             for msg in updated_messages_response:
                 m = msg.message_json
                 if isinstance(m, dict):
                     m = {k: v for k, v in m.items()
-                         if k not in _STRIP_NULL_FIELDS or (v is not None and v != [])}
+                         if k not in _ALWAYS_STRIP_FIELDS and
+                         (k not in _STRIP_NULL_FIELDS or (v is not None and v != []))}
                 openai_messages.append(m)
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
@@ -4554,6 +4557,187 @@ async def process_chat_interaction_task(
                                     }
                             except Exception as e:
                                 logger.exception("get_weather_stats tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_forecast":
+                            try:
+                                from src.services.forecast_service import get_farm_forecast
+
+                                _fc_lat = tool_args.get("latitude")
+                                _fc_lon = tool_args.get("longitude")
+                                _fc_district = tool_args.get("district")
+                                _fc_days = min(max(1, tool_args.get("forecast_days", 10)), 16)
+
+                                # If district provided but no lat/lon, look up centroid
+                                if _fc_district and (_fc_lat is None or _fc_lon is None):
+                                    try:
+                                        _fc_row = await conn.fetchrow(
+                                            "SELECT round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                                            "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                                            "FROM rwanda_district_boundaries "
+                                            "WHERE district ILIKE $1 LIMIT 1",
+                                            _fc_district,
+                                        )
+                                        if _fc_row:
+                                            _fc_lat = float(_fc_row["lat"])
+                                            _fc_lon = float(_fc_row["lon"])
+                                    except Exception:
+                                        pass
+
+                                if _fc_lat is None or _fc_lon is None:
+                                    # Default to Kigali
+                                    _fc_lat = _fc_lat or -1.9403
+                                    _fc_lon = _fc_lon or 29.8739
+
+                                import asyncio as _aio
+                                _fc_result = await _aio.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: get_farm_forecast(
+                                        _fc_lat, _fc_lon,
+                                        forecast_days=_fc_days,
+                                    ),
+                                )
+                                tool_result = {
+                                    "status": "success",
+                                    **_fc_result,
+                                }
+                            except Exception as e:
+                                logger.exception("get_forecast tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_forecast_accuracy":
+                            try:
+                                import asyncio as _aio2
+                                from src.services.forecast_service import get_farm_forecast
+
+                                _acc_district = tool_args.get("district")
+
+                                # Get district centroids
+                                if _acc_district:
+                                    _acc_rows = await conn.fetch(
+                                        "SELECT district, "
+                                        "round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                                        "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                                        "FROM rwanda_district_boundaries WHERE district ILIKE $1",
+                                        _acc_district,
+                                    )
+                                else:
+                                    _acc_rows = await conn.fetch(
+                                        "SELECT district, "
+                                        "round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                                        "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                                        "FROM rwanda_district_boundaries ORDER BY district"
+                                    )
+
+                                # Get observed weather from AgERA5 cache (last 5 days)
+                                _obs_rows = await conn.fetch(
+                                    "SELECT district, observation_date, temperature_mean, "
+                                    "temperature_max, temperature_min, precipitation "
+                                    "FROM weather_daily_cache "
+                                    "WHERE observation_date >= CURRENT_DATE - INTERVAL '5 days' "
+                                    "ORDER BY observation_date DESC, district"
+                                )
+
+                                # Build observed lookup: {(district, date) -> row}
+                                _obs_lookup = {}
+                                for r in _obs_rows:
+                                    key = (r["district"], str(r["observation_date"]))
+                                    _obs_lookup[key] = {
+                                        "temp_mean": float(r["temperature_mean"]) if r["temperature_mean"] else None,
+                                        "temp_max": float(r["temperature_max"]) if r["temperature_max"] else None,
+                                        "temp_min": float(r["temperature_min"]) if r["temperature_min"] else None,
+                                        "precip": float(r["precipitation"]) if r["precipitation"] else None,
+                                    }
+
+                                _model_errors = {"temp_errors": [], "precip_errors": [], "comparisons": []}
+
+                                for _r in _acc_rows:
+                                    _d_name = _r["district"]
+                                    _d_lat, _d_lon = float(_r["lat"]), float(_r["lon"])
+
+                                    try:
+                                        _fc = await _aio2.get_event_loop().run_in_executor(
+                                            None,
+                                            lambda lat=_d_lat, lon=_d_lon: get_farm_forecast(
+                                                lat, lon, forecast_days=3,
+                                            ),
+                                        )
+                                    except Exception:
+                                        continue
+
+                                    _fc_daily = _fc.get("daily", [])
+                                    for _fd in _fc_daily:
+                                        _fd_date = _fd.get("date")
+                                        _obs = _obs_lookup.get((_d_name, _fd_date))
+                                        if not _obs:
+                                            continue
+
+                                        _fc_tmax = _fd.get("temperature_max")
+                                        _fc_precip = _fd.get("precipitation_mm")
+
+                                        if _fc_tmax is not None and _obs["temp_max"] is not None:
+                                            _fc_t = _fc_tmax["mean"] if isinstance(_fc_tmax, dict) else _fc_tmax
+                                            _model_errors["temp_errors"].append(_fc_t - _obs["temp_max"])
+
+                                        if _fc_precip is not None and _obs["precip"] is not None:
+                                            _fc_p = _fc_precip["mean"] if isinstance(_fc_precip, dict) else _fc_precip
+                                            _model_errors["precip_errors"].append(_fc_p - _obs["precip"])
+
+                                        _model_errors["comparisons"].append({
+                                            "district": _d_name,
+                                            "date": _fd_date,
+                                            "forecast_tmax": _fc_tmax["mean"] if isinstance(_fc_tmax, dict) else _fc_tmax,
+                                            "observed_tmax": _obs["temp_max"],
+                                            "forecast_precip": _fc_precip["mean"] if isinstance(_fc_precip, dict) else _fc_precip,
+                                            "observed_precip": _obs["precip"],
+                                        })
+
+                                _te = _model_errors["temp_errors"]
+                                _pe = _model_errors["precip_errors"]
+                                _accuracy_result = {
+                                    "comparison_count": len(_model_errors["comparisons"]),
+                                    "temperature": {
+                                        "mae_celsius": round(sum(abs(e) for e in _te) / len(_te), 2) if _te else None,
+                                        "bias_celsius": round(sum(_te) / len(_te), 2) if _te else None,
+                                    },
+                                    "precipitation": {
+                                        "mae_mm": round(sum(abs(e) for e in _pe) / len(_pe), 2) if _pe else None,
+                                        "bias_mm": round(sum(_pe) / len(_pe), 2) if _pe else None,
+                                    },
+                                    "sample_comparisons": _model_errors["comparisons"][:10],
+                                }
+
+                                _obs_dates = sorted(set(str(r["observation_date"]) for r in _obs_rows))
+                                tool_result = {
+                                    "status": "success",
+                                    "source": "ECMWF IFS + GFS + ICON + GraphCast via Open-Meteo",
+                                    "note": (
+                                        "Accuracy = forecast vs AgERA5 reanalysis (ground truth). "
+                                        "MAE = mean absolute error. Bias = systematic over/under prediction. "
+                                        "Positive bias = forecast runs hot/wet. "
+                                        "AgERA5 has ~5-8 day latency so comparisons are for recent overlapping dates."
+                                    ),
+                                    "observed_dates": _obs_dates,
+                                    **_accuracy_result,
+                                }
+                            except Exception as e:
+                                logger.exception("get_forecast_accuracy tool failed")
                                 tool_result = {"status": "error", "error": str(e)}
 
                             await add_chat_completion_message(
