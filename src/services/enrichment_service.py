@@ -172,22 +172,22 @@ AVAILABLE_METRICS: Dict[str, MetricDefinition] = {
         key="rainfall_mm",
         label="Rainfall (mm)",
         category="Weather",
-        description="Forecast precipitation over next 3 days (NOAA HGEFS ensemble mean)",
-        source="NOAA HGEFS",
+        description="Forecast precipitation over next 3 days (ECMWF IFS + GFS + ICON + GraphCast ensemble)",
+        source="Multi-model ensemble",
     ),
     "temp_mean": MetricDefinition(
         key="temp_mean",
         label="Temperature (C)",
         category="Weather",
-        description="Forecast mean temperature over next 3 days (NOAA HGEFS ensemble mean)",
-        source="NOAA HGEFS",
+        description="Forecast mean temperature over next 3 days (ECMWF IFS + GFS + ICON + GraphCast ensemble)",
+        source="Multi-model ensemble",
     ),
     "wind_speed_ms": MetricDefinition(
         key="wind_speed_ms",
         label="Wind Speed (m/s)",
         category="Weather",
-        description="Forecast mean wind speed over next 3 days (NOAA HGEFS ensemble mean)",
-        source="NOAA HGEFS",
+        description="Forecast mean wind speed over next 3 days (ECMWF IFS + GFS + ICON + GraphCast ensemble)",
+        source="Multi-model ensemble",
     ),
     "yield_forecast_tha": MetricDefinition(
         key="yield_forecast_tha",
@@ -431,12 +431,11 @@ def compute_all_lulc_metrics(
 def _compute_weather_metric(
     features: List[Dict[str, Any]],
     metric_key: str,
-) -> Dict[int, float]:
-    """Compute weather metric for each feature centroid via NOAA HGEFS.
+) -> Dict[int, Optional[float]]:
+    """Compute weather metric for each feature centroid via multi-model ensemble.
 
-    Uses the NOAA forecast service with grid-cell caching — nearby features
-    sharing the same 0.25° grid cell reuse the same forecast (one NOMADS
-    fetch per unique grid cell, not per feature).
+    Uses the forecast service with grid-cell caching — nearby features
+    sharing the same grid cell reuse the same forecast.
     Returns {feature_id: value}.
     """
     from shapely.geometry import shape
@@ -453,7 +452,7 @@ def _compute_weather_metric(
         centroids.append({"id": feat["id"], "lat": round(c.y, 4), "lon": round(c.x, 4)})
 
     if not centroids:
-        return {f["id"]: 0.0 for f in features}
+        return {f["id"]: None for f in features}
 
     results: Dict[int, float] = {}
 
@@ -462,11 +461,11 @@ def _compute_weather_metric(
         try:
             forecast = get_farm_forecast(
                 centroid["lat"], centroid["lon"],
-                forecast_days=3, model="HGEFS",
+                forecast_days=3,
             )
             daily = forecast.get("daily", [])
             if not daily:
-                results[fid] = 0.0
+                results[fid] = None
                 continue
 
             if metric_key == "rainfall_mm":
@@ -475,24 +474,24 @@ def _compute_weather_metric(
                     p = d.get("precipitation_mm")
                     if p is not None:
                         vals.append(p["mean"] if isinstance(p, dict) else p)
-                results[fid] = round(sum(vals), 1) if vals else 0.0
+                results[fid] = round(sum(vals), 1) if vals else None
             elif metric_key == "temp_mean":
                 vals = []
                 for d in daily:
                     t = d.get("temperature_mean")
                     if t is not None:
                         vals.append(t["mean"] if isinstance(t, dict) else t)
-                results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+                results[fid] = round(sum(vals) / len(vals), 1) if vals else None
             elif metric_key == "wind_speed_ms":
                 vals = []
                 for d in daily:
                     w = d.get("wind_speed_ms")
                     if w is not None:
                         vals.append(w["mean"] if isinstance(w, dict) else w)
-                results[fid] = round(sum(vals) / len(vals), 1) if vals else 0.0
+                results[fid] = round(sum(vals) / len(vals), 1) if vals else None
         except Exception as e:
-            logger.warning("NOAA forecast failed for feature %d: %s", fid, e)
-            results[fid] = 0.0
+            logger.error("Weather forecast failed for feature %d: %s", fid, e)
+            results[fid] = None
 
     return results
 
@@ -515,7 +514,7 @@ _AGRI_INDEX_MAP = {
 async def _compute_agri_index_metric(
     features: List[Dict[str, Any]],
     index_name: str,
-) -> Dict[int, float]:
+) -> Dict[int, Optional[float]]:
     """Compute mean of a vegetation index for each feature via Sentinel Hub.
 
     Uses asyncio.Semaphore to limit concurrency to 3 concurrent requests.
@@ -533,8 +532,8 @@ async def _compute_agri_index_metric(
 
     sh = get_sentinel_hub_service()
     if sh is None:
-        logger.warning("Sentinel Hub service not available, skipping %s", index_name)
-        return {}
+        logger.error("Sentinel Hub service not available — check SH_CLIENT_ID/SH_CLIENT_SECRET env vars. Skipping %s", index_name)
+        return {f["id"]: None for f in features}
 
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
     date_from = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -563,10 +562,10 @@ async def _compute_agri_index_metric(
                 if means:
                     results[fid] = round(float(np.mean(means)), 4)
                 else:
-                    results[fid] = 0.0
+                    results[fid] = None  # no valid pixels (cloud cover, etc.)
             except Exception as e:
-                logger.warning("%s computation failed for feature %d: %s", index_name, fid, e)
-                results[fid] = 0.0
+                logger.error("%s computation failed for feature %d: %s", index_name, fid, e)
+                results[fid] = None
 
     tasks = [_fetch_one(feat) for feat in features]
     await asyncio.gather(*tasks)
@@ -836,7 +835,7 @@ def _compute_yield_forecast(
 async def compute_metric(
     metric_key: str,
     features: List[Dict[str, Any]],
-) -> Dict[int, float]:
+) -> Dict[int, Optional[float]]:
     """Compute a metric for a list of features.
 
     Args:

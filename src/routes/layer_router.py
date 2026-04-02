@@ -1704,7 +1704,14 @@ async def _enrich_background(
         from src.fs_lru import layer_cache
         layer_cache().invalidate_layer(layer_id)
 
-        logger.info("Background enrichment completed: %s on layer %s (%d features)", metric_key, layer_id, len(values))
+        failed_count = sum(1 for v in values.values() if v is None)
+        if failed_count:
+            logger.warning(
+                "Background enrichment completed with errors: %s on layer %s (%d features, %d failed)",
+                metric_key, layer_id, len(values), failed_count,
+            )
+        else:
+            logger.info("Background enrichment completed: %s on layer %s (%d features)", metric_key, layer_id, len(values))
 
     except Exception as exc:
         logger.exception("Background enrichment failed for %s on layer %s", metric_key, layer_id)
