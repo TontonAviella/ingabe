@@ -425,7 +425,7 @@ def compute_all_lulc_metrics(
 
 
 # ---------------------------------------------------------------------------
-# Weather computation (NOAA HGEFS ensemble via NOMADS)
+# Weather computation (multi-model ensemble via Open-Meteo)
 # ---------------------------------------------------------------------------
 
 def _compute_weather_metric(
