@@ -280,7 +280,6 @@ export default function MapLibreMap({
     overridesRef: paintOverridesRef,
     setLayerOpacity,
     setLayerColor,
-    setLayerChoropleth,
   } = useLayerPaintOverrides({
     map: localMapRef.current,
     mapId,
@@ -1092,17 +1091,23 @@ export default function MapLibreMap({
     if (!map) return;
 
     const onClick = (e: any) => {
-      const features = map.queryRenderedFeatures(e.point);
-      if (!features.length) {
-        selectFeature(null);
-        return;
-      }
-
-      const feature = features[0];
-      if (!(typeof feature.source === 'string' && feature.source.startsWith('L') && feature.source.length === 12)) {
-        selectFeature(null);
+      // Use a small bounding box around the click point so that line-only
+      // layers (polygons rendered as outlines without a fill) are still
+      // clickable when the user clicks inside the polygon area.
+      const tolerance = 5;
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - tolerance, e.point.y - tolerance],
+        [e.point.x + tolerance, e.point.y + tolerance],
+      ];
+      const features = map.queryRenderedFeatures(bbox);
+      // Find the first feature that belongs to one of our layers (L-prefixed IDs)
+      const appFeature = features.find(
+        (f) => typeof f.source === 'string' && f.source.startsWith('L') && f.source.length === 12,
+      );
+      if (appFeature) {
+        selectFeature(appFeature);
       } else {
-        selectFeature(feature);
+        selectFeature(null);
       }
     };
 
@@ -1265,6 +1270,35 @@ export default function MapLibreMap({
               };
             }
           }
+        }
+      }
+
+      // Inject invisible fill layers for polygon sources that only have line
+      // layers. Without a fill layer, queryRenderedFeatures only returns hits
+      // on the thin outline pixels, making it nearly impossible to click a
+      // feature inside the polygon.
+      if (style.layers && style.sources) {
+        const sourcesWithFill = new Set<string>();
+        const sourcesWithLine = new Map<string, { sourceLayer?: string; idx: number }>();
+        for (let i = 0; i < style.layers.length; i++) {
+          const l = style.layers[i];
+          if (!l.source || typeof l.source !== 'string' || !l.source.startsWith('L')) continue;
+          if (l.type === 'fill') sourcesWithFill.add(l.source);
+          if (l.type === 'line' && !sourcesWithFill.has(l.source)) {
+            sourcesWithLine.set(l.source, { sourceLayer: l['source-layer'], idx: i });
+          }
+        }
+        // For sources that have line but no fill, insert an invisible fill before the line
+        for (const [src, info] of sourcesWithLine) {
+          if (sourcesWithFill.has(src)) continue;
+          const invisibleFill: Record<string, unknown> = {
+            id: `${src}-click-fill`,
+            type: 'fill',
+            source: src,
+            paint: { 'fill-color': '#000', 'fill-opacity': 0 },
+          };
+          if (info.sourceLayer) invisibleFill['source-layer'] = info.sourceLayer;
+          style.layers.splice(info.idx, 0, invisibleFill);
         }
       }
 
@@ -1722,14 +1756,6 @@ export default function MapLibreMap({
             paintOverrides={paintOverrides}
             onLayerOpacityChange={setLayerOpacity}
             onLayerColorChange={setLayerColor}
-            onLayerChoropleth={setLayerChoropleth}
-            onShowPieChart={(layerId, data) => {
-              setPieOverlays((prev) => {
-                const next = new Map(prev);
-                next.set(layerId, data);
-                return next;
-              });
-            }}
           />
         )}
         {/* Pie chart overlays for single-feature buffer layers */}
@@ -1809,7 +1835,19 @@ export default function MapLibreMap({
                   </thead>
                   <tbody>
                     {selectedFeature.properties &&
-                      Object.entries(selectedFeature.properties).map(([key, value]) => (
+                      Object.entries(selectedFeature.properties)
+                        .filter(([key]) => {
+                          // Hide auto-enriched metric columns added by the
+                          // (now removed) enrichment API. These are computed
+                          // values, not original layer attributes.
+                          const enrichedPrefixes = [
+                            'soil_', 'ndvi_', 'evi_', 'ndwi_', 'savi_', 'ndre_', 'ndbi_',
+                            'temp_', 'rainfall_', 'wind_', 'ch4_', 'n2o_', 'co2_',
+                            'cropland_', 'forest_', 'built_', 'rangeland_',
+                          ];
+                          return !enrichedPrefixes.some((p) => key.startsWith(p));
+                        })
+                        .map(([key, value]) => (
                         <tr key={key} className="border-b border-gray-100 dark:border-gray-700" title={`Type: ${typeof value}`}>
                           <td className="py-1 pr-2 font-mono text-gray-600 dark:text-gray-400 break-all">{key}</td>
                           <td className="py-1 font-mono break-all">{String(value)}</td>
