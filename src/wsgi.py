@@ -28,6 +28,7 @@ from src.routes.lakehouse_routes import lakehouse_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
+from src.routes.insurance_routes import insurance_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -519,6 +520,11 @@ app.include_router(
 app.include_router(
     satellite_router,
     tags=["Satellite"],
+)
+app.include_router(
+    insurance_router,
+    prefix="/api",
+    tags=["Insurance"],
 )
 
 
