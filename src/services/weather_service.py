@@ -451,7 +451,7 @@ class WeatherService:
                     "temperature_min": round(t_min[i], 1) if i < len(t_min) and t_min[i] is not None else None,
                     "precipitation": round(precip[i], 1) if i < len(precip) and precip[i] is not None else None,
                     "solar_radiation": round(solar[i], 2) if i < len(solar) and solar[i] is not None else None,
-                    "source": "open-meteo",
+                    "source": "nwp-reanalysis",
                 })
 
         logger.info(

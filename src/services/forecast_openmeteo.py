@@ -314,7 +314,7 @@ def fetch_openmeteo_multimodel(
         "model": "MULTI",
         "type": "NWP + AI fusion",
         "models_used": [_OPENMETEO_LABELS.get(m, m) for m in _OPENMETEO_MODELS],
-        "source": "Open-Meteo — ECMWF IFS (9km) + GFS (13km) + ICON (11km) + GraphCast (28km)",
+        "source": "Multi-model ensemble — ECMWF IFS (9km) + GFS (13km) + ICON (11km) + GraphCast (28km)",
         "resolution_km": 9,
         "location": {"lat": data.get("latitude", lat), "lon": data.get("longitude", lon)},
         "elevation_m": data.get("elevation"),

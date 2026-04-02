@@ -4505,7 +4505,7 @@ async def process_chat_interaction_task(
                                                     "temperature_min_c": om["temperature_min"],
                                                     "precipitation_mm_day": om["precipitation"],
                                                     "solar_radiation_mj_m2_day": om["solar_radiation"],
-                                                    "source": "open-meteo",
+                                                    "source": "nwp-reanalysis",
                                                 })
                                 except Exception as _om_err:
                                     logger.warning("Open-Meteo supplement failed: %s", _om_err)
@@ -4533,7 +4533,7 @@ async def process_chat_interaction_task(
                                             "district-level averages and suggest using get_forecast with exact lat/lon "
                                             "for more precise local conditions. "
                                             "AgERA5 (Copernicus reanalysis) covers older dates. "
-                                            "Open-Meteo (real-time model) covers recent days."
+                                            "NWP reanalysis (ECMWF/GFS/ICON) covers recent days."
                                         ),
                                         "weather_stats": _all_stats,
                                     }
@@ -4555,7 +4555,7 @@ async def process_chat_interaction_task(
                                         "status": "success",
                                         "weather_stats": [],
                                         "message": (
-                                            "No weather data available. DuckDB cache is empty and Open-Meteo "
+                                            "No weather data available. DuckDB cache is empty and real-time weather "
                                             "fetch did not return results. Check network connectivity."
                                         ),
                                     }
@@ -4730,7 +4730,7 @@ async def process_chat_interaction_task(
                                 _obs_dates = sorted(set(str(r["observation_date"]) for r in _obs_rows))
                                 tool_result = {
                                     "status": "success",
-                                    "source": "ECMWF IFS + GFS + ICON + GraphCast via Open-Meteo",
+                                    "source": "Multi-model ensemble — ECMWF IFS + GFS + ICON + GraphCast",
                                     "note": (
                                         "Accuracy = forecast vs AgERA5 reanalysis (ground truth). "
                                         "MAE = mean absolute error. Bias = systematic over/under prediction. "
