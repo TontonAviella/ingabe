@@ -11,3 +11,4 @@ frontendts/README.md
 *.joblib
 .gitnexus
 .gstack/
+yolo*.pt
