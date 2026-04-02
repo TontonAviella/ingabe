@@ -708,7 +708,7 @@ def _compute_soil_metric(
     prop_info = SOIL_PROPERTIES.get(soil_property)
     if prop_info is None:
         logger.warning("Unknown soil property: %s", soil_property)
-        return {feat["id"]: 0.0 for feat in features}
+        return {feat["id"]: None for feat in features}
 
     url = _cog_url(soil_property)
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
@@ -730,7 +730,7 @@ def _compute_soil_metric(
 
     valid_centroids = [(fid, cx, cy) for fid, cx, cy in centroids if cx is not None]
     if not valid_centroids:
-        return {feat["id"]: 0.0 for feat in features}
+        return {feat["id"]: None for feat in features}
 
     # Bounding box in EPSG:3857
     all_cx = [cx for _, cx, _ in valid_centroids]
@@ -753,6 +753,7 @@ def _compute_soil_metric(
                 window = from_bounds(bbox_west, bbox_south, bbox_east, bbox_north, src.transform)
                 data = src.read(window=window)  # (bands, h, w)
                 win_transform = src.window_transform(window)
+                nodata_val = src.nodatavals[depth_band]
 
                 band = data[depth_band].astype(np.float64)
 
@@ -764,27 +765,27 @@ def _compute_soil_metric(
                         col, row = int(round(col)), int(round(row))
                         if 0 <= row < band.shape[0] and 0 <= col < band.shape[1]:
                             raw_val = band[row, col]
-                            if raw_val > 0:
+                            if raw_val > 0 and (nodata_val is None or raw_val != nodata_val):
                                 results[fid] = round(float(transform_fn(raw_val)), 2)
                             else:
-                                results[fid] = 0.0
+                                results[fid] = None
                         else:
-                            results[fid] = 0.0
+                            results[fid] = None
                     except Exception as e:
                         logger.warning("Soil sample failed for feature %d: %s", fid, e)
-                        results[fid] = 0.0
+                        results[fid] = None
 
         del data, band
         gc.collect()
 
     except Exception as e:
         logger.error("Failed to read soil COG %s: %s", url, e)
-        return {feat["id"]: 0.0 for feat in features}
+        return {feat["id"]: None for feat in features}
 
     # Fill in features with bad geometry
     for fid, cx, cy in centroids:
         if fid not in results:
-            results[fid] = 0.0
+            results[fid] = None
 
     return results
 
