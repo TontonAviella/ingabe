@@ -1,6 +1,7 @@
 #!/bin/bash
-# Start all mundi.ai services: main app (8000), field monitor (8001), insurance (8002)
-# Main app runs in foreground; satellite APIs run as background processes with auto-restart.
+# Start all mundi.ai services: main app (8000), field monitor (8001)
+# Insurance API is served by the main app (auth-protected via insurance_routes.py).
+# Main app runs in foreground; field monitor runs as background process with auto-restart.
 
 set -e
 
@@ -27,14 +28,7 @@ echo "[start-services] Starting field monitor API on :8001..."
   done
 ) &
 
-echo "[start-services] Starting insurance API on :8002..."
-(
-  while true; do
-    python -m uvicorn api_insurance:app --host 0.0.0.0 --port 8002 --log-level warning 2>&1 | sed 's/^/[insurance] /'
-    echo "[insurance] Process exited ($?), restarting in 3s..."
-    sleep 3
-  done
-) &
+echo "[start-services] Insurance API now served by main app on :8000 (auth-protected)"
 
 echo "[start-services] Starting main app on :8000..."
 exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*'
