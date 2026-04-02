@@ -8,14 +8,26 @@ const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // to the primary domain (NozaLabs). Example: "https://nozalabs.rw/sign-in"
 const CLERK_SIGN_IN_URL = import.meta.env.VITE_CLERK_SIGN_IN_URL;
 const CLERK_SIGN_UP_URL = import.meta.env.VITE_CLERK_SIGN_UP_URL;
-const IS_SATELLITE = Boolean(CLERK_SIGN_IN_URL);
+
+// Detect broken satellite config: sign-in URL points to localhost but we're
+// running on a real domain. This happens when dev .env leaks into production.
+const _signInIsLocalhost = CLERK_SIGN_IN_URL && new URL(CLERK_SIGN_IN_URL, window.location.href).hostname === 'localhost';
+const _isProductionDomain = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const IS_SATELLITE_BROKEN = Boolean(_signInIsLocalhost && _isProductionDomain);
+const IS_SATELLITE = Boolean(CLERK_SIGN_IN_URL) && !IS_SATELLITE_BROKEN;
+const IS_DEV_KEY = CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_');
 
 // ── init ────────────────────────────────────────────────────────────────
 export async function init(): Promise<void> {
   if (!CLERK_PUBLISHABLE_KEY) {
     console.warn('[Auth] VITE_CLERK_PUBLISHABLE_KEY not set — auth disabled');
   }
-  if (IS_SATELLITE) {
+  if (IS_DEV_KEY && _isProductionDomain) {
+    console.error('[Auth] Clerk DEVELOPMENT key detected on production domain. Set VITE_CLERK_PUBLISHABLE_KEY to a pk_live_* key.');
+  }
+  if (IS_SATELLITE_BROKEN) {
+    console.error('[Auth] Satellite sign-in URL points to localhost but app is running on', window.location.hostname, '— satellite mode disabled. Set VITE_CLERK_SIGN_IN_URL to the real primary domain sign-in URL.');
+  } else if (IS_SATELLITE) {
     console.log('[Auth] Running as satellite domain — sign-in via', CLERK_SIGN_IN_URL);
   }
 }
@@ -53,9 +65,27 @@ export function RequireAuth({ children }: React.PropsWithChildren) {
     <>
       <SignedIn>{children}</SignedIn>
       <SignedOut>
-        <RedirectToSignIn />
+        {IS_SATELLITE_BROKEN ? <_BrokenAuthFallback /> : <RedirectToSignIn />}
       </SignedOut>
     </>
+  );
+}
+
+function _BrokenAuthFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-background">
+      <div className="text-center max-w-md px-6">
+        <h1 className="text-2xl font-bold mb-3">Sign-in unavailable</h1>
+        <p className="text-muted-foreground mb-4">
+          Authentication is misconfigured on this server. The sign-in service
+          cannot be reached.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          If you are the administrator, check that <code className="bg-muted px-1 rounded">VITE_CLERK_SIGN_IN_URL</code> points
+          to your primary domain, not localhost.
+        </p>
+      </div>
+    </div>
   );
 }
 
