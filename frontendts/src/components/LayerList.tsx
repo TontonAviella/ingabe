@@ -26,7 +26,7 @@ import { ReadyState } from 'react-use-websocket';
 import { toast } from 'sonner';
 import { AddRemoteDataSource } from '@/components/AddRemoteDataSource';
 import { AddSatelliteLayer } from '@/components/AddSatelliteLayer';
-import { ChoroplethDialog } from '@/components/ChoroplethDialog';
+
 import { ConnectESRIFeatureService } from '@/components/ConnectESRIFeatureService';
 import { ConnectGoogleSheets } from '@/components/ConnectGoogleSheets';
 import { ConnectWFS } from '@/components/ConnectWFS';
@@ -74,8 +74,6 @@ interface LayerListProps {
   paintOverrides?: PaintOverrides;
   onLayerOpacityChange?: (layerId: string, opacity: number) => void;
   onLayerColorChange?: (layerId: string, color: string) => void;
-  onLayerChoropleth?: (layerId: string, column: string, expression: unknown[]) => void;
-  onShowPieChart?: (layerId: string, data: import('./BufferPieOverlay').PieChartData) => void;
 }
 
 const LayerList: React.FC<LayerListProps> = ({
@@ -102,13 +100,10 @@ const LayerList: React.FC<LayerListProps> = ({
   paintOverrides,
   onLayerOpacityChange,
   onLayerColorChange,
-  onLayerChoropleth,
-  onShowPieChart,
 }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [showPostgisDialog, setShowPostgisDialog] = useState(false);
-  const [choroplethLayerId, setChoroplethLayerId] = useState<string | null>(null);
 
   // Helper function to get errors for a specific source/layer ID
   const getLayerErrors = (layerId: string): ErrorEntry[] => {
@@ -479,17 +474,6 @@ const LayerList: React.FC<LayerListProps> = ({
                           setShowAttributeTable(true);
                         },
                       },
-                      ...(onLayerChoropleth && (layerDetails.type === 'vector' || layerDetails.type === 'postgis')
-                        ? {
-                            'classify-choropleth': {
-                              label: 'Classify (choropleth)…',
-                              disabled: false,
-                              action: (layerId: string) => {
-                                setChoroplethLayerId(layerId);
-                              },
-                            },
-                          }
-                        : {}),
                       'export-geopackage': {
                         label: 'Export as GeoPackage',
                         disabled: layerDetails.type !== 'vector',
@@ -1143,60 +1127,6 @@ const LayerList: React.FC<LayerListProps> = ({
           onSuccess={updateMapData}
         />
 
-        {/* Choropleth classification dialog */}
-        {choroplethLayerId &&
-          onLayerChoropleth &&
-          (() => {
-            const choroplethLayer = currentMapData.layers?.find((l) => l.id === choroplethLayerId);
-            return (
-              <ChoroplethDialog
-                layerId={choroplethLayerId}
-                open={choroplethLayerId !== null}
-                onOpenChange={(open) => {
-                  if (!open) setChoroplethLayerId(null);
-                }}
-                onApply={(layerId, column, expression) => {
-                  onLayerChoropleth(layerId, column, expression);
-                  setChoroplethLayerId(null);
-                }}
-                onEnrichmentComplete={(layerId) => {
-                  // Force MapLibre to reload vector tiles for this layer
-                  const map = mapRef?.current;
-                  if (!map) return;
-
-                  try {
-                    // Distinguish MVT (tiles array) vs PMTiles (url) by checking
-                    // the style spec source definition.  VectorTileSource always
-                    // exposes both setTiles() and setUrl() methods regardless of
-                    // the underlying source type, so checking 'setTiles' in source
-                    // is unreliable.
-                    const ts = Date.now();
-                    const origin = window.location.origin;
-                    const styleSrc = map.getStyle()?.sources?.[layerId] as Record<string, unknown> | undefined;
-                    const source = map.getSource(layerId);
-                    if (!source) return;
-
-                    if (styleSrc && 'tiles' in styleSrc) {
-                      // MVT source — update tile URL with cache-busting timestamp
-                      (source as unknown as { setTiles: (tiles: string[]) => void }).setTiles([
-                        `${origin}/api/layer/${layerId}/{z}/{x}/{y}.mvt?v=${ts}`,
-                      ]);
-                    } else if ('setUrl' in source) {
-                      // PMTiles source — reload with pmtiles:// protocol prefix
-                      (source as unknown as { setUrl: (url: string) => void }).setUrl(
-                        `pmtiles://${origin}/api/layer/${layerId}.pmtiles?v=${ts}`,
-                      );
-                    }
-                  } catch (err) {
-                    console.warn('[enrichment] tile reload failed for layer', layerId, err);
-                  }
-                }}
-                featureCount={choroplethLayer?.feature_count}
-                layerBounds={choroplethLayer?.bounds}
-                onPieChart={onShowPieChart}
-              />
-            );
-          })()}
       </CardFooter>
     </Card>
   );
