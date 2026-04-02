@@ -1805,6 +1805,12 @@ async def process_chat_interaction_task(
                                                 "query": query,
                                                 "added_to_map": True,
                                             }
+                                            if feature_count is not None:
+                                                tool_result["feature_count"] = feature_count
+                                            if geometry_type:
+                                                tool_result["geometry_type"] = geometry_type
+                                            if attribute_names:
+                                                tool_result["attribute_columns"] = attribute_names
                                             if bounds and len(bounds) == 4:
                                                 tool_result["bounds"] = bounds
 
