@@ -1355,7 +1355,6 @@ async def process_chat_interaction_task(
             # Store the assistant message in the database
             await add_chat_completion_message(assistant_message)
 
-            # If no tool calls, break
             if not assistant_message.tool_calls:
                 break
 
@@ -4523,13 +4522,18 @@ async def process_chat_interaction_task(
                                     tool_result = {
                                         "status": "success",
                                         "source": _source_str,
+                                        "spatial_resolution": "district-level (~10km grid, one value per district)",
                                         "count": len(_all_stats),
                                         "agera5_records": len(_weather_stats),
                                         "openmeteo_records": len(_openmeteo_stats),
                                         "note": (
-                                            "AgERA5 data (Copernicus reanalysis, high accuracy) covers older dates. "
-                                            "Open-Meteo data (real-time forecast model) covers recent days up to today. "
-                                            "Each record has a 'source' field indicating its origin."
+                                            "This data is aggregated at DISTRICT level from a ~10km grid. "
+                                            "Actual weather varies within a district due to elevation and terrain. "
+                                            "If the user asks about a specific sector or location, note that these are "
+                                            "district-level averages and suggest using get_forecast with exact lat/lon "
+                                            "for more precise local conditions. "
+                                            "AgERA5 (Copernicus reanalysis) covers older dates. "
+                                            "Open-Meteo (real-time model) covers recent days."
                                         ),
                                         "weather_stats": _all_stats,
                                     }

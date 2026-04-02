@@ -214,10 +214,19 @@ export default function ProjectView() {
     // when Clerk is enabled and the token hasn't arrived yet.
     if (jwt === undefined) return null;
     if (!jwt) {
+      if (hadClerkAuth.current) {
+        // Clerk was active but token is now null = session died.
+        // Block WebSocket to prevent infinite 1008 reconnect loop.
+        return null;
+      }
+      // Legacy/no-auth mode: connect without token
       return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
     }
     return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates?token=${jwt}`;
   }, [conversationId, wsProtocol, jwt]);
+
+  // Track whether Clerk auth was ever active (to distinguish "no auth" from "auth died")
+  const hadClerkAuth = useRef(false);
 
   // If EE is present, fetch a JWT for authenticated websockets
   // Clerk dev tokens expire after 60s; refresh every 45s to stay ahead.
@@ -226,9 +235,11 @@ export default function ProjectView() {
 
     const refreshJwt = () => {
       getJwt().then((token: string | undefined) => {
+        if (!mounted) return;
+        if (token) hadClerkAuth.current = true;
         // Always call setJwt after resolution: token string for Clerk, null for legacy/no-auth.
         // This transitions jwt from undefined (loading) so wsUrl unblocks.
-        if (mounted) setJwt(token ?? null);
+        setJwt(token ?? null);
       });
     };
 
@@ -238,9 +249,20 @@ export default function ProjectView() {
     // Refresh every 45 seconds to stay ahead of Clerk's 60-second token expiry
     const refreshInterval = window.setInterval(refreshJwt, 45_000);
 
+    // When the tab becomes visible again, refresh the JWT immediately.
+    // Browser throttles setInterval in background tabs (to ~1/min or slower),
+    // so the cached token is likely expired when the user switches back.
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshJwt();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       mounted = false;
-      if (refreshInterval) clearInterval(refreshInterval);
+      clearInterval(refreshInterval);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
 
@@ -283,9 +305,17 @@ export default function ProjectView() {
     wsUrl,
     {
       onError: () => {
-        toast.error('Chat connection error.');
+        if (hadClerkAuth.current && !jwt) {
+          toast.error('Session expired. Please refresh the page to reconnect.');
+        } else {
+          toast.error('Chat connection error.');
+        }
       },
-      shouldReconnect: () => true,
+      shouldReconnect: () => {
+        // Don't reconnect if Clerk auth died, it'll just fail again
+        if (hadClerkAuth.current && !jwt) return false;
+        return true;
+      },
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
       reconnectInterval: (attempt) => backoffMs[Math.min(attempt, backoffMs.length - 1)],
     },

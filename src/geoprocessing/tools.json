@@ -875,7 +875,7 @@
     "type": "function",
     "function": {
       "name": "get_weather_stats",
-      "description": "Read daily weather statistics from the PostgreSQL cache. Data comes from Copernicus AgERA5 agrometeorological indicators (0.1 degree resolution). Returns per-district daily temperature (mean/max/min in Celsius), precipitation (mm/day), and solar radiation (MJ/m2/day). Use for HISTORICAL weather (past observations). For future weather use get_forecast instead.",
+      "description": "Read daily weather statistics from the PostgreSQL cache. Data comes from Copernicus AgERA5 agrometeorological indicators at 0.1° (~10km) grid resolution, aggregated to district level. Returns daily temperature (mean/max/min °C), precipitation (mm/day), and solar radiation (MJ/m²/day). NOTE: Results are district-level averages. Actual conditions vary within a district due to elevation, terrain, and microclimates. For location-specific weather, use get_forecast with exact lat/lon instead. Use this tool for HISTORICAL weather only.",
       "strict": false,
       "parameters": {
         "type": "object",

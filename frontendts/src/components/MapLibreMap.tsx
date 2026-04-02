@@ -1,4 +1,4 @@
-import { apiFetch, getCachedToken } from '@mundi/ee';
+import { apiFetch, getCachedToken, getJwt } from '@mundi/ee';
 import { useQuery } from '@tanstack/react-query';
 import legendSymbol, { type RenderElement } from 'legend-symbol-ts';
 import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
@@ -982,7 +982,36 @@ export default function MapLibreMap({
         if (e.error?.url?.includes('/api/satellite/')) return;
 
         if (e.error instanceof AJAXError) {
-          // Sometimes we can read the error. If its 4xx, show the user the message
+          // 401 on tile requests = expired Clerk token. Refresh and reload tiles
+          // instead of showing a confusing "Token expired" error to the user.
+          if (e.error.status === 401) {
+            (async () => {
+              const freshToken = await getJwt();
+              if (freshToken) {
+                // Token refreshed successfully, reload map sources to retry tiles
+                const m = localMapRef.current;
+                if (m) {
+                  const style = m.getStyle();
+                  if (style?.sources) {
+                    for (const [id, src] of Object.entries(style.sources)) {
+                      if ('tiles' in (src as any)) {
+                        // Force MapLibre to re-request tiles with the new cached token
+                        const source = m.getSource(id);
+                        if (source && 'setTiles' in source) {
+                          (source as any).setTiles((src as any).tiles);
+                        }
+                      }
+                    }
+                  }
+                }
+              } else {
+                // Clerk session is fully dead, user needs to re-login
+                addError('Session expired. Please refresh the page to sign in again.', true);
+              }
+            })();
+            return; // Don't show "Token expired" error for tile requests
+          }
+          // Non-auth 4xx errors: show the user the message
           if (e.error.status >= 400 && e.error.status < 500 && e.error.body instanceof Blob) {
             // Read the body of the error
             (async () => {
@@ -1467,13 +1496,23 @@ export default function MapLibreMap({
       if (response.ok) {
         await response.json();
         invalidateProjectData();
+      } else if (response.status === 401) {
+        // Session expired during chat send. Give a clear, actionable message.
+        addError('Your session has expired. Please refresh the page to continue chatting.', true);
+        return;
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const d = errorData.detail;
         throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
       }
     } catch (error) {
-      addError(error instanceof Error ? error.message : 'Network error', true);
+      const msg = error instanceof Error ? error.message : 'Network error';
+      // Translate cryptic "Token expired" into actionable message
+      if (msg.toLowerCase().includes('token expired') || msg.toLowerCase().includes('unauthorized')) {
+        addError('Your session has expired. Please refresh the page to continue chatting.', true);
+      } else {
+        addError(msg, true);
+      }
     } finally {
       // Remove the ephemeral action when done
       setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId));

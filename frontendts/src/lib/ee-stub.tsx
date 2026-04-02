@@ -126,20 +126,28 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
 
   useEffect(() => {
     _getTokenFn = getToken;
-    // Eagerly cache token so transformRequest has it immediately
-    getToken().then((t) => {
-      _cachedToken = t;
-    });
-    // Refresh cached token every 50s (Clerk tokens expire ~60s)
-    const interval = setInterval(() => {
+    const refreshToken = () => {
       getToken().then((t) => {
         _cachedToken = t;
       });
-    }, 50_000);
+    };
+    // Eagerly cache token so transformRequest has it immediately
+    refreshToken();
+    // Refresh cached token every 50s (Clerk tokens expire ~60s)
+    const interval = setInterval(refreshToken, 50_000);
+    // Refresh immediately when tab becomes visible again.
+    // Browsers throttle setInterval in background tabs, so the cached token
+    // used by MapLibre's synchronous transformRequest is often stale after
+    // the user switches back to the tab.
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refreshToken();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       _getTokenFn = null;
       _cachedToken = null;
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [getToken]);
 
