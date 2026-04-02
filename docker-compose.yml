@@ -86,13 +86,18 @@ services:
       # - OPENAI_MODEL=orieg/gemma3-tools:1b
       #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
     command: >
-      bash -c "alembic upgrade head && uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors"
+      bash -c "bash /app/scripts/start-services.sh"
     volumes:
       - ./src:/app/src
       - ./alembic:/app/alembic
       - ./conftest.py:/app/conftest.py
       - ./pytest.ini:/app/pytest.ini
       - ./docs:/app/docs
+      - ./scripts:/app/scripts
+      - ./services/api_monitor.py:/app/api_monitor.py
+      - ./services/api_insurance.py:/app/api_insurance.py
+      - ./services/monitor_field_v3.py:/app/monitor_field_v3.py
+      - ./services/insurance_report.py:/app/insurance_report.py
       - ingabe-cache:/tmp/ingabe_cache
 
   minio:

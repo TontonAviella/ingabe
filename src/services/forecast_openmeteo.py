@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,101 @@ _OPENMETEO_LABELS = {
     "icon_global": "ICON",
     "gfs_graphcast025": "GraphCast",
 }
+
+
+# ---------------------------------------------------------------------------
+# Terrain correction — Rwanda elevation range 1000-4500m
+# 9km model grid cells average over huge elevation variation
+# ---------------------------------------------------------------------------
+
+_LAPSE_RATE_C_PER_KM = -6.5  # standard atmospheric lapse rate
+
+
+def _fetch_field_elevation(lat: float, lon: float) -> Optional[float]:
+    """Get actual field elevation from SRTM 90m via Open-Meteo."""
+    import json as _json
+
+    url = f"https://api.open-meteo.com/v1/elevation?latitude={lat}&longitude={lon}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read().decode())
+        elevs = data.get("elevation", [])
+        return elevs[0] if elevs else None
+    except Exception:
+        return None
+
+
+def _apply_terrain_correction(
+    daily: List[Dict[str, Any]],
+    model_elev_m: Optional[float],
+    field_elev_m: Optional[float],
+) -> Dict[str, Any]:
+    """Correct forecast for elevation difference between model grid and actual field.
+
+    Temperature: standard lapse rate (-6.5 C/km).
+    Precipitation: orographic enhancement for Rwanda highlands.
+    Model grid cell at 1800m, actual field at 2400m = 600m difference =
+      temperature -3.9 C, precipitation +10%.
+    """
+    if model_elev_m is None or field_elev_m is None:
+        return {"applied": False, "reason": "elevation data unavailable"}
+
+    elev_diff_m = field_elev_m - model_elev_m
+    if abs(elev_diff_m) < 50:
+        return {
+            "applied": False,
+            "reason": f"elevation difference only {elev_diff_m:.0f}m — no correction needed",
+            "model_elevation_m": round(model_elev_m),
+            "field_elevation_m": round(field_elev_m),
+        }
+
+    elev_diff_km = elev_diff_m / 1000.0
+    temp_correction = _LAPSE_RATE_C_PER_KM * elev_diff_km
+
+    # Orographic precipitation: higher terrain = more orographic lift in Rwanda
+    # Conservative: +8% per 500m above grid cell, capped at 1.4x
+    if elev_diff_m > 0:
+        precip_factor = 1.0 + 0.08 * (elev_diff_m / 500.0)
+        precip_factor = min(1.4, precip_factor)
+    else:
+        precip_factor = 1.0 + 0.05 * (elev_diff_m / 500.0)
+        precip_factor = max(0.7, precip_factor)
+
+    for day in daily:
+        # Correct temperatures
+        for temp_key in ("temperature_max", "temperature_min", "temperature_mean"):
+            var = day.get(temp_key)
+            if not var or "mean" not in var:
+                continue
+            var["mean"] = round(var["mean"] + temp_correction, 1)
+            if "models" in var:
+                for m in var["models"]:
+                    var["models"][m] = round(var["models"][m] + temp_correction, 1)
+            for bound in ("p10", "p90"):
+                if bound in var:
+                    var[bound] = round(var[bound] + temp_correction, 1)
+
+        # Correct precipitation
+        precip = day.get("precipitation_mm")
+        if precip and "mean" in precip:
+            precip["mean"] = round(precip["mean"] * precip_factor, 1)
+            if "models" in precip:
+                for m in precip["models"]:
+                    precip["models"][m] = round(precip["models"][m] * precip_factor, 1)
+            for bound in ("p10", "p90"):
+                if bound in precip:
+                    precip[bound] = round(precip[bound] * precip_factor, 1)
+            precip["spread"] = round(precip.get("spread", 0) * precip_factor, 1)
+
+    return {
+        "applied": True,
+        "model_elevation_m": round(model_elev_m),
+        "field_elevation_m": round(field_elev_m),
+        "elevation_difference_m": round(elev_diff_m),
+        "temperature_correction_c": round(temp_correction, 1),
+        "precipitation_factor": round(precip_factor, 2),
+    }
 
 
 def fetch_openmeteo_multimodel(
@@ -186,6 +281,21 @@ def fetch_openmeteo_multimodel(
             list(corrections.get("weights", {}).keys()),
         )
 
+    # Terrain correction — adjust for elevation difference between model grid and field
+    model_elev = data.get("elevation")
+    field_elev = _fetch_field_elevation(lat, lon)
+    terrain_info = _apply_terrain_correction(forecast_daily, model_elev, field_elev)
+    if terrain_info.get("applied"):
+        _apply_terrain_correction(recent_daily, model_elev, field_elev)
+        logger.info(
+            "Terrain correction: field=%dm vs model=%dm (diff=%dm), temp %+.1fC, precip x%.2f",
+            terrain_info["field_elevation_m"],
+            terrain_info["model_elevation_m"],
+            terrain_info["elevation_difference_m"],
+            terrain_info["temperature_correction_c"],
+            terrain_info["precipitation_factor"],
+        )
+
     # Risk assessment on forecast days only
     _assess_daily_risk(forecast_daily)
     risk_summary = _assess_period_risk(forecast_daily)
@@ -208,8 +318,10 @@ def fetch_openmeteo_multimodel(
         "resolution_km": 9,
         "location": {"lat": data.get("latitude", lat), "lon": data.get("longitude", lon)},
         "elevation_m": data.get("elevation"),
+        "field_elevation_m": field_elev,
         "timezone": data.get("timezone"),
         "risk_summary": risk_summary,
+        "terrain_correction": terrain_info,
         "bias_correction": {
             "applied": bool(corrections),
             "observed_days": corrections.get("observed_days", 0) if corrections else 0,

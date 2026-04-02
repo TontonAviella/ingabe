@@ -211,7 +211,7 @@ def compute_bias_corrections(
     recent_daily: List[Dict[str, Any]],
     lat: float,
     lon: float,
-    lookback_days: int = 7,
+    lookback_days: int = 14,
 ) -> Dict[str, Dict[str, float]]:
     """Compute per-model bias and MAE from hindcasts vs observations.
 
@@ -253,15 +253,24 @@ def compute_bias_corrections(
             if i < len(observed.get(var, []))
         }
 
-    # Build per-model error lists
-    # model_errors[model_label][var] = list of (hindcast - observed) values
-    model_errors: Dict[str, Dict[str, List[float]]] = {}
+    # Build per-model error lists with exponential decay weighting
+    # Recent observations matter more than older ones (half-life = 5 days)
+    # model_errors[model_label][var] = list of (error, weight) tuples
+    model_errors: Dict[str, Dict[str, List[tuple]]] = {}
+    _DECAY_HALFLIFE = 5.0  # days
+
+    sorted_dates = sorted(obs_by_date.keys(), reverse=True)
+    date_weights = {}
+    for i, d in enumerate(sorted_dates):
+        # Exponential decay: weight = 2^(-age/halflife)
+        date_weights[d] = 2.0 ** (-i / _DECAY_HALFLIFE)
 
     for day in recent_daily:
         date = day.get("date")
         if date not in obs_by_date:
             continue
         obs = obs_by_date[date]
+        w = date_weights.get(date, 1.0)
 
         for var in _CORRECTABLE_VARS:
             var_data = day.get(var, {})
@@ -274,24 +283,30 @@ def compute_bias_corrections(
                 if hindcast_val is None:
                     continue
                 model_errors.setdefault(model_label, {}).setdefault(var, [])
-                model_errors[model_label][var].append(hindcast_val - obs_val)
+                model_errors[model_label][var].append((hindcast_val - obs_val, w))
 
     if not model_errors:
         return {}
 
-    # Compute bias (mean error) and MAE per model per variable
+    # Compute weighted bias and MAE per model per variable
+    # Recent observations get higher weight via exponential decay
     bias: Dict[str, Dict[str, float]] = {}
     mae: Dict[str, Dict[str, float]] = {}
 
     for model_label, var_errors in model_errors.items():
         bias[model_label] = {}
         mae[model_label] = {}
-        for var, errors in var_errors.items():
-            if not errors:
+        for var, error_weights in var_errors.items():
+            if not error_weights:
                 continue
-            bias[model_label][var] = round(sum(errors) / len(errors), 2)
+            total_w = sum(w for _, w in error_weights)
+            if total_w < 0.01:
+                continue
+            bias[model_label][var] = round(
+                sum(e * w for e, w in error_weights) / total_w, 2
+            )
             mae[model_label][var] = round(
-                sum(abs(e) for e in errors) / len(errors), 2
+                sum(abs(e) * w for e, w in error_weights) / total_w, 2
             )
 
     # Compute inverse-MAE weights per variable
