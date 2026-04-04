@@ -157,7 +157,7 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
   useEffect(() => {
     _getTokenFn = getToken;
     const refreshToken = (skipCache = false) => {
-      getToken({ skipCache }).then((t) => {
+      getToken(skipCache ? { skipCache: true } : undefined).then((t) => {
         _cachedToken = t;
       });
     };
