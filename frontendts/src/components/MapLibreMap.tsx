@@ -628,7 +628,13 @@ export default function MapLibreMap({
 
       setSelectedFeature((prev: MapGeoJSONFeature | null) => {
         if (prev) {
-          newMap.setFeatureState({ source: prev.source, sourceLayer: prev.sourceLayer, id: prev.id }, { selected: false });
+          // Source may have been removed (e.g. layer deleted → child map navigation).
+          // Guard so a stale prev doesn't block selecting the new feature.
+          try {
+            newMap.setFeatureState({ source: prev.source, sourceLayer: prev.sourceLayer, id: prev.id }, { selected: false });
+          } catch (_) {
+            // source gone — nothing to deselect
+          }
         }
 
         if (feat) {

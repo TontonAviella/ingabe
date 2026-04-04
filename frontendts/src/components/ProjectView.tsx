@@ -239,9 +239,12 @@ export default function ProjectView() {
     }
 
     // Return an async function so react-use-websocket fetches a fresh JWT
-    // on each connection attempt (initial + every reconnect)
+    // on each connection attempt (initial + every reconnect).
+    // skipCache: true forces Clerk to issue a fresh token, avoiding the race
+    // where tab-return reconnect grabs a stale cached token before the
+    // TokenManager visibility handler has finished refreshing.
     return async () => {
-      const token = await getJwt();
+      const token = await getJwt({ skipCache: true });
       if (!token) {
         // Token gone = session died. Throw to prevent connection with no auth.
         throw new Error('Session expired');
