@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useWebSocket from 'react-use-websocket';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { apiFetch, fetchMaybeAuth, getJwt, useIsReady } from '@mundi/ee';
+import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, useIsReady } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
@@ -205,43 +205,50 @@ export default function ProjectView() {
 
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // undefined = JWT not yet resolved (block connection), null = resolved/legacy (no token), string = Clerk JWT
-  const [jwt, setJwt] = useState<string | null | undefined>(undefined);
-
-  const wsUrl = useMemo(() => {
-    if (!conversationId) return null;
-    // Block connection until getJwt() resolves — prevents spurious 1008 errors
-    // when Clerk is enabled and the token hasn't arrived yet.
-    if (jwt === undefined) return null;
-    if (!jwt) {
-      if (hadClerkAuth.current) {
-        // Clerk was active but token is now null = session died.
-        // Block WebSocket to prevent infinite 1008 reconnect loop.
-        return null;
-      }
-      // Legacy/no-auth mode: connect without token
-      return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
-    }
-    return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates?token=${jwt}`;
-  }, [conversationId, wsProtocol, jwt]);
 
   // Track whether Clerk auth was ever active (to distinguish "no auth" from "auth died")
   const hadClerkAuth = useRef(false);
+  // Track whether initial JWT resolution is complete (blocks WS until resolved)
+  const [authResolved, setAuthResolved] = useState(false);
 
-  // Fetch a JWT once on mount for WebSocket URL construction.
-  // TokenManager in ee-stub owns the refresh interval and visibilitychange listener,
-  // so no duplicate loop here.
+  // Resolve auth mode once on mount so we know whether to connect
   useEffect(() => {
     let mounted = true;
     getJwt().then((token: string | undefined) => {
       if (!mounted) return;
       if (token) hadClerkAuth.current = true;
-      setJwt(token ?? null);
+      setAuthResolved(true);
     });
     return () => {
       mounted = false;
     };
   }, []);
+
+  // Async URL factory: fetches a fresh JWT on every connect/reconnect.
+  // react-use-websocket calls this function each time it opens a new connection,
+  // so the token is always fresh (Clerk JWTs expire in 60s).
+  const wsUrl = useMemo(() => {
+    if (!conversationId) return null;
+    if (!authResolved) return null; // block until initial auth check completes
+
+    const baseUrl = `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
+
+    if (!hadClerkAuth.current) {
+      // Legacy/no-auth mode: connect without token
+      return baseUrl;
+    }
+
+    // Return an async function so react-use-websocket fetches a fresh JWT
+    // on each connection attempt (initial + every reconnect)
+    return async () => {
+      const token = await getJwt();
+      if (!token) {
+        // Token gone = session died. Throw to prevent connection with no auth.
+        throw new Error('Session expired');
+      }
+      return `${baseUrl}?token=${token}`;
+    };
+  }, [conversationId, wsProtocol, authResolved]);
 
   // Track page visibility and allow socket to remain open for 10 minutes after hidden
   const WS_REMAIN_OPEN_FOR_MS = 10 * 60 * 1000; // 10 minutes
@@ -282,15 +289,17 @@ export default function ProjectView() {
     wsUrl,
     {
       onError: () => {
-        if (hadClerkAuth.current && !jwt) {
+        // The async URL factory throws when the session dies, so errors
+        // during URL resolution surface here. getCachedToken() is a
+        // synchronous check — if TokenManager has no token, session is dead.
+        if (hadClerkAuth.current && !getCachedToken()) {
           toast.error('Session expired. Please refresh the page to reconnect.');
         } else {
           toast.error('Chat connection error.');
         }
       },
       shouldReconnect: () => {
-        // Don't reconnect if Clerk auth died, it'll just fail again
-        if (hadClerkAuth.current && !jwt) return false;
+        if (hadClerkAuth.current && !getCachedToken()) return false;
         return true;
       },
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
