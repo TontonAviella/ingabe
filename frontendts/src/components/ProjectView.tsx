@@ -233,8 +233,8 @@ export default function ProjectView() {
   useEffect(() => {
     let mounted = true;
 
-    const refreshJwt = () => {
-      getJwt().then((token: string | undefined) => {
+    const refreshJwt = (skipCache = false) => {
+      getJwt(skipCache ? { skipCache: true } : undefined).then((token: string | undefined) => {
         if (!mounted) return;
         if (token) hadClerkAuth.current = true;
         // Always call setJwt after resolution: token string for Clerk, null for legacy/no-auth.
@@ -247,14 +247,16 @@ export default function ProjectView() {
     refreshJwt();
 
     // Refresh every 45 seconds to stay ahead of Clerk's 60-second token expiry
-    const refreshInterval = window.setInterval(refreshJwt, 45_000);
+    const refreshInterval = window.setInterval(() => refreshJwt(), 45_000);
 
     // When the tab becomes visible again, refresh the JWT immediately.
     // Browser throttles setInterval in background tabs (to ~1/min or slower),
     // so the cached token is likely expired when the user switches back.
+    // skipCache forces Clerk to mint a fresh token instead of returning the
+    // potentially expired one from its internal cache.
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') {
-        refreshJwt();
+        refreshJwt(true);
       }
     };
     document.addEventListener('visibilitychange', handleVisibility);

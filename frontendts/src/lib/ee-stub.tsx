@@ -147,7 +147,7 @@ export function ApiKeys(): React.ReactNode | null {
 // ── getJwt ──────────────────────────────────────────────────────────────
 // This is called outside React components (e.g. in useEffect callbacks).
 // We store the getToken function from useAuth when the Provider mounts.
-let _getTokenFn: (() => Promise<string | null>) | null = null;
+let _getTokenFn: ((options?: { skipCache?: boolean }) => Promise<string | null>) | null = null;
 // Cached token for synchronous access (used by MapLibre transformRequest)
 let _cachedToken: string | null = null;
 
@@ -156,21 +156,22 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
 
   useEffect(() => {
     _getTokenFn = getToken;
-    const refreshToken = () => {
-      getToken().then((t) => {
+    const refreshToken = (skipCache = false) => {
+      getToken({ skipCache }).then((t) => {
         _cachedToken = t;
       });
     };
     // Eagerly cache token so transformRequest has it immediately
     refreshToken();
     // Refresh cached token every 50s (Clerk tokens expire ~60s)
-    const interval = setInterval(refreshToken, 50_000);
+    const interval = setInterval(() => refreshToken(), 50_000);
     // Refresh immediately when tab becomes visible again.
     // Browsers throttle setInterval in background tabs, so the cached token
     // used by MapLibre's synchronous transformRequest is often stale after
-    // the user switches back to the tab.
+    // the user switches back to the tab. skipCache forces Clerk to issue a
+    // fresh token instead of returning a potentially expired cached one.
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') refreshToken();
+      if (document.visibilityState === 'visible') refreshToken(true);
     };
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
@@ -209,13 +210,13 @@ export function useIsReady(): boolean {
 // Use this for all /api/* calls instead of raw fetch().
 export { fetchMaybeAuth as apiFetch };
 
-export async function getJwt(): Promise<string | undefined> {
+export async function getJwt(options?: { skipCache?: boolean }): Promise<string | undefined> {
   if (!CLERK_PUBLISHABLE_KEY) {
     return undefined;
   }
 
   if (_getTokenFn) {
-    const token = await _getTokenFn();
+    const token = await _getTokenFn(options);
     _cachedToken = token;
     return token ?? undefined;
   }
@@ -259,10 +260,11 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
   const response = await doFetch({ ...init, headers });
 
   // If we get 401 Unauthorized, token might have expired mid-operation.
-  // Retry once with a fresh token (Clerk auto-refreshes expired tokens).
+  // Retry once with a fresh token. skipCache bypasses Clerk's internal token
+  // cache to avoid getting the same expired token back.
   if (response.status === 401 && !hasRetriedBefore) {
-    console.log('401 received, refreshing token and retrying...');
-    const freshToken = await getJwt();
+    console.log('401 received, refreshing token (skipCache) and retrying...');
+    const freshToken = await getJwt({ skipCache: true });
     if (freshToken && freshToken !== token) {
       const retryHeaders = new Headers(init?.headers);
       retryHeaders.set('Authorization', `Bearer ${freshToken}`);
