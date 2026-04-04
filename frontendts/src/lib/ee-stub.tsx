@@ -220,6 +220,7 @@ class TokenManager {
   }
 
   private _handleVisibility = () => {
+    if (!this._getTokenFn) return; // destroyed — ignore queued events
     if (document.visibilityState === 'visible') {
       // Cancel and restart interval to prevent race with background-throttled timer
       if (this._intervalId) clearInterval(this._intervalId);
