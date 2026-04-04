@@ -44,6 +44,16 @@ IPC_LABELS = {
 }
 
 
+def _safe_int(val: Any) -> int | None:
+    """Safely convert a value to int, handling strings and floats."""
+    if val is None:
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
+
+
 def _fetch_all() -> list[dict]:
     """Fetch all IPC records for Rwanda from FEWS NET API."""
     global _cache, _cache_ts
@@ -52,13 +62,20 @@ def _fetch_all() -> list[dict]:
     if _cache.get("records") and (now - _cache_ts) < _CACHE_TTL_S:
         return _cache["records"]
 
-    resp = httpx.get(
-        FEWS_NET_API,
-        params={"country_code": COUNTRY_CODE, "format": "json"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    records = resp.json()
+    try:
+        resp = httpx.get(
+            FEWS_NET_API,
+            params={"country_code": COUNTRY_CODE, "format": "json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        records = resp.json()
+    except (httpx.HTTPError, Exception) as e:
+        logger.warning("FEWS NET API request failed: %s", e)
+        if _cache.get("records"):
+            logger.info("Returning stale FEWS NET cache")
+            return _cache["records"]
+        raise
 
     _cache["records"] = records
     _cache_ts = now
@@ -101,7 +118,7 @@ def get_food_security(
     filtered = [
         r for r in records
         if r.get("reporting_date") == latest_date
-        and target_scenario.lower() in (r.get("scenario_name", "").strip().lower())
+        and r.get("scenario_name", "").strip().lower() == target_scenario.lower()
     ]
 
     # If no exact match, try all scenarios at latest date
@@ -124,9 +141,7 @@ def get_food_security(
 
     classifications = []
     for r in filtered:
-        phase = r.get("value")
-        if phase is not None:
-            phase = int(phase)
+        phase = _safe_int(r.get("value"))
         classifications.append({
             "area": r.get("geographic_unit_name", "Rwanda"),
             "ipc_phase": phase,
@@ -140,11 +155,12 @@ def get_food_security(
     stressed_areas = []
     recent_cutoff = dates[-1][:4]  # same year as latest
     for r in records:
-        if (r.get("value") or 0) >= 2 and (r.get("reporting_date", "") >= f"{recent_cutoff}-01-01"):
+        phase_val = _safe_int(r.get("value"))
+        if phase_val is not None and phase_val >= 2 and (r.get("reporting_date", "") >= f"{recent_cutoff}-01-01"):
             stressed_areas.append({
                 "area": r.get("geographic_unit_name", ""),
-                "ipc_phase": int(r["value"]),
-                "ipc_label": IPC_LABELS.get(int(r["value"]), ""),
+                "ipc_phase": phase_val,
+                "ipc_label": IPC_LABELS.get(phase_val, ""),
                 "date": r.get("reporting_date", ""),
                 "scenario": r.get("scenario_name", "").strip(),
             })
