@@ -228,43 +228,18 @@ export default function ProjectView() {
   // Track whether Clerk auth was ever active (to distinguish "no auth" from "auth died")
   const hadClerkAuth = useRef(false);
 
-  // If EE is present, fetch a JWT for authenticated websockets
-  // Clerk dev tokens expire after 60s; refresh every 45s to stay ahead.
+  // Fetch a JWT once on mount for WebSocket URL construction.
+  // TokenManager in ee-stub owns the refresh interval and visibilitychange listener,
+  // so no duplicate loop here.
   useEffect(() => {
     let mounted = true;
-
-    const refreshJwt = (skipCache = false) => {
-      getJwt(skipCache ? { skipCache: true } : undefined).then((token: string | undefined) => {
-        if (!mounted) return;
-        if (token) hadClerkAuth.current = true;
-        // Always call setJwt after resolution: token string for Clerk, null for legacy/no-auth.
-        // This transitions jwt from undefined (loading) so wsUrl unblocks.
-        setJwt(token ?? null);
-      });
-    };
-
-    // Initial fetch
-    refreshJwt();
-
-    // Refresh every 45 seconds to stay ahead of Clerk's 60-second token expiry
-    const refreshInterval = window.setInterval(() => refreshJwt(), 45_000);
-
-    // When the tab becomes visible again, refresh the JWT immediately.
-    // Browser throttles setInterval in background tabs (to ~1/min or slower),
-    // so the cached token is likely expired when the user switches back.
-    // skipCache forces Clerk to mint a fresh token instead of returning the
-    // potentially expired one from its internal cache.
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        refreshJwt(true);
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-
+    getJwt().then((token: string | undefined) => {
+      if (!mounted) return;
+      if (token) hadClerkAuth.current = true;
+      setJwt(token ?? null);
+    });
     return () => {
       mounted = false;
-      clearInterval(refreshInterval);
-      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
 

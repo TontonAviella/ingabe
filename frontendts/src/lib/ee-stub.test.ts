@@ -79,6 +79,72 @@ describe('getJwt', () => {
   });
 });
 
+describe('TokenManager', () => {
+  beforeEach(() => {
+    vi.stubEnv('VITE_CLERK_PUBLISHABLE_KEY', 'pk_test_abc');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('never overwrites a good token with null (null-guard)', async () => {
+    const mod = await import('./ee-stub-testable');
+    // First call succeeds
+    const mockGetToken = vi.fn()
+      .mockResolvedValueOnce('good-token')
+      .mockResolvedValueOnce(null); // transient Clerk failure
+    mod.__test__.setGetTokenFn(mockGetToken);
+
+    await mod.getJwt();
+    expect(mod.getCachedToken()).toBe('good-token');
+
+    // Second call returns null — cached token should survive
+    await mod.getJwt();
+    expect(mod.getCachedToken()).toBe('good-token');
+  });
+
+  it('deduplicates concurrent refresh calls (stampede prevention)', async () => {
+    const mod = await import('./ee-stub-testable');
+    const mockGetToken = vi.fn().mockResolvedValue('dedup-token');
+    mod.__test__.setGetTokenFn(mockGetToken);
+
+    // Fire 5 concurrent getJwt() calls
+    const results = await Promise.all([
+      mod.getJwt(),
+      mod.getJwt(),
+      mod.getJwt(),
+      mod.getJwt(),
+      mod.getJwt(),
+    ]);
+
+    // All should resolve with the same token
+    for (const r of results) expect(r).toBe('dedup-token');
+    // _getTokenFn called once: initialize()'s refresh() creates the promise,
+    // and all 5 concurrent calls coalesce onto it
+    expect(mockGetToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not leak stale promise across destroy/reinit', async () => {
+    const mod = await import('./ee-stub-testable');
+    const oldMock = vi.fn().mockResolvedValue('old-token');
+    mod.__test__.setGetTokenFn(oldMock);
+    await mod.getJwt();
+    expect(mod.getCachedToken()).toBe('old-token');
+
+    // Destroy and reinit with new mock
+    mod.__test__.reset();
+    const newMock = vi.fn().mockResolvedValue('new-token');
+    mod.__test__.setGetTokenFn(newMock);
+    const result = await mod.getJwt();
+
+    expect(result).toBe('new-token');
+    expect(mod.getCachedToken()).toBe('new-token');
+    expect(newMock).toHaveBeenCalled();
+  });
+});
+
 describe('getCachedToken', () => {
   afterEach(() => {
     vi.unstubAllEnvs();

@@ -144,46 +144,99 @@ export function ApiKeys(): React.ReactNode | null {
   );
 }
 
-// ── getJwt ──────────────────────────────────────────────────────────────
-// This is called outside React components (e.g. in useEffect callbacks).
-// We store the getToken function from useAuth when the Provider mounts.
-let _getTokenFn: ((options?: { skipCache?: boolean }) => Promise<string | null>) | null = null;
-// Cached token for synchronous access (used by MapLibre transformRequest)
-let _cachedToken: string | null = null;
+// ── TokenManager ────────────────────────────────────────────────────────
+// Single source of truth for Clerk JWT lifecycle. Owns the cached token,
+// one refresh interval, one visibilitychange listener, and a dedup promise
+// that coalesces concurrent callers (e.g. 20 tile 401s) into one Clerk call.
+
+const TOKEN_REFRESH_INTERVAL_MS = 55_000; // Clerk tokens expire ~60s
+
+class TokenManager {
+  private _cachedToken: string | null = null;
+  private _getTokenFn: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = null;
+  private _refreshPromise: Promise<string | null> | null = null;
+  private _intervalId: ReturnType<typeof setInterval> | null = null;
+
+  get cachedToken(): string | null {
+    return this._cachedToken;
+  }
+
+  /** Test-only: directly set cached token without a refresh cycle */
+  set cachedToken(token: string | null) {
+    this._cachedToken = token;
+  }
+
+  initialize(getToken: typeof this._getTokenFn) {
+    // Idempotency guard: React strict mode double-mounts components.
+    this.destroy();
+    this._getTokenFn = getToken;
+    this.refresh();
+    this._startInterval();
+    document.addEventListener('visibilitychange', this._handleVisibility);
+  }
+
+  destroy() {
+    this._getTokenFn = null;
+    this._cachedToken = null;
+    this._refreshPromise = null;
+    if (this._intervalId) {
+      clearInterval(this._intervalId);
+      this._intervalId = null;
+    }
+    document.removeEventListener('visibilitychange', this._handleVisibility);
+  }
+
+  async refresh(skipCache = false): Promise<string | null> {
+    if (!this._getTokenFn) return this._cachedToken;
+
+    // Dedup: if a refresh is already in-flight and we don't need skipCache,
+    // coalesce onto the existing promise
+    if (this._refreshPromise && !skipCache) return this._refreshPromise;
+
+    const promise = this._getTokenFn(skipCache ? { skipCache: true } : undefined)
+      .then((token) => {
+        // NULL GUARD: never downgrade a known-good token to null
+        if (token) this._cachedToken = token;
+        return this._cachedToken;
+      })
+      .catch((err) => {
+        console.warn('[Auth] Token refresh failed:', err);
+        return this._cachedToken; // return stale token, don't clobber
+      })
+      .finally(() => {
+        // Identity check: only clear if this is still the active promise.
+        // A skipCache call may have replaced _refreshPromise while we were in-flight.
+        if (this._refreshPromise === promise) {
+          this._refreshPromise = null;
+        }
+      });
+
+    this._refreshPromise = promise;
+    return promise;
+  }
+
+  private _startInterval() {
+    this._intervalId = setInterval(() => this.refresh(), TOKEN_REFRESH_INTERVAL_MS);
+  }
+
+  private _handleVisibility = () => {
+    if (document.visibilityState === 'visible') {
+      // Cancel and restart interval to prevent race with background-throttled timer
+      if (this._intervalId) clearInterval(this._intervalId);
+      this.refresh(true); // skipCache: force fresh token after background throttle
+      this._startInterval();
+    }
+  };
+}
+
+const tokenManager = new TokenManager();
 
 export function _SetTokenProvider({ children }: React.PropsWithChildren) {
   const { getToken } = useAuth();
 
   useEffect(() => {
-    _getTokenFn = getToken;
-    const refreshToken = (skipCache = false) => {
-      getToken(skipCache ? { skipCache: true } : undefined)
-        .then((t) => {
-          _cachedToken = t;
-        })
-        .catch((err) => {
-          console.warn('[Auth] Token refresh failed:', err);
-        });
-    };
-    // Eagerly cache token so transformRequest has it immediately
-    refreshToken();
-    // Refresh cached token every 50s (Clerk tokens expire ~60s)
-    const interval = setInterval(() => refreshToken(), 50_000);
-    // Refresh immediately when tab becomes visible again.
-    // Browsers throttle setInterval in background tabs, so the cached token
-    // used by MapLibre's synchronous transformRequest is often stale after
-    // the user switches back to the tab. skipCache forces Clerk to issue a
-    // fresh token instead of returning a potentially expired cached one.
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') refreshToken(true);
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      _getTokenFn = null;
-      _cachedToken = null;
-      clearInterval(interval);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
+    tokenManager.initialize(getToken);
+    return () => tokenManager.destroy();
   }, [getToken]);
 
   return <>{children}</>;
@@ -194,7 +247,7 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
  * Used by MapLibre's transformRequest to add Bearer tokens to tile requests.
  */
 export function getCachedToken(): string | null {
-  return _cachedToken;
+  return tokenManager.cachedToken;
 }
 
 // ── useIsReady ──────────────────────────────────────────────────────────
@@ -219,13 +272,8 @@ export async function getJwt(options?: { skipCache?: boolean }): Promise<string 
     return undefined;
   }
 
-  if (_getTokenFn) {
-    const token = await _getTokenFn(options);
-    _cachedToken = token;
-    return token ?? undefined;
-  }
-
-  return undefined;
+  const token = await tokenManager.refresh(options?.skipCache ?? false);
+  return token ?? undefined;
 }
 
 // ── fetchMaybeAuth ──────────────────────────────────────────────────────
@@ -280,17 +328,16 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
   return response;
 }
 
-// ── Test hooks (tree-shaken in production builds) ──────────────────────
+// ── Test hooks ─────────────────────────────────────────────────────────
 export const __test__ = {
-  setGetTokenFn: (fn: typeof _getTokenFn) => {
-    _getTokenFn = fn;
+  setGetTokenFn: (fn: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null) => {
+    tokenManager.initialize(fn);
   },
   setCachedToken: (t: string | null) => {
-    _cachedToken = t;
+    tokenManager.cachedToken = t;
   },
   reset: () => {
-    _getTokenFn = null;
-    _cachedToken = null;
+    tokenManager.destroy();
   },
 };
 
