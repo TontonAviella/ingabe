@@ -1119,5 +1119,92 @@
         "required": ["predicted_crop", "actual_crop", "confirmed"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_soil_moisture",
+      "description": "Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (WGS84)"
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (WGS84)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 30 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          }
+        },
+        "required": ["latitude", "longitude"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_evapotranspiration",
+      "description": "Query actual evapotranspiration (ET) and optionally transpiration and net primary productivity from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of ET values in mm/day for the given location. Use when the user asks about evapotranspiration, water use, crop water consumption, water productivity, ET, or how much water a crop/field is using.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (WGS84)"
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (WGS84)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 30 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          },
+          "include_components": {
+            "type": "boolean",
+            "description": "If true, also return transpiration and net primary productivity. Default: false"
+          }
+        },
+        "required": ["latitude", "longitude"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_food_security_alerts",
+      "description": "Query IPC food security classifications for Rwanda from FEWS NET. Returns the current IPC phase (1-5 scale: 1=Minimal, 2=Stressed, 3=Crisis, 4=Emergency, 5=Famine) and any areas of concern. Use when the user asks about food security, hunger, famine risk, IPC classification, food crisis, or food insecurity in Rwanda.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Optional district name to filter (e.g. Kayonza, Bugesera)"
+          },
+          "period": {
+            "type": "string",
+            "enum": ["current", "projected"],
+            "description": "current = latest observed situation, projected = near-term outlook. Default: current"
+          }
+        },
+        "required": []
+      }
+    }
   }
 ]

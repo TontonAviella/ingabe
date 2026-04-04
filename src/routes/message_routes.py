@@ -1256,6 +1256,29 @@ async def process_chat_interaction_task(
                         },
                     },
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "reverse_geocode_coordinates",
+                        "strict": True,
+                        "description": "Given latitude and longitude, returns the Rwanda administrative divisions (province, district, sector, cell, village) that contain that point. Use this whenever the user provides coordinates and asks what location they correspond to.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "lat": {
+                                    "type": "number",
+                                    "description": "Latitude (e.g. -1.9403)",
+                                },
+                                "lon": {
+                                    "type": "number",
+                                    "description": "Longitude (e.g. 29.8739)",
+                                },
+                            },
+                            "required": ["lat", "lon"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
             ]
 
             # add pydantic-defined tools to the payload
@@ -5043,6 +5066,229 @@ async def process_chat_interaction_task(
                             except Exception as e:
                                 logger.exception("add_land_cover_layer failed")
                                 tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_soil_moisture":
+                            try:
+                                from datetime import date as _dt_date_sm
+                                from src.services.wapor_service import query_soil_moisture
+
+                                _sm_lat = tool_args.get("latitude")
+                                _sm_lon = tool_args.get("longitude")
+                                _sm_from = None
+                                _sm_to = None
+                                if tool_args.get("date_from"):
+                                    _sm_from = _dt_date_sm.fromisoformat(tool_args["date_from"])
+                                if tool_args.get("date_to"):
+                                    _sm_to = _dt_date_sm.fromisoformat(tool_args["date_to"])
+
+                                if _sm_lat is None or _sm_lon is None:
+                                    tool_result = {"status": "error", "error": "latitude and longitude are required"}
+                                else:
+                                    import asyncio as _aio_sm
+                                    tool_result = await _aio_sm.get_event_loop().run_in_executor(
+                                        None,
+                                        lambda: query_soil_moisture(
+                                            lat=float(_sm_lat),
+                                            lon=float(_sm_lon),
+                                            date_from=_sm_from,
+                                            date_to=_sm_to,
+                                        ),
+                                    )
+                            except Exception as e:
+                                logger.exception("get_soil_moisture tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_evapotranspiration":
+                            try:
+                                from datetime import date as _dt_date
+                                from src.services.wapor_service import query_et
+
+                                _et_lat = tool_args.get("latitude")
+                                _et_lon = tool_args.get("longitude")
+                                _et_from = None
+                                _et_to = None
+                                if tool_args.get("date_from"):
+                                    _et_from = _dt_date.fromisoformat(tool_args["date_from"])
+                                if tool_args.get("date_to"):
+                                    _et_to = _dt_date.fromisoformat(tool_args["date_to"])
+
+                                if _et_lat is None or _et_lon is None:
+                                    tool_result = {"status": "error", "error": "latitude and longitude are required"}
+                                else:
+                                    import asyncio as _aio_et
+                                    tool_result = await _aio_et.get_event_loop().run_in_executor(
+                                        None,
+                                        lambda: query_et(
+                                            lat=float(_et_lat),
+                                            lon=float(_et_lon),
+                                            date_from=_et_from,
+                                            date_to=_et_to,
+                                            include_components=bool(tool_args.get("include_components", False)),
+                                        ),
+                                    )
+                            except Exception as e:
+                                logger.exception("get_evapotranspiration tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_food_security_alerts":
+                            try:
+                                from src.services.fewsnet_service import get_food_security
+
+                                import asyncio as _aio_fs
+                                tool_result = await _aio_fs.get_event_loop().run_in_executor(
+                                    None,
+                                    lambda: get_food_security(
+                                        district=tool_args.get("district"),
+                                        period=tool_args.get("period", "current"),
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("get_food_security_alerts tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "reverse_geocode_coordinates":
+                            _rg_lat = tool_args.get("lat")
+                            _rg_lon = tool_args.get("lon")
+
+                            if _rg_lat is None or _rg_lon is None:
+                                tool_result = {"status": "error", "error": "lat and lon are required"}
+                            else:
+                                # Province-to-district mapping (stable since 2006)
+                                _DISTRICT_TO_PROVINCE = {
+                                    "Gasabo": "Kigali City", "Kicukiro": "Kigali City", "Nyarugenge": "Kigali City",
+                                    "Burera": "Northern", "Gakenke": "Northern", "Gicumbi": "Northern",
+                                    "Musanze": "Northern", "Rulindo": "Northern",
+                                    "Gisagara": "Southern", "Huye": "Southern", "Kamonyi": "Southern",
+                                    "Muhanga": "Southern", "Nyamagabe": "Southern", "Nyanza": "Southern",
+                                    "Nyaruguru": "Southern", "Ruhango": "Southern",
+                                    "Bugesera": "Eastern", "Gatsibo": "Eastern", "Kayonza": "Eastern",
+                                    "Kirehe": "Eastern", "Ngoma": "Eastern", "Nyagatare": "Eastern",
+                                    "Rwamagana": "Eastern",
+                                    "Karongi": "Western", "Ngororero": "Western", "Nyabihu": "Western",
+                                    "Nyamasheke": "Western", "Rubavu": "Western", "Rusizi": "Western",
+                                    "Rutsiro": "Western",
+                                }
+                                try:
+                                    import asyncpg as _asyncpg_rg
+                                    _pg_host_rg = os.environ.get("POSTGRES_HOST", "postgresdb")
+                                    _pg_port_rg = int(os.environ.get("POSTGRES_PORT", "5432"))
+                                    _pg_db_rg = os.environ.get("POSTGRES_DB", "mundidb")
+                                    _pg_user_rg = os.environ.get("POSTGRES_USER", "mundiuser")
+                                    _pg_pass_rg = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                                    _pg_conn_rg = await _asyncpg_rg.connect(
+                                        host=_pg_host_rg, port=_pg_port_rg,
+                                        database=_pg_db_rg, user=_pg_user_rg, password=_pg_pass_rg,
+                                    )
+                                    try:
+                                        _rg_result = {
+                                            "province": None, "district": None,
+                                            "sector": None, "cell": None, "village": None,
+                                        }
+
+                                        # Village (most specific)
+                                        _row = await _pg_conn_rg.fetchrow(
+                                            "SELECT village_name, cell_name, sector_name, district_name "
+                                            "FROM rwanda_village_boundaries "
+                                            "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                            "LIMIT 1",
+                                            float(_rg_lon), float(_rg_lat),
+                                        )
+                                        if _row:
+                                            _rg_result["village"] = _row["village_name"]
+                                            _rg_result["cell"] = _row["cell_name"]
+                                            _rg_result["sector"] = _row["sector_name"]
+                                            _rg_result["district"] = _row["district_name"]
+                                        else:
+                                            # Fall back to cell
+                                            _row = await _pg_conn_rg.fetchrow(
+                                                "SELECT cell_name, sector_name, district_name "
+                                                "FROM rwanda_cell_boundaries "
+                                                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                "LIMIT 1",
+                                                float(_rg_lon), float(_rg_lat),
+                                            )
+                                            if _row:
+                                                _rg_result["cell"] = _row["cell_name"]
+                                                _rg_result["sector"] = _row["sector_name"]
+                                                _rg_result["district"] = _row["district_name"]
+                                            else:
+                                                # Fall back to sector
+                                                _row = await _pg_conn_rg.fetchrow(
+                                                    "SELECT sector_name, district_name "
+                                                    "FROM rwanda_sector_boundaries "
+                                                    "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                    "LIMIT 1",
+                                                    float(_rg_lon), float(_rg_lat),
+                                                )
+                                                if _row:
+                                                    _rg_result["sector"] = _row["sector_name"]
+                                                    _rg_result["district"] = _row["district_name"]
+                                                else:
+                                                    # Fall back to district
+                                                    _row = await _pg_conn_rg.fetchrow(
+                                                        "SELECT district FROM rwanda_district_boundaries "
+                                                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                                                        "LIMIT 1",
+                                                        float(_rg_lon), float(_rg_lat),
+                                                    )
+                                                    if _row:
+                                                        _rg_result["district"] = _row["district"]
+
+                                        # Derive province from district
+                                        if _rg_result["district"]:
+                                            _rg_result["province"] = _DISTRICT_TO_PROVINCE.get(
+                                                _rg_result["district"]
+                                            )
+
+                                        if _rg_result["district"]:
+                                            tool_result = {
+                                                "status": "success",
+                                                "coordinates": {"lat": _rg_lat, "lon": _rg_lon},
+                                                **_rg_result,
+                                            }
+                                        else:
+                                            tool_result = {
+                                                "status": "not_found",
+                                                "error": f"Coordinates ({_rg_lat}, {_rg_lon}) are not within Rwanda boundaries.",
+                                                "coordinates": {"lat": _rg_lat, "lon": _rg_lon},
+                                            }
+                                    finally:
+                                        await _pg_conn_rg.close()
+                                except Exception as _rg_err:
+                                    logger.exception("reverse_geocode_coordinates failed")
+                                    tool_result = {"status": "error", "error": str(_rg_err)}
 
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
