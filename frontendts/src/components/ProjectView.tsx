@@ -404,6 +404,9 @@ export default function ProjectView() {
 
             if (action.updates.style_json) {
               invalidateMapData();
+              // Also invalidate the style query directly so MapLibre picks up
+              // new layer styles even if the monotonic counter hasn't changed yet.
+              queryClient.invalidateQueries({ queryKey: ['mapStyle'] });
             }
           }
         } else {

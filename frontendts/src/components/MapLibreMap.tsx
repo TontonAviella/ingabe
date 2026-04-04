@@ -1155,8 +1155,20 @@ export default function MapLibreMap({
     };
   }, [mapRef, mapId, mapInstanceId]);
 
+  // Monotonically increasing counter that triggers style.json refetch.
+  // Previously this counted activeActions with style_json, but since completed
+  // actions are removed from the array, the counter would oscillate (N→N+1→N→N+1)
+  // causing TanStack Query to serve stale cached results on the second refetch.
+  const styleUpdateCounterRef = useRef(0);
+  const prevStyleActionCountRef = useRef(0);
   const styleUpdateCounter = useMemo(() => {
-    return activeActions.filter((a) => a.updates.style_json).length;
+    const currentCount = activeActions.filter((a) => a.updates.style_json).length;
+    if (currentCount > prevStyleActionCountRef.current) {
+      // New style action arrived — bump the monotonic counter
+      styleUpdateCounterRef.current += 1;
+    }
+    prevStyleActionCountRef.current = currentCount;
+    return styleUpdateCounterRef.current;
   }, [activeActions]);
 
   // Use useQuery to fetch the style.json
