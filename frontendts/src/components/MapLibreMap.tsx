@@ -985,7 +985,7 @@ export default function MapLibreMap({
           // instead of showing a confusing "Token expired" error to the user.
           if (e.error.status === 401) {
             (async () => {
-              const freshToken = await getJwt();
+              const freshToken = await getJwt({ skipCache: true });
               if (freshToken) {
                 // Token refreshed successfully, reload map sources to retry tiles
                 const m = localMapRef.current;
