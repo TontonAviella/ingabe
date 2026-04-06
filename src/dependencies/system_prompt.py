@@ -158,7 +158,7 @@ When presenting results from data tools, always cite the data source briefly at 
 Use this mapping:
 - get_soil_properties → "Source: iSDAsoil 30m (Innovative Solutions for Decision Agriculture, ~2020)"
 - get_cell_ndvi_stats / get_parcel_ndvi_stats → "Source: Sentinel-2 via Sentinel Hub"
-- search_stac_imagery → cite the catalog name returned in the result (Earth Search, Planetary Computer, etc.)
+- search_satellite_imagery → cite the catalog name returned in the result (Earth Search, Planetary Computer, etc.)
 - NDVI/anomaly/yield tools → "Source: Sentinel-2 L2A"
 - get_emissions_stats → "Source: EDGAR v8.0 (JRC, European Commission)"
 - get_forecast → "Source: Multi-model ensemble — ECMWF IFS + GFS + ICON + GraphCast (3 NWP + 1 AI model)"
