@@ -4627,8 +4627,8 @@ async def process_chat_interaction_task(
 
                                 if _fc_lat is None or _fc_lon is None:
                                     # Default to Kigali
-                                    _fc_lat = _fc_lat or -1.9403
-                                    _fc_lon = _fc_lon or 29.8739
+                                    _fc_lat = _fc_lat if _fc_lat is not None else -1.9403
+                                    _fc_lon = _fc_lon if _fc_lon is not None else 29.8739
 
                                 import asyncio as _aio
                                 _fc_result = await _aio.get_event_loop().run_in_executor(
