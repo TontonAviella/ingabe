@@ -1053,14 +1053,36 @@ export default function MapLibreMap({
         } else {
           // Non-AJAXError path: MapLibre often emits plain Error for tile requests.
           const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
-          // Suppress satellite/underlay tile errors (cloud gaps, network timeouts, etc.)
-          if (sourceId === 'sentinel2-live' || sourceId === 'ndvi-map' || sourceId === 'basemap-underlay') return;
+          // Suppress satellite/underlay/basemap tile errors (cloud gaps, network timeouts,
+          // rate limiting from external tile providers like Esri, OSM, CARTO, etc.)
+          const basemapSources = new Set([
+            'sentinel2-live', 'ndvi-map', 'basemap-underlay',
+            'esri-satellite', 'esri-topo', 'openstreetmap', 'carto-dark', 'carto-voyager',
+          ]);
+          if (sourceId && basemapSources.has(sourceId)) return;
           const msg = (e as any)?.error?.message as string | undefined;
           if (typeof msg === 'string') {
             const match = msg.match(/Bad response code:\s*(\d+)/);
             const code = match ? parseInt(match[1], 10) : null;
             if (code === 423) {
               addError('Vector tiles are still generating. Please refresh in a moment. This will take 2-3 minutes.', true, sourceId);
+              return;
+            }
+            if (code === 403) {
+              // 403 from tile requests = expired presigned S3 URL (PMTiles) or
+              // external provider rate limiting. Trigger a style refresh to get
+              // fresh presigned URLs, debounced to once per 30 seconds.
+              console.warn('Tile source returned 403 (presigned URL may have expired)', sourceId);
+              if (styleUpdateCounterRef.current !== undefined) {
+                const now = Date.now();
+                if (!lastPresignedRefreshRef.current || now - lastPresignedRefreshRef.current > 30_000) {
+                  lastPresignedRefreshRef.current = now;
+                  styleUpdateCounterRef.current += 1;
+                  // Force TanStack Query to refetch by updating the counter
+                  setPresignedRefreshTrigger((prev) => prev + 1);
+                  console.info('Triggering style.json refetch for fresh presigned URLs');
+                }
+              }
               return;
             }
             if (code === 502) {
@@ -1161,6 +1183,8 @@ export default function MapLibreMap({
   // causing TanStack Query to serve stale cached results on the second refetch.
   const styleUpdateCounterRef = useRef(0);
   const prevStyleActionCountRef = useRef(0);
+  const lastPresignedRefreshRef = useRef<number | null>(null);
+  const [presignedRefreshTrigger, setPresignedRefreshTrigger] = useState(0);
   const styleUpdateCounter = useMemo(() => {
     const currentCount = activeActions.filter((a) => a.updates.style_json).length;
     if (currentCount > prevStyleActionCountRef.current) {
@@ -1173,7 +1197,7 @@ export default function MapLibreMap({
 
   // Use useQuery to fetch the style.json
   const { data: styleData } = useQuery({
-    queryKey: ['mapStyle', mapId, styleUpdateCounter],
+    queryKey: ['mapStyle', mapId, styleUpdateCounter, presignedRefreshTrigger],
     queryFn: async () => {
       const url = new URL(`/api/maps/${mapId}/style.json`, window.location.origin);
       url.searchParams.set('only_show_inline_sources', 'true');
