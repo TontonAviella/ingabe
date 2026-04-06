@@ -1053,13 +1053,9 @@ export default function MapLibreMap({
         } else {
           // Non-AJAXError path: MapLibre often emits plain Error for tile requests.
           const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
-          // Suppress satellite/underlay/basemap tile errors (cloud gaps, network timeouts,
+          // Suppress basemap tile errors (cloud gaps, network timeouts,
           // rate limiting from external tile providers like Esri, OSM, CARTO, etc.)
-          const basemapSources = new Set([
-            'sentinel2-live', 'ndvi-map', 'basemap-underlay',
-            'esri-satellite', 'esri-topo', 'openstreetmap', 'carto-dark', 'carto-voyager',
-          ]);
-          if (sourceId && basemapSources.has(sourceId)) return;
+          if (sourceId && BASEMAP_SOURCE_IDS.has(sourceId)) return;
           const msg = (e as any)?.error?.message as string | undefined;
           if (typeof msg === 'string') {
             const match = msg.match(/Bad response code:\s*(\d+)/);
