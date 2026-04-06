@@ -432,14 +432,10 @@ export default function ProjectView() {
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 
-      const token = await getJwt();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
       // Step 1: Get presigned URL and fork the map
-      const presignRes = await fetch(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
+      const presignRes = await fetchMaybeAuth(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
       });
       if (!presignRes.ok) {
         const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
@@ -485,9 +481,9 @@ export default function ProjectView() {
       // Step 3: Tell the server to process the uploaded file
       setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
 
-      const completeRes = await fetch(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
+      const completeRes = await fetchMaybeAuth(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           s3_key: presign.s3_key,
           layer_id: presign.layer_id,
