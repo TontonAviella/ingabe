@@ -145,6 +145,33 @@ class TestFetchMvtTile:
         assert exc_info.value.status_code == 504
         assert "timed out" in exc_info.value.detail
 
+    async def test_non_integer_id_returns_422(self, mock_conn):
+        """ST_AsMVT rejects non-integer id columns. PostgresError should map
+        to 422 with a user-actionable message, not bubble up as a 500."""
+        mock_conn.fetchval = AsyncMock(
+            side_effect=asyncpg.exceptions.InternalServerError(
+                "mvt_agg_transfn: Could not find column 'id' of integer type"
+            )
+        )
+        with pytest.raises(Exception) as exc_info:
+            await fetch_mvt_tile(_make_layer(), mock_conn, 10, 512, 512)
+        assert exc_info.value.status_code == 422
+        assert "cannot be rendered as vector tiles" in exc_info.value.detail
+        assert "integer type" in exc_info.value.detail
+
+    async def test_generic_postgres_error_returns_422(self, mock_conn):
+        """Any other PostgresError (e.g. undefined column) should also map
+        to 422 rather than crashing with a 500."""
+        mock_conn.fetchval = AsyncMock(
+            side_effect=asyncpg.exceptions.UndefinedColumnError(
+                'column "nonexistent" does not exist'
+            )
+        )
+        with pytest.raises(Exception) as exc_info:
+            await fetch_mvt_tile(_make_layer(), mock_conn, 10, 512, 512)
+        assert exc_info.value.status_code == 422
+        assert "cannot be rendered as vector tiles" in exc_info.value.detail
+
     async def test_successful_fetch_returns_bytes(self, mock_conn):
         """Happy path: valid query returns MVT bytes."""
         fake_mvt = b"\x1a\x00"  # minimal protobuf-like bytes

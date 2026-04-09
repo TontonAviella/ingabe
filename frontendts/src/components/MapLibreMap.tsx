@@ -1042,6 +1042,11 @@ export default function MapLibreMap({
             // This just means database is slow
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
             addError('PostGIS query took 60+ seconds, database might be overloaded', true, sourceId);
+          } else if (e.error.status == 422 && e.error.message.indexOf('.mvt') !== -1) {
+            // Layer query is structurally incompatible with vector tile rendering
+            // (e.g. non-integer id column, invalid geometry). Actionable by the user.
+            const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            addError("This layer's query is incompatible with the map renderer. Ask Sage to recreate it.", true, sourceId);
           } else if (e.error.status == 500 && e.error.message.indexOf('.mvt') !== -1) {
             // Potentially an error with the query
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;

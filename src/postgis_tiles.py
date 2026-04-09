@@ -252,3 +252,19 @@ async def fetch_mvt_tile(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=f"Tile query timed out for layer {layer.name}. Consider adding a spatial index or simplifying the query.",
         )
+    except asyncpg.PostgresError as e:
+        # Catch PostgreSQL-level failures (type mismatches, invalid geometry,
+        # missing columns, etc.) so a broken layer degrades to a clear 422
+        # instead of bubbling up as a generic 500 and a "contact support" toast.
+        # Common case: Sage's query aliased a non-integer column AS id, which
+        # ST_AsMVT rejects with "mvt_agg_transfn: Could not find column 'id' of integer type".
+        logger.error(
+            "MVT query failed for layer %s (%s): %s",
+            layer.layer_id,
+            layer.name,
+            e,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Layer '{layer.name}' cannot be rendered as vector tiles: {e}",
+        )
