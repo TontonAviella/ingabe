@@ -1519,14 +1519,76 @@ async def process_chat_interaction_task(
                                                     attr.name for attr in column_info
                                                 ]
 
-                                                # Make sure it returns a geometry column called geom and id
+                                                # Must return a geometry column called geom
                                                 if "geom" not in column_names:
                                                     raise ValueError(
                                                         "Query must return a column named 'geom'"
                                                     )
-                                                if "id" not in column_names:
-                                                    raise ValueError(
-                                                        "Query must return a column named 'id'"
+
+                                                # ST_AsMVT requires the feature id column to be an
+                                                # integer type (int2/int4/int8). If Sage's query has
+                                                # no id column, or aliases a text/uuid column AS id,
+                                                # the layer would be created successfully but tile
+                                                # rendering would fail at runtime with
+                                                # "mvt_agg_transfn: Could not find column 'id' of integer type".
+                                                # Detect that here and wrap with ROW_NUMBER() so it
+                                                # "just works", preserving the original column under
+                                                # id_original if a non-integer id existed.
+                                                _INT_OIDS = {21, 23, 20}  # int2, int4, int8
+                                                id_attr = next(
+                                                    (a for a in column_info if a.name == "id"),
+                                                    None,
+                                                )
+                                                _id_oid = (
+                                                    id_attr.type.oid if id_attr is not None else None
+                                                )
+                                                if id_attr is None or _id_oid not in _INT_OIDS:
+                                                    # Build an explicit column list. We MUST NOT use
+                                                    # `_inner.*` here: if the inner query already has
+                                                    # a column named `id` (the very thing we're trying
+                                                    # to override), `_inner.*` would expose it alongside
+                                                    # the new ROW_NUMBER `id`, producing two columns
+                                                    # with the same name. When postgis_tiles wraps the
+                                                    # stored query as `(query) t` and references `t.id`,
+                                                    # PostgreSQL errors with "column reference 'id' is
+                                                    # ambiguous". Enumerate columns instead, aliasing
+                                                    # any pre-existing `id` to `id_original`.
+                                                    import re as _id_re
+                                                    _SAFE_COL = _id_re.compile(
+                                                        r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$"
+                                                    )
+                                                    inner_cols: list[str] = []
+                                                    for _attr in column_info:
+                                                        if not _SAFE_COL.match(_attr.name):
+                                                            raise ValueError(
+                                                                f"Unsafe column name in PostGIS query: {_attr.name!r}"
+                                                            )
+                                                        if _attr.name == "id":
+                                                            inner_cols.append(
+                                                                '_inner."id" AS id_original'
+                                                            )
+                                                        else:
+                                                            inner_cols.append(
+                                                                f'_inner."{_attr.name}"'
+                                                            )
+                                                    _inner_cols_sql = ", ".join(inner_cols)
+                                                    query = (
+                                                        "SELECT ROW_NUMBER() OVER()::bigint AS id, "
+                                                        f"{_inner_cols_sql} "
+                                                        f"FROM ({query}) _inner"
+                                                    )
+                                                    # Re-prepare to refresh column_info after the wrap
+                                                    prepared = await pg.prepare(
+                                                        f"SELECT * FROM ({query}) AS sub LIMIT 1"
+                                                    )
+                                                    column_info = prepared.get_attributes()
+                                                    column_names = [
+                                                        attr.name for attr in column_info
+                                                    ]
+                                                    logger.info(
+                                                        "Auto-wrapped PostGIS layer query with ROW_NUMBER() id "
+                                                        "(original id_oid=%s)",
+                                                        _id_oid,
                                                     )
 
                                                 attribute_names = [
@@ -2475,40 +2537,36 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_field_health":
                             try:
-                                from src.services.sentinel_hub_service import get_sentinel_hub_service
+                                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
 
-                                sh_service = get_sentinel_hub_service()
-                                if sh_service is None:
-                                    tool_result = {"status": "error", "error": "Sentinel Hub not available"}
-                                else:
-                                    _fh_geom = tool_args.get("geometry")
-                                    # Auto-buffer Point/MultiPoint geometries (500m) so the LLM
-                                    # doesn't need to create a buffer first.
-                                    if _fh_geom and _fh_geom.get("type") in ("Point", "MultiPoint"):
-                                        from shapely.geometry import shape as _shape, mapping as _mapping
-                                        from pyproj import Transformer as _Transformer
-                                        _pt = _shape(_fh_geom)
-                                        _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
-                                        _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
-                                        from shapely.ops import transform as _stransform
-                                        _pt_utm = _stransform(_to_utm.transform, _pt)
-                                        _buf_utm = _pt_utm.buffer(500)  # 500m radius
-                                        _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
-                                        _fh_geom = _mapping(_buf_wgs)
-                                        logger.info("get_field_health: auto-buffered Point to 500m polygon")
+                                _fh_geom = tool_args.get("geometry")
+                                # Auto-buffer Point/MultiPoint geometries (500m) so the LLM
+                                # doesn't need to create a buffer first.
+                                if _fh_geom and _fh_geom.get("type") in ("Point", "MultiPoint"):
+                                    from shapely.geometry import shape as _shape, mapping as _mapping
+                                    from pyproj import Transformer as _Transformer
+                                    _pt = _shape(_fh_geom)
+                                    _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
+                                    _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
+                                    from shapely.ops import transform as _stransform
+                                    _pt_utm = _stransform(_to_utm.transform, _pt)
+                                    _buf_utm = _pt_utm.buffer(500)  # 500m radius
+                                    _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
+                                    _fh_geom = _mapping(_buf_wgs)
+                                    logger.info("get_field_health: auto-buffered Point to 500m polygon")
 
-                                    result_data = await asyncio.get_event_loop().run_in_executor(
-                                        None, lambda: sh_service.get_field_stats(
-                                            geometry=_fh_geom,
-                                            date_from=tool_args.get("date_from"),
-                                            date_to=tool_args.get("date_to"),
-                                            index=tool_args.get("index", "ndvi"),
-                                        )
+                                result_data = await asyncio.get_event_loop().run_in_executor(
+                                    None, lambda: _sa_get_field_stats(
+                                        geometry=_fh_geom,
+                                        date_from=tool_args.get("date_from"),
+                                        date_to=tool_args.get("date_to"),
+                                        index=tool_args.get("index", "ndvi"),
                                     )
-                                    if "error" in result_data:
-                                        tool_result = {"status": "error", "error": result_data["error"]}
-                                    else:
-                                        tool_result = {"status": "success", "field_stats": result_data}
+                                )
+                                if "error" in result_data:
+                                    tool_result = {"status": "error", "error": result_data["error"]}
+                                else:
+                                    tool_result = {"status": "success", "field_stats": result_data}
                             except Exception as e:
                                 logger.exception("get_field_health tool failed")
                                 tool_result = {"status": "error", "error": str(e)}
@@ -2607,17 +2665,13 @@ async def process_chat_interaction_task(
 
                         elif function_name == "identify_parcel_crop":
                             try:
-                                from src.services.sentinel_hub_service import get_sentinel_hub_service
+                                from src.services.satellite_analytics import get_field_timeseries as _sa_get_field_timeseries
                                 from src.services.ml_inference import get_ml_service
 
-                                sh_service = get_sentinel_hub_service()
-                                if sh_service is None:
-                                    tool_result = {"status": "error", "error": "Sentinel Hub not available"}
+                                _ic_geom = tool_args.get("geometry")
+                                if not _ic_geom:
+                                    tool_result = {"status": "error", "error": "geometry is required for crop identification"}
                                 else:
-                                    _ic_geom = tool_args.get("geometry")
-                                    if not _ic_geom:
-                                        tool_result = {"status": "error", "error": "geometry is required for crop identification"}
-                                        break
                                     _ic_months = tool_args.get("months", 6)
                                     if _ic_months < 3:
                                         _ic_months = 3
@@ -2636,9 +2690,9 @@ async def process_chat_interaction_task(
                                         _ic_geom = _mapping(_buf_wgs)
                                         logger.info("identify_parcel_crop: auto-buffered Point to 500m polygon")
 
-                                    # Step 1: Get NDVI time-series from Sentinel Hub
+                                    # Step 1: Get NDVI time-series (DE Africa primary, SH fallback)
                                     ts_result = await asyncio.get_event_loop().run_in_executor(
-                                        None, lambda: sh_service.get_field_timeseries(
+                                        None, lambda: _sa_get_field_timeseries(
                                             geometry=_ic_geom,
                                             months=_ic_months,
                                         )
@@ -2821,67 +2875,66 @@ async def process_chat_interaction_task(
                                 _realtime_stats: list = []
                                 if _need_realtime:
                                     try:
-                                        from src.services.sentinel_hub_service import get_sentinel_hub_service as _get_sh
+                                        from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
                                         import numpy as _np
 
-                                        _sh = _get_sh()
-                                        if _sh and _sh.is_configured():
-                                            # Get district geometries from PostGIS
-                                            _district_filter = tool_args.get("district")
-                                            _where_clause = "WHERE district = $1" if _district_filter else ""
-                                            _query_params = [_district_filter] if _district_filter else []
-                                            async with conn.transaction():
-                                                _dist_rows = await conn.fetch(
-                                                    f"SELECT district, ST_AsGeoJSON(geom) as geom "
-                                                    f"FROM rwanda_district_boundaries {_where_clause} "
-                                                    f"ORDER BY district",
-                                                    *_query_params,
+                                        # Get district geometries from PostGIS
+                                        _district_filter = tool_args.get("district")
+                                        _where_clause = "WHERE district = $1" if _district_filter else ""
+                                        _query_params = [_district_filter] if _district_filter else []
+                                        async with conn.transaction():
+                                            _dist_rows = await conn.fetch(
+                                                f"SELECT district, ST_AsGeoJSON(geom) as geom "
+                                                f"FROM rwanda_district_boundaries {_where_clause} "
+                                                f"ORDER BY district",
+                                                *_query_params,
+                                            )
+
+                                        _now = _datetime.utcnow()
+                                        _rt_from = (_now - _td(days=7)).strftime("%Y-%m-%d")
+                                        _rt_to = _now.strftime("%Y-%m-%d")
+                                        _rt_week = _rt_from
+
+                                        for _dr in _dist_rows:
+                                            try:
+                                                _geom = json.loads(_dr["geom"])
+                                                _stats = _sa_get_field_stats(
+                                                    geometry=_geom,
+                                                    date_from=_rt_from,
+                                                    date_to=_rt_to,
+                                                    index="ndvi",
                                                 )
-
-                                            _now = _datetime.utcnow()
-                                            _rt_from = (_now - _td(days=7)).strftime("%Y-%m-%d")
-                                            _rt_to = _now.strftime("%Y-%m-%d")
-                                            _rt_week = _rt_from
-
-                                            for _dr in _dist_rows:
-                                                try:
-                                                    _geom = json.loads(_dr["geom"])
-                                                    _stats = _sh.get_field_stats(
-                                                        geometry=_geom,
-                                                        date_from=_rt_from,
-                                                        date_to=_rt_to,
-                                                        index="ndvi",
-                                                    )
-                                                    if "error" in _stats:
-                                                        continue
-                                                    _intervals = _stats.get("intervals", [])
-                                                    if not _intervals:
-                                                        continue
-                                                    _means = [
-                                                        iv["ndvi"]["mean"]
-                                                        for iv in _intervals
-                                                        if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
-                                                    ]
-                                                    if not _means:
-                                                        continue
-                                                    _realtime_stats.append({
-                                                        "district": _dr["district"],
-                                                        "week_start": _rt_week,
-                                                        "mean_ndvi": round(float(_np.mean(_means)), 4),
-                                                        "std_ndvi": round(float(_np.std(_means)), 4),
-                                                        "min_ndvi": round(float(_np.min(_means)), 4),
-                                                        "max_ndvi": round(float(_np.max(_means)), 4),
-                                                        "valid_pixels": sum(
-                                                            iv["ndvi"].get("valid_pixels", 0)
-                                                            for iv in _intervals if "ndvi" in iv
-                                                        ),
-                                                        "source": "sentinel_hub_realtime",
-                                                    })
-                                                except Exception as _e:
-                                                    logger.debug("SH realtime failed for %s: %s", _dr["district"], _e)
-                                            _source = "sentinel_hub_realtime" if not _ndvi_stats else "cache + realtime"
+                                                if "error" in _stats:
+                                                    continue
+                                                _intervals = _stats.get("intervals", [])
+                                                if not _intervals:
+                                                    continue
+                                                _means = [
+                                                    iv["ndvi"]["mean"]
+                                                    for iv in _intervals
+                                                    if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
+                                                ]
+                                                if not _means:
+                                                    continue
+                                                _backend_tag = _stats.get("backend", "satellite")
+                                                _realtime_stats.append({
+                                                    "district": _dr["district"],
+                                                    "week_start": _rt_week,
+                                                    "mean_ndvi": round(float(_np.mean(_means)), 4),
+                                                    "std_ndvi": round(float(_np.std(_means)), 4),
+                                                    "min_ndvi": round(float(_np.min(_means)), 4),
+                                                    "max_ndvi": round(float(_np.max(_means)), 4),
+                                                    "valid_pixels": sum(
+                                                        iv["ndvi"].get("valid_pixels", 0)
+                                                        for iv in _intervals if "ndvi" in iv
+                                                    ),
+                                                    "source": f"{_backend_tag}_realtime",
+                                                })
+                                            except Exception as _e:
+                                                logger.debug("Satellite realtime failed for %s: %s", _dr["district"], _e)
+                                        _source = "satellite_realtime" if not _ndvi_stats else "cache + realtime"
                                     except Exception as _sh_err:
-                                        logger.warning("Sentinel Hub real-time NDVI failed: %s", _sh_err)
+                                        logger.warning("Satellite real-time NDVI failed: %s", _sh_err)
 
                                 # ── 3. Merge cached + real-time ──
                                 _all_stats = _ndvi_stats + _realtime_stats
