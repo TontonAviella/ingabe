@@ -79,7 +79,13 @@ def _bbox_from_geojson(geom: Dict[str, Any]) -> Tuple[float, float, float, float
 
 
 def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
-    """Compute a vegetation index from a dict of band arrays (float32)."""
+    """Compute a vegetation index from a dict of band arrays (float32).
+
+    S2 L2A COGs store BOA reflectance * 10000 (DN).  Ratio-based indices
+    (NDVI, NDWI, NDRE, NDBI, BSI) don't need rescaling because the scale
+    factor cancels.  EVI and SAVI contain absolute constants (L=0.5,
+    +1.0) that assume 0-1 reflectance, so we rescale for those.
+    """
     eps = 1e-6
     if index == "ndvi":
         nir, red = bands["B08"], bands["B04"]
@@ -92,7 +98,7 @@ def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
         return (nir - re5) / (nir + re5 + eps)
     if index == "savi":
         L = 0.5
-        nir, red = bands["B08"], bands["B04"]
+        nir, red = bands["B08"] / 10000.0, bands["B04"] / 10000.0
         return ((nir - red) / (nir + red + L + eps)) * (1.0 + L)
     if index == "bsi":
         b02, b03, b04, b08 = bands["B02"], bands["B03"], bands["B04"], bands["B08"]
@@ -100,7 +106,7 @@ def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
         den = (b04 + b02) + (b08 + b03) + eps
         return num / den
     if index == "evi":
-        nir, red, blue = bands["B08"], bands["B04"], bands["B02"]
+        nir, red, blue = bands["B08"] / 10000.0, bands["B04"] / 10000.0, bands["B02"] / 10000.0
         return 2.5 * (nir - red) / (nir + 6.0 * red - 7.5 * blue + 1.0 + eps)
     if index == "ndbi":
         swir, nir = bands["B11"], bands["B08"]
@@ -304,6 +310,128 @@ class DEAfricaSTACService:
             "scenes_found": len(items),
             "scenes_used": len(intervals),
             "intervals": intervals,
+        }
+
+    def get_agri_stats(
+        self,
+        geometry: Dict[str, Any],
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        collection: Optional[str] = None,
+        max_cloud: float = 80.0,
+    ) -> Dict[str, Any]:
+        """Compute ALL agricultural indices for a GeoJSON polygon.
+
+        Reads each Sentinel-2 scene once, loading all needed bands, then
+        computes ndvi, evi, ndwi, savi, ndre, ndbi with SCL cloud masking.
+        Output shape matches SentinelHubService.get_agri_stats so callers
+        can swap implementations.
+        """
+        now = datetime.utcnow()
+        if date_to is None:
+            date_to = now.strftime("%Y-%m-%d")
+        if date_from is None:
+            date_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        try:
+            bbox = _bbox_from_geojson(geometry)
+        except Exception as e:
+            return {"error": f"Invalid geometry: {e}"}
+
+        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        if not items:
+            return {
+                "source": "deafrica_stac",
+                "collection": "s2_l2a",
+                "indices": list(_INDEX_BANDS.keys()),
+                "date_from": date_from,
+                "date_to": date_to,
+                "intervals": [],
+                "interval_count": 0,
+                "note": "No Sentinel-2 scenes matched bbox/date/cloud filter",
+            }
+
+        # Collect all unique bands needed across all indices
+        all_bands = set()
+        for bands in _INDEX_BANDS.values():
+            all_bands.update(bands)
+        all_bands.add("SCL")
+
+        intervals: List[Dict[str, Any]] = []
+
+        for item in items:
+            assets = item.get("assets", {})
+            if not all(b in assets for b in all_bands):
+                continue
+
+            # Read all bands for this scene
+            band_arrays: Dict[str, np.ndarray] = {}
+            max_shape: Optional[Tuple[int, int]] = None
+            failed = False
+            for b in all_bands:
+                if b == "SCL":
+                    continue
+                res = _read_window(assets[b]["href"], bbox)
+                if res is None:
+                    failed = True
+                    break
+                arr, _ = res
+                band_arrays[b] = arr.astype("float32")
+                if max_shape is None or (arr.shape[0] * arr.shape[1]) > (max_shape[0] * max_shape[1]):
+                    max_shape = arr.shape
+            if failed or max_shape is None:
+                continue
+
+            # Resample any 20m bands (B05, B11) to match 10m shape
+            for b, arr in band_arrays.items():
+                if arr.shape != max_shape:
+                    yf = max_shape[0] / arr.shape[0]
+                    xf = max_shape[1] / arr.shape[1]
+                    yy = (np.arange(max_shape[0]) / yf).astype(int).clip(0, arr.shape[0] - 1)
+                    xx = (np.arange(max_shape[1]) / xf).astype(int).clip(0, arr.shape[1] - 1)
+                    band_arrays[b] = arr[yy[:, None], xx[None, :]]
+
+            scl_res = _read_window(assets["SCL"]["href"], bbox)
+            if scl_res is None:
+                continue
+            scl, _ = scl_res
+            if scl.shape != max_shape:
+                yf = max_shape[0] / scl.shape[0]
+                xf = max_shape[1] / scl.shape[1]
+                yy = (np.arange(max_shape[0]) / yf).astype(int).clip(0, scl.shape[0] - 1)
+                xx = (np.arange(max_shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
+                scl = scl[yy[:, None], xx[None, :]]
+
+            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
+
+            dt = item["properties"].get("datetime", "")
+            parsed: Dict[str, Any] = {
+                "date_from": dt,
+                "date_to": dt,
+                "cloud_cover_scene": item["properties"].get("eo:cloud_cover"),
+            }
+
+            # Compute all indices from the already-loaded bands
+            for idx_name in _INDEX_BANDS:
+                try:
+                    idx_arr = _compute_index(band_arrays, idx_name)
+                    parsed[idx_name] = _stats_from_array(idx_arr, valid)
+                except Exception:
+                    parsed[idx_name] = {
+                        "mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0,
+                        "valid_pixels": 0, "no_data_pixels": 0,
+                    }
+
+            intervals.append(parsed)
+
+        return {
+            "source": "deafrica_stac",
+            "collection": "s2_l2a",
+            "indices": list(_INDEX_BANDS.keys()),
+            "date_from": date_from,
+            "date_to": date_to,
+            "intervals": intervals,
+            "interval_count": len(intervals),
         }
 
     def get_field_timeseries(

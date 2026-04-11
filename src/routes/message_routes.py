@@ -1012,6 +1012,8 @@ async def process_chat_interaction_task(
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
 
+    _lock_key = f"chat_lock:{conversation.id}"
+
     async def add_chat_completion_message(
         message: Union[ChatCompletionMessage, ChatCompletionMessageParam],
     ):
@@ -3245,14 +3247,12 @@ async def process_chat_interaction_task(
                             )
 
                         elif function_name == "get_agri_indices":
-                            # Cache-first multi-index query: PostgreSQL cache → Sentinel Hub on miss
+                            # Cache-first multi-index query: PostgreSQL cache → DE Africa → Sentinel Hub on miss
                             try:
-                                from src.services.sentinel_hub_service import (
-                                    get_sentinel_hub_service as _get_sh,
-                                    AGRI_INDEX_NAMES as _AGRI_INDICES,
-                                )
+                                from src.services.satellite_analytics import get_agri_stats as _get_agri_stats
+                                _AGRI_INDICES = ["ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
                                 import numpy as _np
-                                from datetime import datetime as _datetime, timedelta as _td
+                                from datetime import date as _date, datetime as _datetime, timedelta as _td
 
                                 _CACHE_TTL_DAYS = 7  # Sentinel-2 revisit ~5 days
 
@@ -3310,7 +3310,7 @@ async def process_chat_interaction_task(
                                 else:
                                     # ---- Step 1: Check PostgreSQL cache ----
                                     _admin_names = [r["name"] for r in _admin_rows]
-                                    _cutoff = (_datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)).strftime("%Y-%m-%d")
+                                    _cutoff = _datetime.utcnow() - _td(days=_CACHE_TTL_DAYS)
 
                                     # Query cache for fresh rows
                                     _cached_rows = await conn.fetch(
@@ -3357,21 +3357,17 @@ async def process_chat_interaction_task(
                                         _cache_hits, len(_miss_rows), _level,
                                     )
 
-                                    # ---- Step 3: Query Sentinel Hub for misses ----
+                                    # ---- Step 3: Query DE Africa (free) → Sentinel Hub fallback for misses ----
                                     _results: list = list(_cached_by_name.values())
                                     _errors: list = []
 
                                     if _miss_rows:
-                                        _sh = _get_sh()
-                                        if not _sh or not _sh.is_configured():
-                                            _errors.append("Sentinel Hub not configured — returning cached data only")
-                                        else:
-                                            for _ar in _miss_rows:
+                                        for _ar in _miss_rows:
                                                 _geom = json.loads(_ar["geom"])
                                                 _name = _ar["name"]
                                                 _parent = _ar.get("parent")
                                                 try:
-                                                    _stats = _sh.get_agri_stats(
+                                                    _stats = _get_agri_stats(
                                                         geometry=_geom,
                                                         date_from=_date_from,
                                                         date_to=_date_to,
@@ -3410,11 +3406,13 @@ async def process_chat_interaction_task(
                                                         if "ndvi" in iv:
                                                             _total_px += iv["ndvi"].get("valid_pixels", 0)
                                                     _row["valid_pixels"] = _total_px
-                                                    _row["source"] = "sentinel_hub_realtime"
+                                                    _row["source"] = _stats.get("backend", "satellite_realtime")
                                                     _results.append(_row)
 
                                                     # ---- Step 4: Write back to PostgreSQL cache ----
                                                     try:
+                                                        # asyncpg requires date objects, not strings
+                                                        _week_start_date = _date.fromisoformat(_date_from) if isinstance(_date_from, str) else _date_from
                                                         await conn.execute(
                                                             "INSERT INTO agri_indices_cache "
                                                             "(admin_level, admin_name, parent_name, week_start, "
@@ -3425,7 +3423,7 @@ async def process_chat_interaction_task(
                                                             _level,
                                                             _name,
                                                             _parent,
-                                                            _date_from,
+                                                            _week_start_date,
                                                             _row.get("ndvi_mean"), _row.get("ndvi_std"),
                                                             _row.get("evi_mean"), _row.get("evi_std"),
                                                             _row.get("ndwi_mean"), _row.get("ndwi_std"),
@@ -3444,7 +3442,7 @@ async def process_chat_interaction_task(
                                     _results.sort(key=lambda r: r.get("name", ""))
 
                                     _source_desc = "cache" if not _miss_rows else (
-                                        "sentinel_hub_realtime" if _cache_hits == 0
+                                        "satellite_realtime" if _cache_hits == 0
                                         else f"mixed ({_cache_hits} cached, {len(_miss_rows)} realtime)"
                                     )
 
@@ -5395,9 +5393,9 @@ async def process_chat_interaction_task(
         # if conversation.title == "title pending":
         #     await label_conversation_inline(conversation.id)
 
-    # Unlock the map when processing is complete
+    # Unlock the conversation when processing is complete
     try:
-        redis.delete(f"chat_lock:{conversation.id}")
+        redis.delete(_lock_key)
     except Exception:
         logger.debug("Redis unavailable for chat lock cleanup")
 

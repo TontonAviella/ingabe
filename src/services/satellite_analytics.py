@@ -100,6 +100,49 @@ def get_field_stats(
         return {"error": f"All satellite backends failed: {e}", "backend": "none"}
 
 
+def get_agri_stats(
+    geometry: Dict[str, Any],
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    collection: Optional[str] = None,
+) -> Dict[str, Any]:
+    """All agri indices (ndvi, evi, ndwi, savi, ndre, ndbi). DE Africa primary, SH fallback."""
+    try:
+        from src.services.deafrica_stac import get_deafrica_service
+        de_result = get_deafrica_service().get_agri_stats(
+            geometry=geometry,
+            date_from=date_from,
+            date_to=date_to,
+            collection=collection,
+        )
+        if _has_useful_intervals(de_result):
+            de_result["backend"] = "deafrica"
+            return de_result
+        logger.info("DE Africa agri_stats returned no usable scenes — falling back to Sentinel Hub")
+    except Exception as e:
+        logger.warning("DE Africa agri_stats failed: %s — falling back to Sentinel Hub", e)
+
+    try:
+        from src.services.sentinel_hub_service import get_sentinel_hub_service
+        sh = get_sentinel_hub_service()
+        if sh is None or not sh.is_configured():
+            return {
+                "error": "Both DE Africa and Sentinel Hub are unavailable",
+                "backend": "none",
+            }
+        sh_result = sh.get_agri_stats(
+            geometry=geometry,
+            date_from=date_from,
+            date_to=date_to,
+            collection=collection,
+        )
+        sh_result["backend"] = "sentinel_hub"
+        return sh_result
+    except Exception as e:
+        logger.exception("Sentinel Hub agri_stats fallback also failed")
+        return {"error": f"All satellite backends failed: {e}", "backend": "none"}
+
+
 def get_field_timeseries(
     geometry: Dict[str, Any],
     months: Optional[int] = None,
