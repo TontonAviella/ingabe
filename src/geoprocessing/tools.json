@@ -939,6 +939,10 @@
           "district": {
             "type": "string",
             "description": "Specific district to check accuracy for (optional — defaults to all districts)"
+          },
+          "lookback_days": {
+            "type": "integer",
+            "description": "Number of days to look back for accuracy comparison. Default: 30"
           }
         },
         "required": []
@@ -1201,6 +1205,67 @@
             "type": "string",
             "enum": ["current", "projected"],
             "description": "current = latest observed situation, projected = near-term outlook. Default: current"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "detect_dry_spells",
+      "description": "Detect historical dry spells from observed weather data (AgERA5). Scans for consecutive days where precipitation was below a threshold. Use when the user asks about dry spells, drought events, consecutive dry days, rainfall gaps, or historical drought periods for Rwanda districts.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "District name to filter (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 180 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          },
+          "threshold_mm": {
+            "type": "number",
+            "description": "Daily precipitation threshold in mm — days below this count as dry. Default: 2.0"
+          },
+          "min_duration_days": {
+            "type": "integer",
+            "description": "Minimum consecutive dry days to qualify as a dry spell. Default: 10"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_insurance_accuracy",
+      "description": "Compute weather data accuracy for agricultural insurance underwriting. Returns binary rainfall detection metrics (POD, FAR, HSS, CSI), dry spell detection results, NDVI-weather concordance, and an overall confidence rating (0-100). Use when the user asks about insurance accuracy, weather data reliability, rainfall detection quality, underwriting confidence, or whether weather data is good enough for crop insurance.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "District name (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+          },
+          "season": {
+            "type": "string",
+            "enum": ["A", "B"],
+            "description": "Rwanda growing season: A (Sep-Jan) or B (Feb-Jun). Optional — defaults to last 90 days"
+          },
+          "threshold_mm": {
+            "type": "number",
+            "description": "Rainfall threshold in mm for binary rain/no-rain classification. Default: 5.0"
           }
         },
         "required": []

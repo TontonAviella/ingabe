@@ -4729,13 +4729,17 @@ async def process_chat_interaction_task(
                                         "FROM rwanda_district_boundaries ORDER BY district"
                                     )
 
-                                # Get observed weather from AgERA5 cache (last 5 days)
+                                # Get observed weather from AgERA5 cache (configurable lookback)
+                                from datetime import date as _date, timedelta as _td
+                                _lookback = int(tool_args.get("lookback_days", 30))
+                                _cutoff = _date.today() - _td(days=_lookback)
                                 _obs_rows = await conn.fetch(
                                     "SELECT district, observation_date, temperature_mean, "
                                     "temperature_max, temperature_min, precipitation "
                                     "FROM weather_daily_cache "
-                                    "WHERE observation_date >= CURRENT_DATE - INTERVAL '5 days' "
-                                    "ORDER BY observation_date DESC, district"
+                                    "WHERE observation_date >= $1 "
+                                    "ORDER BY observation_date DESC, district",
+                                    _cutoff,
                                 )
 
                                 # Build observed lookup: {(district, date) -> row}
@@ -4822,6 +4826,50 @@ async def process_chat_interaction_task(
                                 }
                             except Exception as e:
                                 logger.exception("get_forecast_accuracy tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "detect_dry_spells":
+                            try:
+                                from src.services.weather_accuracy import detect_dry_spells as _detect_ds
+                                tool_result = await _detect_ds(
+                                    conn,
+                                    district=tool_args.get("district"),
+                                    date_from=tool_args.get("date_from"),
+                                    date_to=tool_args.get("date_to"),
+                                    threshold_mm=float(tool_args.get("threshold_mm", 2.0)),
+                                    min_duration_days=int(tool_args.get("min_duration_days", 10)),
+                                )
+                            except Exception as e:
+                                logger.exception("detect_dry_spells tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_insurance_accuracy":
+                            try:
+                                from src.services.weather_accuracy import compute_insurance_accuracy as _compute_ins
+                                tool_result = await _compute_ins(
+                                    conn,
+                                    district=tool_args.get("district"),
+                                    season=tool_args.get("season"),
+                                    threshold_mm=float(tool_args.get("threshold_mm", 5.0)),
+                                )
+                            except Exception as e:
+                                logger.exception("get_insurance_accuracy tool failed")
                                 tool_result = {"status": "error", "error": str(e)}
 
                             await add_chat_completion_message(

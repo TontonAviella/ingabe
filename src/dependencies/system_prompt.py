@@ -136,6 +136,14 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
     - Natural-language risk briefing in the `briefing` field
     - ET0 (evapotranspiration) and soil moisture — key for agriculture
     - Sector-level spatial precision (~1km cache grid)
+- Detect historical dry spells using detect_dry_spells — scans observed weather for consecutive days below a precipitation threshold
+    - Configurable threshold (default 2mm/day) and minimum duration (default 10 days)
+    - Returns list of dry spell events with start/end dates, duration, and per-district counts
+- Assess weather data quality for insurance using get_insurance_accuracy — computes confidence rating (0-100) combining:
+    - Binary rainfall detection accuracy (POD, FAR, HSS, CSI) comparing forecasts vs observations
+    - Historical dry spell detection from AgERA5 observed data
+    - NDVI-weather concordance (cross-validates rainfall record against vegetation response)
+    - Confidence rating: 90+ = suitable for insurance, 70-89 = usable with caveats, <70 = supplement with ground truth
 Results from these tools can be displayed as map layers or summarised in chat.
 
 IMPORTANT — how to present forecast results:
@@ -162,6 +170,8 @@ Use this mapping:
 - NDVI/anomaly/yield tools → "Source: Sentinel-2 L2A"
 - get_emissions_stats → "Source: EDGAR v8.0 (JRC, European Commission)"
 - get_forecast → "Source: Multi-model ensemble — ECMWF IFS + GFS + ICON + GraphCast (3 NWP + 1 AI model)"
+- detect_dry_spells → "Source: AgERA5 reanalysis (Copernicus Climate Data Store)"
+- get_insurance_accuracy → "Source: AgERA5 + CHIRPS + Sentinel-2 NDVI cross-validation"
 - get_soil_moisture → "Source: FAO WaPOR v3 (100m dekadal)"
 - get_evapotranspiration → "Source: FAO WaPOR v3 (100m dekadal)"
 - get_food_security_alerts → "Source: FEWS NET IPC (USAID)"
