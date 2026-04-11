@@ -309,7 +309,20 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
         if token:
             try:
                 claims = _decode_clerk_jwt(token)
-            except jwt.InvalidTokenError:
+            except jwt.ExpiredSignatureError as e:
+                logger.warning("WS JWT expired: %s (token_prefix=%s)", e, token[:20])
+                raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+            except jwt.InvalidTokenError as e:
+                logger.warning(
+                    "WS JWT decode failed: %s: %s (token_prefix=%s)",
+                    type(e).__name__, e, token[:20],
+                )
+                raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+            except Exception as e:
+                logger.warning(
+                    "WS JWT unexpected error: %s: %s (token_prefix=%s)",
+                    type(e).__name__, e, token[:20],
+                )
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
 
             clerk_id = claims.get("sub")
@@ -320,6 +333,9 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
             internal_uuid = await _get_or_create_user(clerk_id, email)
             return ClerkUserContext(internal_uuid, clerk_id, email)
         # No token supplied — block by default to prevent cross-tenant leak.
+        logger.warning(
+            "WS: Clerk enabled but NO ?token= query param in WebSocket URL (client not sending JWT)"
+        )
         if not os.environ.get("CLERK_ALLOW_LEGACY_FALLBACK", "").lower() == "true":
             raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
         logger.warning(

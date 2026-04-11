@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useWebSocket from 'react-use-websocket';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, useIsReady } from '@mundi/ee';
+import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, isAuthConfigured, useIsReady, useIsSignedOut } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
@@ -40,6 +40,7 @@ export default function ProjectView() {
 
   // Gate all queries on Clerk auth readiness to prevent premature 401s
   const isReady = useIsReady();
+  const isSignedOut = useIsSignedOut();
 
   // State for controlling sources (PostGIS connections) refetch interval
   const [sourcesRefetchInterval, setSourcesRefetchInterval] = useState<number | false>(false);
@@ -233,9 +234,15 @@ export default function ProjectView() {
 
     const baseUrl = `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
 
-    if (!hadClerkAuth.current) {
-      // Legacy/no-auth mode: connect without token
+    if (!isAuthConfigured()) {
+      // No Clerk key at all: legacy/no-auth mode, connect without token
       return baseUrl;
+    }
+
+    if (!hadClerkAuth.current) {
+      // Clerk is configured but session is expired/absent on page load.
+      // Don't connect without auth, it'll just get 403.
+      return null;
     }
 
     // Return an async function so react-use-websocket fetches a fresh JWT
@@ -292,17 +299,22 @@ export default function ProjectView() {
     wsUrl,
     {
       onError: () => {
-        // The async URL factory throws when the session dies, so errors
-        // during URL resolution surface here. getCachedToken() is a
-        // synchronous check — if TokenManager has no token, session is dead.
-        if (hadClerkAuth.current && !getCachedToken()) {
-          toast.error('Session expired. Please refresh the page to reconnect.');
+        // Check if auth is configured but we have no token. This catches both:
+        // 1. Session expired mid-use (hadClerkAuth was true, token gone)
+        // 2. Session already expired on page load (hadClerkAuth never became true)
+        if (isAuthConfigured() && !getCachedToken()) {
+          toast.error('Session expired. Please sign in again.', {
+            action: { label: 'Sign in', onClick: () => window.location.reload() },
+            duration: 10_000,
+          });
         } else {
           toast.error('Chat connection error.');
         }
       },
       shouldReconnect: () => {
-        if (hadClerkAuth.current && !getCachedToken()) return false;
+        // Don't retry if auth is configured but there's no token. Retrying
+        // without auth just hammers the server with 403s.
+        if (isAuthConfigured() && !getCachedToken()) return false;
         return true;
       },
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
@@ -590,6 +602,28 @@ export default function ProjectView() {
   const toggleLayerVisibility = (layerId: string) => {
     setHiddenLayerIDs((prev) => (prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]));
   };
+
+  // If Clerk has loaded and the user is definitively not signed in (session
+  // expired or never signed in), show a sign-in prompt instead of an infinite spinner.
+  if (isSignedOut) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-background">
+        <div className="text-center max-w-md px-6">
+          <h1 className="text-2xl font-bold mb-3">Sign in to continue</h1>
+          <p className="text-muted-foreground mb-4">
+            Your session has expired or you need to sign in to view this project.
+          </p>
+          <button
+            type="button"
+            className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={() => { window.location.href = '/'; }}
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!project || !versionId) {
     return (

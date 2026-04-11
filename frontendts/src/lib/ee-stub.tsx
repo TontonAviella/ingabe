@@ -251,6 +251,14 @@ export function getCachedToken(): string | null {
   return tokenManager.cachedToken;
 }
 
+/**
+ * Returns true if Clerk auth is configured (publishable key is set).
+ * Use this to distinguish "no auth mode" from "auth configured but session expired".
+ */
+export function isAuthConfigured(): boolean {
+  return Boolean(CLERK_PUBLISHABLE_KEY);
+}
+
 // ── useIsReady ──────────────────────────────────────────────────────────
 // Returns true once Clerk has loaded and the user is signed in.
 // Use this to gate React Query `enabled` so fetches don't fire before auth.
@@ -261,6 +269,18 @@ export function useIsReady(): boolean {
   // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
   const { isLoaded, isSignedIn } = useAuth();
   return isLoaded && (isSignedIn ?? false);
+}
+
+// ── useIsSignedOut ─────────────────────────────────────────────────────
+// Returns true when Clerk has loaded and the user is definitively NOT signed in.
+// Useful for showing "sign in" prompts on OptionalAuth pages.
+export function useIsSignedOut(): boolean {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return false; // no auth — never "signed out"
+  }
+  // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
+  const { isLoaded, isSignedIn } = useAuth();
+  return isLoaded && !isSignedIn;
 }
 
 // ── apiFetch ────────────────────────────────────────────────────────────
