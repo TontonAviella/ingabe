@@ -628,7 +628,13 @@ export default function MapLibreMap({
 
       setSelectedFeature((prev: MapGeoJSONFeature | null) => {
         if (prev) {
-          newMap.setFeatureState({ source: prev.source, sourceLayer: prev.sourceLayer, id: prev.id }, { selected: false });
+          // Source may have been removed (e.g. layer deleted → child map navigation).
+          // Guard so a stale prev doesn't block selecting the new feature.
+          try {
+            newMap.setFeatureState({ source: prev.source, sourceLayer: prev.sourceLayer, id: prev.id }, { selected: false });
+          } catch (_) {
+            // source gone — nothing to deselect
+          }
         }
 
         if (feat) {
@@ -985,6 +991,8 @@ export default function MapLibreMap({
           // instead of showing a confusing "Token expired" error to the user.
           if (e.error.status === 401) {
             (async () => {
+              // No skipCache: TokenManager deduplicates concurrent 401 refresh calls.
+              // 20 tiles failing at once → 1 Clerk token request, not 20.
               const freshToken = await getJwt();
               if (freshToken) {
                 // Token refreshed successfully, reload map sources to retry tiles
@@ -1034,6 +1042,11 @@ export default function MapLibreMap({
             // This just means database is slow
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
             addError('PostGIS query took 60+ seconds, database might be overloaded', true, sourceId);
+          } else if (e.error.status == 422 && e.error.message.indexOf('.mvt') !== -1) {
+            // Layer query is structurally incompatible with vector tile rendering
+            // (e.g. non-integer id column, invalid geometry). Actionable by the user.
+            const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            addError("This layer's query is incompatible with the map renderer. Ask Sage to recreate it.", true, sourceId);
           } else if (e.error.status == 500 && e.error.message.indexOf('.mvt') !== -1) {
             // Potentially an error with the query
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
@@ -1045,14 +1058,32 @@ export default function MapLibreMap({
         } else {
           // Non-AJAXError path: MapLibre often emits plain Error for tile requests.
           const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
-          // Suppress satellite/underlay tile errors (cloud gaps, network timeouts, etc.)
-          if (sourceId === 'sentinel2-live' || sourceId === 'ndvi-map' || sourceId === 'basemap-underlay') return;
+          // Suppress basemap tile errors (cloud gaps, network timeouts,
+          // rate limiting from external tile providers like Esri, OSM, CARTO, etc.)
+          if (sourceId && BASEMAP_SOURCE_IDS.has(sourceId)) return;
           const msg = (e as any)?.error?.message as string | undefined;
           if (typeof msg === 'string') {
             const match = msg.match(/Bad response code:\s*(\d+)/);
             const code = match ? parseInt(match[1], 10) : null;
             if (code === 423) {
               addError('Vector tiles are still generating. Please refresh in a moment. This will take 2-3 minutes.', true, sourceId);
+              return;
+            }
+            if (code === 403) {
+              // 403 from tile requests = expired presigned S3 URL (PMTiles) or
+              // external provider rate limiting. Trigger a style refresh to get
+              // fresh presigned URLs, debounced to once per 30 seconds.
+              console.warn('Tile source returned 403 (presigned URL may have expired)', sourceId);
+              if (styleUpdateCounterRef.current !== undefined) {
+                const now = Date.now();
+                if (!lastPresignedRefreshRef.current || now - lastPresignedRefreshRef.current > 30_000) {
+                  lastPresignedRefreshRef.current = now;
+                  styleUpdateCounterRef.current += 1;
+                  // Force TanStack Query to refetch by updating the counter
+                  setPresignedRefreshTrigger((prev) => prev + 1);
+                  console.info('Triggering style.json refetch for fresh presigned URLs');
+                }
+              }
               return;
             }
             if (code === 502) {
@@ -1147,13 +1178,27 @@ export default function MapLibreMap({
     };
   }, [mapRef, mapId, mapInstanceId]);
 
+  // Monotonically increasing counter that triggers style.json refetch.
+  // Previously this counted activeActions with style_json, but since completed
+  // actions are removed from the array, the counter would oscillate (N→N+1→N→N+1)
+  // causing TanStack Query to serve stale cached results on the second refetch.
+  const styleUpdateCounterRef = useRef(0);
+  const prevStyleActionCountRef = useRef(0);
+  const lastPresignedRefreshRef = useRef<number | null>(null);
+  const [presignedRefreshTrigger, setPresignedRefreshTrigger] = useState(0);
   const styleUpdateCounter = useMemo(() => {
-    return activeActions.filter((a) => a.updates.style_json).length;
+    const currentCount = activeActions.filter((a) => a.updates.style_json).length;
+    if (currentCount > prevStyleActionCountRef.current) {
+      // New style action arrived — bump the monotonic counter
+      styleUpdateCounterRef.current += 1;
+    }
+    prevStyleActionCountRef.current = currentCount;
+    return styleUpdateCounterRef.current;
   }, [activeActions]);
 
   // Use useQuery to fetch the style.json
   const { data: styleData } = useQuery({
-    queryKey: ['mapStyle', mapId, styleUpdateCounter],
+    queryKey: ['mapStyle', mapId, styleUpdateCounter, presignedRefreshTrigger],
     queryFn: async () => {
       const url = new URL(`/api/maps/${mapId}/style.json`, window.location.origin);
       url.searchParams.set('only_show_inline_sources', 'true');

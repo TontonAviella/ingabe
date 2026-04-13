@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useWebSocket from 'react-use-websocket';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { apiFetch, fetchMaybeAuth, getJwt, useIsReady } from '@mundi/ee';
+import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, isAuthConfigured, useIsReady, useIsSignedOut } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
@@ -40,6 +40,7 @@ export default function ProjectView() {
 
   // Gate all queries on Clerk auth readiness to prevent premature 401s
   const isReady = useIsReady();
+  const isSignedOut = useIsSignedOut();
 
   // State for controlling sources (PostGIS connections) refetch interval
   const [sourcesRefetchInterval, setSourcesRefetchInterval] = useState<number | false>(false);
@@ -205,66 +206,59 @@ export default function ProjectView() {
 
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // undefined = JWT not yet resolved (block connection), null = resolved/legacy (no token), string = Clerk JWT
-  const [jwt, setJwt] = useState<string | null | undefined>(undefined);
-
-  const wsUrl = useMemo(() => {
-    if (!conversationId) return null;
-    // Block connection until getJwt() resolves — prevents spurious 1008 errors
-    // when Clerk is enabled and the token hasn't arrived yet.
-    if (jwt === undefined) return null;
-    if (!jwt) {
-      if (hadClerkAuth.current) {
-        // Clerk was active but token is now null = session died.
-        // Block WebSocket to prevent infinite 1008 reconnect loop.
-        return null;
-      }
-      // Legacy/no-auth mode: connect without token
-      return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
-    }
-    return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates?token=${jwt}`;
-  }, [conversationId, wsProtocol, jwt]);
 
   // Track whether Clerk auth was ever active (to distinguish "no auth" from "auth died")
   const hadClerkAuth = useRef(false);
+  // Track whether initial JWT resolution is complete (blocks WS until resolved)
+  const [authResolved, setAuthResolved] = useState(false);
 
-  // If EE is present, fetch a JWT for authenticated websockets
-  // Clerk dev tokens expire after 60s; refresh every 45s to stay ahead.
+  // Resolve auth mode once on mount so we know whether to connect
   useEffect(() => {
     let mounted = true;
-
-    const refreshJwt = () => {
-      getJwt().then((token: string | undefined) => {
-        if (!mounted) return;
-        if (token) hadClerkAuth.current = true;
-        // Always call setJwt after resolution: token string for Clerk, null for legacy/no-auth.
-        // This transitions jwt from undefined (loading) so wsUrl unblocks.
-        setJwt(token ?? null);
-      });
-    };
-
-    // Initial fetch
-    refreshJwt();
-
-    // Refresh every 45 seconds to stay ahead of Clerk's 60-second token expiry
-    const refreshInterval = window.setInterval(refreshJwt, 45_000);
-
-    // When the tab becomes visible again, refresh the JWT immediately.
-    // Browser throttles setInterval in background tabs (to ~1/min or slower),
-    // so the cached token is likely expired when the user switches back.
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        refreshJwt();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-
+    getJwt().then((token: string | undefined) => {
+      if (!mounted) return;
+      if (token) hadClerkAuth.current = true;
+      setAuthResolved(true);
+    });
     return () => {
       mounted = false;
-      clearInterval(refreshInterval);
-      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
+
+  // Async URL factory: fetches a fresh JWT on every connect/reconnect.
+  // react-use-websocket calls this function each time it opens a new connection,
+  // so the token is always fresh (Clerk JWTs expire in 60s).
+  const wsUrl = useMemo(() => {
+    if (!conversationId) return null;
+    if (!authResolved) return null; // block until initial auth check completes
+
+    const baseUrl = `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
+
+    if (!isAuthConfigured()) {
+      // No Clerk key at all: legacy/no-auth mode, connect without token
+      return baseUrl;
+    }
+
+    if (!hadClerkAuth.current) {
+      // Clerk is configured but session is expired/absent on page load.
+      // Don't connect without auth, it'll just get 403.
+      return null;
+    }
+
+    // Return an async function so react-use-websocket fetches a fresh JWT
+    // on each connection attempt (initial + every reconnect).
+    // skipCache: true forces Clerk to issue a fresh token, avoiding the race
+    // where tab-return reconnect grabs a stale cached token before the
+    // TokenManager visibility handler has finished refreshing.
+    return async () => {
+      const token = await getJwt({ skipCache: true });
+      if (!token) {
+        // Token gone = session died. Throw to prevent connection with no auth.
+        throw new Error('Session expired');
+      }
+      return `${baseUrl}?token=${token}`;
+    };
+  }, [conversationId, wsProtocol, authResolved]);
 
   // Track page visibility and allow socket to remain open for 10 minutes after hidden
   const WS_REMAIN_OPEN_FOR_MS = 10 * 60 * 1000; // 10 minutes
@@ -305,15 +299,22 @@ export default function ProjectView() {
     wsUrl,
     {
       onError: () => {
-        if (hadClerkAuth.current && !jwt) {
-          toast.error('Session expired. Please refresh the page to reconnect.');
+        // Check if auth is configured but we have no token. This catches both:
+        // 1. Session expired mid-use (hadClerkAuth was true, token gone)
+        // 2. Session already expired on page load (hadClerkAuth never became true)
+        if (isAuthConfigured() && !getCachedToken()) {
+          toast.error('Session expired. Please sign in again.', {
+            action: { label: 'Sign in', onClick: () => window.location.reload() },
+            duration: 10_000,
+          });
         } else {
           toast.error('Chat connection error.');
         }
       },
       shouldReconnect: () => {
-        // Don't reconnect if Clerk auth died, it'll just fail again
-        if (hadClerkAuth.current && !jwt) return false;
+        // Don't retry if auth is configured but there's no token. Retrying
+        // without auth just hammers the server with 403s.
+        if (isAuthConfigured() && !getCachedToken()) return false;
         return true;
       },
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
@@ -415,6 +416,9 @@ export default function ProjectView() {
 
             if (action.updates.style_json) {
               invalidateMapData();
+              // Also invalidate the style query directly so MapLibre picks up
+              // new layer styles even if the monotonic counter hasn't changed yet.
+              queryClient.invalidateQueries({ queryKey: ['mapStyle'] });
             }
           }
         } else {
@@ -440,14 +444,10 @@ export default function ProjectView() {
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 
-      const token = await getJwt();
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
       // Step 1: Get presigned URL and fork the map
-      const presignRes = await fetch(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
+      const presignRes = await fetchMaybeAuth(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
       });
       if (!presignRes.ok) {
         const err = await presignRes.json().catch(() => ({ detail: presignRes.statusText }));
@@ -493,9 +493,9 @@ export default function ProjectView() {
       // Step 3: Tell the server to process the uploaded file
       setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
 
-      const completeRes = await fetch(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
+      const completeRes = await fetchMaybeAuth(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
         method: 'POST',
-        headers,
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           s3_key: presign.s3_key,
           layer_id: presign.layer_id,
@@ -602,6 +602,28 @@ export default function ProjectView() {
   const toggleLayerVisibility = (layerId: string) => {
     setHiddenLayerIDs((prev) => (prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]));
   };
+
+  // If Clerk has loaded and the user is definitively not signed in (session
+  // expired or never signed in), show a sign-in prompt instead of an infinite spinner.
+  if (isSignedOut) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-background">
+        <div className="text-center max-w-md px-6">
+          <h1 className="text-2xl font-bold mb-3">Sign in to continue</h1>
+          <p className="text-muted-foreground mb-4">
+            Your session has expired or you need to sign in to view this project.
+          </p>
+          <button
+            type="button"
+            className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={() => { window.location.href = '/'; }}
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!project || !versionId) {
     return (

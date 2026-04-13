@@ -6,6 +6,20 @@ import '@geoman-io/maplibre-geoman-free/dist/maplibre-geoman.css'; // Geoman dra
 import { init } from '@mundi/ee';
 import App from './App';
 
+// After a deploy, the old JS chunk filenames no longer exist on the server.
+// If a user has the tab open during a deploy, lazy imports will fail with
+// "Failed to fetch dynamically imported module". Auto-reload once to pick up
+// the new assets. The sessionStorage guard prevents an infinite reload loop.
+window.addEventListener('vite:preloadError', (e) => {
+  e.preventDefault();
+  if (!sessionStorage.getItem('chunk-reload')) {
+    sessionStorage.setItem('chunk-reload', '1');
+    window.location.reload();
+  }
+});
+// Clear the guard on successful page load so future deploys can retry
+sessionStorage.removeItem('chunk-reload');
+
 // Initialize PostHog analytics (only when key is provided)
 const posthogKey = import.meta.env.VITE_POSTHOG_KEY;
 if (posthogKey) {
