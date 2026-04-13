@@ -5397,6 +5397,87 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "predict_ndvi_from_sar":
+                            try:
+                                from src.services.sar_ndvi import get_sar_ndvi_predictor
+                                _sar_ndvi_svc = get_sar_ndvi_predictor()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _target_date = tool_args.get("target_date")
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _sar_ndvi_svc.predict_ndvi(_bbox_tuple, _target_date)
+                                )
+                            except Exception as e:
+                                logger.exception("predict_ndvi_from_sar tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "detect_water_bodies":
+                            try:
+                                from src.services.sar_water import get_sar_water_service
+                                _water_svc = get_sar_water_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _date = tool_args.get("date")
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _water_svc.detect_water(_bbox_tuple, _date)
+                                )
+                            except Exception as e:
+                                logger.exception("detect_water_bodies tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "detect_flood_extent":
+                            try:
+                                from src.services.sar_water import get_sar_water_service
+                                _flood_svc = get_sar_water_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _date_before = tool_args.get("date_before", "")
+                                _date_after = tool_args.get("date_after", "")
+                                if not _date_before or not _date_after:
+                                    raise ValueError("date_before and date_after are required")
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _flood_svc.detect_flood(_bbox_tuple, _date_before, _date_after)
+                                )
+                            except Exception as e:
+                                logger.exception("detect_flood_extent tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name in geoprocessing_function_names:
                             tool_result = await run_geoprocessing_tool(
                                 tool_call,

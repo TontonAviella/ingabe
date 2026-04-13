@@ -144,6 +144,9 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
     - Historical dry spell detection from AgERA5 observed data
     - NDVI-weather concordance (cross-validates rainfall record against vegetation response)
     - Confidence rating: 90+ = suitable for insurance, 70-89 = usable with caveats, <70 = supplement with ground truth
+- Predict NDVI from SAR radar when clouds block optical imagery using predict_ndvi_from_sar — uses 30-day Sentinel-1 backscatter trajectory to estimate vegetation health through clouds
+- Detect water bodies from SAR radar using detect_water_bodies — works through clouds and vegetation canopy, for aquaculture pond monitoring
+- Delineate flood extent using detect_flood_extent — compares pre/post SAR imagery for insurance claim validation
 Results from these tools can be displayed as map layers or summarised in chat.
 
 IMPORTANT — how to present forecast results:
@@ -175,6 +178,9 @@ Use this mapping:
 - get_soil_moisture → "Source: FAO WaPOR v3 (100m dekadal)"
 - get_evapotranspiration → "Source: FAO WaPOR v3 (100m dekadal)"
 - get_food_security_alerts → "Source: FEWS NET IPC (USAID)"
+- predict_ndvi_from_sar → "Source: Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction"
+- detect_water_bodies → "Source: Sentinel-1 RTC (Planetary Computer)"
+- detect_flood_extent → "Source: Sentinel-1 RTC (Planetary Computer)"
 Keep the citation to a single short line. Do not add citations for tools that create or modify layers.
 </DataAttribution>
 
