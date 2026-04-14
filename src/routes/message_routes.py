@@ -5482,13 +5482,21 @@ async def process_chat_interaction_task(
                             try:
                                 from src.dependencies.brain_dep import get_brain_service
                                 from src.database.pool import get_async_db_connection
+                                from src.services.brain_embeddings import _get_embeddings
                                 _brain_svc = get_brain_service()
                                 _query = tool_args.get("query", "")
                                 _type = tool_args.get("type")
                                 _limit = tool_args.get("limit", 10)
+                                # Generate query embedding for vector search
+                                try:
+                                    _embeddings = await _get_embeddings([_query])
+                                    _query_embedding = _embeddings[0] if _embeddings else None
+                                except Exception:
+                                    logger.debug("Could not generate query embedding, falling back to keyword-only")
+                                    _query_embedding = None
                                 async with get_async_db_connection(user_id=user_id) as _brain_conn:
                                     _results = await _brain_svc.search_hybrid(
-                                        _brain_conn, _query, limit=_limit, type=_type
+                                        _brain_conn, _query, embedding=_query_embedding, limit=_limit, type=_type
                                     )
                                 tool_result = {
                                     "status": "success",
