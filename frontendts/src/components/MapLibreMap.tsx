@@ -1563,6 +1563,10 @@ export default function MapLibreMap({
           attributes: selectedFeature.properties,
         };
       }
+      if (mapRef.current) {
+        const b = mapRef.current.getBounds();
+        sendBody.viewport_bounds = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      }
 
       const response = await apiFetch(`/api/maps/conversations/${conversationIdToUse}/maps/${mapId}/send`, {
         method: 'POST',
