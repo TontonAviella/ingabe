@@ -160,7 +160,7 @@ async def _create_pages_from_s3_vector(
         else:
             # Also check uploads/ prefix variants
             logger.info("No source file found for PMTiles %s, skipping feature extraction", s3_key)
-            return _create_layer_summary_page(conn, brain, layer_id, layer_name, user_id, geometry_type)
+            return await _create_layer_summary_page(conn, brain, layer_id, layer_name, user_id, geometry_type)
 
     # Download to temp file
     suffix = "." + s3_key.rsplit(".", 1)[-1] if "." in s3_key else ".fgb"
