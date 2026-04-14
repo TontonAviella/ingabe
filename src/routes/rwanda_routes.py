@@ -642,8 +642,8 @@ async def get_superset_guest_token(
             login_response = await client.post(
                 f"{superset_url}/api/v1/security/login",
                 json={
-                    "username": "admin",
-                    "password": "admin",
+                    "username": os.environ.get("SUPERSET_USER", "admin"),
+                    "password": os.environ.get("SUPERSET_PASSWORD", "admin"),
                     "provider": "db",
                     "refresh": True,
                 },
@@ -704,8 +704,8 @@ async def list_superset_dashboards(
             login_response = await client.post(
                 f"{superset_url}/api/v1/security/login",
                 json={
-                    "username": "admin",
-                    "password": "admin",
+                    "username": os.environ.get("SUPERSET_USER", "admin"),
+                    "password": os.environ.get("SUPERSET_PASSWORD", "admin"),
                     "provider": "db",
                     "refresh": True,
                 },

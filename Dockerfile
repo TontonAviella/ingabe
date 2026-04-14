@@ -75,4 +75,7 @@ ENV DISPLAY=:99 \
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+RUN useradd -r -s /bin/false appuser && chown -R appuser:appuser /app
+USER appuser
+
 CMD ["/entrypoint.sh"]

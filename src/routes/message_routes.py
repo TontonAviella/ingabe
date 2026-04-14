@@ -636,10 +636,15 @@ def validate_sql_query(query: str) -> str:
         r'\bINSERT\b', r'\bUPDATE\b', r'\bDELETE\b', r'\bDROP\b',
         r'\bALTER\b', r'\bCREATE\b', r'\bTRUNCATE\b', r'\bGRANT\b',
         r'\bREVOKE\b', r'\bEXEC\b', r'\bEXECUTE\b', r'\bINTO\b\s+\b(OUTFILE|DUMPFILE)\b',
-        r'\bCOPY\b', r'\bpg_read_file\b', r'\bpg_write_file\b',
+        r'\bCOPY\b', r'\bpg_read_file\b', r'\bpg_read_binary_file\b',
+        r'\bpg_write_file\b',
         r'\blo_import\b', r'\blo_export\b',
         r'\bpg_sleep\b',  # Prevent DoS via sleep
         r'\bdblink\b',  # Prevent lateral movement
+        r'\bpg_shadow\b',  # Prevent credential access
+        r'\bpg_authid\b',  # Prevent credential access
+        r'\bpg_roles\b',  # Prevent role enumeration
+        r'\binformation_schema\b',  # Prevent schema enumeration
     ]
 
     for pattern in dangerous_patterns:
