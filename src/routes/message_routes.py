@@ -5724,6 +5724,7 @@ async def send_map_message(
     # Inject brain context: knowledge pages near viewport or recent (≤2000 tokens)
     try:
         from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
         brain_svc = get_brain_service()
         async with get_async_db_connection(user_id=user_id) as brain_conn:
             # Spatial query when frontend sends viewport bounds
