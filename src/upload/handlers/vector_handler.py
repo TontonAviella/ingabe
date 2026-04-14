@@ -192,4 +192,18 @@ class VectorUploadHandler(BaseUploadHandler):
                 result.first_layer_url = f"/api/layer/{this_layer_id}.pmtiles"
                 result.first_layer_name = display_name
 
+        # Enqueue brain hook: auto-create brain pages from vector features
+        if result.created_layer_ids:
+            try:
+                from src.dependencies.brain_dep import get_brain_service
+                brain_svc = get_brain_service()
+                await brain_svc.enqueue_hook(ctx.conn, "vector_upload", {
+                    "layer_ids": result.created_layer_ids,
+                    "layer_name": ctx.layer_name or ctx.file_basename,
+                    "user_id": ctx.user_id,
+                    "bounds": result.bounds,
+                })
+            except Exception:
+                logger.debug("Brain hook enqueue skipped (tables may not exist yet)")
+
         return result

@@ -56,6 +56,19 @@ class RasterUploadHandler(BaseUploadHandler):
         result.first_layer_name = ctx.layer_name
         result.first_layer_url = f"/api/layer/{ctx.layer_id}.cog.tif"
 
+        # Enqueue brain hook: match raster to field pages via spatial overlap
+        try:
+            from src.dependencies.brain_dep import get_brain_service
+            brain_svc = get_brain_service()
+            await brain_svc.enqueue_hook(ctx.conn, "raster_upload", {
+                "layer_id": ctx.layer_id,
+                "layer_name": ctx.layer_name,
+                "user_id": ctx.user_id,
+                "bounds": bounds,
+            })
+        except Exception:
+            logger.debug("Brain hook enqueue skipped (tables may not exist yet)")
+
         return result
 
     async def _extract_metadata(self, ctx: UploadContext):

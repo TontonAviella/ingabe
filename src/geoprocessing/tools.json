@@ -1338,5 +1338,80 @@
         "required": ["bbox", "date_before", "date_after"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_brain",
+      "description": "Search the knowledge brain for entities and information. Uses hybrid search (keyword + vector) across brain pages. Returns ranked results with compiled truth summaries. Use when the user asks about a field, farmer, district, claim, policy, or any entity the brain might know about.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "type": {
+            "type": "string",
+            "description": "Filter by page type: field, farmer, district, company, insurance_worker, claim, policy, season, crop, weather_station, equipment"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max results to return (default 10, max 100)"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_entity",
+      "description": "Get a specific brain page by its slug. Returns the full compiled truth, recent timeline entries, tags, and linked entities. Use when the user asks about a specific known entity like 'field-gasabo-001' or 'farmer-uwimana'.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "The entity slug (e.g. 'field-gasabo-001', 'farmer-uwimana')"
+          }
+        },
+        "required": ["slug"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_observation",
+      "description": "Add a timeline observation to a brain page. Use when the user reports a field visit, observation, measurement, or event that should be recorded in an entity's history. The brain grows with every observation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "The entity slug to add the observation to"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Short summary of the observation"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Detailed description (optional)"
+          },
+          "date": {
+            "type": "string",
+            "description": "Date of the observation (YYYY-MM-DD). Default: today"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source of the observation (e.g. 'field_visit', 'satellite', 'user_report'). Default: 'user_report'"
+          }
+        },
+        "required": ["slug", "summary"]
+      }
+    }
   }
 ]
