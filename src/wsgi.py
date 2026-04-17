@@ -195,9 +195,31 @@ async def lifespan(app: FastAPI):
 
     hook_task = asyncio.create_task(_brain_hook_loop())
 
+    # Start the per-source ingestion scheduler (APScheduler, in-process).
+    # Failure to start is logged but non-fatal — app continues to serve
+    # even if brain_sources rows are missing or misconfigured.
+    try:
+        from src.services.brain_ingestion.scheduler import (
+            start_ingestion_scheduler,
+        )
+        await start_ingestion_scheduler()
+    except Exception:
+        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+            "ingestion_scheduler_failed_to_start"
+        )
+
     yield
 
     hook_task.cancel()
+    try:
+        from src.services.brain_ingestion.scheduler import (
+            shutdown_ingestion_scheduler,
+        )
+        await shutdown_ingestion_scheduler()
+    except Exception:
+        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+            "ingestion_scheduler_shutdown_failed"
+        )
     # Cleanup: close all connection pools and shared clients
     await close_all_pools()
     from src.dependencies.redis_client import close_async_redis

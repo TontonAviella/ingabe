@@ -469,8 +469,14 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
     """Convenience function to run one batch of hook processing.
 
     Creates its own DB connection with empty app.user_id (bypasses RLS).
+    After processing upload hooks, backfills embeddings for any pages whose
+    compiled_truth/timeline was written (by hooks or the ingestion fetchers)
+    but has no chunks yet. This keeps search/sage retrieval consistent with
+    the continuous-ops SLA — freshly ingested pages become queryable on the
+    next hook tick (30s), not on the next nightly batch.
     """
     from src.database.pool import _build_postgres_url
+    from src.services.brain_embeddings import embed_all_stale
 
     url = _build_postgres_url()
     conn = await asyncpg.connect(url)
@@ -478,7 +484,16 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
         # Empty user_id bypasses RLS (background worker mode)
         await conn.execute("SELECT set_config('app.user_id', '', false)")
         brain = BrainService()
-        result = await process_pending_hooks(conn, brain, limit=limit)
-        return result
+        hook_result = await process_pending_hooks(conn, brain, limit=limit)
+
+        # Embedding backfill. Separate try/except so a single bad page
+        # doesn't stall the hook loop.
+        try:
+            embed_result = await embed_all_stale(conn, brain, limit=limit)
+        except Exception:
+            logger.exception("embed_all_stale failed in hook loop")
+            embed_result = {"embedded": 0, "skipped": 0, "errors": -1}
+
+        return {**hook_result, "embeddings": embed_result}
     finally:
         await conn.close()
