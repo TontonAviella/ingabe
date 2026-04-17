@@ -130,6 +130,18 @@ async def _run_source_job(source_id: str) -> None:
             await registry.record_fetch_failure(
                 conn, source_id, result.finished_at, result.error,
             )
+        elif result.items_failed > 0 and result.items_fetched == 0:
+            # Every item crashed but the outer loop survived. Without this
+            # branch the scheduler records success and operators see a green
+            # last_success while every fetch is actually failing. For
+            # continuous ops we'd rather surface the failure on last_error.
+            await registry.record_fetch_failure(
+                conn,
+                source_id,
+                result.finished_at,
+                f"all {result.items_failed} items failed "
+                "(see fetch_item_failed logs)",
+            )
         else:
             await registry.record_fetch_success(
                 conn, source_id, result.finished_at,

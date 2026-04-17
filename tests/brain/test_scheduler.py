@@ -136,10 +136,15 @@ async def test_run_source_job_records_failure_on_fetch_error(monkeypatch):
             "WHERE source_id = $1",
             _TEST_SOURCE_ID,
         )
-        # Per-item failures are counted but the run itself completed — in
-        # that case record_fetch_success fires. The test is that this
-        # didn't crash and the row exists with a recorded run outcome.
+        # When every per-item fetch crashes and nothing gets fetched the
+        # scheduler must record a run-level failure. Anything else hides
+        # broken sources behind a green last_success timestamp.
         assert src is not None
+        assert src["last_error"] is not None, (
+            "all-items-failed run must stamp last_error"
+        )
+        assert "items failed" in src["last_error"]
+        assert src["last_success"] is None
 
         await admin.execute(
             "DELETE FROM brain_sources WHERE source_id = $1",
