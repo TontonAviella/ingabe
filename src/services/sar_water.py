@@ -292,7 +292,7 @@ class SARWaterService:
         water_area = _compute_area_ha(mask, ml_transform)
         geojson = _mask_to_geojson(mask, ml_transform, crs)
 
-        return {
+        result = {
             "status": "success",
             "scene_date": scene_date,
             "water_fraction": water_fraction,
@@ -303,6 +303,8 @@ class SARWaterService:
             "geojson": geojson,
             "source": "Sentinel-1 RTC (Planetary Computer)",
         }
+        from src.services.deafrica_stac import enrich_with_validation
+        return enrich_with_validation(result, bbox)
 
     def detect_flood(
         self,
@@ -377,7 +379,7 @@ class SARWaterService:
 
         geojson = _mask_to_geojson(flood_mask, ml_transform, crs)
 
-        return {
+        result = {
             "status": "success",
             "before_date": pair["before"]["date"],
             "after_date": pair["after"]["date"],
@@ -390,6 +392,8 @@ class SARWaterService:
             "geojson": geojson,
             "source": "Sentinel-1 RTC (Planetary Computer)",
         }
+        from src.services.deafrica_stac import enrich_with_validation
+        return enrich_with_validation(result, bbox)
 
 
 _singleton: Optional[SARWaterService] = None

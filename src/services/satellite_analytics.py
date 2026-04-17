@@ -49,6 +49,20 @@ def _has_useful_intervals(result: Dict[str, Any]) -> bool:
     return False
 
 
+def _enrich_field_stats(result: Dict[str, Any], geometry: Dict[str, Any]) -> Dict[str, Any]:
+    """Enrich field stats with cropland fraction from DE Africa."""
+    try:
+        from src.services.deafrica_stac import _bbox_from_geojson, _cached_cropland, _round_bbox
+        bbox = _round_bbox(_bbox_from_geojson(geometry))
+        crop = _cached_cropland(bbox)
+        if crop is not None:
+            result["cropland_fraction"] = crop[0]
+            result["validation_data_year"] = crop[1]
+    except Exception as e:
+        logger.warning("Cropland enrichment failed for field stats: %s", e)
+    return result
+
+
 def get_field_stats(
     geometry: Dict[str, Any],
     date_from: Optional[str] = None,
@@ -69,7 +83,7 @@ def get_field_stats(
         )
         if _has_useful_intervals(de_result):
             de_result["backend"] = "deafrica"
-            return de_result
+            return _enrich_field_stats(de_result, geometry)
         logger.info(
             "DE Africa returned no usable scenes for %s/%s — falling back to Sentinel Hub",
             date_from, date_to,
@@ -94,7 +108,7 @@ def get_field_stats(
             collection=collection,
         )
         sh_result["backend"] = "sentinel_hub"
-        return sh_result
+        return _enrich_field_stats(sh_result, geometry)
     except Exception as e:
         logger.exception("Sentinel Hub fallback also failed")
         return {"error": f"All satellite backends failed: {e}", "backend": "none"}

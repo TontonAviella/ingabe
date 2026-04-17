@@ -38,6 +38,7 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -203,12 +204,161 @@ def _stats_from_array(arr: np.ndarray, valid: np.ndarray) -> Dict[str, float]:
     }
 
 
+def _round_bbox(bbox: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+    """Round bbox to 6 decimal places for consistent cache keys."""
+    return tuple(round(v, 6) for v in bbox)  # type: ignore[return-value]
+
+
+def _search_collection_items(
+    collection: str,
+    bbox: Tuple[float, float, float, float],
+    limit: int = 1,
+) -> List[Dict[str, Any]]:
+    """Search a DE Africa STAC collection for the most recent item covering bbox."""
+    url = f"{_STAC_ROOT}/collections/{collection}/items"
+    params = {
+        "bbox": ",".join(str(x) for x in bbox),
+        "limit": str(limit),
+    }
+    try:
+        r = httpx.get(
+            url,
+            params=params,
+            headers={"Accept": "application/json", "User-Agent": "curl/8"},
+            timeout=30.0,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        return r.json().get("features", [])
+    except Exception as e:
+        logger.warning("DE Africa STAC search for %s failed: %s", collection, e)
+        return []
+
+
+@lru_cache(maxsize=128)
+def _cached_water_frequency(bbox: Tuple[float, float, float, float]) -> Optional[Tuple[float, int]]:
+    """Fetch mean WOfS water frequency for bbox. Returns (mean_freq, data_year) or None."""
+    items = _search_collection_items("wofs_ls", bbox, limit=1)
+    if not items:
+        return None
+    item = items[0]
+    assets = item.get("assets", {})
+    # WOfS frequency band is typically "frequency" or the first available asset
+    freq_key = "frequency" if "frequency" in assets else next(iter(assets), None)
+    if not freq_key or "href" not in assets.get(freq_key, {}):
+        return None
+    result = _read_window(assets[freq_key]["href"], bbox)
+    if result is None:
+        return None
+    arr, _ = result
+    arr = arr.astype("float32")
+    # WOfS frequency is 0-100 (percentage) in some products, 0-1 in others.
+    # Normalize to 0-1 if values exceed 1.
+    if arr.max() > 1.0:
+        arr = arr / 100.0
+    # Exclude fill/nodata (0 can be valid = never wet, so only exclude if all zeros)
+    valid = arr > -1  # all pixels valid for mean computation
+    mean_val = float(np.nanmean(arr[valid]))
+    if math.isnan(mean_val):
+        return None
+    # Extract data year from item datetime
+    dt_str = item.get("properties", {}).get("datetime", "")
+    try:
+        data_year = int(dt_str[:4])
+    except (ValueError, IndexError):
+        data_year = datetime.utcnow().year
+    return (round(mean_val, 4), data_year)
+
+
+@lru_cache(maxsize=128)
+def _cached_cropland(bbox: Tuple[float, float, float, float]) -> Optional[Tuple[float, int]]:
+    """Fetch cropland fraction for bbox. Returns (fraction, data_year) or None."""
+    items = _search_collection_items("crop_mask", bbox, limit=1)
+    if not items:
+        return None
+    item = items[0]
+    assets = item.get("assets", {})
+    # Cropland mask band
+    mask_key = "mask" if "mask" in assets else next(iter(assets), None)
+    if not mask_key or "href" not in assets.get(mask_key, {}):
+        return None
+    result = _read_window(assets[mask_key]["href"], bbox)
+    if result is None:
+        return None
+    arr, _ = result
+    # Binary mask: 1=cropland, 0=not cropland
+    total = arr.size
+    if total == 0:
+        return None
+    cropland_pixels = int(np.count_nonzero(arr))
+    fraction = round(cropland_pixels / total, 4)
+    dt_str = item.get("properties", {}).get("datetime", "")
+    try:
+        data_year = int(dt_str[:4])
+    except (ValueError, IndexError):
+        data_year = datetime.utcnow().year
+    return (fraction, data_year)
+
+
+def enrich_with_validation(
+    result: Dict[str, Any],
+    bbox: Tuple[float, float, float, float],
+) -> Dict[str, Any]:
+    """Enrich a result dict with WOfS water frequency and cropland fraction.
+
+    Adds keys to result dict if DE Africa data is available. Keys are ABSENT
+    (not null) on failure so existing consumers are unaffected.
+
+    Calls are sequential to avoid nested thread pool issues when called
+    from async handlers via run_in_executor.
+    """
+    bbox = _round_bbox(bbox)
+
+    # WOfS water frequency
+    try:
+        wofs = _cached_water_frequency(bbox)
+        if wofs is not None:
+            freq, year = wofs
+            result["wofs_mean_frequency"] = freq
+            result["validation_data_year"] = year
+            result["validation_source"] = "Digital Earth Africa (WOfS + Cropland Extent)"
+    except Exception as e:
+        logger.warning("WOfS enrichment failed for bbox %s: %s", bbox, e)
+
+    # Cropland fraction
+    try:
+        crop = _cached_cropland(bbox)
+        if crop is not None:
+            fraction, year = crop
+            result["cropland_fraction"] = fraction
+            # Use the most recent data year across both sources
+            if "validation_data_year" in result:
+                result["validation_data_year"] = max(result["validation_data_year"], year)
+            else:
+                result["validation_data_year"] = year
+            result["validation_source"] = "Digital Earth Africa (WOfS + Cropland Extent)"
+    except Exception as e:
+        logger.warning("Cropland enrichment failed for bbox %s: %s", bbox, e)
+
+    return result
+
+
 class DEAfricaSTACService:
     """Analysis-ready Sentinel-2 access via Digital Earth Africa STAC + COG."""
 
     def is_configured(self) -> bool:
         """DE Africa is public; always configured."""
         return True
+
+    def get_water_frequency(self, bbox: Tuple[float, float, float, float]) -> Optional[float]:
+        """Return mean WOfS water frequency (0-1) for bbox, or None on failure."""
+        result = _cached_water_frequency(_round_bbox(bbox))
+        return result[0] if result is not None else None
+
+    def get_cropland_mask(self, bbox: Tuple[float, float, float, float]) -> Optional[float]:
+        """Return cropland fraction (0-1) for bbox, or None on failure."""
+        result = _cached_cropland(_round_bbox(bbox))
+        return result[0] if result is not None else None
 
     def get_field_stats(
         self,

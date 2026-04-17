@@ -144,9 +144,9 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
     - Historical dry spell detection from AgERA5 observed data
     - NDVI-weather concordance (cross-validates rainfall record against vegetation response)
     - Confidence rating: 90+ = suitable for insurance, 70-89 = usable with caveats, <70 = supplement with ground truth
-- Predict NDVI from SAR radar when clouds block optical imagery using predict_ndvi_from_sar — uses 30-day Sentinel-1 backscatter trajectory to estimate vegetation health through clouds
-- Detect water bodies from SAR radar using detect_water_bodies — works through clouds and vegetation canopy, for aquaculture pond monitoring
-- Delineate flood extent using detect_flood_extent — compares pre/post SAR imagery for insurance claim validation
+- Predict NDVI from SAR radar when clouds block optical imagery using predict_ndvi_from_sar — uses 30-day Sentinel-1 backscatter trajectory to estimate vegetation health through clouds. Results include cropland fraction and a warning if the area may not be farmland.
+- Detect water bodies from SAR radar using detect_water_bodies — works through clouds and vegetation canopy, for aquaculture pond monitoring. Results include WOfS historical water frequency (30+ years of Landsat via Digital Earth Africa) and cropland fraction for automatic land-use validation.
+- Delineate flood extent using detect_flood_extent — compares pre/post SAR imagery for insurance claim validation. Results include WOfS historical water frequency to distinguish floods from seasonal wetlands, plus cropland fraction to confirm the area is farmland.
 - Search the knowledge brain using search_brain — hybrid keyword + vector search across all known entities (fields, farmers, districts, companies, claims, policies, seasons, crops, weather stations, equipment)
 - Get full entity details using get_entity — returns compiled truth, timeline, tags, and links for a known entity by slug
 - Add observations to entities using add_observation — record field visits, claim events, weather notes, or any timestamped observation to an entity's timeline
@@ -190,6 +190,7 @@ Use this mapping:
 - predict_ndvi_from_sar → "Source: Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction"
 - detect_water_bodies → "Source: Sentinel-1 RTC (Planetary Computer)"
 - detect_flood_extent → "Source: Sentinel-1 RTC (Planetary Computer)"
+- wofs_mean_frequency / cropland_fraction fields → "Validation: Digital Earth Africa (WOfS 30-year Landsat + Cropland Extent 10m)"
 - search_brain → "Source: Ingabe Knowledge Brain"
 - get_entity → "Source: Ingabe Knowledge Brain"
 - add_observation → (no citation needed, user-generated data)

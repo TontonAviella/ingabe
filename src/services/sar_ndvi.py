@@ -198,6 +198,27 @@ def _generate_training_data(
     return np.array(X_list), np.array(y_list)
 
 
+def _enrich_ndvi_with_cropland(
+    result: Dict[str, Any],
+    bbox: Tuple[float, float, float, float],
+) -> Dict[str, Any]:
+    """Add cropland_fraction and cropland_warning to an NDVI prediction result."""
+    try:
+        from src.services.deafrica_stac import _cached_cropland, _round_bbox
+        crop = _cached_cropland(_round_bbox(bbox))
+        if crop is not None:
+            fraction, year = crop
+            result["cropland_fraction"] = fraction
+            result["validation_data_year"] = year
+            if fraction < 0.3:
+                result["cropland_warning"] = (
+                    f"Low cropland fraction ({fraction:.2f}), area may not be farmland"
+                )
+    except Exception as e:
+        logger.warning("Cropland enrichment failed for NDVI prediction: %s", e)
+    return result
+
+
 class SARNDVIPredictor:
     """Predict NDVI from SAR backscatter when optical imagery is cloudy."""
 
@@ -288,7 +309,7 @@ class SARNDVIPredictor:
 
             confidence = self._compute_confidence(ts)
 
-            return {
+            result = {
                 "status": "success",
                 "predicted_ndvi": round(predicted, 4),
                 "confidence": round(confidence, 2),
@@ -300,9 +321,10 @@ class SARNDVIPredictor:
                 "method": "gradient_boosting",
                 "source": "Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction",
             }
+            return _enrich_ndvi_with_cropland(result, bbox)
         except Exception as e:
             logger.exception("NDVI prediction failed")
-            return self._empirical_prediction(ts)
+            return self._empirical_prediction(ts, bbox)
 
     def train_model(
         self,
@@ -349,7 +371,7 @@ class SARNDVIPredictor:
             "r2": self._model_r2,
         }
 
-    def _empirical_prediction(self, ts: Dict[str, Any]) -> Dict[str, Any]:
+    def _empirical_prediction(self, ts: Dict[str, Any], bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, Any]:
         """Fallback: predict NDVI from simple VH/VV cross-pol ratio.
 
         Based on research thresholds from working/test_sar_monitoring.py:
@@ -387,7 +409,7 @@ class SARNDVIPredictor:
         else:
             predicted = min(0.85, 0.75 + (ratio - 0.40) * 0.5)
 
-        return {
+        result = {
             "status": "success",
             "predicted_ndvi": round(predicted, 4),
             "confidence": 0.45,  # Low confidence for empirical method
@@ -399,6 +421,9 @@ class SARNDVIPredictor:
             "vh_vv_ratio": round(ratio, 4),
             "source": "Sentinel-1 RTC (Planetary Computer) + empirical VH/VV mapping",
         }
+        if bbox is not None:
+            return _enrich_ndvi_with_cropland(result, bbox)
+        return result
 
     def _compute_confidence(self, ts: Dict[str, Any]) -> float:
         """Compute prediction confidence from data quality indicators."""
