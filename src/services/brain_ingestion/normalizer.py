@@ -77,39 +77,44 @@ async def write_page(
         content_hash=item.content_hash,
     )
 
-    await brain.put_page(conn, slug, page_input, owner_uuid=owner_uuid)
+    # One transaction across all three writes. Without this, a crash between
+    # put_page and the UPDATE leaves access_scope/partner_id NULL, which RLS
+    # treats as public — a partner_internal row would be readable by anyone
+    # until the next re-fetch. That's the exact isolation guarantee the
+    # brain_pages schema exists to enforce.
+    async with conn.transaction():
+        await brain.put_page(conn, slug, page_input, owner_uuid=owner_uuid)
 
-    # Update the ingestion-specific columns not covered by put_page.
-    await conn.execute(
-        """
-        UPDATE brain_pages
-        SET language     = COALESCE($2, language),
-            license      = COALESCE($3, license),
-            source_id    = $4,
-            fetched_at   = $5,
-            access_scope = $6,
-            partner_id   = $7::uuid
-        WHERE slug = $1
-        """,
-        slug,
-        item.language,
-        item.license,
-        item.source_id,
-        item.fetched_at,
-        item.access_scope,
-        item.partner_id,
-    )
+        await conn.execute(
+            """
+            UPDATE brain_pages
+            SET language     = COALESCE($2, language),
+                license      = COALESCE($3, license),
+                source_id    = $4,
+                fetched_at   = $5,
+                access_scope = $6,
+                partner_id   = $7::uuid
+            WHERE slug = $1
+            """,
+            slug,
+            item.language,
+            item.license,
+            item.source_id,
+            item.fetched_at,
+            item.access_scope,
+            item.partner_id,
+        )
 
-    await brain.add_timeline_entry(
-        conn,
-        slug,
-        TimelineInput(
-            date=item.fetched_at.date(),
-            summary=f"Fetched from {item.source_id} ({item.tier})",
-            source=item.source_id,
-            detail=str(item.url),
-        ),
-        owner_uuid=owner_uuid,
-    )
+        await brain.add_timeline_entry(
+            conn,
+            slug,
+            TimelineInput(
+                date=item.fetched_at.date(),
+                summary=f"Fetched from {item.source_id} ({item.tier})",
+                source=item.source_id,
+                detail=str(item.url),
+            ),
+            owner_uuid=owner_uuid,
+        )
 
     return slug

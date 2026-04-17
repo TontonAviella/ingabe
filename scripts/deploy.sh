@@ -120,23 +120,44 @@ log "restart app"
 SSH_DEPLOY "${COMPOSE} up -d app"
 
 # --- 3. verify -----------------------------------------------------
-log "waiting for app to boot"
-sleep 8
+# Bounded poll instead of fixed sleep. Old behaviour slept 8s then grepped
+# --tail=200 of the container log, which both (a) falsely failed on cold
+# images where lifespan takes >8s, and (b) could match the *previous*
+# container's startup line if docker reused the name. The --since window
+# pins us to logs from this deploy; the loop gives slow boots a real
+# chance to finish.
+DEPLOY_START_TS="$(SSH_DEPLOY "date -u +'%Y-%m-%dT%H:%M:%S'" || date -u +'%Y-%m-%dT%H:%M:%S')"
+BOOT_TIMEOUT=120  # seconds
+log "waiting up to ${BOOT_TIMEOUT}s for app to boot (since ${DEPLOY_START_TS})"
 
-STATUS="$(SSH_DEPLOY "${COMPOSE} ps app --format '{{.Status}}'" || true)"
+deadline=$((SECONDS + BOOT_TIMEOUT))
+STATUS=""
+while (( SECONDS < deadline )); do
+  STATUS="$(SSH_DEPLOY "${COMPOSE} ps app --format '{{.Status}}'" || true)"
+  [[ "$STATUS" =~ ^Up ]] && break
+  sleep 3
+done
 log "container: ${STATUS}"
 if ! [[ "$STATUS" =~ ^Up ]]; then
-  err "app did not reach Up state"
-  SSH_DEPLOY "docker logs mundi-app --tail=40" || true
+  err "app did not reach Up state within ${BOOT_TIMEOUT}s"
+  SSH_DEPLOY "docker logs mundi-app --tail=60" || true
   exit 1
 fi
 
 log "checking ingestion scheduler startup log"
-if SSH_DEPLOY "docker logs mundi-app --tail=200 2>&1 | grep -q ingestion_scheduler_started"; then
+scheduler_ok=0
+while (( SECONDS < deadline )); do
+  if SSH_DEPLOY "docker logs mundi-app --since ${DEPLOY_START_TS} 2>&1 | grep -q ingestion_scheduler_started"; then
+    scheduler_ok=1
+    break
+  fi
+  sleep 3
+done
+if (( scheduler_ok == 1 )); then
   log "scheduler: ingestion_scheduler_started ✓"
 else
-  err "scheduler did not log ingestion_scheduler_started — investigate:"
-  SSH_DEPLOY "docker logs mundi-app --tail=60" || true
+  err "scheduler did not log ingestion_scheduler_started within ${BOOT_TIMEOUT}s — investigate:"
+  SSH_DEPLOY "docker logs mundi-app --tail=80" || true
   exit 1
 fi
 

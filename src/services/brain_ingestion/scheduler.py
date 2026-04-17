@@ -33,6 +33,7 @@ import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from src.database.pool import get_async_db_connection
 from src.services.brain_ingestion import normalizer, registry
 from src.services.brain_ingestion.html_fetcher import HTMLFetcher
 from src.services.brain_ingestion.models import FetchedContent
@@ -70,25 +71,38 @@ async def _open_admin_conn() -> asyncpg.Connection:
 
 
 async def _run_source_job(source_id: str) -> None:
-    """Fire one ingest cycle for `source_id`. Called by APScheduler."""
+    """Fire one ingest cycle for `source_id`. Called by APScheduler.
+
+    Connection discipline:
+      - `lock_conn` is a dedicated session held for the lifetime of the job.
+        It holds the session-scoped advisory lock and is used only for the
+        bookkeeping reads/writes (config lookup, record_fetch_*). It does
+        NOT participate in per-item writes, so slow HTTP fetches can't tie
+        up a connection needed by the writer pool.
+      - Per-item writes inside `_PersistingFetcher.on_item` acquire a fresh
+        pool connection, wrap the three normalizer writes in a transaction,
+        and release. Pool pressure is bounded by write rate, not by fetch
+        latency.
+    """
     log = logger.getChild(source_id)
-    conn = await _open_admin_conn()
+    lock_conn = await _open_admin_conn()
     lock_key = f"brain_ingest:{source_id}"
+    lock_held = False
     try:
         # Prod runs uvicorn with --workers 6, so each worker has its own
         # APScheduler. Without a lock, one cron tick fires 6 concurrent
         # fetches. pg_try_advisory_lock is non-blocking and session-scoped:
         # first worker to acquire runs the job, the rest exit immediately.
         # Same mechanism covers future multi-container scale-out.
-        got_lock = await conn.fetchval(
+        lock_held = await lock_conn.fetchval(
             "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
             lock_key,
         )
-        if not got_lock:
+        if not lock_held:
             log.info("source_skipped_lock_held")
             return
 
-        row = await conn.fetchrow(
+        row = await lock_conn.fetchrow(
             "SELECT source_id, url, fetcher_type, tier, schedule_cron, status "
             "FROM brain_sources WHERE source_id = $1 AND status = 'active'",
             source_id,
@@ -111,7 +125,7 @@ async def _run_source_job(source_id: str) -> None:
         except ValueError as e:
             log.error("source_config_rejected", extra={"error": str(e)})
             await registry.record_fetch_failure(
-                conn, source_id, datetime.now(timezone.utc), str(e),
+                lock_conn, source_id, datetime.now(timezone.utc), str(e),
             )
             return
 
@@ -119,16 +133,23 @@ async def _run_source_job(source_id: str) -> None:
 
         class _PersistingFetcher(fetcher_cls):  # type: ignore[valid-type,misc]
             async def on_item(self, item: FetchedContent) -> None:
-                await normalizer.write_page(
-                    conn, brain, item, owner_uuid=SYSTEM_OWNER_UUID,
-                )
+                # Fresh pool connection per write. user_id="" matches the
+                # admin handshake: empty app.user_id means "system writer",
+                # bypassing RLS policies that key off session user.
+                async with get_async_db_connection(user_id="") as write_conn:
+                    await normalizer.write_page(
+                        write_conn,
+                        brain,
+                        item,
+                        owner_uuid=SYSTEM_OWNER_UUID,
+                    )
 
         fetcher = _PersistingFetcher(source_cfg)
         result = await fetcher.run()
 
         if result.error:
             await registry.record_fetch_failure(
-                conn, source_id, result.finished_at, result.error,
+                lock_conn, source_id, result.finished_at, result.error,
             )
         elif result.items_failed > 0 and result.items_fetched == 0:
             # Every item crashed but the outer loop survived. Without this
@@ -136,7 +157,7 @@ async def _run_source_job(source_id: str) -> None:
             # last_success while every fetch is actually failing. For
             # continuous ops we'd rather surface the failure on last_error.
             await registry.record_fetch_failure(
-                conn,
+                lock_conn,
                 source_id,
                 result.finished_at,
                 f"all {result.items_failed} items failed "
@@ -144,7 +165,7 @@ async def _run_source_job(source_id: str) -> None:
             )
         else:
             await registry.record_fetch_success(
-                conn, source_id, result.finished_at,
+                lock_conn, source_id, result.finished_at,
             )
 
         log.info(
@@ -162,12 +183,28 @@ async def _run_source_job(source_id: str) -> None:
         log.exception("source_job_crashed")
         try:
             await registry.record_fetch_failure(
-                conn, source_id, datetime.now(timezone.utc), repr(e)[:500],
+                lock_conn,
+                source_id,
+                datetime.now(timezone.utc),
+                repr(e)[:500],
             )
         except Exception:
             log.exception("fetch_failure_record_also_failed")
     finally:
-        await conn.close()
+        # Release the advisory lock explicitly. Relying on session teardown
+        # (conn.close()) is unsafe: lifespan shutdown(wait=False) can cancel
+        # mid-run, and future PgBouncer transaction-pooling would strand the
+        # backend session, keeping the lock indefinitely. A stuck lock means
+        # the source silently stops ingesting with no error trail.
+        if lock_held:
+            try:
+                await lock_conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                    lock_key,
+                )
+            except Exception:
+                log.exception("advisory_lock_release_failed")
+        await lock_conn.close()
 
 
 async def start_ingestion_scheduler() -> Optional[AsyncIOScheduler]:
