@@ -2,6 +2,25 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.2.0.0] - 2026-04-17
+
+### Added
+- Brain ingestion Phase 0: per-source APScheduler cron jobs that fetch HTML content on a schedule and write it into the brain as pages with full partner-scoped access control
+- HTML fetcher with conditional GET (ETag / Last-Modified), robots.txt compliance, per-host rate limiting, and exponential-backoff retry
+- Source registry + config builder that materializes DB rows into typed SourceConfig objects (public/partner_internal access scopes)
+- Normalizer that persists FetchedContent as brain_pages + brain_timeline_entries atomically in a single transaction, so partner_internal content cannot leak as public on a mid-write crash
+- Postgres advisory-lock coordination (pg_try_advisory_lock on a per-source key) so uvicorn's 6 workers don't multiply every cron tick by 6
+- Concurrency + cost guardrails module for future OCR (semaphore, token-bucket rate limit, Redis daily-budget counters, per-source 40% cap)
+- scripts/deploy.sh rsync-based deployer for the Hetzner prod host with bounded boot-health poll (`--since` log scan, 120s deadline)
+- 17 brain tests covering scheduler happy path, all-items-failed stamping last_error, paused-source skip, unknown-fetcher-type no-op, advisory-lock contention, partner isolation, and concurrency guards
+
+### Fixed
+- Scheduler held one asyncpg connection for an entire ingest run; split into dedicated lock-holder + per-item pool connections so slow HTTP fetches no longer starve the writer pool
+- Advisory lock released only via implicit session close; under lifespan shutdown(wait=False) or future PgBouncer transaction pooling this stranded the lock indefinitely. Now explicitly unlocked in finally, guarded by lock_held
+- Scheduler recorded fetch_success when every item in a run crashed (items_fetched=0, items_failed=N), masking broken sources behind a green last_success timestamp. Now calls record_fetch_failure on all-items-failed runs
+- write_page's three writes (put_page, UPDATE access_scope/partner_id, add_timeline_entry) ran without a transaction; wrapped in `async with conn.transaction():` so access_scope is never NULL between steps (RLS treats NULL as public)
+- deploy.sh used `sleep 8` + `docker logs --tail=200 | grep` which false-failed on cold starts and could match a previous container's log. Replaced with bounded poll against container Up status + `docker logs --since ${DEPLOY_START_TS}`
+
 ## [0.1.0.0] - 2026-04-13
 
 ### Added
