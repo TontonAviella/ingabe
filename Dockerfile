@@ -77,6 +77,7 @@ RUN chmod +x /entrypoint.sh
 
 RUN useradd -r -s /bin/false appuser \
     && chown -R appuser:appuser /app \
+    && chmod -R u+rwX,go+rX /app/src \
     && mkdir -p /cache \
     && chown appuser:appuser /cache
 USER appuser
