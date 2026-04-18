@@ -60,6 +60,44 @@ class User(Base):
     )
 
 
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(UUID, primary_key=True, server_default=func.gen_random_uuid())
+    name = Column(Text, nullable=False)
+    slug = Column(Text, nullable=False, unique=True)
+    tier = Column(Text, nullable=False, server_default="partner")
+    clerk_org_id = Column(Text, unique=True)
+    metadata_json = Column("metadata", JSONB, nullable=False, server_default="{}")
+    created_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.current_timestamp()
+    )
+    updated_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.current_timestamp()
+    )
+
+    members = relationship("UserOrganization", back_populates="organization")
+
+
+class UserOrganization(Base):
+    __tablename__ = "user_organizations"
+
+    user_id = Column(
+        String(36), ForeignKey("users.internal_uuid", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    org_id = Column(
+        UUID, ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    role = Column(Text, nullable=False, server_default="member")
+    created_at = Column(
+        TIMESTAMP(timezone=True), server_default=func.current_timestamp()
+    )
+
+    organization = relationship("Organization", back_populates="members")
+
+
 class MundiProject(Base):
     __tablename__ = "user_mundiai_projects"
 

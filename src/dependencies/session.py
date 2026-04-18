@@ -108,14 +108,31 @@ class UserContext(ABC):
         """Return the user's email from the JWT, or None."""
         return None
 
+    def get_org_id(self) -> str | None:
+        """Return the internal org UUID string, or None if no org context."""
+        return None
+
+    def get_org_role(self) -> str | None:
+        """Return the user's role within the active org (owner/admin/member)."""
+        return None
+
 
 class ClerkUserContext(UserContext):
     """Real user authenticated via Clerk JWT."""
 
-    def __init__(self, internal_uuid: str, clerk_id: str, email: str | None = None):
+    def __init__(
+        self,
+        internal_uuid: str,
+        clerk_id: str,
+        email: str | None = None,
+        org_id: str | None = None,
+        org_role: str | None = None,
+    ):
         self._uuid = internal_uuid
         self._clerk_id = clerk_id
         self._email = email
+        self._org_id = org_id
+        self._org_role = org_role
 
     def get_user_id(self) -> str:
         return self._uuid
@@ -125,6 +142,12 @@ class ClerkUserContext(UserContext):
 
     def get_email(self) -> str | None:
         return self._email
+
+    def get_org_id(self) -> str | None:
+        return self._org_id
+
+    def get_org_role(self) -> str | None:
+        return self._org_role
 
 
 class LegacyUserContext(UserContext):
@@ -212,6 +235,18 @@ def _extract_token_from_request(request: Request) -> str | None:
     return None
 
 
+async def _resolve_clerk_org(clerk_org_id: str) -> str | None:
+    """Map a Clerk org_id (org_xxx) to our internal organizations.id UUID."""
+    from src.structures import async_conn
+
+    async with async_conn("resolve_clerk_org") as conn:
+        row = await conn.fetchval(
+            "SELECT id FROM organizations WHERE clerk_org_id = $1",
+            clerk_org_id,
+        )
+        return str(row) if row else None
+
+
 async def _authenticate_clerk(token: str) -> ClerkUserContext:
     """Verify Clerk JWT and return a ClerkUserContext."""
     try:
@@ -227,7 +262,19 @@ async def _authenticate_clerk(token: str) -> ClerkUserContext:
 
     email = claims.get("email")
     internal_uuid = await _get_or_create_user(clerk_id, email)
-    return ClerkUserContext(internal_uuid, clerk_id, email)
+
+    org_id: str | None = None
+    org_role: str | None = None
+    clerk_org_id = claims.get("org_id")
+    if clerk_org_id:
+        org_id = await _resolve_clerk_org(clerk_org_id)
+        org_role = claims.get("org_role")
+        if org_id:
+            logger.info("Resolved clerk org %s → %s", clerk_org_id, org_id)
+        else:
+            logger.warning("Clerk org %s not found in organizations table", clerk_org_id)
+
+    return ClerkUserContext(internal_uuid, clerk_id, email, org_id, org_role)
 
 
 def verify_session(session_required: bool = True):
@@ -331,7 +378,15 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
 
             email = claims.get("email")
             internal_uuid = await _get_or_create_user(clerk_id, email)
-            return ClerkUserContext(internal_uuid, clerk_id, email)
+
+            org_id: str | None = None
+            org_role: str | None = None
+            clerk_org_id = claims.get("org_id")
+            if clerk_org_id:
+                org_id = await _resolve_clerk_org(clerk_org_id)
+                org_role = claims.get("org_role")
+
+            return ClerkUserContext(internal_uuid, clerk_id, email, org_id, org_role)
         # No token supplied — block by default to prevent cross-tenant leak.
         logger.warning(
             "WS: Clerk enabled but NO ?token= query param in WebSocket URL (client not sending JWT)"
