@@ -98,11 +98,15 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-# Ensure deploy owns everything we just wrote as root.
+# Ensure deploy owns everything we just wrote as root. Skip data/ — it is
+# excluded from rsync and holds postgres data (uid 999) + minio data. A naive
+# `chown -R` here clobbered postgres's pg_filenode.map ownership to uid 1000,
+# which postgres survived on inherited fds until the next restart took prod
+# down. Never again.
 if [[ "$RSYNC_USER" == "root" ]]; then
-  log "chown → ${DEPLOY_USER}:${DEPLOY_USER}"
+  log "chown → ${DEPLOY_USER}:${DEPLOY_USER} (excluding data/)"
   ssh "${RSYNC_USER}@${DEPLOY_HOST}" \
-    "chown -R ${DEPLOY_USER}:${DEPLOY_USER} ${DEPLOY_PATH}"
+    "find ${DEPLOY_PATH} -mindepth 1 -path ${DEPLOY_PATH}/data -prune -o -print0 | xargs -0 chown ${DEPLOY_USER}:${DEPLOY_USER}"
 fi
 
 # --- 2. rebuild + restart -----------------------------------------
