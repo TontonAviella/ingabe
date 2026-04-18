@@ -30,6 +30,8 @@ import pytest
 
 from src.database.pool import _build_postgres_url
 
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
 
 # Two synthetic partners. Each gets its own asyncpg connection with
 # app.partner_id set at session start. Admin gets a third connection with

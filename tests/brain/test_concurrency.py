@@ -25,6 +25,9 @@ from src.services.brain_ingestion.concurrency import (
     reserve_ocr_budget,
 )
 
+pytestmark = pytest.mark.asyncio(loop_scope="session")
+
+
 class _FakeRedis:
     """Just enough for reserve_ocr_budget's INCRBY / DECRBY / EXPIRE."""
 

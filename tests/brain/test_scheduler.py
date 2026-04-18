@@ -14,9 +14,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import asyncpg
+import pytest
 
 from src.services.brain_ingestion import scheduler as sched
 from src.services.brain_ingestion.models import FetchedContent
+
+pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 _TEST_SOURCE_ID = "test-sched-src"
