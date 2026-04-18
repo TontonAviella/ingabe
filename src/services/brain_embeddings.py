@@ -1,7 +1,11 @@
 """Brain embedding pipeline: chunk text and generate vector embeddings.
 
 Chunks brain page content (compiled_truth + timeline) into ~500-token pieces,
-calls OpenAI text-embedding-3-large, and stores via BrainService.upsert_chunks().
+calls an OpenAI-compatible embeddings endpoint (default: self-hosted Ollama
+serving nomic-embed-text), and stores via BrainService.upsert_chunks().
+
+Provider is configured via EMBEDDING_BASE_URL / EMBEDDING_API_KEY /
+EMBEDDING_MODEL so embeddings don't share a credential with the chat LLM.
 """
 
 from __future__ import annotations
@@ -9,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import textwrap
-from typing import Optional
+from typing import Literal, Optional
 
 import asyncpg
 
@@ -17,9 +21,14 @@ from src.services.brain_service import BrainService, ChunkInput
 
 logger = logging.getLogger(__name__)
 
-# Model config
-_EMBED_MODEL = "text-embedding-3-large"
-_EMBED_DIMS = 1536
+# Model config. Overridable so dev can point at a different provider (e.g. OpenAI
+# text-embedding-3-large) without code changes; prod runs nomic-embed-text via Ollama.
+_EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
+# Nomic-embed-text native dim; text-embedding-3-large is 1536. Kept for reference —
+# not sent to the API (Ollama's /v1/embeddings rejects the `dimensions` kwarg).
+_EMBED_DIMS = 768 if "nomic" in _EMBED_MODEL.lower() else 1536
+# Models trained for asymmetric retrieval (nomic, e5, bge) need a task prefix.
+_NEEDS_RETRIEVAL_PREFIX = any(tag in _EMBED_MODEL.lower() for tag in ("nomic", "e5", "bge"))
 _CHUNK_SIZE = 500  # tokens (~2000 chars)
 _CHUNK_OVERLAP = 50  # tokens overlap between chunks
 
@@ -65,24 +74,42 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_O
     return chunks
 
 
-async def _get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Call OpenAI embeddings API. Returns list of embedding vectors."""
+async def _get_embeddings(
+    texts: list[str],
+    *,
+    kind: Literal["document", "query"] = "document",
+) -> list[list[float]]:
+    """Call the configured embeddings endpoint. Returns one vector per input.
+
+    `kind` selects the retrieval role for asymmetric models (nomic/e5/bge),
+    which prepend "search_document: " or "search_query: " to each input. Using
+    the wrong prefix (or none) silently tanks retrieval quality. For symmetric
+    models (OpenAI) the prefix is skipped.
+    """
     from openai import AsyncOpenAI
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set, cannot generate embeddings")
-
-    # Always use OpenAI directly for embeddings (not OpenRouter)
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url="https://api.openai.com/v1",
+    base_url = (
+        os.environ.get("EMBEDDING_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
     )
+    api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    if not api_key:
+        raise RuntimeError(
+            "EMBEDDING_API_KEY (or OPENAI_API_KEY) not set, cannot generate embeddings"
+        )
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    if _NEEDS_RETRIEVAL_PREFIX:
+        prefix = "search_query: " if kind == "query" else "search_document: "
+        payload = [prefix + t for t in texts]
+    else:
+        payload = texts
 
     response = await client.embeddings.create(
         model=_EMBED_MODEL,
-        input=texts,
-        dimensions=_EMBED_DIMS,
+        input=payload,
     )
 
     return [item.embedding for item in response.data]

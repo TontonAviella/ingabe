@@ -27,6 +27,8 @@ services:
         condition: service_healthy
       qgis-processing:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     environment:
       - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
       # Clerk authentication (set these to enable real multi-user auth)
@@ -45,6 +47,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
+      # Embeddings run on self-hosted Ollama by default (nomic-embed-text, 768-dim).
+      # Decoupled from OPENAI_* so the chat-LLM gateway key can't 401 embed_all_stale.
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL:-http://ollama:11434/v1}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-ollama}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
@@ -406,6 +413,31 @@ services:
         crond -f -l 2
     restart: unless-stopped
 
+  ollama:
+    container_name: mundi-ollama
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+    # Pull nomic-embed-text on first boot, then hold the server in the foreground.
+    # Healthcheck reports healthy as soon as the model is pulled and /api/tags
+    # lists it, so the app can start depending on it.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        ollama serve &
+        OLLAMA_PID=$$!
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull nomic-embed-text
+        wait $$OLLAMA_PID
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q nomic-embed-text"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   dagster-home:
   superset-home:
@@ -413,3 +445,4 @@ volumes:
   prometheus-data:
   grafana-data:
   tempo-data:
+  ollama-data:

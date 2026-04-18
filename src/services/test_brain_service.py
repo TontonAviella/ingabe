@@ -490,8 +490,8 @@ async def test_upsert_chunks_with_embedding(conn, brain):
         owner_uuid=TEST_OWNER,
     )
 
-    # Create fake embeddings (1536 dims)
-    fake_embedding = [0.01 * i for i in range(1536)]
+    # Create fake embeddings (768 dims, matches nomic-embed-text)
+    fake_embedding = [0.01 * i for i in range(768)]
 
     chunks = [
         ChunkInput(
@@ -522,7 +522,7 @@ async def test_vector_search_with_embeddings(conn, brain):
     """Vector search finds pages by embedding similarity."""
     # The page and chunks from test above should still exist
     # Search with the same fake embedding — should match
-    fake_embedding = [0.01 * i for i in range(1536)]
+    fake_embedding = [0.01 * i for i in range(768)]
 
     results = await brain.search_vector(conn, fake_embedding, limit=5)
     # Should find the test-embed-page
