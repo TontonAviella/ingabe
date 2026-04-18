@@ -2,6 +2,15 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.2.1.0] - 2026-04-18
+
+### Added
+- ALOS-2 PALSAR-2 L-band SAR service (`src/services/alos_palsar.py`) via Digital Earth Africa STAC, with annual 25m gamma-naught mosaics, HH/HV ratio, and multi-year temporal variation. Sees through clouds and into canopy for biomass and structural monitoring.
+- NASA CYGNSS GNSS-R service (`src/services/cygnss.py`) via NASA CMR + PO.DAAC using earthaccess auth. Exposes 9km/36km soil moisture and 1km watermask products. Returns `auth_required` gracefully when Earthdata credentials are missing.
+- Five new Sage (LLM) tools wired through `src/geoprocessing/tools.json` and `src/routes/message_routes.py`: `get_alos_l_band_stats`, `get_alos_temporal_variation`, `check_cygnss_availability`, `get_cygnss_soil_moisture`, `get_cygnss_watermask`.
+- 24 mocked unit tests in `src/services/test_alos_cygnss_services.py` covering the gamma-naught conversion, band stats, ALOS + CYGNSS service methods, and full tool-registration integrity (tools.json schema, message_routes dispatch, system prompt capabilities).
+- Capability and data-attribution entries for the two new sensors in `src/dependencies/system_prompt.py` so Sage can cite sources correctly.
+
 ## [0.2.0.0] - 2026-04-17
 
 ### Added
