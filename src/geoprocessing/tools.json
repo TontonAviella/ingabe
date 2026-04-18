@@ -1342,6 +1342,119 @@
   {
     "type": "function",
     "function": {
+      "name": "get_alos_l_band_stats",
+      "description": "Get ALOS-2 PALSAR-2 L-band (24cm wavelength) SAR backscatter statistics for a bounding box over one or more years. Returns per-year HH/HV gamma-naught stats plus the HH/HV ratio in dB. The HH/HV ratio discriminates vegetation structure: forest <-5dB, crops -5 to -10dB, bare/water >-3dB. L-band penetrates dense canopy where Sentinel-1 C-band saturates. Use for crop-type discrimination, biomass analysis, or deep canopy monitoring. No auth needed (Digital Earth Africa public bucket).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "years": {
+            "type": "string",
+            "description": "Comma-separated years to analyse (e.g. '2020,2021,2022'). Available: 2015-2022 (PALSAR-2), 2007-2010 (PALSAR). Default: 2020,2021,2022"
+          }
+        },
+        "required": ["bbox"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_alos_temporal_variation",
+      "description": "Compute year-over-year variation in ALOS PALSAR L-band HH/HV ratio across multiple years. Reveals agricultural activity patterns: stable ratio = perennial crops/forest, variable ratio = annual crop rotation, high HV std = heterogeneous smallholder mosaics. Use for long-term land-use change analysis or distinguishing perennial vs annual cropping systems.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "years": {
+            "type": "string",
+            "description": "Comma-separated years (need at least 2). Default: 2018,2019,2020,2021,2022"
+          }
+        },
+        "required": ["bbox"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "check_cygnss_availability",
+      "description": "Check what NASA CYGNSS (GNSS-Reflectometry) data is available for a bounding box. CYGNSS is an 8-satellite constellation that measures GPS signal reflections to detect soil moisture and surface water. Coverage ±38° latitude (Rwanda is dead center), median 3-hour revisit, ~6-day latency. CYGNSS's killer feature: L-band penetrates vegetation canopy, detecting water UNDER trees where Sentinel-1 and optical fail. Returns granule counts, latest dates, and auth status. No auth needed for this diagnostic tool. Use first before calling get_cygnss_soil_moisture or get_cygnss_watermask.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'. Default: Rwanda national bbox."
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_cygnss_soil_moisture",
+      "description": "Get CYGNSS soil moisture timeseries for a point (lat/lon). Returns volumetric water content (m³/m³, 0-5cm depth) at 9km or 36km resolution. Interpretation: <0.10 dry, 0.10-0.25 moist, 0.25-0.40 wet/flood risk, >0.40 likely standing water. Complements WaPOR (100m dekadal) with higher temporal resolution. Requires NASA Earthdata credentials — if unavailable, returns granule availability without data. Use for drought monitoring, irrigation planning, or flood risk at a specific field.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (Rwanda: -2.84 to -1.05)"
+          },
+          "lon": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (Rwanda: 28.86 to 30.90)"
+          },
+          "days_back": {
+            "type": "integer",
+            "description": "How many days of history to pull. Default: 90"
+          },
+          "resolution_km": {
+            "type": "integer",
+            "description": "Grid resolution, 9 or 36 km. Default: 9"
+          }
+        },
+        "required": ["lat", "lon"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_cygnss_watermask",
+      "description": "Get CYGNSS binary water/land classification at ~1km resolution for a bounding box. L-band GNSS-R detects water under vegetation canopy — ponds hidden under banana groves show up here where Sentinel-1 fails. Coarser than SAR water detection (detect_water_bodies at ~10m) but sees through canopy. Use for aquaculture pond verification under forest cover, or cross-validating Sentinel-1 flood extent. Requires NASA Earthdata credentials.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "date": {
+            "type": "string",
+            "description": "Target date (YYYY-MM-DD). Default: 7 days ago (accounting for 6-day latency)"
+          },
+          "product": {
+            "type": "string",
+            "description": "'watermask_daily' (1km, daily) or 'watermask_monthly' (1km, monthly). Default: watermask_daily"
+          }
+        },
+        "required": ["bbox"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "search_brain",
       "description": "Search the knowledge brain for entities and information. Uses hybrid search (keyword + vector) across brain pages. Returns ranked results with compiled truth summaries. Use when the user asks about a field, farmer, district, claim, policy, or any entity the brain might know about.",
       "parameters": {

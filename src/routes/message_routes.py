@@ -5483,6 +5483,145 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "get_alos_l_band_stats":
+                            try:
+                                from src.services.alos_palsar import get_alos_palsar_service
+                                _alos_svc = get_alos_palsar_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _years_str = tool_args.get("years", "")
+                                _years = [int(y.strip()) for y in _years_str.split(",") if y.strip()] if _years_str else None
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _alos_svc.get_l_band_stats(_bbox_tuple, _years)
+                                )
+                            except Exception as e:
+                                logger.exception("get_alos_l_band_stats tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_alos_temporal_variation":
+                            try:
+                                from src.services.alos_palsar import get_alos_palsar_service
+                                _alos_svc = get_alos_palsar_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _years_str = tool_args.get("years", "")
+                                _years = [int(y.strip()) for y in _years_str.split(",") if y.strip()] if _years_str else None
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _alos_svc.get_temporal_variation(_bbox_tuple, _years)
+                                )
+                            except Exception as e:
+                                logger.exception("get_alos_temporal_variation tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "check_cygnss_availability":
+                            try:
+                                from src.services.cygnss import get_cygnss_service, RWANDA_BBOX as _CYGNSS_RWANDA
+                                _cygnss_svc = get_cygnss_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                if _bbox_str:
+                                    _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                    if len(_bbox_parts) != 4:
+                                        raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                    _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                else:
+                                    _bbox_tuple = _CYGNSS_RWANDA
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None, lambda: _cygnss_svc.check_data_availability(_bbox_tuple)
+                                )
+                            except Exception as e:
+                                logger.exception("check_cygnss_availability tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_cygnss_soil_moisture":
+                            try:
+                                from src.services.cygnss import get_cygnss_service
+                                _cygnss_svc = get_cygnss_service()
+                                _lat = float(tool_args.get("lat"))
+                                _lon = float(tool_args.get("lon"))
+                                _days_back = int(tool_args.get("days_back", 90))
+                                _resolution_km = int(tool_args.get("resolution_km", 9))
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None,
+                                    lambda: _cygnss_svc.get_soil_moisture(
+                                        lat=_lat, lon=_lon, days_back=_days_back, resolution_km=_resolution_km
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("get_cygnss_soil_moisture tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name == "get_cygnss_watermask":
+                            try:
+                                from src.services.cygnss import get_cygnss_service
+                                _cygnss_svc = get_cygnss_service()
+                                _bbox_str = tool_args.get("bbox", "")
+                                _bbox_parts = [float(x.strip()) for x in _bbox_str.split(",")]
+                                if len(_bbox_parts) != 4:
+                                    raise ValueError(f"bbox must have 4 values, got {len(_bbox_parts)}")
+                                _bbox_tuple = (_bbox_parts[0], _bbox_parts[1], _bbox_parts[2], _bbox_parts[3])
+                                _date = tool_args.get("date")
+                                _product = tool_args.get("product", "watermask_daily")
+                                loop = asyncio.get_event_loop()
+                                tool_result = await loop.run_in_executor(
+                                    None,
+                                    lambda: _cygnss_svc.get_watermask(
+                                        bbox=_bbox_tuple, date=_date, product=_product
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("get_cygnss_watermask tool failed")
+                                tool_result = {"status": "error", "error": str(e)}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                )
+                            )
+
                         elif function_name == "search_brain":
                             try:
                                 from src.dependencies.brain_dep import get_brain_service
