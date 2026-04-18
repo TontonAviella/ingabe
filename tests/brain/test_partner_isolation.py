@@ -27,10 +27,14 @@ import uuid
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from src.database.pool import _build_postgres_url
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+# Module-scoped loop so our session-like `seeded_db` fixture survives across
+# the tests in this file without being torn down by unrelated test modules
+# (e.g. tests that spin up a FastAPI lifespan and close the session loop).
+pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
 # Two synthetic partners. Each gets its own asyncpg connection with
@@ -130,7 +134,7 @@ async def _seed_page(
         )
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def seeded_db():
     """Ensure migrations run, then seed one page per scope/partner combo."""
     from src.database.migrate import run_migrations
@@ -183,21 +187,21 @@ async def seeded_db():
     await admin.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="module")
 async def conn_a(seeded_db):
     c = await _open(USER_A, PARTNER_A)
     yield c
     await c.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="module")
 async def conn_b(seeded_db):
     c = await _open(USER_B, PARTNER_B)
     yield c
     await c.close()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="module")
 async def conn_admin(seeded_db):
     c = await _open(USER_ADMIN, None, role="admin")
     yield c
