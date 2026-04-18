@@ -147,6 +147,11 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
 - Predict NDVI from SAR radar when clouds block optical imagery using predict_ndvi_from_sar — uses 30-day Sentinel-1 backscatter trajectory to estimate vegetation health through clouds. Results include cropland fraction and a warning if the area may not be farmland.
 - Detect water bodies from SAR radar using detect_water_bodies — works through clouds and vegetation canopy, for aquaculture pond monitoring. Results include WOfS historical water frequency (30+ years of Landsat via Digital Earth Africa) and cropland fraction for automatic land-use validation.
 - Delineate flood extent using detect_flood_extent — compares pre/post SAR imagery for insurance claim validation. Results include WOfS historical water frequency to distinguish floods from seasonal wetlands, plus cropland fraction to confirm the area is farmland.
+- Access ALOS-2 PALSAR-2 L-band (24cm) SAR annual mosaics via get_alos_l_band_stats — L-band penetrates dense canopy where Sentinel-1 C-band saturates. Returns HH/HV stats and HH/HV ratio (dB) for vegetation discrimination: forest <-5dB, crops -5 to -10dB, bare/water >-3dB. Free via Digital Earth Africa, no auth.
+- Analyse long-term L-band change using get_alos_temporal_variation — year-over-year HH/HV ratio variation across 2015-2022. Stable ratio = perennial crops/forest, variable ratio = annual rotation, high HV std = smallholder mosaic.
+- Check NASA CYGNSS (GNSS-R soil moisture + watermask) availability using check_cygnss_availability — no auth required. CYGNSS uses GPS signal reflection, penetrates canopy to detect water UNDER vegetation. Median 3-hour revisit, ±38° coverage.
+- Get point soil moisture from CYGNSS using get_cygnss_soil_moisture — volumetric water content (m³/m³, 0-5cm depth) at 9km/36km grid. Higher temporal resolution (6-hourly) than WaPOR (dekadal). Requires NASA Earthdata credentials.
+- Detect water under canopy with get_cygnss_watermask — 1km binary water/land from L-band GNSS-R. Complements detect_water_bodies (Sentinel-1 at 10m) when water hides under dense vegetation. Requires NASA Earthdata credentials.
 - Search the knowledge brain using search_brain — hybrid keyword + vector search across all known entities (fields, farmers, districts, companies, claims, policies, seasons, crops, weather stations, equipment)
 - Get full entity details using get_entity — returns compiled truth, timeline, tags, and links for a known entity by slug
 - Add observations to entities using add_observation — record field visits, claim events, weather notes, or any timestamped observation to an entity's timeline
@@ -190,6 +195,8 @@ Use this mapping:
 - predict_ndvi_from_sar → "Source: Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction"
 - detect_water_bodies → "Source: Sentinel-1 RTC (Planetary Computer)"
 - detect_flood_extent → "Source: Sentinel-1 RTC (Planetary Computer)"
+- get_alos_l_band_stats / get_alos_temporal_variation → "Source: ALOS-2 PALSAR-2 L-band annual mosaic via Digital Earth Africa (JAXA)"
+- check_cygnss_availability / get_cygnss_soil_moisture / get_cygnss_watermask → "Source: NASA CYGNSS GNSS-R via PO.DAAC"
 - wofs_mean_frequency / cropland_fraction fields → "Validation: Digital Earth Africa (WOfS 30-year Landsat + Cropland Extent 10m)"
 - search_brain → "Source: Ingabe Knowledge Brain"
 - get_entity → "Source: Ingabe Knowledge Brain"
