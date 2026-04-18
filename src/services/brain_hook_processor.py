@@ -48,6 +48,8 @@ async def process_pending_hooks(
                 n = await _process_vector_hook(conn, brain, payload)
             elif hook_type == "raster_upload":
                 n = await _process_raster_hook(conn, brain, payload)
+            elif hook_type == "partner_url_fetch":
+                n = await _process_partner_url_hook(conn, brain, payload)
             else:
                 logger.warning("Unknown hook type: %s", hook_type)
                 skipped += 1
@@ -397,6 +399,86 @@ async def _process_raster_hook(
         pages_updated=[slug],
         summary=f"Created brain page for raster '{layer_name}'",
     )
+
+    return 1
+
+
+async def _process_partner_url_hook(
+    conn: asyncpg.Connection,
+    brain: BrainService,
+    payload: dict,
+) -> int:
+    """Fetch a URL and create a partner-private brain page."""
+    import httpx
+
+    url = payload.get("url", "")
+    slug = payload.get("slug", "")
+    title = payload.get("title", url[:80])
+    org_id = payload.get("org_id", "")
+    user_id = payload.get("user_id", "")
+
+    if not url or not slug or not org_id or not user_id:
+        logger.warning("partner_url_fetch hook missing required fields")
+        return 0
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+
+    text = resp.text
+    if not text.strip():
+        logger.warning("partner_url_fetch: empty content from %s", url)
+        return 0
+
+    # Truncate very large pages
+    if len(text) > 500_000:
+        text = text[:500_000]
+
+    from src.services.brain_service import PageInput, TimelineInput, _validate_slug
+
+    slug = _validate_slug(slug)
+    now = date.today()
+
+    async with conn.transaction():
+        await brain.put_page(
+            conn,
+            slug,
+            PageInput(
+                type="source_document",
+                title=title,
+                compiled_truth=text,
+                frontmatter={
+                    "source_type": "partner_url_fetch",
+                    "source_url": url,
+                },
+            ),
+            owner_uuid=user_id,
+        )
+
+        await conn.execute(
+            """
+            UPDATE brain_pages
+            SET access_scope = 'partner_internal',
+                partner_id   = $2::uuid,
+                source_id    = $3,
+                fetched_at   = now()
+            WHERE slug = $1
+            """,
+            slug,
+            org_id,
+            f"partner-url-{org_id[:8]}",
+        )
+
+        await brain.add_timeline_entry(
+            conn,
+            slug,
+            TimelineInput(
+                date=now,
+                summary=f"Fetched from partner URL: {url[:100]}",
+                source="partner_url_fetch",
+            ),
+            owner_uuid=user_id,
+        )
 
     return 1
 
