@@ -16,14 +16,42 @@ secrets mount wiring for the first partner.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Iterable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import asyncpg
 
 from src.services.brain_ingestion.models import SourceConfig
 
 logger = logging.getLogger(__name__)
+
+
+_URL_RE = re.compile(r'https?://[^\s<>"\'`]+')
+
+
+def _sanitize_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        # Drop userinfo (strips user:pass@) and query + fragment.
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except Exception:
+        return url
+
+
+def _sanitize_error(err: str) -> str:
+    """Strip userinfo and query strings from any URLs in an error message.
+
+    brain_sources.last_error is readable by anyone with source-table read.
+    If a partner source embeds an API key as ?token=... or https://user:pass@host,
+    we don't want it persisted in plaintext.
+    """
+    if not err:
+        return err
+    return _URL_RE.sub(lambda m: _sanitize_url(m.group(0)), err)
 
 
 async def upsert_source_row(
@@ -87,7 +115,7 @@ async def record_fetch_failure(
             status     = COALESCE($3, status)
         WHERE source_id = $1
         """,
-        source_id, error[:2000], new_status,
+        source_id, _sanitize_error(error)[:2000], new_status,
     )
 
 
