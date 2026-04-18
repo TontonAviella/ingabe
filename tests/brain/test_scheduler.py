@@ -19,7 +19,7 @@ import pytest
 from src.services.brain_ingestion import scheduler as sched
 from src.services.brain_ingestion.models import FetchedContent
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
 _TEST_SOURCE_ID = "test-sched-src"

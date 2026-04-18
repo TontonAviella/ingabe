@@ -30,7 +30,7 @@ import pytest
 
 from src.database.pool import _build_postgres_url
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
 # Two synthetic partners. Each gets its own asyncpg connection with

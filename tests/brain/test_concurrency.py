@@ -25,7 +25,7 @@ from src.services.brain_ingestion.concurrency import (
     reserve_ocr_budget,
 )
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
 class _FakeRedis:
