@@ -1,14 +1,15 @@
 """Tests for BRAIN_PARTNER_INTERNAL_ENABLED feature flag.
 
-Covers the helper plus the three gate sites (scheduler fetcher pull,
-write_page path, Sage retrieval). One flag moves three sites together;
-a missed site is a silent half-failure.
+Covers the helper plus the two write-path gate sites and the retrieval
+isolation layer. The flag gates the write path only; retrieval uses the
+app.partner_id GUC and _PARTNER_FILTER for defense-in-depth isolation.
 
-Gate sites:
+Write-path gates (flag-controlled):
   1. scheduler._run_source_job — skips partner_internal sources when off
   2. normalizer.write_page — refuses partner_internal writes when off
-  3. brain_service.search_keyword / search_vector — filter partner_internal
-     rows out of results when off
+
+Retrieval isolation (GUC-controlled, tested here for completeness):
+  3. brain_service.search_keyword — filters via app.partner_id GUC
 """
 
 from __future__ import annotations

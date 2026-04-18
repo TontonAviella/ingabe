@@ -147,20 +147,28 @@ class AsyncDatabaseConnection:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.conn is not None:
-            # Always reset ALL GUCs before returning to pool, regardless of
-            # which ones this request set. A previous request may have set
-            # partner_id on this connection; leaving it is a data leak.
-            if not IS_RUNNING_PYTEST:
+            if IS_RUNNING_PYTEST:
+                await self.conn.close()
+            else:
+                # Always reset ALL GUCs before returning to pool, regardless
+                # of which ones this request set. A previous request may have
+                # set partner_id on this connection; leaving it is a data leak.
+                reset_ok = True
                 try:
                     await self.conn.execute(
                         "RESET app.user_id; RESET app.partner_id; RESET app.role"
                     )
                 except Exception:
-                    pass  # Connection may already be broken
-            if IS_RUNNING_PYTEST:
-                await self.conn.close()
-            else:
-                await self._pool.release(self.conn)
+                    reset_ok = False
+                if reset_ok:
+                    await self._pool.release(self.conn)
+                else:
+                    # Connection broken or in error state. Discard it rather
+                    # than returning to pool with potentially stale GUCs.
+                    try:
+                        await self.conn.close()
+                    except Exception:
+                        pass
         if self.span:
             self.span.end()
 
