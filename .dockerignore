@@ -11,3 +11,6 @@ archives/
 frontendts/dist/
 frontendts/design_suggestions/
 data/
+.env
+.env.*
+.env.prod

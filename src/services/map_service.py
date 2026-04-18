@@ -599,7 +599,7 @@ async def get_map_style_internal(
 
             async def _gen_url(key: str) -> str:
                 return await s3_op(
-                    s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": key}, ExpiresIn=3600),
+                    s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": key}, ExpiresIn=28800),
                     "presigned URL", f"PMTiles {key}",
                 )
 
@@ -625,7 +625,7 @@ async def get_map_style_internal(
             bucket_name = get_bucket_name()
             s3_client = await get_async_s3_client()
             presigned_url = await s3_op(
-                s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=3600),
+                s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=28800),
                 "presigned URL", f"PMTiles {pmtiles_key}",
             )
             style_json["sources"][layer_id] = {
@@ -671,7 +671,7 @@ async def get_map_style_internal(
 
             async def _gen_postgis_url(key: str) -> str:
                 return await s3_op(
-                    _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=3600),
+                    _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=28800),
                     "presigned URL", f"PMTiles {key}",
                 )
 

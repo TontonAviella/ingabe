@@ -48,12 +48,14 @@ if "dataspace.copernicus.eu" in _SH_BASE_URL:
         "CDSE/protocol/openid-connect/token"
     )
     _SH_PROCESS_URL = f"{_SH_BASE_URL}/api/v1/process"
+    _SH_CATALOG_URL = f"{_SH_BASE_URL}/api/v1/catalog/1.0.0/search"
 else:
     _SH_TOKEN_URL = (
         "https://services.sentinel-hub.com/auth/realms/main/"
         "protocol/openid-connect/token"
     )
     _SH_PROCESS_URL = "https://services.sentinel-hub.com/api/v1/process"
+    _SH_CATALOG_URL = "https://services.sentinel-hub.com/api/v1/catalog/1.0.0/search"
 
 # Cached token state
 _cached_token: Optional[str] = None
@@ -65,14 +67,17 @@ def is_configured() -> bool:
     return bool(settings.sh_client_id and settings.sh_client_secret)
 
 
-async def get_access_token() -> str:
+async def get_access_token(force_refresh: bool = False) -> str:
     """Return a valid OAuth2 access token, fetching a new one if expired.
 
     Tokens are cached in memory with a 5-minute safety margin before expiry.
+    Set ``force_refresh=True`` to bypass the cache after a 401 from the API
+    (server-side revocation, credential rotation, or clock drift can invalidate
+    a token before its advertised expiry).
     """
     global _cached_token, _token_expires_at
 
-    if _cached_token and time.monotonic() < _token_expires_at:
+    if not force_refresh and _cached_token and time.monotonic() < _token_expires_at:
         return _cached_token
 
     if not is_configured():
@@ -102,10 +107,6 @@ async def get_access_token() -> str:
     return _cached_token
 
 
-# Sentinel Hub Catalog API (STAC)
-_SH_CATALOG_URL = "https://services.sentinel-hub.com/api/v1/catalog/1.0.0/search"
-
-
 async def search_catalog(
     bbox_wgs84: tuple[float, float, float, float],
     *,
@@ -118,8 +119,6 @@ async def search_catalog(
     Returns a list of scene dicts with 'datetime' and 'cloud_cover' fields,
     sorted by cloud cover ascending (clearest first).
     """
-    token = await get_access_token()
-
     search_body: dict = {
         "collections": [collection],
         "bbox": list(bbox_wgs84),
@@ -135,19 +134,35 @@ async def search_catalog(
         search_body["datetime"] = f"{date_from}T00:00:00Z/{date_to}T23:59:59Z"
 
     session = _get_session()
-    async with session.post(
-        _SH_CATALOG_URL,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-        json=search_body,
-    ) as resp:
-        if resp.status != 200:
+
+    async def _do_request(token: str):
+        return await session.post(
+            _SH_CATALOG_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json=search_body,
+        )
+
+    token = await get_access_token()
+    async with await _do_request(token) as resp:
+        # Stale-token recovery: force-refresh once on 401 and retry.
+        if resp.status == 401:
+            logger.info("Catalog search got 401, refreshing token and retrying")
+            token = await get_access_token(force_refresh=True)
+            async with await _do_request(token) as resp2:
+                if resp2.status != 200:
+                    body = await resp2.text()
+                    logger.warning("Catalog search failed %d: %s", resp2.status, body[:200])
+                    return []
+                data = await resp2.json()
+        elif resp.status != 200:
             body = await resp.text()
             logger.warning("Catalog search failed %d: %s", resp.status, body[:200])
             return []
-        data = await resp.json()
+        else:
+            data = await resp.json()
 
     results = []
     for feat in data.get("features", []):
@@ -463,7 +478,6 @@ async def fetch_tile(
 
     Returns PNG bytes on success, None on error.
     """
-    token = await get_access_token()
     evalscript = get_evalscript(collection, layer)
     payload = build_process_payload(
         collection=collection,
@@ -478,15 +492,34 @@ async def fetch_tile(
     )
 
     session = _get_session()
-    async with session.post(
-        _SH_PROCESS_URL,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "image/png",
-        },
-        json=payload,
-    ) as resp:
+
+    async def _do_request(token: str):
+        return await session.post(
+            _SH_PROCESS_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "image/png",
+            },
+            json=payload,
+        )
+
+    token = await get_access_token()
+    async with await _do_request(token) as resp:
+        # Stale-token recovery: force-refresh once on 401 and retry.
+        if resp.status == 401:
+            logger.info("Process API got 401, refreshing token and retrying")
+            token = await get_access_token(force_refresh=True)
+            async with await _do_request(token) as resp2:
+                if resp2.status != 200:
+                    body = await resp2.text()
+                    logger.warning(
+                        "Sentinel Hub Process API error %d (after refresh): %s",
+                        resp2.status,
+                        body[:300],
+                    )
+                    return None
+                return await resp2.read()
         if resp.status != 200:
             body = await resp.text()
             logger.warning(

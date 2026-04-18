@@ -642,8 +642,8 @@ async def get_superset_guest_token(
             login_response = await client.post(
                 f"{superset_url}/api/v1/security/login",
                 json={
-                    "username": "admin",
-                    "password": "admin",
+                    "username": os.environ.get("SUPERSET_USER", "admin"),
+                    "password": os.environ.get("SUPERSET_PASSWORD", "admin"),
                     "provider": "db",
                     "refresh": True,
                 },
@@ -704,8 +704,8 @@ async def list_superset_dashboards(
             login_response = await client.post(
                 f"{superset_url}/api/v1/security/login",
                 json={
-                    "username": "admin",
-                    "password": "admin",
+                    "username": os.environ.get("SUPERSET_USER", "admin"),
+                    "password": os.environ.get("SUPERSET_PASSWORD", "admin"),
                     "provider": "db",
                     "refresh": True,
                 },
@@ -870,14 +870,7 @@ async def field_ndvi(
     Returns per-day statistics (mean, std, min, max, percentiles).
     Requires SH_CLIENT_ID and SH_CLIENT_SECRET environment variables.
     """
-    from src.services.sentinel_hub_service import get_sentinel_hub_service
-
-    service = get_sentinel_hub_service()
-    if service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Sentinel Hub service not available (sentinelhub package not installed)",
-        )
+    from src.services.satellite_analytics import get_field_stats as _get_field_stats
 
     geometry = data.get("geometry")
 
@@ -906,7 +899,7 @@ async def field_ndvi(
 
     result = await asyncio.get_running_loop().run_in_executor(
         None,
-        lambda: service.get_field_stats(
+        lambda: _get_field_stats(
             geometry=geometry,
             date_from=data.get("date_from"),
             date_to=data.get("date_to"),
@@ -942,14 +935,7 @@ async def field_timeseries(
             "months": 6  // optional, default 6
         }
     """
-    from src.services.sentinel_hub_service import get_sentinel_hub_service
-
-    service = get_sentinel_hub_service()
-    if service is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Sentinel Hub service not available",
-        )
+    from src.services.satellite_analytics import get_field_timeseries as _get_field_timeseries
 
     geometry = data.get("geometry")
 
@@ -978,7 +964,7 @@ async def field_timeseries(
 
     result = await asyncio.get_running_loop().run_in_executor(
         None,
-        lambda: service.get_field_timeseries(
+        lambda: _get_field_timeseries(
             geometry=geometry,
             months=data.get("months", 6),
         ),

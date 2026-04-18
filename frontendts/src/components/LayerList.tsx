@@ -1126,7 +1126,6 @@ const LayerList: React.FC<LayerListProps> = ({
           mapId={currentMapData?.map_id}
           onSuccess={updateMapData}
         />
-
       </CardFooter>
     </Card>
   );

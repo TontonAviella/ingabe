@@ -627,7 +627,7 @@ if __name__ == '__main__':
         q1 = report['q1_crop_present']
         sat = q1['satellite']
         wx = q1['weather']
-        print(f"\n  Q1: Is there a crop?")
+        print("\n  Q1: Is there a crop?")
         print(f"    Satellite: {sat.get('answer', '?')} | Health: {sat.get('health', '?')} | NDVI: {sat.get('ndvi', '?')}")
         if wx.get('pct_of_normal'):
             print(f"    Weather:   {wx.get('recent_30d_mm', '?')}mm last 30d ({wx['pct_of_normal']:.0f}% of normal)")
@@ -637,7 +637,7 @@ if __name__ == '__main__':
         q2 = report['q2_crop_trend']
         sat2 = q2['satellite']
         wx2 = q2['weather']
-        print(f"\n  Q2: Is it on track?")
+        print("\n  Q2: Is it on track?")
         print(f"    Satellite: {sat2.get('trend', '?')} | NDVI change: {sat2.get('ndvi_change', '?')}")
         if wx2.get('drought_risk'):
             print(f"    Weather:   Drought risk: {wx2['drought_risk']} | Next {wx2.get('forecast_days', '?')}d rainfall: {wx2.get('total_rainfall_mm', '?')}mm")
@@ -648,7 +648,7 @@ if __name__ == '__main__':
         q3 = report['q3_claim_verdict']
         sat3 = q3['satellite_evidence']
         wx3 = q3['weather_evidence']
-        print(f"\n  Q3: Did the crop fail?")
+        print("\n  Q3: Did the crop fail?")
         print(f"    Satellite: {sat3.get('claim_support', '?')} ({sat3.get('evidence_score', '?')}/{sat3.get('max_score', 8)})")
         if sat3.get('evidence'):
             for e in sat3['evidence']:

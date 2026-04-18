@@ -173,7 +173,53 @@ async def lifespan(app: FastAPI):
     """
     _configure_app_logging()
 
+    # Start brain hook processor as a background task (processes upload hooks)
+    import asyncio
+
+    async def _brain_hook_loop():
+        """Process pending brain hooks every 30 seconds."""
+        await asyncio.sleep(10)  # Wait for app to fully start
+        while True:
+            try:
+                from src.services.brain_hook_processor import run_hook_processor_once
+                result = await run_hook_processor_once(limit=10)
+                if result["processed"] or result["failed"]:
+                    logging.getLogger("src.services.brain_hook_processor").info(
+                        "Hook processor batch: %s", result
+                    )
+            except Exception:
+                logging.getLogger("src.services.brain_hook_processor").debug(
+                    "Hook processor cycle skipped (tables may not exist yet)"
+                )
+            await asyncio.sleep(30)
+
+    hook_task = asyncio.create_task(_brain_hook_loop())
+
+    # Start the per-source ingestion scheduler (APScheduler, in-process).
+    # Failure to start is logged but non-fatal — app continues to serve
+    # even if brain_sources rows are missing or misconfigured.
+    try:
+        from src.services.brain_ingestion.scheduler import (
+            start_ingestion_scheduler,
+        )
+        await start_ingestion_scheduler()
+    except Exception:
+        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+            "ingestion_scheduler_failed_to_start"
+        )
+
     yield
+
+    hook_task.cancel()
+    try:
+        from src.services.brain_ingestion.scheduler import (
+            shutdown_ingestion_scheduler,
+        )
+        await shutdown_ingestion_scheduler()
+    except Exception:
+        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+            "ingestion_scheduler_shutdown_failed"
+        )
     # Cleanup: close all connection pools and shared clients
     await close_all_pools()
     from src.dependencies.redis_client import close_async_redis

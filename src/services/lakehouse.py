@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+import re
 import tempfile
 from typing import Any, Optional, List, Dict
 
@@ -47,6 +48,41 @@ from src.utils import get_bucket_name, get_async_s3_client
 from src.database.models import LAYER_TYPE_VECTOR
 
 logger = logging.getLogger(__name__)
+
+# Blocked patterns for SQL WHERE clause validation
+_BLOCKED_DUCKDB_FUNCTIONS = [
+    "read_csv", "read_csv_auto", "read_parquet", "read_json",
+    "read_json_auto", "read_text", "read_blob", "glob",
+    "parquet_scan", "csv_scan",
+]
+_BLOCKED_SQL_KEYWORDS = [
+    "UNION", "INSERT", "UPDATE", "DELETE", "DROP", "ALTER",
+    "CREATE", "TRUNCATE", "COPY", "ATTACH", "DETACH",
+    "INSTALL", "LOAD",
+]
+
+
+def _validate_sql_where(sql_where: str) -> None:
+    """Validate a SQL WHERE clause to prevent injection attacks.
+
+    Raises:
+        ValueError: If the clause contains blocked patterns.
+    """
+    if ";" in sql_where:
+        raise ValueError("SQL WHERE clause must not contain semicolons")
+
+    upper = sql_where.upper()
+
+    for kw in _BLOCKED_SQL_KEYWORDS:
+        if re.search(r'\b' + kw + r'\b', upper):
+            raise ValueError(f"SQL WHERE clause must not contain '{kw}'")
+
+    lower = sql_where.lower()
+    for func in _BLOCKED_DUCKDB_FUNCTIONS:
+        if re.search(r'\b' + func + r'\s*\(', lower):
+            raise ValueError(
+                f"SQL WHERE clause must not contain function '{func}'"
+            )
 
 
 class LakehouseManager:
@@ -454,6 +490,13 @@ class LakehouseManager:
                 query = f"SELECT * FROM iceberg_scan('{table_path}')"
 
             if sql_where:
+                try:
+                    _validate_sql_where(sql_where)
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=str(e),
+                    )
                 query += f" WHERE {sql_where}"
 
             query += f" LIMIT {limit}"

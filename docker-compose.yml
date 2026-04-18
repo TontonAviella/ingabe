@@ -131,7 +131,10 @@ services:
 
   postgresdb:
     platform: linux/amd64
-    image: postgis/postgis:15-3.4
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: mundi-postgres:local
     environment:
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
       - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
@@ -177,7 +180,10 @@ services:
   # and set POSTGRES_READ_HOST in the app environment instead.
   #
   # postgresdb-replica:
-  #   image: postgis/postgis:15-3.4
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.postgres
+  #   image: mundi-postgres:local
   #   environment:
   #     - POSTGRES_DB=mundidb
   #     - POSTGRES_USER=mundiuser

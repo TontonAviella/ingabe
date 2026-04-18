@@ -12,7 +12,8 @@ const CLERK_SIGN_UP_URL = import.meta.env.VITE_CLERK_SIGN_UP_URL;
 // Detect broken satellite config: sign-in URL points to localhost but we're
 // running on a real domain. This happens when dev .env leaks into production.
 const _signInIsLocalhost = CLERK_SIGN_IN_URL && new URL(CLERK_SIGN_IN_URL, window.location.href).hostname === 'localhost';
-const _isProductionDomain = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+const _isProductionDomain =
+  typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
 const IS_SATELLITE_BROKEN = Boolean(_signInIsLocalhost && _isProductionDomain);
 const IS_SATELLITE = Boolean(CLERK_SIGN_IN_URL) && !IS_SATELLITE_BROKEN;
 const IS_DEV_KEY = CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_');
@@ -26,7 +27,11 @@ export async function init(): Promise<void> {
     console.error('[Auth] Clerk DEVELOPMENT key detected on production domain. Set VITE_CLERK_PUBLISHABLE_KEY to a pk_live_* key.');
   }
   if (IS_SATELLITE_BROKEN) {
-    console.error('[Auth] Satellite sign-in URL points to localhost but app is running on', window.location.hostname, '— satellite mode disabled. Set VITE_CLERK_SIGN_IN_URL to the real primary domain sign-in URL.');
+    console.error(
+      '[Auth] Satellite sign-in URL points to localhost but app is running on',
+      window.location.hostname,
+      '— satellite mode disabled. Set VITE_CLERK_SIGN_IN_URL to the real primary domain sign-in URL.',
+    );
   } else if (IS_SATELLITE) {
     console.log('[Auth] Running as satellite domain — sign-in via', CLERK_SIGN_IN_URL);
   }
@@ -64,9 +69,7 @@ export function RequireAuth({ children }: React.PropsWithChildren) {
   return (
     <>
       <SignedIn>{children}</SignedIn>
-      <SignedOut>
-        {IS_SATELLITE_BROKEN ? <_BrokenAuthFallback /> : <RedirectToSignIn />}
-      </SignedOut>
+      <SignedOut>{IS_SATELLITE_BROKEN ? <_BrokenAuthFallback /> : <RedirectToSignIn />}</SignedOut>
     </>
   );
 }
@@ -76,13 +79,10 @@ function _BrokenAuthFallback() {
     <div className="flex items-center justify-center min-h-screen bg-background">
       <div className="text-center max-w-md px-6">
         <h1 className="text-2xl font-bold mb-3">Sign-in unavailable</h1>
-        <p className="text-muted-foreground mb-4">
-          Authentication is misconfigured on this server. The sign-in service
-          cannot be reached.
-        </p>
+        <p className="text-muted-foreground mb-4">Authentication is misconfigured on this server. The sign-in service cannot be reached.</p>
         <p className="text-sm text-muted-foreground">
-          If you are the administrator, check that <code className="bg-muted px-1 rounded">VITE_CLERK_SIGN_IN_URL</code> points
-          to your primary domain, not localhost.
+          If you are the administrator, check that <code className="bg-muted px-1 rounded">VITE_CLERK_SIGN_IN_URL</code> points to your
+          primary domain, not localhost.
         </p>
       </div>
     </div>
@@ -144,41 +144,100 @@ export function ApiKeys(): React.ReactNode | null {
   );
 }
 
-// ── getJwt ──────────────────────────────────────────────────────────────
-// This is called outside React components (e.g. in useEffect callbacks).
-// We store the getToken function from useAuth when the Provider mounts.
-let _getTokenFn: (() => Promise<string | null>) | null = null;
-// Cached token for synchronous access (used by MapLibre transformRequest)
-let _cachedToken: string | null = null;
+// ── TokenManager ────────────────────────────────────────────────────────
+// Single source of truth for Clerk JWT lifecycle. Owns the cached token,
+// one refresh interval, one visibilitychange listener, and a dedup promise
+// that coalesces concurrent callers (e.g. 20 tile 401s) into one Clerk call.
+
+const TOKEN_REFRESH_INTERVAL_MS = 55_000; // Clerk tokens expire ~60s
+
+class TokenManager {
+  private _cachedToken: string | null = null;
+  private _getTokenFn: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null = null;
+  private _refreshPromise: Promise<string | null> | null = null;
+  private _intervalId: ReturnType<typeof setInterval> | null = null;
+
+  get cachedToken(): string | null {
+    return this._cachedToken;
+  }
+
+  /** Test-only: directly set cached token without a refresh cycle */
+  set cachedToken(token: string | null) {
+    this._cachedToken = token;
+  }
+
+  initialize(getToken: typeof this._getTokenFn) {
+    // Idempotency guard: React strict mode double-mounts components.
+    this.destroy();
+    this._getTokenFn = getToken;
+    this.refresh();
+    this._startInterval();
+    document.addEventListener('visibilitychange', this._handleVisibility);
+  }
+
+  destroy() {
+    this._getTokenFn = null;
+    this._cachedToken = null;
+    this._refreshPromise = null;
+    if (this._intervalId) {
+      clearInterval(this._intervalId);
+      this._intervalId = null;
+    }
+    document.removeEventListener('visibilitychange', this._handleVisibility);
+  }
+
+  async refresh(skipCache = false): Promise<string | null> {
+    if (!this._getTokenFn) return this._cachedToken;
+
+    // Dedup: if a refresh is already in-flight and we don't need skipCache,
+    // coalesce onto the existing promise
+    if (this._refreshPromise && !skipCache) return this._refreshPromise;
+
+    const promise = this._getTokenFn(skipCache ? { skipCache: true } : undefined)
+      .then((token) => {
+        // NULL GUARD: never downgrade a known-good token to null
+        if (token) this._cachedToken = token;
+        return this._cachedToken;
+      })
+      .catch((err) => {
+        console.warn('[Auth] Token refresh failed:', err);
+        return this._cachedToken; // return stale token, don't clobber
+      })
+      .finally(() => {
+        // Identity check: only clear if this is still the active promise.
+        // A skipCache call may have replaced _refreshPromise while we were in-flight.
+        if (this._refreshPromise === promise) {
+          this._refreshPromise = null;
+        }
+      });
+
+    this._refreshPromise = promise;
+    return promise;
+  }
+
+  private _startInterval() {
+    this._intervalId = setInterval(() => this.refresh(), TOKEN_REFRESH_INTERVAL_MS);
+  }
+
+  private _handleVisibility = () => {
+    if (!this._getTokenFn) return; // destroyed — ignore queued events
+    if (document.visibilityState === 'visible') {
+      // Cancel and restart interval to prevent race with background-throttled timer
+      if (this._intervalId) clearInterval(this._intervalId);
+      this.refresh(true); // skipCache: force fresh token after background throttle
+      this._startInterval();
+    }
+  };
+}
+
+const tokenManager = new TokenManager();
 
 export function _SetTokenProvider({ children }: React.PropsWithChildren) {
   const { getToken } = useAuth();
 
   useEffect(() => {
-    _getTokenFn = getToken;
-    const refreshToken = () => {
-      getToken().then((t) => {
-        _cachedToken = t;
-      });
-    };
-    // Eagerly cache token so transformRequest has it immediately
-    refreshToken();
-    // Refresh cached token every 50s (Clerk tokens expire ~60s)
-    const interval = setInterval(refreshToken, 50_000);
-    // Refresh immediately when tab becomes visible again.
-    // Browsers throttle setInterval in background tabs, so the cached token
-    // used by MapLibre's synchronous transformRequest is often stale after
-    // the user switches back to the tab.
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') refreshToken();
-    };
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      _getTokenFn = null;
-      _cachedToken = null;
-      clearInterval(interval);
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
+    tokenManager.initialize(getToken);
+    return () => tokenManager.destroy();
   }, [getToken]);
 
   return <>{children}</>;
@@ -189,7 +248,15 @@ export function _SetTokenProvider({ children }: React.PropsWithChildren) {
  * Used by MapLibre's transformRequest to add Bearer tokens to tile requests.
  */
 export function getCachedToken(): string | null {
-  return _cachedToken;
+  return tokenManager.cachedToken;
+}
+
+/**
+ * Returns true if Clerk auth is configured (publishable key is set).
+ * Use this to distinguish "no auth mode" from "auth configured but session expired".
+ */
+export function isAuthConfigured(): boolean {
+  return Boolean(CLERK_PUBLISHABLE_KEY);
 }
 
 // ── useIsReady ──────────────────────────────────────────────────────────
@@ -204,23 +271,30 @@ export function useIsReady(): boolean {
   return isLoaded && (isSignedIn ?? false);
 }
 
+// ── useIsSignedOut ─────────────────────────────────────────────────────
+// Returns true when Clerk has loaded and the user is definitively NOT signed in.
+// Useful for showing "sign in" prompts on OptionalAuth pages.
+export function useIsSignedOut(): boolean {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return false; // no auth — never "signed out"
+  }
+  // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
+  const { isLoaded, isSignedIn } = useAuth();
+  return isLoaded && !isSignedIn;
+}
+
 // ── apiFetch ────────────────────────────────────────────────────────────
 // Drop-in replacement for fetch() that attaches the Clerk Bearer token.
 // Use this for all /api/* calls instead of raw fetch().
 export { fetchMaybeAuth as apiFetch };
 
-export async function getJwt(): Promise<string | undefined> {
+export async function getJwt(options?: { skipCache?: boolean }): Promise<string | undefined> {
   if (!CLERK_PUBLISHABLE_KEY) {
     return undefined;
   }
 
-  if (_getTokenFn) {
-    const token = await _getTokenFn();
-    _cachedToken = token;
-    return token ?? undefined;
-  }
-
-  return undefined;
+  const token = await tokenManager.refresh(options?.skipCache ?? false);
+  return token ?? undefined;
 }
 
 // ── fetchMaybeAuth ──────────────────────────────────────────────────────
@@ -259,10 +333,11 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
   const response = await doFetch({ ...init, headers });
 
   // If we get 401 Unauthorized, token might have expired mid-operation.
-  // Retry once with a fresh token (Clerk auto-refreshes expired tokens).
+  // Retry once with a fresh token. skipCache bypasses Clerk's internal token
+  // cache to avoid getting the same expired token back.
   if (response.status === 401 && !hasRetriedBefore) {
-    console.log('401 received, refreshing token and retrying...');
-    const freshToken = await getJwt();
+    console.log('401 received, refreshing token (skipCache) and retrying...');
+    const freshToken = await getJwt({ skipCache: true });
     if (freshToken && freshToken !== token) {
       const retryHeaders = new Headers(init?.headers);
       retryHeaders.set('Authorization', `Bearer ${freshToken}`);
@@ -273,6 +348,19 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
 
   return response;
 }
+
+// ── Test hooks ─────────────────────────────────────────────────────────
+export const __test__ = {
+  setGetTokenFn: (fn: ((opts?: { skipCache?: boolean }) => Promise<string | null>) | null) => {
+    tokenManager.initialize(fn);
+  },
+  setCachedToken: (t: string | null) => {
+    tokenManager.cachedToken = t;
+  },
+  reset: () => {
+    tokenManager.destroy();
+  },
+};
 
 // ── createGeocoder ──────────────────────────────────────────────────────
 // nominatim allows limited geocoding results

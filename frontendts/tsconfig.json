@@ -1,14 +1,25 @@
 {
   "files": [],
   "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    {
+      "path": "./tsconfig.app.json"
+    },
+    {
+      "path": "./tsconfig.node.json"
+    }
   ],
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@mundi/ee": ["./src/lib/ee-stub.tsx"]
+      "@/*": [
+        "./src/*"
+      ],
+      "@mundi/ee": [
+        "./src/lib/ee-stub.tsx"
+      ]
     }
-  }
+  },
+  "exclude": [
+    "opensrc"
+  ]
 }

@@ -939,6 +939,10 @@
           "district": {
             "type": "string",
             "description": "Specific district to check accuracy for (optional — defaults to all districts)"
+          },
+          "lookback_days": {
+            "type": "integer",
+            "description": "Number of days to look back for accuracy comparison. Default: 30"
           }
         },
         "required": []
@@ -1117,6 +1121,296 @@
           }
         },
         "required": ["predicted_crop", "actual_crop", "confirmed"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_soil_moisture",
+      "description": "Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (WGS84)"
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (WGS84)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 30 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          }
+        },
+        "required": ["latitude", "longitude"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_evapotranspiration",
+      "description": "Query actual evapotranspiration (ET) and optionally transpiration and net primary productivity from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of ET values in mm/day for the given location. Use when the user asks about evapotranspiration, water use, crop water consumption, water productivity, ET, or how much water a crop/field is using.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "description": "Latitude in decimal degrees (WGS84)"
+          },
+          "longitude": {
+            "type": "number",
+            "description": "Longitude in decimal degrees (WGS84)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 30 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          },
+          "include_components": {
+            "type": "boolean",
+            "description": "If true, also return transpiration and net primary productivity. Default: false"
+          }
+        },
+        "required": ["latitude", "longitude"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_food_security_alerts",
+      "description": "Query IPC food security classifications for Rwanda from FEWS NET. Returns the current IPC phase (1-5 scale: 1=Minimal, 2=Stressed, 3=Crisis, 4=Emergency, 5=Famine) and any areas of concern. Use when the user asks about food security, hunger, famine risk, IPC classification, food crisis, or food insecurity in Rwanda.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "Optional district name to filter (e.g. Kayonza, Bugesera)"
+          },
+          "period": {
+            "type": "string",
+            "enum": ["current", "projected"],
+            "description": "current = latest observed situation, projected = near-term outlook. Default: current"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "detect_dry_spells",
+      "description": "Detect historical dry spells from observed weather data (AgERA5). Scans for consecutive days where precipitation was below a threshold. Use when the user asks about dry spells, drought events, consecutive dry days, rainfall gaps, or historical drought periods for Rwanda districts.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "District name to filter (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date (YYYY-MM-DD). Default: 180 days ago"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date (YYYY-MM-DD). Default: latest available"
+          },
+          "threshold_mm": {
+            "type": "number",
+            "description": "Daily precipitation threshold in mm — days below this count as dry. Default: 2.0"
+          },
+          "min_duration_days": {
+            "type": "integer",
+            "description": "Minimum consecutive dry days to qualify as a dry spell. Default: 10"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_insurance_accuracy",
+      "description": "Compute weather data accuracy for agricultural insurance underwriting. Returns binary rainfall detection metrics (POD, FAR, HSS, CSI), dry spell detection results, NDVI-weather concordance, and an overall confidence rating (0-100). Use when the user asks about insurance accuracy, weather data reliability, rainfall detection quality, underwriting confidence, or whether weather data is good enough for crop insurance.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "district": {
+            "type": "string",
+            "description": "District name (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+          },
+          "season": {
+            "type": "string",
+            "enum": ["A", "B"],
+            "description": "Rwanda growing season: A (Sep-Jan) or B (Feb-Jun). Optional — defaults to last 90 days"
+          },
+          "threshold_mm": {
+            "type": "number",
+            "description": "Rainfall threshold in mm for binary rain/no-rain classification. Default: 5.0"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "predict_ndvi_from_sar",
+      "description": "Predict NDVI vegetation index from Sentinel-1 SAR radar data when optical imagery is blocked by clouds. Uses 30-day SAR backscatter trajectory to estimate what NDVI would be. Use when the user asks about crop health during cloudy periods or wants cloud-proof monitoring.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "target_date": {
+            "type": "string",
+            "description": "Date to predict NDVI for (YYYY-MM-DD). Default: today"
+          }
+        },
+        "required": ["bbox"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "detect_water_bodies",
+      "description": "Detect water bodies and ponds from Sentinel-1 SAR radar imagery. Works through clouds and under tree canopy. Use for aquaculture pond verification, water body monitoring, or checking if ponds are filled. Returns water area in hectares and water body polygons.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "date": {
+            "type": "string",
+            "description": "Target date (YYYY-MM-DD). Default: most recent S1 pass"
+          }
+        },
+        "required": ["bbox"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "detect_flood_extent",
+      "description": "Delineate flood extent by comparing Sentinel-1 SAR radar imagery from before and after a flood event. Returns new flood area (excluding permanent water bodies) with polygons suitable for insurance claim validation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"
+          },
+          "date_before": {
+            "type": "string",
+            "description": "Pre-flood date (YYYY-MM-DD)"
+          },
+          "date_after": {
+            "type": "string",
+            "description": "Post-flood date (YYYY-MM-DD)"
+          }
+        },
+        "required": ["bbox", "date_before", "date_after"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_brain",
+      "description": "Search the knowledge brain for entities and information. Uses hybrid search (keyword + vector) across brain pages. Returns ranked results with compiled truth summaries. Use when the user asks about a field, farmer, district, claim, policy, or any entity the brain might know about.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural language search query"
+          },
+          "type": {
+            "type": "string",
+            "description": "Filter by page type: field, farmer, district, company, insurance_worker, claim, policy, season, crop, weather_station, equipment"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max results to return (default 10, max 100)"
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "get_entity",
+      "description": "Get a specific brain page by its slug. Returns the full compiled truth, recent timeline entries, tags, and linked entities. Use when the user asks about a specific known entity like 'field-gasabo-001' or 'farmer-uwimana'.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "The entity slug (e.g. 'field-gasabo-001', 'farmer-uwimana')"
+          }
+        },
+        "required": ["slug"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "add_observation",
+      "description": "Add a timeline observation to a brain page. Use when the user reports a field visit, observation, measurement, or event that should be recorded in an entity's history. The brain grows with every observation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "The entity slug to add the observation to"
+          },
+          "summary": {
+            "type": "string",
+            "description": "Short summary of the observation"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Detailed description (optional)"
+          },
+          "date": {
+            "type": "string",
+            "description": "Date of the observation (YYYY-MM-DD). Default: today"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source of the observation (e.g. 'field_visit', 'satellite', 'user_report'). Default: 'user_report'"
+          }
+        },
+        "required": ["slug", "summary"]
       }
     }
   }

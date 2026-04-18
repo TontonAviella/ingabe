@@ -108,6 +108,7 @@ export interface SelectedFeature {
 export interface MessageSendRequest {
   message: ChatCompletionUserMessageParam;
   selected_feature: SelectedFeature | null;
+  viewport_bounds?: [number, number, number, number];
 }
 
 export interface MessageSendResponse {
