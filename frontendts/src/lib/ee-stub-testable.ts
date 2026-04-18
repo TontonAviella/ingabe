@@ -6,9 +6,7 @@
  */
 
 // Re-export all public API
-export { fetchMaybeAuth, getCachedToken, getJwt } from './ee-stub';
-
 // The module-level variables live in ee-stub.tsx. The __test__ export at the
 // bottom of ee-stub.tsx exposes setters so tests can manipulate internal state
 // without going through _SetTokenProvider (which requires a full React tree).
-export { __test__ } from './ee-stub';
+export { __test__, fetchMaybeAuth, getCachedToken, getJwt } from './ee-stub';

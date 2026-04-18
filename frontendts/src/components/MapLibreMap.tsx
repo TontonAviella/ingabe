@@ -1132,9 +1132,7 @@ export default function MapLibreMap({
       ];
       const features = map.queryRenderedFeatures(bbox);
       // Find the first feature that belongs to one of our layers (L-prefixed IDs)
-      const appFeature = features.find(
-        (f) => typeof f.source === 'string' && f.source.startsWith('L') && f.source.length === 12,
-      );
+      const appFeature = features.find((f) => typeof f.source === 'string' && f.source.startsWith('L') && f.source.length === 12);
       if (appFeature) {
         selectFeature(appFeature);
       } else {
@@ -1890,18 +1888,32 @@ export default function MapLibreMap({
                           // (now removed) enrichment API. These are computed
                           // values, not original layer attributes.
                           const enrichedPrefixes = [
-                            'soil_', 'ndvi_', 'evi_', 'ndwi_', 'savi_', 'ndre_', 'ndbi_',
-                            'temp_', 'rainfall_', 'wind_', 'ch4_', 'n2o_', 'co2_',
-                            'cropland_', 'forest_', 'built_', 'rangeland_',
+                            'soil_',
+                            'ndvi_',
+                            'evi_',
+                            'ndwi_',
+                            'savi_',
+                            'ndre_',
+                            'ndbi_',
+                            'temp_',
+                            'rainfall_',
+                            'wind_',
+                            'ch4_',
+                            'n2o_',
+                            'co2_',
+                            'cropland_',
+                            'forest_',
+                            'built_',
+                            'rangeland_',
                           ];
                           return !enrichedPrefixes.some((p) => key.startsWith(p));
                         })
                         .map(([key, value]) => (
-                        <tr key={key} className="border-b border-gray-100 dark:border-gray-700" title={`Type: ${typeof value}`}>
-                          <td className="py-1 pr-2 font-mono text-gray-600 dark:text-gray-400 break-all">{key}</td>
-                          <td className="py-1 font-mono break-all">{String(value)}</td>
-                        </tr>
-                      ))}
+                          <tr key={key} className="border-b border-gray-100 dark:border-gray-700" title={`Type: ${typeof value}`}>
+                            <td className="py-1 pr-2 font-mono text-gray-600 dark:text-gray-400 break-all">{key}</td>
+                            <td className="py-1 font-mono break-all">{String(value)}</td>
+                          </tr>
+                        ))}
                   </tbody>
                 </table>
               </div>

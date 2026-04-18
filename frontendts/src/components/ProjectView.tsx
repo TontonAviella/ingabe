@@ -610,13 +610,13 @@ export default function ProjectView() {
       <div className="flex items-center justify-center min-h-screen bg-background">
         <div className="text-center max-w-md px-6">
           <h1 className="text-2xl font-bold mb-3">Sign in to continue</h1>
-          <p className="text-muted-foreground mb-4">
-            Your session has expired or you need to sign in to view this project.
-          </p>
+          <p className="text-muted-foreground mb-4">Your session has expired or you need to sign in to view this project.</p>
           <button
             type="button"
             className="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            onClick={() => { window.location.href = '/'; }}
+            onClick={() => {
+              window.location.href = '/';
+            }}
           >
             Sign in
           </button>

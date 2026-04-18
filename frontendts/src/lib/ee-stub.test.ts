@@ -92,9 +92,7 @@ describe('TokenManager', () => {
   it('never overwrites a good token with null (null-guard)', async () => {
     const mod = await import('./ee-stub-testable');
     // First call succeeds
-    const mockGetToken = vi.fn()
-      .mockResolvedValueOnce('good-token')
-      .mockResolvedValueOnce(null); // transient Clerk failure
+    const mockGetToken = vi.fn().mockResolvedValueOnce('good-token').mockResolvedValueOnce(null); // transient Clerk failure
     mod.__test__.setGetTokenFn(mockGetToken);
 
     await mod.getJwt();
@@ -111,13 +109,7 @@ describe('TokenManager', () => {
     mod.__test__.setGetTokenFn(mockGetToken);
 
     // Fire 5 concurrent getJwt() calls
-    const results = await Promise.all([
-      mod.getJwt(),
-      mod.getJwt(),
-      mod.getJwt(),
-      mod.getJwt(),
-      mod.getJwt(),
-    ]);
+    const results = await Promise.all([mod.getJwt(), mod.getJwt(), mod.getJwt(), mod.getJwt(), mod.getJwt()]);
 
     // All should resolve with the same token
     for (const r of results) expect(r).toBe('dedup-token');
