@@ -35,6 +35,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.database.pool import get_async_db_connection
 from src.services.brain_ingestion import normalizer, registry
+from src.services.brain_ingestion.feature_flags import partner_internal_enabled
 from src.services.brain_ingestion.html_fetcher import HTMLFetcher
 from src.services.brain_ingestion.models import FetchedContent
 from src.services.brain_service import BrainService
@@ -126,6 +127,18 @@ async def _run_source_job(source_id: str) -> None:
             log.error("source_config_rejected", extra={"error": str(e)})
             await registry.record_fetch_failure(
                 lock_conn, source_id, datetime.now(timezone.utc), str(e),
+            )
+            return
+
+        # Partner-internal sources require the BRAIN_PARTNER_INTERNAL_ENABLED
+        # flag. Off by default until Phase 0 hard gates land (child-table RLS,
+        # session GUC wiring, scheduler/CLI audit). A partner-internal fetch
+        # that runs before RLS is verified could persist rows that leak via
+        # Sage retrieval — same flag gates the write and retrieval paths.
+        if source_cfg.access_scope == "partner_internal" and not partner_internal_enabled():
+            log.info(
+                "source_skipped_partner_internal_flag_off",
+                extra={"source_id": source_id, "fetcher_type": fetcher_type},
             )
             return
 

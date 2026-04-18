@@ -89,6 +89,7 @@ services:
       bash -c "bash /app/scripts/start-services.sh"
     volumes:
       - ./src:/app/src
+      - ./tests:/app/tests
       - ./alembic:/app/alembic
       - ./conftest.py:/app/conftest.py
       - ./pytest.ini:/app/pytest.ini
