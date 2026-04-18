@@ -14,13 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import asyncpg
-import pytest
 
 from src.services.brain_ingestion import scheduler as sched
 from src.services.brain_ingestion.models import FetchedContent
 
-
-_asyncio = pytest.mark.asyncio(loop_scope="session")
 
 _TEST_SOURCE_ID = "test-sched-src"
 _TEST_URL = "https://example.test/doc"
@@ -65,7 +62,6 @@ def _fake_fetched() -> FetchedContent:
     )
 
 
-@_asyncio
 async def test_run_source_job_persists_and_records_success(monkeypatch):
     """Full Phase 0 loop: HTML fetch → write_page → last_success stamped."""
     from src.services.brain_ingestion.html_fetcher import HTMLFetcher
@@ -113,7 +109,6 @@ async def test_run_source_job_persists_and_records_success(monkeypatch):
         await admin.close()
 
 
-@_asyncio
 async def test_run_source_job_records_failure_on_fetch_error(monkeypatch):
     """When fetch_one raises, brain_sources.last_error is populated."""
     from src.services.brain_ingestion.html_fetcher import HTMLFetcher
@@ -154,7 +149,6 @@ async def test_run_source_job_records_failure_on_fetch_error(monkeypatch):
         await admin.close()
 
 
-@_asyncio
 async def test_run_source_job_skips_inactive_source():
     """Paused sources must not run even if someone triggers the job."""
     from src.database.pool import _build_postgres_url
@@ -192,7 +186,6 @@ async def test_run_source_job_skips_inactive_source():
         await admin.close()
 
 
-@_asyncio
 async def test_run_source_job_rejects_unknown_fetcher_type():
     """fetcher_type values not in _FETCHER_REGISTRY must not crash the job."""
     from src.database.pool import _build_postgres_url
@@ -230,7 +223,6 @@ async def test_run_source_job_rejects_unknown_fetcher_type():
         await admin.close()
 
 
-@_asyncio
 async def test_run_source_job_skips_when_lock_held(monkeypatch):
     """When another worker holds the advisory lock, the job must no-op.
 

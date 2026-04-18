@@ -25,10 +25,6 @@ from src.services.brain_ingestion.concurrency import (
     reserve_ocr_budget,
 )
 
-# Only the budget-reservation tests are async; sync tests don't need the mark.
-_asyncio = pytest.mark.asyncio(loop_scope="session")
-
-
 class _FakeRedis:
     """Just enough for reserve_ocr_budget's INCRBY / DECRBY / EXPIRE."""
 
@@ -77,7 +73,6 @@ def test_rate_bucket_refills_over_time():
     assert b.try_acquire(1.0) is True
 
 
-@_asyncio
 async def test_reserve_budget_blocks_over_global_ceiling():
     r = _FakeRedis()
     # Fill the global ceiling by spreading across enough sources to avoid
@@ -96,7 +91,6 @@ async def test_reserve_budget_blocks_over_global_ceiling():
         await reserve_ocr_budget(r, "src-last", 1)
 
 
-@_asyncio
 async def test_reserve_budget_blocks_over_per_source_cap():
     r = _FakeRedis()
     per_source_cap = int(OCR_DAILY_PAGE_CEILING * PER_SOURCE_DAILY_FRACTION)
@@ -109,7 +103,6 @@ async def test_reserve_budget_blocks_over_per_source_cap():
     await reserve_ocr_budget(r, "src-other", 10)
 
 
-@_asyncio
 async def test_reserve_budget_decrements_on_overshoot():
     """If a reservation fails, the counter must be rolled back so retries
     (e.g. next minute) see the real remaining headroom, not a phantom
