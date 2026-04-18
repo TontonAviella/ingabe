@@ -51,10 +51,10 @@ USER_ADMIN = str(uuid.uuid4())
 RUN_TAG = uuid.uuid4().hex[:8]
 
 
-# Postgres superusers (and BYPASSRLS roles) skip RLS unconditionally, even
-# with FORCE ROW LEVEL SECURITY. CI connects as a superuser, so every
-# connection must SET ROLE to a non-superuser role or the policies are
-# effectively disabled. Mirrors src/test_rls_policies.py fixture.
+# Postgres BYPASSRLS roles skip RLS unconditionally. Before the
+# a0b1c2d3e4f5 migration, CI connects as a superuser with BYPASSRLS,
+# so _open() must SET ROLE to a non-bypass role. After the migration,
+# mundiuser has NOSUPERUSER NOBYPASSRLS and RLS applies directly.
 _RLS_ROLE = "rls_test_role"
 
 
@@ -80,8 +80,15 @@ async def _ensure_rls_role() -> None:
 async def _open(user_id: str, partner_id: str | None, role: str | None = None):
     url = _build_postgres_url()
     c = await asyncpg.connect(url)
-    # Downgrade from superuser to a non-bypass role so RLS actually applies.
-    await c.execute(f"SET ROLE {_RLS_ROLE}")
+    # If the connecting role has BYPASSRLS (pre-revocation dev environments),
+    # downgrade to rls_test_role so RLS actually applies. After the
+    # a0b1c2d3e4f5 migration (NOSUPERUSER NOBYPASSRLS), mundiuser sessions
+    # are subject to RLS directly and SET ROLE is unnecessary.
+    bypasses = await c.fetchval(
+        "SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user"
+    )
+    if bypasses:
+        await c.execute(f"SET ROLE {_RLS_ROLE}")
     await c.execute("SELECT set_config('app.user_id', $1, false)", user_id)
     await c.execute(
         "SELECT set_config('app.partner_id', $1, false)", partner_id or ""
