@@ -28,6 +28,18 @@ import asyncpg
 MAX_SEARCH_LIMIT = 100
 _DEFAULT_LIMIT = 20
 
+# Application-layer partner filter (defense-in-depth alongside RLS).
+# {a} is the table alias prefix, e.g. "p." or "" for unaliased brain_pages.
+_PARTNER_FILTER = """
+    AND (
+        {a}access_scope IS NULL
+        OR {a}access_scope = 'public'
+        OR ({a}access_scope = 'partner_internal'
+            AND {a}partner_id::text = coalesce(
+                current_setting('app.partner_id', true), ''))
+    )
+"""
+
 # Agricultural page types for Rwanda insurance
 PAGE_TYPES = {
     "field",
@@ -180,11 +192,12 @@ class BrainService:
 
     async def get_page(self, conn: asyncpg.Connection, slug: str) -> Optional[Page]:
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT id, slug, type, title, compiled_truth, timeline, frontmatter,
                    content_hash, owner_uuid, viewer_uuids, editor_uuids,
                    created_at, updated_at
             FROM brain_pages WHERE slug = $1
+            {_PARTNER_FILTER.format(a="")}
             """,
             slug,
         )
@@ -267,38 +280,44 @@ class BrainService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Page]:
+        pf = _PARTNER_FILTER.format(a="p.")
+        pf_bare = _PARTNER_FILTER.format(a="")
         if type and tag:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT p.* FROM brain_pages p
                 JOIN brain_tags t ON t.page_id = p.id
                 WHERE p.type = $1 AND t.tag = $2
+                {pf}
                 ORDER BY p.updated_at DESC LIMIT $3 OFFSET $4
                 """,
                 type, tag, limit, offset,
             )
         elif type:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT * FROM brain_pages WHERE type = $1
+                {pf_bare}
                 ORDER BY updated_at DESC LIMIT $2 OFFSET $3
                 """,
                 type, limit, offset,
             )
         elif tag:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT p.* FROM brain_pages p
                 JOIN brain_tags t ON t.page_id = p.id
                 WHERE t.tag = $1
+                {pf}
                 ORDER BY p.updated_at DESC LIMIT $2 OFFSET $3
                 """,
                 tag, limit, offset,
             )
         else:
             rows = await conn.fetch(
-                """
-                SELECT * FROM brain_pages
+                f"""
+                SELECT * FROM brain_pages WHERE true
+                {pf_bare}
                 ORDER BY updated_at DESC LIMIT $1 OFFSET $2
                 """,
                 limit, offset,
@@ -306,17 +325,19 @@ class BrainService:
         return [_row_to_page(r) for r in rows]
 
     async def resolve_slugs(self, conn: asyncpg.Connection, partial: str) -> list[str]:
+        pf = _PARTNER_FILTER.format(a="")
         exact = await conn.fetch(
-            "SELECT slug FROM brain_pages WHERE slug = $1", partial
+            f"SELECT slug FROM brain_pages WHERE slug = $1 {pf}", partial
         )
         if exact:
             return [exact[0]["slug"]]
 
         fuzzy = await conn.fetch(
-            """
+            f"""
             SELECT slug, similarity(title, $1) AS sim
             FROM brain_pages
-            WHERE title %% $1 OR slug ILIKE '%' || $1 || '%'
+            WHERE (title %% $1 OR slug ILIKE '%' || $1 || '%')
+            {pf}
             ORDER BY sim DESC LIMIT 5
             """,
             partial,
@@ -338,7 +359,7 @@ class BrainService:
         exclude = exclude_slugs or []
 
         rows = await conn.fetch(
-            """
+            f"""
             WITH ranked_pages AS (
                 SELECT p.id, p.slug, p.title, p.type,
                     ts_rank(p.search_vector, websearch_to_tsquery('english', $1)) AS score
@@ -346,6 +367,7 @@ class BrainService:
                 WHERE p.search_vector @@ websearch_to_tsquery('english', $1)
                     AND ($4::text IS NULL OR p.type = $4)
                     AND p.slug != ALL($5::text[])
+                    {_PARTNER_FILTER.format(a="p.")}
                 ORDER BY score DESC
                 LIMIT $2 OFFSET $3
             ),
@@ -389,7 +411,7 @@ class BrainService:
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
         rows = await conn.fetch(
-            """
+            f"""
             SELECT
                 p.slug, p.id as page_id, p.title, p.type,
                 cc.chunk_text, cc.chunk_source,
@@ -399,6 +421,7 @@ class BrainService:
             WHERE cc.embedding IS NOT NULL
                 AND ($4::text IS NULL OR p.type = $4)
                 AND p.slug != ALL($5::text[])
+                {_PARTNER_FILTER.format(a="p.")}
             ORDER BY cc.embedding <=> $1::vector
             LIMIT $2 OFFSET $3
             """,
@@ -525,10 +548,12 @@ class BrainService:
 
     async def get_chunks(self, conn: asyncpg.Connection, slug: str) -> list[dict]:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT cc.* FROM brain_content_chunks cc
             JOIN brain_pages p ON p.id = cc.page_id
-            WHERE p.slug = $1 ORDER BY cc.chunk_index
+            WHERE p.slug = $1
+            {_PARTNER_FILTER.format(a="p.")}
+            ORDER BY cc.chunk_index
             """,
             slug,
         )
@@ -583,12 +608,14 @@ class BrainService:
 
     async def get_links(self, conn: asyncpg.Connection, slug: str) -> list[dict]:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT f.slug as from_slug, t.slug as to_slug, l.link_type, l.context
             FROM brain_links l
             JOIN brain_pages f ON f.id = l.from_page_id
             JOIN brain_pages t ON t.id = l.to_page_id
             WHERE f.slug = $1
+            {_PARTNER_FILTER.format(a="f.")}
+            {_PARTNER_FILTER.format(a="t.")}
             """,
             slug,
         )
@@ -596,12 +623,14 @@ class BrainService:
 
     async def get_backlinks(self, conn: asyncpg.Connection, slug: str) -> list[dict]:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT f.slug as from_slug, t.slug as to_slug, l.link_type, l.context
             FROM brain_links l
             JOIN brain_pages f ON f.id = l.from_page_id
             JOIN brain_pages t ON t.id = l.to_page_id
             WHERE t.slug = $1
+            {_PARTNER_FILTER.format(a="f.")}
+            {_PARTNER_FILTER.format(a="t.")}
             """,
             slug,
         )
@@ -611,10 +640,11 @@ class BrainService:
         self, conn: asyncpg.Connection, slug: str, depth: int = 5
     ) -> list[GraphNode]:
         rows = await conn.fetch(
-            """
+            f"""
             WITH RECURSIVE graph AS (
                 SELECT p.id, p.slug, p.title, p.type, 0 as depth
                 FROM brain_pages p WHERE p.slug = $1
+                {_PARTNER_FILTER.format(a="p.")}
 
                 UNION
 
@@ -623,6 +653,7 @@ class BrainService:
                 JOIN brain_links l ON l.from_page_id = g.id
                 JOIN brain_pages p2 ON p2.id = l.to_page_id
                 WHERE g.depth < $2
+                {_PARTNER_FILTER.format(a="p2.")}
             )
             SELECT DISTINCT g.slug, g.title, g.type, g.depth,
                 coalesce(
@@ -673,9 +704,10 @@ class BrainService:
 
     async def get_tags(self, conn: asyncpg.Connection, slug: str) -> list[str]:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT tag FROM brain_tags
-            WHERE page_id = (SELECT id FROM brain_pages WHERE slug = $1)
+            WHERE page_id = (SELECT id FROM brain_pages
+                             WHERE slug = $1 {_PARTNER_FILTER.format(a="")})
             ORDER BY tag
             """,
             slug,
@@ -712,32 +744,36 @@ class BrainService:
         after: Optional[date] = None,
         before: Optional[date] = None,
     ) -> list[dict]:
+        pf = _PARTNER_FILTER.format(a="p.")
         if after and before:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT te.* FROM brain_timeline_entries te
                 JOIN brain_pages p ON p.id = te.page_id
                 WHERE p.slug = $1 AND te.date >= $2 AND te.date <= $3
+                {pf}
                 ORDER BY te.date DESC LIMIT $4
                 """,
                 slug, after, before, limit,
             )
         elif after:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT te.* FROM brain_timeline_entries te
                 JOIN brain_pages p ON p.id = te.page_id
                 WHERE p.slug = $1 AND te.date >= $2
+                {pf}
                 ORDER BY te.date DESC LIMIT $3
                 """,
                 slug, after, limit,
             )
         else:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT te.* FROM brain_timeline_entries te
                 JOIN brain_pages p ON p.id = te.page_id
                 WHERE p.slug = $1
+                {pf}
                 ORDER BY te.date DESC LIMIT $2
                 """,
                 slug, limit,
@@ -766,21 +802,24 @@ class BrainService:
     async def get_raw_data(
         self, conn: asyncpg.Connection, slug: str, source: Optional[str] = None
     ) -> list[dict]:
+        pf = _PARTNER_FILTER.format(a="p.")
         if source:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT rd.source, rd.data, rd.fetched_at FROM brain_raw_data rd
                 JOIN brain_pages p ON p.id = rd.page_id
                 WHERE p.slug = $1 AND rd.source = $2
+                {pf}
                 """,
                 slug, source,
             )
         else:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT rd.source, rd.data, rd.fetched_at FROM brain_raw_data rd
                 JOIN brain_pages p ON p.id = rd.page_id
                 WHERE p.slug = $1
+                {pf}
                 """,
                 slug,
             )
@@ -804,10 +843,12 @@ class BrainService:
 
     async def get_versions(self, conn: asyncpg.Connection, slug: str) -> list[dict]:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT pv.* FROM brain_page_versions pv
             JOIN brain_pages p ON p.id = pv.page_id
-            WHERE p.slug = $1 ORDER BY pv.snapshot_at DESC
+            WHERE p.slug = $1
+            {_PARTNER_FILTER.format(a="p.")}
+            ORDER BY pv.snapshot_at DESC
             """,
             slug,
         )
@@ -833,19 +874,28 @@ class BrainService:
     # ── Stats + Health ──────────────────────────────────────────
 
     async def get_stats(self, conn: asyncpg.Connection) -> dict:
+        pf = _PARTNER_FILTER.format(a="p.")
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT
-                (SELECT count(*) FROM brain_pages) as page_count,
-                (SELECT count(*) FROM brain_content_chunks) as chunk_count,
-                (SELECT count(*) FROM brain_content_chunks WHERE embedded_at IS NOT NULL) as embedded_count,
-                (SELECT count(*) FROM brain_links) as link_count,
-                (SELECT count(DISTINCT tag) FROM brain_tags) as tag_count,
-                (SELECT count(*) FROM brain_timeline_entries) as timeline_entry_count
+                (SELECT count(*) FROM brain_pages p WHERE true {pf}) as page_count,
+                (SELECT count(*) FROM brain_content_chunks cc
+                 JOIN brain_pages p ON p.id = cc.page_id WHERE true {pf}) as chunk_count,
+                (SELECT count(*) FROM brain_content_chunks cc
+                 JOIN brain_pages p ON p.id = cc.page_id
+                 WHERE cc.embedded_at IS NOT NULL {pf}) as embedded_count,
+                (SELECT count(*) FROM brain_links l
+                 JOIN brain_pages p ON p.id = l.from_page_id WHERE true {pf}) as link_count,
+                (SELECT count(DISTINCT t.tag) FROM brain_tags t
+                 JOIN brain_pages p ON p.id = t.page_id WHERE true {pf}) as tag_count,
+                (SELECT count(*) FROM brain_timeline_entries te
+                 JOIN brain_pages p ON p.id = te.page_id WHERE true {pf}) as timeline_entry_count
             """
         )
         types = await conn.fetch(
-            "SELECT type, count(*)::int as count FROM brain_pages GROUP BY type ORDER BY count DESC"
+            f"""SELECT p.type, count(*)::int as count
+                FROM brain_pages p WHERE true {pf}
+                GROUP BY p.type ORDER BY count DESC"""
         )
         return {
             "page_count": row["page_count"],
@@ -858,21 +908,30 @@ class BrainService:
         }
 
     async def get_health(self, conn: asyncpg.Connection) -> dict:
+        pf = _PARTNER_FILTER.format(a="p.")
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT
-                (SELECT count(*) FROM brain_pages) as page_count,
-                (SELECT count(*) FROM brain_content_chunks WHERE embedded_at IS NOT NULL)::float /
-                    GREATEST((SELECT count(*) FROM brain_content_chunks), 1)::float as embed_coverage,
+                (SELECT count(*) FROM brain_pages p WHERE true {pf}) as page_count,
+                (SELECT count(*) FROM brain_content_chunks cc
+                 JOIN brain_pages p ON p.id = cc.page_id
+                 WHERE cc.embedded_at IS NOT NULL {pf})::float /
+                    GREATEST((SELECT count(*) FROM brain_content_chunks cc
+                              JOIN brain_pages p ON p.id = cc.page_id
+                              WHERE true {pf}), 1)::float as embed_coverage,
                 (SELECT count(*) FROM brain_pages p
                  WHERE (p.compiled_truth != '' OR p.timeline != '')
                    AND NOT EXISTS (SELECT 1 FROM brain_content_chunks cc WHERE cc.page_id = p.id)
+                   {pf}
                 ) as stale_pages,
                 (SELECT count(*) FROM brain_pages p
                  WHERE NOT EXISTS (SELECT 1 FROM brain_links l WHERE l.to_page_id = p.id)
                    AND NOT EXISTS (SELECT 1 FROM brain_links l WHERE l.from_page_id = p.id)
+                   {pf}
                 ) as orphan_pages,
-                (SELECT count(*) FROM brain_content_chunks WHERE embedded_at IS NULL) as missing_embeddings
+                (SELECT count(*) FROM brain_content_chunks cc
+                 JOIN brain_pages p ON p.id = cc.page_id
+                 WHERE cc.embedded_at IS NULL {pf}) as missing_embeddings
             """
         )
         return dict(row)
@@ -929,23 +988,26 @@ class BrainService:
             bbox: (lon_min, lat_min, lon_max, lat_max)
         """
         lon_min, lat_min, lon_max, lat_max = bbox
+        pf = _PARTNER_FILTER.format(a="")
         if type:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT * FROM brain_pages
                 WHERE geom IS NOT NULL
                   AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
                   AND type = $5
+                {pf}
                 ORDER BY updated_at DESC LIMIT $6
                 """,
                 lon_min, lat_min, lon_max, lat_max, type, limit,
             )
         else:
             rows = await conn.fetch(
-                """
+                f"""
                 SELECT * FROM brain_pages
                 WHERE geom IS NOT NULL
                   AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
+                {pf}
                 ORDER BY updated_at DESC LIMIT $5
                 """,
                 lon_min, lat_min, lon_max, lat_max, limit,

@@ -25,6 +25,7 @@ from typing import Optional
 
 import asyncpg
 
+from src.services.brain_ingestion.feature_flags import partner_internal_enabled
 from src.services.brain_ingestion.models import FetchedContent
 from src.services.brain_service import BrainService, PageInput, TimelineInput
 
@@ -49,6 +50,16 @@ async def write_page(
         raise ValueError(
             f"partner_internal content from source={item.source_id} has no "
             "partner_id. Refusing to write — this would leak across tenants."
+        )
+
+    # Belt-and-suspenders: the scheduler skips partner_internal sources
+    # when the flag is off, but write_page is also called from admin CLIs
+    # and replay paths. Refusing at the write layer means no partner row
+    # ever lands in the DB until the flag is explicitly enabled.
+    if item.access_scope == "partner_internal" and not partner_internal_enabled():
+        raise ValueError(
+            f"partner_internal content from source={item.source_id} "
+            "refused: BRAIN_PARTNER_INTERNAL_ENABLED is off."
         )
 
     slug = build_slug(item.source_id, str(item.url))
