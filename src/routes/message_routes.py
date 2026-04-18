@@ -5494,7 +5494,7 @@ async def process_chat_interaction_task(
                                 _limit = tool_args.get("limit", 10)
                                 # Generate query embedding for vector search
                                 try:
-                                    _embeddings = await _get_embeddings([_query])
+                                    _embeddings = await _get_embeddings([_query], kind="query")
                                     _query_embedding = _embeddings[0] if _embeddings else None
                                 except Exception:
                                     logger.debug("Could not generate query embedding, falling back to keyword-only")

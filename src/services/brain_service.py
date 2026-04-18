@@ -106,7 +106,7 @@ class ChunkInput:
     chunk_text: str
     chunk_source: str = "compiled_truth"
     embedding: Optional[list[float]] = None
-    model: str = "text-embedding-3-large"
+    model: str = "nomic-embed-text"
     token_count: Optional[int] = None
 
 
