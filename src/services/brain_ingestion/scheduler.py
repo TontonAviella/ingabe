@@ -243,7 +243,12 @@ async def start_ingestion_scheduler() -> Optional[AsyncIOScheduler]:
         source_id = row["source_id"]
         cron = row["schedule_cron"]
         try:
+            # jitter=30 spreads fires by ±30s across workers/replicas so all
+            # six uvicorn workers don't race the advisory lock at the same
+            # UTC second. Five losers still pay one pg_try_advisory_lock
+            # round-trip per tick; the jitter cuts that to a trickle.
             trigger = CronTrigger.from_crontab(cron, timezone="UTC")
+            trigger.jitter = 30
         except Exception:
             logger.warning(
                 "invalid_schedule_cron_skipped",
