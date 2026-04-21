@@ -2,6 +2,11 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.2.1.1] - 2026-04-21
+
+### Fixed
+- Partner users asking Sage questions now see their own private documents. The org context from Clerk was not flowing through to the 4 brain database connections in `send_map_message()`, so the `app.partner_id` GUC was never set during chat interactions.
+
 ## [0.2.1.0] - 2026-04-18
 
 ### Added
