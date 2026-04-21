@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import textwrap
+import time
 from typing import Optional
 
 import asyncpg
@@ -16,6 +17,9 @@ import asyncpg
 from src.services.brain_service import BrainService, ChunkInput
 
 logger = logging.getLogger(__name__)
+
+_auth_failed_at: float = 0.0
+_AUTH_BACKOFF_SECONDS = 600
 
 # Model config
 _EMBED_MODEL = "text-embedding-3-large"
@@ -67,23 +71,32 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_O
 
 async def _get_embeddings(texts: list[str]) -> list[list[float]]:
     """Call OpenAI embeddings API. Returns list of embedding vectors."""
-    from openai import AsyncOpenAI
+    global _auth_failed_at
+    from openai import AsyncOpenAI, AuthenticationError
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
+        raise RuntimeError("Embeddings disabled: auth failed recently, retrying in %ds" % int(
+            _AUTH_BACKOFF_SECONDS - (time.monotonic() - _auth_failed_at)))
+
+    api_key = os.environ.get("BRAIN_EMBEDDINGS_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set, cannot generate embeddings")
+        raise RuntimeError("No API key for embeddings (set BRAIN_EMBEDDINGS_API_KEY or OPENAI_API_KEY)")
 
-    # Always use OpenAI directly for embeddings (not OpenRouter)
     client = AsyncOpenAI(
         api_key=api_key,
         base_url="https://api.openai.com/v1",
     )
 
-    response = await client.embeddings.create(
-        model=_EMBED_MODEL,
-        input=texts,
-        dimensions=_EMBED_DIMS,
-    )
+    try:
+        response = await client.embeddings.create(
+            model=_EMBED_MODEL,
+            input=texts,
+            dimensions=_EMBED_DIMS,
+        )
+    except AuthenticationError:
+        _auth_failed_at = time.monotonic()
+        logger.error("Embeddings auth failed, disabling for %ds. Set BRAIN_EMBEDDINGS_API_KEY with a valid OpenAI key.", _AUTH_BACKOFF_SECONDS)
+        raise
 
     return [item.embedding for item in response.data]
 
