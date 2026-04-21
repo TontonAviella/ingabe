@@ -1016,6 +1016,7 @@ async def process_chat_interaction_task(
 ):
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
+    partner_id = session.get_org_id()
 
     _lock_key = f"chat_lock:{conversation.id}"
 
