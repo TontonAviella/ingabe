@@ -163,6 +163,9 @@ async def embed_all_stale(
 
     Returns: {embedded: int, skipped: int, errors: int}
     """
+    if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
+        return {"embedded": 0, "skipped": 0, "errors": 0, "auth_disabled": True}
+
     # Find pages that have content but no chunks with embeddings
     rows = await conn.fetch(
         """
