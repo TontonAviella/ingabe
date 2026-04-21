@@ -421,8 +421,23 @@ async def _process_partner_url_hook(
         logger.warning("partner_url_fetch hook missing required fields")
         return 0
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.get(url)
+    from src.routes.partner_routes import _validate_url_safety
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+        for _attempt in range(5):
+            resp = await client.get(url)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                redirect_url = str(resp.headers.get("location", ""))
+                if not redirect_url:
+                    break
+                if redirect_url.startswith("/"):
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(url)
+                    redirect_url = urlunparse((parsed.scheme, parsed.netloc, redirect_url, "", "", ""))
+                _validate_url_safety(redirect_url)
+                url = redirect_url
+                continue
+            break
         resp.raise_for_status()
 
     text = resp.text

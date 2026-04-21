@@ -30,7 +30,7 @@ router = APIRouter()
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_PDF_PAGES = 500
-ALLOWED_EXTENSIONS = {".pdf", ".txt", ".docx", ".md", ".csv"}
+ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".csv"}
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,15 @@ async def _extract_text_from_pdf(data: bytes) -> str:
     """Extract text from PDF bytes using pypdf. Runs in a thread to avoid blocking."""
     def _extract(pdf_bytes: bytes) -> str:
         from pypdf import PdfReader
+        from pypdf.errors import PdfReadError
 
-        reader = PdfReader(io.BytesIO(pdf_bytes))
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+        except (PdfReadError, Exception) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not read PDF: {exc}",
+            ) from exc
         if len(reader.pages) > MAX_PDF_PAGES:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -132,7 +139,7 @@ async def upload_document(
     file: UploadFile = File(...),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Upload a PDF, TXT, DOCX, MD, or CSV file into Brain as partner-private content.
+    """Upload a PDF, TXT, MD, or CSV file into Brain as partner-private content.
 
     The document is stored in S3, text is extracted, and a brain_pages row is
     created with access_scope='partner_internal' and partner_id set to the
