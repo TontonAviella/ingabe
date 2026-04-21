@@ -1016,6 +1016,7 @@ async def process_chat_interaction_task(
 ):
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
+    partner_id = session.get_org_id()
 
     _lock_key = f"chat_lock:{conversation.id}"
 
@@ -5638,7 +5639,7 @@ async def process_chat_interaction_task(
                                 except Exception:
                                     logger.debug("Could not generate query embedding, falling back to keyword-only")
                                     _query_embedding = None
-                                async with get_async_db_connection(user_id=user_id) as _brain_conn:
+                                async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as _brain_conn:
                                     _results = await _brain_svc.search_hybrid(
                                         _brain_conn, _query, embedding=_query_embedding, limit=_limit, type=_type
                                     )
@@ -5674,7 +5675,7 @@ async def process_chat_interaction_task(
                                 from src.database.pool import get_async_db_connection
                                 _brain_svc = get_brain_service()
                                 _slug = tool_args.get("slug", "")
-                                async with get_async_db_connection(user_id=user_id) as _brain_conn:
+                                async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as _brain_conn:
                                     _page = await _brain_svc.get_page(_brain_conn, _slug)
                                     if _page:
                                         _timeline = await _brain_svc.get_timeline(_brain_conn, _slug, limit=20)
@@ -5725,7 +5726,7 @@ async def process_chat_interaction_task(
                                     detail=_detail,
                                     source=_source,
                                 )
-                                async with get_async_db_connection(user_id=user_id) as _brain_conn:
+                                async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as _brain_conn:
                                     _entry_id = await _brain_svc.add_timeline_entry(
                                         _brain_conn, _slug, _entry, owner_uuid=user_id
                                     )
@@ -5838,6 +5839,7 @@ async def send_map_message(
     # get_conversation authenticates
     logger.info("send_map_message called: conversation=%s map=%s", conversation.id, map_id)
     user_id = session.get_user_id()
+    partner_id = session.get_org_id()
 
     # Check if map is already being processed
     lock_key = f"chat_lock:{conversation.id}"
@@ -5878,7 +5880,7 @@ async def send_map_message(
         from src.dependencies.brain_dep import get_brain_service
         from src.database.pool import get_async_db_connection
         brain_svc = get_brain_service()
-        async with get_async_db_connection(user_id=user_id) as brain_conn:
+        async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as brain_conn:
             # Spatial query when frontend sends viewport bounds
             if body.viewport_bounds and len(body.viewport_bounds) == 4:
                 pages = await brain_svc.get_pages_in_bbox(
