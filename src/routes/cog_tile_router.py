@@ -74,16 +74,6 @@ INDEX_RESCALE = {
     "nbr": (-0.5, 0.8),
 }
 
-BAND_NAMES = {
-    "B02": "blue",
-    "B03": "green",
-    "B04": "red",
-    "B08": "nir",
-    "B8A": "nir08",
-    "B11": "swir16",
-    "B12": "swir22",
-}
-
 _TILE_HEADERS = {
     "Cache-Control": "public, max-age=86400",
     "Access-Control-Allow-Origin": "*",
@@ -94,6 +84,14 @@ _TILE_HEADERS = {
 
 def _cache_key(url_hash: str, expression: str) -> str:
     return f"cog:{url_hash}:{expression}"
+
+
+@lru_cache(maxsize=8)
+def _colormap_lut(cm_name: str):
+    import numpy as np
+    _ensure_rio_tiler()
+    cm = _cmap.get(cm_name)
+    return np.array([cm[i] for i in range(256)], dtype=np.uint8)
 
 
 @cog_tile_router.get(
@@ -109,6 +107,7 @@ async def get_cog_tile(
     expression: str = Query(
         "visual",
         description="Rendering mode: visual (RGB), ndvi, ndwi, nbr",
+        pattern="^(visual|ndvi|ndwi|nbr)$",
     ),
     nir_url: str = Query("", description="NIR band COG URL (B08) for index computation"),
     green_url: str = Query("", description="Green band COG URL (B03) for NDWI"),
@@ -187,10 +186,7 @@ async def get_cog_tile(
                     scaled = np.clip((index - lo) / (hi - lo), 0, 1)
                     scaled_uint8 = (scaled * 255).astype(np.uint8)
 
-                    cm_name = INDEX_COLORMAPS[expression]
-                    cm = _cmap.get(cm_name)
-
-                    cm_lut = np.array([cm[i] for i in range(256)], dtype=np.uint8)
+                    cm_lut = _colormap_lut(INDEX_COLORMAPS[expression])
                     rgba = cm_lut[scaled_uint8]
 
                     nodata_mask = (b1 == 0) & (b2 == 0)
@@ -201,7 +197,7 @@ async def get_cog_tile(
                     img_pil.save(buf, format="PNG")
                     return buf.getvalue()
             else:
-                raise ValueError(f"Unknown expression: {expression}")
+                raise ValueError("expression must be one of: visual, ndvi, ndwi, nbr")
 
     try:
         async with _COG_TILE_SEMAPHORE:

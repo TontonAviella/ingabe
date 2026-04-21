@@ -79,6 +79,7 @@ const KUE_MESSAGE_STYLE = `
   [&_td]:align-top
   [&_img]:border [&_img]:border-[#aaa] [&_img]:rounded-md [&_img]:my-2 [&_img]:block [&_img]:mx-auto [&_img]:max-w-[360px] [&_img]:h-auto
   [&_pre]:max-w-80 [&_pre]:overflow-x-scroll [&_pre]:my-4 [&_pre]:bg-gray-900 [&_pre]:border-gray-500 [&_pre]:border [&_pre]:rounded
+  [&_a]:text-blue-200 [&_a]:underline
 `;
 
 function MessageItem({

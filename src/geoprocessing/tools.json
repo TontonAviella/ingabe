@@ -1592,6 +1592,7 @@
           },
           "index": {
             "type": "string",
+            "enum": ["ndvi", "ndwi", "nbr"],
             "description": "Spectral index to compute: 'ndvi' (vegetation health), 'ndwi' (water/flooding), or 'nbr' (burn severity)"
           },
           "date_from": {

@@ -10,7 +10,7 @@ from src.tools.pyd import IngabeToolCallMetaArgs
 logger = logging.getLogger(__name__)
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_NOMINATIM_HEADERS = {"User-Agent": "mundi.ai/1.0 (ntabukiraniroroger@gmail.com)"}
+_NOMINATIM_HEADERS = {"User-Agent": "mundi.ai/1.0 (contact@ingabe.rw)"}
 
 
 class SearchLocationArgs(BaseModel):
