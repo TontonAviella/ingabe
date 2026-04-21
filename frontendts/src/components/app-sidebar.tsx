@@ -1,4 +1,4 @@
-import { AccountMenu } from '@mundi/ee';
+import { AccountMenu, OrgSwitcher } from '@mundi/ee';
 import { House, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
@@ -108,6 +108,7 @@ export function AppSidebar() {
         </SidebarGroup>
 
         <Suspense fallback={null}>
+          <OrgSwitcher />
           <AccountMenu />
         </Suspense>
       </SidebarContent>

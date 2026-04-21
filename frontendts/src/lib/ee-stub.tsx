@@ -1,4 +1,4 @@
-import { ClerkProvider, RedirectToSignIn, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
+import { ClerkProvider, OrganizationSwitcher, RedirectToSignIn, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import MaplibreGeocoder from '@maplibre/maplibre-gl-geocoder';
 import React, { useEffect } from 'react';
 import '@maplibre/maplibre-gl-geocoder/dist/maplibre-gl-geocoder.css';
@@ -113,6 +113,28 @@ export function AccountMenu(): React.ReactNode | null {
         appearance={{
           elements: {
             avatarBox: 'w-8 h-8',
+          },
+        }}
+      />
+    </div>
+  );
+}
+
+// ── OrgSwitcher ────────────────────────────────────────────────────────
+export function OrgSwitcher(): React.ReactNode | null {
+  if (!CLERK_PUBLISHABLE_KEY) {
+    return null;
+  }
+
+  return (
+    <div className="px-3 py-2">
+      <OrganizationSwitcher
+        hidePersonal
+        afterSelectOrganizationUrl="/"
+        appearance={{
+          elements: {
+            rootBox: 'w-full',
+            organizationSwitcherTrigger: 'w-full justify-between',
           },
         }}
       />

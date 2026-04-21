@@ -28,6 +28,7 @@ from src.routes.lakehouse_routes import lakehouse_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
+from src.routes.partner_routes import router as partner_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -565,6 +566,11 @@ app.include_router(
 app.include_router(
     satellite_router,
     tags=["Satellite"],
+)
+app.include_router(
+    partner_router,
+    prefix="/api/partner",
+    tags=["Partner"],
 )
 
 
