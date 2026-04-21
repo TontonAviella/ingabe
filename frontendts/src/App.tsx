@@ -4,7 +4,7 @@ import maplibregl from 'maplibre-gl';
 import { Protocol } from 'pmtiles';
 import { lazy, Suspense, useEffect, useState } from 'react';
 import * as reactRouterDom from 'react-router-dom';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppSidebar } from '@/components/app-sidebar';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { SidebarProvider } from '@/components/ui/sidebar';
@@ -96,6 +96,7 @@ function AppContent() {
                   }
                 />
 
+                <Route path="/sign-up" element={<Navigate to="/" replace />} />
                 <Route path="/privacy" element={<PrivacyPolicy />} />
                 <Route path="/terms" element={<TermsOfService />} />
                 <Route path="*" element={<NotFound />} />

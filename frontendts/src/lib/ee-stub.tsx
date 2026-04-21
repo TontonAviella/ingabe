@@ -105,6 +105,9 @@ export function AccountMenu(): React.ReactNode | null {
   if (!CLERK_PUBLISHABLE_KEY) {
     return null;
   }
+  // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
+  const { isSignedIn } = useAuth();
+  if (!isSignedIn) return null;
 
   return (
     <div className="px-3 py-2">
@@ -125,6 +128,9 @@ export function OrgSwitcher(): React.ReactNode | null {
   if (!CLERK_PUBLISHABLE_KEY) {
     return null;
   }
+  // biome-ignore lint/correctness/useHookAtTopLevel: CLERK_PUBLISHABLE_KEY is a build-time constant, hook call order is stable per build
+  const { isSignedIn } = useAuth();
+  if (!isSignedIn) return null;
 
   return (
     <div className="px-3 py-2">
