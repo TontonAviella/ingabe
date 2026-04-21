@@ -333,3 +333,55 @@ async def test_partner_hook_created(db, org_id):
 
     # Cleanup
     await brain.complete_hook(db, hook_id)
+
+
+# ---------------------------------------------------------------------------
+# File validation edge cases
+# ---------------------------------------------------------------------------
+
+@pytest.mark.postgres
+def test_unsupported_extension_rejected():
+    """File types outside the allowlist must be rejected."""
+    from src.routes.partner_routes import ALLOWED_EXTENSIONS
+
+    assert ".exe" not in ALLOWED_EXTENSIONS
+    assert ".docx" not in ALLOWED_EXTENSIONS
+    assert ".pdf" in ALLOWED_EXTENSIONS
+    assert ".txt" in ALLOWED_EXTENSIONS
+    assert ".md" in ALLOWED_EXTENSIONS
+    assert ".csv" in ALLOWED_EXTENSIONS
+
+
+@pytest.mark.postgres
+async def test_pdf_too_many_pages_rejected():
+    """PDFs exceeding MAX_PDF_PAGES must be rejected."""
+    from unittest.mock import MagicMock, patch
+    from src.routes.partner_routes import _extract_text_from_pdf, MAX_PDF_PAGES
+    from fastapi import HTTPException
+
+    mock_reader = MagicMock()
+    mock_reader.pages = [MagicMock()] * (MAX_PDF_PAGES + 1)
+
+    with patch("pypdf.PdfReader", return_value=mock_reader):
+        with pytest.raises(HTTPException) as exc_info:
+            await _extract_text_from_pdf(b"fake-pdf-bytes")
+        assert exc_info.value.status_code == 413
+
+
+@pytest.mark.postgres
+def test_max_file_size_constant():
+    """Verify the upload size limit is set to 50MB."""
+    from src.routes.partner_routes import MAX_FILE_SIZE
+    assert MAX_FILE_SIZE == 50 * 1024 * 1024
+
+
+@pytest.mark.postgres
+def test_ssrf_blocks_non_http_schemes():
+    """Only http and https schemes are allowed."""
+    from src.routes.partner_routes import _validate_url_safety
+    from fastapi import HTTPException
+
+    for url in ["ftp://evil.com/file", "file:///etc/passwd", "gopher://x"]:
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_url_safety(url)
+        assert exc_info.value.status_code == 400
