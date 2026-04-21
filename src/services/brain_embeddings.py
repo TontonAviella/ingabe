@@ -186,6 +186,8 @@ async def embed_all_stale(
     errors = 0
 
     for row in rows:
+        if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
+            break
         try:
             n = await embed_page(conn, brain, row["slug"])
             if n > 0:

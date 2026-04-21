@@ -439,7 +439,7 @@ export default function ProjectView() {
             );
           }
 
-          if (action.updates.add_tile_layer && mapRef.current) {
+          if (action.updates?.add_tile_layer && mapRef.current) {
             const tl = action.updates.add_tile_layer;
             const map = mapRef.current;
             if (!map.getSource(tl.source_id)) {
@@ -470,7 +470,7 @@ export default function ProjectView() {
             // Remove from active actions
             setActiveActions((prev) => prev.filter((a) => a.action_id !== action.action_id));
 
-            if (action.updates.style_json) {
+            if (action.updates?.style_json) {
               invalidateMapData();
               // Also invalidate the style query directly so MapLibre picks up
               // new layer styles even if the monotonic counter hasn't changed yet.
