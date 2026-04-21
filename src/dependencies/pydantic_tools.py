@@ -29,6 +29,18 @@ from src.tools.create_point import (
     create_point_layer,
     CreatePointLayerArgs,
 )
+from src.tools.search_place import (
+    search_location,
+    SearchLocationArgs,
+)
+from src.tools.display_layer import (
+    display_satellite_layer,
+    DisplaySatelliteLayerArgs,
+)
+from src.tools.spectral_index import (
+    compute_spectral_index,
+    ComputeSpectralIndexArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -52,6 +64,21 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "create_point_layer": (
             create_point_layer,
             CreatePointLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "search_location": (
+            search_location,
+            SearchLocationArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "display_satellite_layer": (
+            display_satellite_layer,
+            DisplaySatelliteLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "compute_spectral_index": (
+            compute_spectral_index,
+            ComputeSpectralIndexArgs,
             IngabeToolCallMetaArgs,
         ),
     }

@@ -2,15 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Accept } from 'react-dropzone';
 import { useDropzone } from 'react-dropzone';
 import { useNavigate, useParams } from 'react-router-dom';
-import useWebSocket from 'react-use-websocket';
+import useWebSocket, { ReadyState } from 'react-use-websocket';
+import ChatSidebar, { ChatSidebarToggle } from './ChatSidebar';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, isAuthConfigured, useIsReady, useIsSignedOut } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { MapGeoJSONFeature } from 'maplibre-gl';
 import { Map as MLMap } from 'maplibre-gl';
+import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions';
 import { toast } from 'sonner';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import type { Conversation, EphemeralAction, MapProject, MapTreeResponse, PostgresConnectionDetails } from '../lib/types';
+import type {
+  Conversation,
+  EphemeralAction,
+  MapProject,
+  MapTreeResponse,
+  MessageSendRequest,
+  PostgresConnectionDetails,
+  TileLayerUpdate,
+} from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
 const DROPZONE_ACCEPT: Accept = {
@@ -156,10 +167,11 @@ export default function ProjectView() {
   // tracking ephemeral state, where reloading the page will reset
   const [errors, setErrors] = useState<ErrorEntry[]>([]);
   const [activeActions, setActiveActions] = useState<EphemeralAction[]>([]);
-  const [zoomHistory, setZoomHistory] = useState<Array<{ bounds: [number, number, number, number] }>>([]);
+  const [, setZoomHistory] = useState<Array<{ bounds: [number, number, number, number] }>>([]);
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
+  const [ephemeralTileLayers, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
@@ -407,6 +419,30 @@ export default function ProjectView() {
             );
           }
 
+          if (action.updates.add_tile_layer && mapRef.current) {
+            const tl = action.updates.add_tile_layer;
+            const map = mapRef.current;
+            if (!map.getSource(tl.source_id)) {
+              map.addSource(tl.source_id, {
+                type: 'raster',
+                tiles: tl.tiles,
+                tileSize: tl.tileSize || 256,
+                maxzoom: tl.maxzoom || 14,
+                bounds: tl.bounds,
+              });
+              map.addLayer({
+                id: tl.source_id,
+                type: 'raster',
+                source: tl.source_id,
+                paint: { 'raster-opacity': 0.85 },
+              });
+              setEphemeralTileLayers((prev) => {
+                if (prev.some((l) => l.source_id === tl.source_id)) return prev;
+                return [...prev, tl];
+              });
+            }
+          }
+
           if (action.status === 'active') {
             // Add to active actions
             setActiveActions((prev) => [...prev, action]);
@@ -603,6 +639,124 @@ export default function ProjectView() {
     setHiddenLayerIDs((prev) => (prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]));
   };
 
+  // Chat sidebar state
+  const [isChatCollapsed, setIsChatCollapsed] = usePersistedState<boolean>('chatSidebarCollapsed', [projectId], false);
+  const [selectedFeature, setSelectedFeature] = useState<MapGeoJSONFeature | null>(null);
+
+  const readyStateRef = useRef<number>(readyState);
+  useEffect(() => {
+    readyStateRef.current = readyState;
+  }, [readyState]);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      if (!text.trim() || !versionId) return;
+
+      const userMessage: ChatCompletionUserMessageParam = {
+        role: 'user',
+        content: text,
+      };
+
+      const actionId = `send-message-${Date.now()}`;
+      const sendingAction: EphemeralAction = {
+        map_id: versionId,
+        ephemeral: true,
+        action_id: actionId,
+        action: 'Sending message to Sage...',
+        timestamp: new Date().toISOString(),
+        completed_at: null,
+        layer_id: null,
+        status: 'active',
+        updates: { style_json: false },
+      };
+
+      try {
+        let conversationIdToUse: number | null = conversationId;
+
+        if (conversationIdToUse === null) {
+          const createConversationAction: EphemeralAction = {
+            map_id: versionId,
+            ephemeral: true,
+            action_id: `create-conversation-${Date.now()}`,
+            action: 'Creating new conversation...',
+            timestamp: new Date().toISOString(),
+            completed_at: null,
+            layer_id: null,
+            status: 'active',
+            updates: { style_json: false },
+          };
+          setActiveActions((prev) => [...prev, createConversationAction]);
+
+          const createResp = await apiFetch(`/api/conversations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_id: project!.id }),
+          });
+          if (!createResp.ok) {
+            const err = await createResp.json().catch(() => ({ detail: createResp.statusText }));
+            const d = err.detail;
+            throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : createResp.statusText);
+          }
+          const newConv = (await createResp.json()) as Conversation;
+          conversationIdToUse = newConv.id;
+          setConversationId(conversationIdToUse);
+
+          const maxWaitMs = 10000;
+          const start = Date.now();
+          while (Date.now() - start < maxWaitMs && readyStateRef.current !== ReadyState.OPEN) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          setActiveActions((prev) => prev.filter((a) => a.action_id !== createConversationAction.action_id));
+        }
+
+        setActiveActions((prev) => [...prev, sendingAction]);
+
+        const sendBody: MessageSendRequest = {
+          message: userMessage,
+          selected_feature: null,
+        };
+        if (selectedFeature) {
+          sendBody.selected_feature = {
+            layer_id: selectedFeature.source,
+            attributes: selectedFeature.properties as Record<string, string>,
+          };
+        }
+        if (mapRef.current) {
+          const b = mapRef.current.getBounds();
+          sendBody.viewport_bounds = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+        }
+
+        const response = await apiFetch(`/api/maps/conversations/${conversationIdToUse}/maps/${versionId}/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sendBody),
+        });
+
+        if (response.ok) {
+          await response.json();
+          invalidateProjectData();
+        } else if (response.status === 401) {
+          addError('Your session has expired. Please refresh the page to continue chatting.', true);
+          return;
+        } else {
+          const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+          const d = errorData.detail;
+          throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Network error';
+        if (msg.toLowerCase().includes('token expired') || msg.toLowerCase().includes('unauthorized')) {
+          addError('Your session has expired. Please refresh the page to continue chatting.', true);
+        } else {
+          addError(msg, true);
+        }
+      } finally {
+        setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId));
+      }
+    },
+    [versionId, conversationId, project, selectedFeature, mapRef, addError, invalidateProjectData, setConversationId],
+  );
+
   // If Clerk has loaded and the user is definitively not signed in (session
   // expired or never signed in), show a sign-in prompt instead of an infinite spinner.
   if (isSignedOut) {
@@ -652,34 +806,69 @@ export default function ProjectView() {
       {/* Dropzone */}
       <input {...getInputProps()} />
 
-      {/* Interactive Map Section */}
-      <MapLibreMap
-        mapId={versionId}
-        height="100%"
-        project={project}
-        mapData={mapData}
+      {/* Chat Sidebar (left of map) */}
+      <ChatSidebar
         mapTree={mapTree || null}
         conversationId={effectiveConversationId}
+        currentMapId={versionId}
         conversations={conversations || []}
         conversationsEnabled={conversationsEnabled}
         setConversationId={setConversationId}
-        readyState={readyState}
-        openDropzone={open}
-        uploadingFiles={uploadingFiles}
-        hiddenLayerIDs={hiddenLayerIDs}
-        toggleLayerVisibility={toggleLayerVisibility}
-        mapRef={mapRef}
         activeActions={activeActions}
-        setActiveActions={setActiveActions}
-        zoomHistory={zoomHistory}
-        zoomHistoryIndex={zoomHistoryIndex}
-        setZoomHistoryIndex={setZoomHistoryIndex}
-        addError={addError}
-        dismissError={dismissError}
-        errors={errors}
-        invalidateProjectData={invalidateProjectData}
-        invalidateMapData={invalidateMapData}
+        onSendMessage={sendMessage}
+        hasSelectedFeature={selectedFeature !== null}
+        onClearSelectedFeature={() => setSelectedFeature(null)}
+        isCollapsed={isChatCollapsed}
+        onToggleCollapse={() => setIsChatCollapsed((v) => !v)}
       />
+
+      {/* Map Section */}
+      <div className="relative flex-1 min-w-0">
+        <ChatSidebarToggle isCollapsed={isChatCollapsed} onToggle={() => setIsChatCollapsed((v) => !v)} />
+        <MapLibreMap
+          mapId={versionId}
+          height="100%"
+          mapData={mapData}
+          mapTree={mapTree || null}
+          conversationId={effectiveConversationId}
+          conversations={conversations || []}
+          conversationsEnabled={conversationsEnabled}
+          setConversationId={setConversationId}
+          readyState={readyState}
+          openDropzone={open}
+          uploadingFiles={uploadingFiles}
+          hiddenLayerIDs={hiddenLayerIDs}
+          toggleLayerVisibility={toggleLayerVisibility}
+          mapRef={mapRef}
+          activeActions={activeActions}
+          setActiveActions={setActiveActions}
+          addError={addError}
+          dismissError={dismissError}
+          errors={errors}
+          invalidateProjectData={invalidateProjectData}
+          invalidateMapData={invalidateMapData}
+          onSelectedFeatureChange={setSelectedFeature}
+          ephemeralTileLayers={ephemeralTileLayers}
+          onRemoveEphemeralTileLayer={useCallback((sourceId: string) => {
+            const map = mapRef.current;
+            if (map) {
+              if (map.getLayer(sourceId)) map.removeLayer(sourceId);
+              if (map.getSource(sourceId)) map.removeSource(sourceId);
+            }
+            setEphemeralTileLayers((prev) => prev.filter((l) => l.source_id !== sourceId));
+          }, [])}
+          onClearAllEphemeralTileLayers={useCallback(() => {
+            const map = mapRef.current;
+            if (map) {
+              for (const tl of ephemeralTileLayers) {
+                if (map.getLayer(tl.source_id)) map.removeLayer(tl.source_id);
+                if (map.getSource(tl.source_id)) map.removeSource(tl.source_id);
+              }
+            }
+            setEphemeralTileLayers([]);
+          }, [ephemeralTileLayers])}
+        />
+      </div>
     </div>
   );
 }

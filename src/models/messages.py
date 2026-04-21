@@ -38,6 +38,8 @@ class SanitizedToolCall(BaseModel):
         "zoom-in",
         "qgis",
         "square-terminal",
+        "satellite",
+        "map-pin",
     ]
     code: CodeBlock | None
     table: dict | None
@@ -72,6 +74,9 @@ TC_ICON_MAP = {
     "zoom_to_bounds": "zoom-in",
     "download_from_openstreetmap": "cloud-download",
     "execute_shell_in_vm": "square-terminal",
+    "search_location": "map-pin",
+    "display_satellite_layer": "satellite",
+    "compute_spectral_index": "satellite",
 }
 
 TC_TAGLINE_MAP = {
@@ -83,6 +88,9 @@ TC_TAGLINE_MAP = {
     "zoom_to_bounds": "Zooming to bounds...",
     "download_from_openstreetmap": "Downloading from OpenStreetMap...",
     "execute_shell_in_vm": "Running analysis...",
+    "search_location": "Searching for location...",
+    "display_satellite_layer": "Loading satellite imagery...",
+    "compute_spectral_index": "Computing spectral index...",
 }
 
 
