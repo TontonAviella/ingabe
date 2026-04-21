@@ -137,15 +137,19 @@ async def compute_spectral_index(
 
     stac = STACService("earth_search")
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: stac.search_imagery(
-            bbox=bbox,
-            datetime_range=datetime_range,
-            max_cloud_cover=30.0,
-            limit=5,
-        ),
-    )
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: stac.search_imagery(
+                bbox=bbox,
+                datetime_range=datetime_range,
+                max_cloud_cover=30.0,
+                limit=5,
+            ),
+        )
+    except Exception as e:
+        logger.exception("STAC search failed for compute_spectral_index")
+        return {"status": "error", "error": f"Satellite imagery search failed: {e}"}
 
     items = result.get("items", [])
     if not items:
@@ -166,10 +170,14 @@ async def compute_spectral_index(
             "error": f"Scene missing required bands for {index_name.upper()}: need {formula['band1']} and {formula['band2']}",
         }
 
-    stats = await loop.run_in_executor(
-        None,
-        lambda: _compute_stats_from_cogs(band1_href, band2_href, bbox, index_name),
-    )
+    try:
+        stats = await loop.run_in_executor(
+            None,
+            lambda: _compute_stats_from_cogs(band1_href, band2_href, bbox, index_name),
+        )
+    except Exception as e:
+        logger.warning("Stats computation failed for %s: %s", index_name, e)
+        stats = None
 
     from src.tools.display_layer import _build_cog_tile_url
 

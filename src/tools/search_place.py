@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -25,7 +26,7 @@ async def search_location(
     """Search for a location by name and return its bounding box and coordinates. Use this when the user mentions a place name and you need geographic coordinates for satellite imagery tools."""
     query = args.query
 
-    try:
+    def _do_geocode():
         resp = requests.get(
             _NOMINATIM_URL,
             params={
@@ -39,7 +40,10 @@ async def search_location(
             timeout=10,
         )
         resp.raise_for_status()
-        results = resp.json()
+        return resp.json()
+
+    try:
+        results = await asyncio.to_thread(_do_geocode)
     except Exception as e:
         logger.exception("Nominatim search failed for %r", query)
         return {"status": "error", "error": f"Geocoding failed: {e}"}

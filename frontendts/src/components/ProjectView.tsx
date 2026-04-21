@@ -204,6 +204,26 @@ export default function ProjectView() {
     setErrors((prevErrors) => prevErrors.filter((error) => error.id !== errorId));
   }, []);
 
+  const removeEphemeralTileLayer = useCallback((sourceId: string) => {
+    const map = mapRef.current;
+    if (map) {
+      if (map.getLayer(sourceId)) map.removeLayer(sourceId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+    }
+    setEphemeralTileLayers((prev) => prev.filter((l) => l.source_id !== sourceId));
+  }, []);
+
+  const clearAllEphemeralTileLayers = useCallback(() => {
+    const map = mapRef.current;
+    if (map) {
+      for (const tl of ephemeralTileLayers) {
+        if (map.getLayer(tl.source_id)) map.removeLayer(tl.source_id);
+        if (map.getSource(tl.source_id)) map.removeSource(tl.source_id);
+      }
+    }
+    setEphemeralTileLayers([]);
+  }, [ephemeralTileLayers]);
+
   const allowedExtensions = useMemo(() => {
     const exts: string[] = [];
     for (const key in DROPZONE_ACCEPT) {
@@ -849,24 +869,8 @@ export default function ProjectView() {
           invalidateMapData={invalidateMapData}
           onSelectedFeatureChange={setSelectedFeature}
           ephemeralTileLayers={ephemeralTileLayers}
-          onRemoveEphemeralTileLayer={useCallback((sourceId: string) => {
-            const map = mapRef.current;
-            if (map) {
-              if (map.getLayer(sourceId)) map.removeLayer(sourceId);
-              if (map.getSource(sourceId)) map.removeSource(sourceId);
-            }
-            setEphemeralTileLayers((prev) => prev.filter((l) => l.source_id !== sourceId));
-          }, [])}
-          onClearAllEphemeralTileLayers={useCallback(() => {
-            const map = mapRef.current;
-            if (map) {
-              for (const tl of ephemeralTileLayers) {
-                if (map.getLayer(tl.source_id)) map.removeLayer(tl.source_id);
-                if (map.getSource(tl.source_id)) map.removeSource(tl.source_id);
-              }
-            }
-            setEphemeralTileLayers([]);
-          }, [ephemeralTileLayers])}
+          onRemoveEphemeralTileLayer={removeEphemeralTileLayer}
+          onClearAllEphemeralTileLayers={clearAllEphemeralTileLayers}
         />
       </div>
     </div>

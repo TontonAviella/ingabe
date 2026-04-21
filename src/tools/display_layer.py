@@ -64,15 +64,19 @@ async def display_satellite_layer(
 
     stac = STACService("earth_search")
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: stac.search_imagery(
-            bbox=bbox,
-            datetime_range=datetime_range,
-            max_cloud_cover=30.0,
-            limit=5,
-        ),
-    )
+    try:
+        result = await loop.run_in_executor(
+            None,
+            lambda: stac.search_imagery(
+                bbox=bbox,
+                datetime_range=datetime_range,
+                max_cloud_cover=30.0,
+                limit=5,
+            ),
+        )
+    except Exception as e:
+        logger.exception("STAC search failed for display_satellite_layer")
+        return {"status": "error", "error": f"Satellite imagery search failed: {e}"}
 
     items = result.get("items", [])
     if not items:

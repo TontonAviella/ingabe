@@ -19,6 +19,7 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from src.services.map_service import validate_remote_url
 from src.tile_cache import tile_cache
 
 logger = logging.getLogger(__name__)
@@ -116,8 +117,9 @@ async def get_cog_tile(
     if z < 0 or z > 18 or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
 
-    if not url.startswith("https://"):
-        raise HTTPException(status_code=400, detail="COG URL must use HTTPS")
+    for u in [url, nir_url, green_url, swir_url]:
+        if u:
+            validate_remote_url(u, "raster")
 
     url_hash = hashlib.sha256(
         f"{url}:{nir_url}:{green_url}:{swir_url}".encode()
@@ -188,11 +190,8 @@ async def get_cog_tile(
                     cm_name = INDEX_COLORMAPS[expression]
                     cm = _cmap.get(cm_name)
 
-                    rgba = np.zeros((256, 256, 4), dtype=np.uint8)
-                    for val in range(256):
-                        r, g, b, a = cm[val]
-                        mask = scaled_uint8 == val
-                        rgba[mask] = [r, g, b, a]
+                    cm_lut = np.array([cm[i] for i in range(256)], dtype=np.uint8)
+                    rgba = cm_lut[scaled_uint8]
 
                     nodata_mask = (b1 == 0) & (b2 == 0)
                     rgba[nodata_mask] = [0, 0, 0, 0]
