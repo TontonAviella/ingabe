@@ -774,7 +774,7 @@ export default function ProjectView() {
         setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId));
       }
     },
-    [versionId, conversationId, project, selectedFeature, mapRef, addError, invalidateProjectData, setConversationId],
+    [versionId, conversationId, project, selectedFeature, addError, invalidateProjectData, setConversationId],
   );
 
   // If Clerk has loaded and the user is definitively not signed in (session

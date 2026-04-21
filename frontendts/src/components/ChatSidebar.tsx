@@ -118,9 +118,7 @@ function MessageItem({
     <>
       <div
         className={`px-3 py-2 rounded-lg ${
-          message.role === 'user'
-            ? 'bg-blue-600/20 border border-blue-500/30 ml-6'
-            : 'bg-gray-700/50 mr-6'
+          message.role === 'user' ? 'bg-blue-600/20 border border-blue-500/30 ml-6' : 'bg-gray-700/50 mr-6'
         }`}
       >
         <div className="flex items-center gap-1.5 mb-1">
@@ -129,9 +127,7 @@ function MessageItem({
           ) : (
             <Brain className="w-3 h-3 text-green-400 shrink-0" />
           )}
-          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider">
-            {message.role === 'user' ? 'You' : 'Sage'}
-          </span>
+          <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider">{message.role === 'user' ? 'You' : 'Sage'}</span>
         </div>
         <div className={`${KUE_MESSAGE_STYLE} text-white text-halfway-sm-xs`}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
@@ -164,9 +160,7 @@ function MessageItem({
                   {status !== 'pending' && (
                     <span
                       className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                        status === 'success'
-                          ? 'bg-green-900/50 text-green-400'
-                          : 'bg-red-900/50 text-red-400'
+                        status === 'success' ? 'bg-green-900/50 text-green-400' : 'bg-red-900/50 text-red-400'
                       }`}
                     >
                       {status === 'success' ? 'Complete' : 'Failed'}
@@ -332,15 +326,16 @@ export default function ChatSidebar({
 
   useEffect(() => {
     if (!currentMapId) return;
-    const containing = displayItems.find(
-      (it) => it.type === 'group' && it.nodes.some((n) => n.map_id === currentMapId),
-    ) as Extract<DisplayItem, { type: 'group' }> | undefined;
+    const containing = displayItems.find((it) => it.type === 'group' && it.nodes.some((n) => n.map_id === currentMapId)) as
+      | Extract<DisplayItem, { type: 'group' }>
+      | undefined;
     if (containing) {
       setExpandedEditGroups((prev) => (prev.includes(containing.id) ? prev : [...prev, containing.id]));
     }
   }, [currentMapId, displayItems]);
 
   // Auto-scroll to bottom when new messages arrive
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps are intentional scroll triggers
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [displayItems, activeActions]);
@@ -353,7 +348,8 @@ export default function ChatSidebar({
     const messages = getMessagesForMap(node.map_id);
     const toolResponses = messages.filter((msg) => msg.role === 'tool' && msg.tool_response).map((msg) => msg.tool_response!);
     const hasMessages = messages.length > 0;
-    const hasDiff = node.diff_from_previous && (node.diff_from_previous.added_layers.length > 0 || node.diff_from_previous.removed_layers.length > 0);
+    const hasDiff =
+      node.diff_from_previous && (node.diff_from_previous.added_layers.length > 0 || node.diff_from_previous.removed_layers.length > 0);
 
     return (
       <div key={node.map_id} className="space-y-1.5">
@@ -475,9 +471,7 @@ export default function ChatSidebar({
               <div className="flex flex-col items-center justify-center h-full text-gray-500 px-6 text-center">
                 <Brain className="w-8 h-8 mb-3 text-gray-600" />
                 <p className="text-sm font-medium text-gray-400">Ask Sage anything</p>
-                <p className="text-xs mt-1">
-                  Search data, change map styles, run geoprocessing, or ask questions about your layers.
-                </p>
+                <p className="text-xs mt-1">Search data, change map styles, run geoprocessing, or ask questions about your layers.</p>
               </div>
             )}
 
@@ -541,10 +535,7 @@ export default function ChatSidebar({
                 {hasSelectedFeature && (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <button
-                        onClick={onClearSelectedFeature}
-                        className="text-blue-400 hover:text-blue-300 cursor-pointer"
-                      >
+                      <button onClick={onClearSelectedFeature} className="text-blue-400 hover:text-blue-300 cursor-pointer">
                         <MousePointerClick className="w-4 h-4" />
                       </button>
                     </TooltipTrigger>
@@ -573,13 +564,7 @@ export default function ChatSidebar({
   );
 }
 
-export function ChatSidebarToggle({
-  isCollapsed,
-  onToggle,
-}: {
-  isCollapsed: boolean;
-  onToggle: () => void;
-}) {
+export function ChatSidebarToggle({ isCollapsed, onToggle }: { isCollapsed: boolean; onToggle: () => void }) {
   if (!isCollapsed) return null;
 
   return (
