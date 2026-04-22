@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -132,6 +133,35 @@ class GraphNode:
 
 
 # ---------------------------------------------------------------------------
+# Intent detection (matches gbrain src/core/search/intent.ts)
+# ---------------------------------------------------------------------------
+
+_ENTITY_PATTERNS = [
+    re.compile(r"^(?:what|who)\s+is\s+", re.IGNORECASE),
+    re.compile(r"^(?:tell\s+me\s+about|describe|explain)\s+", re.IGNORECASE),
+    re.compile(r"^(?:info|information)\s+(?:on|about)\s+", re.IGNORECASE),
+]
+
+_TEMPORAL_PATTERNS = [
+    re.compile(r"\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b"),
+    re.compile(r"\b(?:before|after|since|during|between|from|until)\s+\d{4}\b", re.IGNORECASE),
+    re.compile(r"\b(?:last|past|recent|this)\s+(?:year|month|week|season|quarter)\b", re.IGNORECASE),
+    re.compile(r"\b(?:trend|change|history|timeline|evolution)\b", re.IGNORECASE),
+]
+
+
+def _detect_intent(query: str) -> str:
+    """Classify query as entity/temporal/general. Adjusts search weights."""
+    for p in _ENTITY_PATTERNS:
+        if p.search(query):
+            return "entity"
+    for p in _TEMPORAL_PATTERNS:
+        if p.search(query):
+            return "temporal"
+    return "general"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -149,6 +179,39 @@ def _validate_slug(slug: str) -> str:
     if not slug:
         raise ValueError("Invalid slug: empty after normalization")
     return slug
+
+
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
+_FRONTMATTER_REF_KEYS = {"related", "see_also", "links", "references", "parent", "children"}
+
+
+def _extract_link_targets(page: PageInput) -> set[str]:
+    """Extract outbound link targets from wikilinks in compiled_truth + frontmatter refs."""
+    targets: set[str] = set()
+    if page.compiled_truth:
+        for m in _WIKILINK_RE.finditer(page.compiled_truth):
+            try:
+                slug = _validate_slug(m.group(1))
+                if slug:
+                    targets.add(slug)
+            except ValueError:
+                pass
+    if page.frontmatter:
+        for key in _FRONTMATTER_REF_KEYS:
+            val = page.frontmatter.get(key)
+            if isinstance(val, list):
+                for item in val:
+                    if isinstance(item, str):
+                        try:
+                            targets.add(_validate_slug(item))
+                        except ValueError:
+                            pass
+            elif isinstance(val, str):
+                try:
+                    targets.add(_validate_slug(val))
+                except ValueError:
+                    pass
+    return targets
 
 
 def _content_hash(page: PageInput) -> str:
@@ -267,7 +330,27 @@ class BrainService:
                 owner_uuid, v_uuids, e_uuids,
             )
 
-        return _row_to_page(row)
+        result_page = _row_to_page(row)
+
+        # Auto-link: extract [[wikilinks]] and frontmatter refs, sync brain_links
+        link_targets = _extract_link_targets(page)
+        if link_targets:
+            await conn.execute(
+                "DELETE FROM brain_links WHERE from_page_id = $1",
+                result_page.id,
+            )
+            for target_slug in link_targets:
+                await conn.execute(
+                    """
+                    INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
+                    SELECT $1, p.id, 'auto', ''
+                    FROM brain_pages p WHERE p.slug = $2
+                    ON CONFLICT (from_page_id, to_page_id) DO NOTHING
+                    """,
+                    result_page.id, target_slug,
+                )
+
+        return result_page
 
     async def delete_page(self, conn: asyncpg.Connection, slug: str) -> None:
         await conn.execute("DELETE FROM brain_pages WHERE slug = $1", slug)
@@ -444,35 +527,98 @@ class BrainService:
         limit: Optional[int] = None,
         type: Optional[str] = None,
     ) -> list[SearchResult]:
-        """Reciprocal Rank Fusion of keyword + vector search."""
+        """Reciprocal Rank Fusion with gbrain-quality refinements.
+
+        Improvements over bare RRF:
+        1. compiled_truth 2x boost (authoritative summaries rank higher)
+        2. Per-page dedup (best chunk per page only)
+        3. Backlink boost (well-connected pages rank higher)
+        4. Cosine re-scoring (blend RRF with actual similarity)
+        5. Intent detection (entity/temporal/general adjusts weights)
+        """
         limit = _clamp_limit(limit)
         k = 60  # RRF constant
+        intent = _detect_intent(query)
+
+        # Intent adjusts keyword vs vector weight
+        kw_weight, vec_weight = 1.0, 1.0
+        if intent == "entity":
+            kw_weight, vec_weight = 1.3, 0.7
+        elif intent == "temporal":
+            kw_weight, vec_weight = 1.2, 0.8
 
         keyword_results = await self.search_keyword(
-            conn, query, limit=limit * 2, type=type
+            conn, query, limit=limit * 3, type=type
         )
 
         if embedding:
             vector_results = await self.search_vector(
-                conn, embedding, limit=limit * 2, type=type
+                conn, embedding, limit=limit * 3, type=type
             )
         else:
             vector_results = []
 
-        # RRF scoring
+        # -- RRF scoring with compiled_truth 2x boost --
         scores: dict[str, float] = {}
+        cosine_scores: dict[str, float] = {}
         result_map: dict[str, SearchResult] = {}
 
         for rank, r in enumerate(keyword_results):
-            scores[r.slug] = scores.get(r.slug, 0) + 1 / (k + rank + 1)
-            result_map[r.slug] = r
-
-        for rank, r in enumerate(vector_results):
-            scores[r.slug] = scores.get(r.slug, 0) + 1 / (k + rank + 1)
+            rrf = kw_weight / (k + rank + 1)
+            if r.chunk_source == "compiled_truth":
+                rrf *= 2.0
+            scores[r.slug] = scores.get(r.slug, 0) + rrf
             if r.slug not in result_map:
                 result_map[r.slug] = r
 
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+        for rank, r in enumerate(vector_results):
+            rrf = vec_weight / (k + rank + 1)
+            if r.chunk_source == "compiled_truth":
+                rrf *= 2.0
+            scores[r.slug] = scores.get(r.slug, 0) + rrf
+            cosine_scores[r.slug] = r.score
+            if r.slug not in result_map:
+                result_map[r.slug] = r
+
+        # -- Cosine re-scoring: blend 0.7*rrf + 0.3*cosine --
+        if cosine_scores:
+            max_rrf = max(scores.values()) if scores else 1.0
+            for slug in scores:
+                norm_rrf = scores[slug] / max_rrf if max_rrf > 0 else 0
+                cosine = cosine_scores.get(slug, 0.0)
+                scores[slug] = 0.7 * norm_rrf + 0.3 * cosine
+
+        # -- Backlink boost: score *= (1 + 0.05 * log(1 + backlinks)) --
+        slugs_with_scores = list(scores.keys())
+        if slugs_with_scores:
+            backlink_rows = await conn.fetch(
+                f"""
+                SELECT p.slug, count(l.id) as cnt
+                FROM brain_pages p
+                LEFT JOIN brain_links l ON l.to_page_id = p.id
+                WHERE p.slug = ANY($1::text[])
+                {_PARTNER_FILTER.format(a="p.")}
+                GROUP BY p.slug
+                """,
+                slugs_with_scores,
+            )
+            backlinks = {r["slug"]: r["cnt"] for r in backlink_rows}
+            for slug in scores:
+                bl = backlinks.get(slug, 0)
+                if bl > 0:
+                    scores[slug] *= 1 + 0.05 * math.log(1 + bl)
+
+        # -- Per-page dedup: keep only best-scoring chunk per page --
+        seen_pages: set[int] = set()
+        deduped: list[tuple[str, float]] = []
+        for slug, score in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+            r = result_map.get(slug)
+            if r and r.page_id not in seen_pages:
+                seen_pages.add(r.page_id)
+                deduped.append((slug, score))
+            if len(deduped) >= limit:
+                break
+
         return [
             SearchResult(
                 slug=slug, page_id=result_map[slug].page_id,
@@ -481,7 +627,7 @@ class BrainService:
                 chunk_source=result_map[slug].chunk_source,
                 score=score,
             )
-            for slug, score in ranked
+            for slug, score in deduped
         ]
 
     # ── Chunks ──────────────────────────────────────────────────
@@ -1068,3 +1214,105 @@ class BrainService:
             """,
             hook_id, error,
         )
+
+    # ── Health Score ───────────────────────────────────────────
+
+    async def health_score(self, conn: asyncpg.Connection) -> dict:
+        """Composite brain health score (0-100), matching gbrain's model.
+
+        Components:
+          - Embedding coverage (35 pts): % of pages with embedded chunks
+          - Link density (25 pts): % of pages with at least one outbound link
+          - Timeline coverage (15 pts): % of pages with timeline entries
+          - Orphan penalty (15 pts): deducted for pages with no inbound links
+          - Dead link penalty (10 pts): deducted for links pointing to non-existent pages
+        """
+        pf = _PARTNER_FILTER.format(a="p.")
+
+        stats = await conn.fetchrow(
+            f"""
+            WITH page_stats AS (
+                SELECT
+                    count(*) AS total,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM brain_content_chunks cc
+                        WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
+                    )) AS with_embeddings,
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM brain_links l WHERE l.from_page_id = p.id
+                    )) AS with_outlinks,
+                    count(*) FILTER (WHERE NOT EXISTS (
+                        SELECT 1 FROM brain_links l WHERE l.to_page_id = p.id
+                    )) AS orphans,
+                    count(*) FILTER (WHERE p.timeline != '') AS with_timeline
+                FROM brain_pages p
+                WHERE true {pf}
+            ),
+            dead_links AS (
+                SELECT count(*) AS cnt
+                FROM brain_links l
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM brain_pages p WHERE p.id = l.to_page_id
+                )
+            )
+            SELECT
+                ps.total, ps.with_embeddings, ps.with_outlinks,
+                ps.orphans, ps.with_timeline, dl.cnt as dead_links
+            FROM page_stats ps, dead_links dl
+            """,
+        )
+
+        total = stats["total"] or 0
+        if total == 0:
+            return {
+                "score": 0,
+                "total_pages": 0,
+                "components": {
+                    "embedding_coverage": {"score": 0, "max": 35, "detail": "no pages"},
+                    "link_density": {"score": 0, "max": 25, "detail": "no pages"},
+                    "timeline_coverage": {"score": 0, "max": 15, "detail": "no pages"},
+                    "orphan_penalty": {"score": 0, "max": 15, "detail": "no pages"},
+                    "dead_links": {"score": 0, "max": 10, "detail": "no pages"},
+                },
+            }
+
+        embed_pct = stats["with_embeddings"] / total
+        link_pct = stats["with_outlinks"] / total
+        timeline_pct = stats["with_timeline"] / total
+        orphan_pct = stats["orphans"] / total
+        dead = stats["dead_links"] or 0
+
+        embed_score = round(embed_pct * 35, 1)
+        link_score = round(link_pct * 25, 1)
+        timeline_score = round(timeline_pct * 15, 1)
+        orphan_score = round(max(0, 15 - orphan_pct * 15), 1)
+        dead_score = round(max(0, 10 - min(dead, 10)), 1)
+
+        total_score = round(embed_score + link_score + timeline_score + orphan_score + dead_score, 1)
+
+        return {
+            "score": total_score,
+            "total_pages": total,
+            "components": {
+                "embedding_coverage": {
+                    "score": embed_score, "max": 35,
+                    "detail": f"{stats['with_embeddings']}/{total} pages embedded",
+                },
+                "link_density": {
+                    "score": link_score, "max": 25,
+                    "detail": f"{stats['with_outlinks']}/{total} pages with outbound links",
+                },
+                "timeline_coverage": {
+                    "score": timeline_score, "max": 15,
+                    "detail": f"{stats['with_timeline']}/{total} pages with timeline",
+                },
+                "orphan_penalty": {
+                    "score": orphan_score, "max": 15,
+                    "detail": f"{stats['orphans']}/{total} orphan pages",
+                },
+                "dead_links": {
+                    "score": dead_score, "max": 10,
+                    "detail": f"{dead} dead links",
+                },
+            },
+        }
