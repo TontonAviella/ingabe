@@ -131,14 +131,19 @@ def convert_openai_tool_call_to_sanitized_tool_call(
     elif is_geoprocessing_tool:
         table = sanitized_fc_table_from_args(args)
 
-    if is_geoprocessing_tool:
+    if function_name in TC_TAGLINE_MAP:
+        tagline = TC_TAGLINE_MAP[function_name]
+    elif is_geoprocessing_tool:
         tagline = function_name.replace("_", ":")
     else:
-        tagline = TC_TAGLINE_MAP.get(function_name, function_name)
+        tagline = function_name
 
-    icon = TC_ICON_MAP.get(function_name, "wrench")
-    if is_geoprocessing_tool:
+    if function_name in TC_ICON_MAP:
+        icon = TC_ICON_MAP[function_name]
+    elif is_geoprocessing_tool:
         icon = "qgis"
+    else:
+        icon = "wrench"
 
     return SanitizedToolCall(
         id=tool_call["id"],
