@@ -67,6 +67,7 @@ class StreamingTokenPayload(ConversationRelatedPayload):
     streaming: bool = True
     token: str
     done: bool = False
+    turn_id: str | None = None
 
 
 # Create router
@@ -648,11 +649,12 @@ async def kue_notify_error(conversation_id: int, error_message: str):
     await _publish_and_distribute(payload)
 
 
-async def kue_stream_token(conversation_id: int, token: str, done: bool = False):
+async def kue_stream_token(conversation_id: int, token: str, done: bool = False, turn_id: str | None = None):
     """Push a single streaming token (or done signal) to the frontend."""
     payload = StreamingTokenPayload(
         conversation_id=conversation_id,
         token=token,
         done=done,
+        turn_id=turn_id,
     )
     await _publish_and_distribute(payload)

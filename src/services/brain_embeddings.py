@@ -93,8 +93,8 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_O
     return chunks
 
 
-async def _get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Call embeddings API (OpenAI, OpenRouter, or compatible). Returns list of embedding vectors."""
+async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
+    """Call embeddings API (OpenAI, OpenRouter, or compatible). Returns (embeddings, resolved_model)."""
     global _auth_failed_at
     from openai import AsyncOpenAI, AuthenticationError
 
@@ -122,7 +122,7 @@ async def _get_embeddings(texts: list[str]) -> list[list[float]]:
         )
         raise
 
-    return [item.embedding for item in response.data]
+    return [item.embedding for item in response.data], model
 
 
 async def embed_page(
@@ -157,7 +157,7 @@ async def embed_page(
         return 0
 
     # Get embeddings in one batch
-    embeddings = await _get_embeddings(chunks)
+    embeddings, resolved_model = await _get_embeddings(chunks)
 
     # Build ChunkInput list
     chunk_inputs = []
@@ -168,7 +168,7 @@ async def embed_page(
                 chunk_text=text,
                 chunk_source="compiled_truth",
                 embedding=embedding,
-                model=_OPENAI_EMBED_MODEL,
+                model=resolved_model,
                 token_count=_estimate_tokens(text),
             )
         )

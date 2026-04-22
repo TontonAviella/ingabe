@@ -1349,6 +1349,7 @@ async def process_chat_interaction_task(
                 tool_choice="auto" if tools_payload else None,
             )
 
+            turn_id = str(_uuid.uuid4())
             async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
                 with tracer.start_as_current_span(
                     "kue.openai.chat.completions.create"
@@ -1365,7 +1366,7 @@ async def process_chat_interaction_task(
                             delta = chunk.choices[0].delta
                             if delta.content:
                                 content_parts.append(delta.content)
-                                await kue_stream_token(conversation.id, delta.content)
+                                await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
                             if delta.tool_calls:
                                 for tc in delta.tool_calls:
                                     idx = tc.index
@@ -1382,7 +1383,7 @@ async def process_chat_interaction_task(
                                         if tc.function.arguments:
                                             tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
                         if content_parts:
-                            await kue_stream_token(conversation.id, "", done=True)
+                            await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
                         full_tool_calls = (
                             [ChatCompletionMessageToolCall(**tool_calls_acc[i])
@@ -1396,7 +1397,7 @@ async def process_chat_interaction_task(
                         )
                     except APIError as e:
                         if content_parts:
-                            await kue_stream_token(conversation.id, "", done=True)
+                            await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
                         if e.code == "context_length_exceeded":
                             await kue_notify_error(
@@ -1417,7 +1418,7 @@ async def process_chat_interaction_task(
                         break
                     except Exception as e:
                         if content_parts:
-                            await kue_stream_token(conversation.id, "", done=True)
+                            await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM unexpected error: %s", e, exc_info=True)
                         await kue_notify_error(
                             conversation.id,
