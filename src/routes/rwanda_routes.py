@@ -1997,7 +1997,7 @@ async def admin_backfill_caches(
 
     results: dict = {}
 
-    # Run the heavy Sentinel Hub job in a thread to avoid blocking
+    # Run the DE Africa COG reads in a thread to avoid blocking
     def _run_field_ndvi():
         """Run nightly_field_ndvi asset logic synchronously."""
         import json as _json
@@ -2005,15 +2005,11 @@ async def admin_backfill_caches(
 
         import numpy as _np
 
-        from src.services.sentinel_hub_service import (
-            get_sentinel_hub_service,
-            AGRI_INDEX_NAMES,
-        )
+        from src.services.deafrica_stac import get_deafrica_service
         from src.structures import get_sync_db_connection
 
-        sh = get_sentinel_hub_service()
-        if sh is None or not sh.is_configured():
-            return {"status": "skipped", "reason": "sentinel_hub_unavailable"}
+        AGRI_INDEX_NAMES = ["ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
+        dea = get_deafrica_service()
 
         with get_sync_db_connection() as conn:
             with conn.cursor() as cur:
@@ -2037,7 +2033,7 @@ async def admin_backfill_caches(
                 continue
             try:
                 geometry = _json.loads(geom_geojson)
-                stats = sh.get_agri_stats(
+                stats = dea.get_agri_stats(
                     geometry=geometry,
                     date_from=date_from,
                     date_to=date_to,

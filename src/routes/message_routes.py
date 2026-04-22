@@ -88,7 +88,7 @@ from src.database.models import (
     MapLayer,
     Conversation,
 )
-from src.routes.websocket import kue_ephemeral_action, kue_notify_error
+from src.routes.websocket import kue_ephemeral_action, kue_notify_error, kue_stream_token
 from src.tools.pyd import tool_from as tool_from_pyd
 from src.dependencies.pydantic_tools import (
     get_pydantic_tool_calls,
@@ -437,7 +437,7 @@ async def get_map_tree(
 
     # TODO: if you add a message to a previous map, it interrupts the chain.
     # adding a message should be considered creating a new node in the DAG...
-    async with async_conn("describe_map_tree") as conn:
+    async with async_conn("describe_map_tree", user_id=session.get_user_id()) as conn:
         # Collect all map IDs in the parent chain
         map_ids: list[str] = []
         current_map_id: str | None = leaf_map_id
@@ -504,8 +504,14 @@ async def get_map_tree(
         # Fetch all messages from the conversation if conversation_id is provided
         db_messages = []
         if conversation_id is not None:
+            raw_uid = session.get_user_id()
+            if not raw_uid:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid session",
+                )
             try:
-                user_uuid = _uuid.UUID(session.get_user_id())
+                user_uuid = _uuid.UUID(raw_uid)
             except (ValueError, AttributeError):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1327,31 +1333,70 @@ async def process_chat_interaction_task(
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)
 
-            # Replace the thinking ephemeral updates with context manager
+            chat_completions_args = await chat_args.get_args(
+                user_id, "send_map_message_async"
+            )
+            _llm_messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt_provider.get_system_prompt(),
+                }
+            ] + openai_messages
+            _llm_kwargs = dict(
+                **chat_completions_args,
+                messages=_llm_messages,
+                tools=tools_payload if tools_payload else None,
+                tool_choice="auto" if tools_payload else None,
+            )
+
             async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
-                chat_completions_args = await chat_args.get_args(
-                    user_id, "send_map_message_async"
-                )
                 with tracer.start_as_current_span(
                     "kue.openai.chat.completions.create"
                 ):
-                    # chat.completions.create fails for bad messages and tools, so
-                    # if we have orphaned tool calls then we'll get an error - but not
-                    # handling it properly makes for a horrible user experience
                     try:
-                        response = await client.chat.completions.create(
-                            **chat_completions_args,
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": system_prompt_provider.get_system_prompt(),
-                                }
-                            ]
-                            + openai_messages,
-                            tools=tools_payload if tools_payload else None,
-                            tool_choice="auto" if tools_payload else None,
+                        stream = await client.chat.completions.create(
+                            **_llm_kwargs, stream=True,
+                        )
+                        content_parts: list[str] = []
+                        tool_calls_acc: dict[int, dict] = {}
+                        async for chunk in stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                content_parts.append(delta.content)
+                                await kue_stream_token(conversation.id, delta.content)
+                            if delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.index
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            "id": "", "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    if tc.id:
+                                        tool_calls_acc[idx]["id"] = tc.id
+                                    if tc.function:
+                                        if tc.function.name:
+                                            tool_calls_acc[idx]["function"]["name"] += tc.function.name
+                                        if tc.function.arguments:
+                                            tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                        if content_parts:
+                            await kue_stream_token(conversation.id, "", done=True)
+                        full_content = "".join(content_parts) or None
+                        full_tool_calls = (
+                            [ChatCompletionMessageToolCall(**tool_calls_acc[i])
+                             for i in sorted(tool_calls_acc)]
+                            if tool_calls_acc else None
+                        )
+                        assistant_message = ChatCompletionMessage(
+                            role="assistant",
+                            content=full_content,
+                            tool_calls=full_tool_calls,
                         )
                     except APIError as e:
+                        if content_parts:
+                            await kue_stream_token(conversation.id, "", done=True)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
                         if e.code == "context_length_exceeded":
                             await kue_notify_error(
@@ -1383,9 +1428,6 @@ async def process_chat_interaction_task(
                             "error.traceback", traceback.format_exc()
                         )
                         break
-            assistant_message: ChatCompletionMessageParam = response.choices[
-                0
-            ].message
 
             # after chat completions is a pretty common spot to get a cancelled message
             try:
@@ -2864,7 +2906,7 @@ async def process_chat_interaction_task(
                                             "FROM ndvi_field_cache ORDER BY week_start DESC, district LIMIT 200"
                                         )
                                 except Exception:
-                                    logger.debug("PostgreSQL NDVI cache not available, will try real-time Sentinel Hub")
+                                    logger.debug("PostgreSQL NDVI cache not available, will try real-time DE Africa")
 
                                 _ndvi_stats: list = []
                                 _source = "postgres_cache"
@@ -2876,7 +2918,7 @@ async def process_chat_interaction_task(
                                         "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
                                         "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
                                         "valid_pixels": r["valid_pixels"],
-                                        "source": "sentinel_hub_cache",
+                                        "source": "deafrica_cache",
                                     })
 
                                 # ── 2. Real-time Sentinel Hub fallback ──
@@ -2975,8 +3017,9 @@ async def process_chat_interaction_task(
                                             "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
                                             "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
                                             "Negative values indicate heavy cloud cover during the observation period. "
-                                            "Each record has a 'source' field: 'sentinel_hub_cache' (nightly batch) "
-                                            "or 'sentinel_hub_realtime' (live query)."
+                                            "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
+                                            "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
+                                            "or 'deafrica_realtime' (live COG query)."
                                         ),
                                         "ndvi_stats": _all_stats,
                                     }
@@ -3069,9 +3112,9 @@ async def process_chat_interaction_task(
                                             "status": "success",
                                             "ndvi_stats": [],
                                             "message": (
-                                                "No NDVI data available. Cache is empty, Sentinel Hub unreachable, "
-                                                "and STAC COG query found no cloud-free scenes. "
-                                                "The nightly Dagster job populates this cache automatically."
+                                                "No NDVI data available. Cache is empty and real-time query "
+                                                "found no cloud-free Sentinel-2 scenes via Digital Earth Africa. "
+                                                "The nightly job populates this cache automatically."
                                             ),
                                         }
                             except Exception as e:
@@ -5803,6 +5846,17 @@ async def process_chat_interaction_task(
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":
         #     await label_conversation_inline(conversation.id)
+
+        # Notify the frontend that processing is complete so it refetches messages.
+        # Without this, text-only responses (no tool calls) would be saved to DB
+        # but never shown — the frontend only refetches on ephemeral completions
+        # with update_style_json=True.
+        async with kue_ephemeral_action(
+            conversation.id,
+            "Processing complete",
+            update_style_json=True,
+        ):
+            pass
 
     # Unlock the conversation when processing is complete
     try:

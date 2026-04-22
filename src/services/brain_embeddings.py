@@ -1,7 +1,8 @@
 """Brain embedding pipeline: chunk text and generate vector embeddings.
 
 Chunks brain page content (compiled_truth + timeline) into ~500-token pieces,
-calls OpenAI text-embedding-3-large, and stores via BrainService.upsert_chunks().
+calls text-embedding-3-large via OpenAI-compatible API (OpenRouter, OpenAI, etc.),
+and stores via BrainService.upsert_chunks().
 """
 
 from __future__ import annotations
@@ -22,10 +23,33 @@ _auth_failed_at: float = 0.0
 _AUTH_BACKOFF_SECONDS = 600
 
 # Model config
-_EMBED_MODEL = "text-embedding-3-large"
+_OPENAI_EMBED_MODEL = "text-embedding-3-large"
 _EMBED_DIMS = 1536
 _CHUNK_SIZE = 500  # tokens (~2000 chars)
 _CHUNK_OVERLAP = 50  # tokens overlap between chunks
+
+
+def _resolve_embed_config() -> tuple[str, str, str]:
+    """Return (api_key, base_url, model) for the embeddings client.
+
+    Supports two configurations:
+      1. Dedicated: BRAIN_EMBEDDINGS_API_KEY + BRAIN_EMBEDDINGS_BASE_URL
+      2. Direct OpenAI: OPENAI_API_KEY + api.openai.com/v1 (default)
+    OPENAI_BASE_URL is intentionally NOT used — it points to OpenRouter
+    in prod, which cannot serve embedding models.
+    """
+    api_key = (
+        os.environ.get("BRAIN_EMBEDDINGS_API_KEY")
+        or os.environ.get("OPENAI_API_KEY", "")
+    )
+    base_url = (
+        os.environ.get("BRAIN_EMBEDDINGS_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
+    model = _OPENAI_EMBED_MODEL
+    if "openrouter.ai" in base_url:
+        model = f"openai/{_OPENAI_EMBED_MODEL}"
+    return api_key, base_url, model
 
 
 def _estimate_tokens(text: str) -> int:
@@ -70,7 +94,7 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_O
 
 
 async def _get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Call OpenAI embeddings API. Returns list of embedding vectors."""
+    """Call embeddings API (OpenAI, OpenRouter, or compatible). Returns list of embedding vectors."""
     global _auth_failed_at
     from openai import AsyncOpenAI, AuthenticationError
 
@@ -78,24 +102,24 @@ async def _get_embeddings(texts: list[str]) -> list[list[float]]:
         raise RuntimeError("Embeddings disabled: auth failed recently, retrying in %ds" % int(
             _AUTH_BACKOFF_SECONDS - (time.monotonic() - _auth_failed_at)))
 
-    api_key = os.environ.get("BRAIN_EMBEDDINGS_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+    api_key, base_url, model = _resolve_embed_config()
     if not api_key:
         raise RuntimeError("No API key for embeddings (set BRAIN_EMBEDDINGS_API_KEY or OPENAI_API_KEY)")
 
-    client = AsyncOpenAI(
-        api_key=api_key,
-        base_url="https://api.openai.com/v1",
-    )
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     try:
         response = await client.embeddings.create(
-            model=_EMBED_MODEL,
+            model=model,
             input=texts,
             dimensions=_EMBED_DIMS,
         )
     except AuthenticationError:
         _auth_failed_at = time.monotonic()
-        logger.error("Embeddings auth failed, disabling for %ds. Set BRAIN_EMBEDDINGS_API_KEY with a valid OpenAI key.", _AUTH_BACKOFF_SECONDS)
+        logger.error(
+            "Embeddings auth failed against %s, disabling for %ds.",
+            base_url, _AUTH_BACKOFF_SECONDS,
+        )
         raise
 
     return [item.embedding for item in response.data]
@@ -144,7 +168,7 @@ async def embed_page(
                 chunk_text=text,
                 chunk_source="compiled_truth",
                 embedding=embedding,
-                model=_EMBED_MODEL,
+                model=_OPENAI_EMBED_MODEL,
                 token_count=_estimate_tokens(text),
             )
         )

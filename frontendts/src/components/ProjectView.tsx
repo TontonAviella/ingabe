@@ -156,6 +156,7 @@ export default function ProjectView() {
   // tracking ephemeral state, where reloading the page will reset
   const [errors, setErrors] = useState<ErrorEntry[]>([]);
   const [activeActions, setActiveActions] = useState<EphemeralAction[]>([]);
+  const [streamingText, setStreamingText] = useState<string>('');
   const [zoomHistory, setZoomHistory] = useState<Array<{ bounds: [number, number, number, number] }>>([]);
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
@@ -361,6 +362,16 @@ export default function ProjectView() {
           return;
         }
 
+        // Handle streaming tokens from Sage
+        if (update && typeof update === 'object' && 'streaming' in update && update.streaming === true) {
+          if (update.done) {
+            setStreamingText('');
+          } else if (update.token) {
+            setStreamingText((prev) => prev + update.token);
+          }
+          return;
+        }
+
         // Check if this is an ephemeral action
         if (update && typeof update === 'object' && 'ephemeral' in update && update.ephemeral === true) {
           const action = update as EphemeralAction;
@@ -448,8 +459,7 @@ export default function ProjectView() {
           }
         } else {
           // Non-ephemeral messages are of type SanitizedMessage
-          // Regular message
-          // just invalidate map data
+          setStreamingText('');
           invalidateMapData();
         }
       } catch (e) {
@@ -696,6 +706,7 @@ export default function ProjectView() {
         mapRef={mapRef}
         activeActions={activeActions}
         setActiveActions={setActiveActions}
+        streamingText={streamingText}
         zoomHistory={zoomHistory}
         zoomHistoryIndex={zoomHistoryIndex}
         setZoomHistoryIndex={setZoomHistoryIndex}

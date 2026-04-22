@@ -196,6 +196,7 @@ interface MapLibreMapProps {
   mapRef: React.RefObject<MLMap | null>;
   activeActions: EphemeralAction[];
   setActiveActions: React.Dispatch<React.SetStateAction<EphemeralAction[]>>;
+  streamingText?: string;
   zoomHistory: Array<{ bounds: [number, number, number, number] }>;
   zoomHistoryIndex: number;
   setZoomHistoryIndex: React.Dispatch<React.SetStateAction<number>>;
@@ -242,6 +243,7 @@ export default function MapLibreMap({
   mapRef,
   activeActions,
   setActiveActions,
+  streamingText,
   zoomHistory,
   zoomHistoryIndex,
   setZoomHistoryIndex,
@@ -1921,13 +1923,13 @@ export default function MapLibreMap({
           </Card>
         )}
         {/* Message display component - always show parent div, animate height */}
-        {(criticalErrors.length > 0 || activeActions.length > 0 || lastAssistantMsg) && (
+        {(criticalErrors.length > 0 || !!streamingText || activeActions.length > 0 || lastAssistantMsg) && (
           <div
             className={`z-30 absolute bottom-12 mb-[34px] left-3/5 transform -translate-x-1/2 w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
             style={{ backgroundColor: 'rgba(30, 41, 57, 0.9)' }}
           >
             {/* Expand/contract toggle */}
-            {lastAssistantMsg && (
+            {(lastAssistantMsg || !!streamingText) && (
               <button
                 onClick={() => setAssistantExpanded((v) => !v)}
                 className="absolute right-2 top-2 text-gray-400 hover:text-gray-200 cursor-pointer"
@@ -1953,6 +1955,11 @@ export default function MapLibreMap({
                     </button>
                   </div>
                 ))}
+              </div>
+            ) : streamingText ? (
+              <div className={KUE_MESSAGE_STYLE}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
+                <span className="inline-block w-1.5 h-4 ml-0.5 bg-gray-400 animate-pulse align-text-bottom" />
               </div>
             ) : activeActions.length > 0 ? (
               <div className="flex items-center justify-between">

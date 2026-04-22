@@ -557,11 +557,12 @@ def nightly_field_ndvi(
     context: AssetExecutionContext,
     postgres: PostgresResource,
 ) -> dict[str, Any]:
-    """Pre-warm district-level agri indices cache via Sentinel Hub.
+    """Pre-warm district-level agri indices cache via Digital Earth Africa.
 
-    Runs nightly at 2 AM UTC.  Queries Sentinel Hub for ALL 6 agricultural
-    indices (NDVI, EVI, NDWI, SAVI, NDRE, NDBI) in ONE API call per
-    district.  30 districts = 30 processing units — well within free tier.
+    Runs nightly at 2 AM UTC.  Reads Sentinel-2 L2A COGs from DE Africa's
+    public S3 bucket (free, no credentials, no rate limits) and computes
+    ALL 6 agricultural indices (NDVI, EVI, NDWI, SAVI, NDRE, NDBI) per
+    district.  30 districts × ~7 band reads each.
 
     Results written to:
       - agri_indices_cache: for the cache-first get_agri_indices tool
@@ -571,17 +572,11 @@ def nightly_field_ndvi(
     Sectors and cells are NOT pre-warmed here — they use cache-on-first-
     request in the get_agri_indices handler to stay within API limits.
     """
-    from src.services.sentinel_hub_service import (
-        get_sentinel_hub_service,
-        AGRI_INDEX_NAMES,
-    )
+    from src.services.deafrica_stac import get_deafrica_service
 
-    sh = get_sentinel_hub_service()
-    if sh is None or not sh.is_configured():
-        context.log.warning(
-            "Sentinel Hub not available or not configured — skipping nightly pre-warm"
-        )
-        return {"status": "skipped", "reason": "sentinel_hub_unavailable"}
+    AGRI_INDEX_NAMES = ["ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
+
+    dea = get_deafrica_service()
 
     # Get all districts from rwanda_district_boundaries
     try:
@@ -614,15 +609,14 @@ def nightly_field_ndvi(
 
             geometry = json.loads(geom_geojson)
 
-            # Single API call returns ALL 6 indices
-            stats = sh.get_agri_stats(
+            stats = dea.get_agri_stats(
                 geometry=geometry,
                 date_from=date_from,
                 date_to=date_to,
             )
 
             if "error" in stats:
-                context.log.warning("SH error for %s: %s", district, stats["error"])
+                context.log.warning("DE Africa error for %s: %s", district, stats["error"])
                 errors.append({"district": district, "error": stats["error"]})
                 continue
 
@@ -705,9 +699,9 @@ def nightly_field_ndvi(
 
     return {
         "status": "ok",
+        "backend": "deafrica",
         "districts_processed": rows_written,
         "indices": list(AGRI_INDEX_NAMES),
-        "pu_consumed": rows_written,  # 1 PU per district
         "errors": errors,
         "date_range": f"{date_from}/{date_to}",
     }
@@ -1022,21 +1016,17 @@ def nightly_parcel_ndvi(
 
     Runs nightly at 3 AM UTC.  Finds vector layers tagged with
     metadata->>'rwanda_parcels' = true, extracts individual feature
-    geometries, and runs Sentinel Hub per-parcel at 10m native resolution.
+    geometries, and computes NDVI via Digital Earth Africa at 10m
+    native resolution.
 
     Results go into ndvi_parcel_cache for Sage to read instantly.
     """
     import math
     import uuid
 
-    from src.services.sentinel_hub_service import get_sentinel_hub_service
+    from src.services.deafrica_stac import get_deafrica_service
 
-    sh = get_sentinel_hub_service()
-    if sh is None or not sh.is_configured():
-        context.log.warning(
-            "Sentinel Hub not available — skipping parcel NDVI"
-        )
-        return {"status": "skipped", "reason": "sentinel_hub_unavailable"}
+    dea = get_deafrica_service()
 
     # Find parcel layers: user-uploaded vectors tagged as rwanda_parcels
     try:
@@ -1132,7 +1122,7 @@ def nightly_parcel_ndvi(
 
                     geometry = json.loads(geom_geojson)
 
-                    stats = sh.get_field_stats(
+                    stats = dea.get_field_stats(
                         geometry=geometry,
                         date_from=date_from,
                         date_to=date_to,

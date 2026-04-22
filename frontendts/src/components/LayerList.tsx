@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Database,
   DatabaseZap,
+  FileText,
   Link,
   Loader2,
   Plus,
@@ -32,6 +33,7 @@ import { ConnectGoogleSheets } from '@/components/ConnectGoogleSheets';
 import { ConnectWFS } from '@/components/ConnectWFS';
 import EditableTitle from '@/components/EditableTitle';
 import { LayerListItem } from '@/components/LayerListItem';
+import UploadDocument from '@/components/UploadDocument';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -153,6 +155,7 @@ const LayerList: React.FC<LayerListProps> = ({
   const [showGoogleSheetsDialog, setShowGoogleSheetsDialog] = useState(false);
   const [showESRIDialog, setShowESRIDialog] = useState(false);
   const [showSatelliteDialog, setShowSatelliteDialog] = useState(false);
+  const [showUploadDocDialog, setShowUploadDocDialog] = useState(false);
   const [portError, setPortError] = useState<string | null>(null);
 
   // Fetch PostGIS sources (database connections) for this project
@@ -835,6 +838,10 @@ const LayerList: React.FC<LayerListProps> = ({
                   <Satellite className="h-4 w-4 mr-2" />
                   Satellite Imagery
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowUploadDocDialog(true)} className="cursor-pointer">
+                  <FileText className="h-4 w-4 mr-2" />
+                  Upload Document
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </TooltipProvider>
@@ -1126,6 +1133,7 @@ const LayerList: React.FC<LayerListProps> = ({
           mapId={currentMapData?.map_id}
           onSuccess={updateMapData}
         />
+        <UploadDocument isOpen={showUploadDocDialog} onClose={() => setShowUploadDocDialog(false)} projectId={project?.id} />
       </CardFooter>
     </Card>
   );

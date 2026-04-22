@@ -1350,6 +1350,20 @@ async def add_remote_layer(
                     forked_map.id,
                 )
 
+            try:
+                from src.dependencies.brain_dep import get_brain_service
+                hook_type = "vector_upload" if layer_type == LAYER_TYPE_VECTOR else "raster_upload"
+                payload = {
+                    "layer_ids": [layer_id],
+                    "layer_id": layer_id,
+                    "layer_name": request.name,
+                    "user_id": session.get_user_id(),
+                    "bounds": bounds,
+                }
+                await get_brain_service().enqueue_hook(conn, hook_type, payload)
+            except Exception:
+                logger.debug("Brain hook enqueue skipped for remote layer %s", layer_id)
+
     finally:
         for p in temp_paths_to_cleanup:
             try:
@@ -1459,6 +1473,23 @@ async def add_satellite_layer(
                 current_layers + [layer_id],
                 forked_map.id,
             )
+
+            try:
+                from src.dependencies.brain_dep import get_brain_service
+                payload = {
+                    "layer_ids": [layer_id],
+                    "layer_id": layer_id,
+                    "layer_name": request.name,
+                    "user_id": session.get_user_id(),
+                    "bounds": bounds,
+                    "satellite_collection": request.collection,
+                    "satellite_layer": request.layer,
+                    "date_from": request.date_from,
+                    "date_to": request.date_to,
+                }
+                await get_brain_service().enqueue_hook(conn, "raster_upload", payload)
+            except Exception:
+                logger.debug("Brain hook enqueue skipped for satellite layer %s", layer_id)
 
     return LayerUploadResponse(
         dag_child_map_id=forked_map.id,

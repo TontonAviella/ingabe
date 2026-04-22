@@ -1,13 +1,16 @@
 import os
 import math
 import json
+import hashlib
 from fastapi import (
     Request,
     APIRouter,
+    File,
     HTTPException,
     status,
     Depends,
     BackgroundTasks,
+    UploadFile,
 )
 from fastapi.responses import Response, HTMLResponse
 from pydantic import BaseModel
@@ -19,7 +22,7 @@ from src.dependencies.auth import require_auth
 from src.dependencies.base_map import BaseMapProvider, get_base_map_provider
 from typing import List, Optional, Sequence, cast
 import logging
-from datetime import datetime
+from datetime import datetime, date, timezone
 from src.dependencies.redis_client import get_redis_client
 import asyncio
 from botocore.exceptions import ClientError
@@ -461,6 +464,18 @@ async def add_postgis_connection(
             connection_uri,
             connection_data.connection_name,
         )
+
+        try:
+            from src.dependencies.brain_dep import get_brain_service
+            payload = {
+                "layer_id": connection_id,
+                "layer_name": connection_data.connection_name or "Database",
+                "user_id": user_id,
+                "connection_type": "postgis",
+            }
+            await get_brain_service().enqueue_hook(conn, "vector_upload", payload)
+        except Exception:
+            logger.debug("Brain hook enqueue skipped for postgis connection %s", connection_id)
 
         # Start background task to generate database documentation
         background_tasks.add_task(
@@ -970,3 +985,259 @@ async def get_project_embed(
     }
 
     return HTMLResponse(content=html_content, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Document upload for Brain
+# ---------------------------------------------------------------------------
+
+DOC_MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+DOC_MAX_PDF_PAGES = 500
+DOC_ALLOWED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv"}
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: str
+    slug: str
+    title: str
+    status: str
+
+
+async def _extract_text_pdf(data: bytes) -> str:
+    def _extract(pdf_bytes: bytes) -> str:
+        from pypdf import PdfReader
+        import io as _io
+
+        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        if len(reader.pages) > DOC_MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"PDF has {len(reader.pages)} pages, max is {DOC_MAX_PDF_PAGES}.",
+            )
+        parts = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
+
+    return await asyncio.to_thread(_extract, data)
+
+
+async def _extract_text_docx(data: bytes) -> str:
+    def _extract(docx_bytes: bytes) -> str:
+        from docx import Document
+        import io as _io
+
+        doc = Document(_io.BytesIO(docx_bytes))
+        parts = []
+        for para in doc.paragraphs:
+            if para.text.strip():
+                parts.append(para.text)
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n\n".join(parts)
+
+    return await asyncio.to_thread(_extract, data)
+
+
+async def _extract_text_xlsx(data: bytes) -> str:
+    def _extract(xlsx_bytes: bytes) -> str:
+        from openpyxl import load_workbook
+        import io as _io
+
+        wb = load_workbook(_io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+        parts = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            parts.append(f"Sheet: {sheet_name}")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None]
+                if cells:
+                    parts.append(" | ".join(cells))
+        wb.close()
+        return "\n\n".join(parts)
+
+    return await asyncio.to_thread(_extract, data)
+
+
+async def _extract_text_pptx(data: bytes) -> str:
+    def _extract(pptx_bytes: bytes) -> str:
+        from pptx import Presentation
+        import io as _io
+
+        prs = Presentation(_io.BytesIO(pptx_bytes))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_parts = [f"Slide {i}:"]
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        if para.text.strip():
+                            slide_parts.append(para.text)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                        if cells:
+                            slide_parts.append(" | ".join(cells))
+            if len(slide_parts) > 1:
+                parts.append("\n".join(slide_parts))
+        return "\n\n".join(parts)
+
+    return await asyncio.to_thread(_extract, data)
+
+
+def _extract_text_plain(data: bytes) -> str:
+    for encoding in ("utf-8", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+@project_router.post(
+    "/{project_id}/upload-document",
+    response_model=DocumentUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a document to Brain for Sage search",
+)
+async def upload_document_to_brain(
+    project_id: str,
+    file: UploadFile = File(...),
+    project: MundiProject = Depends(edit_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Upload a PDF, DOCX, XLSX, PPTX, or TXT file into Brain.
+
+    Text is extracted, stored as a brain page, and becomes searchable by Sage.
+    The raw file is stored in S3 for reference.
+    """
+    from src.dependencies.brain_dep import get_brain_service
+    from src.services.brain_service import PageInput, TimelineInput, _validate_slug
+    import uuid
+
+    user_id = session.get_user_id()
+
+    filename = file.filename or "document"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in DOC_ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(DOC_ALLOWED_EXTENSIONS))}",
+        )
+
+    data = await file.read()
+    if len(data) > DOC_MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File size {len(data) / 1024 / 1024:.1f} MB exceeds limit of {DOC_MAX_FILE_SIZE / 1024 / 1024:.0f} MB.",
+        )
+    if len(data) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty file.",
+        )
+
+    extractors = {
+        ".pdf": _extract_text_pdf,
+        ".docx": _extract_text_docx,
+        ".xlsx": _extract_text_xlsx,
+        ".pptx": _extract_text_pptx,
+    }
+    extractor = extractors.get(ext)
+    if extractor:
+        try:
+            text = await extractor(data)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Could not extract text from {ext} file: {e}",
+            )
+    else:
+        text = _extract_text_plain(data)
+
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No text could be extracted from this file.",
+        )
+
+    doc_id = uuid.uuid4().hex[:16]
+    title = os.path.splitext(filename)[0]
+    slug = _validate_slug(f"doc-{project_id[:8]}-{doc_id}")
+    content_hash = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
+    now = datetime.now(timezone.utc)
+
+    # Upload raw file to S3
+    s3_key = f"brain-docs/{project_id}/{doc_id}{ext}"
+    try:
+        s3_client = await get_async_s3_client()
+        await s3_client.put_object(
+            Bucket=get_bucket_name(),
+            Key=s3_key,
+            Body=data,
+        )
+    except Exception:
+        logger.warning("S3 upload failed for brain doc %s, continuing without raw file storage", doc_id)
+        s3_key = ""
+
+    brain = get_brain_service()
+    async with get_async_db_connection(user_id=user_id) as conn:
+        async with conn.transaction():
+            await brain.put_page(
+                conn,
+                slug,
+                PageInput(
+                    type="source_document",
+                    title=title,
+                    compiled_truth=text,
+                    frontmatter={
+                        "source_type": "document_upload",
+                        "original_filename": filename,
+                        "s3_key": s3_key,
+                        "file_size_bytes": len(data),
+                        "content_type": file.content_type,
+                        "project_id": project_id,
+                    },
+                    content_hash=content_hash,
+                ),
+                owner_uuid=user_id,
+            )
+
+            await conn.execute(
+                """
+                UPDATE brain_pages
+                SET source_id  = $2,
+                    fetched_at = $3
+                WHERE slug = $1
+                """,
+                slug,
+                f"document-upload-{project_id[:8]}",
+                now,
+            )
+
+            await brain.add_timeline_entry(
+                conn,
+                slug,
+                TimelineInput(
+                    date=date.today(),
+                    summary=f"Document uploaded: {filename}",
+                    source="document_upload",
+                ),
+                owner_uuid=user_id,
+            )
+
+    logger.info("Document uploaded to Brain: %s (%s, %d bytes, %d chars text)", slug, filename, len(data), len(text))
+
+    return DocumentUploadResponse(
+        document_id=doc_id,
+        slug=slug,
+        title=title,
+        status="ready",
+    )

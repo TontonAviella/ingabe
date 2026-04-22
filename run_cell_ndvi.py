@@ -41,12 +41,9 @@ def _ensure_cache_tables(conn):
 
 
 def main():
-    from src.services.sentinel_hub_service import get_sentinel_hub_service
+    from src.services.deafrica_stac import get_deafrica_service
 
-    sh = get_sentinel_hub_service()
-    if sh is None or not sh.is_configured():
-        print("ERROR: Sentinel Hub not configured", file=sys.stderr)
-        sys.exit(1)
+    sh = get_deafrica_service()
 
     # Fetch all cells from PostGIS
     pg = psycopg2.connect(**PG_DSN)

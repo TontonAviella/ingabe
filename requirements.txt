@@ -141,6 +141,10 @@ pygments==2.14.0
 pyjwt==2.6.0
 pyotp==2.9.0
 pyparsing==3.1.4
+pypdf==5.1.0
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
 pyproj==3.4.1
 pyroscope-io==0.8.7
 pystac==1.12.2
