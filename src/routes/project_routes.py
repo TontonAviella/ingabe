@@ -462,6 +462,18 @@ async def add_postgis_connection(
             connection_data.connection_name,
         )
 
+        try:
+            from src.dependencies.brain_dep import get_brain_service
+            payload = {
+                "layer_id": connection_id,
+                "layer_name": connection_data.connection_name or "Database",
+                "user_id": user_id,
+                "connection_type": "postgis",
+            }
+            await get_brain_service().enqueue_hook(conn, "vector_upload", payload)
+        except Exception:
+            logger.debug("Brain hook enqueue skipped for postgis connection %s", connection_id)
+
         # Start background task to generate database documentation
         background_tasks.add_task(
             database_documenter.generate_documentation,
