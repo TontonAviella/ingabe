@@ -157,6 +157,7 @@ export default function ProjectView() {
   const [errors, setErrors] = useState<ErrorEntry[]>([]);
   const [activeActions, setActiveActions] = useState<EphemeralAction[]>([]);
   const [streamingText, setStreamingText] = useState<string>('');
+  const streamingTurnId = useRef<string | null>(null);
   const [zoomHistory, setZoomHistory] = useState<Array<{ bounds: [number, number, number, number] }>>([]);
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
@@ -365,8 +366,10 @@ export default function ProjectView() {
         // Handle streaming tokens from Sage
         if (update && typeof update === 'object' && 'streaming' in update && update.streaming === true) {
           if (update.done) {
+            streamingTurnId.current = null;
             setStreamingText('');
           } else if (update.token) {
+            if (update.turn_id) streamingTurnId.current = update.turn_id;
             setStreamingText((prev) => prev + update.token);
           }
           return;
@@ -378,6 +381,7 @@ export default function ProjectView() {
 
           // Check if this is an error notification
           if (action.error_message) {
+            streamingTurnId.current = null;
             setStreamingText('');
             addError(action.error_message, true);
             return;
@@ -458,8 +462,13 @@ export default function ProjectView() {
             }
           }
         } else {
-          // Non-ephemeral messages are of type SanitizedMessage
-          setStreamingText('');
+          // Non-ephemeral messages are of type SanitizedMessage.
+          // Only clear streaming text if no active streaming turn is in progress,
+          // preventing a race where PG NOTIFY delivers the saved message before
+          // the Redis Pub/Sub streaming-done token arrives.
+          if (!streamingTurnId.current) {
+            setStreamingText('');
+          }
           invalidateMapData();
         }
       } catch (e) {

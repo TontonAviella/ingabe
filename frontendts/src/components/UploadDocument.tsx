@@ -10,7 +10,11 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 const ACCEPT_STRING = ALLOWED_EXTENSIONS.join(',');
 
 function validateFile(f: File): string | null {
-  const ext = `.${f.name.split('.').pop()?.toLowerCase()}`;
+  const parts = f.name.split('.');
+  if (parts.length < 2 || !parts[parts.length - 1]) {
+    return `File has no extension. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`;
+  }
+  const ext = `.${parts.pop()!.toLowerCase()}`;
   if (!ALLOWED_EXTENSIONS.includes(ext)) {
     return `Unsupported file type "${ext}". Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`;
   }
