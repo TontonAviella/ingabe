@@ -63,6 +63,12 @@ class EphemeralErrorNotificationPayload(ConversationRelatedPayload):
     )
 
 
+class StreamingTokenPayload(ConversationRelatedPayload):
+    streaming: bool = True
+    token: str
+    done: bool = False
+
+
 # Create router
 router = APIRouter()
 
@@ -195,6 +201,8 @@ async def _redis_pubsub_listener():
 
 def _parse_payload(payload_dict: dict) -> ConversationRelatedPayload:
     """Parse a dict into the appropriate payload model."""
+    if payload_dict.get("streaming"):
+        return StreamingTokenPayload(**payload_dict)
     if payload_dict.get("ephemeral"):
         if "error_message" in payload_dict:
             return EphemeralErrorNotificationPayload(**payload_dict)
@@ -494,11 +502,16 @@ async def ws_conversation_chat(
                     logger.debug("Failed to send satellite update", exc_info=True)
                 continue
 
-            assert (
-                isinstance(payload, ChatCompletionReferenceNotificationPayload)
-                or isinstance(payload, EphemeralNotificationPayload)
-                or isinstance(payload, EphemeralErrorNotificationPayload)
-            )
+            assert isinstance(payload, (
+                ChatCompletionReferenceNotificationPayload,
+                EphemeralNotificationPayload,
+                EphemeralErrorNotificationPayload,
+                StreamingTokenPayload,
+            ))
+
+            if isinstance(payload, StreamingTokenPayload):
+                await ws.send_json(payload.model_dump(mode="json"))
+                continue
 
             # Check if this is an ephemeral message
             if isinstance(
@@ -632,4 +645,14 @@ async def kue_notify_error(conversation_id: int, error_message: str):
     )
 
     # Publish via Redis for cross-worker delivery (falls back to local)
+    await _publish_and_distribute(payload)
+
+
+async def kue_stream_token(conversation_id: int, token: str, done: bool = False):
+    """Push a single streaming token (or done signal) to the frontend."""
+    payload = StreamingTokenPayload(
+        conversation_id=conversation_id,
+        token=token,
+        done=done,
+    )
     await _publish_and_distribute(payload)
