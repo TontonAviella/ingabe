@@ -1957,9 +1957,18 @@ export default function MapLibreMap({
                 ))}
               </div>
             ) : streamingText ? (
-              <div className={KUE_MESSAGE_STYLE}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
-                <span className="inline-block w-1.5 h-4 ml-0.5 bg-gray-400 animate-pulse align-text-bottom" />
+              <div className="flex items-start justify-between">
+                <div className={KUE_MESSAGE_STYLE}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
+                  <span className="inline-block w-1.5 h-4 ml-0.5 bg-gray-400 animate-pulse align-text-bottom" />
+                </div>
+                {isCancelling ? (
+                  <span className="text-white ml-2 shrink-0">Cancelling...</span>
+                ) : (
+                  <button className="text-white cursor-pointer ml-2 shrink-0 hover:underline" onClick={() => setIsCancelling(true)}>
+                    Cancel
+                  </button>
+                )}
               </div>
             ) : activeActions.length > 0 ? (
               <div className="flex items-center justify-between">
