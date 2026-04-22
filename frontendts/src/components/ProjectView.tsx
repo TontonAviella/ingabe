@@ -457,7 +457,7 @@ export default function ProjectView() {
         addError('Failed to process update from server.', false);
       }
     }
-  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData]);
+  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient]);
 
   // Helper function to upload a single file with progress tracking
   // Uses 3-step presigned URL flow to bypass server timeout limits:
