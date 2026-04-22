@@ -160,7 +160,7 @@ export default function ProjectView() {
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
-  const [ephemeralTileLayers, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
+  const [, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
@@ -192,26 +192,6 @@ export default function ProjectView() {
   const dismissError = useCallback((errorId: string) => {
     setErrors((prevErrors) => prevErrors.filter((error) => error.id !== errorId));
   }, []);
-
-  const removeEphemeralTileLayer = useCallback((sourceId: string) => {
-    const map = mapRef.current;
-    if (map) {
-      if (map.getLayer(sourceId)) map.removeLayer(sourceId);
-      if (map.getSource(sourceId)) map.removeSource(sourceId);
-    }
-    setEphemeralTileLayers((prev) => prev.filter((l) => l.source_id !== sourceId));
-  }, []);
-
-  const clearAllEphemeralTileLayers = useCallback(() => {
-    const map = mapRef.current;
-    if (map) {
-      for (const tl of ephemeralTileLayers) {
-        if (map.getLayer(tl.source_id)) map.removeLayer(tl.source_id);
-        if (map.getSource(tl.source_id)) map.removeSource(tl.source_id);
-      }
-    }
-    setEphemeralTileLayers([]);
-  }, [ephemeralTileLayers]);
 
   const allowedExtensions = useMemo(() => {
     const exts: string[] = [];
