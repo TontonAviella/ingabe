@@ -437,7 +437,7 @@ async def get_map_tree(
 
     # TODO: if you add a message to a previous map, it interrupts the chain.
     # adding a message should be considered creating a new node in the DAG...
-    async with async_conn("describe_map_tree") as conn:
+    async with async_conn("describe_map_tree", user_id=session.get_user_id()) as conn:
         # Collect all map IDs in the parent chain
         map_ids: list[str] = []
         current_map_id: str | None = leaf_map_id
@@ -504,8 +504,14 @@ async def get_map_tree(
         # Fetch all messages from the conversation if conversation_id is provided
         db_messages = []
         if conversation_id is not None:
+            raw_uid = session.get_user_id()
+            if not raw_uid:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid session",
+                )
             try:
-                user_uuid = _uuid.UUID(session.get_user_id())
+                user_uuid = _uuid.UUID(raw_uid)
             except (ValueError, AttributeError):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -5803,6 +5809,17 @@ async def process_chat_interaction_task(
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":
         #     await label_conversation_inline(conversation.id)
+
+        # Notify the frontend that processing is complete so it refetches messages.
+        # Without this, text-only responses (no tool calls) would be saved to DB
+        # but never shown — the frontend only refetches on ephemeral completions
+        # with update_style_json=True.
+        async with kue_ephemeral_action(
+            conversation.id,
+            "Processing complete",
+            update_style_json=True,
+        ):
+            pass
 
     # Unlock the conversation when processing is complete
     try:
