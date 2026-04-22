@@ -1395,6 +1395,8 @@ async def process_chat_interaction_task(
                             tool_calls=full_tool_calls,
                         )
                     except APIError as e:
+                        if content_parts:
+                            await kue_stream_token(conversation.id, "", done=True)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
                         if e.code == "context_length_exceeded":
                             await kue_notify_error(

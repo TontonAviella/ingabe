@@ -1108,6 +1108,7 @@ def _extract_text_plain(data: bytes) -> str:
 async def upload_document_to_brain(
     project_id: str,
     file: UploadFile = File(...),
+    project: MundiProject = Depends(edit_project),
     session: UserContext = Depends(verify_session_required),
 ):
     """Upload a PDF, DOCX, XLSX, PPTX, or TXT file into Brain.
@@ -1170,7 +1171,7 @@ async def upload_document_to_brain(
     doc_id = uuid.uuid4().hex[:16]
     title = os.path.splitext(filename)[0]
     slug = _validate_slug(f"doc-{project_id[:8]}-{doc_id}")
-    content_hash = hashlib.sha256(data).hexdigest()
+    content_hash = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
     now = datetime.now(timezone.utc)
 
     # Upload raw file to S3

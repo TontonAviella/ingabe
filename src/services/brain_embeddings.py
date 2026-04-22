@@ -31,10 +31,11 @@ _CHUNK_OVERLAP = 50  # tokens overlap between chunks
 def _resolve_embed_config() -> tuple[str, str, str]:
     """Return (api_key, base_url, model) for the embeddings client.
 
-    Supports three configurations:
+    Supports two configurations:
       1. Dedicated: BRAIN_EMBEDDINGS_API_KEY + BRAIN_EMBEDDINGS_BASE_URL
-      2. Shared OpenRouter: OPENAI_API_KEY + OPENAI_BASE_URL (openrouter)
-      3. Direct OpenAI: OPENAI_API_KEY only (defaults to api.openai.com)
+      2. Direct OpenAI: OPENAI_API_KEY + api.openai.com/v1 (default)
+    OPENAI_BASE_URL is intentionally NOT used — it points to OpenRouter
+    in prod, which cannot serve embedding models.
     """
     api_key = (
         os.environ.get("BRAIN_EMBEDDINGS_API_KEY")
@@ -42,7 +43,6 @@ def _resolve_embed_config() -> tuple[str, str, str]:
     )
     base_url = (
         os.environ.get("BRAIN_EMBEDDINGS_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL")
         or "https://api.openai.com/v1"
     )
     model = _OPENAI_EMBED_MODEL

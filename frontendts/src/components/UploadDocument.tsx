@@ -102,6 +102,8 @@ const UploadDocument: React.FC<UploadDocumentProps> = ({ isOpen, onClose, projec
 
         <div
           className="border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors hover:border-blue-400 hover:bg-blue-50/5"
+          role="button"
+          tabIndex={0}
           onClick={() => fileInputRef.current?.click()}
           onKeyDown={(e) => e.key === 'Enter' && fileInputRef.current?.click()}
           onDrop={(e) => {
