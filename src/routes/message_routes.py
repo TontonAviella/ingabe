@@ -1354,11 +1354,11 @@ async def process_chat_interaction_task(
                     "kue.openai.chat.completions.create"
                 ):
                     try:
+                        content_parts: list[str] = []
+                        tool_calls_acc: dict[int, dict] = {}
                         stream = await client.chat.completions.create(
                             **_llm_kwargs, stream=True,
                         )
-                        content_parts: list[str] = []
-                        tool_calls_acc: dict[int, dict] = {}
                         async for chunk in stream:
                             if not chunk.choices:
                                 continue
@@ -1416,6 +1416,8 @@ async def process_chat_interaction_task(
                         )
                         break
                     except Exception as e:
+                        if content_parts:
+                            await kue_stream_token(conversation.id, "", done=True)
                         logger.error("LLM unexpected error: %s", e, exc_info=True)
                         await kue_notify_error(
                             conversation.id,
@@ -5846,17 +5848,6 @@ async def process_chat_interaction_task(
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":
         #     await label_conversation_inline(conversation.id)
-
-        # Notify the frontend that processing is complete so it refetches messages.
-        # Without this, text-only responses (no tool calls) would be saved to DB
-        # but never shown — the frontend only refetches on ephemeral completions
-        # with update_style_json=True.
-        async with kue_ephemeral_action(
-            conversation.id,
-            "Processing complete",
-            update_style_json=True,
-        ):
-            pass
 
     # Unlock the conversation when processing is complete
     try:

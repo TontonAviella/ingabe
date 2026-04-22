@@ -378,9 +378,9 @@ export default function ProjectView() {
 
           // Check if this is an error notification
           if (action.error_message) {
-            // Don't add error notifications to active actions, instead treat as error
+            setStreamingText('');
             addError(action.error_message, true);
-            return; // Early return to skip normal ephemeral action handling
+            return;
           }
 
           // Handle bounds zooming only when action becomes active (not on completion)
