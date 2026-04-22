@@ -27,6 +27,7 @@ via DuckDB iceberg_scan() + spatial extension.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
@@ -158,6 +159,21 @@ TABLE_PARCEL_OBSERVATIONS = f"{RWANDA_NAMESPACE}.parcel_observations"
 TABLE_H3_NDVI_WEEKLY = f"{RWANDA_NAMESPACE}.h3_ndvi_weekly"
 
 
+_RE_H3_INDEX = re.compile(r"^[0-9a-fA-F]{15}$")
+_RE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_RE_ALPHA_LABEL = re.compile(r"^[A-Za-z][A-Za-z -]{0,127}$")
+_RE_DATE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+
+
+def _safe_str(value: str, pattern: re.Pattern[str], label: str) -> str:
+    if not pattern.match(value):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid {label}",
+        )
+    return value
+
+
 # ─── Rwanda Lakehouse Manager ────────────────────────────────────────────────
 
 
@@ -244,11 +260,12 @@ class RwandaLakehouseManager:
             query = f"SELECT * FROM iceberg_scan('{table_path}')"
             conditions = []
             if province:
-                conditions.append(f"province = '{province}'")
+                conditions.append(f"province = '{_safe_str(province, _RE_ALPHA_LABEL, 'province')}'")
             if district:
-                conditions.append(f"district = '{district}'")
+                conditions.append(f"district = '{_safe_str(district, _RE_ALPHA_LABEL, 'district')}'")
             if crop_type:
-                conditions.append(f"crop_type = '{crop_type}'")
+                conditions.append(f"crop_type = '{_safe_str(crop_type, _RE_ALPHA_LABEL, 'crop_type')}'")
+
 
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
@@ -259,11 +276,13 @@ class RwandaLakehouseManager:
             rows = [list(row) for row in cursor.fetchall()]
 
             return {"headers": headers, "rows": rows, "row_count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("Parcel query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
@@ -288,11 +307,13 @@ class RwandaLakehouseManager:
             if h3_index:
                 table = catalog.load_table(TABLE_H3_NDVI_WEEKLY)
                 table_path = table.location()
-                query = f"SELECT * FROM iceberg_scan('{table_path}') WHERE h3_index = '{h3_index}'"
+                safe_h3 = _safe_str(h3_index, _RE_H3_INDEX, "h3_index")
+                query = f"SELECT * FROM iceberg_scan('{table_path}') WHERE h3_index = '{safe_h3}'"
             elif parcel_id:
                 table = catalog.load_table(TABLE_PARCEL_OBSERVATIONS)
                 table_path = table.location()
-                query = f"SELECT * FROM iceberg_scan('{table_path}') WHERE parcel_id = '{parcel_id}'"
+                safe_pid = _safe_str(parcel_id, _RE_IDENTIFIER, "parcel_id")
+                query = f"SELECT * FROM iceberg_scan('{table_path}') WHERE parcel_id = '{safe_pid}'"
             else:
                 return {
                     "status": "error",
@@ -304,9 +325,11 @@ class RwandaLakehouseManager:
                 }
 
             if date_from:
-                query += f" AND observation_date >= '{date_from}'" if parcel_id else f" AND week_start >= '{date_from}'"
+                safe_from = _safe_str(date_from, _RE_DATE, "date_from")
+                query += f" AND observation_date >= '{safe_from}'" if parcel_id else f" AND week_start >= '{safe_from}'"
             if date_to:
-                query += f" AND observation_date <= '{date_to}'" if parcel_id else f" AND week_end <= '{date_to}'"
+                safe_to = _safe_str(date_to, _RE_DATE, "date_to")
+                query += f" AND observation_date <= '{safe_to}'" if parcel_id else f" AND week_end <= '{safe_to}'"
 
             query += f" ORDER BY {'observation_date' if parcel_id else 'week_start'} LIMIT {limit}"
 
@@ -321,7 +344,7 @@ class RwandaLakehouseManager:
             logger.error("NDVI time-series query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
@@ -357,9 +380,9 @@ class RwandaLakehouseManager:
             """
 
             if province:
-                query += f" AND p.province = '{province}'"
+                query += f" AND p.province = '{_safe_str(province, _RE_ALPHA_LABEL, 'province')}'"
             if week_start:
-                query += f" AND n.week_start = '{week_start}'"
+                query += f" AND n.week_start = '{_safe_str(week_start, _RE_DATE, 'week_start')}'"
 
             query += " GROUP BY p.province, p.district ORDER BY p.province, p.district"
 
@@ -368,11 +391,13 @@ class RwandaLakehouseManager:
             rows = [list(row) for row in cursor.fetchall()]
 
             return {"headers": headers, "rows": rows, "row_count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("District summary query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
