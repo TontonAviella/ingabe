@@ -1349,82 +1349,83 @@ async def process_chat_interaction_task(
                 tool_choice="auto" if tools_payload else None,
             )
 
-            with tracer.start_as_current_span(
-                "kue.openai.chat.completions.create"
-            ):
-                try:
-                    stream = await client.chat.completions.create(
-                        **_llm_kwargs, stream=True,
-                    )
-                    content_parts: list[str] = []
-                    tool_calls_acc: dict[int, dict] = {}
-                    async for chunk in stream:
-                        if not chunk.choices:
-                            continue
-                        delta = chunk.choices[0].delta
-                        if delta.content:
-                            content_parts.append(delta.content)
-                            await kue_stream_token(conversation.id, delta.content)
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.index
-                                if idx not in tool_calls_acc:
-                                    tool_calls_acc[idx] = {
-                                        "id": "", "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                if tc.id:
-                                    tool_calls_acc[idx]["id"] = tc.id
-                                if tc.function:
-                                    if tc.function.name:
-                                        tool_calls_acc[idx]["function"]["name"] += tc.function.name
-                                    if tc.function.arguments:
-                                        tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
-                    if content_parts:
-                        await kue_stream_token(conversation.id, "", done=True)
-                    full_content = "".join(content_parts) or None
-                    full_tool_calls = (
-                        [ChatCompletionMessageToolCall(**tool_calls_acc[i])
-                         for i in sorted(tool_calls_acc)]
-                        if tool_calls_acc else None
-                    )
-                    assistant_message = ChatCompletionMessage(
-                        role="assistant",
-                        content=full_content,
-                        tool_calls=full_tool_calls,
-                    )
-                except APIError as e:
-                    logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
-                    if e.code == "context_length_exceeded":
+            async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
+                with tracer.start_as_current_span(
+                    "kue.openai.chat.completions.create"
+                ):
+                    try:
+                        stream = await client.chat.completions.create(
+                            **_llm_kwargs, stream=True,
+                        )
+                        content_parts: list[str] = []
+                        tool_calls_acc: dict[int, dict] = {}
+                        async for chunk in stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                content_parts.append(delta.content)
+                                await kue_stream_token(conversation.id, delta.content)
+                            if delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.index
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            "id": "", "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    if tc.id:
+                                        tool_calls_acc[idx]["id"] = tc.id
+                                    if tc.function:
+                                        if tc.function.name:
+                                            tool_calls_acc[idx]["function"]["name"] += tc.function.name
+                                        if tc.function.arguments:
+                                            tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                        if content_parts:
+                            await kue_stream_token(conversation.id, "", done=True)
+                        full_content = "".join(content_parts) or None
+                        full_tool_calls = (
+                            [ChatCompletionMessageToolCall(**tool_calls_acc[i])
+                             for i in sorted(tool_calls_acc)]
+                            if tool_calls_acc else None
+                        )
+                        assistant_message = ChatCompletionMessage(
+                            role="assistant",
+                            content=full_content,
+                            tool_calls=full_tool_calls,
+                        )
+                    except APIError as e:
+                        logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
+                        if e.code == "context_length_exceeded":
+                            await kue_notify_error(
+                                conversation.id,
+                                "Maximum context length for LLM has been reached. Please create a new chat to continue using the chat feature.",
+                            )
+                        else:
+                            await kue_notify_error(
+                                conversation.id,
+                                "Error connecting to LLM. If trying again doesn't work, create a new chat in the top right to reset the chat history.",
+                            )
+                        span.set_status(
+                            trace.Status(trace.StatusCode.ERROR, str(e))
+                        )
+                        span.set_attribute(
+                            "error.traceback", traceback.format_exc()
+                        )
+                        break
+                    except Exception as e:
+                        logger.error("LLM unexpected error: %s", e, exc_info=True)
                         await kue_notify_error(
                             conversation.id,
-                            "Maximum context length for LLM has been reached. Please create a new chat to continue using the chat feature.",
+                            "Error connecting to LLM. This is probably a bug with Mundi, please open a new issue on GitHub.",
                         )
-                    else:
-                        await kue_notify_error(
-                            conversation.id,
-                            "Error connecting to LLM. If trying again doesn't work, create a new chat in the top right to reset the chat history.",
+                        span.set_status(
+                            trace.Status(trace.StatusCode.ERROR, str(e))
                         )
-                    span.set_status(
-                        trace.Status(trace.StatusCode.ERROR, str(e))
-                    )
-                    span.set_attribute(
-                        "error.traceback", traceback.format_exc()
-                    )
-                    break
-                except Exception as e:
-                    logger.error("LLM unexpected error: %s", e, exc_info=True)
-                    await kue_notify_error(
-                        conversation.id,
-                        "Error connecting to LLM. This is probably a bug with Mundi, please open a new issue on GitHub.",
-                    )
-                    span.set_status(
-                        trace.Status(trace.StatusCode.ERROR, str(e))
-                    )
-                    span.set_attribute(
-                        "error.traceback", traceback.format_exc()
-                    )
-                    break
+                        span.set_attribute(
+                            "error.traceback", traceback.format_exc()
+                        )
+                        break
 
             # after chat completions is a pretty common spot to get a cancelled message
             try:
