@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import textwrap
 import time
+from collections import Counter
 from typing import Optional
 
 import asyncpg
+import numpy as np
 
 from src.services.brain_service import BrainService, ChunkInput
 
@@ -21,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 _auth_failed_at: float = 0.0
 _AUTH_BACKOFF_SECONDS = 600
+_EXPAND_CACHE: dict[str, tuple[float, list[str]]] = {}
+_EXPAND_CACHE_TTL = 300  # 5 minutes
 
 # Model config
 _OPENAI_EMBED_MODEL = "text-embedding-3-large"
@@ -56,11 +61,133 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+_SENTENCE_RE = re.compile(r'(?<=[.!?])\s+|\n{2,}')
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences on punctuation boundaries or double newlines."""
+    parts = _SENTENCE_RE.split(text)
+    return [s.strip() for s in parts if s.strip()]
+
+
+def _bow_vectors(sentences: list[str]) -> np.ndarray:
+    """Build bag-of-words matrix for sentences. Cheap local similarity signal."""
+    vocab: dict[str, int] = {}
+    for s in sentences:
+        for w in s.lower().split():
+            if w not in vocab:
+                vocab[w] = len(vocab)
+    if not vocab:
+        return np.zeros((len(sentences), 1))
+    mat = np.zeros((len(sentences), len(vocab)))
+    for i, s in enumerate(sentences):
+        counts = Counter(s.lower().split())
+        for w, c in counts.items():
+            if w in vocab:
+                mat[i, vocab[w]] = c
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return mat / norms
+
+
+def _cosine_similarities(vecs: np.ndarray) -> list[float]:
+    """Cosine similarity between adjacent row vectors."""
+    sims = []
+    for i in range(len(vecs) - 1):
+        sims.append(float(np.dot(vecs[i], vecs[i + 1])))
+    return sims
+
+
+def _find_boundaries(sims: list[float]) -> list[int]:
+    """Find topic boundaries where similarity drops significantly.
+
+    Uses local minima detection: a boundary exists where similarity drops
+    below the mean minus one standard deviation (or at zero-similarity gaps).
+    """
+    if not sims:
+        return []
+    arr = np.array(sims)
+    mean = float(arr.mean())
+    std = float(arr.std())
+    threshold = max(mean - std, 0.01)
+    boundaries = []
+    for i, s in enumerate(sims):
+        if s <= threshold:
+            boundaries.append(i + 1)
+    return boundaries
+
+
 def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[str]:
-    """Split text into chunks of approximately chunk_size tokens with overlap."""
+    """Semantic chunking: split on topic boundaries, fall back to size-based split.
+
+    Uses bag-of-words cosine similarity between adjacent sentences to detect
+    topic shifts (cheap local approximation of gbrain's Savitzky-Golay approach).
+    Merges small segments to respect chunk_size targets.
+    """
     if not text or not text.strip():
         return []
 
+    char_size = chunk_size * 4
+
+    if len(text) <= char_size:
+        return [text.strip()]
+
+    sentences = _split_sentences(text)
+
+    # Fall back to size-based splitting for very few sentences
+    if len(sentences) < 4:
+        return _chunk_text_fixed(text, chunk_size, overlap)
+
+    # Compute similarity between adjacent sentences
+    vecs = _bow_vectors(sentences)
+    sims = _cosine_similarities(vecs)
+    boundaries = _find_boundaries(sims)
+    if not boundaries:
+        return _chunk_text_fixed(text, chunk_size, overlap)
+
+    # Build segments from boundaries
+    segments: list[list[str]] = []
+    prev = 0
+    for b in boundaries:
+        if b > prev:
+            segments.append(sentences[prev:b])
+        prev = b
+    if prev < len(sentences):
+        segments.append(sentences[prev:])
+
+    # Merge small segments to meet chunk_size target, split large ones
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for seg in segments:
+        seg_text = " ".join(seg)
+        seg_len = len(seg_text)
+
+        if current_len + seg_len <= char_size:
+            current.extend(seg)
+            current_len += seg_len + 1
+        else:
+            if current:
+                chunks.append(" ".join(current).strip())
+            if seg_len <= char_size:
+                current = list(seg)
+                current_len = seg_len
+            else:
+                # Segment too large, split it with the fixed method
+                for sub in _chunk_text_fixed(seg_text, chunk_size, overlap):
+                    chunks.append(sub)
+                current = []
+                current_len = 0
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    return [c for c in chunks if c]
+
+
+def _chunk_text_fixed(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_OVERLAP) -> list[str]:
+    """Fixed-size chunking with sentence boundary heuristic (original method)."""
     char_size = chunk_size * 4
     char_overlap = overlap * 4
 
@@ -72,9 +199,7 @@ def chunk_text(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _CHUNK_O
     while start < len(text):
         end = start + char_size
 
-        # Try to break at sentence boundary
         if end < len(text):
-            # Look for sentence end within last 20% of chunk
             search_start = max(start, end - char_size // 5)
             last_period = text.rfind(". ", search_start, end)
             last_newline = text.rfind("\n", search_start, end)
@@ -123,6 +248,66 @@ async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
         raise
 
     return [item.embedding for item in response.data], model
+
+
+async def expand_query(query: str, n_variants: int = 3) -> list[str]:
+    """Generate search query variants via LLM for multi-query expansion.
+
+    Returns the original query plus up to n_variants rewrites.
+    Falls back to [query] on any failure (LLM down, bad key, timeout).
+    Results cached for 5 minutes to avoid repeat LLM calls for identical queries.
+    """
+    global _auth_failed_at
+
+    cache_key = query.strip().lower()
+    cached = _EXPAND_CACHE.get(cache_key)
+    if cached:
+        ts, variants = cached
+        if (time.monotonic() - ts) < _EXPAND_CACHE_TTL:
+            return variants
+
+    from openai import AsyncOpenAI, AuthenticationError
+
+    if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
+        return [query]
+
+    api_key, base_url, _ = _resolve_embed_config()
+    if not api_key:
+        return [query]
+
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"Generate {n_variants} alternative search queries for a knowledge base. "
+                        "Each should capture a different angle or phrasing of the same intent. "
+                        "Return ONLY the queries, one per line, no numbering or bullets."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            temperature=0.7,
+            max_tokens=200,
+        )
+    except AuthenticationError:
+        _auth_failed_at = time.monotonic()
+        return [query]
+    except Exception:
+        logger.debug("Multi-query expansion failed, using original query")
+        return [query]
+
+    raw = (resp.choices[0].message.content or "").strip()
+    variants = [line.strip() for line in raw.splitlines() if line.strip()]
+    result = [query] + variants[:n_variants]
+    _EXPAND_CACHE[cache_key] = (time.monotonic(), result)
+    if len(_EXPAND_CACHE) > 256:
+        oldest = min(_EXPAND_CACHE, key=lambda k: _EXPAND_CACHE[k][0])
+        del _EXPAND_CACHE[oldest]
+    return result
 
 
 async def embed_page(

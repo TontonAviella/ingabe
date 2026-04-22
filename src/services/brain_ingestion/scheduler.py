@@ -220,6 +220,93 @@ async def _run_source_job(source_id: str) -> None:
         await lock_conn.close()
 
 
+async def _run_maintenance_cycle() -> None:
+    """Periodic brain maintenance: embed stale pages, rebuild links, log health.
+
+    Matches gbrain's runCycle autopilot. Runs every 30 minutes.
+    Advisory-locked so only one worker executes per tick.
+    """
+    log = logger.getChild("maintenance")
+    conn = await _open_admin_conn()
+    lock_held = False
+    try:
+        lock_held = await conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+            "brain_maintenance",
+        )
+        if not lock_held:
+            return
+
+        brain = BrainService()
+
+        # Phase 1: Embed pages with content but no embeddings
+        from src.services.brain_embeddings import embed_all_stale
+        embed_result = await embed_all_stale(conn, brain, limit=20)
+        if embed_result.get("embedded", 0) > 0:
+            log.info("maintenance_embedded", extra=embed_result)
+
+        # Phase 2: Rebuild missing auto-links for pages that have compiled_truth
+        rebuilt = 0
+        rows = await conn.fetch(
+            """
+            SELECT p.id, p.slug, p.compiled_truth, p.frontmatter
+            FROM brain_pages p
+            WHERE p.compiled_truth IS NOT NULL AND p.compiled_truth != ''
+              AND NOT EXISTS (
+                  SELECT 1 FROM brain_links bl WHERE bl.from_page_id = p.id AND bl.link_type = 'auto'
+              )
+            LIMIT 50
+            """
+        )
+        for row in rows:
+            from src.services.brain_service import PageInput, _extract_link_targets
+            page_input = PageInput(
+                slug=row["slug"],
+                compiled_truth=row["compiled_truth"],
+                frontmatter=row["frontmatter"] if row["frontmatter"] else None,
+            )
+            targets = _extract_link_targets(page_input)
+            if targets:
+                for target_slug in targets:
+                    try:
+                        await conn.execute(
+                            """
+                            INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
+                            SELECT $1, p.id, 'auto', ''
+                            FROM brain_pages p WHERE p.slug = $2
+                            ON CONFLICT (from_page_id, to_page_id) DO NOTHING
+                            """,
+                            row["id"], target_slug,
+                        )
+                        rebuilt += 1
+                    except Exception:
+                        log.debug("auto_link_insert_failed", extra={
+                            "from_page_id": row["id"], "target_slug": target_slug,
+                        }, exc_info=True)
+        if rebuilt > 0:
+            log.info("maintenance_links_rebuilt", extra={"links": rebuilt})
+
+        # Phase 3: Log health score
+        health = await brain.health_score(conn)
+        log.info(
+            "maintenance_health",
+            extra={"score": health.get("score", 0), "detail": health},
+        )
+
+    except Exception:
+        log.exception("maintenance_cycle_crashed")
+    finally:
+        if lock_held:
+            try:
+                await conn.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                    "brain_maintenance",
+                )
+            except Exception:
+                log.exception("maintenance_lock_release_failed")
+        await conn.close()
+
+
 async def start_ingestion_scheduler() -> Optional[AsyncIOScheduler]:
     """Load active sources and register one cron job per source.
 
@@ -273,6 +360,16 @@ async def start_ingestion_scheduler() -> Optional[AsyncIOScheduler]:
             coalesce=True,
         )
         registered += 1
+
+    # Brain maintenance cycle: embed stale pages, rebuild links, log health
+    scheduler.add_job(
+        _run_maintenance_cycle,
+        trigger=CronTrigger(minute="*/30", timezone="UTC"),
+        id="brain_maintenance",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
     scheduler.start()
     _scheduler = scheduler

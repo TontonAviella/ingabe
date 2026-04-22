@@ -5685,22 +5685,42 @@ async def process_chat_interaction_task(
                             try:
                                 from src.dependencies.brain_dep import get_brain_service
                                 from src.database.pool import get_async_db_connection
-                                from src.services.brain_embeddings import _get_embeddings
+                                from src.services.brain_embeddings import _get_embeddings, expand_query
                                 _brain_svc = get_brain_service()
                                 _query = tool_args.get("query", "")
                                 _type = tool_args.get("type")
                                 _limit = tool_args.get("limit", 10)
-                                # Generate query embedding for vector search
+                                # Multi-query expansion: generate variants, embed all, merge results
                                 try:
-                                    _embeddings = await _get_embeddings([_query])
-                                    _query_embedding = _embeddings[0] if _embeddings else None
+                                    _variants = await expand_query(_query)
+                                    _all_embeddings, _ = await _get_embeddings(_variants)
                                 except Exception:
-                                    logger.debug("Could not generate query embedding, falling back to keyword-only")
-                                    _query_embedding = None
-                                async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as _brain_conn:
-                                    _results = await _brain_svc.search_hybrid(
-                                        _brain_conn, _query, embedding=_query_embedding, limit=_limit, type=_type
-                                    )
+                                    logger.debug("Query expansion/embedding failed, falling back to keyword-only")
+                                    _variants = [_query]
+                                    _all_embeddings = []
+                                import asyncio as _aio
+                                async def _search_variant(vq: str, vemb):
+                                    async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as vc:
+                                        return await _brain_svc.search_hybrid(
+                                            vc, vq, embedding=vemb, limit=_limit, type=_type
+                                        )
+                                _variant_args = [
+                                    (_vq, _all_embeddings[_vi] if _vi < len(_all_embeddings) else None)
+                                    for _vi, _vq in enumerate(_variants)
+                                ]
+                                _all_results = await _aio.gather(
+                                    *(_search_variant(vq, vemb) for vq, vemb in _variant_args)
+                                )
+                                _seen_keys: set[str] = set()
+                                _results: list = []
+                                for _vresults in _all_results:
+                                    for _r in _vresults:
+                                        _key = f"{_r.slug}:{_r.chunk_text[:80] if _r.chunk_text else ''}"
+                                        if _key not in _seen_keys:
+                                            _seen_keys.add(_key)
+                                            _results.append(_r)
+                                _results.sort(key=lambda r: r.score, reverse=True)
+                                _results = _results[:_limit]
                                 tool_result = {
                                     "status": "success",
                                     "results": [
