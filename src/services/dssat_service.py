@@ -562,13 +562,10 @@ def _compute_assimilation_ratio(
     Returns 1.0 if Sentinel-2 data unavailable.
     """
     try:
-        from src.services.sentinel_hub_service import get_sentinel_hub_service
+        from src.services.deafrica_stac import get_deafrica_service
 
-        sh = get_sentinel_hub_service()
-        if sh is None:
-            return 1.0
-
-        ts = sh.get_field_timeseries(geometry=geom, months=4)
+        dea = get_deafrica_service()
+        ts = dea.get_field_timeseries(geometry=geom, months=4)
         intervals = ts.get("intervals", [])
 
         # Extract NDVI means and convert to LAI

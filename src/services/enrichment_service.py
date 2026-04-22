@@ -528,12 +528,9 @@ async def _compute_agri_index_metric(
     Returns:
         {feature_id: mean_value}
     """
-    from src.services.sentinel_hub_service import get_sentinel_hub_service
+    from src.services.deafrica_stac import get_deafrica_service
 
-    sh = get_sentinel_hub_service()
-    if sh is None:
-        logger.error("Sentinel Hub service not available — check SH_CLIENT_ID/SH_CLIENT_SECRET env vars. Skipping %s", index_name)
-        return {f["id"]: None for f in features}
+    dea = get_deafrica_service()
 
     date_to = datetime.utcnow().strftime("%Y-%m-%d")
     date_from = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -547,7 +544,7 @@ async def _compute_agri_index_metric(
             try:
                 stats = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: sh.get_agri_stats(
+                    lambda: dea.get_agri_stats(
                         geometry=feat["geom"],
                         date_from=date_from,
                         date_to=date_to,

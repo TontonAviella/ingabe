@@ -15,16 +15,11 @@
 
 """Unified satellite analytics facade.
 
-Tries Digital Earth Africa (free, public, no auth) first. Falls back to
-Sentinel Hub Statistical API only when DE Africa returns no usable scenes
-or errors. This is the single import point for analysis-path callers
-that previously imported sentinel_hub_service directly.
+Uses Digital Earth Africa exclusively. DE Africa serves analysis-ready
+Sentinel-2 L2A COGs from a public S3 bucket in af-south-1. No credentials,
+no rate limits, no processing units to budget.
 
-Why a facade instead of patching every call site:
-    1. One place to control fallback policy
-    2. Output shape is identical between the two backends
-    3. Lets us flip the priority (or remove SH entirely) without
-       touching consumer code
+This is the single import point for analysis-path callers.
 """
 
 from __future__ import annotations
@@ -70,48 +65,23 @@ def get_field_stats(
     index: str = "ndvi",
     collection: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compute vegetation index stats. DE Africa primary, Sentinel Hub fallback."""
-    # Primary: DE Africa
+    """Compute vegetation index stats via Digital Earth Africa."""
     try:
         from src.services.deafrica_stac import get_deafrica_service
-        de_result = get_deafrica_service().get_field_stats(
+        result = get_deafrica_service().get_field_stats(
             geometry=geometry,
             date_from=date_from,
             date_to=date_to,
             index=index,
             collection=collection,
         )
-        if _has_useful_intervals(de_result):
-            de_result["backend"] = "deafrica"
-            return _enrich_field_stats(de_result, geometry)
-        logger.info(
-            "DE Africa returned no usable scenes for %s/%s — falling back to Sentinel Hub",
-            date_from, date_to,
-        )
+        result["backend"] = "deafrica"
+        if _has_useful_intervals(result):
+            return _enrich_field_stats(result, geometry)
+        return result
     except Exception as e:
-        logger.warning("DE Africa primary path failed: %s — falling back to Sentinel Hub", e)
-
-    # Fallback: Sentinel Hub
-    try:
-        from src.services.sentinel_hub_service import get_sentinel_hub_service
-        sh = get_sentinel_hub_service()
-        if sh is None or not sh.is_configured():
-            return {
-                "error": "Both DE Africa and Sentinel Hub are unavailable",
-                "backend": "none",
-            }
-        sh_result = sh.get_field_stats(
-            geometry=geometry,
-            date_from=date_from,
-            date_to=date_to,
-            index=index,
-            collection=collection,
-        )
-        sh_result["backend"] = "sentinel_hub"
-        return _enrich_field_stats(sh_result, geometry)
-    except Exception as e:
-        logger.exception("Sentinel Hub fallback also failed")
-        return {"error": f"All satellite backends failed: {e}", "backend": "none"}
+        logger.exception("DE Africa field stats failed")
+        return {"error": f"Satellite analytics failed: {e}", "backend": "none"}
 
 
 def get_agri_stats(
@@ -120,41 +90,20 @@ def get_agri_stats(
     date_to: Optional[str] = None,
     collection: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """All agri indices (ndvi, evi, ndwi, savi, ndre, ndbi). DE Africa primary, SH fallback."""
+    """All agri indices (ndvi, evi, ndwi, savi, ndre, ndbi) via Digital Earth Africa."""
     try:
         from src.services.deafrica_stac import get_deafrica_service
-        de_result = get_deafrica_service().get_agri_stats(
+        result = get_deafrica_service().get_agri_stats(
             geometry=geometry,
             date_from=date_from,
             date_to=date_to,
             collection=collection,
         )
-        if _has_useful_intervals(de_result):
-            de_result["backend"] = "deafrica"
-            return de_result
-        logger.info("DE Africa agri_stats returned no usable scenes — falling back to Sentinel Hub")
+        result["backend"] = "deafrica"
+        return result
     except Exception as e:
-        logger.warning("DE Africa agri_stats failed: %s — falling back to Sentinel Hub", e)
-
-    try:
-        from src.services.sentinel_hub_service import get_sentinel_hub_service
-        sh = get_sentinel_hub_service()
-        if sh is None or not sh.is_configured():
-            return {
-                "error": "Both DE Africa and Sentinel Hub are unavailable",
-                "backend": "none",
-            }
-        sh_result = sh.get_agri_stats(
-            geometry=geometry,
-            date_from=date_from,
-            date_to=date_to,
-            collection=collection,
-        )
-        sh_result["backend"] = "sentinel_hub"
-        return sh_result
-    except Exception as e:
-        logger.exception("Sentinel Hub agri_stats fallback also failed")
-        return {"error": f"All satellite backends failed: {e}", "backend": "none"}
+        logger.exception("DE Africa agri stats failed")
+        return {"error": f"Satellite analytics failed: {e}", "backend": "none"}
 
 
 def get_field_timeseries(
@@ -164,35 +113,18 @@ def get_field_timeseries(
     date_to: Optional[str] = None,
     index: str = "ndvi",
 ) -> Dict[str, Any]:
-    """Index timeseries. DE Africa primary, Sentinel Hub fallback."""
+    """Index timeseries via Digital Earth Africa."""
     try:
         from src.services.deafrica_stac import get_deafrica_service
-        de_result = get_deafrica_service().get_field_timeseries(
+        result = get_deafrica_service().get_field_timeseries(
             geometry=geometry,
             date_from=date_from,
             date_to=date_to,
             index=index,
             months=months,
         )
-        if _has_useful_intervals(de_result):
-            de_result["backend"] = "deafrica"
-            return de_result
-        logger.info("DE Africa timeseries empty — falling back to Sentinel Hub")
+        result["backend"] = "deafrica"
+        return result
     except Exception as e:
-        logger.warning("DE Africa timeseries failed: %s — falling back to Sentinel Hub", e)
-
-    try:
-        from src.services.sentinel_hub_service import get_sentinel_hub_service
-        sh = get_sentinel_hub_service()
-        if sh is None or not sh.is_configured():
-            return {
-                "error": "Both DE Africa and Sentinel Hub are unavailable",
-                "backend": "none",
-            }
-        # SH service signature uses months=N
-        sh_result = sh.get_field_timeseries(geometry=geometry, months=months or 6)
-        sh_result["backend"] = "sentinel_hub"
-        return sh_result
-    except Exception as e:
-        logger.exception("Sentinel Hub timeseries fallback failed")
-        return {"error": f"All satellite backends failed: {e}", "backend": "none"}
+        logger.exception("DE Africa timeseries failed")
+        return {"error": f"Satellite analytics failed: {e}", "backend": "none"}

@@ -2870,7 +2870,7 @@ async def process_chat_interaction_task(
                                             "FROM ndvi_field_cache ORDER BY week_start DESC, district LIMIT 200"
                                         )
                                 except Exception:
-                                    logger.debug("PostgreSQL NDVI cache not available, will try real-time Sentinel Hub")
+                                    logger.debug("PostgreSQL NDVI cache not available, will try real-time DE Africa")
 
                                 _ndvi_stats: list = []
                                 _source = "postgres_cache"
@@ -2882,7 +2882,7 @@ async def process_chat_interaction_task(
                                         "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
                                         "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
                                         "valid_pixels": r["valid_pixels"],
-                                        "source": "sentinel_hub_cache",
+                                        "source": "deafrica_cache",
                                     })
 
                                 # ── 2. Real-time Sentinel Hub fallback ──
@@ -2981,8 +2981,9 @@ async def process_chat_interaction_task(
                                             "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
                                             "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
                                             "Negative values indicate heavy cloud cover during the observation period. "
-                                            "Each record has a 'source' field: 'sentinel_hub_cache' (nightly batch) "
-                                            "or 'sentinel_hub_realtime' (live query)."
+                                            "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
+                                            "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
+                                            "or 'deafrica_realtime' (live COG query)."
                                         ),
                                         "ndvi_stats": _all_stats,
                                     }
@@ -3075,9 +3076,9 @@ async def process_chat_interaction_task(
                                             "status": "success",
                                             "ndvi_stats": [],
                                             "message": (
-                                                "No NDVI data available. Cache is empty, Sentinel Hub unreachable, "
-                                                "and STAC COG query found no cloud-free scenes. "
-                                                "The nightly Dagster job populates this cache automatically."
+                                                "No NDVI data available. Cache is empty and real-time query "
+                                                "found no cloud-free Sentinel-2 scenes via Digital Earth Africa. "
+                                                "The nightly job populates this cache automatically."
                                             ),
                                         }
                             except Exception as e:
