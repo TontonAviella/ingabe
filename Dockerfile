@@ -63,9 +63,11 @@ RUN python3 -c "import duckdb; con = duckdb.connect(':memory:'); con.install_ext
 # Copy application files
 COPY . /app/
 COPY --from=frontend-builder /app/frontendts/dist /app/frontendts/dist
+RUN find /app -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
 
 # Setup environment
-ENV DISPLAY=:99 \
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    DISPLAY=:99 \
     LANG=en_US.UTF-8 \
     PYTHONPATH="/app:/usr/local/lib/python3.11/dist-packages:/usr/lib/python3/dist-packages" \
     LD_LIBRARY_PATH="/usr/local/lib:/usr/lib" \

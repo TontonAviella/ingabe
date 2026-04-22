@@ -1526,5 +1526,91 @@
         "required": ["slug", "summary"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "search_location",
+      "description": "Search for a location by name and return its bounding box and coordinates. Use this when the user mentions a place name and you need geographic coordinates for satellite imagery or spectral index tools.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Place name to search for, e.g. 'Musanze district, Rwanda' or 'Kigali'"
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "display_satellite_layer",
+      "description": "Display satellite imagery (true color) on the map for a specific area and date range. Searches Earth Search for the best Sentinel-2 scene and adds it as a visible tile layer. Use this when the user wants to SEE satellite imagery on the map for a location.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'west,south,east,north' in WGS84 coordinates, e.g. '29.44,-1.72,29.68,-1.50'"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date in ISO 8601 format, e.g. '2025-01-01'"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date in ISO 8601 format, e.g. '2025-01-31'"
+          },
+          "layer_name": {
+            "type": "string",
+            "description": "Display name for the map layer, e.g. 'Musanze TCI Jan 2025'"
+          }
+        },
+        "required": ["bbox", "date_from", "date_to", "layer_name"],
+        "additionalProperties": false
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "compute_spectral_index",
+      "description": "Compute a spectral index (NDVI, NDWI, or NBR) over an area and display it on the map with a colormap. Returns area statistics (mean, std, min, max). Use this for vegetation health analysis (NDVI), water/flood detection (NDWI), or burn severity mapping (NBR). Always call search_location first to get the bbox.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "bbox": {
+            "type": "string",
+            "description": "Bounding box as 'west,south,east,north' in WGS84 coordinates"
+          },
+          "index": {
+            "type": "string",
+            "enum": ["ndvi", "ndwi", "nbr"],
+            "description": "Spectral index to compute: 'ndvi' (vegetation health), 'ndwi' (water/flooding), or 'nbr' (burn severity)"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Start date in ISO 8601 format, e.g. '2025-01-01'"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "End date in ISO 8601 format, e.g. '2025-01-31'"
+          },
+          "layer_name": {
+            "type": "string",
+            "description": "Display name for the map layer, e.g. 'NDVI Musanze Jan 2025'"
+          }
+        },
+        "required": ["bbox", "index", "date_from", "date_to", "layer_name"],
+        "additionalProperties": false
+      }
+    }
   }
 ]

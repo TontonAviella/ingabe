@@ -13,6 +13,7 @@ import io
 import csv
 import asyncio
 import traceback
+import uuid as _uuid
 from src.dependencies.dag import get_map
 from fastapi import UploadFile
 import httpx
@@ -357,6 +358,10 @@ async def get_all_conversation_messages(
     session: UserContext,
 ) -> List[MundiChatCompletionMessage]:
     user_id = session.get_user_id()
+    try:
+        user_uuid = _uuid.UUID(user_id)
+    except (ValueError, AttributeError):
+        return []
     async with async_conn("get_all_conversation_messages", user_id=user_id) as conn:
         db_messages = await conn.fetch(
             """
@@ -369,7 +374,7 @@ async def get_all_conversation_messages(
             ORDER BY ccm.created_at ASC
             """,
             conversation_id,
-            session.get_user_id(),
+            user_uuid,
         )
 
         messages: list[MundiChatCompletionMessage] = []
@@ -499,6 +504,13 @@ async def get_map_tree(
         # Fetch all messages from the conversation if conversation_id is provided
         db_messages = []
         if conversation_id is not None:
+            try:
+                user_uuid = _uuid.UUID(session.get_user_id())
+            except (ValueError, AttributeError):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid session",
+                )
             conv_ok = await conn.fetchrow(
                 """
                 SELECT 1
@@ -509,7 +521,7 @@ async def get_map_tree(
                   AND c.soft_deleted_at IS NULL
                 """,
                 conversation_id,
-                session.get_user_id(),
+                user_uuid,
                 map.project_id,
             )
             if not conv_ok:

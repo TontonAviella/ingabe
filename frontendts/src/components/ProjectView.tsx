@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import type { Conversation, EphemeralAction, MapProject, MapTreeResponse, PostgresConnectionDetails } from '../lib/types';
+import type { Conversation, EphemeralAction, MapProject, MapTreeResponse, PostgresConnectionDetails, TileLayerUpdate } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
 const DROPZONE_ACCEPT: Accept = {
@@ -160,6 +160,7 @@ export default function ProjectView() {
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
+  const [, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
@@ -407,6 +408,30 @@ export default function ProjectView() {
             );
           }
 
+          if (action.updates?.add_tile_layer && mapRef.current) {
+            const tl = action.updates.add_tile_layer;
+            const map = mapRef.current;
+            if (!map.getSource(tl.source_id)) {
+              map.addSource(tl.source_id, {
+                type: 'raster',
+                tiles: tl.tiles,
+                tileSize: tl.tileSize || 256,
+                maxzoom: tl.maxzoom || 14,
+                bounds: tl.bounds,
+              });
+              map.addLayer({
+                id: tl.source_id,
+                type: 'raster',
+                source: tl.source_id,
+                paint: { 'raster-opacity': 0.85 },
+              });
+              setEphemeralTileLayers((prev) => {
+                if (prev.some((l) => l.source_id === tl.source_id)) return prev;
+                return [...prev, tl];
+              });
+            }
+          }
+
           if (action.status === 'active') {
             // Add to active actions
             setActiveActions((prev) => [...prev, action]);
@@ -414,7 +439,7 @@ export default function ProjectView() {
             // Remove from active actions
             setActiveActions((prev) => prev.filter((a) => a.action_id !== action.action_id));
 
-            if (action.updates.style_json) {
+            if (action.updates?.style_json) {
               invalidateMapData();
               // Also invalidate the style query directly so MapLibre picks up
               // new layer styles even if the monotonic counter hasn't changed yet.
@@ -432,7 +457,7 @@ export default function ProjectView() {
         addError('Failed to process update from server.', false);
       }
     }
-  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData]);
+  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient]);
 
   // Helper function to upload a single file with progress tracking
   // Uses 3-step presigned URL flow to bypass server timeout limits:

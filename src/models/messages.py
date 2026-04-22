@@ -38,6 +38,8 @@ class SanitizedToolCall(BaseModel):
         "zoom-in",
         "qgis",
         "square-terminal",
+        "satellite",
+        "map-pin",
     ]
     code: CodeBlock | None
     table: dict | None
@@ -72,6 +74,9 @@ TC_ICON_MAP = {
     "zoom_to_bounds": "zoom-in",
     "download_from_openstreetmap": "cloud-download",
     "execute_shell_in_vm": "square-terminal",
+    "search_location": "map-pin",
+    "display_satellite_layer": "satellite",
+    "compute_spectral_index": "satellite",
 }
 
 TC_TAGLINE_MAP = {
@@ -83,6 +88,9 @@ TC_TAGLINE_MAP = {
     "zoom_to_bounds": "Zooming to bounds...",
     "download_from_openstreetmap": "Downloading from OpenStreetMap...",
     "execute_shell_in_vm": "Running analysis...",
+    "search_location": "Searching for location...",
+    "display_satellite_layer": "Loading satellite imagery...",
+    "compute_spectral_index": "Computing spectral index...",
 }
 
 
@@ -123,14 +131,19 @@ def convert_openai_tool_call_to_sanitized_tool_call(
     elif is_geoprocessing_tool:
         table = sanitized_fc_table_from_args(args)
 
-    if is_geoprocessing_tool:
+    if function_name in TC_TAGLINE_MAP:
+        tagline = TC_TAGLINE_MAP[function_name]
+    elif is_geoprocessing_tool:
         tagline = function_name.replace("_", ":")
     else:
-        tagline = TC_TAGLINE_MAP.get(function_name, function_name)
+        tagline = function_name
 
-    icon = TC_ICON_MAP.get(function_name, "wrench")
-    if is_geoprocessing_tool:
+    if function_name in TC_ICON_MAP:
+        icon = TC_ICON_MAP[function_name]
+    elif is_geoprocessing_tool:
         icon = "qgis"
+    else:
+        icon = "wrench"
 
     return SanitizedToolCall(
         id=tool_call["id"],
