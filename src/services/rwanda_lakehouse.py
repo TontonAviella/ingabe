@@ -161,15 +161,15 @@ TABLE_H3_NDVI_WEEKLY = f"{RWANDA_NAMESPACE}.h3_ndvi_weekly"
 
 _RE_H3_INDEX = re.compile(r"^[0-9a-fA-F]{15}$")
 _RE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_RE_ALPHA_LABEL = re.compile(r"^[A-Za-z][A-Za-z \'-]{0,127}$")
-_RE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RE_ALPHA_LABEL = re.compile(r"^[A-Za-z][A-Za-z -]{0,127}$")
+_RE_DATE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
 
 
 def _safe_str(value: str, pattern: re.Pattern[str], label: str) -> str:
     if not pattern.match(value):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {label}: {value!r}",
+            detail=f"Invalid {label}",
         )
     return value
 
@@ -276,11 +276,13 @@ class RwandaLakehouseManager:
             rows = [list(row) for row in cursor.fetchall()]
 
             return {"headers": headers, "rows": rows, "row_count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("Parcel query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
@@ -342,7 +344,7 @@ class RwandaLakehouseManager:
             logger.error("NDVI time-series query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
@@ -389,11 +391,13 @@ class RwandaLakehouseManager:
             rows = [list(row) for row in cursor.fetchall()]
 
             return {"headers": headers, "rows": rows, "row_count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error("District summary query failed: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Query failed: {e}",
+                detail="Query failed",
             )
         finally:
             con.close()
