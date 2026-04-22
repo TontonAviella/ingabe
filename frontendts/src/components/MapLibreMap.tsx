@@ -120,7 +120,7 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { X, ZoomIn } from 'lucide-react';
+import { Activity, Brain, Database, Maximize2, Minimize2, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -131,16 +131,47 @@ import {
   ScaleControl,
   type SourceSpecification,
 } from 'maplibre-gl';
+import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download } from 'react-bootstrap-icons';
+import ReactMarkdown from 'react-markdown';
+import { ReadyState } from 'react-use-websocket';
+import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import AttributeTable from '@/components/AttributeTable';
 import { BufferPieOverlay, type PieChartData } from '@/components/BufferPieOverlay';
-import MapLayersPanel from '@/components/MapLayersPanel';
+import LayerList from '@/components/LayerList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import VersionVisualization from '@/components/VersionVisualization';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import type { Conversation, EphemeralAction, MapData, MapLayer, MapTreeResponse, TileLayerUpdate } from '../lib/types';
+import type {
+  Conversation,
+  EphemeralAction,
+  MapData,
+  MapLayer,
+  MapProject,
+  MapTreeResponse,
+  MessageSendRequest,
+  SanitizedMessage,
+} from '../lib/types';
 
 const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
+
+// Import styles in the parent component
+const KUE_MESSAGE_STYLE = `
+  text-sm
+  [&_table]:w-full [&_table]:border-collapse [&_table]:text-left
+  [&_thead]:border-b-1 [&_thead]:border-gray-600
+  [&_thead_th]:font-semibold
+  [&_tbody_tr]:border-b [&_tbody_tr]:border-gray-200 last:[&_tbody_tr]:border-b-0
+  [&_td]:align-top
+  [&_a]:text-blue-200 [&_a]:underline
+  [&_img]:h-auto [&_img]:block [&_img]:mx-auto
+  [&_img]:my-2 [&_img]:w-[320px] [&_img]:border
+  [&_img]:border-[#aaa] [&_img]:rounded-md
+`;
 
 // SWAP_XY is created lazily via getDeckModules() since Matrix4 is dynamically imported.
 
@@ -149,6 +180,7 @@ interface MapLibreMapProps {
   width?: string;
   height?: string;
   className?: string;
+  project: MapProject;
   mapData?: MapData | null;
   mapTree: MapTreeResponse | null;
   conversationId: number | null;
@@ -164,14 +196,13 @@ interface MapLibreMapProps {
   mapRef: React.RefObject<MLMap | null>;
   activeActions: EphemeralAction[];
   setActiveActions: React.Dispatch<React.SetStateAction<EphemeralAction[]>>;
+  zoomHistory: Array<{ bounds: [number, number, number, number] }>;
+  zoomHistoryIndex: number;
+  setZoomHistoryIndex: React.Dispatch<React.SetStateAction<number>>;
   addError: (message: string, shouldOverrideMessages?: boolean, sourceId?: string) => void;
   dismissError: (errorId: string) => void;
   errors: ErrorEntry[];
   invalidateMapData: () => void;
-  onSelectedFeatureChange?: (feature: MapGeoJSONFeature | null) => void;
-  ephemeralTileLayers?: TileLayerUpdate[];
-  onRemoveEphemeralTileLayer?: (sourceId: string) => void;
-  onClearAllEphemeralTileLayers?: () => void;
 }
 
 // Known basemap source IDs — these are the only sources that should be
@@ -196,20 +227,29 @@ export default function MapLibreMap({
   width = '100%',
   height = '500px',
   className = '',
+  project,
   mapData,
+  mapTree,
+  conversationId,
+  conversations,
+  conversationsEnabled,
+  setConversationId,
+  readyState,
   openDropzone,
   uploadingFiles,
   hiddenLayerIDs,
   toggleLayerVisibility,
   mapRef,
   activeActions,
+  setActiveActions,
+  zoomHistory,
+  zoomHistoryIndex,
+  setZoomHistoryIndex,
   addError,
   dismissError,
   errors,
-  onSelectedFeatureChange,
-  ephemeralTileLayers,
-  onRemoveEphemeralTileLayer,
-  onClearAllEphemeralTileLayers,
+  invalidateProjectData,
+  invalidateMapData,
 }: MapLibreMapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const localMapRef = useRef<MLMap | null>(null);
@@ -220,10 +260,11 @@ export default function MapLibreMap({
   // (controls, basemap, click handler) re-attach to the new map instance.
   const [mapInstanceId, setMapInstanceId] = useState(0);
   // hasZoomed is tracked via hasZoomedRef (line ~1087) to avoid triggering setStyle re-runs
-  const [, setLayerSymbols] = useState<{
+  const [layerSymbols, setLayerSymbols] = useState<{
     [layerId: string]: JSX.Element;
   }>({});
   const [loadingSourceIds, setLoadingSourceIds] = useState<Set<string>>(new Set());
+  const [assistantExpanded, setAssistantExpanded] = useState(false);
   const [isMapReady, setIsMapReady] = useState(false);
   const [pieOverlays, setPieOverlays] = useState<Map<string, PieChartData>>(new Map());
   const [sceneInfo, setSceneInfo] = useState<{
@@ -234,7 +275,12 @@ export default function MapLibreMap({
   const [isSentinel2Active, setIsSentinel2Active] = useState(false);
   const [mosaicMode, setMosaicMode] = useState<'leastCC' | 'mostRecent'>('leastCC');
 
-  const { overridesRef: paintOverridesRef } = useLayerPaintOverrides({
+  const {
+    overrides: paintOverrides,
+    overridesRef: paintOverridesRef,
+    setLayerOpacity,
+    setLayerColor,
+  } = useLayerPaintOverrides({
     map: localMapRef.current,
     mapId,
     isMapReady,
@@ -259,6 +305,18 @@ export default function MapLibreMap({
     if (!mapData?.layers) return [] as string[];
     return mapData.layers.map((l) => l.id).filter((id) => loadingSourceIds.has(id));
   }, [mapData?.layers, loadingSourceIds]);
+
+  const { data: demoConfigData } = useQuery({
+    queryKey: ['projects', 'config', 'demo-postgis-available'],
+    queryFn: async () => {
+      const response = await apiFetch('/api/projects/config/demo-postgis-available');
+      if (!response.ok) {
+        throw new Error('Failed to fetch demo config');
+      }
+      return (await response.json()) as { available: boolean; description: string };
+    },
+  });
+  const demoConfig = demoConfigData ?? { available: false, description: '' };
 
   const pointCloudLayers = useMemo(() => {
     const filtered = mapData?.layers?.filter((layer) => layer.type === 'point_cloud') ?? EMPTY_POINT_CLOUD_LAYERS;
@@ -357,7 +415,7 @@ export default function MapLibreMap({
   }, []);
 
   const [showAttributeTable, setShowAttributeTable] = useState(false);
-  const [selectedLayer] = useState<MapLayer | null>(null);
+  const [selectedLayer, setSelectedLayer] = useState<MapLayer | null>(null);
 
   const [isCancelling, setIsCancelling] = useState(false);
 
@@ -502,6 +560,22 @@ export default function MapLibreMap({
     [mapId],
   );
 
+  // Function to get the appropriate icon for an action
+  const getActionIcon = (action: string) => {
+    if (action.includes('thinking')) {
+      return <Brain className="animate-pulse w-4 h-4 mr-2" />;
+    } else if (action.includes('Downloading data from OpenStreetMap')) {
+      return <Download className="animate-pulse w-4 h-4 mr-2" />;
+    } else if (action.includes('SQL')) {
+      return <Database className="animate-pulse w-4 h-4 mr-2" />;
+    } else if (action.includes('Sending message')) {
+      return <Send className="animate-pulse w-4 h-4 mr-2" />;
+    } else {
+      return <Activity className="w-4 h-4 mr-2 animate-pulse" />;
+    }
+  };
+
+  // State for changelog entries
   // State for changelog entries from map data
   const [__changelog, setChangelog] = useState<
     Array<{
@@ -547,10 +621,6 @@ export default function MapLibreMap({
 
   const [selectedFeature, setSelectedFeature] = useState<MapGeoJSONFeature | null>(null);
 
-  useEffect(() => {
-    onSelectedFeatureChange?.(selectedFeature);
-  }, [selectedFeature, onSelectedFeatureChange]);
-
   const selectFeature = useCallback(
     (feat: MapGeoJSONFeature | null) => {
       if (!mapRef.current) return;
@@ -558,10 +628,12 @@ export default function MapLibreMap({
 
       setSelectedFeature((prev: MapGeoJSONFeature | null) => {
         if (prev) {
+          // Source may have been removed (e.g. layer deleted → child map navigation).
+          // Guard so a stale prev doesn't block selecting the new feature.
           try {
             newMap.setFeatureState({ source: prev.source, sourceLayer: prev.sourceLayer, id: prev.id }, { selected: false });
           } catch (_) {
-            // source gone
+            // source gone — nothing to deselect
           }
         }
 
@@ -1399,7 +1471,142 @@ export default function MapLibreMap({
     }
   }, [pointsGeoJSON]);
 
-  // (sendMessage and chat input moved to ChatSidebar via ProjectView)
+  const [inputValue, setInputValue] = useState('');
+  const readyStateRef = useRef<number>(readyState);
+
+  useEffect(() => {
+    readyStateRef.current = readyState;
+  }, [readyState]);
+
+  // Function to send a message
+  const sendMessage = async (text: string) => {
+    if (!text.trim()) return;
+
+    setInputValue(''); // Clear input after preparing to send
+
+    const userMessage: ChatCompletionUserMessageParam = {
+      role: 'user',
+      content: text,
+    };
+
+    // Create and add ephemeral action
+    const actionId = `send-message-${Date.now()}`;
+    const sendingAction: EphemeralAction = {
+      map_id: mapId,
+      ephemeral: true,
+      action_id: actionId,
+      action: 'Sending message to Sage...',
+      timestamp: new Date().toISOString(),
+      completed_at: null,
+      layer_id: null,
+      status: 'active',
+      updates: {
+        style_json: false,
+      },
+    };
+
+    try {
+      let conversationIdToUse: number | null = conversationId;
+
+      // If no conversation, create one first
+      if (conversationIdToUse === null) {
+        // Creating conversation also an ephemeral action
+        const createConversationAction: EphemeralAction = {
+          map_id: mapId,
+          ephemeral: true,
+          action_id: `create-conversation-${Date.now()}`,
+          action: 'Creating new conversation...',
+          timestamp: new Date().toISOString(),
+          completed_at: null,
+          layer_id: null,
+          status: 'active',
+          updates: {
+            style_json: false,
+          },
+        };
+        setActiveActions((prev) => [...prev, createConversationAction]);
+
+        const createResp = await apiFetch(`/api/conversations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project_id: project.id }),
+        });
+        if (!createResp.ok) {
+          const err = await createResp.json().catch(() => ({ detail: createResp.statusText }));
+          const d = err.detail;
+          throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : createResp.statusText);
+        }
+        const newConv = (await createResp.json()) as Conversation;
+        conversationIdToUse = newConv.id;
+        setConversationId(conversationIdToUse);
+
+        // Wait briefly for websocket to connect to the new conversation
+        const maxWaitMs = 10000;
+        const start = Date.now();
+        while (Date.now() - start < maxWaitMs && readyStateRef.current !== ReadyState.OPEN) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        setActiveActions((prev) => prev.filter((a) => a.action_id !== createConversationAction.action_id));
+      }
+
+      setActiveActions((prev) => [...prev, sendingAction]);
+
+      const sendBody: MessageSendRequest = {
+        message: userMessage,
+        selected_feature: null,
+      };
+      if (selectedFeature) {
+        sendBody.selected_feature = {
+          layer_id: selectedFeature.source,
+          attributes: selectedFeature.properties,
+        };
+      }
+      if (mapRef.current) {
+        const b = mapRef.current.getBounds();
+        sendBody.viewport_bounds = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+      }
+
+      const response = await apiFetch(`/api/maps/conversations/${conversationIdToUse}/maps/${mapId}/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(sendBody),
+      });
+
+      if (response.ok) {
+        await response.json();
+        invalidateProjectData();
+      } else if (response.status === 401) {
+        // Session expired during chat send. Give a clear, actionable message.
+        addError('Your session has expired. Please refresh the page to continue chatting.', true);
+        return;
+      } else {
+        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+        const d = errorData.detail;
+        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Network error';
+      // Translate cryptic "Token expired" into actionable message
+      if (msg.toLowerCase().includes('token expired') || msg.toLowerCase().includes('unauthorized')) {
+        addError('Your session has expired. Please refresh the page to continue chatting.', true);
+      } else {
+        addError(msg, true);
+      }
+    } finally {
+      // Remove the ephemeral action when done
+      setActiveActions((prev) => prev.filter((a) => a.action_id !== actionId));
+    }
+  };
+
+  // Handle input submission
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && inputValue.trim()) {
+      sendMessage(inputValue);
+      setInputValue('');
+    }
+  };
 
   // Update basemap control when basemap changes
   useEffect(() => {
@@ -1504,6 +1711,25 @@ export default function MapLibreMap({
     }
   }, [showAttributeTable, selectedLayer]);
 
+  // Find the last message in the conversation history
+  const lastMsg: SanitizedMessage | undefined = mapTree?.tree
+    .find((node) => node.map_id === mapId)
+    ?.messages.sort((a, b) => {
+      if (a.created_at && b.created_at) {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+      return 0;
+    })[0];
+
+  // Determine the last assistant message to display. Only show if it's the very
+  // last message in the conversation and has text content.
+  const lastAssistantMsg: string | undefined = lastMsg && lastMsg.role === 'assistant' ? lastMsg.content : undefined;
+
+  // Determine the last user message for the input placeholder.
+  const lastUserMsg: string | undefined = lastMsg && lastMsg.role === 'user' ? lastMsg.content : undefined;
+
+  // especially chat disconnected errors happen all the time and shouldn't
+  // override the text box
   const criticalErrors = errors.filter((e) => e.shouldOverrideMessages);
 
   return (
@@ -1552,18 +1778,31 @@ export default function MapLibreMap({
           </div>
         )}
 
-        {mapData && (
-          <MapLayersPanel
-            layers={mapData.layers ?? []}
+        {mapData && openDropzone && (
+          <LayerList
+            project={project}
+            currentMapData={mapData}
+            mapRef={mapRef}
+            openDropzone={openDropzone}
+            isInConversation={conversationId !== null}
+            readyState={readyState}
+            activeActions={activeActions}
+            setShowAttributeTable={setShowAttributeTable}
+            setSelectedLayer={setSelectedLayer}
+            updateMapData={invalidateMapData}
+            layerSymbols={layerSymbols}
+            zoomHistory={zoomHistory}
+            zoomHistoryIndex={zoomHistoryIndex}
+            setZoomHistoryIndex={setZoomHistoryIndex}
+            uploadingFiles={uploadingFiles}
+            demoConfig={demoConfig}
             hiddenLayerIDs={hiddenLayerIDs}
             toggleLayerVisibility={toggleLayerVisibility}
+            errors={errors}
             loadingLayerIDs={loadingLayerIDs}
-            openDropzone={openDropzone}
-            uploadingFiles={uploadingFiles}
-            ephemeralTileLayers={ephemeralTileLayers}
-            onRemoveEphemeralTileLayer={onRemoveEphemeralTileLayer}
-            onClearAllEphemeralTileLayers={onClearAllEphemeralTileLayers}
-            mapRef={mapRef}
+            paintOverrides={paintOverrides}
+            onLayerOpacityChange={setLayerOpacity}
+            onLayerColorChange={setLayerColor}
           />
         )}
         {/* Pie chart overlays for single-feature buffer layers */}
@@ -1681,32 +1920,99 @@ export default function MapLibreMap({
             </CardContent>
           </Card>
         )}
-        {/* Critical errors overlay (kept on map, not in sidebar) */}
-        {criticalErrors.length > 0 && (
+        {/* Message display component - always show parent div, animate height */}
+        {(criticalErrors.length > 0 || activeActions.length > 0 || lastAssistantMsg) && (
           <div
-            className="z-30 absolute bottom-4 left-1/2 transform -translate-x-1/2 w-4/5 max-w-lg max-h-20 overflow-auto rounded-md shadow-md p-2 text-sm"
+            className={`z-30 absolute bottom-12 mb-[34px] left-3/5 transform -translate-x-1/2 w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
             style={{ backgroundColor: 'rgba(30, 41, 57, 0.9)' }}
           >
-            <div className="space-y-1">
-              {criticalErrors.map((error) => (
-                <div key={error.id} className="flex items-center justify-between">
-                  <div className="flex flex-col flex-1 mr-2">
-                    <span className="text-red-400">{error.message}</span>
-                    <span className="text-xs text-slate-500 dark:text-gray-400">{error.timestamp.toLocaleTimeString()}</span>
+            {/* Expand/contract toggle */}
+            {lastAssistantMsg && (
+              <button
+                onClick={() => setAssistantExpanded((v) => !v)}
+                className="absolute right-2 top-2 text-gray-400 hover:text-gray-200 cursor-pointer"
+                title={assistantExpanded ? 'Contract' : 'Expand'}
+              >
+                {assistantExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </button>
+            )}
+            {criticalErrors.length > 0 ? (
+              <div className="space-y-1 max-h-20">
+                {criticalErrors.map((error) => (
+                  <div key={error.id} className="flex items-center justify-between">
+                    <div className="flex flex-col flex-1 mr-2">
+                      <span className="text-red-400">{error.message}</span>
+                      <span className="text-xs text-slate-500 dark:text-gray-400">{error.timestamp.toLocaleTimeString()}</span>
+                    </div>
+                    <button
+                      onClick={() => dismissError(error.id)}
+                      className="text-white cursor-pointer hover:underline shrink-0"
+                      title="Dismiss error"
+                    >
+                      Dismiss
+                    </button>
                   </div>
-                  <button
-                    onClick={() => dismissError(error.id)}
-                    className="text-white cursor-pointer hover:underline shrink-0"
-                    title="Dismiss error"
-                  >
-                    Dismiss
+                ))}
+              </div>
+            ) : activeActions.length > 0 ? (
+              <div className="flex items-center justify-between">
+                <ol className="space-y-1">
+                  {activeActions.map((action, actionIndex) => (
+                    <li key={`${action.action_id}-${actionIndex}`} className="flex items-center">
+                      {getActionIcon(action.action)}
+                      <span>{action.action}</span>
+                    </li>
+                  ))}
+                </ol>
+                {isCancelling ? (
+                  <span className="text-white ml-2 shrink-0">Cancelling...</span>
+                ) : (
+                  <button className="text-white cursor-pointer ml-2 shrink-0 hover:underline" onClick={() => setIsCancelling(true)}>
+                    Cancel
                   </button>
-                </div>
-              ))}
-            </div>
+                )}
+              </div>
+            ) : lastAssistantMsg ? (
+              <div className={KUE_MESSAGE_STYLE}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{lastAssistantMsg}</ReactMarkdown>
+              </div>
+            ) : null}
           </div>
         )}
+        <div
+          className={`z-30 absolute bottom-12 left-3/5 transform -translate-x-1/2 w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
+        >
+          <Input
+            className={`flex-1 border-none shadow-none !bg-transparent focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
+            placeholder={lastUserMsg || 'Type in for Sage to do something...'}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+          {selectedFeature && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span onClick={() => selectFeature(null)} className={`px-2 hover:cursor-pointer text-gray-400 hover:text-gray-200`}>
+                  <MousePointerClick className="h-6 w-6 inline-block" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Sage can see your selected feature</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
+        </div>
       </div>
+
+      <VersionVisualization
+        mapTree={mapTree}
+        conversationId={conversationId}
+        currentMapId={mapId}
+        conversations={conversations}
+        conversationsEnabled={conversationsEnabled}
+        setConversationId={setConversationId}
+        activeActions={activeActions}
+      />
     </>
   );
 }

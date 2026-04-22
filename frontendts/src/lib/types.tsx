@@ -82,11 +82,10 @@ export interface PresenceData {
 export interface TileLayerUpdate {
   source_id: string;
   tiles: string[];
-  tileSize: number;
-  maxzoom: number;
+  tileSize?: number;
+  maxzoom?: number;
   name: string;
-  bounds: [number, number, number, number];
-  index?: string;
+  bounds?: [number, number, number, number];
 }
 
 export interface EphemeralUpdates {
@@ -137,17 +136,7 @@ export interface CodeBlock {
 export interface SanitizedToolCall {
   id: string;
   tagline: string;
-  icon:
-    | 'text-search'
-    | 'brush'
-    | 'wrench'
-    | 'map-plus'
-    | 'cloud-download'
-    | 'zoom-in'
-    | 'qgis'
-    | 'square-terminal'
-    | 'satellite'
-    | 'map-pin';
+  icon: 'text-search' | 'brush' | 'wrench' | 'map-plus' | 'cloud-download' | 'zoom-in' | 'qgis' | 'square-terminal' | 'satellite' | 'map-pin';
   code: CodeBlock | null;
   table?: Record<string, string>;
 }
