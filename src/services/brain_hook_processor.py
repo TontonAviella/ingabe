@@ -87,6 +87,9 @@ async def _process_vector_hook(
     layer_name = payload.get("layer_name", "Unknown Layer")
     user_id = payload.get("user_id", "")
 
+    if payload.get("connection_type") == "postgis":
+        return await _create_postgis_summary_page(conn, brain, payload)
+
     if not layer_ids or not user_id:
         logger.warning("vector_upload hook missing layer_ids or user_id")
         return 0
@@ -106,7 +109,12 @@ async def _process_vector_hook(
 
         s3_key = layer["s3_key"]
         if not s3_key:
-            logger.warning("Layer %s has no s3_key, skipping", layer_id)
+            logger.info("Layer %s has no s3_key, creating summary page", layer_id)
+            n = await _create_layer_summary_page(
+                conn, brain, layer_id, layer["name"] or layer_name, user_id,
+                layer.get("geometry_type"),
+            )
+            total_pages += n
             continue
 
         # Try to read features from the file on S3
@@ -338,6 +346,12 @@ async def _process_raster_hook(
 
     # Build compiled truth
     truth_parts = [f"Raster layer: {layer_name}"]
+    if payload.get("satellite_collection"):
+        truth_parts.append(f"Collection: {payload['satellite_collection']}")
+    if payload.get("satellite_layer"):
+        truth_parts.append(f"Visualization: {payload['satellite_layer']}")
+    if payload.get("date_from") and payload.get("date_to"):
+        truth_parts.append(f"Date range: {payload['date_from']} to {payload['date_to']}")
     if bounds and len(bounds) == 4:
         truth_parts.append(f"Bounds: [{bounds[0]:.4f}, {bounds[1]:.4f}, {bounds[2]:.4f}, {bounds[3]:.4f}]")
     if metadata.get("band_count"):
@@ -398,6 +412,47 @@ async def _process_raster_hook(
         source_ref=layer_id,
         pages_updated=[slug],
         summary=f"Created brain page for raster '{layer_name}'",
+    )
+
+    return 1
+
+
+async def _create_postgis_summary_page(
+    conn: asyncpg.Connection,
+    brain: BrainService,
+    payload: dict,
+) -> int:
+    """Create a brain page for a PostGIS database connection."""
+    connection_id = payload.get("layer_id", "")
+    connection_name = payload.get("layer_name", "Database")
+    user_id = payload.get("user_id", "")
+
+    if not connection_id or not user_id:
+        return 0
+
+    slug = _validate_slug(f"db-{connection_id}")
+
+    await brain.put_page(
+        conn,
+        slug,
+        PageInput(
+            type="institution",
+            title=f"Database: {connection_name}",
+            compiled_truth=f"PostGIS database connection: {connection_name}. Connected for spatial data access and analysis.",
+            frontmatter={"connection_id": connection_id, "source": "postgis_connection"},
+        ),
+        owner_uuid=user_id,
+    )
+
+    await brain.add_timeline_entry(
+        conn,
+        slug,
+        TimelineInput(
+            date=date.today(),
+            summary=f"Database connected: {connection_name}",
+            source="postgis_connection",
+        ),
+        owner_uuid=user_id,
     )
 
     return 1
