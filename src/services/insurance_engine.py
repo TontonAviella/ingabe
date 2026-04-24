@@ -591,13 +591,20 @@ def _compute_phase_rainfall(
                 day_count += 1
             d += timedelta(days=1)
 
-        daily_avg = total_mm / max(day_count, 1)
-        estimated_cumulative = daily_avg * total_days if day_count > 0 else 0.0
+        # Extrapolate only when we have ≥30% sample coverage; otherwise
+        # report the raw sum to avoid amplifying sparse observations.
+        min_coverage = 0.3
+        if day_count > 0 and total_days > 0 and (day_count / total_days) >= min_coverage:
+            daily_avg = total_mm / day_count
+            estimated_cumulative = daily_avg * total_days
+        else:
+            daily_avg = total_mm / max(day_count, 1)
+            estimated_cumulative = total_mm
 
         results.append(PhaseRainfall(
             phase=phase_name,
             cumulative_mm=estimated_cumulative,
-            day_count=total_days,
+            day_count=day_count,
             daily_avg_mm=daily_avg,
             date_from=phase_start.strftime("%Y-%m-%d"),
             date_to=phase_end.strftime("%Y-%m-%d"),
@@ -669,8 +676,11 @@ async def _fetch_sar_backscatter(
             vh_mean = stats.get("vh", {}).get("mean")
             vv_mean = stats.get("vv", {}).get("mean")
             if vh_mean is not None and vv_mean is not None and vv_mean != 0:
+                # Reject NoData sentinels and implausible values.
+                # Plausible SAR backscatter: -50 to +10 dB, or 0 to ~10 in linear.
+                if vv_mean < -50 or vv_mean > 10 or vh_mean < -50 or vh_mean > 10:
+                    return None
                 if vv_mean < 0:
-                    # dB values — convert to linear ratio: 10^((VH_dB - VV_dB) / 10)
                     return 10 ** ((vh_mean - vv_mean) / 10)
                 return vh_mean / vv_mean
     except Exception:
@@ -829,8 +839,15 @@ def _evaluate_triggers(
 # 6. Composite confidence score
 # ---------------------------------------------------------------------------
 
-def _compute_confidence(triggers: list[TriggerResult]) -> tuple[int, str]:
-    """Weighted composite confidence score (0-100) and status label."""
+def _compute_confidence(
+    triggers: list[TriggerResult],
+    expected_signals: int = 0,
+) -> tuple[int, str]:
+    """Weighted composite confidence score (0-100) and status label.
+
+    When expected_signals > len(triggers), confidence is penalized
+    proportionally — missing data means lower certainty.
+    """
     if not triggers:
         return 50, "UNKNOWN"
 
@@ -840,6 +857,10 @@ def _compute_confidence(triggers: list[TriggerResult]) -> tuple[int, str]:
 
     passing_weight = sum(t.weight for t in triggers if not t.triggered)
     score = int((passing_weight / total_weight) * 100)
+
+    if expected_signals > 0 and len(triggers) < expected_signals:
+        coverage = len(triggers) / expected_signals
+        score = int(score * coverage)
 
     activated = sum(1 for t in triggers if t.triggered)
     high_weight_activated = any(t.triggered and t.weight >= 0.8 for t in triggers)
@@ -947,10 +968,11 @@ def _format_insurance(r: InsuranceReport) -> str:
     rows = []
     for t in r.triggers:
         status = "TRIGGERED" if t.triggered else "PASS"
+        # Show the trigger condition: "below" means payout if current < threshold
         if t.direction == "below":
-            op = "≥"
+            op = "<"
         else:
-            op = "≤"
+            op = ">"
         rows.append(
             f"  {t.signal:<22s} {t.current_value:>8.1f}  {op}{t.threshold:<8.1f}  "
             f"{status:<10s} {t.weight:.1f}"
@@ -1047,6 +1069,12 @@ async def compute_insurance_intelligence(
     """
     from src.services.dssat_service import detect_current_season
 
+    if not any([district, sector, cell, village]):
+        return {
+            "status": "error",
+            "error": "At least one location parameter (district, sector, cell, or village) is required.",
+        }
+
     today = ref_date or date.today()
     crop = crop.lower().strip()
     if crop not in _GROWTH_PHASES:
@@ -1088,47 +1116,9 @@ async def compute_insurance_intelligence(
         lat, lon = _RWANDA_CENTER
 
     # --- PARALLEL DATA FETCH ---
-    # Group 1: async functions needing conn
-    # Group 2: sync functions needing lat/lon (run in thread pool)
-
-    async def fetch_insurance_accuracy():
-        try:
-            return await compute_insurance_accuracy_safe(conn, district, season)
-        except Exception:
-            logger.debug("insurance_accuracy fetch failed", exc_info=True)
-            return None
-
-    async def fetch_dry_spells():
-        try:
-            from src.services.weather_accuracy import detect_dry_spells
-            period_start = planting_date.strftime("%Y-%m-%d")
-            period_end = today.strftime("%Y-%m-%d")
-            return await detect_dry_spells(
-                conn, district=district,
-                date_from=period_start, date_to=period_end,
-            )
-        except Exception:
-            logger.debug("dry_spells fetch failed", exc_info=True)
-            return None
-
-    async def fetch_ndvi_concordance():
-        try:
-            from src.services.weather_accuracy import compute_ndvi_concordance
-            period_start = planting_date.strftime("%Y-%m-%d")
-            return await compute_ndvi_concordance(
-                conn, district=district,
-                date_from=period_start, date_to=today.strftime("%Y-%m-%d"),
-            )
-        except Exception:
-            logger.debug("ndvi_concordance fetch failed", exc_info=True)
-            return None
-
-    async def fetch_ndvi_anomaly():
-        return await _fetch_ndvi_with_sar_fallback(
-            conn, lat, lon,
-            planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-            district,
-        )
+    # Network-only fetches (no shared conn) run in parallel.
+    # DB-dependent fetches run sequentially on `conn` — asyncpg connections
+    # are not safe for concurrent use (raises InterfaceError).
 
     async def fetch_sar_backscatter():
         return await _fetch_sar_backscatter(
@@ -1146,8 +1136,6 @@ async def compute_insurance_intelligence(
                 d += timedelta(days=1)
             if not all_dates:
                 return {}
-            # Cap at 45 downloads to avoid multi-minute serial fetches.
-            # Sample every Nth day to maintain season-wide coverage for SPI.
             max_downloads = 45
             if len(all_dates) > max_downloads:
                 step = len(all_dates) / max_downloads
@@ -1181,25 +1169,53 @@ async def compute_insurance_intelligence(
             logger.debug("wapor soil moisture fetch failed", exc_info=True)
             return None
 
-    # Fire all fetches in parallel
-    (
-        accuracy_result,
-        dry_spells_result,
-        ndvi_conc_result,
-        ndvi_z,
-        sar_result,
-        chirps_daily,
-        et_result,
-        soil_result,
-    ) = await asyncio.gather(
-        fetch_insurance_accuracy(),
-        fetch_dry_spells(),
-        fetch_ndvi_concordance(),
-        fetch_ndvi_anomaly(),
+    # Network-only fetches: safe to parallelize (return_exceptions prevents
+    # one failure from cancelling the others)
+    network_results = await asyncio.gather(
         fetch_sar_backscatter(),
         fetch_chirps(),
         fetch_wapor_et(),
         fetch_wapor_soil(),
+        return_exceptions=True,
+    )
+    sar_result = network_results[0] if not isinstance(network_results[0], BaseException) else None
+    chirps_daily = network_results[1] if not isinstance(network_results[1], BaseException) else {}
+    et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
+    soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
+
+    # DB-dependent fetches: sequential on the shared connection
+    try:
+        accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
+    except Exception:
+        logger.debug("insurance_accuracy fetch failed", exc_info=True)
+        accuracy_result = None
+
+    try:
+        from src.services.weather_accuracy import detect_dry_spells
+        dry_spells_result = await detect_dry_spells(
+            conn, district=district,
+            date_from=planting_date.strftime("%Y-%m-%d"),
+            date_to=today.strftime("%Y-%m-%d"),
+        )
+    except Exception:
+        logger.debug("dry_spells fetch failed", exc_info=True)
+        dry_spells_result = None
+
+    try:
+        from src.services.weather_accuracy import compute_ndvi_concordance
+        ndvi_conc_result = await compute_ndvi_concordance(
+            conn, district=district,
+            date_from=planting_date.strftime("%Y-%m-%d"),
+            date_to=today.strftime("%Y-%m-%d"),
+        )
+    except Exception:
+        logger.debug("ndvi_concordance fetch failed", exc_info=True)
+        ndvi_conc_result = None
+
+    ndvi_z = await _fetch_ndvi_with_sar_fallback(
+        conn, lat, lon,
+        planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
+        district,
     )
 
     # --- PROCESS RESULTS ---
@@ -1273,7 +1289,9 @@ async def compute_insurance_intelligence(
 
     trigger_results = _evaluate_triggers(trigger_defs, current_values)
     triggers_activated = sum(1 for t in trigger_results if t.triggered)
-    confidence_score, overall_status = _compute_confidence(trigger_results)
+    confidence_score, overall_status = _compute_confidence(
+        trigger_results, expected_signals=len(trigger_defs),
+    )
     recommendation = _generate_recommendation(overall_status, crop, growth_phase, trigger_results)
 
     # Merge with existing accuracy components if available

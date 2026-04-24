@@ -1274,12 +1274,12 @@ class TestFormatInsuranceEdgeCases:
         defaults.update(overrides)
         return InsuranceReport(**defaults)
 
-    def test_above_direction_shows_leq_operator(self):
-        """Triggers with direction='above' should show ≤ operator."""
+    def test_above_direction_shows_gt_operator(self):
+        """Triggers with direction='above' should show > operator (trigger fires when current > threshold)."""
         trigger = TriggerResult("dry_spell_days", 20.0, 15.0, "above", True, 33.3, 0.6, "Max dry spell")
         r = self._report(triggers=[trigger], triggers_activated=1, triggers_total=1)
         text = format_for_audience(r, "insurance")
-        assert "≤" in text
+        assert ">" in text
 
     def test_empty_sources_uses_fallback(self):
         """When sources list is empty, should fallback to default source string."""

@@ -5001,6 +5001,7 @@ async def process_chat_interaction_task(
                                         )
                                         await _ins_brain.add_timeline_entry(
                                             conn, _ins_slug, _tl_input,
+                                            owner_uuid=user_id or "00000000-0000-0000-0000-000000000000",
                                         )
                                     except Exception:
                                         logger.warning("insurance brain save failed", exc_info=True)
