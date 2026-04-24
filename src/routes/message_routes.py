@@ -4944,6 +4944,79 @@ async def process_chat_interaction_task(
                                 )
                             )
 
+                        elif function_name == "get_insurance_intelligence":
+                            try:
+                                from src.services.insurance_engine import compute_insurance_intelligence
+                                tool_result = await compute_insurance_intelligence(
+                                    conn,
+                                    crop=tool_args.get("crop", "maize"),
+                                    season=tool_args.get("season"),
+                                    district=tool_args.get("district"),
+                                    sector=tool_args.get("sector"),
+                                    cell=tool_args.get("cell"),
+                                    village=tool_args.get("village"),
+                                    audience=tool_args.get("audience", "farmer"),
+                                )
+                                # Save to Brain for audit trail + future retrieval
+                                if tool_result.get("status") == "ok":
+                                    try:
+                                        from src.dependencies.brain_dep import get_brain_service
+                                        from src.services.brain_service import PageInput, TimelineInput
+                                        _ins_brain = get_brain_service()
+                                        _ins_slug = tool_result.get("slug", "insurance-report")
+                                        _ins_data = tool_result.get("data", {})
+                                        _ins_geom = tool_result.get("geometry")
+                                        _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
+                                        _page_input = PageInput(
+                                            type="insurance_intelligence",
+                                            title=f"Insurance: {_ins_data.get('crop', '')} in {_ins_data.get('location', '')} Season {_ins_data.get('season', '')}",
+                                            compiled_truth=tool_result.get("report", ""),
+                                            frontmatter={
+                                                "type": "insurance_intelligence",
+                                                "crop": _ins_data.get("crop"),
+                                                "season": _ins_data.get("season"),
+                                                "location": _ins_data.get("location"),
+                                                "admin_level": _ins_data.get("admin_level"),
+                                                "confidence_score": _ins_data.get("confidence_score"),
+                                                "overall_status": _ins_data.get("overall_status"),
+                                            },
+                                            geom_geojson=_ins_geom_str,
+                                        )
+                                        await _ins_brain.put_page(
+                                            conn, _ins_slug, _page_input,
+                                            owner_uuid=user_id or "00000000-0000-0000-0000-000000000000",
+                                        )
+                                        from datetime import date as _date_cls
+                                        _tl_input = TimelineInput(
+                                            date=_date_cls.today(),
+                                            summary=(
+                                                f"{_ins_data.get('overall_status', 'UNKNOWN')}: "
+                                                f"{_ins_data.get('crop', '')} in {_ins_data.get('location', '')} "
+                                                f"Season {_ins_data.get('season', '')} — "
+                                                f"confidence {_ins_data.get('confidence_score', 0)}/100, "
+                                                f"{_ins_data.get('triggers_activated', 0)}/{_ins_data.get('triggers_total', 0)} triggers"
+                                            ),
+                                            source="insurance_engine",
+                                            detail=json.dumps(_ins_data, default=str),
+                                        )
+                                        await _ins_brain.add_timeline_entry(
+                                            conn, _ins_slug, _tl_input,
+                                            owner_uuid=user_id or "00000000-0000-0000-0000-000000000000",
+                                        )
+                                    except Exception:
+                                        logger.warning("insurance brain save failed", exc_info=True)
+                            except Exception:
+                                logger.exception("get_insurance_intelligence tool failed")
+                                tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}
+
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result, default=str),
+                                )
+                            )
+
                         elif function_name == "get_emissions_stats":
                             try:
                                 # ── Query emissions_annual_cache (PostgreSQL) ──

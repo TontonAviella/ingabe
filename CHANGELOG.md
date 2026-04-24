@@ -2,6 +2,21 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.3.0.0] - 2026-04-24
+
+### Added
+- Insurance Intelligence Engine (`src/services/insurance_engine.py`) — composition layer connecting 7 existing satellite/weather services (CHIRPS rainfall, crop calendars, dry spells, NDVI anomaly, NDVI concordance, WaPOR ET, WaPOR soil moisture) into unified parametric insurance reports for BK Insurance.
+- Four audience-specific formatters: farmer (WhatsApp-ready), insurance worker (trigger assessment table), agronomist (technical + recommendations), scientist (full JSON with methodology and provenance).
+- Growth-phase rainfall accumulation connecting CHIRPS daily precipitation to crop calendars, splitting the growing season into planting/vegetative/flowering/grain_fill/maturity phases with per-phase cumulative totals.
+- Parametric trigger evaluation engine loading thresholds from `insurance_triggers` table (data, not code) so BK Insurance can customize per district without engineering involvement.
+- Alembic migration `a1b2c3d4e5f7` creating `insurance_triggers` table with 568 seed rows covering 52 crops across Seasons A and B. Check constraints, composite unique index, and `updated_at` trigger.
+- New Sage tool `get_insurance_intelligence` registered in `tools.json` and wired in `message_routes.py` with Brain persistence (put_page + timeline entry) for audit trail.
+- `brain_service.py` `put_page()` extended with `access_scope` and `partner_id` parameters for future partner isolation support.
+- 160 unit tests covering pure functions, async mocked integration, and migration integrity.
+
+### Known Gaps
+- `InsuranceReport.to_dict()` omits `accuracy_components` field — weather accuracy metrics (POD/FAR/HSS/CSI) are computed but not serialized. Deferred pending design decision on which audience views should include them.
+
 ## [0.2.1.1] - 2026-04-21
 
 ### Fixed
