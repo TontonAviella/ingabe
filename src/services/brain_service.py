@@ -54,6 +54,7 @@ PAGE_TYPES = {
     "crop",
     "weather_station",
     "equipment",
+    "insurance_intelligence",
     # Generic types from gbrain
     "person",
     "concept",

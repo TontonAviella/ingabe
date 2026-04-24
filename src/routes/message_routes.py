@@ -4984,7 +4984,7 @@ async def process_chat_interaction_task(
                                         )
                                         await _ins_brain.put_page(
                                             conn, _ins_slug, _page_input,
-                                            owner_uuid=user_id or "system",
+                                            owner_uuid=user_id or "00000000-0000-0000-0000-000000000000",
                                         )
                                         from datetime import date as _date_cls
                                         _tl_input = TimelineInput(
@@ -5003,10 +5003,10 @@ async def process_chat_interaction_task(
                                             conn, _ins_slug, _tl_input,
                                         )
                                     except Exception:
-                                        logger.debug("insurance brain save failed", exc_info=True)
-                            except Exception as e:
+                                        logger.warning("insurance brain save failed", exc_info=True)
+                            except Exception:
                                 logger.exception("get_insurance_intelligence tool failed")
-                                tool_result = {"status": "error", "error": str(e)}
+                                tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}
 
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(

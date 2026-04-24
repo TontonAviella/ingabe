@@ -1,14 +1,14 @@
 """insurance_triggers table with seed data
 
-Revision ID: g1a2b3c4d5e6
-Revises: f6a7b8c9d0e1
+Revision ID: a1b2c3d4e5f7
+Revises: 47463555a0f8
 Create Date: 2026-04-24
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "g1a2b3c4d5e6"
-down_revision: str = "f6a7b8c9d0e1"
+revision: str = "a1b2c3d4e5f7"
+down_revision: str = "47463555a0f8"
 branch_labels = None
 depends_on = None
 
@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("district", sa.Text()),
         sa.Column("description", sa.Text()),
         sa.Column("source", sa.Text()),
+        sa.Column("enabled", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.CheckConstraint("season IN ('A', 'B')", name="ck_insurance_triggers_season"),
@@ -44,6 +45,22 @@ def upgrade() -> None:
             name="ck_insurance_triggers_direction",
         ),
     )
+
+    op.execute("""
+        CREATE OR REPLACE FUNCTION update_insurance_triggers_timestamp()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            NEW.updated_at = now();
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+    op.execute("""
+        CREATE TRIGGER trg_insurance_triggers_updated_at
+        BEFORE UPDATE ON insurance_triggers
+        FOR EACH ROW
+        EXECUTE FUNCTION update_insurance_triggers_timestamp();
+    """)
 
     op.create_index(
         "uq_insurance_triggers_key",
@@ -100,4 +117,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS trg_insurance_triggers_updated_at ON insurance_triggers")
+    op.execute("DROP FUNCTION IF EXISTS update_insurance_triggers_timestamp()")
     op.drop_table("insurance_triggers")

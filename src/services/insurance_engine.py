@@ -65,6 +65,12 @@ _GROWTH_PHASES: dict[str, dict[str, tuple[int, int]]] = {
 
 # Approximate long-term seasonal rainfall normals (mm) for Rwanda
 # Source: CHIRPS 2000-2020 seasonal averages across 30 districts
+_RWANDA_CENTER = (-1.94, 29.87)
+
+# WaPOR v3 long-term average ET for Rwanda cropland (mm/dekad).
+# Single national value. District-specific means need historical WaPOR analysis.
+_ET_LONG_TERM_MEAN = 3.5
+
 _RAINFALL_NORMALS: dict[str, dict[str, float]] = {
     "A": {"mean": 400.0, "std": 85.0},
     "B": {"mean": 350.0, "std": 75.0},
@@ -236,8 +242,10 @@ def _compute_phase_rainfall(
 
         total_mm = 0.0
         day_count = 0
+        total_days = 0
         d = phase_start
         while d < phase_end:
+            total_days += 1
             key = d.strftime("%Y-%m-%d")
             val = daily_precip.get(key)
             if val is not None:
@@ -245,11 +253,14 @@ def _compute_phase_rainfall(
                 day_count += 1
             d += timedelta(days=1)
 
+        daily_avg = total_mm / max(day_count, 1)
+        estimated_cumulative = daily_avg * total_days if day_count > 0 else 0.0
+
         results.append(PhaseRainfall(
             phase=phase_name,
-            cumulative_mm=total_mm,
-            day_count=day_count,
-            daily_avg_mm=total_mm / max(day_count, 1),
+            cumulative_mm=estimated_cumulative,
+            day_count=total_days,
+            daily_avg_mm=daily_avg,
             date_from=phase_start.strftime("%Y-%m-%d"),
             date_to=phase_end.strftime("%Y-%m-%d"),
         ))
@@ -306,7 +317,7 @@ def _centroid_from_geojson(geom: dict) -> tuple[float, float]:
     """Extract approximate centroid (lat, lon) from a GeoJSON geometry."""
     coords = _flatten_coords(geom.get("coordinates", []))
     if not coords:
-        return (-1.94, 29.87)  # Rwanda center fallback
+        return _RWANDA_CENTER
     lons = [c[0] for c in coords]
     lats = [c[1] for c in coords]
     return (sum(lats) / len(lats), sum(lons) / len(lons))
@@ -346,6 +357,7 @@ async def _load_triggers(
             "signal, direction, threshold, weight, description "
             "FROM insurance_triggers "
             "WHERE crop = $1 AND season = $2 AND (phase = $3 OR phase = 'full_season') "
+            "AND enabled = true "
             "AND (district IS NULL OR LOWER(district) = LOWER($4)) "
             "ORDER BY phase, signal, "
             "CASE WHEN district IS NOT NULL THEN 0 ELSE 1 END, "
@@ -397,6 +409,7 @@ def _evaluate_triggers(
         else:
             triggered = value > threshold
             margin = ((value - threshold) / abs(threshold)) * 100 if threshold != 0 else 0
+        margin = max(-999, min(999, margin))
 
         results.append(TriggerResult(
             signal=signal,
@@ -435,7 +448,7 @@ def _compute_confidence(triggers: list[TriggerResult]) -> tuple[int, str]:
         status = "SAFE"
     elif activated == 1 and not high_weight_activated:
         status = "WATCH"
-    elif activated <= 2 or (activated == 1 and high_weight_activated):
+    elif activated <= 2:
         status = "WARNING"
     else:
         status = "PAYOUT_LIKELY"
@@ -669,7 +682,7 @@ async def compute_insurance_intelligence(
     if geometry:
         lat, lon = _centroid_from_geojson(geometry)
     else:
-        lat, lon = -1.94, 29.87  # Rwanda center
+        lat, lon = _RWANDA_CENTER
 
     # --- PARALLEL DATA FETCH ---
     # Group 1: async functions needing conn
@@ -713,13 +726,23 @@ async def compute_insurance_intelligence(
     async def fetch_chirps():
         try:
             from src.services.forecast_fusion import _fetch_chirps_precip
-            dates = []
+            all_dates = []
             d = planting_date
             while d <= today:
-                dates.append(d.strftime("%Y-%m-%d"))
+                all_dates.append(d.strftime("%Y-%m-%d"))
                 d += timedelta(days=1)
-            if not dates:
+            if not all_dates:
                 return {}
+            # Cap at 45 downloads to avoid multi-minute serial fetches.
+            # Sample every Nth day to maintain season-wide coverage for SPI.
+            max_downloads = 45
+            if len(all_dates) > max_downloads:
+                step = len(all_dates) / max_downloads
+                dates = [all_dates[int(i * step)] for i in range(max_downloads)]
+                if all_dates[-1] not in dates:
+                    dates[-1] = all_dates[-1]
+            else:
+                dates = all_dates
             return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates)
         except Exception:
             logger.debug("chirps fetch failed", exc_info=True)
@@ -800,8 +823,7 @@ async def compute_insurance_intelligence(
             values = [s.get("value") for s in series if s.get("value") is not None]
             if values:
                 mean_et = sum(values) / len(values)
-                long_term_mean = 3.5  # mm/dekad approximate for Rwanda cropland
-                et_anomaly = ((mean_et - long_term_mean) / long_term_mean) * 100
+                et_anomaly = ((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100
                 sources.append("WaPOR v3 ET")
 
     soil_moisture = None

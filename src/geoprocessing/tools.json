@@ -1283,7 +1283,7 @@
         "properties": {
           "crop": {
             "type": "string",
-            "enum": ["maize", "beans", "rice", "sorghum", "wheat"],
+            "enum": ["maize", "beans", "rice"],
             "description": "Crop type. Default: maize"
           },
           "season": {
