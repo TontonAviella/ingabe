@@ -1283,8 +1283,7 @@
         "properties": {
           "crop": {
             "type": "string",
-            "enum": ["maize", "beans", "rice"],
-            "description": "Crop type. Default: maize"
+            "description": "Crop type (default: maize). Supported: maize, beans, rice, sorghum, wheat, finger_millet, potato, sweet_potato, cassava, yam, taro, soybean, groundnut, peas, cowpea, pigeon_pea, tomato, onion, cabbage, carrot, chili, eggplant, green_pepper, garlic, amaranth, leek, lettuce, spinach, cucumber, watermelon, pumpkin, banana, avocado, mango, passion_fruit, pineapple, papaya, citrus, strawberry, tree_tomato, guava, cape_gooseberry, coffee, tea, sugarcane, pyrethrum, tobacco, sunflower, macadamia, sesame, oil_palm, soya"
           },
           "season": {
             "type": "string",

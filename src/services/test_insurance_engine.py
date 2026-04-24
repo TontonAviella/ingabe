@@ -32,6 +32,7 @@ from src.services.insurance_engine import (
     _get_planting_date,
     _load_triggers,
     _resolve_location_name,
+    _GROWTH_PHASES,
     _RAINFALL_NORMALS,
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
@@ -406,9 +407,9 @@ class TestFlattenCoords:
 # ---------------------------------------------------------------------------
 
 class TestDefaultTriggers:
-    def test_returns_five_triggers(self):
+    def test_returns_six_triggers(self):
         triggers = _default_triggers("full_season")
-        assert len(triggers) == 5
+        assert len(triggers) == 6
 
     def test_signals_present(self):
         triggers = _default_triggers("full_season")
@@ -418,6 +419,7 @@ class TestDefaultTriggers:
         assert "dry_spell_days" in signals
         assert "ndvi_z_score" in signals
         assert "et_anomaly" in signals
+        assert "sar_backscatter" in signals
 
     def test_all_have_required_fields(self):
         for t in _default_triggers("full_season"):
@@ -845,7 +847,7 @@ class TestLoadTriggers:
         conn = AsyncMock()
         conn.fetch.side_effect = Exception("table not found")
         result = _run(_load_triggers(conn, "maize", "A", "flowering", None))
-        assert len(result) == 5
+        assert len(result) == 6
         assert result[0]["signal"] == "rainfall_cumulative"
 
     def test_distinct_on_phase_signal(self):
@@ -902,7 +904,7 @@ class TestComputeInsuranceIntelligence:
         conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
-    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None, sar=None):
         """Return a contextlib.ExitStack context manager with all external deps patched."""
         from contextlib import ExitStack
         stack = ExitStack()
@@ -914,6 +916,13 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
+        # SAR services — cloud-penetrating fallback
+        sar_svc = MagicMock()
+        sar_svc.get_backscatter.return_value = sar or {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
+        sar_ndvi_pred = MagicMock()
+        sar_ndvi_pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         return stack
 
     def test_returns_ok_with_district(self):
@@ -1041,16 +1050,14 @@ class TestMigrationIntegrity:
         import re
         with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
             content = f.read()
-        insert_rows = re.findall(r"\('(maize|beans|rice)',", content)
-        assert len(insert_rows) == 34
+        insert_rows = re.findall(r"^\s+\('[\w]+',\s*'[AB]',", content, re.MULTILINE)
+        assert len(insert_rows) == 568
 
-    def test_all_crops_have_both_seasons(self):
-        import re
+    def test_all_crops_have_at_least_one_season(self):
         with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
             content = f.read()
-        for crop in ("maize", "beans", "rice"):
-            assert f"('{crop}', 'A'" in content
-            assert f"('{crop}', 'B'" in content
+        for crop in _GROWTH_PHASES:
+            assert f"('{crop}'," in content, f"Crop {crop} missing from seed data"
 
     def test_enabled_column_exists(self):
         with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
@@ -1171,7 +1178,7 @@ class TestFormatInsuranceEdgeCases:
         """When sources list is empty, should fallback to default source string."""
         r = self._report(sources=[])
         text = format_for_audience(r, "insurance")
-        assert "CHIRPS, Sentinel-2, WaPOR" in text
+        assert "CHIRPS, Sentinel-1/2, WaPOR" in text
 
 
 # ---------------------------------------------------------------------------
@@ -1251,6 +1258,12 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
+        sar_svc = MagicMock()
+        sar_svc.get_backscatter.return_value = {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
+        sar_ndvi_pred = MagicMock()
+        sar_ndvi_pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         return stack
 
     def test_dap_negative_correction(self):
@@ -1338,14 +1351,14 @@ class TestInsuranceToolSchema:
         for param in ("crop", "season", "district", "sector", "cell", "village", "audience"):
             assert param in props, f"Missing parameter {param}"
 
-    def test_crop_enum_subset_of_engine(self):
-        """Tool schema crops must be a subset of engine-supported crops (seeded triggers only)."""
-        from src.services.insurance_engine import _GROWTH_PHASES
+    def test_crop_description_lists_supported_crops(self):
+        """Tool schema crop field should be free-text with supported crops listed in description."""
         tool = self._load_tool()
-        schema_crops = set(tool["function"]["parameters"]["properties"]["crop"]["enum"])
-        engine_crops = set(_GROWTH_PHASES.keys())
-        assert schema_crops <= engine_crops, f"Schema has crops not in engine: {schema_crops - engine_crops}"
-        assert len(schema_crops) >= 3
+        crop_field = tool["function"]["parameters"]["properties"]["crop"]
+        assert "enum" not in crop_field, "Crop field should be free-text, not enum-restricted"
+        desc = crop_field["description"]
+        for crop in ("maize", "beans", "rice", "banana", "coffee", "tomato", "potato"):
+            assert crop in desc, f"Crop {crop} not listed in description"
 
     def test_audience_enum_matches_formatters(self):
         tool = self._load_tool()

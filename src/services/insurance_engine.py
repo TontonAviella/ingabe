@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _GROWTH_PHASES: dict[str, dict[str, tuple[int, int]]] = {
+    # --- Cereals ---
     "maize": {
         "planting": (0, 20),
         "vegetative": (20, 55),
@@ -60,6 +61,341 @@ _GROWTH_PHASES: dict[str, dict[str, tuple[int, int]]] = {
         "flowering": (50, 75),
         "grain_fill": (75, 105),
         "maturity": (105, 120),
+    },
+    "finger_millet": {
+        "planting": (0, 15),
+        "vegetative": (15, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 90),
+        "maturity": (90, 105),
+    },
+    # --- Tubers & roots ---
+    "potato": {
+        "planting": (0, 20),
+        "vegetative": (20, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 95),
+        "maturity": (95, 110),
+    },
+    "sweet_potato": {
+        "planting": (0, 25),
+        "vegetative": (25, 60),
+        "flowering": (60, 90),
+        "grain_fill": (90, 120),
+        "maturity": (120, 150),
+    },
+    "cassava": {
+        "planting": (0, 30),
+        "vegetative": (30, 120),
+        "flowering": (120, 180),
+        "grain_fill": (180, 300),
+        "maturity": (300, 365),
+    },
+    "yam": {
+        "planting": (0, 30),
+        "vegetative": (30, 90),
+        "flowering": (90, 150),
+        "grain_fill": (150, 210),
+        "maturity": (210, 270),
+    },
+    "taro": {
+        "planting": (0, 25),
+        "vegetative": (25, 80),
+        "flowering": (80, 140),
+        "grain_fill": (140, 200),
+        "maturity": (200, 270),
+    },
+    # --- Legumes ---
+    "soybean": {
+        "planting": (0, 15),
+        "vegetative": (15, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 95),
+        "maturity": (95, 110),
+    },
+    "groundnut": {
+        "planting": (0, 15),
+        "vegetative": (15, 40),
+        "flowering": (40, 65),
+        "grain_fill": (65, 100),
+        "maturity": (100, 120),
+    },
+    "peas": {
+        "planting": (0, 15),
+        "vegetative": (15, 35),
+        "flowering": (35, 50),
+        "grain_fill": (50, 70),
+        "maturity": (70, 85),
+    },
+    "cowpea": {
+        "planting": (0, 12),
+        "vegetative": (12, 35),
+        "flowering": (35, 50),
+        "grain_fill": (50, 70),
+        "maturity": (70, 80),
+    },
+    "pigeon_pea": {
+        "planting": (0, 20),
+        "vegetative": (20, 60),
+        "flowering": (60, 100),
+        "grain_fill": (100, 140),
+        "maturity": (140, 170),
+    },
+    # --- Vegetables ---
+    "tomato": {
+        "planting": (0, 20),
+        "vegetative": (20, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 90),
+        "maturity": (90, 110),
+    },
+    "onion": {
+        "planting": (0, 20),
+        "vegetative": (20, 55),
+        "flowering": (55, 80),
+        "grain_fill": (80, 110),
+        "maturity": (110, 130),
+    },
+    "cabbage": {
+        "planting": (0, 20),
+        "vegetative": (20, 50),
+        "flowering": (50, 65),
+        "grain_fill": (65, 80),
+        "maturity": (80, 95),
+    },
+    "carrot": {
+        "planting": (0, 15),
+        "vegetative": (15, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 85),
+        "maturity": (85, 100),
+    },
+    "chili": {
+        "planting": (0, 25),
+        "vegetative": (25, 55),
+        "flowering": (55, 80),
+        "grain_fill": (80, 110),
+        "maturity": (110, 130),
+    },
+    "eggplant": {
+        "planting": (0, 25),
+        "vegetative": (25, 55),
+        "flowering": (55, 80),
+        "grain_fill": (80, 110),
+        "maturity": (110, 130),
+    },
+    "green_pepper": {
+        "planting": (0, 25),
+        "vegetative": (25, 55),
+        "flowering": (55, 75),
+        "grain_fill": (75, 100),
+        "maturity": (100, 120),
+    },
+    "garlic": {
+        "planting": (0, 20),
+        "vegetative": (20, 60),
+        "flowering": (60, 90),
+        "grain_fill": (90, 120),
+        "maturity": (120, 150),
+    },
+    "amaranth": {
+        "planting": (0, 12),
+        "vegetative": (12, 35),
+        "flowering": (35, 50),
+        "grain_fill": (50, 65),
+        "maturity": (65, 75),
+    },
+    "leek": {
+        "planting": (0, 20),
+        "vegetative": (20, 60),
+        "flowering": (60, 90),
+        "grain_fill": (90, 120),
+        "maturity": (120, 150),
+    },
+    "lettuce": {
+        "planting": (0, 10),
+        "vegetative": (10, 30),
+        "flowering": (30, 40),
+        "grain_fill": (40, 50),
+        "maturity": (50, 60),
+    },
+    "spinach": {
+        "planting": (0, 10),
+        "vegetative": (10, 25),
+        "flowering": (25, 35),
+        "grain_fill": (35, 45),
+        "maturity": (45, 55),
+    },
+    "cucumber": {
+        "planting": (0, 12),
+        "vegetative": (12, 30),
+        "flowering": (30, 45),
+        "grain_fill": (45, 60),
+        "maturity": (60, 70),
+    },
+    "watermelon": {
+        "planting": (0, 15),
+        "vegetative": (15, 35),
+        "flowering": (35, 55),
+        "grain_fill": (55, 75),
+        "maturity": (75, 90),
+    },
+    "pumpkin": {
+        "planting": (0, 15),
+        "vegetative": (15, 40),
+        "flowering": (40, 60),
+        "grain_fill": (60, 85),
+        "maturity": (85, 110),
+    },
+    # --- Fruits ---
+    "banana": {
+        "planting": (0, 60),
+        "vegetative": (60, 180),
+        "flowering": (180, 240),
+        "grain_fill": (240, 330),
+        "maturity": (330, 365),
+    },
+    "avocado": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 420),
+        "grain_fill": (420, 600),
+        "maturity": (600, 730),
+    },
+    "mango": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 400),
+        "grain_fill": (400, 500),
+        "maturity": (500, 545),
+    },
+    "passion_fruit": {
+        "planting": (0, 30),
+        "vegetative": (30, 120),
+        "flowering": (120, 160),
+        "grain_fill": (160, 230),
+        "maturity": (230, 270),
+    },
+    "pineapple": {
+        "planting": (0, 30),
+        "vegetative": (30, 240),
+        "flowering": (240, 300),
+        "grain_fill": (300, 450),
+        "maturity": (450, 540),
+    },
+    "papaya": {
+        "planting": (0, 30),
+        "vegetative": (30, 120),
+        "flowering": (120, 180),
+        "grain_fill": (180, 270),
+        "maturity": (270, 330),
+    },
+    "citrus": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 400),
+        "grain_fill": (400, 540),
+        "maturity": (540, 600),
+    },
+    "strawberry": {
+        "planting": (0, 20),
+        "vegetative": (20, 50),
+        "flowering": (50, 70),
+        "grain_fill": (70, 95),
+        "maturity": (95, 110),
+    },
+    "tree_tomato": {
+        "planting": (0, 60),
+        "vegetative": (60, 180),
+        "flowering": (180, 240),
+        "grain_fill": (240, 330),
+        "maturity": (330, 365),
+    },
+    "guava": {
+        "planting": (0, 60),
+        "vegetative": (60, 240),
+        "flowering": (240, 300),
+        "grain_fill": (300, 420),
+        "maturity": (420, 480),
+    },
+    "cape_gooseberry": {
+        "planting": (0, 20),
+        "vegetative": (20, 60),
+        "flowering": (60, 90),
+        "grain_fill": (90, 120),
+        "maturity": (120, 150),
+    },
+    # --- Cash & industrial crops ---
+    "coffee": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 400),
+        "grain_fill": (400, 580),
+        "maturity": (580, 640),
+    },
+    "tea": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 420),
+        "grain_fill": (420, 540),
+        "maturity": (540, 730),
+    },
+    "sugarcane": {
+        "planting": (0, 30),
+        "vegetative": (30, 120),
+        "flowering": (120, 240),
+        "grain_fill": (240, 330),
+        "maturity": (330, 420),
+    },
+    "pyrethrum": {
+        "planting": (0, 20),
+        "vegetative": (20, 90),
+        "flowering": (90, 150),
+        "grain_fill": (150, 180),
+        "maturity": (180, 210),
+    },
+    "tobacco": {
+        "planting": (0, 20),
+        "vegetative": (20, 55),
+        "flowering": (55, 80),
+        "grain_fill": (80, 105),
+        "maturity": (105, 120),
+    },
+    "sunflower": {
+        "planting": (0, 15),
+        "vegetative": (15, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 90),
+        "maturity": (90, 105),
+    },
+    "macadamia": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 420),
+        "grain_fill": (420, 600),
+        "maturity": (600, 730),
+    },
+    "sesame": {
+        "planting": (0, 12),
+        "vegetative": (12, 35),
+        "flowering": (35, 55),
+        "grain_fill": (55, 80),
+        "maturity": (80, 95),
+    },
+    # --- Oil crops ---
+    "oil_palm": {
+        "planting": (0, 90),
+        "vegetative": (90, 365),
+        "flowering": (365, 420),
+        "grain_fill": (420, 600),
+        "maturity": (600, 730),
+    },
+    "soya": {
+        "planting": (0, 15),
+        "vegetative": (15, 45),
+        "flowering": (45, 65),
+        "grain_fill": (65, 95),
+        "maturity": (95, 110),
     },
 }
 
@@ -309,6 +645,63 @@ async def _fetch_ndvi_anomaly(
     return None
 
 
+async def _fetch_sar_backscatter(
+    lat: float,
+    lon: float,
+    date_from: str,
+    date_to: str,
+) -> Optional[float]:
+    """Get mean VH/VV ratio from Sentinel-1 SAR. Cloud-penetrating."""
+    try:
+        from src.services.sentinel1_service import get_sentinel1_service
+        svc = get_sentinel1_service()
+        buf = 0.05
+        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
+        result = await asyncio.to_thread(
+            svc.get_backscatter,
+            bbox=bbox,
+            date_range=f"{date_from}/{date_to}",
+        )
+        if result and result.get("status") == "ok":
+            stats = result.get("statistics", {})
+            vh_mean = stats.get("vh", {}).get("mean")
+            vv_mean = stats.get("vv", {}).get("mean")
+            if vh_mean is not None and vv_mean is not None and vv_mean != 0:
+                return vh_mean / vv_mean
+    except Exception:
+        logger.debug("SAR backscatter fetch failed", exc_info=True)
+    return None
+
+
+async def _fetch_ndvi_with_sar_fallback(
+    conn: asyncpg.Connection,
+    lat: float,
+    lon: float,
+    date_from: str,
+    date_to: str,
+    district: Optional[str] = None,
+) -> Optional[float]:
+    """Get NDVI z-score from optical first, fall back to SAR-predicted NDVI."""
+    ndvi_z = await _fetch_ndvi_anomaly(conn, district)
+    if ndvi_z is not None:
+        return ndvi_z
+    try:
+        from src.services.sar_ndvi import get_sar_ndvi_predictor
+        pred = get_sar_ndvi_predictor()
+        buf = 0.05
+        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
+        result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
+        if result and result.get("status") == "ok":
+            predicted = result.get("predicted_ndvi")
+            if predicted is not None:
+                mean_ndvi = 0.45
+                std_ndvi = 0.15
+                return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
+    except Exception:
+        logger.debug("SAR-predicted NDVI fallback failed", exc_info=True)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 4. Centroid from GeoJSON geometry
 # ---------------------------------------------------------------------------
@@ -383,6 +776,8 @@ def _default_triggers(phase: str) -> list[dict]:
          "description": "NDVI anomaly indicates severe vegetation stress"},
         {"signal": "et_anomaly", "direction": "below", "threshold": -20.0, "weight": 0.4,
          "description": "ET anomaly exceeds -20% deficit"},
+        {"signal": "sar_backscatter", "direction": "below", "threshold": 0.15, "weight": 0.7,
+         "description": "SAR VH/VV ratio below 0.15 indicates low vegetation density"},
     ]
     return triggers
 
@@ -562,7 +957,7 @@ def _format_insurance(r: InsuranceReport) -> str:
         *rows,
     ])
 
-    sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-2, WaPOR"
+    sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
     phase_info = f"Phase: {r.growth_phase} (day {r.days_after_planting} of {_get_harvest_dap(r.crop, r.season)})"
 
     return f"{header}\n{status_line}\n\n{table}\n\n{phase_info}\nSources: {sources}"
@@ -613,7 +1008,8 @@ def _format_scientist(r: InsuranceReport) -> str:
     data["methodology"] = {
         "rainfall": "CHIRPS v2.0 daily precipitation, 0.05° resolution",
         "spi": f"Simplified SPI: (cumulative - mean) / std, normals: {_RAINFALL_NORMALS}",
-        "ndvi": "Sentinel-2 NDVI anomaly z-scores from anomaly_alerts_cache",
+        "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
+        "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
         "et": "WaPOR v3 AETI dekadal, 100m resolution",
         "soil_moisture": "WaPOR v3 relative soil moisture, dekadal",
@@ -721,7 +1117,17 @@ async def compute_insurance_intelligence(
             return None
 
     async def fetch_ndvi_anomaly():
-        return await _fetch_ndvi_anomaly(conn, district)
+        return await _fetch_ndvi_with_sar_fallback(
+            conn, lat, lon,
+            planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
+            district,
+        )
+
+    async def fetch_sar_backscatter():
+        return await _fetch_sar_backscatter(
+            lat, lon,
+            planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
+        )
 
     async def fetch_chirps():
         try:
@@ -774,6 +1180,7 @@ async def compute_insurance_intelligence(
         dry_spells_result,
         ndvi_conc_result,
         ndvi_z,
+        sar_result,
         chirps_daily,
         et_result,
         soil_result,
@@ -782,6 +1189,7 @@ async def compute_insurance_intelligence(
         fetch_dry_spells(),
         fetch_ndvi_concordance(),
         fetch_ndvi_anomaly(),
+        fetch_sar_backscatter(),
         fetch_chirps(),
         fetch_wapor_et(),
         fetch_wapor_soil(),
@@ -813,7 +1221,14 @@ async def compute_insurance_intelligence(
     if ndvi_conc_result and ndvi_conc_result.get("status") == "ok":
         ndvi_concordance_score = ndvi_conc_result.get("concordance_score")
     if ndvi_z is not None:
-        sources.append("Sentinel-2 NDVI")
+        sources.append("Sentinel-2/SAR NDVI")
+
+    # SAR backscatter (VH/VV ratio) — cloud-penetrating vegetation signal
+    sar_vh_vv_ratio: Optional[float] = None
+    if isinstance(sar_result, (int, float)):
+        sar_vh_vv_ratio = float(sar_result)
+        if "Sentinel-1 SAR" not in sources:
+            sources.append("Sentinel-1 SAR")
 
     # ET and soil moisture
     et_anomaly = None
@@ -844,6 +1259,7 @@ async def compute_insurance_intelligence(
         "spi": spi,
         "dry_spell_days": float(max_dry_spell),
         "ndvi_z_score": ndvi_z,
+        "sar_backscatter": sar_vh_vv_ratio,
         "et_anomaly": et_anomaly,
         "soil_moisture": soil_moisture,
     }
