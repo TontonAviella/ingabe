@@ -1,14 +1,16 @@
-"""Tests for insurance_engine.py — pure function tests, no DB/API required.
+"""Tests for insurance_engine.py — pure functions + mocked async functions.
 
-Tests the functions that make payout decisions:
-  _evaluate_triggers, _compute_confidence, _compute_spi,
-  _compute_phase_rainfall, _current_growth_phase, _centroid_from_geojson,
-  _flatten_coords, _default_triggers, _generate_recommendation,
-  format_for_audience, InsuranceReport.to_dict, TriggerResult.to_dict
+Part 1: Pure function tests (no DB/API required).
+Part 2: Mocked async tests for DB/API functions:
+  _load_triggers, _fetch_ndvi_anomaly, compute_insurance_intelligence,
+  _resolve_location_name, _get_planting_date, _get_harvest_dap,
+  compute_insurance_accuracy_safe
 """
 
+import asyncio
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,11 +25,18 @@ from src.services.insurance_engine import (
     _current_growth_phase,
     _default_triggers,
     _evaluate_triggers,
+    _fetch_ndvi_anomaly,
     _flatten_coords,
     _generate_recommendation,
+    _get_harvest_dap,
+    _get_planting_date,
+    _load_triggers,
+    _resolve_location_name,
     _RAINFALL_NORMALS,
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
+    compute_insurance_intelligence,
+    compute_insurance_accuracy_safe,
     format_for_audience,
 )
 
@@ -682,3 +691,389 @@ class TestEvaluateAndConfidencePipeline:
         results = _evaluate_triggers(triggers, values)
         score, status = _compute_confidence(results)
         assert status == "WATCH"
+
+
+# ===========================================================================
+# Part 2: Mocked async tests — DB/API functions with mocked dependencies
+# ===========================================================================
+
+def _run(coro):
+    """Run an async coroutine in a fresh event loop."""
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_location_name
+# ---------------------------------------------------------------------------
+
+class TestResolveLocationName:
+    def test_village_most_specific(self):
+        name, level = _resolve_location_name(district="Musanze", village="Kinigi")
+        assert name == "Kinigi"
+        assert level == "village"
+
+    def test_cell_level(self):
+        name, level = _resolve_location_name(district="Musanze", sector="Gataraga", cell="Ruhondo")
+        assert name == "Ruhondo"
+        assert level == "cell"
+
+    def test_sector_level(self):
+        name, level = _resolve_location_name(district="Musanze", sector="Gataraga")
+        assert name == "Gataraga"
+        assert level == "sector"
+
+    def test_district_level(self):
+        name, level = _resolve_location_name(district="Musanze")
+        assert name == "Musanze"
+        assert level == "district"
+
+    def test_nothing_returns_empty(self):
+        name, level = _resolve_location_name()
+        assert name == ""
+        assert level == ""
+
+    def test_whitespace_stripped(self):
+        name, level = _resolve_location_name(district="  Huye  ")
+        assert name == "Huye"
+
+
+# ---------------------------------------------------------------------------
+# _get_planting_date and _get_harvest_dap
+# ---------------------------------------------------------------------------
+
+class TestGetPlantingDate:
+    def test_known_crop_season(self):
+        d = _get_planting_date("maize", "A", 2025)
+        assert isinstance(d, date)
+        assert d.year == 2025
+
+    def test_unknown_crop_falls_back(self):
+        d = _get_planting_date("quinoa", "A", 2025)
+        assert isinstance(d, date)
+
+    def test_season_b(self):
+        d = _get_planting_date("maize", "B", 2026)
+        assert d.year == 2026
+
+
+class TestGetHarvestDap:
+    def test_known_crop(self):
+        dap = _get_harvest_dap("maize", "A")
+        assert isinstance(dap, int)
+        assert dap > 0
+
+    def test_unknown_crop_returns_default(self):
+        dap = _get_harvest_dap("quinoa", "A")
+        assert dap == 120
+
+
+# ---------------------------------------------------------------------------
+# _fetch_ndvi_anomaly (mock conn)
+# ---------------------------------------------------------------------------
+
+class TestFetchNdviAnomaly:
+    def test_with_district(self):
+        conn = AsyncMock()
+        conn.fetchrow.return_value = {"mean_z": -0.85}
+        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
+        assert result == pytest.approx(-0.85)
+        conn.fetchrow.assert_called_once()
+        call_sql = conn.fetchrow.call_args[0][0]
+        assert "LOWER(district)" in call_sql
+
+    def test_without_district(self):
+        conn = AsyncMock()
+        conn.fetchrow.return_value = {"mean_z": 0.3}
+        result = _run(_fetch_ndvi_anomaly(conn, district=None))
+        assert result == pytest.approx(0.3)
+        call_sql = conn.fetchrow.call_args[0][0]
+        assert "LOWER(district)" not in call_sql
+
+    def test_no_data_returns_none(self):
+        conn = AsyncMock()
+        conn.fetchrow.return_value = {"mean_z": None}
+        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
+        assert result is None
+
+    def test_no_rows_returns_none(self):
+        conn = AsyncMock()
+        conn.fetchrow.return_value = None
+        result = _run(_fetch_ndvi_anomaly(conn))
+        assert result is None
+
+    def test_exception_returns_none(self):
+        conn = AsyncMock()
+        conn.fetchrow.side_effect = Exception("connection lost")
+        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _load_triggers (mock conn)
+# ---------------------------------------------------------------------------
+
+class TestLoadTriggers:
+    def test_returns_parsed_rows(self):
+        conn = AsyncMock()
+        row1 = {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8, "description": "drought"}
+        row2 = {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "low rain"}
+        conn.fetch.return_value = [MagicMock(**{"__getitem__": lambda s, k: row1[k], "keys": lambda s: row1.keys()}),
+                                    MagicMock(**{"__getitem__": lambda s, k: row2[k], "keys": lambda s: row2.keys()})]
+        conn.fetch.return_value = [row1, row2]
+        result = _run(_load_triggers(conn, "maize", "A", "flowering", "Musanze"))
+        assert len(result) == 2
+        assert result[0]["signal"] == "spi"
+
+    def test_sql_includes_enabled_filter(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = []
+        _run(_load_triggers(conn, "maize", "A", "flowering", None))
+        call_sql = conn.fetch.call_args[0][0]
+        assert "enabled = true" in call_sql
+
+    def test_sql_passes_crop_season_phase_district(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = []
+        _run(_load_triggers(conn, "beans", "B", "vegetative", "Huye"))
+        args = conn.fetch.call_args[0]
+        assert args[1] == "beans"
+        assert args[2] == "B"
+        assert args[3] == "vegetative"
+        assert args[4] == "Huye"
+
+    def test_exception_falls_back_to_defaults(self):
+        conn = AsyncMock()
+        conn.fetch.side_effect = Exception("table not found")
+        result = _run(_load_triggers(conn, "maize", "A", "flowering", None))
+        assert len(result) == 5
+        assert result[0]["signal"] == "rainfall_cumulative"
+
+    def test_distinct_on_phase_signal(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = []
+        _run(_load_triggers(conn, "maize", "A", "full_season", None))
+        call_sql = conn.fetch.call_args[0][0]
+        assert "DISTINCT ON (phase, signal)" in call_sql
+
+    def test_district_override_ordering(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = []
+        _run(_load_triggers(conn, "maize", "A", "full_season", "Musanze"))
+        call_sql = conn.fetch.call_args[0][0]
+        assert "CASE WHEN district IS NOT NULL THEN 0 ELSE 1 END" in call_sql
+
+
+# ---------------------------------------------------------------------------
+# compute_insurance_accuracy_safe (mock)
+# ---------------------------------------------------------------------------
+
+class TestComputeInsuranceAccuracySafe:
+    def test_returns_result_on_success(self):
+        conn = AsyncMock()
+        expected = {"status": "ok", "confidence_rating": 85}
+        mock_fn = AsyncMock(return_value=expected)
+        fake_module = MagicMock(compute_insurance_accuracy=mock_fn)
+        with patch.dict("sys.modules", {"src.services.weather_accuracy": fake_module}):
+            result = _run(compute_insurance_accuracy_safe(conn, "Musanze", "A"))
+        assert result is not None
+
+    def test_returns_none_on_exception(self):
+        conn = AsyncMock()
+        mock_fn = AsyncMock(side_effect=Exception("fail"))
+        fake_module = MagicMock(compute_insurance_accuracy=mock_fn)
+        with patch.dict("sys.modules", {"src.services.weather_accuracy": fake_module}):
+            result = _run(compute_insurance_accuracy_safe(conn, "Musanze", "A"))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# compute_insurance_intelligence (full orchestrator mock)
+# ---------------------------------------------------------------------------
+
+class TestComputeInsuranceIntelligence:
+    """Full orchestrator tests. All external lazy imports are patched at their source modules."""
+
+    def _mock_conn(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = [
+            {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
+            {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8, "description": "Drought"},
+        ]
+        conn.fetchrow.return_value = {"mean_z": -0.5}
+        return conn
+
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
+        """Return a contextlib.ExitStack context manager with all external deps patched."""
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
+        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
+        stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
+        stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
+        stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
+        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
+        stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
+        return stack
+
+    def test_returns_ok_with_district(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert "report" in result
+        assert "data" in result
+        assert result["audience"] == "farmer"
+
+    def test_error_without_location(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(conn, crop="maize", ref_date=date(2025, 11, 15)))
+        assert result["status"] == "error"
+        assert "district" in result["error"].lower() or "specify" in result["error"].lower()
+
+    def test_season_auto_detection_used(self):
+        conn = self._mock_conn()
+        with self._patches(season="B") as stack:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Huye", ref_date=date(2026, 3, 15),
+            ))
+        assert result["status"] == "ok"
+        assert result["data"]["season"] == "B"
+
+    def test_geometry_used_for_centroid(self):
+        conn = self._mock_conn()
+        with self._patches(geom={"type": "Point", "coordinates": [29.5, -1.5]}):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert result["geometry"] is not None
+
+    def test_unknown_crop_defaults_to_maize(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="quinoa", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert result["data"]["crop"] == "maize"
+
+    def test_audience_parameter_forwarded(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze",
+                audience="scientist", ref_date=date(2025, 11, 15),
+            ))
+        assert result["audience"] == "scientist"
+        data = json.loads(result["report"])
+        assert "methodology" in data
+
+    def test_chirps_data_flows_to_rainfall(self):
+        conn = self._mock_conn()
+        chirps_data = {
+            "2025-10-01": 5.0, "2025-10-02": 3.0, "2025-10-03": 0.0,
+            "2025-10-15": 8.0, "2025-10-20": 12.0,
+            "2025-11-01": 6.0, "2025-11-10": 4.0,
+        }
+        with self._patches(chirps=chirps_data):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert result["data"]["season_rainfall_mm"] > 0
+
+    def test_dry_spells_flow_through(self):
+        conn = self._mock_conn()
+        dry_result = {"status": "ok", "longest_spell_days": 12, "dry_spells": [{"duration_days": 12, "ongoing": False}]}
+        with self._patches(dry=dry_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["max_dry_spell_days"] == 12
+
+    def test_et_anomaly_computed_from_wapor(self):
+        conn = self._mock_conn()
+        et_result = {"status": "ok", "time_series": [{"value": 3.0}, {"value": 4.0}, {"value": 3.5}]}
+        with self._patches(et=et_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["et_anomaly_pct"] is not None
+
+    def test_soil_moisture_latest_value_used(self):
+        conn = self._mock_conn()
+        soil_result = {"status": "ok", "time_series": [{"value": 40.0}, {"value": 35.0}, {"value": 28.0}]}
+        with self._patches(soil=soil_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["soil_moisture_pct"] == pytest.approx(28.0)
+
+    def test_slug_format(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["slug"].startswith("insurance-maize-musanze")
+
+    def test_accuracy_result_used_when_available(self):
+        conn = self._mock_conn()
+        acc_result = {"status": "ok", "confidence_rating": 85, "recommendation": "Safe"}
+        with self._patches(acc=acc_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert "report" in result
+
+
+# ---------------------------------------------------------------------------
+# Migration validation (parse, don't run)
+# ---------------------------------------------------------------------------
+
+class TestMigrationIntegrity:
+    def test_seed_data_count(self):
+        import re
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        insert_rows = re.findall(r"\('(maize|beans|rice)',", content)
+        assert len(insert_rows) == 34
+
+    def test_all_crops_have_both_seasons(self):
+        import re
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        for crop in ("maize", "beans", "rice"):
+            assert f"('{crop}', 'A'" in content
+            assert f"('{crop}', 'B'" in content
+
+    def test_enabled_column_exists(self):
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        assert '"enabled"' in content
+        assert 'server_default="true"' in content
+
+    def test_check_constraints_defined(self):
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        assert "ck_insurance_triggers_season" in content
+        assert "ck_insurance_triggers_phase" in content
+        assert "ck_insurance_triggers_signal" in content
+        assert "ck_insurance_triggers_direction" in content
+
+    def test_downgrade_drops_table(self):
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        assert "drop_table" in content
+        assert "insurance_triggers" in content
+
+    def test_revision_chain(self):
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            content = f.read()
+        assert 'revision: str = "a1b2c3d4e5f7"' in content
+        assert 'down_revision: str = "47463555a0f8"' in content
