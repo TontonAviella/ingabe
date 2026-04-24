@@ -1077,3 +1077,232 @@ class TestMigrationIntegrity:
             content = f.read()
         assert 'revision: str = "a1b2c3d4e5f7"' in content
         assert 'down_revision: str = "47463555a0f8"' in content
+
+
+# ===========================================================================
+# Part 3: Coverage gap tests — edge cases and conditional branches
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# _compute_spi: std == 0 branch
+# ---------------------------------------------------------------------------
+
+class TestComputeSPIEdgeCases:
+    def test_std_zero_returns_zero(self):
+        """When std is 0, _compute_spi should return 0.0 to avoid division by zero."""
+        with patch.dict(
+            "src.services.insurance_engine._RAINFALL_NORMALS",
+            {"A": {"mean": 400.0, "std": 0}, "B": {"mean": 350.0, "std": 75.0}},
+        ):
+            spi = _compute_spi(500.0, "A")
+            assert spi == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _format_farmer: edge case branches
+# ---------------------------------------------------------------------------
+
+class TestFormatFarmerEdgeCases:
+    def _report(self, **overrides):
+        defaults = dict(
+            location_name="Musanze", admin_level="district",
+            crop="maize", season="A", growth_phase="vegetative",
+            days_after_planting=35, season_rainfall_mm=178.0, spi=-0.3,
+            ndvi_z_score=-0.18, max_dry_spell_days=8,
+            triggers=[], triggers_activated=0, triggers_total=0,
+            confidence_score=100, overall_status="SAFE",
+            recommendation="Crop progressing normally.",
+            sources=["CHIRPS v2.0"], period_start="2025-09-15",
+            period_end="2025-10-20", computed_at="2025-10-20T12:00:00Z",
+        )
+        defaults.update(overrides)
+        return InsuranceReport(**defaults)
+
+    def test_ndvi_stressed_middle_band(self):
+        """NDVI z-score between -1.5 and -0.5 should show 'stressed'."""
+        r = self._report(ndvi_z_score=-1.0)
+        text = format_for_audience(r, "farmer")
+        assert "stressed" in text
+        assert "very stressed" not in text
+
+    def test_ndvi_none_skips_vegetation_line(self):
+        """When ndvi_z_score is None, no vegetation line should appear."""
+        r = self._report(ndvi_z_score=None)
+        text = format_for_audience(r, "farmer")
+        assert "Vegetation:" not in text
+        assert "healthy" not in text
+        assert "stressed" not in text
+
+    def test_max_dry_spell_zero_skips_line(self):
+        """When max_dry_spell_days is 0, no dry spell line should appear."""
+        r = self._report(max_dry_spell_days=0)
+        text = format_for_audience(r, "farmer")
+        assert "dry spell" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# _format_insurance: direction="above" operator and empty sources fallback
+# ---------------------------------------------------------------------------
+
+class TestFormatInsuranceEdgeCases:
+    def _report(self, **overrides):
+        defaults = dict(
+            location_name="Huye", admin_level="district",
+            crop="beans", season="B", growth_phase="flowering",
+            days_after_planting=50, season_rainfall_mm=120.0, spi=-0.5,
+            triggers=[], triggers_activated=0, triggers_total=0,
+            confidence_score=80, overall_status="WATCH",
+            recommendation="Monitor.", sources=["CHIRPS v2.0"],
+            period_start="2026-02-15", period_end="2026-04-01",
+            computed_at="2026-04-01T12:00:00Z",
+        )
+        defaults.update(overrides)
+        return InsuranceReport(**defaults)
+
+    def test_above_direction_shows_leq_operator(self):
+        """Triggers with direction='above' should show ≤ operator."""
+        trigger = TriggerResult("dry_spell_days", 20.0, 15.0, "above", True, 33.3, 0.6, "Max dry spell")
+        r = self._report(triggers=[trigger], triggers_activated=1, triggers_total=1)
+        text = format_for_audience(r, "insurance")
+        assert "≤" in text
+
+    def test_empty_sources_uses_fallback(self):
+        """When sources list is empty, should fallback to default source string."""
+        r = self._report(sources=[])
+        text = format_for_audience(r, "insurance")
+        assert "CHIRPS, Sentinel-2, WaPOR" in text
+
+
+# ---------------------------------------------------------------------------
+# _format_agronomist: optional data field branches
+# ---------------------------------------------------------------------------
+
+class TestFormatAgronomistEdgeCases:
+    def _report(self, **overrides):
+        defaults = dict(
+            location_name="Kayonza", admin_level="district",
+            crop="rice", season="A", growth_phase="grain_fill",
+            days_after_planting=90, season_rainfall_mm=350.0, spi=-0.1,
+            max_dry_spell_days=5, active_dry_spell_days=0,
+            ndvi_z_score=-0.3, ndvi_concordance_score=None,
+            et_anomaly_pct=None, soil_moisture_pct=None,
+            triggers=[], triggers_activated=0, triggers_total=0,
+            confidence_score=90, overall_status="SAFE",
+            recommendation="On track.", sources=["CHIRPS v2.0"],
+            period_start="2025-09-15", period_end="2025-12-14",
+            computed_at="2025-12-14T12:00:00Z",
+        )
+        defaults.update(overrides)
+        return InsuranceReport(**defaults)
+
+    def test_active_dry_spell_shown(self):
+        """When active_dry_spell_days > 0, line should appear with '(ongoing)'."""
+        r = self._report(active_dry_spell_days=6)
+        text = format_for_audience(r, "agronomist")
+        assert "Active dry spell: 6 days" in text
+        assert "ongoing" in text.lower()
+
+    def test_ndvi_concordance_shown(self):
+        """When ndvi_concordance_score is not None, concordance line appears."""
+        r = self._report(ndvi_concordance_score=0.82)
+        text = format_for_audience(r, "agronomist")
+        assert "concordance" in text.lower()
+        assert "0.82" in text
+
+    def test_et_anomaly_shown(self):
+        """When et_anomaly_pct is not None, ET anomaly line appears."""
+        r = self._report(et_anomaly_pct=-12.5)
+        text = format_for_audience(r, "agronomist")
+        assert "ET anomaly" in text
+        assert "-12.5" in text
+
+    def test_soil_moisture_shown(self):
+        """When soil_moisture_pct is not None, soil moisture line appears."""
+        r = self._report(soil_moisture_pct=38.2)
+        text = format_for_audience(r, "agronomist")
+        assert "Soil moisture" in text
+        assert "38.2" in text
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator edge cases
+# ---------------------------------------------------------------------------
+
+class TestOrchestratorEdgeCases:
+    """Tests for conditional branches inside compute_insurance_intelligence."""
+
+    def _mock_conn(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = [
+            {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
+        ]
+        conn.fetchrow.return_value = {"mean_z": -0.5}
+        return conn
+
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
+        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
+        stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
+        stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
+        stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
+        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
+        stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
+        return stack
+
+    def test_dap_negative_correction(self):
+        """When computed DAP < 0, planting_year should decrement and recalculate."""
+        conn = self._mock_conn()
+        # Use a date early in the year for Season A — maize Season A plants in Sep,
+        # so ref_date=2025-08-01 with season=A gives a planting_date in Sep 2025
+        # which is AFTER ref_date, producing negative DAP.
+        with self._patches(season="A"):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 8, 1),
+                season="A",
+            ))
+        assert result["status"] == "ok"
+        assert result["data"]["days_after_planting"] >= 0
+
+    def test_season_a_year_adjustment_jan(self):
+        """Season A with today.month <= 2 should adjust planting_year to previous year."""
+        conn = self._mock_conn()
+        with self._patches(season="A"):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2026, 1, 15),
+                season="A",
+            ))
+        assert result["status"] == "ok"
+        # Season A planted Sep 2025, ref_date Jan 2026 — DAP should be ~120 days
+        dap = result["data"]["days_after_planting"]
+        assert dap > 90
+
+    def test_active_dry_spell_ongoing(self):
+        """Dry spell with ongoing=True should populate active_dry_spell_days."""
+        conn = self._mock_conn()
+        dry_result = {
+            "status": "ok",
+            "longest_spell_days": 10,
+            "dry_spells": [
+                {"duration_days": 5, "ongoing": False},
+                {"duration_days": 10, "ongoing": True},
+            ],
+        }
+        with self._patches(dry=dry_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["active_dry_spell_days"] == 10
+
+    def test_ndvi_concordance_extraction(self):
+        """NDVI concordance result with status=ok should populate concordance score."""
+        conn = self._mock_conn()
+        conc_result = {"status": "ok", "concordance_score": 0.78}
+        with self._patches(conc=conc_result):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["ndvi_concordance_score"] == pytest.approx(0.78)
