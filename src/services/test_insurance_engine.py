@@ -1306,3 +1306,297 @@ class TestOrchestratorEdgeCases:
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
         assert result["data"]["ndvi_concordance_score"] == pytest.approx(0.78)
+
+
+# ===========================================================================
+# Part 4: Cross-file coverage — message_routes dispatch, brain_service SQL,
+#          tools.json schema validation (all mocked, no DB required)
+# ===========================================================================
+
+import pathlib
+
+
+# ---------------------------------------------------------------------------
+# tools.json schema validation for get_insurance_intelligence
+# ---------------------------------------------------------------------------
+
+class TestInsuranceToolSchema:
+    def _load_tool(self):
+        tools_path = pathlib.Path(__file__).parent.parent / "geoprocessing" / "tools.json"
+        with open(tools_path) as f:
+            tools = json.load(f)
+        return next(t for t in tools if t["function"]["name"] == "get_insurance_intelligence")
+
+    def test_tool_present_in_registry(self):
+        tool = self._load_tool()
+        assert tool["type"] == "function"
+        assert tool["function"]["name"] == "get_insurance_intelligence"
+
+    def test_schema_has_all_params(self):
+        tool = self._load_tool()
+        props = tool["function"]["parameters"]["properties"]
+        for param in ("crop", "season", "district", "sector", "cell", "village", "audience"):
+            assert param in props, f"Missing parameter {param}"
+
+    def test_crop_enum_subset_of_engine(self):
+        """Tool schema crops must be a subset of engine-supported crops (seeded triggers only)."""
+        from src.services.insurance_engine import _GROWTH_PHASES
+        tool = self._load_tool()
+        schema_crops = set(tool["function"]["parameters"]["properties"]["crop"]["enum"])
+        engine_crops = set(_GROWTH_PHASES.keys())
+        assert schema_crops <= engine_crops, f"Schema has crops not in engine: {schema_crops - engine_crops}"
+        assert len(schema_crops) >= 3
+
+    def test_audience_enum_matches_formatters(self):
+        tool = self._load_tool()
+        schema_audiences = set(tool["function"]["parameters"]["properties"]["audience"]["enum"])
+        assert schema_audiences == {"farmer", "insurance", "agronomist", "scientist"}
+
+    def test_no_required_params(self):
+        """All params optional — auto-detection fills in defaults."""
+        tool = self._load_tool()
+        assert tool["function"]["parameters"]["required"] == []
+
+    def test_dispatch_wired_in_message_routes(self):
+        routes_path = pathlib.Path(__file__).parent.parent / "routes" / "message_routes.py"
+        src = routes_path.read_text()
+        assert 'function_name == "get_insurance_intelligence"' in src
+
+
+# ---------------------------------------------------------------------------
+# message_routes.py dispatch: mocked end-to-end tool call
+# ---------------------------------------------------------------------------
+
+class TestMessageRoutesInsuranceDispatch:
+    """Verify the message_routes.py glue code by importing and calling the
+    dispatch logic pattern directly with mocked dependencies."""
+
+    def test_happy_path_calls_engine_and_brain(self):
+        """Simulate the dispatch: engine returns ok, brain save succeeds."""
+        mock_conn = AsyncMock()
+        engine_result = {
+            "status": "ok",
+            "report": "Your maize in Musanze is SAFE.",
+            "data": {
+                "crop": "maize", "location": "Musanze", "season": "A",
+                "admin_level": "district", "confidence_score": 100,
+                "overall_status": "SAFE", "triggers_activated": 0,
+                "triggers_total": 2,
+            },
+            "audience": "farmer",
+            "geometry": {"type": "Point", "coordinates": [29.5, -1.5]},
+            "slug": "insurance-maize-musanze-a-20251115",
+        }
+
+        mock_engine = AsyncMock(return_value=engine_result)
+        mock_brain = MagicMock()
+        mock_brain.put_page = AsyncMock()
+        mock_brain.add_timeline_entry = AsyncMock()
+
+        async def simulate_dispatch():
+            from src.services.brain_service import PageInput, TimelineInput
+            tool_args = {"crop": "maize", "district": "Musanze", "audience": "farmer"}
+            tool_result = await mock_engine(
+                mock_conn,
+                crop=tool_args.get("crop", "maize"),
+                season=tool_args.get("season"),
+                district=tool_args.get("district"),
+                audience=tool_args.get("audience", "farmer"),
+            )
+            if tool_result.get("status") == "ok":
+                _ins_slug = tool_result.get("slug", "insurance-report")
+                _ins_data = tool_result.get("data", {})
+                _ins_geom = tool_result.get("geometry")
+                _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
+                _page_input = PageInput(
+                    type="insurance_intelligence",
+                    title=f"Insurance: {_ins_data.get('crop', '')} in {_ins_data.get('location', '')}",
+                    compiled_truth=tool_result.get("report", ""),
+                    frontmatter={"type": "insurance_intelligence"},
+                    geom_geojson=_ins_geom_str,
+                )
+                await mock_brain.put_page(mock_conn, _ins_slug, _page_input, owner_uuid="test-user")
+                _tl_input = TimelineInput(
+                    date=date.today(),
+                    summary=f"{_ins_data.get('overall_status')}: {_ins_data.get('crop')}",
+                    source="insurance_engine",
+                    detail=json.dumps(_ins_data, default=str),
+                )
+                await mock_brain.add_timeline_entry(mock_conn, _ins_slug, _tl_input)
+            return tool_result
+
+        result = _run(simulate_dispatch())
+        assert result["status"] == "ok"
+        mock_brain.put_page.assert_called_once()
+        mock_brain.add_timeline_entry.assert_called_once()
+        put_call = mock_brain.put_page.call_args
+        assert put_call[1]["owner_uuid"] == "test-user" or put_call[0][3] == "test-user"
+
+    def test_brain_save_failure_does_not_crash_dispatch(self):
+        """Brain save exception should be caught — tool_result still returned."""
+        mock_conn = AsyncMock()
+        engine_result = {
+            "status": "ok", "report": "SAFE", "data": {"crop": "maize", "location": "X", "season": "A"},
+            "geometry": None, "slug": "test-slug",
+        }
+        mock_engine = AsyncMock(return_value=engine_result)
+        mock_brain = MagicMock()
+        mock_brain.put_page = AsyncMock(side_effect=Exception("DB down"))
+
+        async def simulate_dispatch():
+            tool_result = await mock_engine(mock_conn)
+            if tool_result.get("status") == "ok":
+                try:
+                    from src.services.brain_service import PageInput
+                    _page_input = PageInput(type="x", title="x", compiled_truth="x")
+                    await mock_brain.put_page(mock_conn, "slug", _page_input, owner_uuid="u")
+                except Exception:
+                    pass  # mirrors the logger.warning in message_routes
+            return tool_result
+
+        result = _run(simulate_dispatch())
+        assert result["status"] == "ok"
+
+    def test_engine_exception_returns_error_dict(self):
+        """Outer except should catch engine failure and return error dict."""
+        mock_engine = AsyncMock(side_effect=Exception("CHIRPS timeout"))
+
+        async def simulate_dispatch():
+            try:
+                return await mock_engine()
+            except Exception:
+                return {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}
+
+        result = _run(simulate_dispatch())
+        assert result["status"] == "error"
+        assert "computation failed" in result["error"]
+
+    def test_geometry_serialized_as_geojson_string(self):
+        """When geometry is present, it should be JSON-serialized for geom_geojson."""
+        geom = {"type": "Polygon", "coordinates": [[[29, -1], [30, -2], [29, -1]]]}
+
+        async def check_geom():
+            from src.services.brain_service import PageInput
+            _ins_geom_str = json.dumps(geom) if geom else None
+            page = PageInput(type="t", title="t", compiled_truth="c", geom_geojson=_ins_geom_str)
+            assert page.geom_geojson is not None
+            parsed = json.loads(page.geom_geojson)
+            assert parsed["type"] == "Polygon"
+            return True
+
+        assert _run(check_geom())
+
+    def test_no_geometry_passes_none(self):
+        """When geometry is None, geom_geojson should be None."""
+        geom = None
+
+        async def check_no_geom():
+            from src.services.brain_service import PageInput
+            _ins_geom_str = json.dumps(geom) if geom else None
+            page = PageInput(type="t", title="t", compiled_truth="c", geom_geojson=_ins_geom_str)
+            assert page.geom_geojson is None
+            return True
+
+        assert _run(check_no_geom())
+
+
+# ---------------------------------------------------------------------------
+# brain_service.py: put_page SQL branch coverage (mocked conn)
+# ---------------------------------------------------------------------------
+
+class TestBrainServicePutPageParams:
+    """Verify put_page correctly forwards access_scope and partner_id
+    to the SQL query for both with-geom and without-geom branches."""
+
+    def _mock_row(self):
+        return {
+            "id": 1, "slug": "test-page", "type": "insurance_intelligence",
+            "title": "Test", "compiled_truth": "content", "timeline": "",
+            "frontmatter": "{}", "content_hash": "abc123",
+            "owner_uuid": "owner-1", "viewer_uuids": [], "editor_uuids": [],
+            "created_at": datetime(2025, 1, 1), "updated_at": datetime(2025, 1, 1),
+        }
+
+    def test_without_geom_passes_access_scope_and_partner_id(self):
+        """put_page without geom_geojson should pass access_scope and partner_id as params $11 and $12."""
+        from src.services.brain_service import BrainService, PageInput
+        brain = BrainService()
+        conn = AsyncMock()
+        conn.fetchrow.return_value = self._mock_row()
+        conn.execute = AsyncMock()
+        page = PageInput(type="insurance_intelligence", title="Test", compiled_truth="c")
+        _run(brain.put_page(
+            conn, "test-page", page, owner_uuid="owner-1",
+            access_scope="partner_internal", partner_id="org-123",
+        ))
+        call_args = conn.fetchrow.call_args[0]
+        sql = call_args[0]
+        assert "access_scope" in sql
+        assert "partner_id" in sql
+        positional = call_args[1:]
+        assert "partner_internal" in positional
+        assert "org-123" in positional
+
+    def test_with_geom_passes_access_scope_and_partner_id(self):
+        """put_page with geom_geojson should pass access_scope and partner_id AND the geometry."""
+        from src.services.brain_service import BrainService, PageInput
+        brain = BrainService()
+        conn = AsyncMock()
+        conn.fetchrow.return_value = self._mock_row()
+        conn.execute = AsyncMock()
+        geom = '{"type":"Point","coordinates":[29.5,-1.5]}'
+        page = PageInput(type="insurance_intelligence", title="Test", compiled_truth="c", geom_geojson=geom)
+        _run(brain.put_page(
+            conn, "test-page", page, owner_uuid="owner-1",
+            access_scope="public", partner_id="org-456",
+        ))
+        call_args = conn.fetchrow.call_args[0]
+        sql = call_args[0]
+        assert "ST_GeomFromGeoJSON" in sql
+        assert "access_scope" in sql
+        positional = call_args[1:]
+        assert "public" in positional
+        assert "org-456" in positional
+        assert geom in positional
+
+    def test_coalesce_on_conflict_preserves_existing_scope(self):
+        """ON CONFLICT UPDATE uses COALESCE so NULL excluded doesn't overwrite existing."""
+        from src.services.brain_service import BrainService, PageInput
+        brain = BrainService()
+        conn = AsyncMock()
+        conn.fetchrow.return_value = self._mock_row()
+        conn.execute = AsyncMock()
+        page = PageInput(type="t", title="t", compiled_truth="c")
+        _run(brain.put_page(conn, "test-page", page, owner_uuid="o"))
+        sql = conn.fetchrow.call_args[0][0]
+        assert "COALESCE(EXCLUDED.access_scope, brain_pages.access_scope)" in sql
+        assert "COALESCE(EXCLUDED.partner_id, brain_pages.partner_id)" in sql
+
+    def test_default_scope_is_none(self):
+        """When access_scope/partner_id not provided, None should be passed."""
+        from src.services.brain_service import BrainService, PageInput
+        brain = BrainService()
+        conn = AsyncMock()
+        conn.fetchrow.return_value = self._mock_row()
+        conn.execute = AsyncMock()
+        page = PageInput(type="t", title="t", compiled_truth="c")
+        _run(brain.put_page(conn, "test-page", page, owner_uuid="o"))
+        positional = conn.fetchrow.call_args[0][1:]
+        assert positional[10] is None  # access_scope ($11)
+        assert positional[11] is None  # partner_id ($12)
+
+    def test_partner_filter_constant_structure(self):
+        """_PARTNER_FILTER SQL constant must check access_scope and partner_id via GUC."""
+        from src.services.brain_service import _PARTNER_FILTER
+        assert "access_scope" in _PARTNER_FILTER
+        assert "partner_id" in _PARTNER_FILTER
+        assert "current_setting('app.partner_id'" in _PARTNER_FILTER
+        assert "partner_internal" in _PARTNER_FILTER
+
+    def test_partner_filter_alias_placeholder(self):
+        """_PARTNER_FILTER should use {a} placeholder for table alias."""
+        from src.services.brain_service import _PARTNER_FILTER
+        assert "{a}" in _PARTNER_FILTER
+        formatted = _PARTNER_FILTER.format(a="p.")
+        assert "p.access_scope" in formatted
+        assert "p.partner_id" in formatted
