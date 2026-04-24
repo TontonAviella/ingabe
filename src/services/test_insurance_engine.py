@@ -26,6 +26,7 @@ from src.services.insurance_engine import (
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
+    _fetch_sar_backscatter,
     _flatten_coords,
     _generate_recommendation,
     _get_harvest_dap,
@@ -36,6 +37,7 @@ from src.services.insurance_engine import (
     _RAINFALL_NORMALS,
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
+    _VALID_AUDIENCES,
     compute_insurance_intelligence,
     compute_insurance_accuracy_safe,
     format_for_audience,
@@ -808,6 +810,111 @@ class TestFetchNdviAnomaly:
         conn.fetchrow.side_effect = Exception("connection lost")
         result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _fetch_sar_backscatter (mock sentinel1_service)
+# ---------------------------------------------------------------------------
+
+class TestFetchSarBackscatter:
+    def test_linear_power_values(self):
+        """VH=0.05, VV=0.3 in linear power → ratio 0.167"""
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {
+            "status": "ok",
+            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}},
+        }
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        assert result == pytest.approx(0.05 / 0.3, rel=1e-4)
+
+    def test_db_values_converted_to_linear_ratio(self):
+        """VH=-20dB, VV=-12dB → linear ratio = 10^((-20-(-12))/10) ≈ 0.158"""
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {
+            "status": "ok",
+            "statistics": {"vh": {"mean": -20.0}, "vv": {"mean": -12.0}},
+        }
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        expected = 10 ** ((-20.0 - (-12.0)) / 10)  # ≈ 0.158
+        assert result == pytest.approx(expected, rel=1e-4)
+        assert 0.1 < result < 0.3  # sanity: within expected VH/VV range
+
+    def test_db_values_typical_vegetation(self):
+        """VH=-15dB, VV=-8dB → healthy vegetation, ratio ≈ 0.2"""
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {
+            "status": "ok",
+            "statistics": {"vh": {"mean": -15.0}, "vv": {"mean": -8.0}},
+        }
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        expected = 10 ** ((-15.0 - (-8.0)) / 10)  # ≈ 0.2
+        assert result == pytest.approx(expected, rel=1e-4)
+
+    def test_service_error_returns_none(self):
+        svc = MagicMock()
+        svc.get_backscatter.side_effect = Exception("service down")
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        assert result is None
+
+    def test_missing_stats_returns_none(self):
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {"status": "ok", "statistics": {}}
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        assert result is None
+
+    def test_vv_zero_returns_none(self):
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {
+            "status": "ok",
+            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0}},
+        }
+        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
+            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _VALID_AUDIENCES
+# ---------------------------------------------------------------------------
+
+class TestValidAudiences:
+    def test_constant_matches_formatters(self):
+        assert _VALID_AUDIENCES == {"farmer", "insurance", "agronomist", "scientist"}
+
+    def test_invalid_audience_clamped_to_farmer(self):
+        conn = AsyncMock()
+        conn.fetchrow.return_value = {"mean_z": -0.5}
+        conn.fetch.return_value = []
+
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=None))
+        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value="A"))
+        stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=None))
+        stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=None))
+        stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=None))
+        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value={}))
+        stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
+        stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
+        svc = MagicMock()
+        svc.get_backscatter.return_value = {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc))
+        pred = MagicMock()
+        pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
+
+        with stack:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze",
+                audience="hacker_injection", ref_date=date(2025, 11, 15),
+            ))
+        assert result["status"] == "ok"
+        assert result["audience"] == "farmer"
 
 
 # ---------------------------------------------------------------------------

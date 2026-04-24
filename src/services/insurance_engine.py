@@ -21,6 +21,8 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
+_VALID_AUDIENCES = {"farmer", "insurance", "agronomist", "scientist"}
+
 # ---------------------------------------------------------------------------
 # Growth phases per crop (DAP = days after planting)
 # ---------------------------------------------------------------------------
@@ -667,6 +669,9 @@ async def _fetch_sar_backscatter(
             vh_mean = stats.get("vh", {}).get("mean")
             vv_mean = stats.get("vv", {}).get("mean")
             if vh_mean is not None and vv_mean is not None and vv_mean != 0:
+                if vv_mean < 0:
+                    # dB values — convert to linear ratio: 10^((VH_dB - VV_dB) / 10)
+                    return 10 ** ((vh_mean - vv_mean) / 10)
                 return vh_mean / vv_mean
     except Exception:
         logger.debug("SAR backscatter fetch failed", exc_info=True)
@@ -1046,6 +1051,8 @@ async def compute_insurance_intelligence(
     crop = crop.lower().strip()
     if crop not in _GROWTH_PHASES:
         crop = "maize"
+    if audience not in _VALID_AUDIENCES:
+        audience = "farmer"
 
     if season is None:
         season = detect_current_season(crop, datetime(today.year, today.month, today.day))

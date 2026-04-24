@@ -1276,7 +1276,7 @@
     "type": "function",
     "function": {
       "name": "get_insurance_intelligence",
-      "description": "Get comprehensive crop insurance intelligence for any location in Rwanda. Connects rainfall (CHIRPS), vegetation health (NDVI), evapotranspiration (WaPOR), dry spells, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple SMS-style), insurance (trigger assessment table), agronomist (technical + recommendations), scientist (full JSON with methodology). Works at any admin level: district, sector, cell, or village. Use when the user asks about crop insurance status, drought triggers, payout conditions, crop health for insurance, or weather-index insurance.",
+      "description": "Get comprehensive crop insurance intelligence for any location in Rwanda. Connects rainfall (CHIRPS), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), dry spells, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple SMS-style), insurance (trigger assessment table), agronomist (technical + recommendations), scientist (full JSON with methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required. Use when the user asks about crop insurance status, drought triggers, payout conditions, crop health for insurance, or weather-index insurance.",
       "strict": false,
       "parameters": {
         "type": "object",
