@@ -1,5 +1,19 @@
 # TODOS
 
+## Deferred from Insurance Intelligence Engine (2026-04-24)
+
+### accuracy_components not serialized in InsuranceReport.to_dict()
+- **What**: `src/services/insurance_engine.py:156-193` — `to_dict()` serializes 25 of 27 dataclass fields but omits `accuracy_components` (POD/FAR/HSS/CSI metrics from `compute_insurance_accuracy_safe`) and `geometry` (GeoJSON used for spatial queries). The data is computed and stored on the dataclass but silently dropped during serialization.
+- **Why deferred**: New code, not a regression. Requires design decision on whether accuracy metrics belong in all audience views or only scientist. The geometry field is partially handled (extracted from top-level result in message_routes.py, not from `data`).
+- **Depends on**: Nothing. Straightforward to add to `to_dict()`.
+- **When to revisit**: Before the BK Insurance demo, or when scientist view accuracy metrics are requested.
+
+### SPI simplified from gamma-fit to z-score approximation
+- **What**: `_compute_spi()` uses `(rainfall - mean) / std` with hardcoded national normals instead of the planned gamma distribution fit (scipy.stats.gamma) on 20-year CHIRPS monthly totals. No SPI-1/SPI-3 distinction.
+- **Why deferred**: The z-score approximation is sufficient for trigger evaluation at current scale. Proper gamma-fit SPI requires historical CHIRPS data aggregation pipeline that doesn't exist yet.
+- **Depends on**: Historical CHIRPS monthly aggregation (20+ years per district).
+- **When to revisit**: When BNR requests WMO-standard SPI for regulatory compliance, or when district-level thresholds need calibration.
+
 ## Deferred from gbrain Adoption (2026-04-13)
 
 ### Dream Cycles (Phase 2)
