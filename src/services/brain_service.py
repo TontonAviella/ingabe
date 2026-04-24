@@ -274,6 +274,8 @@ class BrainService:
         owner_uuid: str,
         viewer_uuids: Optional[list[str]] = None,
         editor_uuids: Optional[list[str]] = None,
+        access_scope: Optional[str] = None,
+        partner_id: Optional[str] = None,
     ) -> Page:
         slug = _validate_slug(slug)
         content_hash = page.content_hash or _content_hash(page)
@@ -286,9 +288,12 @@ class BrainService:
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,
-                     content_hash, owner_uuid, viewer_uuids, editor_uuids, geom, updated_at)
+                     content_hash, owner_uuid, viewer_uuids, editor_uuids,
+                     access_scope, partner_id,
+                     geom, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                        ST_SetSRID(ST_GeomFromGeoJSON($11), 4326), now())
+                        $11, $12::uuid,
+                        ST_SetSRID(ST_GeomFromGeoJSON($13), 4326), now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
                     title = EXCLUDED.title,
@@ -296,6 +301,8 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
+                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     geom = EXCLUDED.geom,
                     updated_at = now()
                 RETURNING id, slug, type, title, compiled_truth, timeline, frontmatter,
@@ -304,15 +311,21 @@ class BrainService:
                 """,
                 slug, page.type, page.title, page.compiled_truth,
                 page.timeline or "", frontmatter, content_hash,
-                owner_uuid, v_uuids, e_uuids, page.geom_geojson,
+                owner_uuid, v_uuids, e_uuids,
+                access_scope, partner_id,
+                page.geom_geojson,
             )
         else:
             row = await conn.fetchrow(
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,
-                     content_hash, owner_uuid, viewer_uuids, editor_uuids, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, now())
+                     content_hash, owner_uuid, viewer_uuids, editor_uuids,
+                     access_scope, partner_id,
+                     updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
+                        $11, $12::uuid,
+                        now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
                     title = EXCLUDED.title,
@@ -320,6 +333,8 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
+                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     updated_at = now()
                 RETURNING id, slug, type, title, compiled_truth, timeline, frontmatter,
                           content_hash, owner_uuid, viewer_uuids, editor_uuids,
@@ -328,6 +343,7 @@ class BrainService:
                 slug, page.type, page.title, page.compiled_truth,
                 page.timeline or "", frontmatter, content_hash,
                 owner_uuid, v_uuids, e_uuids,
+                access_scope, partner_id,
             )
 
         result_page = _row_to_page(row)

@@ -1275,6 +1275,51 @@
   {
     "type": "function",
     "function": {
+      "name": "get_insurance_intelligence",
+      "description": "Get comprehensive crop insurance intelligence for any location in Rwanda. Connects rainfall (CHIRPS), vegetation health (NDVI), evapotranspiration (WaPOR), dry spells, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple SMS-style), insurance (trigger assessment table), agronomist (technical + recommendations), scientist (full JSON with methodology). Works at any admin level: district, sector, cell, or village. Use when the user asks about crop insurance status, drought triggers, payout conditions, crop health for insurance, or weather-index insurance.",
+      "strict": false,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "crop": {
+            "type": "string",
+            "enum": ["maize", "beans", "rice", "sorghum", "wheat"],
+            "description": "Crop type. Default: maize"
+          },
+          "season": {
+            "type": "string",
+            "enum": ["A", "B"],
+            "description": "Growing season: A (Sep-Feb) or B (Feb-Jul). Auto-detected if omitted"
+          },
+          "district": {
+            "type": "string",
+            "description": "District name (e.g. Musanze, Gasabo, Bugesera)"
+          },
+          "sector": {
+            "type": "string",
+            "description": "Sector name within a district (e.g. Kinigi, Kimironko)"
+          },
+          "cell": {
+            "type": "string",
+            "description": "Cell name within a sector"
+          },
+          "village": {
+            "type": "string",
+            "description": "Village name — most specific admin level"
+          },
+          "audience": {
+            "type": "string",
+            "enum": ["farmer", "insurance", "agronomist", "scientist"],
+            "description": "Who is reading this report. Default: farmer"
+          }
+        },
+        "required": []
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "predict_ndvi_from_sar",
       "description": "Predict NDVI vegetation index from Sentinel-1 SAR radar data when optical imagery is blocked by clouds. Uses 30-day SAR backscatter trajectory to estimate what NDVI would be. Use when the user asks about crop health during cloudy periods or wants cloud-proof monitoring.",
       "parameters": {
