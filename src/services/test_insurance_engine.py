@@ -840,7 +840,7 @@ class TestFetchSarBackscatter:
         """VH=0.05, VV=0.3 in linear power → ratio 0.167"""
         svc = MagicMock()
         svc.get_backscatter.return_value = {
-            "status": "ok",
+            "status": "success",
             "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}},
         }
         with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
@@ -851,7 +851,7 @@ class TestFetchSarBackscatter:
         """VH=-20dB, VV=-12dB → linear ratio = 10^((-20-(-12))/10) ≈ 0.158"""
         svc = MagicMock()
         svc.get_backscatter.return_value = {
-            "status": "ok",
+            "status": "success",
             "statistics": {"vh": {"mean": -20.0}, "vv": {"mean": -12.0}},
         }
         with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
@@ -864,7 +864,7 @@ class TestFetchSarBackscatter:
         """VH=-15dB, VV=-8dB → healthy vegetation, ratio ≈ 0.2"""
         svc = MagicMock()
         svc.get_backscatter.return_value = {
-            "status": "ok",
+            "status": "success",
             "statistics": {"vh": {"mean": -15.0}, "vv": {"mean": -8.0}},
         }
         with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
@@ -881,7 +881,7 @@ class TestFetchSarBackscatter:
 
     def test_missing_stats_returns_none(self):
         svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "ok", "statistics": {}}
+        svc.get_backscatter.return_value = {"status": "success", "statistics": {}}
         with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
             result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
         assert result is None
@@ -889,7 +889,7 @@ class TestFetchSarBackscatter:
     def test_vv_zero_returns_none(self):
         svc = MagicMock()
         svc.get_backscatter.return_value = {
-            "status": "ok",
+            "status": "success",
             "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0}},
         }
         with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
@@ -921,10 +921,10 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
         svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
         stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc))
         pred = MagicMock()
-        pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
 
         with stack:
@@ -998,7 +998,7 @@ class TestLoadTriggers:
 class TestComputeInsuranceAccuracySafe:
     def test_returns_result_on_success(self):
         conn = AsyncMock()
-        expected = {"status": "ok", "confidence_rating": 85}
+        expected = {"status": "success", "confidence_rating": 85}
         mock_fn = AsyncMock(return_value=expected)
         fake_module = MagicMock(compute_insurance_accuracy=mock_fn)
         with patch.dict("sys.modules", {"src.services.weather_accuracy": fake_module}):
@@ -1044,10 +1044,10 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         # SAR services — cloud-penetrating fallback
         sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = sar or {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        sar_svc.get_backscatter.return_value = sar or {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
         stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
         sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         return stack
 
@@ -1123,7 +1123,7 @@ class TestComputeInsuranceIntelligence:
 
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
-        dry_result = {"status": "ok", "longest_spell_days": 12, "dry_spells": [{"duration_days": 12, "ongoing": False}]}
+        dry_result = {"status": "success", "longest_spell_days": 12, "dry_spells": [{"duration_days": 12, "ongoing": False}]}
         with self._patches(dry=dry_result):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
@@ -1132,7 +1132,7 @@ class TestComputeInsuranceIntelligence:
 
     def test_et_anomaly_computed_from_wapor(self):
         conn = self._mock_conn()
-        et_result = {"status": "ok", "time_series": [{"value": 3.0}, {"value": 4.0}, {"value": 3.5}]}
+        et_result = {"status": "success", "time_series": [{"value": 3.0}, {"value": 4.0}, {"value": 3.5}]}
         with self._patches(et=et_result):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
@@ -1141,7 +1141,7 @@ class TestComputeInsuranceIntelligence:
 
     def test_soil_moisture_latest_value_used(self):
         conn = self._mock_conn()
-        soil_result = {"status": "ok", "time_series": [{"value": 40.0}, {"value": 35.0}, {"value": 28.0}]}
+        soil_result = {"status": "success", "time_series": [{"value": 40.0}, {"value": 35.0}, {"value": 28.0}]}
         with self._patches(soil=soil_result):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
@@ -1158,13 +1158,29 @@ class TestComputeInsuranceIntelligence:
 
     def test_accuracy_result_used_when_available(self):
         conn = self._mock_conn()
-        acc_result = {"status": "ok", "confidence_rating": 85, "recommendation": "Safe"}
+        acc_result = {
+            "status": "success",
+            "confidence_rating": 85,
+            "recommendation": "Safe",
+            "components": {
+                "binary_accuracy": {
+                    "overall_binary": {"pod": 0.9, "far": 0.1, "hss": 0.8, "csi": 0.75}
+                }
+            },
+        }
         with self._patches(acc=acc_result):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
         assert "report" in result
+        ac = result["data"]["accuracy_components"]
+        assert ac is not None
+        assert ac["confidence_rating"] == 85
+        assert ac["pod"] == 0.9
+        assert ac["far"] == 0.1
+        assert ac["hss"] == 0.8
+        assert ac["csi"] == 0.75
 
 
 # ---------------------------------------------------------------------------
@@ -1385,10 +1401,10 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = {"status": "ok", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
+        sar_svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
         stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
         sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "ok", "predicted_ndvi": 0.45}
+        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         return stack
 
@@ -1423,7 +1439,7 @@ class TestOrchestratorEdgeCases:
         """Dry spell with ongoing=True should populate active_dry_spell_days."""
         conn = self._mock_conn()
         dry_result = {
-            "status": "ok",
+            "status": "success",
             "longest_spell_days": 10,
             "dry_spells": [
                 {"duration_days": 5, "ongoing": False},
@@ -1439,7 +1455,7 @@ class TestOrchestratorEdgeCases:
     def test_ndvi_concordance_extraction(self):
         """NDVI concordance result with status=ok should populate concordance score."""
         conn = self._mock_conn()
-        conc_result = {"status": "ok", "concordance_score": 0.78}
+        conc_result = {"status": "success", "concordance_score": 0.78}
         with self._patches(conc=conc_result):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
