@@ -41,6 +41,38 @@ from src.tools.spectral_index import (
     compute_spectral_index,
     ComputeSpectralIndexArgs,
 )
+from src.tools.wapor import (
+    get_soil_moisture,
+    GetSoilMoistureArgs,
+    get_evapotranspiration,
+    GetEvapotranspirationArgs,
+)
+from src.tools.food_security import (
+    get_food_security_alerts,
+    GetFoodSecurityAlertsArgs,
+)
+from src.tools.sar import (
+    predict_ndvi_from_sar,
+    PredictNdviFromSarArgs,
+    detect_water_bodies,
+    DetectWaterBodiesArgs,
+    detect_flood_extent,
+    DetectFloodExtentArgs,
+)
+from src.tools.alos import (
+    get_alos_l_band_stats,
+    GetAlosLBandStatsArgs,
+    get_alos_temporal_variation,
+    GetAlosTemporalVariationArgs,
+)
+from src.tools.cygnss import (
+    check_cygnss_availability,
+    CheckCygnssAvailabilityArgs,
+    get_cygnss_soil_moisture,
+    GetCygnssSoilMoistureArgs,
+    get_cygnss_watermask,
+    GetCygnssWatermaskArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -79,6 +111,61 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "compute_spectral_index": (
             compute_spectral_index,
             ComputeSpectralIndexArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_soil_moisture": (
+            get_soil_moisture,
+            GetSoilMoistureArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_evapotranspiration": (
+            get_evapotranspiration,
+            GetEvapotranspirationArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_food_security_alerts": (
+            get_food_security_alerts,
+            GetFoodSecurityAlertsArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "predict_ndvi_from_sar": (
+            predict_ndvi_from_sar,
+            PredictNdviFromSarArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "detect_water_bodies": (
+            detect_water_bodies,
+            DetectWaterBodiesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "detect_flood_extent": (
+            detect_flood_extent,
+            DetectFloodExtentArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_alos_l_band_stats": (
+            get_alos_l_band_stats,
+            GetAlosLBandStatsArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_alos_temporal_variation": (
+            get_alos_temporal_variation,
+            GetAlosTemporalVariationArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "check_cygnss_availability": (
+            check_cygnss_availability,
+            CheckCygnssAvailabilityArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_cygnss_soil_moisture": (
+            get_cygnss_soil_moisture,
+            GetCygnssSoilMoistureArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_cygnss_watermask": (
+            get_cygnss_watermask,
+            GetCygnssWatermaskArgs,
             IngabeToolCallMetaArgs,
         ),
     }
