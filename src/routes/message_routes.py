@@ -1348,11 +1348,72 @@ async def process_chat_interaction_task(
                     "content": system_prompt_provider.get_system_prompt(),
                 }
             ] + openai_messages
+
+            # --- Context window overflow protection ---
+            # Estimate tokens and truncate history to fit within model context.
+            # Nemotron 3 Super 120B = 262144, but respect any model. Default
+            # conservatively to 128K if unknown.
+            _MODEL_CONTEXT_LIMIT = int(os.environ.get(
+                "LLM_CONTEXT_LIMIT", "131072"
+            ))
+            _DESIRED_OUTPUT_TOKENS = 4096
+            _TOOLS_TOKEN_ESTIMATE = (
+                len(json.dumps(tools_payload)) // 4
+                if tools_payload else 0
+            )
+
+            def _estimate_tokens_for_messages(msgs: list) -> int:
+                return sum(len(json.dumps(m)) // 4 for m in msgs)
+
+            _total_est = (
+                _estimate_tokens_for_messages(_llm_messages)
+                + _TOOLS_TOKEN_ESTIMATE
+                + _DESIRED_OUTPUT_TOKENS
+            )
+            if _total_est > _MODEL_CONTEXT_LIMIT and len(_llm_messages) > 3:
+                _budget = (
+                    _MODEL_CONTEXT_LIMIT
+                    - _TOOLS_TOKEN_ESTIMATE
+                    - _DESIRED_OUTPUT_TOKENS
+                )
+                # Keep system prompt (index 0) always. Trim oldest conversation
+                # messages (index 1..N-1), preserving the most recent ones.
+                _system = _llm_messages[:1]
+                _history = _llm_messages[1:]
+                _kept: list = []
+                _kept_tokens = _estimate_tokens_for_messages(_system)
+                # Walk from most recent backward
+                for msg in reversed(_history):
+                    msg_tokens = len(json.dumps(msg)) // 4
+                    if _kept_tokens + msg_tokens > _budget:
+                        break
+                    _kept.insert(0, msg)
+                    _kept_tokens += msg_tokens
+                if _kept:
+                    _llm_messages = _system + _kept
+                logger.info(
+                    "Context truncation: %d→%d messages, ~%d tokens (limit %d)",
+                    len(_system) + len(_history),
+                    len(_llm_messages),
+                    _kept_tokens + _TOOLS_TOKEN_ESTIMATE,
+                    _MODEL_CONTEXT_LIMIT,
+                )
+
+            # Cap max_tokens so input + output never exceeds context limit
+            _input_est = (
+                _estimate_tokens_for_messages(_llm_messages)
+                + _TOOLS_TOKEN_ESTIMATE
+            )
+            _max_tokens = max(
+                512, min(_DESIRED_OUTPUT_TOKENS, _MODEL_CONTEXT_LIMIT - _input_est)
+            )
+
             _llm_kwargs = dict(
                 **chat_completions_args,
                 messages=_llm_messages,
                 tools=tools_payload if tools_payload else None,
                 tool_choice="auto" if tools_payload else None,
+                max_tokens=_max_tokens,
             )
 
             turn_id = str(_uuid.uuid4())
@@ -1405,7 +1466,12 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
-                        if e.code == "context_length_exceeded":
+                        _is_context_overflow = (
+                            e.code == "context_length_exceeded"
+                            or "context length" in str(e).lower()
+                            or "maximum context" in str(e).lower()
+                        )
+                        if _is_context_overflow:
                             await kue_notify_error(
                                 conversation.id,
                                 "Maximum context length for LLM has been reached. Please create a new chat to continue using the chat feature.",
