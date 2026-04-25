@@ -52,6 +52,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 ### AI/LLM Integration
 - OpenAI function calling with tools defined in `src/geoprocessing/tools.json`
 - `src/dependencies/chat_completions.py` and `src/dependencies/pydantic_tools.py` wire up tool dispatch
+- `src/tools/` contains Pydantic tool handler modules (ALOS, CYGNSS, SAR, WaPOR, food security, insurance, spectral index, etc.)
 - `src/symbology/llm.py` generates MapLibre styles via LLM
 - WebSocket streaming for real-time chat completions and tool execution updates
 

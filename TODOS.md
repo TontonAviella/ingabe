@@ -3,10 +3,8 @@
 ## Deferred from Insurance Intelligence Engine (2026-04-24)
 
 ### accuracy_components not serialized in InsuranceReport.to_dict()
-- **What**: `src/services/insurance_engine.py:156-193` — `to_dict()` serializes 25 of 27 dataclass fields but omits `accuracy_components` (POD/FAR/HSS/CSI metrics from `compute_insurance_accuracy_safe`) and `geometry` (GeoJSON used for spatial queries). The data is computed and stored on the dataclass but silently dropped during serialization.
-- **Why deferred**: New code, not a regression. Requires design decision on whether accuracy metrics belong in all audience views or only scientist. The geometry field is partially handled (extracted from top-level result in message_routes.py, not from `data`).
-- **Depends on**: Nothing. Straightforward to add to `to_dict()`.
-- **When to revisit**: Before the BK Insurance demo, or when scientist view accuracy metrics are requested.
+- **Completed:** v0.3.0.0 (2026-04-25)
+- **What was done**: `to_dict()` serialization added (commit `51958b2`). Status string mismatch (`"ok"` vs `"success"`) that made accuracy_components dead code fixed. POD/FAR/HSS/CSI now properly hoisted from `components.binary_accuracy.overall_binary`.
 
 ### SPI simplified from gamma-fit to z-score approximation
 - **What**: `_compute_spi()` uses `(rainfall - mean) / std` with hardcoded national normals instead of the planned gamma distribution fit (scipy.stats.gamma) on 20-year CHIRPS monthly totals. No SPI-1/SPI-3 distinction.
@@ -22,11 +20,11 @@
 - **Depends on**: brain_pages, brain_timeline_entries, brain_page_versions all shipping in Phase 1.
 - **When to revisit**: After Phase 1 ships and at least 100 brain pages exist with timeline entries.
 
-### Tool Dispatch Registry Refactor
-- **What**: Refactor `src/routes/message_routes.py` tool dispatch from 40+ elif chain (lines 1941-5452, 5,500+ lines) to a registry/dispatch pattern. Each tool becomes a handler function registered in a dict. Dispatch becomes `handlers[function_name](tool_args, ctx)`.
-- **Why deferred**: File works fine. Every new tool adds ~25 lines. Not blocking development, but the file is getting harder to navigate and review.
+### Tool Dispatch Registry Refactor (partial)
+- **What**: Refactor `src/routes/message_routes.py` tool dispatch from elif chain to a registry/dispatch pattern. 11 tools migrated to Pydantic registry in `src/dependencies/pydantic_tools.py` with handler functions in `src/tools/` (ALOS, CYGNSS, SAR, WaPOR, food security, OSM download, create point, display layer, search place, spectral index, zoom). ~30 tools remain in the elif chain (~5,900 lines).
+- **Why deferred**: Remaining migration is incremental. Each tool is ~30 min to extract. Not blocking development.
 - **Depends on**: Nothing. Can be done anytime.
-- **When to revisit**: When the elif chain exceeds 50 tools or someone needs to do a structural change to tool dispatch (e.g., adding middleware, auth per tool, rate limiting per tool).
+- **When to revisit**: Continue migrating tools as they're touched for bug fixes or feature work.
 
 ## Deferred from Brain Ingestion Phase 0 (2026-04-17)
 
