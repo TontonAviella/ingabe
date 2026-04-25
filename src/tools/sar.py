@@ -1,7 +1,7 @@
 import asyncio
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from src.tools.pyd import IngabeToolCallMetaArgs
 
@@ -37,7 +37,7 @@ async def predict_ndvi_from_sar(
 
     svc = get_sar_ndvi_predictor()
     bbox = _parse_bbox(args.bbox)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.predict_ndvi(bbox, args.target_date)
     )
 
@@ -50,7 +50,7 @@ async def detect_water_bodies(
 
     svc = get_sar_water_service()
     bbox = _parse_bbox(args.bbox)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.detect_water(bbox, args.date)
     )
 
@@ -63,6 +63,6 @@ async def detect_flood_extent(
 
     svc = get_sar_water_service()
     bbox = _parse_bbox(args.bbox)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.detect_flood(bbox, args.date_before, args.date_after)
     )

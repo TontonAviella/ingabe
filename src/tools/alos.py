@@ -32,7 +32,7 @@ async def get_alos_l_band_stats(
     svc = get_alos_palsar_service()
     bbox = _parse_bbox(args.bbox)
     years = _parse_years(args.years)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.get_l_band_stats(bbox, years)
     )
 
@@ -46,6 +46,6 @@ async def get_alos_temporal_variation(
     svc = get_alos_palsar_service()
     bbox = _parse_bbox(args.bbox)
     years = _parse_years(args.years)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.get_temporal_variation(bbox, years)
     )

@@ -1307,11 +1307,17 @@ async def process_chat_interaction_task(
                 },
             ]
 
-            # add pydantic-defined tools to the payload
-            for name, (fn, arg_model, _mundi_model) in pydantic_tool_calls.items():
-                tools_payload.append(tool_from_pyd(fn, arg_model))
-
             all_tools = get_tools()
+            geoprocessing_names = {
+                tool["function"]["name"] for tool in all_tools
+            }
+            # Generate schemas from Pydantic models only for tools NOT already
+            # defined in tools.json (avoids duplicates and allows tools.json
+            # tools to use Optional fields that strict schema generation rejects).
+            for name, (fn, arg_model, _mundi_model) in pydantic_tool_calls.items():
+                if name not in geoprocessing_names:
+                    tools_payload.append(tool_from_pyd(fn, arg_model))
+
             tools_payload.extend(all_tools)
             geoprocessing_function_names = [
                 tool["function"]["name"] for tool in all_tools
@@ -1483,23 +1489,27 @@ async def process_chat_interaction_task(
                             )
                             continue
 
-                        try:
-                            mundi_args = MundiModel(
-                                user_uuid=user_id,
-                                conversation_id=conversation.id,
-                                map_id=map_id,
-                                project_id=current_project_id,
-                                session=session,
-                            )
-                            # Execute tool (all tools are async)
-                            tool_result = await fn(parsed_args, mundi_args)
+                        span.add_event(
+                            "kue.tool_call_started",
+                            {"tool_name": function_name},
+                        )
+                        with tracer.start_as_current_span(f"kue.{function_name}"):
+                            try:
+                                mundi_args = MundiModel(
+                                    user_uuid=user_id,
+                                    conversation_id=conversation.id,
+                                    map_id=map_id,
+                                    project_id=current_project_id,
+                                    session=session,
+                                )
+                                tool_result = await fn(parsed_args, mundi_args)
 
-                        except Exception:
-                            logger.exception("Tool execution failed for %s", tool_call.function.name)
-                            tool_result = {
-                                "status": "error",
-                                "error": "Tool execution failed. Please try again or adjust the inputs.",
-                            }
+                            except Exception as e:
+                                logger.exception("Tool execution failed for %s", tool_call.function.name)
+                                tool_result = {
+                                    "status": "error",
+                                    "error": f"{function_name} failed: {e}",
+                                }
 
                         await add_chat_completion_message(
                             ChatCompletionToolMessageParam(

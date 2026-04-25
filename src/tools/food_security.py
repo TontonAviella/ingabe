@@ -17,7 +17,7 @@ async def get_food_security_alerts(
     """Get FEWS NET food security alerts for Rwanda."""
     from src.services.fewsnet_service import get_food_security
 
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: get_food_security(
             district=args.district,

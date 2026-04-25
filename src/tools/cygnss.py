@@ -32,7 +32,7 @@ async def check_cygnss_availability(
 
     svc = get_cygnss_service()
     bbox = _parse_bbox(args.bbox) if args.bbox else RWANDA_BBOX
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.check_data_availability(bbox)
     )
 
@@ -44,7 +44,7 @@ async def get_cygnss_soil_moisture(
     from src.services.cygnss import get_cygnss_service
 
     svc = get_cygnss_service()
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: svc.get_soil_moisture(
             lat=args.lat, lon=args.lon,
@@ -62,7 +62,7 @@ async def get_cygnss_watermask(
 
     svc = get_cygnss_service()
     bbox = _parse_bbox(args.bbox)
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: svc.get_watermask(
             bbox=bbox, date=args.date,

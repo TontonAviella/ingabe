@@ -30,7 +30,7 @@ async def get_soil_moisture(
 
     date_from = date.fromisoformat(args.date_from) if args.date_from else None
     date_to = date.fromisoformat(args.date_to) if args.date_to else None
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: query_soil_moisture(
             lat=args.latitude, lon=args.longitude,
@@ -47,7 +47,7 @@ async def get_evapotranspiration(
 
     date_from = date.fromisoformat(args.date_from) if args.date_from else None
     date_to = date.fromisoformat(args.date_to) if args.date_to else None
-    return await asyncio.get_event_loop().run_in_executor(
+    return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: query_et(
             lat=args.latitude, lon=args.longitude,
