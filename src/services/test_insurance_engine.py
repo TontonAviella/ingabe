@@ -618,6 +618,26 @@ class TestInsuranceReportToDict:
         assert d["phase_rainfall"][0]["cumulative_mm"] == 50.1
         assert d["phase_rainfall"][0]["daily_avg_mm"] == 5.0
 
+    def test_accuracy_components_included(self):
+        acc = {"pod": 0.85, "far": 0.12, "hss": 0.71, "csi": 0.68}
+        r = InsuranceReport(
+            location_name="Test", admin_level="district",
+            crop="maize", season="A",
+            growth_phase="planting", days_after_planting=10,
+            accuracy_components=acc,
+        )
+        d = r.to_dict()
+        assert d["accuracy_components"] == acc
+
+    def test_accuracy_components_none_by_default(self):
+        r = InsuranceReport(
+            location_name="Test", admin_level="district",
+            crop="maize", season="A",
+            growth_phase="planting", days_after_planting=10,
+        )
+        d = r.to_dict()
+        assert d["accuracy_components"] is None
+
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -524,6 +524,7 @@ class InsuranceReport:
             "confidence_score": self.confidence_score,
             "overall_status": self.overall_status,
             "recommendation": self.recommendation,
+            "accuracy_components": self.accuracy_components,
             "sources": self.sources,
             "period_start": self.period_start,
             "period_end": self.period_end,
