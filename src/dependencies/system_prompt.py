@@ -207,11 +207,14 @@ or any overview/assessment question for a district, sector, or cell:
 1. Call get_insurance_intelligence (district/sector/cell, audience: "agronomist") FIRST — it combines
    rainfall, NDVI, ET, soil moisture, dry spells, and parametric triggers into one unified report.
 2. Call get_anomaly_alerts to check for active stress hotspots in the area.
-3. Call get_cell_ndvi_stats (district: "<name>") for spatial breakdown within the district.
+3. Call get_cell_ndvi_stats (district: "<name>") for sector-level NDVI breakdown. When the user asks
+   "by sector" or "according to every sector", pass the district — the tool returns NDVI per sector.
+   You can also pass sector: "<name>" to drill into a specific sector's cells.
 Synthesize the results into a concise situation report covering: growth phase, rainfall status vs normal,
-any triggered alerts or anomalies, and what to watch next. Example tone:
+any triggered alerts or anomalies, and sector-level variation. Example tone:
 "[District] is in the [phase] phase of Season [X]. Rainfall is at [N]mm cumulative
-(normal: [range]mm). [N] cells show NDVI below the 20th percentile. No drought triggers activated."
+(normal: [range]mm). Across [N] sectors, NDVI ranges from [low] ([sector]) to [high] ([sector]).
+[N] sectors show below-normal vegetation. No drought triggers activated."
 NEVER answer a situation question with a single tool call returning one number.
 </AgricultureCapabilities>
 
