@@ -12,10 +12,10 @@ All notable changes to mundi.ai will be documented in this file.
 - Alembic migration `a1b2c3d4e5f7` creating `insurance_triggers` table with 568 seed rows covering 52 crops across Seasons A and B. Check constraints, composite unique index, and `updated_at` trigger.
 - New Sage tool `get_insurance_intelligence` registered in `tools.json` and wired in `message_routes.py` with Brain persistence (put_page + timeline entry) for audit trail.
 - `brain_service.py` `put_page()` extended with `access_scope` and `partner_id` parameters for future partner isolation support.
-- 160 unit tests covering pure functions, async mocked integration, and migration integrity.
+- 162 unit tests covering pure functions, async mocked integration, and migration integrity.
 
-### Known Gaps
-- `InsuranceReport.to_dict()` omits `accuracy_components` field — weather accuracy metrics (POD/FAR/HSS/CSI) are computed but not serialized. Deferred pending design decision on which audience views should include them.
+### Fixed
+- Status string mismatch in insurance engine made `accuracy_components` dead code. Seven upstream service checks compared against `"ok"` when services return `"success"`, so weather accuracy metrics (POD/FAR/HSS/CSI) were silently dropped from every report. Now properly hoisted from nested `components.binary_accuracy.overall_binary`.
 
 ## [0.2.1.1] - 2026-04-21
 

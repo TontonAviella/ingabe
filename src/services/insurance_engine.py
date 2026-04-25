@@ -672,7 +672,7 @@ async def _fetch_sar_backscatter(
             bbox=bbox,
             date_range=f"{date_from}/{date_to}",
         )
-        if result and result.get("status") == "ok":
+        if result and result.get("status") == "success":
             stats = result.get("statistics", {})
             vh_mean = stats.get("vh", {}).get("mean")
             vv_mean = stats.get("vv", {}).get("mean")
@@ -707,7 +707,7 @@ async def _fetch_ndvi_with_sar_fallback(
         buf = 0.05
         bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
         result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
-        if result and result.get("status") == "ok":
+        if result and result.get("status") == "success":
             predicted = result.get("predicted_ndvi")
             if predicted is not None:
                 mean_ndvi = 0.45
@@ -1232,7 +1232,7 @@ async def compute_insurance_intelligence(
     # Dry spells
     max_dry_spell = 0
     active_dry_spell = 0
-    if dry_spells_result and dry_spells_result.get("status") == "ok":
+    if dry_spells_result and dry_spells_result.get("status") == "success":
         max_dry_spell = dry_spells_result.get("longest_spell_days", 0)
         spells = dry_spells_result.get("dry_spells", [])
         if spells:
@@ -1242,7 +1242,7 @@ async def compute_insurance_intelligence(
 
     # NDVI
     ndvi_concordance_score = None
-    if ndvi_conc_result and ndvi_conc_result.get("status") == "ok":
+    if ndvi_conc_result and ndvi_conc_result.get("status") == "success":
         ndvi_concordance_score = ndvi_conc_result.get("concordance_score")
     if ndvi_z is not None:
         sources.append("Sentinel-2/SAR NDVI")
@@ -1256,7 +1256,7 @@ async def compute_insurance_intelligence(
 
     # ET and soil moisture
     et_anomaly = None
-    if et_result and et_result.get("status") == "ok":
+    if et_result and et_result.get("status") == "success":
         series = et_result.get("time_series", [])
         if series:
             values = [s.get("value") for s in series if s.get("value") is not None]
@@ -1266,7 +1266,7 @@ async def compute_insurance_intelligence(
                 sources.append("WaPOR v3 ET")
 
     soil_moisture = None
-    if soil_result and soil_result.get("status") == "ok":
+    if soil_result and soil_result.get("status") == "success":
         series = soil_result.get("time_series", [])
         if series:
             values = [s.get("value") for s in series if s.get("value") is not None]
@@ -1297,10 +1297,17 @@ async def compute_insurance_intelligence(
 
     # Merge with existing accuracy components if available
     accuracy_components = None
-    if accuracy_result and accuracy_result.get("status") == "ok":
+    if accuracy_result and accuracy_result.get("status") == "success":
+        binary = (accuracy_result.get("components") or {}).get(
+            "binary_accuracy", {}
+        ).get("overall_binary", {})
         accuracy_components = {
             "confidence_rating": accuracy_result.get("confidence_rating"),
             "recommendation": accuracy_result.get("recommendation"),
+            "pod": binary.get("pod"),
+            "far": binary.get("far"),
+            "hss": binary.get("hss"),
+            "csi": binary.get("csi"),
         }
 
     # --- BUILD REPORT ---
