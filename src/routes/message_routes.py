@@ -3144,25 +3144,36 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_cell_ndvi_stats":
                             try:
+                                from datetime import date as _date, datetime as _datetime, timedelta as _td
+
                                 _cell = tool_args.get("cell_name")
+                                _sector = tool_args.get("sector")
                                 _district = tool_args.get("district")
+
+                                # ── 1. Try cache with sector JOIN ──
                                 _where = []
                                 _params: list = []
                                 _pidx = 1
                                 if _cell:
-                                    _where.append(f"cell_name ILIKE ${_pidx}")
+                                    _where.append(f"nc.cell_name ILIKE ${_pidx}")
                                     _params.append(f"%{_cell}%")
                                     _pidx += 1
+                                if _sector:
+                                    _where.append(f"cb.sector_name ILIKE ${_pidx}")
+                                    _params.append(f"%{_sector}%")
+                                    _pidx += 1
                                 if _district:
-                                    _where.append(f"district_name ILIKE ${_pidx}")
+                                    _where.append(f"nc.district_name ILIKE ${_pidx}")
                                     _params.append(f"%{_district}%")
                                     _pidx += 1
                                 _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
                                 _rows = await conn.fetch(
-                                    f"SELECT cell_name, district_name, week_start, "
-                                    f"mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels "
-                                    f"FROM ndvi_cell_cache {_where_sql} "
-                                    f"ORDER BY computed_at DESC LIMIT 100",
+                                    f"SELECT nc.cell_name, cb.sector_name, nc.district_name, nc.week_start, "
+                                    f"nc.mean_ndvi, nc.std_ndvi, nc.min_ndvi, nc.max_ndvi, nc.valid_pixels "
+                                    f"FROM ndvi_cell_cache nc "
+                                    f"JOIN rwanda_cell_boundaries cb ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+                                    f"{_where_sql} "
+                                    f"ORDER BY cb.sector_name, nc.cell_name, nc.computed_at DESC LIMIT 200",
                                     *_params,
                                 )
 
@@ -3174,6 +3185,7 @@ async def process_chat_interaction_task(
                                         "cell_ndvi_stats": [
                                             {
                                                 "cell_name": r["cell_name"],
+                                                "sector_name": r["sector_name"],
                                                 "district_name": r["district_name"],
                                                 "week_start": str(r["week_start"]) if r["week_start"] else None,
                                                 "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
@@ -3185,27 +3197,108 @@ async def process_chat_interaction_task(
                                             for r in _rows
                                         ],
                                     }
-                                    # Auto-provision PostGIS connection so Sage can create map layers
+                                else:
+                                    # ── 2. Real-time fallback: compute NDVI per sector via DE Africa ──
+                                    _realtime_stats: list = []
+                                    try:
+                                        from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
+                                        import numpy as _np
+
+                                        _now = _datetime.utcnow()
+                                        _rt_from = (_now - _td(days=10)).strftime("%Y-%m-%d")
+                                        _rt_to = _now.strftime("%Y-%m-%d")
+
+                                        # Query sector geometries from PostGIS
+                                        _sec_where = []
+                                        _sec_params: list = []
+                                        _sec_pidx = 1
+                                        if _sector:
+                                            _sec_where.append(f"sector_name ILIKE ${_sec_pidx}")
+                                            _sec_params.append(f"%{_sector}%")
+                                            _sec_pidx += 1
+                                        if _district:
+                                            _sec_where.append(f"district_name ILIKE ${_sec_pidx}")
+                                            _sec_params.append(f"%{_district}%")
+                                            _sec_pidx += 1
+                                        _sec_where_sql = f"WHERE {' AND '.join(_sec_where)}" if _sec_where else ""
+
+                                        _sec_rows = await conn.fetch(
+                                            f"SELECT sector_name, district_name, ST_AsGeoJSON(geom) as geom "
+                                            f"FROM rwanda_sector_boundaries {_sec_where_sql} "
+                                            f"ORDER BY sector_name",
+                                            *_sec_params,
+                                        )
+
+                                        for _sr in _sec_rows:
+                                            try:
+                                                _geom = json.loads(_sr["geom"])
+                                                _stats = _sa_get_field_stats(
+                                                    geometry=_geom,
+                                                    date_from=_rt_from,
+                                                    date_to=_rt_to,
+                                                    index="ndvi",
+                                                )
+                                                if "error" in _stats:
+                                                    continue
+                                                _intervals = _stats.get("intervals", [])
+                                                if not _intervals:
+                                                    continue
+                                                _means = [
+                                                    iv["ndvi"]["mean"]
+                                                    for iv in _intervals
+                                                    if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
+                                                ]
+                                                if not _means:
+                                                    continue
+                                                _realtime_stats.append({
+                                                    "sector_name": _sr["sector_name"],
+                                                    "district_name": _sr["district_name"],
+                                                    "week_start": _rt_from,
+                                                    "mean_ndvi": round(float(_np.mean(_means)), 4),
+                                                    "std_ndvi": round(float(_np.std(_means)), 4),
+                                                    "min_ndvi": round(float(_np.min(_means)), 4),
+                                                    "max_ndvi": round(float(_np.max(_means)), 4),
+                                                    "valid_pixels": sum(
+                                                        iv["ndvi"].get("valid_pixels", 0)
+                                                        for iv in _intervals if "ndvi" in iv
+                                                    ),
+                                                })
+                                            except Exception as _e:
+                                                logger.debug("Sector realtime NDVI failed for %s: %s", _sr["sector_name"], _e)
+                                    except Exception as _rt_err:
+                                        logger.warning("Sector real-time NDVI fallback failed: %s", _rt_err)
+
+                                    if _realtime_stats:
+                                        tool_result = {
+                                            "status": "success",
+                                            "source": "deafrica_realtime",
+                                            "level": "sector",
+                                            "count": len(_realtime_stats),
+                                            "note": "Real-time sector-level NDVI (cell-level cache not yet populated)",
+                                            "sector_ndvi_stats": _realtime_stats,
+                                        }
+                                    else:
+                                        tool_result = {
+                                            "status": "success",
+                                            "source": "none",
+                                            "cell_ndvi_stats": [],
+                                            "message": "No NDVI data available — cache empty and real-time satellite fetch returned no results for this area.",
+                                        }
+
+                                # Auto-provision PostGIS connection for map layers
+                                if tool_result.get("count", 0) > 0:
                                     _pgc_id = await _ensure_rwanda_postgis_connection(
                                         conn, current_project_id, user_id,
                                     )
                                     if _pgc_id:
                                         tool_result["postgis_connection_id"] = _pgc_id
                                         tool_result["kue_instructions"] = (
-                                            "To visualise these cell NDVI stats on the map, call new_layer_from_postgis with "
+                                            "To visualise these stats on the map, call new_layer_from_postgis with "
                                             f"postgis_connection_id='{_pgc_id}'. IMPORTANT: the query MUST return columns named 'id' and 'geom'. "
-                                            "Available tables: rwanda_cell_boundaries (cell_id, cell_name, district_name, geom). "
-                                            "Example: SELECT cell_id AS id, cell_name, district_name, geom FROM rwanda_cell_boundaries "
-                                            "Then call add_layer_to_map and set_layer_style to colour cells by NDVI values. "
+                                            "Available tables: rwanda_sector_boundaries (sector_id, sector_name, district_name, geom), "
+                                            "rwanda_cell_boundaries (cell_id, cell_name, sector_name, district_name, geom). "
                                             "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
                                         )
-                                else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "source": "duckdb_cache",
-                                        "cell_ndvi_stats": [],
-                                        "message": "No cell NDVI data yet — run rwanda_cell_boundaries asset then nightly_cell_ndvi",
-                                    }
                             except Exception as e:
                                 logger.exception("get_cell_ndvi_stats tool failed")
                                 tool_result = {"status": "error", "error": str(e)}

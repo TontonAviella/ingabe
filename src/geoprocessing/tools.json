@@ -512,7 +512,7 @@
     "type": "function",
     "function": {
       "name": "get_ndvi_stats",
-      "description": "Read the latest NDVI vegetation index statistics from the DuckDB cache. Updated nightly by Dagster from Sentinel-2 satellite imagery via Sentinel Hub. Returns weekly mean, std, min, max NDVI and valid pixel count per district. Use when the user asks about vegetation health, NDVI values, greenness, or crop condition for Rwanda districts.",
+      "description": "Read the latest NDVI vegetation index statistics for a single Rwanda district. Returns one weekly mean NDVI number. ONLY use for simple single-number NDVI lookups like 'what is the NDVI in Musanze'. Do NOT use for situation overviews, status reports, or assessment questions — use get_insurance_intelligence instead, which combines rainfall + NDVI + ET + dry spells + triggers into one report.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -530,7 +530,7 @@
     "type": "function",
     "function": {
       "name": "get_cell_ndvi_stats",
-      "description": "Read cell-level (ADM4) NDVI vegetation index statistics from the DuckDB cache. Updated nightly by Dagster from Sentinel-2 imagery. Rwanda has ~2,148 cells (~12 km² each), giving much better spatial resolution than district-level stats. Returns weekly mean, std, min, max NDVI per cell. Use when the user asks about vegetation health at cell level, wants finer detail than district level, or mentions a specific cell or area within a district.",
+      "description": "Read NDVI vegetation index statistics at sector or cell level within a district. Returns sector_name and cell_name in every row so results can be grouped by sector. When sector is provided, returns only cells in that sector. When only district is provided, returns all sectors with their cells. Use as a SUPPLEMENT after get_insurance_intelligence when the user wants spatial breakdown. Do NOT use as the primary tool for situation/overview questions.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -539,9 +539,13 @@
             "type": "string",
             "description": "Filter by cell name (partial match supported)"
           },
+          "sector": {
+            "type": "string",
+            "description": "Filter by sector name to see all cells within a sector"
+          },
           "district": {
             "type": "string",
-            "description": "Filter by district name to see all cells within a district"
+            "description": "Filter by district name to see all sectors and cells within a district"
           }
         },
         "required": []
@@ -788,7 +792,7 @@
     "type": "function",
     "function": {
       "name": "get_anomaly_alerts",
-      "description": "Read the latest anomaly alerts from the DuckDB cache. Anomalies are detected weekly by Dagster using z-score analysis on NDVI time series. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use when the user asks about crop problems, stress alerts, or anomalies.",
+      "description": "Read the latest vegetation anomaly alerts. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use alongside get_insurance_intelligence for situation overviews — it adds spatial hotspot detail. Also use standalone when the user asks specifically about crop problems, stress alerts, or anomalies.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -1276,7 +1280,7 @@
     "type": "function",
     "function": {
       "name": "get_insurance_intelligence",
-      "description": "Get comprehensive crop insurance intelligence for any location in Rwanda. Connects rainfall (CHIRPS), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), dry spells, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple SMS-style), insurance (trigger assessment table), agronomist (technical + recommendations), scientist (full JSON with methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required. Use when the user asks about crop insurance status, drought triggers, payout conditions, crop health for insurance, or weather-index insurance.",
+      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, growth phase, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
       "strict": false,
       "parameters": {
         "type": "object",
