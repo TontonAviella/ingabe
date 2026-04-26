@@ -5141,48 +5141,131 @@ async def process_chat_interaction_task(
                                     _ins_d = tool_result.get("data", {})
                                     _ins_triggers = _ins_d.get("triggers", [])
                                     _fired = [t for t in _ins_triggers if t.get("triggered")]
-                                    _fired_summary = ", ".join(
-                                        f"{t['signal']} ({t['current_value']} vs threshold {t['threshold']})"
-                                        for t in _fired
-                                    ) if _fired else "none"
-                                    _headline = (
-                                        f"{_ins_d.get('location', '?')} — {_ins_d.get('crop', '?')} Season {_ins_d.get('season', '?')}, "
-                                        f"{_ins_d.get('growth_phase', '?')} phase (day {_ins_d.get('days_after_planting', '?')}). "
-                                        f"Status: {_ins_d.get('overall_status', '?')} | Confidence: {_ins_d.get('confidence_score', '?')}/100"
-                                    )
-                                    _key_numbers = (
-                                        f"Rain: {_ins_d.get('season_rainfall_mm', '?')}mm total, SPI {_ins_d.get('spi', '?')}. "
-                                        f"Longest dry spell: {_ins_d.get('max_dry_spell_days', '?')} days. "
-                                        f"NDVI z-score: {_ins_d.get('ndvi_z_score', 'n/a')}. "
-                                        f"ET anomaly: {_ins_d.get('et_anomaly_pct', 'n/a')}%. "
-                                        f"Soil moisture: {_ins_d.get('soil_moisture_pct', 'n/a')}%."
-                                    )
-                                    tool_result["summary"] = _headline
-                                    tool_result["key_numbers"] = _key_numbers
-                                    tool_result["triggers_fired"] = _fired_summary
-                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)}"
+
+                                    # --- Build context-rich briefing ---
+                                    _loc = _ins_d.get("location", "?")
+                                    _season = _ins_d.get("season", "?")
+                                    _phase = _ins_d.get("growth_phase", "?")
+                                    _dap = _ins_d.get("days_after_planting", "?")
+                                    _status = _ins_d.get("overall_status", "?")
+                                    _confidence = _ins_d.get("confidence_score", "?")
+
+                                    _rain = _ins_d.get("season_rainfall_mm", "?")
+                                    _spi = _ins_d.get("spi", None)
+                                    _spi_str = ""
+                                    if _spi is not None:
+                                        if _spi <= -2.0:
+                                            _spi_str = f"SPI is {_spi} — this is an extreme drought signal, meaning rainfall is far below what's normal for this time of year"
+                                        elif _spi <= -1.5:
+                                            _spi_str = f"SPI is {_spi} — severe drought conditions, significantly less rain than expected"
+                                        elif _spi <= -1.0:
+                                            _spi_str = f"SPI is {_spi} — moderate drought, rainfall noticeably below normal"
+                                        elif _spi >= 1.0:
+                                            _spi_str = f"SPI is {_spi} — wetter than normal conditions"
+                                        else:
+                                            _spi_str = f"SPI is {_spi} — within normal range"
+
+                                    _ndvi = _ins_d.get("ndvi_z_score")
+                                    _ndvi_str = ""
+                                    if _ndvi is not None:
+                                        if _ndvi >= 1.0:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is thriving, well above average greenness for this area and time of year"
+                                        elif _ndvi >= 0.3:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation looks healthy, slightly above average"
+                                        elif _ndvi >= -0.5:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is about normal"
+                                        elif _ndvi >= -1.0:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is showing stress, below average greenness"
+                                        else:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is in poor condition, significantly less green than normal"
+
+                                    _sm = _ins_d.get("soil_moisture_pct")
+                                    _sm_str = ""
+                                    if _sm is not None:
+                                        if _sm >= 80:
+                                            _sm_str = f"Soil moisture at {_sm}% — the ground is well saturated, plenty of water available to roots"
+                                        elif _sm >= 50:
+                                            _sm_str = f"Soil moisture at {_sm}% — adequate water in the soil"
+                                        elif _sm >= 30:
+                                            _sm_str = f"Soil moisture at {_sm}% — getting low, plants may start feeling water stress"
+                                        else:
+                                            _sm_str = f"Soil moisture at {_sm}% — very dry soil, crops are likely under water stress"
+
+                                    _et = _ins_d.get("et_anomaly_pct")
+                                    _et_str = ""
+                                    if _et is not None:
+                                        if _et < -20:
+                                            _et_str = f"ET anomaly {_et}% — plants are transpiring much less than normal, a sign of water stress or poor crop condition"
+                                        elif _et < -5:
+                                            _et_str = f"ET anomaly {_et}% — slightly reduced water uptake by plants"
+                                        elif _et > 10:
+                                            _et_str = f"ET anomaly +{_et}% — plants are actively growing and using more water than usual"
+                                        else:
+                                            _et_str = f"ET anomaly {_et}% — normal plant water use"
+
+                                    _dry = _ins_d.get("max_dry_spell_days")
+                                    _dry_str = ""
+                                    if _dry is not None:
+                                        if _dry >= 15:
+                                            _dry_str = f"Longest dry spell: {_dry} consecutive days without rain — this is damaging, especially during flowering"
+                                        elif _dry >= 10:
+                                            _dry_str = f"Longest dry spell: {_dry} days — worth watching but not yet critical"
+                                        elif _dry > 0:
+                                            _dry_str = f"Longest dry spell: {_dry} days — not a concern"
+
+                                    _drought_diag = _ins_d.get("drought_diagnostic_label", "")
+
+                                    _fired_str = ""
+                                    if _fired:
+                                        _parts = []
+                                        for t in _fired:
+                                            _parts.append(f"{t['signal']}: current {t['current_value']} crossed the {t['threshold']} threshold")
+                                        _fired_str = "TRIGGERED ALERTS: " + "; ".join(_parts)
+
+                                    # Assemble briefing
+                                    _briefing_parts = [
+                                        f"Location: {_loc}, Season {_season}, currently in {_phase} (day {_dap}). Overall status: {_status} (confidence {_confidence}/100).",
+                                        f"Rainfall this season: {_rain}mm so far. {_spi_str}.",
+                                    ]
+                                    if _ndvi_str: _briefing_parts.append(_ndvi_str + ".")
+                                    if _sm_str: _briefing_parts.append(_sm_str + ".")
+                                    if _et_str: _briefing_parts.append(_et_str + ".")
+                                    if _dry_str: _briefing_parts.append(_dry_str + ".")
+                                    if _drought_diag: _briefing_parts.append(f"Drought assessment: {_drought_diag}.")
+                                    if _fired_str: _briefing_parts.append(_fired_str)
+
+                                    tool_result["situation"] = " ".join(_briefing_parts)
+
+                                    if _fired:
+                                        tool_result["triggers_fired"] = _fired_str
+                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)} thresholds crossed"
                                     tool_result["recommendation"] = _ins_d.get("recommendation", "")
                                     tool_result["sources"] = _ins_d.get("sources", [])
                                     tool_result["period"] = f"{_ins_d.get('period_start', '')} to {_ins_d.get('period_end', '')}"
+
                                     _fo = _ins_d.get("forecast_outlook")
                                     if _fo:
-                                        tool_result["forecast_outlook"] = (
-                                            f"Models: {', '.join(_fo.get('models_used', []))}. "
-                                            f"Projected season total: {_fo.get('projected_season_total_mm', '?')}mm "
+                                        _fo_risk = _fo.get("rainfall_trigger_risk", "?")
+                                        _fo_prob = round(_fo.get("rainfall_trigger_probability", 0) * 100)
+                                        _fo_total = _fo.get("projected_season_total_mm", "?")
+                                        _fo_thresh = _fo.get("rainfall_trigger_threshold_mm", "?")
+                                        _fo_models = ", ".join(_fo.get("models_used", []))
+                                        tool_result["forecast"] = (
+                                            f"Looking ahead: 4 weather models ({_fo_models}) project the season will end with about {_fo_total}mm total rainfall "
                                             f"(range {_fo.get('projected_season_p10_mm', '?')}-{_fo.get('projected_season_p90_mm', '?')}mm). "
-                                            f"Trigger threshold: {_fo.get('rainfall_trigger_threshold_mm', '?')}mm. "
-                                            f"Trigger risk: {_fo.get('rainfall_trigger_risk', '?')} "
-                                            f"({round(_fo.get('rainfall_trigger_probability', 0) * 100)}% probability). "
-                                            f"Model agreement: {_fo.get('model_agreement', '?')}. "
-                                            f"Bias-corrected: {_fo.get('bias_corrected', False)}."
+                                            f"The insurance payout threshold is {_fo_thresh}mm — "
+                                            f"risk of triggering a payout is {_fo_risk} ({_fo_prob}% probability). "
+                                            f"{'The models agree closely on this.' if _fo.get('model_agreement') == 'HIGH' else 'There is some disagreement between models, so uncertainty is higher.' if _fo.get('model_agreement') == 'LOW' else 'Models are in moderate agreement.'}"
                                         )
+
                                     del tool_result["data"]
                                     tool_result["instruction"] = (
-                                        "Respond like a knowledgeable colleague in 2-4 sentences. "
-                                        "Lead with what's most notable (a trigger firing, drought stress, or healthy conditions). "
-                                        "Mention only 2-3 numbers that matter most — skip the rest. "
-                                        "If forecast_outlook is present, always mention projected season rainfall and trigger risk. "
-                                        "Do NOT list every metric. Do NOT use bullet points or tables. "
+                                        "You are briefing someone who cares about this area. "
+                                        "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
+                                        "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
+                                        "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
+                                        "If the forecast is present, weave it in — don't list it separately. "
+                                        "3-5 sentences. No bullet points, no tables, no metric dumps. "
                                         "End with sources in parentheses."
                                     )
                                 # Save to Brain for audit trail + future retrieval (skip for comparisons)
