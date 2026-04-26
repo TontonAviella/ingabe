@@ -1219,7 +1219,7 @@ async def _fetch_area_signals(
     # ET anomaly
     if et_result and isinstance(et_result, dict) and et_result.get("status") == "success":
         series = et_result.get("time_series", [])
-        values = [s.get("value") for s in series if s.get("value") is not None]
+        values = [s.get("et_mm_per_day") for s in series if s.get("et_mm_per_day") is not None]
         if values:
             mean_et = sum(values) / len(values)
             signals["et_anomaly_pct"] = round(((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100, 1)
@@ -1227,7 +1227,7 @@ async def _fetch_area_signals(
     # Soil moisture
     if soil_result and isinstance(soil_result, dict) and soil_result.get("status") == "success":
         series = soil_result.get("time_series", [])
-        values = [s.get("value") for s in series if s.get("value") is not None]
+        values = [s.get("relative_soil_moisture_pct") for s in series if s.get("relative_soil_moisture_pct") is not None]
         if values:
             signals["soil_moisture_pct"] = round(values[-1], 1)
 
@@ -1681,7 +1681,7 @@ async def compute_insurance_intelligence(
     if et_result and et_result.get("status") == "success":
         series = et_result.get("time_series", [])
         if series:
-            values = [s.get("value") for s in series if s.get("value") is not None]
+            values = [s.get("et_mm_per_day") for s in series if s.get("et_mm_per_day") is not None]
             if values:
                 mean_et = sum(values) / len(values)
                 et_anomaly = ((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100
@@ -1691,7 +1691,7 @@ async def compute_insurance_intelligence(
     if soil_result and soil_result.get("status") == "success":
         series = soil_result.get("time_series", [])
         if series:
-            values = [s.get("value") for s in series if s.get("value") is not None]
+            values = [s.get("relative_soil_moisture_pct") for s in series if s.get("relative_soil_moisture_pct") is not None]
             if values:
                 soil_moisture = values[-1]  # most recent
                 if "WaPOR v3 ET" not in sources:
