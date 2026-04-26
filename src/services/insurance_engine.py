@@ -714,14 +714,45 @@ def _current_growth_phase(crop: str, dap: int) -> str:
     return "maturity"
 
 
+# Fixed Rwanda season dates — no crop assumption needed
+_SEASON_DATES = {
+    "A": {"start_month": 9, "start_day": 15, "duration_days": 135},
+    "B": {"start_month": 2, "start_day": 15, "duration_days": 120},
+}
+
+
+def _get_season_start(season: str, year: int) -> date:
+    sd = _SEASON_DATES.get(season, _SEASON_DATES["B"])
+    return date(year, sd["start_month"], sd["start_day"])
+
+
+def _get_season_duration(season: str) -> int:
+    return _SEASON_DATES.get(season, _SEASON_DATES["B"])["duration_days"]
+
+
+def _season_progress_label(day_in_season: int, season_duration: int) -> str:
+    fraction = day_in_season / season_duration if season_duration > 0 else 0
+    if fraction < 0.33:
+        return "early_season"
+    elif fraction < 0.67:
+        return "mid_season"
+    else:
+        return "late_season"
+
+
 def _compute_phase_rainfall(
     daily_precip: dict[str, Optional[float]],
     planting_date: date,
-    crop: str,
+    season_duration: int,
     today: date,
 ) -> list[PhaseRainfall]:
-    """Accumulate rainfall per growth phase from daily CHIRPS data."""
-    phases = _GROWTH_PHASES.get(crop, _GROWTH_PHASES["maize"])
+    """Accumulate rainfall per season third from daily CHIRPS data."""
+    third = season_duration / 3
+    phases = {
+        "early_season": (0, int(third)),
+        "mid_season": (int(third), int(2 * third)),
+        "late_season": (int(2 * third), season_duration),
+    }
     results = []
 
     for phase_name, (dap_start, dap_end) in phases.items():
@@ -743,8 +774,6 @@ def _compute_phase_rainfall(
                 day_count += 1
             d += timedelta(days=1)
 
-        # Extrapolate only when we have ≥30% sample coverage; otherwise
-        # report the raw sum to avoid amplifying sparse observations.
         min_coverage = 0.3
         if day_count > 0 and total_days > 0 and (day_count / total_days) >= min_coverage:
             daily_avg = total_mm / day_count
@@ -1088,7 +1117,6 @@ def _compute_forecast_outlook(
     planting_date: "date",
     harvest_dap: int,
     today: "date",
-    crop: str,
     season: str,
     district: Optional[str] = None,
 ) -> Optional[dict]:
@@ -1149,15 +1177,10 @@ def _compute_forecast_outlook(
     projected_season_p10 = season_rainfall_so_far + projected_p10
     projected_season_p90 = season_rainfall_so_far + projected_p90
 
-    # Season minimum rainfall thresholds (mm) — based on crop water requirements
-    # for Rwanda's bimodal seasons. These are conservative (parametric insurance
-    # typically triggers at 60-70% of crop water need).
-    _SEASON_RAIN_THRESHOLDS = {
-        "maize": 300, "rice": 400, "beans": 200, "sorghum": 280,
-        "potato": 250, "sweet_potato": 300, "cassava": 350,
-        "soybean": 280, "groundnut": 280, "wheat": 250,
-    }
-    rainfall_threshold = float(_SEASON_RAIN_THRESHOLDS.get(crop, 300))
+    # Season minimum rainfall threshold (mm) — generic for Rwanda's growing seasons.
+    # Season A (Sep-Jan, 135 days) needs more rain than Season B (Feb-Jun, 120 days).
+    # Parametric insurance typically triggers at 60-70% of average seasonal rainfall.
+    rainfall_threshold = 300.0 if season == "A" else 250.0
 
     # Estimate trigger probability from p10/p90 spread
     # If p10 (pessimistic) is below threshold → high probability of trigger
@@ -1304,13 +1327,13 @@ def _compute_confidence(
 
 
 def _generate_recommendation(
-    status: str, crop: str, phase: str, triggers: list[TriggerResult],
+    status: str, phase: str, triggers: list[TriggerResult],
 ) -> str:
     """Generate actionable recommendation based on trigger results."""
     activated = [t for t in triggers if t.triggered]
 
     if status == "SAFE":
-        return f"{crop.title()} crop in {phase} phase is progressing normally. No intervention needed."
+        return f"Conditions in {phase} are progressing normally. No intervention needed."
 
     signals = ", ".join(t.signal.replace("_", " ") for t in activated)
 
@@ -1358,7 +1381,7 @@ def _format_farmer(r: InsuranceReport) -> str:
     }.get(r.overall_status, "UNKNOWN")
 
     lines = [
-        f"{status_emoji} Your {r.crop} in {r.location_name} is {status_word}.",
+        f"{status_emoji} {r.location_name} is {status_word}.",
         f"Rain this season: {r.season_rainfall_mm:.0f}mm",
     ]
     if r.max_dry_spell_days > 0:
@@ -1389,14 +1412,14 @@ def _format_farmer(r: InsuranceReport) -> str:
         else:
             lines.append(f"Forecast: rain on track — {projected:.0f}mm projected by harvest")
 
-    lines.append(f"Growth stage: {r.growth_phase} (day {r.days_after_planting})")
+    lines.append(f"Season progress: {r.growth_phase} (day {r.days_after_planting})")
     return "\n".join(lines)
 
 
 def _format_insurance(r: InsuranceReport) -> str:
     """Trigger assessment table for insurance workers."""
     header = (
-        f"TRIGGER ASSESSMENT: {r.location_name} — {r.crop.title()} Season {r.season} "
+        f"TRIGGER ASSESSMENT: {r.location_name} — Season {r.season} "
         f"({r.period_start} to {r.period_end})"
     )
 
@@ -1427,7 +1450,7 @@ def _format_insurance(r: InsuranceReport) -> str:
     ])
 
     sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
-    phase_info = f"Phase: {r.growth_phase} (day {r.days_after_planting} of {_get_harvest_dap(r.crop, r.season)})"
+    phase_info = f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})"
 
     sections = [header, status_line, "", table, ""]
 
@@ -1453,8 +1476,8 @@ def _format_insurance(r: InsuranceReport) -> str:
 def _format_agronomist(r: InsuranceReport) -> str:
     """Technical detail + recommendations."""
     lines = [
-        f"AGRONOMIC ASSESSMENT: {r.location_name} — {r.crop.title()} Season {r.season}",
-        f"Growth phase: {r.growth_phase} (day {r.days_after_planting} of {_get_harvest_dap(r.crop, r.season)})",
+        f"AGRONOMIC ASSESSMENT: {r.location_name} — Season {r.season}",
+        f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})",
         "",
         "RAINFALL:",
         f"  Season cumulative: {r.season_rainfall_mm:.0f}mm",
@@ -1720,7 +1743,7 @@ async def _fetch_area_signals(
 
 async def _compare_areas(
     conn: asyncpg.Connection,
-    crop: str = "maize",
+    crop: str = "",
     season: Optional[str] = None,
     district: Optional[str] = None,
     sector: Optional[str] = None,
@@ -1732,14 +1755,11 @@ async def _compare_areas(
 
     Example: district=Nyamasheke, compare_level=sector → compares all sectors.
     """
-    from src.services.dssat_service import detect_current_season
-
     today = ref_date or date.today()
-    crop = crop.lower().strip()
-    if crop not in _GROWTH_PHASES:
-        crop = _default_crop_for_district(district)
+
     if season is None:
-        season = detect_current_season(crop, datetime(today.year, today.month, today.day))
+        m = today.month
+        season = "B" if 2 <= m <= 7 else "A"
 
     compare_level = compare_level.lower().strip()
 
@@ -1803,19 +1823,19 @@ async def _compare_areas(
             "error": f"No {compare_level}s found in {parent_name}.",
         }
 
-    # Resolve planting date
+    # Resolve season dates
     planting_year = today.year if season == "B" or today.month >= 9 else today.year - 1
     if season == "A" and today.month <= 2:
         planting_year = today.year - 1
-    planting_date = _get_planting_date(crop, season, planting_year)
+    planting_date = _get_season_start(season, planting_year)
     dap = (today - planting_date).days
     if dap < 0:
         planting_year -= 1
-        planting_date = _get_planting_date(crop, season, planting_year)
+        planting_date = _get_season_start(season, planting_year)
         dap = (today - planting_date).days
-    harvest_dap = _get_harvest_dap(crop, season)
+    harvest_dap = _get_season_duration(season)
     dap = max(0, min(dap, harvest_dap + 30))
-    growth_phase = _current_growth_phase(crop, dap)
+    growth_phase = _season_progress_label(dap, harvest_dap)
 
     # Also get NDVI from cache (fast, already aggregated)
     ndvi_by_area: dict[str, float] = {}
@@ -1900,10 +1920,9 @@ async def _compare_areas(
         "parent": parent_name,
         "parent_level": parent_level,
         "compare_level": compare_level,
-        "crop": crop,
         "season": season,
-        "growth_phase": growth_phase,
-        "days_after_planting": dap,
+        "season_progress": growth_phase,
+        "days_into_season": dap,
         "period": f"{planting_date.strftime('%Y-%m-%d')} to {today.strftime('%Y-%m-%d')}",
         "area_count": len(comparison),
         "signals_available": sorted(all_signals),
@@ -1953,37 +1972,38 @@ async def compute_insurance_intelligence(
         }
 
     today = ref_date or date.today()
-    crop = crop.lower().strip()
-    _original_crop = crop
-    _crop_was_substituted = crop not in _GROWTH_PHASES
-    if _crop_was_substituted:
-        crop = _default_crop_for_district(district)
+    crop = crop.lower().strip() if crop else ""
     if audience not in _VALID_AUDIENCES:
         audience = "farmer"
 
     if season is None:
-        season = detect_current_season(crop, datetime(today.year, today.month, today.day))
+        # Simple season detection from date — no crop needed
+        m = today.month
+        if 2 <= m <= 7:
+            season = "B"
+        else:
+            season = "A"
 
     # Resolve admin level name for display
     location_name, admin_level = _resolve_location_name(district, sector, cell, village)
     if not location_name:
         return {"status": "error", "error": "Specify at least one of: district, sector, cell, or village"}
 
-    # Determine planting date and current DAP
-    planting_year = today.year if season == "B" or today.month >= 9 else today.year - 1
+    # Season dates — fixed for Rwanda, no crop assumption
+    season_year = today.year if season == "B" or today.month >= 9 else today.year - 1
     if season == "A" and today.month <= 2:
-        planting_year = today.year - 1
+        season_year = today.year - 1
 
-    planting_date = _get_planting_date(crop, season, planting_year)
+    planting_date = _get_season_start(season, season_year)
     dap = (today - planting_date).days
     if dap < 0:
-        planting_year -= 1
-        planting_date = _get_planting_date(crop, season, planting_year)
+        season_year -= 1
+        planting_date = _get_season_start(season, season_year)
         dap = (today - planting_date).days
-    harvest_dap = _get_harvest_dap(crop, season)
+    harvest_dap = _get_season_duration(season)
     dap = max(0, min(dap, harvest_dap + 30))
 
-    growth_phase = _current_growth_phase(crop, dap)
+    growth_phase = _season_progress_label(dap, harvest_dap)
 
     # Get geometry and centroid for CHIRPS/WaPOR
     from src.services.admin_boundaries import lookup_admin_geometry
@@ -2131,7 +2151,7 @@ async def compute_insurance_intelligence(
     sources = []
 
     # Rainfall + SPI
-    phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, crop, today)
+    phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, harvest_dap, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
     spi = _compute_spi(season_rainfall, season, district=district)
     if chirps_daily:
@@ -2196,7 +2216,7 @@ async def compute_insurance_intelligence(
     drought_diagnostic_label = _DROUGHT_STATE_LABELS.get(drought_diagnostic, "")
 
     # --- TRIGGER EVALUATION ---
-    trigger_defs = await _load_triggers(conn, crop, season, growth_phase, district)
+    trigger_defs = await _load_triggers(conn, crop or "general", season, growth_phase, district)
 
     current_values: dict[str, Optional[float]] = {
         "rainfall_cumulative": season_rainfall,
@@ -2213,7 +2233,7 @@ async def compute_insurance_intelligence(
     confidence_score, overall_status = _compute_confidence(
         trigger_results, expected_signals=len(trigger_defs),
     )
-    recommendation = _generate_recommendation(overall_status, crop, growth_phase, trigger_results)
+    recommendation = _generate_recommendation(overall_status, growth_phase, trigger_results)
 
     # Merge with existing accuracy components if available
     accuracy_components = None
@@ -2231,29 +2251,10 @@ async def compute_insurance_intelligence(
         }
 
     # --- FORECAST OUTLOOK ---
-    logger.info(
-        "Forecast outlook input: forecast_result=%s, season_rainfall=%.1f, "
-        "planting_date=%s, harvest_dap=%d, today=%s, crop=%s",
-        type(forecast_result).__name__ if forecast_result else "None",
-        season_rainfall,
-        planting_date,
-        harvest_dap,
-        today,
-        crop,
-    )
-    if forecast_result:
-        fd = forecast_result.get("daily", [])
-        logger.info(
-            "Forecast data: %d daily entries, keys=%s, first_day_keys=%s",
-            len(fd),
-            list(forecast_result.keys())[:6],
-            list(fd[0].keys()) if fd else "empty",
-        )
     forecast_outlook = _compute_forecast_outlook(
         forecast_result, season_rainfall, planting_date, harvest_dap,
-        today, crop, season, district,
+        today, season, district,
     )
-    logger.info("Forecast outlook result: %s", forecast_outlook)
     if forecast_outlook:
         sources.append(f"Multi-model forecast ({', '.join(forecast_outlook.get('models_used', []))})")
 
@@ -2295,21 +2296,14 @@ async def compute_insurance_intelligence(
 
     formatted = format_for_audience(report, audience)
 
-    result: dict[str, Any] = {
+    return {
         "status": "ok",
         "report": formatted,
         "data": report.to_dict(),
         "audience": audience,
         "geometry": geometry,
-        "slug": f"insurance-{crop}-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
+        "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
     }
-    if _crop_was_substituted:
-        result["crop_warning"] = (
-            f"'{_original_crop}' is not in the supported crop list. "
-            f"Used maize growth phases as fallback. "
-            f"Supported crops: {', '.join(sorted(_GROWTH_PHASES.keys()))}"
-        )
-    return result
 
 
 async def compute_insurance_accuracy_safe(

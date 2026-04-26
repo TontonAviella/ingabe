@@ -5116,13 +5116,10 @@ async def process_chat_interaction_task(
                         elif function_name == "get_insurance_intelligence":
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
-                                _ins_raw_crop = tool_args.get("crop", "auto")
-                                _ins_crop = "auto" if _ins_raw_crop in ("maize", "auto") else _ins_raw_crop
-                                _ins_crop_explicit = _ins_crop != "auto"
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
-                                    crop=_ins_crop,
+                                    crop=tool_args.get("crop", ""),
                                     season=tool_args.get("season"),
                                     district=tool_args.get("district"),
                                     sector=tool_args.get("sector"),
@@ -5175,9 +5172,6 @@ async def process_chat_interaction_task(
                                         "Do NOT list every metric. Do NOT use bullet points or tables. "
                                         "End with sources in parentheses."
                                     )
-                                if not _ins_crop_explicit and tool_result.get("status") == "ok" and not _ins_compare:
-                                    _auto_crop = tool_result.get("data", {}).get("crop", "beans")
-                                    tool_result["note"] = f"The user did not specify a crop, so this report uses {_auto_crop} (the primary crop for this area). Mention this naturally — e.g. 'Here is the report for {_auto_crop}, the main crop grown here.' If the user wants a different crop, they can ask."
                                 # Save to Brain for audit trail + future retrieval (skip for comparisons)
                                 if tool_result.get("status") == "ok" and not _ins_compare:
                                     try:
@@ -5189,7 +5183,7 @@ async def process_chat_interaction_task(
                                         _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
                                         _page_input = PageInput(
                                             type="insurance_intelligence",
-                                            title=f"Insurance: {_ins_d.get('crop', '')} in {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
+                                            title=f"Insurance: {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
                                             compiled_truth=tool_result.get("_report_for_brain", ""),
                                             frontmatter={
                                                 "type": "insurance_intelligence",
