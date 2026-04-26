@@ -5117,6 +5117,7 @@ async def process_chat_interaction_task(
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
                                 _ins_crop_explicit = "crop" in tool_args
+                                _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
                                     crop=tool_args.get("crop", "maize"),
@@ -5126,8 +5127,17 @@ async def process_chat_interaction_task(
                                     cell=tool_args.get("cell"),
                                     village=tool_args.get("village"),
                                     audience=tool_args.get("audience", "agronomist"),
+                                    compare_level=_ins_compare,
                                 )
-                                if tool_result.get("status") == "ok":
+                                if tool_result.get("mode") == "comparison" and tool_result.get("status") == "ok":
+                                    tool_result["instruction"] = (
+                                        "Present the comparison naturally. Highlight which areas stand out "
+                                        "(wettest, driest, best NDVI, worst soil moisture, etc). "
+                                        "Use a short table if >3 areas, otherwise describe in sentences. "
+                                        "Mention the most interesting contrasts — don't list every number for every area. "
+                                        "End with sources in parentheses."
+                                    )
+                                elif tool_result.get("status") == "ok":
                                     tool_result["_report_for_brain"] = tool_result.pop("report", "")
                                     _ins_d = tool_result.get("data", {})
                                     _ins_triggers = _ins_d.get("triggers", [])
@@ -5163,10 +5173,10 @@ async def process_chat_interaction_task(
                                         "Do NOT list every metric. Do NOT use bullet points or tables. "
                                         "End with sources in parentheses."
                                     )
-                                if not _ins_crop_explicit and tool_result.get("status") == "ok":
+                                if not _ins_crop_explicit and tool_result.get("status") == "ok" and not _ins_compare:
                                     tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Tell the user this and ask which crop they want — common Rwanda crops: beans, rice, sorghum, cassava, potato, banana, wheat, tea, coffee."
-                                # Save to Brain for audit trail + future retrieval
-                                if tool_result.get("status") == "ok":
+                                # Save to Brain for audit trail + future retrieval (skip for comparisons)
+                                if tool_result.get("status") == "ok" and not _ins_compare:
                                     try:
                                         from src.dependencies.brain_dep import get_brain_service
                                         from src.services.brain_service import PageInput, TimelineInput

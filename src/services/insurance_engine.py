@@ -1100,7 +1100,364 @@ def _format_scientist(r: InsuranceReport) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 8. Composite orchestrator — THE MAIN ENTRY POINT
+# 8a. Multi-area comparison mode
+# ---------------------------------------------------------------------------
+
+_COMPARE_HIERARCHY = {
+    "district": {
+        "child_table": "rwanda_sector_boundaries",
+        "child_col": "sector_name",
+        "parent_col": "district_name",
+    },
+    "sector": {
+        "child_table": "rwanda_sector_boundaries",
+        "child_col": "sector_name",
+        "parent_col": "district_name",
+    },
+    "cell": {
+        "child_table": "rwanda_cell_boundaries",
+        "child_col": "cell_name",
+        "parent_col": "sector_name",
+        "grandparent_col": "district_name",
+    },
+}
+
+_COMPARE_SEMAPHORE = asyncio.Semaphore(6)
+
+
+async def _fetch_area_signals(
+    lat: float, lon: float,
+    planting_date: date,
+    today: date,
+    season: str,
+    district: Optional[str],
+) -> dict[str, Any]:
+    """Fetch all signals for a single centroid. Lightweight — no DB, no triggers."""
+    signals: dict[str, Any] = {}
+
+    async def _chirps():
+        try:
+            from src.services.forecast_fusion import _fetch_chirps_precip
+            all_dates = []
+            d = planting_date
+            while d <= today:
+                all_dates.append(d.strftime("%Y-%m-%d"))
+                d += timedelta(days=1)
+            if not all_dates:
+                return {}
+            max_dl = 30
+            if len(all_dates) > max_dl:
+                step = len(all_dates) / max_dl
+                dates = [all_dates[int(i * step)] for i in range(max_dl)]
+                if all_dates[-1] not in dates:
+                    dates[-1] = all_dates[-1]
+            else:
+                dates = all_dates
+            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates)
+        except Exception:
+            return {}
+
+    async def _wapor_et():
+        try:
+            from src.services.wapor_service import query_et
+            return await asyncio.to_thread(query_et, lat, lon, planting_date, today)
+        except Exception:
+            return None
+
+    async def _wapor_soil():
+        try:
+            from src.services.wapor_service import query_soil_moisture
+            return await asyncio.to_thread(query_soil_moisture, lat, lon, planting_date, today)
+        except Exception:
+            return None
+
+    async def _sar():
+        try:
+            return await _fetch_sar_backscatter(
+                lat, lon,
+                planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            return None
+
+    async def _weather():
+        try:
+            from src.services.forecast_fusion import _fetch_observed
+            return await asyncio.to_thread(_fetch_observed, lat, lon, 10)
+        except Exception:
+            return None
+
+    async with _COMPARE_SEMAPHORE:
+        results = await asyncio.gather(
+            _chirps(), _wapor_et(), _wapor_soil(), _sar(), _weather(),
+            return_exceptions=True,
+        )
+
+    chirps_daily = results[0] if not isinstance(results[0], BaseException) else {}
+    et_result = results[1] if not isinstance(results[1], BaseException) else None
+    soil_result = results[2] if not isinstance(results[2], BaseException) else None
+    sar_result = results[3] if not isinstance(results[3], BaseException) else None
+    weather_result = results[4] if not isinstance(results[4], BaseException) else None
+
+    # Rainfall + SPI
+    if chirps_daily:
+        season_rain = sum(v for v in chirps_daily.values() if v is not None)
+        signals["rainfall_mm"] = round(season_rain, 1)
+        signals["spi"] = round(_compute_spi(season_rain, season, district=district), 2)
+        rain_days = [v for v in chirps_daily.values() if v is not None]
+        if rain_days:
+            consecutive_dry = 0
+            max_dry = 0
+            for v in rain_days:
+                if v < 2.0:
+                    consecutive_dry += 1
+                    max_dry = max(max_dry, consecutive_dry)
+                else:
+                    consecutive_dry = 0
+            signals["max_dry_spell_days"] = max_dry
+
+    # ET anomaly
+    if et_result and isinstance(et_result, dict) and et_result.get("status") == "success":
+        series = et_result.get("time_series", [])
+        values = [s.get("value") for s in series if s.get("value") is not None]
+        if values:
+            mean_et = sum(values) / len(values)
+            signals["et_anomaly_pct"] = round(((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100, 1)
+
+    # Soil moisture
+    if soil_result and isinstance(soil_result, dict) and soil_result.get("status") == "success":
+        series = soil_result.get("time_series", [])
+        values = [s.get("value") for s in series if s.get("value") is not None]
+        if values:
+            signals["soil_moisture_pct"] = round(values[-1], 1)
+
+    # SAR backscatter
+    if isinstance(sar_result, (int, float)):
+        signals["sar_vh_vv_ratio"] = round(float(sar_result), 3)
+
+    # Weather (temperature, precipitation from recent observations)
+    if weather_result and isinstance(weather_result, dict):
+        t_max = weather_result.get("temperature_max", [])
+        t_min = weather_result.get("temperature_min", [])
+        precip = weather_result.get("precipitation_mm", [])
+        if t_max:
+            valid = [v for v in t_max if v is not None]
+            if valid:
+                signals["temperature_max_c"] = round(max(valid), 1)
+        if t_min:
+            valid = [v for v in t_min if v is not None]
+            if valid:
+                signals["temperature_min_c"] = round(min(valid), 1)
+        if t_max and t_min:
+            valid_max = [v for v in t_max if v is not None]
+            valid_min = [v for v in t_min if v is not None]
+            if valid_max and valid_min:
+                signals["temperature_mean_c"] = round(
+                    (sum(valid_max) / len(valid_max) + sum(valid_min) / len(valid_min)) / 2, 1
+                )
+        if precip:
+            valid = [v for v in precip if v is not None]
+            if valid:
+                signals["recent_precip_mm_day"] = round(sum(valid) / len(valid), 1)
+
+    return signals
+
+
+async def _compare_areas(
+    conn: asyncpg.Connection,
+    crop: str = "maize",
+    season: Optional[str] = None,
+    district: Optional[str] = None,
+    sector: Optional[str] = None,
+    cell: Optional[str] = None,
+    compare_level: str = "sector",
+    ref_date: Optional[date] = None,
+) -> dict[str, Any]:
+    """Compare all child areas at compare_level within the parent area.
+
+    Example: district=Nyamasheke, compare_level=sector → compares all sectors.
+    """
+    from src.services.dssat_service import detect_current_season
+
+    today = ref_date or date.today()
+    crop = crop.lower().strip()
+    if crop not in _GROWTH_PHASES:
+        crop = "maize"
+    if season is None:
+        season = detect_current_season(crop, datetime(today.year, today.month, today.day))
+
+    compare_level = compare_level.lower().strip()
+
+    # Discover child areas with centroids
+    if compare_level == "sector" and district:
+        rows = await conn.fetch(
+            "SELECT sector_name AS name, district_name, "
+            "round(ST_Y(ST_Centroid(geom))::numeric, 5) AS lat, "
+            "round(ST_X(ST_Centroid(geom))::numeric, 5) AS lon "
+            "FROM rwanda_sector_boundaries WHERE LOWER(district_name) = LOWER($1) "
+            "ORDER BY sector_name",
+            district,
+        )
+        parent_name = district
+        parent_level = "district"
+    elif compare_level == "cell" and (sector or district):
+        if sector:
+            rows = await conn.fetch(
+                "SELECT cell_name AS name, district_name, "
+                "round(ST_Y(ST_Centroid(geom))::numeric, 5) AS lat, "
+                "round(ST_X(ST_Centroid(geom))::numeric, 5) AS lon "
+                "FROM rwanda_cell_boundaries WHERE LOWER(sector_name) = LOWER($1) "
+                "ORDER BY cell_name",
+                sector,
+            )
+            parent_name = sector
+            parent_level = "sector"
+        else:
+            rows = await conn.fetch(
+                "SELECT cell_name AS name, district_name, "
+                "round(ST_Y(ST_Centroid(geom))::numeric, 5) AS lat, "
+                "round(ST_X(ST_Centroid(geom))::numeric, 5) AS lon "
+                "FROM rwanda_cell_boundaries WHERE LOWER(district_name) = LOWER($1) "
+                "ORDER BY cell_name",
+                district,
+            )
+            parent_name = district
+            parent_level = "district"
+    elif compare_level == "district":
+        rows = await conn.fetch(
+            "SELECT district AS name, district AS district_name, "
+            "round(ST_Y(ST_Centroid(geom))::numeric, 5) AS lat, "
+            "round(ST_X(ST_Centroid(geom))::numeric, 5) AS lon "
+            "FROM rwanda_district_boundaries ORDER BY district",
+        )
+        parent_name = "Rwanda"
+        parent_level = "country"
+    else:
+        return {
+            "status": "error",
+            "error": (
+                f"compare_level='{compare_level}' requires a parent area. "
+                "Use district= for sector comparison, sector= for cell comparison, "
+                "or compare_level='district' to compare all districts."
+            ),
+        }
+
+    if not rows:
+        return {
+            "status": "error",
+            "error": f"No {compare_level}s found in {parent_name}.",
+        }
+
+    # Resolve planting date
+    planting_year = today.year if season == "B" or today.month >= 9 else today.year - 1
+    if season == "A" and today.month <= 2:
+        planting_year = today.year - 1
+    planting_date = _get_planting_date(crop, season, planting_year)
+    dap = (today - planting_date).days
+    if dap < 0:
+        planting_year -= 1
+        planting_date = _get_planting_date(crop, season, planting_year)
+        dap = (today - planting_date).days
+    dap = max(0, min(dap, _get_harvest_dap(crop, season) + 30))
+    growth_phase = _current_growth_phase(crop, dap)
+
+    # Also get NDVI from cache (fast, already aggregated)
+    ndvi_by_area: dict[str, float] = {}
+    try:
+        if compare_level == "sector" and district:
+            ndvi_rows = await conn.fetch(
+                "SELECT cb.sector_name AS area_name, AVG(nc.mean_ndvi) AS avg_ndvi "
+                "FROM ndvi_cell_cache nc "
+                "JOIN rwanda_cell_boundaries cb ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+                "WHERE LOWER(nc.district_name) = LOWER($1) "
+                "AND nc.computed_at > NOW() - INTERVAL '30 days' "
+                "GROUP BY cb.sector_name",
+                district,
+            )
+        elif compare_level == "cell":
+            filter_col = "sector_name" if sector else "district_name"
+            filter_val = sector or district
+            ndvi_rows = await conn.fetch(
+                f"SELECT nc.cell_name AS area_name, AVG(nc.mean_ndvi) AS avg_ndvi "
+                f"FROM ndvi_cell_cache nc "
+                f"JOIN rwanda_cell_boundaries cb ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+                f"WHERE LOWER(cb.{filter_col}) = LOWER($1) "
+                f"AND nc.computed_at > NOW() - INTERVAL '30 days' "
+                f"GROUP BY nc.cell_name",
+                filter_val,
+            )
+        elif compare_level == "district":
+            ndvi_rows = await conn.fetch(
+                "SELECT nc.district_name AS area_name, AVG(nc.mean_ndvi) AS avg_ndvi "
+                "FROM ndvi_cell_cache nc "
+                "WHERE nc.computed_at > NOW() - INTERVAL '30 days' "
+                "GROUP BY nc.district_name",
+            )
+        else:
+            ndvi_rows = []
+        for nr in ndvi_rows:
+            ndvi_by_area[nr["area_name"].lower()] = round(float(nr["avg_ndvi"]), 4)
+    except Exception:
+        logger.debug("NDVI cache lookup for comparison failed", exc_info=True)
+
+    # Fetch all signals in parallel for each area
+    async def _fetch_one(row: asyncpg.Record) -> dict[str, Any]:
+        lat = float(row["lat"])
+        lon = float(row["lon"])
+        name = row["name"]
+        d_name = row["district_name"] if "district_name" in row.keys() else district
+        signals = await _fetch_area_signals(
+            lat, lon, planting_date, today, season, district=d_name,
+        )
+        # Merge cached NDVI
+        ndvi = ndvi_by_area.get(name.lower())
+        if ndvi is not None:
+            signals["ndvi"] = ndvi
+        signals["name"] = name
+        signals["lat"] = lat
+        signals["lon"] = lon
+        return signals
+
+    area_results = await asyncio.gather(
+        *[_fetch_one(r) for r in rows],
+        return_exceptions=True,
+    )
+
+    comparison = []
+    for r in area_results:
+        if isinstance(r, BaseException):
+            logger.debug("Compare area fetch failed: %s", r)
+            continue
+        comparison.append(r)
+
+    # Sort by rainfall descending (most intuitive default for "who gets more rain")
+    comparison.sort(key=lambda x: x.get("rainfall_mm", 0), reverse=True)
+
+    # Collect which signals are present across all areas
+    all_signals = set()
+    for c in comparison:
+        all_signals.update(k for k in c if k not in ("name", "lat", "lon"))
+
+    return {
+        "status": "ok",
+        "mode": "comparison",
+        "parent": parent_name,
+        "parent_level": parent_level,
+        "compare_level": compare_level,
+        "crop": crop,
+        "season": season,
+        "growth_phase": growth_phase,
+        "days_after_planting": dap,
+        "period": f"{planting_date.strftime('%Y-%m-%d')} to {today.strftime('%Y-%m-%d')}",
+        "area_count": len(comparison),
+        "signals_available": sorted(all_signals),
+        "areas": comparison,
+        "sources": "CHIRPS v2.0, WaPOR v3, Sentinel-1 SAR, Sentinel-2 NDVI, Open-Meteo/ERA5",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
 async def compute_insurance_intelligence(
@@ -1113,12 +1470,24 @@ async def compute_insurance_intelligence(
     village: Optional[str] = None,
     audience: str = "farmer",
     ref_date: Optional[date] = None,
+    compare_level: Optional[str] = None,
 ) -> dict[str, Any]:
     """One call, all signals, any audience, any admin level.
 
     Returns dict with 'status', 'report' (formatted string), 'data' (raw dict),
     and 'geometry' (GeoJSON for Brain persistence).
+
+    When compare_level is set (e.g. "sector", "cell", "district"), discovers all
+    child admin units at that level within the parent area and returns a
+    comparison table with all signals for each.
     """
+    if compare_level:
+        return await _compare_areas(
+            conn, crop=crop, season=season,
+            district=district, sector=sector, cell=cell,
+            compare_level=compare_level, ref_date=ref_date,
+        )
+
     from src.services.dssat_service import detect_current_season
 
     if not any([district, sector, cell, village]):
