@@ -1093,6 +1093,32 @@ async def process_chat_interaction_task(
                          (k not in _STRIP_NULL_FIELDS or (v is not None and v != []))}
                 openai_messages.append(m)
 
+            # Sanitize: drop orphaned tool messages whose tool_call_id
+            # doesn't appear in any preceding assistant tool_calls.
+            # Providers (DeepSeek, Bedrock, etc.) return 400 otherwise.
+            _valid_tc_ids: set[str] = set()
+            _sanitized: list = []
+            for _m in openai_messages:
+                if not isinstance(_m, dict):
+                    _sanitized.append(_m)
+                    continue
+                _role = _m.get("role")
+                if _role == "assistant":
+                    for _tc in (_m.get("tool_calls") or []):
+                        _tc_id = _tc.get("id") if isinstance(_tc, dict) else getattr(_tc, "id", None)
+                        if _tc_id:
+                            _valid_tc_ids.add(_tc_id)
+                    _sanitized.append(_m)
+                elif _role == "tool":
+                    _tc_ref = _m.get("tool_call_id")
+                    if _tc_ref and _tc_ref not in _valid_tc_ids:
+                        logger.debug("Dropping orphaned tool message for tool_call_id=%s", _tc_ref)
+                        continue
+                    _sanitized.append(_m)
+                else:
+                    _sanitized.append(_m)
+            openai_messages = _sanitized
+
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
                     unattached_layers = await ul_conn.fetch(
