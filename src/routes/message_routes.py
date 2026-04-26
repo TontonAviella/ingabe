@@ -5129,13 +5129,39 @@ async def process_chat_interaction_task(
                                 )
                                 if tool_result.get("status") == "ok":
                                     tool_result["_report_for_brain"] = tool_result.pop("report", "")
+                                    _ins_d = tool_result.get("data", {})
+                                    _ins_triggers = _ins_d.get("triggers", [])
+                                    _fired = [t for t in _ins_triggers if t.get("triggered")]
+                                    _fired_summary = ", ".join(
+                                        f"{t['signal']} ({t['current_value']} vs threshold {t['threshold']})"
+                                        for t in _fired
+                                    ) if _fired else "none"
+                                    _headline = (
+                                        f"{_ins_d.get('location', '?')} — {_ins_d.get('crop', '?')} Season {_ins_d.get('season', '?')}, "
+                                        f"{_ins_d.get('growth_phase', '?')} phase (day {_ins_d.get('days_after_planting', '?')}). "
+                                        f"Status: {_ins_d.get('overall_status', '?')} | Confidence: {_ins_d.get('confidence_score', '?')}/100"
+                                    )
+                                    _key_numbers = (
+                                        f"Rain: {_ins_d.get('season_rainfall_mm', '?')}mm total, SPI {_ins_d.get('spi', '?')}. "
+                                        f"Longest dry spell: {_ins_d.get('max_dry_spell_days', '?')} days. "
+                                        f"NDVI z-score: {_ins_d.get('ndvi_z_score', 'n/a')}. "
+                                        f"ET anomaly: {_ins_d.get('et_anomaly_pct', 'n/a')}%. "
+                                        f"Soil moisture: {_ins_d.get('soil_moisture_pct', 'n/a')}%."
+                                    )
+                                    tool_result["summary"] = _headline
+                                    tool_result["key_numbers"] = _key_numbers
+                                    tool_result["triggers_fired"] = _fired_summary
+                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)}"
+                                    tool_result["recommendation"] = _ins_d.get("recommendation", "")
+                                    tool_result["sources"] = _ins_d.get("sources", [])
+                                    tool_result["period"] = f"{_ins_d.get('period_start', '')} to {_ins_d.get('period_end', '')}"
+                                    del tool_result["data"]
                                     tool_result["instruction"] = (
-                                        "Write a natural, conversational response using the data below. "
-                                        "Do NOT use a fixed template or bullet list. Vary your structure "
-                                        "based on what's interesting: lead with the most notable finding "
-                                        "(a triggered alert, unusual drought, healthy conditions, etc). "
-                                        "Weave in numbers naturally — don't list every metric. "
-                                        "Mention data sources briefly at the end."
+                                        "Respond like a knowledgeable colleague in 2-4 sentences. "
+                                        "Lead with what's most notable (a trigger firing, drought stress, or healthy conditions). "
+                                        "Mention only 2-3 numbers that matter most — skip the rest. "
+                                        "Do NOT list every metric. Do NOT use bullet points or tables. "
+                                        "End with sources in parentheses."
                                     )
                                 if not _ins_crop_explicit and tool_result.get("status") == "ok":
                                     tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Tell the user this and ask which crop they want — common Rwanda crops: beans, rice, sorghum, cassava, potato, banana, wheat, tea, coffee."
@@ -5146,21 +5172,20 @@ async def process_chat_interaction_task(
                                         from src.services.brain_service import PageInput, TimelineInput
                                         _ins_brain = get_brain_service()
                                         _ins_slug = tool_result.get("slug", "insurance-report").lower()
-                                        _ins_data = tool_result.get("data", {})
                                         _ins_geom = tool_result.get("geometry")
                                         _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
                                         _page_input = PageInput(
                                             type="insurance_intelligence",
-                                            title=f"Insurance: {_ins_data.get('crop', '')} in {_ins_data.get('location', '')} Season {_ins_data.get('season', '')}",
+                                            title=f"Insurance: {_ins_d.get('crop', '')} in {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
                                             compiled_truth=tool_result.get("_report_for_brain", ""),
                                             frontmatter={
                                                 "type": "insurance_intelligence",
-                                                "crop": _ins_data.get("crop"),
-                                                "season": _ins_data.get("season"),
-                                                "location": _ins_data.get("location"),
-                                                "admin_level": _ins_data.get("admin_level"),
-                                                "confidence_score": _ins_data.get("confidence_score"),
-                                                "overall_status": _ins_data.get("overall_status"),
+                                                "crop": _ins_d.get("crop"),
+                                                "season": _ins_d.get("season"),
+                                                "location": _ins_d.get("location"),
+                                                "admin_level": _ins_d.get("admin_level"),
+                                                "confidence_score": _ins_d.get("confidence_score"),
+                                                "overall_status": _ins_d.get("overall_status"),
                                             },
                                             geom_geojson=_ins_geom_str,
                                         )
@@ -5172,14 +5197,14 @@ async def process_chat_interaction_task(
                                         _tl_input = TimelineInput(
                                             date=_date_cls.today(),
                                             summary=(
-                                                f"{_ins_data.get('overall_status', 'UNKNOWN')}: "
-                                                f"{_ins_data.get('crop', '')} in {_ins_data.get('location', '')} "
-                                                f"Season {_ins_data.get('season', '')} — "
-                                                f"confidence {_ins_data.get('confidence_score', 0)}/100, "
-                                                f"{_ins_data.get('triggers_activated', 0)}/{_ins_data.get('triggers_total', 0)} triggers"
+                                                f"{_ins_d.get('overall_status', 'UNKNOWN')}: "
+                                                f"{_ins_d.get('crop', '')} in {_ins_d.get('location', '')} "
+                                                f"Season {_ins_d.get('season', '')} — "
+                                                f"confidence {_ins_d.get('confidence_score', 0)}/100, "
+                                                f"{_ins_d.get('triggers_activated', 0)}/{_ins_d.get('triggers_total', 0)} triggers"
                                             ),
                                             source="insurance_engine",
-                                            detail=json.dumps(_ins_data, default=str),
+                                            detail=json.dumps(_ins_d, default=str),
                                         )
                                         await _ins_brain.add_timeline_entry(
                                             conn, _ins_slug, _tl_input,
