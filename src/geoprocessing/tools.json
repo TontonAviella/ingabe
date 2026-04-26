@@ -766,7 +766,7 @@
     "type": "function",
     "function": {
       "name": "get_crop_classifications",
-      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use when the user asks about crop types, land use, or classification maps. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
+      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report — use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -1280,7 +1280,7 @@
     "type": "function",
     "function": {
       "name": "get_insurance_intelligence",
-      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, growth phase, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
+      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Also use this tool when the user asks about OTHER CROPS or says 'what about beans/rice/etc' after a previous situation report — just call it again with a different crop parameter. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, growth phase, and parametric trigger thresholds into one unified report. Supports 50+ crops (change the crop parameter). Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
       "strict": false,
       "parameters": {
         "type": "object",
