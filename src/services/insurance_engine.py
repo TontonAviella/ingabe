@@ -629,6 +629,8 @@ class InsuranceReport:
 
     accuracy_components: Optional[dict] = None
 
+    forecast_outlook: Optional[dict] = None
+
     sources: list[str] = field(default_factory=list)
     period_start: str = ""
     period_end: str = ""
@@ -673,6 +675,7 @@ class InsuranceReport:
             "overall_status": self.overall_status,
             "recommendation": self.recommendation,
             "accuracy_components": self.accuracy_components,
+            "forecast_outlook": self.forecast_outlook,
             "sources": self.sources,
             "period_start": self.period_start,
             "period_end": self.period_end,
@@ -1079,6 +1082,147 @@ def _default_triggers(phase: str) -> list[dict]:
     return triggers
 
 
+def _compute_forecast_outlook(
+    forecast_data: Optional[dict],
+    season_rainfall_so_far: float,
+    planting_date: "date",
+    harvest_dap: int,
+    today: "date",
+    crop: str,
+    season: str,
+    district: Optional[str] = None,
+) -> Optional[dict]:
+    """Project rainfall triggers forward using bias-corrected multi-model forecasts.
+
+    Takes the bias-corrected consensus forecast (ECMWF IFS + GFS + ICON + GraphCast)
+    and projects cumulative rainfall to harvest. Returns probability assessment of
+    whether rainfall triggers will fire.
+    """
+    if not forecast_data or not forecast_data.get("daily"):
+        return None
+
+    forecast_daily = forecast_data["daily"]
+    days_remaining = max(0, harvest_dap - (today - planting_date).days)
+    if days_remaining == 0:
+        return None
+
+    # Sum forecast precipitation (bias-corrected consensus mean)
+    forecast_precip_days = []
+    for day in forecast_daily:
+        precip = day.get("precipitation_mm", {})
+        if isinstance(precip, dict) and "mean" in precip:
+            forecast_precip_days.append({
+                "date": day["date"],
+                "mean": precip["mean"],
+                "p10": precip.get("p10", precip["mean"]),
+                "p90": precip.get("p90", precip["mean"]),
+                "models": precip.get("models", {}),
+                "n_models": precip.get("n_models", 1),
+            })
+
+    if not forecast_precip_days:
+        return None
+
+    forecast_days_available = len(forecast_precip_days)
+    forecast_total_mean = sum(d["mean"] for d in forecast_precip_days)
+    forecast_total_p10 = sum(d["p10"] for d in forecast_precip_days)
+    forecast_total_p90 = sum(d["p90"] for d in forecast_precip_days)
+
+    # Project to harvest: scale forecast if it doesn't cover remaining days
+    if forecast_days_available < days_remaining:
+        daily_avg_mean = forecast_total_mean / forecast_days_available
+        daily_avg_p10 = forecast_total_p10 / forecast_days_available
+        daily_avg_p90 = forecast_total_p90 / forecast_days_available
+        projected_mean = daily_avg_mean * days_remaining
+        projected_p10 = daily_avg_p10 * days_remaining
+        projected_p90 = daily_avg_p90 * days_remaining
+        projection_method = f"{forecast_days_available}-day forecast extrapolated to {days_remaining} days"
+    else:
+        # Forecast covers remaining season — sum only needed days
+        projected_mean = sum(d["mean"] for d in forecast_precip_days[:days_remaining])
+        projected_p10 = sum(d["p10"] for d in forecast_precip_days[:days_remaining])
+        projected_p90 = sum(d["p90"] for d in forecast_precip_days[:days_remaining])
+        projection_method = f"{days_remaining}-day forecast (full coverage)"
+
+    # Projected season totals at harvest
+    projected_season_mean = season_rainfall_so_far + projected_mean
+    projected_season_p10 = season_rainfall_so_far + projected_p10
+    projected_season_p90 = season_rainfall_so_far + projected_p90
+
+    # Season minimum rainfall thresholds (mm) — based on crop water requirements
+    # for Rwanda's bimodal seasons. These are conservative (parametric insurance
+    # typically triggers at 60-70% of crop water need).
+    _SEASON_RAIN_THRESHOLDS = {
+        "maize": 300, "rice": 400, "beans": 200, "sorghum": 280,
+        "potato": 250, "sweet_potato": 300, "cassava": 350,
+        "soybean": 280, "groundnut": 280, "wheat": 250,
+    }
+    rainfall_threshold = float(_SEASON_RAIN_THRESHOLDS.get(crop, 300))
+
+    # Estimate trigger probability from p10/p90 spread
+    # If p10 (pessimistic) is below threshold → high probability of trigger
+    # If p90 (optimistic) is below threshold → near-certain trigger
+    # If mean is above threshold → low probability
+    if projected_season_p90 < rainfall_threshold:
+        trigger_probability = 0.90
+        trigger_risk = "VERY HIGH"
+    elif projected_season_mean < rainfall_threshold:
+        # Mean below but p90 above — moderate-high probability
+        spread = projected_season_p90 - projected_season_p10
+        if spread > 0:
+            fraction_below = (rainfall_threshold - projected_season_p10) / spread
+            trigger_probability = max(0.1, min(0.9, 1.0 - fraction_below))
+        else:
+            trigger_probability = 0.70
+        trigger_risk = "HIGH" if trigger_probability > 0.5 else "MODERATE"
+    elif projected_season_p10 < rainfall_threshold:
+        spread = projected_season_p90 - projected_season_p10
+        if spread > 0:
+            fraction_below = (rainfall_threshold - projected_season_p10) / spread
+            trigger_probability = max(0.05, min(0.5, 1.0 - fraction_below))
+        else:
+            trigger_probability = 0.25
+        trigger_risk = "MODERATE" if trigger_probability > 0.25 else "LOW"
+    else:
+        trigger_probability = 0.05
+        trigger_risk = "LOW"
+
+    # Model agreement — confidence in forecast
+    model_agreement = "HIGH"
+    spreads = [d.get("p90", 0) - d.get("p10", 0) for d in forecast_precip_days]
+    avg_spread = sum(spreads) / len(spreads) if spreads else 0
+    means = [d["mean"] for d in forecast_precip_days]
+    avg_mean = sum(means) / len(means) if means else 1
+    if avg_mean > 0.5 and avg_spread / avg_mean > 0.8:
+        model_agreement = "LOW"
+    elif avg_mean > 0.5 and avg_spread / avg_mean > 0.4:
+        model_agreement = "MODERATE"
+
+    bias_corrected = forecast_data.get("bias_correction", {}).get("applied", False)
+    terrain_corrected = forecast_data.get("terrain_correction", {}).get("applied", False)
+
+    models_used = forecast_data.get("models_used", [])
+
+    return {
+        "days_remaining": days_remaining,
+        "forecast_days_available": forecast_days_available,
+        "projection_method": projection_method,
+        "forecast_precip_mm": round(projected_mean, 1),
+        "forecast_precip_p10_mm": round(projected_p10, 1),
+        "forecast_precip_p90_mm": round(projected_p90, 1),
+        "projected_season_total_mm": round(projected_season_mean, 1),
+        "projected_season_p10_mm": round(projected_season_p10, 1),
+        "projected_season_p90_mm": round(projected_season_p90, 1),
+        "rainfall_trigger_threshold_mm": rainfall_threshold,
+        "rainfall_trigger_probability": round(trigger_probability, 2),
+        "rainfall_trigger_risk": trigger_risk,
+        "model_agreement": model_agreement,
+        "models_used": models_used,
+        "bias_corrected": bias_corrected,
+        "terrain_corrected": terrain_corrected,
+    }
+
+
 def _evaluate_triggers(
     trigger_defs: list[dict],
     current_values: dict[str, Optional[float]],
@@ -1233,6 +1377,18 @@ def _format_farmer(r: InsuranceReport) -> str:
     else:
         lines.append(f"{len(activated)} trigger(s) activated — contact your insurance agent.")
 
+    if r.forecast_outlook:
+        fo = r.forecast_outlook
+        risk = fo["rainfall_trigger_risk"]
+        prob = int(fo["rainfall_trigger_probability"] * 100)
+        projected = fo["projected_season_total_mm"]
+        if risk in ("HIGH", "VERY HIGH"):
+            lines.append(f"Forecast: {prob}% chance of drought trigger by harvest ({projected:.0f}mm projected)")
+        elif risk == "MODERATE":
+            lines.append(f"Forecast: rain outlook moderate — {projected:.0f}mm projected by harvest")
+        else:
+            lines.append(f"Forecast: rain on track — {projected:.0f}mm projected by harvest")
+
     lines.append(f"Growth stage: {r.growth_phase} (day {r.days_after_planting})")
     return "\n".join(lines)
 
@@ -1273,7 +1429,25 @@ def _format_insurance(r: InsuranceReport) -> str:
     sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
     phase_info = f"Phase: {r.growth_phase} (day {r.days_after_planting} of {_get_harvest_dap(r.crop, r.season)})"
 
-    return f"{header}\n{status_line}\n\n{table}\n\n{phase_info}\nSources: {sources}"
+    sections = [header, status_line, "", table, ""]
+
+    if r.forecast_outlook:
+        fo = r.forecast_outlook
+        sections.append("FORECAST OUTLOOK (bias-corrected multi-model):")
+        sections.append(f"  Projected season total: {fo['projected_season_total_mm']:.0f}mm "
+                        f"(range {fo['projected_season_p10_mm']:.0f}–{fo['projected_season_p90_mm']:.0f}mm)")
+        sections.append(f"  Rainfall trigger threshold: {fo['rainfall_trigger_threshold_mm']:.0f}mm")
+        sections.append(f"  Trigger probability: {int(fo['rainfall_trigger_probability'] * 100)}% — {fo['rainfall_trigger_risk']}")
+        sections.append(f"  Model agreement: {fo['model_agreement']} | "
+                        f"Bias-corrected: {'yes' if fo['bias_corrected'] else 'no'} | "
+                        f"Terrain-corrected: {'yes' if fo['terrain_corrected'] else 'no'}")
+        sections.append(f"  Method: {fo['projection_method']}")
+        sections.append("")
+
+    sections.append(phase_info)
+    sections.append(f"Sources: {sources}")
+
+    return "\n".join(sections)
 
 
 def _format_agronomist(r: InsuranceReport) -> str:
@@ -1311,6 +1485,18 @@ def _format_agronomist(r: InsuranceReport) -> str:
         lines.append(f"  Soil moisture: {r.soil_moisture_pct:.1f}%")
     if r.drought_diagnostic and r.drought_diagnostic != "insufficient_data":
         lines.append(f"  Drought diagnostic: {r.drought_diagnostic_label}")
+
+    if r.forecast_outlook:
+        fo = r.forecast_outlook
+        lines.append("")
+        lines.append("FORECAST:")
+        lines.append(f"  {fo['days_remaining']} days to harvest, {fo['forecast_days_available']}-day model forecast available")
+        lines.append(f"  Projected season total: {fo['projected_season_total_mm']:.0f}mm "
+                     f"(p10={fo['projected_season_p10_mm']:.0f}, p90={fo['projected_season_p90_mm']:.0f})")
+        lines.append(f"  Rainfall trigger risk: {fo['rainfall_trigger_risk']} "
+                     f"({int(fo['rainfall_trigger_probability'] * 100)}% probability)")
+        if fo.get("bias_corrected"):
+            lines.append("  Forecast is bias-corrected against CHIRPS/ERA5 observations")
 
     lines.append("")
     lines.append(f"STATUS: {r.overall_status} (confidence {r.confidence_score}/100)")
@@ -1876,6 +2062,20 @@ async def compute_insurance_intelligence(
             logger.debug("wapor soil moisture fetch failed", exc_info=True)
             return None
 
+    async def fetch_forecast():
+        try:
+            from src.services.forecast_openmeteo import fetch_openmeteo_multimodel
+            days_left = max(0, harvest_dap - dap)
+            forecast_days = min(days_left, 16)
+            if forecast_days < 1:
+                return None
+            return await asyncio.to_thread(
+                fetch_openmeteo_multimodel, lat, lon, forecast_days,
+            )
+        except Exception:
+            logger.debug("forecast fetch failed", exc_info=True)
+            return None
+
     # Network-only fetches: safe to parallelize (return_exceptions prevents
     # one failure from cancelling the others)
     network_results = await asyncio.gather(
@@ -1883,12 +2083,14 @@ async def compute_insurance_intelligence(
         fetch_chirps(),
         fetch_wapor_et(),
         fetch_wapor_soil(),
+        fetch_forecast(),
         return_exceptions=True,
     )
     sar_result = network_results[0] if not isinstance(network_results[0], BaseException) else None
     chirps_daily = network_results[1] if not isinstance(network_results[1], BaseException) else {}
     et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
     soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
+    forecast_result = network_results[4] if not isinstance(network_results[4], BaseException) else None
 
     # DB-dependent fetches: sequential on the shared connection
     try:
@@ -2028,6 +2230,14 @@ async def compute_insurance_intelligence(
             "csi": binary.get("csi"),
         }
 
+    # --- FORECAST OUTLOOK ---
+    forecast_outlook = _compute_forecast_outlook(
+        forecast_result, season_rainfall, planting_date, harvest_dap,
+        today, crop, season, district,
+    )
+    if forecast_outlook:
+        sources.append(f"Multi-model forecast ({', '.join(forecast_outlook.get('models_used', []))})")
+
     # --- BUILD REPORT ---
     report = InsuranceReport(
         location_name=location_name,
@@ -2056,6 +2266,7 @@ async def compute_insurance_intelligence(
         overall_status=overall_status,
         recommendation=recommendation,
         accuracy_components=accuracy_components,
+        forecast_outlook=forecast_outlook,
         sources=sources,
         period_start=planting_date.strftime("%Y-%m-%d"),
         period_end=today.strftime("%Y-%m-%d"),
