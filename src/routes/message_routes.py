@@ -1358,12 +1358,12 @@ async def process_chat_interaction_task(
             ))
             _DESIRED_OUTPUT_TOKENS = 4096
             _TOOLS_TOKEN_ESTIMATE = (
-                len(json.dumps(tools_payload)) // 4
+                len(json.dumps(tools_payload)) // 3
                 if tools_payload else 0
             )
 
             def _estimate_tokens_for_messages(msgs: list) -> int:
-                return sum(len(json.dumps(m)) // 4 for m in msgs)
+                return sum(len(json.dumps(m)) // 3 for m in msgs)
 
             _total_est = (
                 _estimate_tokens_for_messages(_llm_messages)
@@ -1371,10 +1371,13 @@ async def process_chat_interaction_task(
                 + _DESIRED_OUTPUT_TOKENS
             )
             if _total_est > _MODEL_CONTEXT_LIMIT and len(_llm_messages) > 3:
-                _budget = (
-                    _MODEL_CONTEXT_LIMIT
-                    - _TOOLS_TOKEN_ESTIMATE
-                    - _DESIRED_OUTPUT_TOKENS
+                _budget = int(
+                    (
+                        _MODEL_CONTEXT_LIMIT
+                        - _TOOLS_TOKEN_ESTIMATE
+                        - _DESIRED_OUTPUT_TOKENS
+                    )
+                    * 0.90
                 )
                 # Keep system prompt (index 0) always. Trim oldest conversation
                 # messages (index 1..N-1), preserving the most recent ones.
@@ -1384,7 +1387,7 @@ async def process_chat_interaction_task(
                 _kept_tokens = _estimate_tokens_for_messages(_system)
                 # Walk from most recent backward
                 for msg in reversed(_history):
-                    msg_tokens = len(json.dumps(msg)) // 4
+                    msg_tokens = len(json.dumps(msg)) // 3
                     if _kept_tokens + msg_tokens > _budget:
                         break
                     _kept.insert(0, msg)
@@ -5132,7 +5135,7 @@ async def process_chat_interaction_task(
                                         from src.dependencies.brain_dep import get_brain_service
                                         from src.services.brain_service import PageInput, TimelineInput
                                         _ins_brain = get_brain_service()
-                                        _ins_slug = tool_result.get("slug", "insurance-report")
+                                        _ins_slug = tool_result.get("slug", "insurance-report").lower()
                                         _ins_data = tool_result.get("data", {})
                                         _ins_geom = tool_result.get("geometry")
                                         _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
