@@ -76,6 +76,30 @@ _CORRECTABLE_VARS = {
 }
 
 
+def _fetch_chirps_one(
+    lat: float, lon: float, date_str: str,
+) -> tuple[str, Optional[float]]:
+    """Fetch a single CHIRPS daily GeoTIFF and extract the pixel value."""
+    import rasterio  # type: ignore[import-untyped]
+
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    fname = f"chirps-v2.0.{dt.strftime('%Y.%m.%d')}.tif.gz"
+    url = f"{_CHIRPS_BASE}/{dt.year}/{fname}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            gz_bytes = resp.read()
+        tif_bytes = gzip.decompress(gz_bytes)
+        with rasterio.open(io.BytesIO(tif_bytes)) as src:
+            row, col = src.index(lon, lat)
+            val = float(src.read(1)[row, col])
+            if val < -9000:
+                return date_str, None
+            return date_str, round(max(0.0, val), 1)
+    except Exception:
+        return date_str, None
+
+
 def _fetch_chirps_precip(
     lat: float, lon: float, dates: List[str],
 ) -> Dict[str, Optional[float]]:
@@ -84,40 +108,22 @@ def _fetch_chirps_precip(
     Downloads gzipped Africa-wide GeoTIFFs (~800KB each), extracts the
     single pixel value at (lat, lon).  Returns {date_str: mm_value}.
 
-    CHIRPS has ~3 week lag so recent dates may 404 — caller handles gaps.
+    Uses a thread pool (10 workers) so 90 days completes in ~12s instead of ~120s.
     """
     try:
-        import rasterio  # type: ignore[import-untyped]
+        import rasterio  # type: ignore[import-untyped]  # noqa: F401
     except ImportError:
         logger.info("rasterio not available — skipping CHIRPS")
         return {}
 
+    from concurrent.futures import ThreadPoolExecutor
+
     result: Dict[str, Optional[float]] = {}
-    for date_str in dates:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        fname = f"chirps-v2.0.{dt.strftime('%Y.%m.%d')}.tif.gz"
-        url = f"{_CHIRPS_BASE}/{dt.year}/{fname}"
-
-        try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "mundi.ai/1.0"}
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                gz_bytes = resp.read()
-
-            tif_bytes = gzip.decompress(gz_bytes)
-
-            with rasterio.open(io.BytesIO(tif_bytes)) as src:
-                row, col = src.index(lon, lat)
-                val = float(src.read(1)[row, col])
-                # CHIRPS nodata is -9999
-                if val < -9000:
-                    result[date_str] = None
-                else:
-                    result[date_str] = round(max(0.0, val), 1)
-        except Exception:
-            # 404 for recent dates or network error — skip silently
-            result[date_str] = None
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(_fetch_chirps_one, lat, lon, d) for d in dates]
+        for f in futures:
+            date_str, val = f.result()
+            result[date_str] = val
 
     fetched = sum(1 for v in result.values() if v is not None)
     if fetched:

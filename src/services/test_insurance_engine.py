@@ -1103,14 +1103,14 @@ class TestComputeInsuranceIntelligence:
         assert result["status"] == "ok"
         assert result["geometry"] is not None
 
-    def test_unknown_crop_defaults_to_maize(self):
+    def test_unknown_crop_defaults_to_district_primary(self):
         conn = self._mock_conn()
         with self._patches():
             result = _run(compute_insurance_intelligence(
                 conn, crop="quinoa", district="Musanze", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
-        assert result["data"]["crop"] == "maize"
+        assert result["data"]["crop"] == "potato"
 
     def test_audience_parameter_forwarded(self):
         conn = self._mock_conn()
