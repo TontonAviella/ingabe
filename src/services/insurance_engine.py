@@ -2231,10 +2231,29 @@ async def compute_insurance_intelligence(
         }
 
     # --- FORECAST OUTLOOK ---
+    logger.info(
+        "Forecast outlook input: forecast_result=%s, season_rainfall=%.1f, "
+        "planting_date=%s, harvest_dap=%d, today=%s, crop=%s",
+        type(forecast_result).__name__ if forecast_result else "None",
+        season_rainfall,
+        planting_date,
+        harvest_dap,
+        today,
+        crop,
+    )
+    if forecast_result:
+        fd = forecast_result.get("daily", [])
+        logger.info(
+            "Forecast data: %d daily entries, keys=%s, first_day_keys=%s",
+            len(fd),
+            list(forecast_result.keys())[:6],
+            list(fd[0].keys()) if fd else "empty",
+        )
     forecast_outlook = _compute_forecast_outlook(
         forecast_result, season_rainfall, planting_date, harvest_dap,
         today, crop, season, district,
     )
+    logger.info("Forecast outlook result: %s", forecast_outlook)
     if forecast_outlook:
         sources.append(f"Multi-model forecast ({', '.join(forecast_outlook.get('models_used', []))})")
 
