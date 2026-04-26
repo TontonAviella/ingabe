@@ -5118,6 +5118,7 @@ async def process_chat_interaction_task(
                         elif function_name == "get_insurance_intelligence":
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
+                                _ins_crop_explicit = "crop" in tool_args
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
                                     crop=tool_args.get("crop", "maize"),
@@ -5128,6 +5129,8 @@ async def process_chat_interaction_task(
                                     village=tool_args.get("village"),
                                     audience=tool_args.get("audience", "farmer"),
                                 )
+                                if not _ins_crop_explicit and tool_result.get("status") == "ok":
+                                    tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Mention this to the user and offer to run the report for other crops (beans, rice, sorghum, etc)."
                                 # Save to Brain for audit trail + future retrieval
                                 if tool_result.get("status") == "ok":
                                     try:
