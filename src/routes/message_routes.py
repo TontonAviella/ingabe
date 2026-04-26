@@ -1580,7 +1580,18 @@ async def process_chat_interaction_task(
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning("Malformed tool arguments for %s: %s", function_name, e)
+                        await add_chat_completion_message(
+                            ChatCompletionToolMessageParam(
+                                role="tool",
+                                tool_call_id=tool_call.id,
+                                content=json.dumps({"status": "error", "error": f"Invalid JSON arguments: {e}"}),
+                            ),
+                        )
+                        continue
                     tool_result = {}
 
                     if function_name in pydantic_tool_calls:
@@ -5953,7 +5964,15 @@ async def process_chat_interaction_task(
                                 ),
                             )
                         else:
-                            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+                            logger.warning("Unknown tool name: %s", function_name)
+                            tool_result = {"status": "error", "error": f"Unknown tool: {function_name}"}
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result),
+                                ),
+                            )
 
             # Track consecutive rounds where tool calls returned errors.
             # This prevents the LLM from retrying the same failing tool in a
