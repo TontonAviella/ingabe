@@ -1093,28 +1093,49 @@ async def process_chat_interaction_task(
                          (k not in _STRIP_NULL_FIELDS or (v is not None and v != []))}
                 openai_messages.append(m)
 
-            # Sanitize: drop orphaned tool messages whose tool_call_id
-            # doesn't appear in any preceding assistant tool_calls.
-            # Providers (DeepSeek, Bedrock, etc.) return 400 otherwise.
-            _valid_tc_ids: set[str] = set()
+            # Sanitize tool call / tool result pairing.
+            # Providers (Bedrock, DeepSeek, etc.) return 400 if:
+            #   - a tool message references a tool_call_id with no preceding assistant tool_call
+            #   - an assistant message has tool_calls with no corresponding tool results
+            # Two-pass fix: collect what exists, then strip orphans from both sides.
+            _tool_result_ids: set[str] = set()
+            _tool_call_ids: set[str] = set()
+            for _m in openai_messages:
+                if not isinstance(_m, dict):
+                    continue
+                if _m.get("role") == "assistant":
+                    for _tc in (_m.get("tool_calls") or []):
+                        _tc_id = _tc.get("id") if isinstance(_tc, dict) else getattr(_tc, "id", None)
+                        if _tc_id:
+                            _tool_call_ids.add(_tc_id)
+                elif _m.get("role") == "tool":
+                    _tc_ref = _m.get("tool_call_id")
+                    if _tc_ref:
+                        _tool_result_ids.add(_tc_ref)
+
             _sanitized: list = []
             for _m in openai_messages:
                 if not isinstance(_m, dict):
                     _sanitized.append(_m)
                     continue
                 _role = _m.get("role")
-                if _role == "assistant":
-                    for _tc in (_m.get("tool_calls") or []):
-                        _tc_id = _tc.get("id") if isinstance(_tc, dict) else getattr(_tc, "id", None)
-                        if _tc_id:
-                            _valid_tc_ids.add(_tc_id)
-                    _sanitized.append(_m)
-                elif _role == "tool":
-                    _tc_ref = _m.get("tool_call_id")
-                    if _tc_ref and _tc_ref not in _valid_tc_ids:
-                        logger.debug("Dropping orphaned tool message for tool_call_id=%s", _tc_ref)
+                if _role == "tool":
+                    if _m.get("tool_call_id") not in _tool_call_ids:
+                        logger.debug("Dropping orphaned tool result for tool_call_id=%s", _m.get("tool_call_id"))
                         continue
                     _sanitized.append(_m)
+                elif _role == "assistant" and _m.get("tool_calls"):
+                    _kept = [tc for tc in _m["tool_calls"]
+                             if (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) in _tool_result_ids]
+                    if _kept:
+                        _m = {**_m, "tool_calls": _kept}
+                        _sanitized.append(_m)
+                    else:
+                        _stripped = {k: v for k, v in _m.items() if k != "tool_calls"}
+                        if _stripped.get("content"):
+                            _sanitized.append(_stripped)
+                        else:
+                            logger.debug("Dropping assistant message with orphaned tool_calls (no results exist)")
                 else:
                     _sanitized.append(_m)
             openai_messages = _sanitized
