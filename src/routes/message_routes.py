@@ -1350,13 +1350,14 @@ async def process_chat_interaction_task(
             ] + openai_messages
 
             # --- Context window overflow protection ---
-            # Estimate tokens and truncate history to fit within model context.
-            # Nemotron 3 Super 120B = 262144, but respect any model. Default
-            # conservatively to 128K if unknown.
+            # chars/3 underestimates real token counts by ~1.5x for JSON-heavy
+            # content (verified: Nvidia counted 258049 vs our estimate 172246).
+            # Divide total space by 1.6 so even a 1.6x underestimate fits.
             _MODEL_CONTEXT_LIMIT = int(os.environ.get(
                 "LLM_CONTEXT_LIMIT", "131072"
             ))
             _DESIRED_OUTPUT_TOKENS = 4096
+            _UNDERESTIMATE_FACTOR = 1.6
             _TOOLS_TOKEN_ESTIMATE = (
                 len(json.dumps(tools_payload)) // 3
                 if tools_payload else 0
@@ -1365,50 +1366,48 @@ async def process_chat_interaction_task(
             def _estimate_tokens_for_messages(msgs: list) -> int:
                 return sum(len(json.dumps(m)) // 3 for m in msgs)
 
-            _total_est = (
-                _estimate_tokens_for_messages(_llm_messages)
-                + _TOOLS_TOKEN_ESTIMATE
-                + _DESIRED_OUTPUT_TOKENS
+            # Max estimated input (msgs+tools) that won't overflow when
+            # real tokens are up to 1.6x our estimate:
+            #   real_input = est_input * 1.6
+            #   real_input + output <= limit
+            #   est_input <= (limit - output) / 1.6
+            _max_estimated_input = int(
+                (_MODEL_CONTEXT_LIMIT - _DESIRED_OUTPUT_TOKENS) / _UNDERESTIMATE_FACTOR
             )
-            if _total_est > _MODEL_CONTEXT_LIMIT and len(_llm_messages) > 3:
-                _budget = int(
-                    (
-                        _MODEL_CONTEXT_LIMIT
-                        - _TOOLS_TOKEN_ESTIMATE
-                        - _DESIRED_OUTPUT_TOKENS
-                    )
-                    * 0.90
-                )
-                # Keep system prompt (index 0) always. Trim oldest conversation
-                # messages (index 1..N-1), preserving the most recent ones.
-                _system = _llm_messages[:1]
-                _history = _llm_messages[1:]
-                _kept: list = []
-                _kept_tokens = _estimate_tokens_for_messages(_system)
-                # Walk from most recent backward
-                for msg in reversed(_history):
-                    msg_tokens = len(json.dumps(msg)) // 3
-                    if _kept_tokens + msg_tokens > _budget:
-                        break
-                    _kept.insert(0, msg)
-                    _kept_tokens += msg_tokens
-                if _kept:
-                    _llm_messages = _system + _kept
+            _budget = _max_estimated_input - _TOOLS_TOKEN_ESTIMATE
+            _system = _llm_messages[:1]
+            _history = _llm_messages[1:]
+            _kept: list = []
+            _kept_tokens = _estimate_tokens_for_messages(_system)
+            for msg in reversed(_history):
+                msg_tokens = len(json.dumps(msg)) // 3
+                if _kept_tokens + msg_tokens > _budget:
+                    break
+                _kept.insert(0, msg)
+                _kept_tokens += msg_tokens
+            if len(_kept) < len(_history):
+                _llm_messages = _system + _kept if _kept else _system
                 logger.info(
-                    "Context truncation: %d→%d messages, ~%d tokens (limit %d)",
+                    "Context truncation: %d→%d messages, ~%d est tokens "
+                    "(limit %d, budget %d, max_est_input %d)",
                     len(_system) + len(_history),
                     len(_llm_messages),
                     _kept_tokens + _TOOLS_TOKEN_ESTIMATE,
                     _MODEL_CONTEXT_LIMIT,
+                    _budget,
+                    _max_estimated_input,
                 )
 
-            # Cap max_tokens so input + output never exceeds context limit
             _input_est = (
                 _estimate_tokens_for_messages(_llm_messages)
                 + _TOOLS_TOKEN_ESTIMATE
             )
             _max_tokens = max(
-                512, min(_DESIRED_OUTPUT_TOKENS, _MODEL_CONTEXT_LIMIT - _input_est)
+                512,
+                min(
+                    _DESIRED_OUTPUT_TOKENS,
+                    _MODEL_CONTEXT_LIMIT - int(_input_est * _UNDERESTIMATE_FACTOR),
+                ),
             )
 
             _llm_kwargs = dict(
