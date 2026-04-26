@@ -5164,11 +5164,24 @@ async def process_chat_interaction_task(
                                     tool_result["recommendation"] = _ins_d.get("recommendation", "")
                                     tool_result["sources"] = _ins_d.get("sources", [])
                                     tool_result["period"] = f"{_ins_d.get('period_start', '')} to {_ins_d.get('period_end', '')}"
+                                    _fo = _ins_d.get("forecast_outlook")
+                                    if _fo:
+                                        tool_result["forecast_outlook"] = (
+                                            f"Models: {', '.join(_fo.get('models_used', []))}. "
+                                            f"Projected season total: {_fo.get('projected_season_total_mm', '?')}mm "
+                                            f"(range {_fo.get('projected_season_p10_mm', '?')}-{_fo.get('projected_season_p90_mm', '?')}mm). "
+                                            f"Trigger threshold: {_fo.get('rainfall_trigger_threshold_mm', '?')}mm. "
+                                            f"Trigger risk: {_fo.get('rainfall_trigger_risk', '?')} "
+                                            f"({round(_fo.get('rainfall_trigger_probability', 0) * 100)}% probability). "
+                                            f"Model agreement: {_fo.get('model_agreement', '?')}. "
+                                            f"Bias-corrected: {_fo.get('bias_corrected', False)}."
+                                        )
                                     del tool_result["data"]
                                     tool_result["instruction"] = (
                                         "Respond like a knowledgeable colleague in 2-4 sentences. "
                                         "Lead with what's most notable (a trigger firing, drought stress, or healthy conditions). "
                                         "Mention only 2-3 numbers that matter most — skip the rest. "
+                                        "If forecast_outlook is present, always mention projected season rainfall and trigger risk. "
                                         "Do NOT list every metric. Do NOT use bullet points or tables. "
                                         "End with sources in parentheses."
                                     )

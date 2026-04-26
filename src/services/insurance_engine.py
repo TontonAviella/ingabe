@@ -1617,6 +1617,14 @@ async def compute_insurance_intelligence(
     et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
     soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
     forecast_result = network_results[4] if not isinstance(network_results[4], BaseException) else None
+    if isinstance(network_results[4], BaseException):
+        logger.warning("forecast fetch raised: %s", network_results[4])
+    elif forecast_result is None:
+        logger.info("forecast fetch returned None")
+    else:
+        logger.info("forecast fetch OK: %d daily entries, models=%s",
+                     len(forecast_result.get("daily", [])),
+                     forecast_result.get("models_used", []))
 
     # DB-dependent fetches: sequential on the shared connection
     try:
@@ -1762,7 +1770,14 @@ async def compute_insurance_intelligence(
         today, season, district,
     )
     if forecast_outlook:
+        logger.info("forecast outlook: risk=%s prob=%.2f projected=%.0fmm threshold=%.0fmm",
+                     forecast_outlook.get("rainfall_trigger_risk"),
+                     forecast_outlook.get("rainfall_trigger_probability", 0),
+                     forecast_outlook.get("projected_season_total_mm", 0),
+                     forecast_outlook.get("rainfall_trigger_threshold_mm", 0))
         sources.append(f"Multi-model forecast ({', '.join(forecast_outlook.get('models_used', []))})")
+    else:
+        logger.info("forecast outlook is None (forecast_result=%s)", type(forecast_result).__name__)
 
     # --- BUILD REPORT ---
     report = InsuranceReport(
