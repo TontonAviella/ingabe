@@ -1338,17 +1338,18 @@ async def _fetch_area_signals(
             if not all_dates:
                 return {}
 
-            # Budget: 60 HTTP calls max. The last 90 days get priority (SPI accuracy).
+            # The last 90 days all get fetched (SPI-1 and SPI-3 need them).
+            # CHIRPS 404s on dates within its ~30-day lag are fast/free.
             # Earlier season days get sparse sampling for cumulative totals.
             spi_start_str = spi_window_start.strftime("%Y-%m-%d")
             recent = [d for d in all_dates if d >= spi_start_str]
             earlier = [d for d in all_dates if d < spi_start_str]
 
-            max_total = 60
+            max_total = 90
             recent_budget = min(len(recent), max_total)
             earlier_budget = max(0, max_total - recent_budget)
 
-            dates_to_fetch = list(recent[:recent_budget])
+            dates_to_fetch = list(recent)
             if earlier and earlier_budget > 0:
                 step = max(1, len(earlier) / earlier_budget)
                 for i in range(min(earlier_budget, len(earlier))):
@@ -1405,7 +1406,9 @@ async def _fetch_area_signals(
     if chirps_daily:
         season_rain = sum(v for v in chirps_daily.values() if v is not None)
         signals["rainfall_mm"] = round(season_rain, 1)
-        spi_pair = _compute_spi_pair(chirps_daily, today, district)
+        dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
+        spi_ref = date.fromisoformat(dates_with_data[-1]) if dates_with_data else today
+        spi_pair = _compute_spi_pair(chirps_daily, spi_ref, district)
         if spi_pair["spi_1"] is not None:
             signals["spi_1"] = round(spi_pair["spi_1"], 2)
         if spi_pair["spi_3"] is not None:
@@ -1876,7 +1879,12 @@ async def compute_insurance_intelligence(
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, crop, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
     spi = _compute_spi(season_rainfall, season, district=district)
-    spi_pair = _compute_spi_pair(chirps_daily, today, district) if chirps_daily else {"spi_1": None, "spi_3": None}
+    if chirps_daily:
+        _dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
+        _spi_ref = date.fromisoformat(_dates_with_data[-1]) if _dates_with_data else today
+        spi_pair = _compute_spi_pair(chirps_daily, _spi_ref, district)
+    else:
+        spi_pair = {"spi_1": None, "spi_3": None}
     spi_1 = spi_pair["spi_1"]
     spi_3 = spi_pair["spi_3"]
     if chirps_daily:
