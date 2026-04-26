@@ -453,6 +453,54 @@ _NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
     "B": {"mean": 350.0, "std": 75.0},
 }
 
+# Per-district MONTHLY rainfall normals (mm per month).
+# Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
+# Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
+# Structure: district -> month (1-12) -> {"mean": mm, "std": mm}
+_MONTHLY_RAINFALL_NORMALS: dict[str, dict[int, dict[str, float]]] = {
+    # --- Northwest highlands (wet, orographic enhancement) ---
+    "musanze":    {1: {"mean": 55, "std": 28}, 2: {"mean": 80, "std": 32}, 3: {"mean": 120, "std": 40}, 4: {"mean": 140, "std": 42}, 5: {"mean": 85, "std": 35}, 6: {"mean": 18, "std": 14}, 7: {"mean": 10, "std": 10}, 8: {"mean": 25, "std": 16}, 9: {"mean": 75, "std": 32}, 10: {"mean": 130, "std": 42}, 11: {"mean": 145, "std": 44}, 12: {"mean": 90, "std": 35}},
+    "rubavu":     {1: {"mean": 50, "std": 26}, 2: {"mean": 75, "std": 30}, 3: {"mean": 115, "std": 38}, 4: {"mean": 135, "std": 40}, 5: {"mean": 80, "std": 33}, 6: {"mean": 15, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 70, "std": 30}, 10: {"mean": 125, "std": 40}, 11: {"mean": 140, "std": 42}, 12: {"mean": 85, "std": 33}},
+    "nyabihu":    {1: {"mean": 58, "std": 30}, 2: {"mean": 85, "std": 34}, 3: {"mean": 125, "std": 42}, 4: {"mean": 145, "std": 44}, 5: {"mean": 90, "std": 36}, 6: {"mean": 20, "std": 15}, 7: {"mean": 12, "std": 11}, 8: {"mean": 28, "std": 18}, 9: {"mean": 80, "std": 34}, 10: {"mean": 135, "std": 44}, 11: {"mean": 150, "std": 46}, 12: {"mean": 95, "std": 36}},
+    "burera":     {1: {"mean": 50, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 78, "std": 32}, 6: {"mean": 16, "std": 13}, 7: {"mean": 9, "std": 9}, 8: {"mean": 24, "std": 16}, 9: {"mean": 68, "std": 30}, 10: {"mean": 120, "std": 40}, 11: {"mean": 135, "std": 42}, 12: {"mean": 83, "std": 33}},
+    "gakenke":    {1: {"mean": 45, "std": 24}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
+    # --- Central plateau (moderate) ---
+    "kigali":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
+    "gasabo":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
+    "kicukiro":   {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
+    "nyarugenge": {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
+    "muhanga":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
+    "kamonyi":    {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
+    "ruhango":    {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
+    "huye":       {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 62, "std": 28}, 10: {"mean": 110, "std": 37}, 11: {"mean": 120, "std": 38}, 12: {"mean": 72, "std": 30}},
+    "nyanza":     {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
+    "gisagara":   {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
+    "nyamagabe":  {1: {"mean": 45, "std": 25}, 2: {"mean": 70, "std": 30}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 40}, 5: {"mean": 68, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 29}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 40}, 12: {"mean": 75, "std": 31}},
+    # --- Eastern lowland (dry, continental) ---
+    "bugesera":   {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 80, "std": 30}, 4: {"mean": 95, "std": 32}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 45, "std": 22}, 10: {"mean": 85, "std": 32}, 11: {"mean": 95, "std": 33}, 12: {"mean": 55, "std": 25}},
+    "kayonza":    {1: {"mean": 32, "std": 20}, 2: {"mean": 52, "std": 24}, 3: {"mean": 85, "std": 32}, 4: {"mean": 100, "std": 34}, 5: {"mean": 50, "std": 24}, 6: {"mean": 9, "std": 9}, 7: {"mean": 4, "std": 5}, 8: {"mean": 15, "std": 12}, 9: {"mean": 48, "std": 23}, 10: {"mean": 90, "std": 33}, 11: {"mean": 100, "std": 34}, 12: {"mean": 58, "std": 26}},
+    "kirehe":     {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
+    "ngoma":      {1: {"mean": 34, "std": 21}, 2: {"mean": 55, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
+    "gatsibo":    {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 90, "std": 33}, 4: {"mean": 108, "std": 35}, 5: {"mean": 54, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 52, "std": 24}, 10: {"mean": 95, "std": 34}, 11: {"mean": 105, "std": 35}, 12: {"mean": 62, "std": 27}},
+    "nyagatare":  {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
+    "rwamagana":  {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
+    # --- Southwest / lake-influenced (moderate-wet) ---
+    "nyamasheke": {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
+    "rusizi":     {1: {"mean": 45, "std": 25}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 68, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 62, "std": 27}, 10: {"mean": 112, "std": 37}, 11: {"mean": 122, "std": 38}, 12: {"mean": 74, "std": 31}},
+    "karongi":    {1: {"mean": 46, "std": 25}, 2: {"mean": 70, "std": 29}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 39}, 5: {"mean": 70, "std": 29}, 6: {"mean": 13, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 21, "std": 15}, 9: {"mean": 64, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 39}, 12: {"mean": 76, "std": 31}},
+    "rutsiro":    {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
+    "ngororero":  {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 60, "std": 27}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 72, "std": 30}},
+    "rulindo":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
+}
+
+# National monthly fallback (average across all districts)
+_NATIONAL_MONTHLY_NORMALS: dict[int, dict[str, float]] = {
+    1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34},
+    4: {"mean": 116, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10},
+    7: {"mean": 6, "std": 7}, 8: {"mean": 19, "std": 14}, 9: {"mean": 57, "std": 26},
+    10: {"mean": 104, "std": 35}, 11: {"mean": 114, "std": 37}, 12: {"mean": 68, "std": 29},
+}
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -504,6 +552,10 @@ class InsuranceReport:
     phase_rainfall: list[PhaseRainfall] = field(default_factory=list)
     season_rainfall_mm: float = 0.0
     spi: float = 0.0
+    spi_1: Optional[float] = None
+    spi_3: Optional[float] = None
+    drought_diagnostic: str = "insufficient_data"
+    drought_diagnostic_label: str = ""
 
     ndvi_z_score: Optional[float] = None
     ndvi_concordance_score: Optional[float] = None
@@ -540,6 +592,10 @@ class InsuranceReport:
             "days_after_planting": self.days_after_planting,
             "season_rainfall_mm": round(self.season_rainfall_mm, 1),
             "spi": round(self.spi, 2),
+            "spi_1": round(self.spi_1, 2) if self.spi_1 is not None else None,
+            "spi_3": round(self.spi_3, 2) if self.spi_3 is not None else None,
+            "drought_diagnostic": self.drought_diagnostic,
+            "drought_diagnostic_label": self.drought_diagnostic_label,
             "phase_rainfall": [
                 {
                     "phase": p.phase,
@@ -654,17 +710,138 @@ def _compute_phase_rainfall(
 
 
 # ---------------------------------------------------------------------------
-# 2. Simplified SPI
+# 2. SPI-1 and SPI-3 from monthly CHIRPS windows
 # ---------------------------------------------------------------------------
+
+def _get_monthly_normals(month: int, district: Optional[str] = None) -> dict[str, float]:
+    """Get monthly rainfall normals (mean, std) for a given month and district."""
+    if district:
+        district_key = district.lower().strip()
+        district_months = _MONTHLY_RAINFALL_NORMALS.get(district_key)
+        if district_months and month in district_months:
+            return district_months[month]
+    return _NATIONAL_MONTHLY_NORMALS.get(month, {"mean": 60, "std": 25})
+
+
+def _compute_spi_from_daily(
+    daily_precip: dict[str, Optional[float]],
+    ref_date: date,
+    window_days: int,
+    district: Optional[str] = None,
+) -> Optional[float]:
+    """Compute SPI for a specific window ending at ref_date.
+
+    Sums observed daily rainfall over the window, then compares against the
+    expected normal for those calendar months.  For SPI-1 (30 days) we use
+    the single month's normals.  For SPI-3 (90 days) we sum the normals
+    for the 3 months covered.  This is a simplified z-score SPI — proper
+    gamma-distribution fitting needs 30+ years of monthly totals which we
+    don't have per-pixel.  The z-score approach is standard for operational
+    approximation when gamma fit isn't available.
+    """
+    window_start = ref_date - timedelta(days=window_days - 1)
+
+    observed = 0.0
+    obs_count = 0
+    for i in range(window_days):
+        d = (window_start + timedelta(days=i)).strftime("%Y-%m-%d")
+        val = daily_precip.get(d)
+        if val is not None:
+            observed += val
+            obs_count += 1
+
+    if obs_count < window_days * 0.4:
+        return None
+
+    if obs_count < window_days:
+        observed = observed * (window_days / obs_count)
+
+    import calendar
+    month_day_counts: dict[tuple[int, int], int] = {}
+    for i in range(window_days):
+        d = window_start + timedelta(days=i)
+        key = (d.year, d.month)
+        month_day_counts[key] = month_day_counts.get(key, 0) + 1
+
+    expected_mean = 0.0
+    expected_var = 0.0
+    for (yr, mo), days_in_window in month_day_counts.items():
+        days_in_month = calendar.monthrange(yr, mo)[1]
+        fraction = days_in_window / days_in_month
+        normals = _get_monthly_normals(mo, district)
+        expected_mean += normals["mean"] * fraction
+        expected_var += (normals["std"] * fraction) ** 2
+
+    expected_std = expected_var ** 0.5
+    if expected_std < 1.0:
+        return 0.0
+    return (observed - expected_mean) / expected_std
+
+
+def _compute_spi_pair(
+    daily_precip: dict[str, Optional[float]],
+    ref_date: date,
+    district: Optional[str] = None,
+) -> dict[str, Optional[float]]:
+    """Compute SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS data."""
+    return {
+        "spi_1": _compute_spi_from_daily(daily_precip, ref_date, 30, district),
+        "spi_3": _compute_spi_from_daily(daily_precip, ref_date, 90, district),
+    }
+
+
+def _classify_drought_state(
+    spi_3: Optional[float],
+    soil_moisture_pct: Optional[float],
+) -> str:
+    """Classify SPI-SM divergence into a named drought diagnostic.
+
+    Patterns (from Copernicus EDO Combined Drought Indicator):
+      SPI dry  + SM dry    → consistent_drought (meteorological → agricultural)
+      SPI ok   + SM dry    → flash_drought (high ET demand, heatwave)
+      SPI dry  + SM ok     → carryover_storage (irrigation, shallow water table)
+      SPI wet  + SM dry    → runoff_dominated (steep slopes, hardpan, intense storms)
+      otherwise            → normal
+    """
+    if spi_3 is None or soil_moisture_pct is None:
+        return "insufficient_data"
+
+    spi_dry = spi_3 < -1.0
+    spi_ok = -1.0 <= spi_3 <= 1.0
+    spi_wet = spi_3 > 1.0
+    sm_dry = soil_moisture_pct < 35.0
+    sm_ok = soil_moisture_pct >= 35.0
+
+    if spi_dry and sm_dry:
+        return "consistent_drought"
+    if spi_ok and sm_dry:
+        return "flash_drought"
+    if spi_dry and sm_ok:
+        return "carryover_storage"
+    if spi_wet and sm_dry:
+        return "runoff_dominated"
+    return "normal"
+
+
+_DROUGHT_STATE_LABELS: dict[str, str] = {
+    "consistent_drought": "Consistent drought — precipitation deficit confirmed by soil moisture drop",
+    "flash_drought": "Flash drought — soil drying from high ET demand despite normal rainfall",
+    "carryover_storage": "Soil buffered — precipitation deficit not yet reflected in soil moisture (irrigation, shallow water table, or stored moisture)",
+    "runoff_dominated": "Runoff-dominated — rainfall not reaching soil (steep terrain, hardpan, or intense convective storms)",
+    "normal": "Normal conditions — no significant drought signal",
+    "insufficient_data": "Insufficient data for drought classification",
+}
+
 
 def _compute_spi(
     season_rainfall_mm: float,
     season: str,
     district: Optional[str] = None,
 ) -> float:
-    """Approximate SPI from season cumulative vs long-term normals.
+    """Legacy SPI from season cumulative vs long-term normals.
 
-    Uses per-district normals when available, falls back to national average.
+    Kept for backward compatibility with trigger evaluation which expects a
+    single SPI value.  New code should use _compute_spi_pair().
     """
     normals = _NATIONAL_RAINFALL_NORMALS.get(season, _NATIONAL_RAINFALL_NORMALS["A"])
     if district:
@@ -992,6 +1169,10 @@ def _format_farmer(r: InsuranceReport) -> str:
     if r.ndvi_z_score is not None:
         health = "healthy" if r.ndvi_z_score > -0.5 else "stressed" if r.ndvi_z_score > -1.5 else "very stressed"
         lines.append(f"Vegetation: {health}")
+    if r.drought_diagnostic and r.drought_diagnostic not in ("normal", "insufficient_data"):
+        labels = {"consistent_drought": "Drought confirmed", "flash_drought": "Flash drought risk",
+                  "carryover_storage": "Soil still has moisture", "runoff_dominated": "Rain running off"}
+        lines.append(labels.get(r.drought_diagnostic, r.drought_diagnostic))
 
     activated = [t for t in r.triggers if t.triggered]
     if not activated:
@@ -1049,7 +1230,9 @@ def _format_agronomist(r: InsuranceReport) -> str:
         f"Growth phase: {r.growth_phase} (day {r.days_after_planting} of {_get_harvest_dap(r.crop, r.season)})",
         "",
         "RAINFALL:",
-        f"  Season cumulative: {r.season_rainfall_mm:.0f}mm | SPI: {r.spi:.2f}",
+        f"  Season cumulative: {r.season_rainfall_mm:.0f}mm",
+        f"  SPI-1 (30-day): {r.spi_1:.2f}" if r.spi_1 is not None else "  SPI-1: n/a",
+        f"  SPI-3 (90-day): {r.spi_3:.2f}" if r.spi_3 is not None else "  SPI-3: n/a",
     ]
 
     for p in r.phase_rainfall:
@@ -1073,6 +1256,8 @@ def _format_agronomist(r: InsuranceReport) -> str:
         lines.append(f"  ET anomaly: {r.et_anomaly_pct:+.1f}%")
     if r.soil_moisture_pct is not None:
         lines.append(f"  Soil moisture: {r.soil_moisture_pct:.1f}%")
+    if r.drought_diagnostic and r.drought_diagnostic != "insufficient_data":
+        lines.append(f"  Drought diagnostic: {r.drought_diagnostic_label}")
 
     lines.append("")
     lines.append(f"STATUS: {r.overall_status} (confidence {r.confidence_score}/100)")
@@ -1086,7 +1271,8 @@ def _format_scientist(r: InsuranceReport) -> str:
     data = r.to_dict()
     data["methodology"] = {
         "rainfall": "CHIRPS v2.0 daily precipitation, 0.05° resolution",
-        "spi": "Simplified SPI: (cumulative - mean) / std, per-district normals from CHIRPS 2000-2023",
+        "spi": "SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS against per-district monthly normals (CHIRPS 2000-2023). Z-score approximation; gamma fit deferred.",
+        "drought_diagnostic": "SPI-SM divergence classification: consistent_drought (SPI<-1, SM<35%), flash_drought (SPI normal, SM<35%), carryover_storage (SPI<-1, SM>=35%), runoff_dominated (SPI>1, SM<35%)",
         "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
         "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
@@ -1136,24 +1322,40 @@ async def _fetch_area_signals(
     signals: dict[str, Any] = {}
 
     async def _chirps():
+        """Fetch CHIRPS daily precip for the last 90 days (for SPI-3) plus
+        sparse season samples (for cumulative totals).  Prioritizes the most
+        recent 90 days to support accurate SPI-1 and SPI-3 computation."""
         try:
             from src.services.forecast_fusion import _fetch_chirps_precip
-            all_dates = []
-            d = planting_date
+            spi_window_start = today - timedelta(days=89)
+            fetch_start = min(planting_date, spi_window_start)
+
+            all_dates: list[str] = []
+            d = fetch_start
             while d <= today:
                 all_dates.append(d.strftime("%Y-%m-%d"))
                 d += timedelta(days=1)
             if not all_dates:
                 return {}
-            max_dl = 30
-            if len(all_dates) > max_dl:
-                step = len(all_dates) / max_dl
-                dates = [all_dates[int(i * step)] for i in range(max_dl)]
-                if all_dates[-1] not in dates:
-                    dates[-1] = all_dates[-1]
-            else:
-                dates = all_dates
-            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates)
+
+            # Budget: 60 HTTP calls max. The last 90 days get priority (SPI accuracy).
+            # Earlier season days get sparse sampling for cumulative totals.
+            spi_start_str = spi_window_start.strftime("%Y-%m-%d")
+            recent = [d for d in all_dates if d >= spi_start_str]
+            earlier = [d for d in all_dates if d < spi_start_str]
+
+            max_total = 60
+            recent_budget = min(len(recent), max_total)
+            earlier_budget = max(0, max_total - recent_budget)
+
+            dates_to_fetch = list(recent[:recent_budget])
+            if earlier and earlier_budget > 0:
+                step = max(1, len(earlier) / earlier_budget)
+                for i in range(min(earlier_budget, len(earlier))):
+                    dates_to_fetch.append(earlier[int(i * step)])
+
+            dates_to_fetch.sort()
+            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates_to_fetch)
         except Exception:
             return {}
 
@@ -1199,11 +1401,15 @@ async def _fetch_area_signals(
     sar_result = results[3] if not isinstance(results[3], BaseException) else None
     weather_result = results[4] if not isinstance(results[4], BaseException) else None
 
-    # Rainfall + SPI
+    # Rainfall + SPI-1 + SPI-3
     if chirps_daily:
         season_rain = sum(v for v in chirps_daily.values() if v is not None)
         signals["rainfall_mm"] = round(season_rain, 1)
-        signals["spi"] = round(_compute_spi(season_rain, season, district=district), 2)
+        spi_pair = _compute_spi_pair(chirps_daily, today, district)
+        if spi_pair["spi_1"] is not None:
+            signals["spi_1"] = round(spi_pair["spi_1"], 2)
+        if spi_pair["spi_3"] is not None:
+            signals["spi_3"] = round(spi_pair["spi_3"], 2)
         rain_days = [v for v in chirps_daily.values() if v is not None]
         if rain_days:
             consecutive_dry = 0
@@ -1230,6 +1436,13 @@ async def _fetch_area_signals(
         values = [s.get("relative_soil_moisture_pct") for s in series if s.get("relative_soil_moisture_pct") is not None]
         if values:
             signals["soil_moisture_pct"] = round(values[-1], 1)
+
+    # SPI-SM drought diagnostic
+    sm_val = signals.get("soil_moisture_pct")
+    spi3_val = signals.get("spi_3")
+    drought_state = _classify_drought_state(spi3_val, sm_val)
+    signals["drought_diagnostic"] = drought_state
+    signals["drought_diagnostic_label"] = _DROUGHT_STATE_LABELS.get(drought_state, "")
 
     # SAR backscatter
     if isinstance(sar_result, (int, float)):
@@ -1358,7 +1571,8 @@ async def _compare_areas(
         planting_year -= 1
         planting_date = _get_planting_date(crop, season, planting_year)
         dap = (today - planting_date).days
-    dap = max(0, min(dap, _get_harvest_dap(crop, season) + 30))
+    harvest_dap = _get_harvest_dap(crop, season)
+    dap = max(0, min(dap, harvest_dap + 30))
     growth_phase = _current_growth_phase(crop, dap)
 
     # Also get NDVI from cache (fast, already aggregated)
@@ -1524,7 +1738,8 @@ async def compute_insurance_intelligence(
         planting_year -= 1
         planting_date = _get_planting_date(crop, season, planting_year)
         dap = (today - planting_date).days
-    dap = max(0, min(dap, _get_harvest_dap(crop, season) + 30))
+    harvest_dap = _get_harvest_dap(crop, season)
+    dap = max(0, min(dap, harvest_dap + 30))
 
     growth_phase = _current_growth_phase(crop, dap)
 
@@ -1550,24 +1765,37 @@ async def compute_insurance_intelligence(
         )
 
     async def fetch_chirps():
+        """Fetch CHIRPS daily precip covering the last 90 days (for SPI-3)
+        plus sparse season samples for cumulative totals."""
         try:
             from src.services.forecast_fusion import _fetch_chirps_precip
-            all_dates = []
-            d = planting_date
+            spi_window_start = today - timedelta(days=89)
+            fetch_start = min(planting_date, spi_window_start)
+
+            all_dates: list[str] = []
+            d = fetch_start
             while d <= today:
                 all_dates.append(d.strftime("%Y-%m-%d"))
                 d += timedelta(days=1)
             if not all_dates:
                 return {}
-            max_downloads = 45
-            if len(all_dates) > max_downloads:
-                step = len(all_dates) / max_downloads
-                dates = [all_dates[int(i * step)] for i in range(max_downloads)]
-                if all_dates[-1] not in dates:
-                    dates[-1] = all_dates[-1]
-            else:
-                dates = all_dates
-            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates)
+
+            spi_start_str = spi_window_start.strftime("%Y-%m-%d")
+            recent = [d for d in all_dates if d >= spi_start_str]
+            earlier = [d for d in all_dates if d < spi_start_str]
+
+            max_total = 90
+            recent_budget = min(len(recent), max_total)
+            earlier_budget = max(0, max_total - recent_budget)
+
+            dates_to_fetch = list(recent[:recent_budget])
+            if earlier and earlier_budget > 0:
+                step = max(1, len(earlier) / earlier_budget)
+                for i in range(min(earlier_budget, len(earlier))):
+                    dates_to_fetch.append(earlier[int(i * step)])
+
+            dates_to_fetch.sort()
+            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates_to_fetch)
         except Exception:
             logger.debug("chirps fetch failed", exc_info=True)
             return {}
@@ -1644,10 +1872,13 @@ async def compute_insurance_intelligence(
     # --- PROCESS RESULTS ---
     sources = []
 
-    # Rainfall
+    # Rainfall + SPI
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, crop, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
     spi = _compute_spi(season_rainfall, season, district=district)
+    spi_pair = _compute_spi_pair(chirps_daily, today, district) if chirps_daily else {"spi_1": None, "spi_3": None}
+    spi_1 = spi_pair["spi_1"]
+    spi_3 = spi_pair["spi_3"]
     if chirps_daily:
         sources.append("CHIRPS v2.0")
 
@@ -1697,6 +1928,10 @@ async def compute_insurance_intelligence(
                 if "WaPOR v3 ET" not in sources:
                     sources.append("WaPOR v3")
 
+    # SPI-SM divergence diagnostic
+    drought_diagnostic = _classify_drought_state(spi_3, soil_moisture)
+    drought_diagnostic_label = _DROUGHT_STATE_LABELS.get(drought_diagnostic, "")
+
     # --- TRIGGER EVALUATION ---
     trigger_defs = await _load_triggers(conn, crop, season, growth_phase, district)
 
@@ -1743,6 +1978,10 @@ async def compute_insurance_intelligence(
         phase_rainfall=phase_rainfall,
         season_rainfall_mm=season_rainfall,
         spi=spi,
+        spi_1=spi_1,
+        spi_3=spi_3,
+        drought_diagnostic=drought_diagnostic,
+        drought_diagnostic_label=drought_diagnostic_label,
         ndvi_z_score=ndvi_z,
         ndvi_concordance_score=ndvi_concordance_score,
         et_anomaly_pct=et_anomaly,
