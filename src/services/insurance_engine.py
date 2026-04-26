@@ -23,384 +23,6 @@ logger = logging.getLogger(__name__)
 
 _VALID_AUDIENCES = {"farmer", "insurance", "agronomist", "scientist"}
 
-# ---------------------------------------------------------------------------
-# Growth phases per crop (DAP = days after planting)
-# ---------------------------------------------------------------------------
-
-_GROWTH_PHASES: dict[str, dict[str, tuple[int, int]]] = {
-    # --- Cereals ---
-    "maize": {
-        "planting": (0, 20),
-        "vegetative": (20, 55),
-        "flowering": (55, 75),
-        "grain_fill": (75, 105),
-        "maturity": (105, 120),
-    },
-    "beans": {
-        "planting": (0, 15),
-        "vegetative": (15, 40),
-        "flowering": (40, 55),
-        "grain_fill": (55, 80),
-        "maturity": (80, 90),
-    },
-    "rice": {
-        "planting": (0, 25),
-        "vegetative": (25, 70),
-        "flowering": (70, 100),
-        "grain_fill": (100, 135),
-        "maturity": (135, 150),
-    },
-    "sorghum": {
-        "planting": (0, 20),
-        "vegetative": (20, 50),
-        "flowering": (50, 70),
-        "grain_fill": (70, 100),
-        "maturity": (100, 110),
-    },
-    "wheat": {
-        "planting": (0, 20),
-        "vegetative": (20, 50),
-        "flowering": (50, 75),
-        "grain_fill": (75, 105),
-        "maturity": (105, 120),
-    },
-    "finger_millet": {
-        "planting": (0, 15),
-        "vegetative": (15, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 90),
-        "maturity": (90, 105),
-    },
-    # --- Tubers & roots ---
-    "potato": {
-        "planting": (0, 20),
-        "vegetative": (20, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 95),
-        "maturity": (95, 110),
-    },
-    "sweet_potato": {
-        "planting": (0, 25),
-        "vegetative": (25, 60),
-        "flowering": (60, 90),
-        "grain_fill": (90, 120),
-        "maturity": (120, 150),
-    },
-    "cassava": {
-        "planting": (0, 30),
-        "vegetative": (30, 120),
-        "flowering": (120, 180),
-        "grain_fill": (180, 300),
-        "maturity": (300, 365),
-    },
-    "yam": {
-        "planting": (0, 30),
-        "vegetative": (30, 90),
-        "flowering": (90, 150),
-        "grain_fill": (150, 210),
-        "maturity": (210, 270),
-    },
-    "taro": {
-        "planting": (0, 25),
-        "vegetative": (25, 80),
-        "flowering": (80, 140),
-        "grain_fill": (140, 200),
-        "maturity": (200, 270),
-    },
-    # --- Legumes ---
-    "soybean": {
-        "planting": (0, 15),
-        "vegetative": (15, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 95),
-        "maturity": (95, 110),
-    },
-    "groundnut": {
-        "planting": (0, 15),
-        "vegetative": (15, 40),
-        "flowering": (40, 65),
-        "grain_fill": (65, 100),
-        "maturity": (100, 120),
-    },
-    "peas": {
-        "planting": (0, 15),
-        "vegetative": (15, 35),
-        "flowering": (35, 50),
-        "grain_fill": (50, 70),
-        "maturity": (70, 85),
-    },
-    "cowpea": {
-        "planting": (0, 12),
-        "vegetative": (12, 35),
-        "flowering": (35, 50),
-        "grain_fill": (50, 70),
-        "maturity": (70, 80),
-    },
-    "pigeon_pea": {
-        "planting": (0, 20),
-        "vegetative": (20, 60),
-        "flowering": (60, 100),
-        "grain_fill": (100, 140),
-        "maturity": (140, 170),
-    },
-    # --- Vegetables ---
-    "tomato": {
-        "planting": (0, 20),
-        "vegetative": (20, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 90),
-        "maturity": (90, 110),
-    },
-    "onion": {
-        "planting": (0, 20),
-        "vegetative": (20, 55),
-        "flowering": (55, 80),
-        "grain_fill": (80, 110),
-        "maturity": (110, 130),
-    },
-    "cabbage": {
-        "planting": (0, 20),
-        "vegetative": (20, 50),
-        "flowering": (50, 65),
-        "grain_fill": (65, 80),
-        "maturity": (80, 95),
-    },
-    "carrot": {
-        "planting": (0, 15),
-        "vegetative": (15, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 85),
-        "maturity": (85, 100),
-    },
-    "chili": {
-        "planting": (0, 25),
-        "vegetative": (25, 55),
-        "flowering": (55, 80),
-        "grain_fill": (80, 110),
-        "maturity": (110, 130),
-    },
-    "eggplant": {
-        "planting": (0, 25),
-        "vegetative": (25, 55),
-        "flowering": (55, 80),
-        "grain_fill": (80, 110),
-        "maturity": (110, 130),
-    },
-    "green_pepper": {
-        "planting": (0, 25),
-        "vegetative": (25, 55),
-        "flowering": (55, 75),
-        "grain_fill": (75, 100),
-        "maturity": (100, 120),
-    },
-    "garlic": {
-        "planting": (0, 20),
-        "vegetative": (20, 60),
-        "flowering": (60, 90),
-        "grain_fill": (90, 120),
-        "maturity": (120, 150),
-    },
-    "amaranth": {
-        "planting": (0, 12),
-        "vegetative": (12, 35),
-        "flowering": (35, 50),
-        "grain_fill": (50, 65),
-        "maturity": (65, 75),
-    },
-    "leek": {
-        "planting": (0, 20),
-        "vegetative": (20, 60),
-        "flowering": (60, 90),
-        "grain_fill": (90, 120),
-        "maturity": (120, 150),
-    },
-    "lettuce": {
-        "planting": (0, 10),
-        "vegetative": (10, 30),
-        "flowering": (30, 40),
-        "grain_fill": (40, 50),
-        "maturity": (50, 60),
-    },
-    "spinach": {
-        "planting": (0, 10),
-        "vegetative": (10, 25),
-        "flowering": (25, 35),
-        "grain_fill": (35, 45),
-        "maturity": (45, 55),
-    },
-    "cucumber": {
-        "planting": (0, 12),
-        "vegetative": (12, 30),
-        "flowering": (30, 45),
-        "grain_fill": (45, 60),
-        "maturity": (60, 70),
-    },
-    "watermelon": {
-        "planting": (0, 15),
-        "vegetative": (15, 35),
-        "flowering": (35, 55),
-        "grain_fill": (55, 75),
-        "maturity": (75, 90),
-    },
-    "pumpkin": {
-        "planting": (0, 15),
-        "vegetative": (15, 40),
-        "flowering": (40, 60),
-        "grain_fill": (60, 85),
-        "maturity": (85, 110),
-    },
-    # --- Fruits ---
-    "banana": {
-        "planting": (0, 60),
-        "vegetative": (60, 180),
-        "flowering": (180, 240),
-        "grain_fill": (240, 330),
-        "maturity": (330, 365),
-    },
-    "avocado": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 420),
-        "grain_fill": (420, 600),
-        "maturity": (600, 730),
-    },
-    "mango": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 400),
-        "grain_fill": (400, 500),
-        "maturity": (500, 545),
-    },
-    "passion_fruit": {
-        "planting": (0, 30),
-        "vegetative": (30, 120),
-        "flowering": (120, 160),
-        "grain_fill": (160, 230),
-        "maturity": (230, 270),
-    },
-    "pineapple": {
-        "planting": (0, 30),
-        "vegetative": (30, 240),
-        "flowering": (240, 300),
-        "grain_fill": (300, 450),
-        "maturity": (450, 540),
-    },
-    "papaya": {
-        "planting": (0, 30),
-        "vegetative": (30, 120),
-        "flowering": (120, 180),
-        "grain_fill": (180, 270),
-        "maturity": (270, 330),
-    },
-    "citrus": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 400),
-        "grain_fill": (400, 540),
-        "maturity": (540, 600),
-    },
-    "strawberry": {
-        "planting": (0, 20),
-        "vegetative": (20, 50),
-        "flowering": (50, 70),
-        "grain_fill": (70, 95),
-        "maturity": (95, 110),
-    },
-    "tree_tomato": {
-        "planting": (0, 60),
-        "vegetative": (60, 180),
-        "flowering": (180, 240),
-        "grain_fill": (240, 330),
-        "maturity": (330, 365),
-    },
-    "guava": {
-        "planting": (0, 60),
-        "vegetative": (60, 240),
-        "flowering": (240, 300),
-        "grain_fill": (300, 420),
-        "maturity": (420, 480),
-    },
-    "cape_gooseberry": {
-        "planting": (0, 20),
-        "vegetative": (20, 60),
-        "flowering": (60, 90),
-        "grain_fill": (90, 120),
-        "maturity": (120, 150),
-    },
-    # --- Cash & industrial crops ---
-    "coffee": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 400),
-        "grain_fill": (400, 580),
-        "maturity": (580, 640),
-    },
-    "tea": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 420),
-        "grain_fill": (420, 540),
-        "maturity": (540, 730),
-    },
-    "sugarcane": {
-        "planting": (0, 30),
-        "vegetative": (30, 120),
-        "flowering": (120, 240),
-        "grain_fill": (240, 330),
-        "maturity": (330, 420),
-    },
-    "pyrethrum": {
-        "planting": (0, 20),
-        "vegetative": (20, 90),
-        "flowering": (90, 150),
-        "grain_fill": (150, 180),
-        "maturity": (180, 210),
-    },
-    "tobacco": {
-        "planting": (0, 20),
-        "vegetative": (20, 55),
-        "flowering": (55, 80),
-        "grain_fill": (80, 105),
-        "maturity": (105, 120),
-    },
-    "sunflower": {
-        "planting": (0, 15),
-        "vegetative": (15, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 90),
-        "maturity": (90, 105),
-    },
-    "macadamia": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 420),
-        "grain_fill": (420, 600),
-        "maturity": (600, 730),
-    },
-    "sesame": {
-        "planting": (0, 12),
-        "vegetative": (12, 35),
-        "flowering": (35, 55),
-        "grain_fill": (55, 80),
-        "maturity": (80, 95),
-    },
-    # --- Oil crops ---
-    "oil_palm": {
-        "planting": (0, 90),
-        "vegetative": (90, 365),
-        "flowering": (365, 420),
-        "grain_fill": (420, 600),
-        "maturity": (600, 730),
-    },
-    "soya": {
-        "planting": (0, 15),
-        "vegetative": (15, 45),
-        "flowering": (45, 65),
-        "grain_fill": (65, 95),
-        "maturity": (95, 110),
-    },
-}
-
 _RWANDA_CENTER = (-1.94, 29.87)
 
 _ET_LONG_TERM_MEAN = 3.5
@@ -453,59 +75,6 @@ _NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
     "B": {"mean": 350.0, "std": 75.0},
 }
 
-# Primary crops by district, ordered by dominance.
-# Source: Rwanda MINAGRI Crop Assessment Survey + RAB crop suitability maps.
-# First crop is the default when user doesn't specify one.
-_DISTRICT_PRIMARY_CROPS: dict[str, list[str]] = {
-    # Northwest highlands (>2000m) — potato, wheat, pyrethrum (no maize)
-    "musanze":    ["potato", "wheat", "beans", "peas"],
-    "burera":     ["potato", "wheat", "beans", "peas"],
-    "nyabihu":    ["potato", "wheat", "beans", "sorghum"],
-    "rubavu":     ["potato", "beans", "cassava", "sweet_potato"],
-    # Northern transition
-    "gakenke":    ["beans", "potato", "maize", "sorghum"],
-    "rulindo":    ["beans", "maize", "potato", "cassava"],
-    # Central plateau — beans + maize dominant
-    "kigali":     ["beans", "maize", "cassava", "sweet_potato"],
-    "gasabo":     ["beans", "maize", "cassava", "sweet_potato"],
-    "kicukiro":   ["beans", "maize", "cassava", "sweet_potato"],
-    "nyarugenge": ["beans", "maize", "cassava", "sweet_potato"],
-    "muhanga":    ["beans", "maize", "sweet_potato", "cassava"],
-    "kamonyi":    ["beans", "maize", "sweet_potato", "cassava"],
-    "ruhango":    ["beans", "maize", "sorghum", "cassava"],
-    "huye":       ["beans", "maize", "sweet_potato", "soybean"],
-    "nyanza":     ["beans", "maize", "cassava", "sweet_potato"],
-    "gisagara":   ["beans", "maize", "cassava", "rice"],
-    "nyamagabe":  ["beans", "potato", "maize", "wheat"],
-    # Eastern lowland — maize + sorghum dominant
-    "bugesera":   ["maize", "sorghum", "cassava", "beans"],
-    "kayonza":    ["maize", "beans", "rice", "cassava"],
-    "kirehe":     ["maize", "beans", "cassava", "sorghum"],
-    "ngoma":      ["maize", "beans", "rice", "cassava"],
-    "gatsibo":    ["maize", "beans", "sorghum", "cassava"],
-    "nyagatare":  ["maize", "sorghum", "beans", "groundnut"],
-    "rwamagana":  ["maize", "beans", "cassava", "rice"],
-    # Southwest lake-influenced — beans + cassava
-    "nyamasheke": ["beans", "cassava", "sweet_potato", "rice"],
-    "rusizi":     ["rice", "beans", "cassava", "maize"],
-    "karongi":    ["beans", "cassava", "sweet_potato", "maize"],
-    "rutsiro":    ["beans", "maize", "cassava", "sweet_potato"],
-    "ngororero":  ["beans", "maize", "sweet_potato", "cassava"],
-}
-
-
-def _default_crop_for_district(district: Optional[str]) -> str:
-    """Return the primary crop for a district, or 'beans' as national fallback.
-
-    Beans are Rwanda's most widely grown crop across all agro-ecological zones.
-    """
-    if district:
-        crops = _DISTRICT_PRIMARY_CROPS.get(district.lower().strip())
-        if crops:
-            return crops[0]
-    return "beans"
-
-
 # Per-district MONTHLY rainfall normals (mm per month).
 # Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
 # Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
@@ -554,7 +123,6 @@ _NATIONAL_MONTHLY_NORMALS: dict[int, dict[str, float]] = {
     10: {"mean": 104, "std": 35}, 11: {"mean": 114, "std": 37}, 12: {"mean": 68, "std": 29},
 }
 
-
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -567,7 +135,6 @@ class PhaseRainfall:
     daily_avg_mm: float
     date_from: str
     date_to: str
-
 
 @dataclass
 class TriggerResult:
@@ -591,7 +158,6 @@ class TriggerResult:
             "weight": self.weight,
             "description": self.description,
         }
-
 
 @dataclass
 class InsuranceReport:
@@ -682,37 +248,9 @@ class InsuranceReport:
             "computed_at": self.computed_at,
         }
 
-
 # ---------------------------------------------------------------------------
 # 1. Growth-phase rainfall accumulation
 # ---------------------------------------------------------------------------
-
-def _get_planting_date(crop: str, season: str, year: int) -> date:
-    """Get planting date for a crop/season/year from crop calendars."""
-    from src.services.dssat_service import _CROP_CALENDARS
-
-    cal = _CROP_CALENDARS.get(crop, {}).get(season)
-    if not cal:
-        cal = _CROP_CALENDARS.get("maize", {}).get("A", {"planting": "09-15"})
-    month, day = cal["planting"].split("-")
-    return date(year, int(month), int(day))
-
-
-def _get_harvest_dap(crop: str, season: str) -> int:
-    from src.services.dssat_service import _CROP_CALENDARS
-    cal = _CROP_CALENDARS.get(crop, {}).get(season)
-    if not cal:
-        return 120
-    return cal.get("harvest_dap", 120)
-
-
-def _current_growth_phase(crop: str, dap: int) -> str:
-    phases = _GROWTH_PHASES.get(crop, _GROWTH_PHASES["maize"])
-    for phase_name, (start, end) in phases.items():
-        if start <= dap < end:
-            return phase_name
-    return "maturity"
-
 
 # Fixed Rwanda season dates — no crop assumption needed
 _SEASON_DATES = {
@@ -720,15 +258,12 @@ _SEASON_DATES = {
     "B": {"start_month": 2, "start_day": 15, "duration_days": 120},
 }
 
-
 def _get_season_start(season: str, year: int) -> date:
     sd = _SEASON_DATES.get(season, _SEASON_DATES["B"])
     return date(year, sd["start_month"], sd["start_day"])
 
-
 def _get_season_duration(season: str) -> int:
     return _SEASON_DATES.get(season, _SEASON_DATES["B"])["duration_days"]
-
 
 def _season_progress_label(day_in_season: int, season_duration: int) -> str:
     fraction = day_in_season / season_duration if season_duration > 0 else 0
@@ -738,7 +273,6 @@ def _season_progress_label(day_in_season: int, season_duration: int) -> str:
         return "mid_season"
     else:
         return "late_season"
-
 
 def _compute_phase_rainfall(
     daily_precip: dict[str, Optional[float]],
@@ -793,7 +327,6 @@ def _compute_phase_rainfall(
 
     return results
 
-
 # ---------------------------------------------------------------------------
 # 2. SPI-1 and SPI-3 from monthly CHIRPS windows
 # ---------------------------------------------------------------------------
@@ -806,7 +339,6 @@ def _get_monthly_normals(month: int, district: Optional[str] = None) -> dict[str
         if district_months and month in district_months:
             return district_months[month]
     return _NATIONAL_MONTHLY_NORMALS.get(month, {"mean": 60, "std": 25})
-
 
 def _compute_spi_from_daily(
     daily_precip: dict[str, Optional[float]],
@@ -862,7 +394,6 @@ def _compute_spi_from_daily(
         return 0.0
     return (observed - expected_mean) / expected_std
 
-
 def _compute_spi_pair(
     daily_precip: dict[str, Optional[float]],
     ref_date: date,
@@ -873,7 +404,6 @@ def _compute_spi_pair(
         "spi_1": _compute_spi_from_daily(daily_precip, ref_date, 30, district),
         "spi_3": _compute_spi_from_daily(daily_precip, ref_date, 90, district),
     }
-
 
 def _classify_drought_state(
     spi_3: Optional[float],
@@ -907,7 +437,6 @@ def _classify_drought_state(
         return "runoff_dominated"
     return "normal"
 
-
 _DROUGHT_STATE_LABELS: dict[str, str] = {
     "consistent_drought": "Consistent drought — precipitation deficit confirmed by soil moisture drop",
     "flash_drought": "Flash drought — soil drying from high ET demand despite normal rainfall",
@@ -916,7 +445,6 @@ _DROUGHT_STATE_LABELS: dict[str, str] = {
     "normal": "Normal conditions — no significant drought signal",
     "insufficient_data": "Insufficient data for drought classification",
 }
-
 
 def _compute_spi(
     season_rainfall_mm: float,
@@ -937,7 +465,6 @@ def _compute_spi(
     if normals["std"] == 0:
         return 0.0
     return (season_rainfall_mm - normals["mean"]) / normals["std"]
-
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
@@ -966,7 +493,6 @@ async def _fetch_ndvi_anomaly(
     except Exception:
         logger.debug("anomaly_alerts_cache query failed", exc_info=True)
     return None
-
 
 async def _fetch_sar_backscatter(
     lat: float,
@@ -1001,7 +527,6 @@ async def _fetch_sar_backscatter(
         logger.debug("SAR backscatter fetch failed", exc_info=True)
     return None
 
-
 async def _fetch_ndvi_with_sar_fallback(
     conn: asyncpg.Connection,
     lat: float,
@@ -1030,7 +555,6 @@ async def _fetch_ndvi_with_sar_fallback(
         logger.debug("SAR-predicted NDVI fallback failed", exc_info=True)
     return None
 
-
 # ---------------------------------------------------------------------------
 # 4. Centroid from GeoJSON geometry
 # ---------------------------------------------------------------------------
@@ -1044,7 +568,6 @@ def _centroid_from_geojson(geom: dict) -> tuple[float, float]:
     lats = [c[1] for c in coords]
     return (sum(lats) / len(lats), sum(lons) / len(lons))
 
-
 def _flatten_coords(coords: Any) -> list[tuple[float, float]]:
     """Recursively flatten nested coordinate arrays to (lon, lat) pairs."""
     if not coords:
@@ -1055,7 +578,6 @@ def _flatten_coords(coords: Any) -> list[tuple[float, float]]:
     for item in coords:
         result.extend(_flatten_coords(item))
     return result
-
 
 # ---------------------------------------------------------------------------
 # 5. Trigger evaluation
@@ -1091,7 +613,6 @@ async def _load_triggers(
         logger.debug("insurance_triggers table not available, using defaults", exc_info=True)
         return _default_triggers(phase)
 
-
 def _default_triggers(phase: str) -> list[dict]:
     """Hardcoded fallback triggers when the table doesn't exist yet."""
     triggers = [
@@ -1109,7 +630,6 @@ def _default_triggers(phase: str) -> list[dict]:
          "description": "SAR VH/VV ratio below 0.15 indicates low vegetation density"},
     ]
     return triggers
-
 
 def _compute_forecast_outlook(
     forecast_data: Optional[dict],
@@ -1245,7 +765,6 @@ def _compute_forecast_outlook(
         "terrain_corrected": terrain_corrected,
     }
 
-
 def _evaluate_triggers(
     trigger_defs: list[dict],
     current_values: dict[str, Optional[float]],
@@ -1282,7 +801,6 @@ def _evaluate_triggers(
         ))
 
     return results
-
 
 # ---------------------------------------------------------------------------
 # 6. Composite confidence score
@@ -1325,7 +843,6 @@ def _compute_confidence(
 
     return score, status
 
-
 def _generate_recommendation(
     status: str, phase: str, triggers: list[TriggerResult],
 ) -> str:
@@ -1352,7 +869,6 @@ def _generate_recommendation(
         f"Payout conditions likely met. Initiate claims verification process."
     )
 
-
 # ---------------------------------------------------------------------------
 # 7. Audience presentation layer
 # ---------------------------------------------------------------------------
@@ -1368,7 +884,6 @@ def format_for_audience(report: InsuranceReport, audience: str) -> str:
     if audience == "scientist":
         return _format_scientist(report)
     return _format_insurance(report)
-
 
 def _format_farmer(r: InsuranceReport) -> str:
     """WhatsApp-ready, <200 chars per section, clear and simple."""
@@ -1414,7 +929,6 @@ def _format_farmer(r: InsuranceReport) -> str:
 
     lines.append(f"Season progress: {r.growth_phase} (day {r.days_after_planting})")
     return "\n".join(lines)
-
 
 def _format_insurance(r: InsuranceReport) -> str:
     """Trigger assessment table for insurance workers."""
@@ -1472,7 +986,6 @@ def _format_insurance(r: InsuranceReport) -> str:
 
     return "\n".join(sections)
 
-
 def _format_agronomist(r: InsuranceReport) -> str:
     """Technical detail + recommendations."""
     lines = [
@@ -1527,7 +1040,6 @@ def _format_agronomist(r: InsuranceReport) -> str:
 
     return "\n".join(lines)
 
-
 def _format_scientist(r: InsuranceReport) -> str:
     """Full JSON with methodology and provenance — returned as formatted string."""
     data = r.to_dict()
@@ -1545,7 +1057,6 @@ def _format_scientist(r: InsuranceReport) -> str:
         "confidence": "Weighted composite: passing_weight / total_weight * 100",
     }
     return json.dumps(data, indent=2, default=str)
-
 
 # ---------------------------------------------------------------------------
 # 8a. Multi-area comparison mode
@@ -1571,7 +1082,6 @@ _COMPARE_HIERARCHY = {
 }
 
 _COMPARE_SEMAPHORE = asyncio.Semaphore(6)
-
 
 async def _fetch_area_signals(
     lat: float, lon: float,
@@ -1739,7 +1249,6 @@ async def _fetch_area_signals(
                 signals["recent_precip_mm_day"] = round(sum(valid) / len(valid), 1)
 
     return signals
-
 
 async def _compare_areas(
     conn: asyncpg.Connection,
@@ -1930,7 +1439,6 @@ async def _compare_areas(
         "sources": "CHIRPS v2.0, WaPOR v3, Sentinel-1 SAR, Sentinel-2 NDVI, Open-Meteo/ERA5",
     }
 
-
 # ---------------------------------------------------------------------------
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
@@ -1962,8 +1470,6 @@ async def compute_insurance_intelligence(
             district=district, sector=sector, cell=cell,
             compare_level=compare_level, ref_date=ref_date,
         )
-
-    from src.services.dssat_service import detect_current_season
 
     if not any([district, sector, cell, village]):
         return {
@@ -2305,7 +1811,6 @@ async def compute_insurance_intelligence(
         "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
     }
 
-
 async def compute_insurance_accuracy_safe(
     conn: asyncpg.Connection,
     district: Optional[str],
@@ -2318,7 +1823,6 @@ async def compute_insurance_accuracy_safe(
     except Exception:
         logger.debug("compute_insurance_accuracy failed", exc_info=True)
         return None
-
 
 def _resolve_location_name(
     district: Optional[str] = None,
