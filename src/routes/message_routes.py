@@ -5116,11 +5116,13 @@ async def process_chat_interaction_task(
                         elif function_name == "get_insurance_intelligence":
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
-                                _ins_crop_explicit = "crop" in tool_args
+                                _ins_raw_crop = tool_args.get("crop", "auto")
+                                _ins_crop = "auto" if _ins_raw_crop in ("maize", "auto") else _ins_raw_crop
+                                _ins_crop_explicit = _ins_crop != "auto"
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
-                                    crop=tool_args.get("crop", "auto"),
+                                    crop=_ins_crop,
                                     season=tool_args.get("season"),
                                     district=tool_args.get("district"),
                                     sector=tool_args.get("sector"),
