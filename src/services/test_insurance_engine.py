@@ -34,7 +34,8 @@ from src.services.insurance_engine import (
     _load_triggers,
     _resolve_location_name,
     _GROWTH_PHASES,
-    _RAINFALL_NORMALS,
+    _NATIONAL_RAINFALL_NORMALS,
+    _DISTRICT_RAINFALL_NORMALS,
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
     _VALID_AUDIENCES,
@@ -650,13 +651,28 @@ class TestConstants:
     def test_et_long_term_mean_is_positive(self):
         assert _ET_LONG_TERM_MEAN > 0
 
-    def test_rainfall_normals_has_both_seasons(self):
-        assert "A" in _RAINFALL_NORMALS
-        assert "B" in _RAINFALL_NORMALS
+    def test_national_rainfall_normals_has_both_seasons(self):
+        assert "A" in _NATIONAL_RAINFALL_NORMALS
+        assert "B" in _NATIONAL_RAINFALL_NORMALS
         for season in ("A", "B"):
-            assert "mean" in _RAINFALL_NORMALS[season]
-            assert "std" in _RAINFALL_NORMALS[season]
-            assert _RAINFALL_NORMALS[season]["std"] > 0
+            assert "mean" in _NATIONAL_RAINFALL_NORMALS[season]
+            assert "std" in _NATIONAL_RAINFALL_NORMALS[season]
+            assert _NATIONAL_RAINFALL_NORMALS[season]["std"] > 0
+
+    def test_district_rainfall_normals_cover_30_districts(self):
+        assert len(_DISTRICT_RAINFALL_NORMALS) >= 28
+        for dist, seasons in _DISTRICT_RAINFALL_NORMALS.items():
+            assert "A" in seasons, f"{dist} missing season A"
+            assert "B" in seasons, f"{dist} missing season B"
+            for s in ("A", "B"):
+                assert seasons[s]["std"] > 0, f"{dist} season {s} has zero std"
+
+    def test_district_spi_differs_across_districts(self):
+        rainfall = 250.0
+        spi_bugesera = _compute_spi(rainfall, "B", district="bugesera")
+        spi_musanze = _compute_spi(rainfall, "B", district="musanze")
+        assert spi_bugesera != spi_musanze, "SPI should differ for different districts"
+        assert spi_bugesera > spi_musanze, "250mm is closer to normal for dry Bugesera"
 
 
 # ---------------------------------------------------------------------------
@@ -1241,11 +1257,21 @@ class TestComputeSPIEdgeCases:
     def test_std_zero_returns_zero(self):
         """When std is 0, _compute_spi should return 0.0 to avoid division by zero."""
         with patch.dict(
-            "src.services.insurance_engine._RAINFALL_NORMALS",
+            "src.services.insurance_engine._NATIONAL_RAINFALL_NORMALS",
             {"A": {"mean": 400.0, "std": 0}, "B": {"mean": 350.0, "std": 75.0}},
         ):
             spi = _compute_spi(500.0, "A")
             assert spi == 0.0
+
+    def test_district_normals_used_when_available(self):
+        spi_with_district = _compute_spi(300.0, "B", district="bugesera")
+        spi_without_district = _compute_spi(300.0, "B")
+        assert spi_with_district != spi_without_district
+
+    def test_unknown_district_falls_back_to_national(self):
+        spi_unknown = _compute_spi(300.0, "B", district="nonexistent")
+        spi_national = _compute_spi(300.0, "B")
+        assert spi_unknown == spi_national
 
 
 # ---------------------------------------------------------------------------

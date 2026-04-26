@@ -204,17 +204,20 @@ existing layers on the map (e.g. a buffer circle, a drawn polygon, or a point la
 IMPORTANT — situation overview queries:
 When the user asks about the "situation", "status", "how is [location] doing", "what's happening in",
 or any overview/assessment question for a district, sector, or cell:
-1. Call get_insurance_intelligence (district/sector/cell, audience: "agronomist") FIRST — it combines
+1. Call get_insurance_intelligence (district/sector/cell) FIRST — it combines
    rainfall, NDVI, ET, soil moisture, dry spells, and parametric triggers into one unified report.
+   If the user did NOT mention a specific crop, do NOT pass a crop parameter. The tool will default
+   to maize and include a note — relay that note to the user and ask which crop they care about.
 2. Call get_anomaly_alerts to check for active stress hotspots in the area.
 3. Call get_cell_ndvi_stats (district: "<name>") for sector-level NDVI breakdown. When the user asks
    "by sector" or "according to every sector", pass the district — the tool returns NDVI per sector.
    You can also pass sector: "<name>" to drill into a specific sector's cells.
-Synthesize the results into a concise situation report covering: growth phase, rainfall status vs normal,
-any triggered alerts or anomalies, and sector-level variation. Example tone:
-"[District] is in the [phase] phase of Season [X]. Rainfall is at [N]mm cumulative
-(normal: [range]mm). Across [N] sectors, NDVI ranges from [low] ([sector]) to [high] ([sector]).
-[N] sectors show below-normal vegetation. No drought triggers activated."
+Write a NATURAL conversational response — do NOT copy/paste the tool output or use a rigid template.
+Lead with the most interesting finding (a triggered alert, unusual drought, healthy conditions).
+Weave numbers into sentences naturally. Vary your structure based on what matters most.
+Bad: "Rain this season: 248mm. Dry spell: 8 days. Vegetation: healthy. No triggers."
+Good: "Bugesera is doing well this season — 248mm of rain so far, vegetation looks healthy, and no
+drought triggers have fired. The longest dry spell was 8 days, nothing concerning for the flowering phase."
 NEVER answer a situation question with a single tool call returning one number.
 </AgricultureCapabilities>
 

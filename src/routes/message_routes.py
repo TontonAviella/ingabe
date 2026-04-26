@@ -5125,10 +5125,20 @@ async def process_chat_interaction_task(
                                     sector=tool_args.get("sector"),
                                     cell=tool_args.get("cell"),
                                     village=tool_args.get("village"),
-                                    audience=tool_args.get("audience", "farmer"),
+                                    audience=tool_args.get("audience", "agronomist"),
                                 )
+                                if tool_result.get("status") == "ok":
+                                    tool_result["_report_for_brain"] = tool_result.pop("report", "")
+                                    tool_result["instruction"] = (
+                                        "Write a natural, conversational response using the data below. "
+                                        "Do NOT use a fixed template or bullet list. Vary your structure "
+                                        "based on what's interesting: lead with the most notable finding "
+                                        "(a triggered alert, unusual drought, healthy conditions, etc). "
+                                        "Weave in numbers naturally — don't list every metric. "
+                                        "Mention data sources briefly at the end."
+                                    )
                                 if not _ins_crop_explicit and tool_result.get("status") == "ok":
-                                    tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Mention this to the user and offer to run the report for other crops (beans, rice, sorghum, etc)."
+                                    tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Tell the user this and ask which crop they want — common Rwanda crops: beans, rice, sorghum, cassava, potato, banana, wheat, tea, coffee."
                                 # Save to Brain for audit trail + future retrieval
                                 if tool_result.get("status") == "ok":
                                     try:
@@ -5142,7 +5152,7 @@ async def process_chat_interaction_task(
                                         _page_input = PageInput(
                                             type="insurance_intelligence",
                                             title=f"Insurance: {_ins_data.get('crop', '')} in {_ins_data.get('location', '')} Season {_ins_data.get('season', '')}",
-                                            compiled_truth=tool_result.get("report", ""),
+                                            compiled_truth=tool_result.get("_report_for_brain", ""),
                                             frontmatter={
                                                 "type": "insurance_intelligence",
                                                 "crop": _ins_data.get("crop"),
@@ -5177,6 +5187,7 @@ async def process_chat_interaction_task(
                                         )
                                     except Exception:
                                         logger.warning("insurance brain save failed", exc_info=True)
+                                    tool_result.pop("_report_for_brain", None)
                             except Exception:
                                 logger.exception("get_insurance_intelligence tool failed")
                                 tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}

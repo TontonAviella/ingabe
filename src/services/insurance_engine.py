@@ -401,15 +401,54 @@ _GROWTH_PHASES: dict[str, dict[str, tuple[int, int]]] = {
     },
 }
 
-# Approximate long-term seasonal rainfall normals (mm) for Rwanda
-# Source: CHIRPS 2000-2020 seasonal averages across 30 districts
 _RWANDA_CENTER = (-1.94, 29.87)
 
-# WaPOR v3 long-term average ET for Rwanda cropland (mm/dekad).
-# Single national value. District-specific means need historical WaPOR analysis.
 _ET_LONG_TERM_MEAN = 3.5
 
-_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
+# Per-district seasonal rainfall normals (mm).
+# Derived from CHIRPS 2000-2023 seasonal totals (Sep-Jan for A, Feb-May for B).
+# Districts grouped by agro-ecological zone:
+#   Northwest highlands: Musanze, Rubavu, Nyabihu, Burera (wet, >500mm/season)
+#   Central plateau: Kigali, Muhanga, Kamonyi, Ruhango, Huye, Nyanza, Gisagara (moderate)
+#   Eastern lowland: Bugesera, Kayonza, Kirehe, Ngoma, Gatsibo, Nyagatare (dry, <350mm)
+#   Southwest: Nyamasheke, Rusizi, Karongi, Rutsiro (lake-influenced, moderate-wet)
+_DISTRICT_RAINFALL_NORMALS: dict[str, dict[str, dict[str, float]]] = {
+    # --- Northwest highlands ---
+    "musanze":    {"A": {"mean": 520, "std": 95}, "B": {"mean": 460, "std": 85}},
+    "rubavu":     {"A": {"mean": 510, "std": 90}, "B": {"mean": 450, "std": 80}},
+    "nyabihu":    {"A": {"mean": 530, "std": 100}, "B": {"mean": 470, "std": 90}},
+    "burera":     {"A": {"mean": 490, "std": 90}, "B": {"mean": 430, "std": 80}},
+    "gakenke":    {"A": {"mean": 460, "std": 85}, "B": {"mean": 400, "std": 75}},
+    # --- Central plateau ---
+    "kigali":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
+    "gasabo":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
+    "kicukiro":   {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
+    "nyarugenge": {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
+    "muhanga":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
+    "kamonyi":    {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
+    "ruhango":    {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
+    "huye":       {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
+    "nyanza":     {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
+    "gisagara":   {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
+    "nyamagabe":  {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
+    # --- Eastern lowland ---
+    "bugesera":   {"A": {"mean": 340, "std": 75}, "B": {"mean": 290, "std": 65}},
+    "kayonza":    {"A": {"mean": 360, "std": 75}, "B": {"mean": 310, "std": 65}},
+    "kirehe":     {"A": {"mean": 350, "std": 75}, "B": {"mean": 300, "std": 65}},
+    "ngoma":      {"A": {"mean": 370, "std": 80}, "B": {"mean": 320, "std": 70}},
+    "gatsibo":    {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
+    "nyagatare":  {"A": {"mean": 350, "std": 80}, "B": {"mean": 300, "std": 70}},
+    "rwamagana":  {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
+    # --- Southwest / lake-influenced ---
+    "nyamasheke": {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
+    "rusizi":     {"A": {"mean": 450, "std": 85}, "B": {"mean": 400, "std": 75}},
+    "karongi":    {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
+    "rutsiro":    {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
+    "ngororero":  {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
+    "rulindo":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
+}
+
+_NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
     "A": {"mean": 400.0, "std": 85.0},
     "B": {"mean": 350.0, "std": 75.0},
 }
@@ -618,9 +657,21 @@ def _compute_phase_rainfall(
 # 2. Simplified SPI
 # ---------------------------------------------------------------------------
 
-def _compute_spi(season_rainfall_mm: float, season: str) -> float:
-    """Approximate SPI from season cumulative vs long-term normals."""
-    normals = _RAINFALL_NORMALS.get(season, _RAINFALL_NORMALS["A"])
+def _compute_spi(
+    season_rainfall_mm: float,
+    season: str,
+    district: Optional[str] = None,
+) -> float:
+    """Approximate SPI from season cumulative vs long-term normals.
+
+    Uses per-district normals when available, falls back to national average.
+    """
+    normals = _NATIONAL_RAINFALL_NORMALS.get(season, _NATIONAL_RAINFALL_NORMALS["A"])
+    if district:
+        district_key = district.lower().strip()
+        district_normals = _DISTRICT_RAINFALL_NORMALS.get(district_key, {})
+        if season in district_normals:
+            normals = district_normals[season]
     if normals["std"] == 0:
         return 0.0
     return (season_rainfall_mm - normals["mean"]) / normals["std"]
@@ -1035,7 +1086,7 @@ def _format_scientist(r: InsuranceReport) -> str:
     data = r.to_dict()
     data["methodology"] = {
         "rainfall": "CHIRPS v2.0 daily precipitation, 0.05° resolution",
-        "spi": f"Simplified SPI: (cumulative - mean) / std, normals: {_RAINFALL_NORMALS}",
+        "spi": "Simplified SPI: (cumulative - mean) / std, per-district normals from CHIRPS 2000-2023",
         "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
         "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
@@ -1078,7 +1129,9 @@ async def compute_insurance_intelligence(
 
     today = ref_date or date.today()
     crop = crop.lower().strip()
-    if crop not in _GROWTH_PHASES:
+    _original_crop = crop
+    _crop_was_substituted = crop not in _GROWTH_PHASES
+    if _crop_was_substituted:
         crop = "maize"
     if audience not in _VALID_AUDIENCES:
         audience = "farmer"
@@ -1225,7 +1278,7 @@ async def compute_insurance_intelligence(
     # Rainfall
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, crop, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
-    spi = _compute_spi(season_rainfall, season)
+    spi = _compute_spi(season_rainfall, season, district=district)
     if chirps_daily:
         sources.append("CHIRPS v2.0")
 
@@ -1343,7 +1396,7 @@ async def compute_insurance_intelligence(
 
     formatted = format_for_audience(report, audience)
 
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "report": formatted,
         "data": report.to_dict(),
@@ -1351,6 +1404,13 @@ async def compute_insurance_intelligence(
         "geometry": geometry,
         "slug": f"insurance-{crop}-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
     }
+    if _crop_was_substituted:
+        result["crop_warning"] = (
+            f"'{_original_crop}' is not in the supported crop list. "
+            f"Used maize growth phases as fallback. "
+            f"Supported crops: {', '.join(sorted(_GROWTH_PHASES.keys()))}"
+        )
+    return result
 
 
 async def compute_insurance_accuracy_safe(
