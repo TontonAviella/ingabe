@@ -1350,14 +1350,14 @@ async def process_chat_interaction_task(
             ] + openai_messages
 
             # --- Context window overflow protection ---
-            # chars/3 underestimates real token counts by ~1.5x for JSON-heavy
-            # content (verified: Nvidia counted 258049 vs our estimate 172246).
-            # Divide total space by 1.6 so even a 1.6x underestimate fits.
+            # chars/3 underestimates real token counts by 1.5-1.7x for JSON-heavy
+            # content (observed ratios: 1.498, 1.616). Factor 2.0 guarantees
+            # no overflow for any realistic content composition.
             _MODEL_CONTEXT_LIMIT = int(os.environ.get(
                 "LLM_CONTEXT_LIMIT", "131072"
             ))
             _DESIRED_OUTPUT_TOKENS = 4096
-            _UNDERESTIMATE_FACTOR = 1.6
+            _UNDERESTIMATE_FACTOR = 2.0
             _TOOLS_TOKEN_ESTIMATE = (
                 len(json.dumps(tools_payload)) // 3
                 if tools_payload else 0
