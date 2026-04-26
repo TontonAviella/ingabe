@@ -5120,7 +5120,7 @@ async def process_chat_interaction_task(
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
-                                    crop=tool_args.get("crop", "maize"),
+                                    crop=tool_args.get("crop", "auto"),
                                     season=tool_args.get("season"),
                                     district=tool_args.get("district"),
                                     sector=tool_args.get("sector"),
@@ -5174,7 +5174,8 @@ async def process_chat_interaction_task(
                                         "End with sources in parentheses."
                                     )
                                 if not _ins_crop_explicit and tool_result.get("status") == "ok" and not _ins_compare:
-                                    tool_result["note"] = "The user did not specify a crop, so this report defaults to maize. Tell the user this and ask which crop they want — common Rwanda crops: beans, rice, sorghum, cassava, potato, banana, wheat, tea, coffee."
+                                    _auto_crop = tool_result.get("data", {}).get("crop", "beans")
+                                    tool_result["note"] = f"The user did not specify a crop, so this report uses {_auto_crop} (the primary crop for this area). Mention this naturally — e.g. 'Here is the report for {_auto_crop}, the main crop grown here.' If the user wants a different crop, they can ask."
                                 # Save to Brain for audit trail + future retrieval (skip for comparisons)
                                 if tool_result.get("status") == "ok" and not _ins_compare:
                                     try:

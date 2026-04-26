@@ -453,6 +453,59 @@ _NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
     "B": {"mean": 350.0, "std": 75.0},
 }
 
+# Primary crops by district, ordered by dominance.
+# Source: Rwanda MINAGRI Crop Assessment Survey + RAB crop suitability maps.
+# First crop is the default when user doesn't specify one.
+_DISTRICT_PRIMARY_CROPS: dict[str, list[str]] = {
+    # Northwest highlands (>2000m) — potato, wheat, pyrethrum (no maize)
+    "musanze":    ["potato", "wheat", "beans", "peas"],
+    "burera":     ["potato", "wheat", "beans", "peas"],
+    "nyabihu":    ["potato", "wheat", "beans", "sorghum"],
+    "rubavu":     ["potato", "beans", "cassava", "sweet_potato"],
+    # Northern transition
+    "gakenke":    ["beans", "potato", "maize", "sorghum"],
+    "rulindo":    ["beans", "maize", "potato", "cassava"],
+    # Central plateau — beans + maize dominant
+    "kigali":     ["beans", "maize", "cassava", "sweet_potato"],
+    "gasabo":     ["beans", "maize", "cassava", "sweet_potato"],
+    "kicukiro":   ["beans", "maize", "cassava", "sweet_potato"],
+    "nyarugenge": ["beans", "maize", "cassava", "sweet_potato"],
+    "muhanga":    ["beans", "maize", "sweet_potato", "cassava"],
+    "kamonyi":    ["beans", "maize", "sweet_potato", "cassava"],
+    "ruhango":    ["beans", "maize", "sorghum", "cassava"],
+    "huye":       ["beans", "maize", "sweet_potato", "soybean"],
+    "nyanza":     ["beans", "maize", "cassava", "sweet_potato"],
+    "gisagara":   ["beans", "maize", "cassava", "rice"],
+    "nyamagabe":  ["beans", "potato", "maize", "wheat"],
+    # Eastern lowland — maize + sorghum dominant
+    "bugesera":   ["maize", "sorghum", "cassava", "beans"],
+    "kayonza":    ["maize", "beans", "rice", "cassava"],
+    "kirehe":     ["maize", "beans", "cassava", "sorghum"],
+    "ngoma":      ["maize", "beans", "rice", "cassava"],
+    "gatsibo":    ["maize", "beans", "sorghum", "cassava"],
+    "nyagatare":  ["maize", "sorghum", "beans", "groundnut"],
+    "rwamagana":  ["maize", "beans", "cassava", "rice"],
+    # Southwest lake-influenced — beans + cassava
+    "nyamasheke": ["beans", "cassava", "sweet_potato", "rice"],
+    "rusizi":     ["rice", "beans", "cassava", "maize"],
+    "karongi":    ["beans", "cassava", "sweet_potato", "maize"],
+    "rutsiro":    ["beans", "maize", "cassava", "sweet_potato"],
+    "ngororero":  ["beans", "maize", "sweet_potato", "cassava"],
+}
+
+
+def _default_crop_for_district(district: Optional[str]) -> str:
+    """Return the primary crop for a district, or 'beans' as national fallback.
+
+    Beans are Rwanda's most widely grown crop across all agro-ecological zones.
+    """
+    if district:
+        crops = _DISTRICT_PRIMARY_CROPS.get(district.lower().strip())
+        if crops:
+            return crops[0]
+    return "beans"
+
+
 # Per-district MONTHLY rainfall normals (mm per month).
 # Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
 # Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
@@ -1498,7 +1551,7 @@ async def _compare_areas(
     today = ref_date or date.today()
     crop = crop.lower().strip()
     if crop not in _GROWTH_PHASES:
-        crop = "maize"
+        crop = _default_crop_for_district(district)
     if season is None:
         season = detect_current_season(crop, datetime(today.year, today.month, today.day))
 
@@ -1718,7 +1771,7 @@ async def compute_insurance_intelligence(
     _original_crop = crop
     _crop_was_substituted = crop not in _GROWTH_PHASES
     if _crop_was_substituted:
-        crop = "maize"
+        crop = _default_crop_for_district(district)
     if audience not in _VALID_AUDIENCES:
         audience = "farmer"
 
