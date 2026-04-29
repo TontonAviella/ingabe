@@ -97,6 +97,10 @@ from src.tools.rgb_visual import (
     analyze_rgb_field,
     AnalyzeRgbFieldArgs,
 )
+from src.tools.similarity import (
+    find_similar_tiles,
+    FindSimilarTilesArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -235,6 +239,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "evaluate_insurance_trigger": (
             evaluate_insurance_trigger,
             EvaluateInsuranceTriggerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "find_similar_tiles": (
+            find_similar_tiles,
+            FindSimilarTilesArgs,
             IngabeToolCallMetaArgs,
         ),
     }

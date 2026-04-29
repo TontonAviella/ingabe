@@ -250,6 +250,13 @@ Routing rules (after describe_user_raster):
   evaluate_insurance_trigger (composes compare_rasters + absolute NDVI vs stage threshold +
   declining-area share + drought rainfall context → composite_score 0-100, triggered bool,
   payout_recommendation. Source='drone'. For satellite-based triggers use get_insurance_intelligence.)
+- "Find other fields that look like this" / "have we seen this stress pattern in any other flight?" /
+  "show me similar areas across my orthophotos" / "any matches in my other flights for this damage" →
+  find_similar_tiles (Clay v1.5 visual embedding similarity in Milvus, cross-flight match.
+  Returns top-K tiles ranked by cosine similarity. Only works on rgb_visual orthophotos that
+  have been embedded — the embedding pipeline runs automatically after COG conversion completes,
+  so layers uploaded >1 minute ago are queryable. NOT for 4-band drone NDVI exports — those
+  aren't embedded in V1.)
 
 Heuristics for picking the band when layer name hints at content:
 - "*_NDVI*" or "ndvi" → typically NDVI is band 2 in 4-band exports, or band 1 if single-band
