@@ -26,6 +26,7 @@ services:
         aliases:
           - gis.nozalabs.rw
           - s3.gis.nozalabs.rw
+          - s3-gis.nozalabs.rw
 
   # --- App: production overrides ---
   app:
@@ -46,6 +47,9 @@ services:
       - GDAL_BAND_BLOCK_CACHE=HASHSET
       - VSI_CACHE=TRUE
       - VSI_CACHE_SIZE=33554432
+      # Skip TLS verification for vsicurl — internal Docker network only,
+      # cert is for s3.gis but URL hostname is s3-gis (no MITM risk on loopback).
+      - GDAL_HTTP_UNSAFESSL=YES
     deploy:
       resources:
         limits:
@@ -96,6 +100,40 @@ services:
   # mc: kept — one-shot S3 user setup (~3s, exits immediately)
   # backup: already has restart: unless-stopped in base
 
+  # --- Milvus Standalone for Phase 2 Clay embedding similarity search ---
+  # Single-container deployment with embedded etcd. Stores 768-dim Clay v1.5
+  # tile embeddings tagged with (layer_id, partner_id, tile_x, tile_y) for
+  # find_similar_tiles. No host port binding — only mundi-app reaches it.
+  milvus:
+    container_name: mundi-milvus
+    image: milvusdb/milvus:v2.6.14
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - "seccomp:unconfined"
+    environment:
+      - ETCD_USE_EMBED=true
+      - ETCD_DATA_DIR=/var/lib/milvus/etcd
+      - ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml
+      - COMMON_STORAGETYPE=local
+      - DEPLOY_MODE=STANDALONE
+    volumes:
+      - milvus_data:/var/lib/milvus
+      - ./milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
+      - ./milvus/user.yaml:/milvus/configs/user.yaml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    networks:
+      - default
+
   # --- Disable dev-only services ---
   dagster-daemon:
     profiles: ["dev"]
@@ -111,3 +149,6 @@ services:
 
   tempo:
     profiles: ["dev"]
+
+volumes:
+  milvus_data:
