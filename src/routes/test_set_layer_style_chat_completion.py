@@ -1,24 +1,89 @@
 import pytest
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from openai.types.chat import (
-    ChatCompletionMessage,
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
 
 
-class MockChoice:
-    def __init__(self, content: str, tool_calls=None):
-        self.message = ChatCompletionMessage(
-            content=content, tool_calls=tool_calls, role="assistant"
-        )
+# message_routes.py:1457 calls client.chat.completions.create(..., stream=True)
+# and then `async for chunk in stream:`. Each chunk must have:
+#   chunk.choices[0].delta.content (str | None)
+#   chunk.choices[0].delta.tool_calls (list of {index, id, function:{name, arguments}} | None)
+# We model each chunk with SimpleNamespace because the streaming code only
+# accesses attributes (no isinstance checks against openai's chunk types).
+
+
+class MockStream:
+    """Async iterator over pre-built chunks. Mirrors the streaming shape of
+    OpenAI's create(stream=True) so the production code at message_routes.py
+    line 1460 can accumulate content + tool_calls deltas like it does in prod.
+    """
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self._idx = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._idx >= len(self._chunks):
+            raise StopAsyncIteration
+        chunk = self._chunks[self._idx]
+        self._idx += 1
+        return chunk
+
+
+def _make_stream(content: str, tool_calls=None):
+    """Build a MockStream representing a single completion. Emits one chunk
+    per tool call (with full id+name+arguments — the streaming accumulator
+    handles partial deltas, but full-payload chunks are valid too) followed
+    by one chunk per content snippet, then end."""
+    chunks = []
+    if tool_calls:
+        for i, tc in enumerate(tool_calls):
+            tc_delta = SimpleNamespace(
+                index=i,
+                id=tc.id,
+                function=SimpleNamespace(
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                ),
+            )
+            chunks.append(SimpleNamespace(
+                choices=[SimpleNamespace(
+                    delta=SimpleNamespace(content=None, tool_calls=[tc_delta]),
+                )],
+            ))
+    if content:
+        chunks.append(SimpleNamespace(
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=content, tool_calls=None),
+            )],
+        ))
+    # Final empty-delta chunk to flush, mirroring real OpenAI streams
+    chunks.append(SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=None, tool_calls=None),
+        )],
+    ))
+    return MockStream(chunks)
 
 
 class MockResponse:
+    """Backwards-compatible shim for tests that build "responses" the old way.
+    Returns an async stream when iterated by message_routes.py."""
+
     def __init__(self, content: str, tool_calls=None):
-        self.choices = [MockChoice(content, tool_calls)]
+        self._content = content
+        self._tool_calls = tool_calls
+
+    def __aiter__(self):
+        return _make_stream(self._content, self._tool_calls).__aiter__()
 
 
 @pytest.fixture
