@@ -217,50 +217,81 @@ async def embed_layer(
     Returns {layer_id, status, tiles_embedded, ...}.
 
     Skips silently for non-rgb_visual layers (V1 scope limitation).
+
+    The function is async because it's called from FastAPI BackgroundTasks
+    that already run on the event loop. Internally, all the work is done
+    SYNCHRONOUSLY (DB, S3, Clay, Milvus) — torch + rasterio CPU-bound work
+    interacts badly with asyncio executors on this image, hanging silently.
+    Doing one big synchronous block in a fire-and-forget context is safe and
+    far more reliable.
     """
-    from src.structures import get_async_read_connection
-    from src.utils import get_async_s3_client, get_bucket_name
+    logger.info("embed_layer: start layer_id=%s", layer_id)
+    return _embed_layer_sync(layer_id, cog_url, skip_if_already_embedded)
+
+
+def _embed_layer_sync(
+    layer_id: str,
+    cog_url: Optional[str] = None,
+    skip_if_already_embedded: bool = True,
+) -> dict:
+    """Synchronous body of embed_layer. See embed_layer docstring for why."""
+    import json as _json
+    import torch
+    import psycopg2
+    import psycopg2.extras
+    import boto3
     from src.services.milvus_client import (
         ensure_clay_tiles_collection, insert_tile_embeddings,
         delete_layer_embeddings,
     )
+    from src.tools.raster_query import _detect_raster_type
 
-    # Look up layer metadata
-    async with get_async_read_connection() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT layer_id, name, type, s3_key, bounds, metadata,
-                   created_on, owner_uuid
-            FROM map_layers
-            WHERE layer_id = $1
-            """,
-            layer_id,
-        )
+    # Sync DB lookup
+    pg_url = (
+        f"host={os.environ.get('POSTGRES_HOST', 'postgresdb')} "
+        f"port={os.environ.get('POSTGRES_PORT', '5432')} "
+        f"dbname={os.environ.get('POSTGRES_DB', 'mundidb')} "
+        f"user={os.environ.get('POSTGRES_USER', 'mundiuser')} "
+        f"password={os.environ.get('POSTGRES_PASSWORD', 'changeme')}"
+    )
+    conn = psycopg2.connect(pg_url)
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(
+                """
+                SELECT layer_id, name, type, s3_key, bounds, metadata,
+                       created_on, owner_uuid
+                FROM map_layers
+                WHERE layer_id = %s
+                """,
+                (layer_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
     if not row:
         return {"layer_id": layer_id, "status": "layer_not_found"}
 
-    import json
     metadata = (
-        json.loads(row["metadata"]) if isinstance(row["metadata"], str)
+        _json.loads(row["metadata"]) if isinstance(row["metadata"], str)
         else (dict(row["metadata"]) if row["metadata"] else {})
     )
     cog_key = metadata.get("cog_key")
     if not cog_key:
         return {"layer_id": layer_id, "status": "cog_pending"}
 
-    # V1 scope: only rgb_visual. Detect via raster_type heuristic in describe path.
-    from src.tools.raster_query import _detect_raster_type
-    raster_type, _ = _detect_raster_type(metadata, row["name"], row["s3_key"])
+    raster_type, _rt_explanation = _detect_raster_type(metadata, row["name"], row["s3_key"])
     if raster_type != "rgb_visual":
         return {
             "layer_id": layer_id, "status": "skipped_not_rgb_visual",
             "raster_type": raster_type,
         }
 
-    # If embeddings already exist, skip unless explicitly forced.
     ensure_clay_tiles_collection()
     if skip_if_already_embedded:
-        from src.services.milvus_client import get_milvus_client, COLLECTION_CLAY_TILES
+        from src.services.milvus_client import (
+            get_milvus_client, COLLECTION_CLAY_TILES,
+        )
         from pymilvus import Collection
         get_milvus_client()
         coll = Collection(COLLECTION_CLAY_TILES)
@@ -274,32 +305,31 @@ async def embed_layer(
                 "tiles_embedded": 0,
             }
 
-    # Build presigned S3 URL for the COG
-    s3 = await get_async_s3_client()
-    bucket = get_bucket_name()
-    cog_url = cog_url or await s3.generate_presigned_url(
-        "get_object", Params={"Bucket": bucket, "Key": cog_key},
-        ExpiresIn=3600,
+    # Build presigned S3 URL using sync boto3 (mirrors the async S3 client config)
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        aws_access_key_id=os.environ.get("S3_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("S3_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("S3_DEFAULT_REGION", "us-east-1"),
     )
+    bucket = os.environ.get("S3_BUCKET", "test-bucket")
+    if not cog_url:
+        cog_url = s3_client.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": cog_key},
+            ExpiresIn=3600,
+        )
 
-    # Center for time/location encoding
     bounds = list(row["bounds"]) if row["bounds"] else None
     if bounds and len(bounds) == 4:
         center_lat = (bounds[1] + bounds[3]) / 2
         center_lon = (bounds[0] + bounds[2]) / 2
     else:
         center_lat, center_lon = 0.0, 0.0
-
     captured_at = row["created_on"] or datetime.utcnow()
     captured_at_epoch = int(captured_at.timestamp())
-
-    # Resolve owner + partner for Milvus tags
     owner_uuid = str(row["owner_uuid"])
     partner_id = metadata.get("partner_id") or ""
-
-    # Run inference in a worker thread — torch + rasterio are CPU-bound.
-    import asyncio
-    import torch
 
     def _do_embed():
         import gc
@@ -356,9 +386,9 @@ async def embed_layer(
                     chips_t, captured_at, center_lat, center_lon,
                 )
                 with torch.no_grad():
-                    emb = encoder(datacube)
-                if emb.ndim == 3:
-                    emb = emb.mean(dim=1)
+                    out = encoder(datacube)
+                encoded_patches = out[0] if isinstance(out, tuple) else out
+                emb = encoded_patches[:, 0, :]
                 embeddings = emb.cpu().numpy()
                 for i, (xtx, xty, xbbox) in enumerate(batch_meta):
                     tile_rows.append({
@@ -385,9 +415,11 @@ async def embed_layer(
         elapsed = time.time() - t0
         return inserted, elapsed
 
-    inserted, elapsed = await asyncio.get_running_loop().run_in_executor(
-        None, _do_embed,
-    )
+    # _do_embed is heavy (~25-45s) but this function is already invoked from
+    # a fire-and-forget BackgroundTask, so blocking the loop here is fine —
+    # and avoids threading/asyncio interactions that hang silently when torch
+    # operates inside run_in_executor on this image.
+    inserted, elapsed = _do_embed()
     return {
         "layer_id": layer_id,
         "status": "ok" if inserted > 0 else "no_valid_tiles",
