@@ -22,18 +22,14 @@ from src.services.insurance_engine import (
     _compute_confidence,
     _compute_phase_rainfall,
     _compute_spi,
-    _current_growth_phase,
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
     _fetch_sar_backscatter,
     _flatten_coords,
     _generate_recommendation,
-    _get_harvest_dap,
-    _get_planting_date,
     _load_triggers,
     _resolve_location_name,
-    _GROWTH_PHASES,
     _NATIONAL_RAINFALL_NORMALS,
     _DISTRICT_RAINFALL_NORMALS,
     _RWANDA_CENTER,
@@ -320,37 +316,11 @@ class TestComputePhaseRainfall:
         assert results[0].date_to == "2025-10-05"
 
 
-# ---------------------------------------------------------------------------
-# _current_growth_phase
-# ---------------------------------------------------------------------------
-
-class TestCurrentGrowthPhase:
-    def test_maize_planting(self):
-        assert _current_growth_phase("maize", 10) == "planting"
-
-    def test_maize_vegetative(self):
-        assert _current_growth_phase("maize", 30) == "vegetative"
-
-    def test_maize_flowering(self):
-        assert _current_growth_phase("maize", 60) == "flowering"
-
-    def test_maize_grain_fill(self):
-        assert _current_growth_phase("maize", 80) == "grain_fill"
-
-    def test_maize_maturity(self):
-        assert _current_growth_phase("maize", 110) == "maturity"
-
-    def test_beyond_maturity_returns_maturity(self):
-        assert _current_growth_phase("maize", 200) == "maturity"
-
-    def test_unknown_crop_uses_maize(self):
-        assert _current_growth_phase("quinoa", 10) == "planting"
-
-    def test_day_zero(self):
-        assert _current_growth_phase("maize", 0) == "planting"
-
-    def test_phase_boundary_vegetative(self):
-        assert _current_growth_phase("maize", 20) == "vegetative"
+# Removed TestCurrentGrowthPhase: _current_growth_phase was removed during the
+# refactor that replaced per-crop 5-stage phase classification with the generic
+# 3-bucket _season_progress_label(day_in_season, season_duration). The two
+# functions have different return values and signatures — tests for the
+# removed function have been deleted rather than rewritten.
 
 
 # ---------------------------------------------------------------------------
@@ -776,34 +746,11 @@ class TestResolveLocationName:
         assert name == "Huye"
 
 
-# ---------------------------------------------------------------------------
-# _get_planting_date and _get_harvest_dap
-# ---------------------------------------------------------------------------
-
-class TestGetPlantingDate:
-    def test_known_crop_season(self):
-        d = _get_planting_date("maize", "A", 2025)
-        assert isinstance(d, date)
-        assert d.year == 2025
-
-    def test_unknown_crop_falls_back(self):
-        d = _get_planting_date("quinoa", "A", 2025)
-        assert isinstance(d, date)
-
-    def test_season_b(self):
-        d = _get_planting_date("maize", "B", 2026)
-        assert d.year == 2026
-
-
-class TestGetHarvestDap:
-    def test_known_crop(self):
-        dap = _get_harvest_dap("maize", "A")
-        assert isinstance(dap, int)
-        assert dap > 0
-
-    def test_unknown_crop_returns_default(self):
-        dap = _get_harvest_dap("quinoa", "A")
-        assert dap == 120
+# Removed TestGetPlantingDate and TestGetHarvestDap: the per-crop helpers
+# _get_planting_date and _get_harvest_dap were folded into _SEASON_DATES /
+# _get_season_duration during the per-crop -> per-season refactor. New tests
+# would need to be written against the season-based API; these crop-keyed
+# tests have been deleted rather than rewritten.
 
 
 # ---------------------------------------------------------------------------
@@ -1212,9 +1159,13 @@ class TestMigrationIntegrity:
         assert len(insert_rows) == 568
 
     def test_all_crops_have_at_least_one_season(self):
+        # Hardcoded list replaces _GROWTH_PHASES which was removed during the
+        # per-crop -> per-season refactor. These are the crops that MUST be in
+        # the seed data — extend if the migration adds more required crops.
+        required_crops = ("maize", "beans", "rice", "sorghum", "wheat")
         with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
             content = f.read()
-        for crop in _GROWTH_PHASES:
+        for crop in required_crops:
             assert f"('{crop}'," in content, f"Crop {crop} missing from seed data"
 
     def test_enabled_column_exists(self):
