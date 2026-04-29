@@ -73,6 +73,30 @@ from src.tools.cygnss import (
     get_cygnss_watermask,
     GetCygnssWatermaskArgs,
 )
+from src.tools.raster_query import (
+    describe_user_raster,
+    DescribeUserRasterArgs,
+    compute_zonal_stats,
+    ComputeZonalStatsArgs,
+    read_pixel_at,
+    ReadPixelAtArgs,
+    get_value_distribution,
+    GetValueDistributionArgs,
+)
+from src.tools.raster_interpret import (
+    interpret_raster_health,
+    InterpretRasterHealthArgs,
+    find_stress_zones,
+    FindStressZonesArgs,
+    compare_rasters,
+    CompareRastersArgs,
+    evaluate_insurance_trigger,
+    EvaluateInsuranceTriggerArgs,
+)
+from src.tools.rgb_visual import (
+    analyze_rgb_field,
+    AnalyzeRgbFieldArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -166,6 +190,51 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "get_cygnss_watermask": (
             get_cygnss_watermask,
             GetCygnssWatermaskArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "describe_user_raster": (
+            describe_user_raster,
+            DescribeUserRasterArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "compute_zonal_stats": (
+            compute_zonal_stats,
+            ComputeZonalStatsArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "interpret_raster_health": (
+            interpret_raster_health,
+            InterpretRasterHealthArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_rgb_field": (
+            analyze_rgb_field,
+            AnalyzeRgbFieldArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "read_pixel_at": (
+            read_pixel_at,
+            ReadPixelAtArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_value_distribution": (
+            get_value_distribution,
+            GetValueDistributionArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "find_stress_zones": (
+            find_stress_zones,
+            FindStressZonesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "compare_rasters": (
+            compare_rasters,
+            CompareRastersArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "evaluate_insurance_trigger": (
+            evaluate_insurance_trigger,
+            EvaluateInsuranceTriggerArgs,
             IngabeToolCallMetaArgs,
         ),
     }
