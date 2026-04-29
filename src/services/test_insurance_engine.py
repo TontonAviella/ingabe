@@ -716,8 +716,21 @@ class TestEvaluateAndConfidencePipeline:
 # ===========================================================================
 
 def _run(coro):
-    """Run an async coroutine in a fresh event loop."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """Run an async coroutine in a fresh event loop.
+
+    asyncio.get_event_loop() returns whatever loop the current thread last had
+    associated with it, which may be CLOSED if a prior test module (e.g.
+    tests/brain/ which uses pytest_asyncio with loop_scope="module") finished
+    and closed its module-scoped loop. That cross-suite pollution caused 44
+    failures here when test_insurance_engine.py ran after tests/brain/ +
+    src/routes/. Create a genuinely fresh loop per call so the helper is
+    immune to whatever prior tests did to the thread's loop association.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 # ---------------------------------------------------------------------------
