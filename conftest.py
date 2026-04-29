@@ -5,6 +5,14 @@ from typing import Dict, Generator, Optional
 
 # Set fast timeout for postgres connections in tests
 os.environ["MUNDI_POSTGIS_TIMEOUT_SEC"] = "0.5"
+
+# Tests run inside the prod container which has CLERK_SECRET_KEY set, so the
+# Clerk-mode auth path blocks unauthenticated requests with 401 before the
+# MUNDI_AUTH_MODE=edit fallback is consulted. CLERK_ALLOW_LEGACY_FALLBACK=true
+# is the documented escape hatch (see src/dependencies/session.py:290) — it
+# lets tests fall through to the legacy edit-mode bypass without weakening
+# production auth.
+os.environ["CLERK_ALLOW_LEGACY_FALLBACK"] = "true"
 from httpx_ws.transport import ASGIWebSocketTransport
 from httpx import AsyncClient
 from pathlib import Path
