@@ -50,6 +50,15 @@ services:
       # Skip TLS verification for vsicurl — internal Docker network only,
       # cert is for s3.gis but URL hostname is s3-gis (no MITM risk on loopback).
       - GDAL_HTTP_UNSAFESSL=YES
+      # Phase 2 Clay embedding paths (checkpoint bind-mounted from host).
+      - CLAY_CHECKPOINT_PATH=/app/data/clay-checkpoints/clay-v1.5.ckpt
+      - CLAY_METADATA_PATH=/app/clay-source/configs/metadata.yaml
+    volumes:
+      # Phase 2 — Clay v1.5 checkpoint (4.9 GB). Read-only bind mount from
+      # host so the heavy file lives outside the image. To populate on a
+      # new host: download via `curl -fsSL -o data/clay-checkpoints/clay-v1.5.ckpt
+      # https://huggingface.co/made-with-clay/Clay/resolve/main/v1.5/clay-v1.5.ckpt`
+      - ./data/clay-checkpoints:/app/data/clay-checkpoints:ro
     deploy:
       resources:
         limits:

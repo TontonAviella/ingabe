@@ -22,10 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt /app/
+COPY clay-source /app/clay-source
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
     uv pip install -r requirements.txt && \
-    uv pip install hyperdx-opentelemetry
+    uv pip install hyperdx-opentelemetry && \
+    uv pip install /app/clay-source
 
 # ── Frontend build ──
 FROM node:20-bookworm-slim AS frontend-builder
