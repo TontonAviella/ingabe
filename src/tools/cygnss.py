@@ -1,27 +1,41 @@
 import asyncio
-from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.tools.sar import _parse_bbox
 
 
 class CheckCygnssAvailabilityArgs(BaseModel):
-    bbox: Optional[str] = None
+    bbox: str = Field(
+        ...,
+        description="Bounding box as 'minLon,minLat,maxLon,maxLat', OR empty string '' to default to all of Rwanda.",
+    )
 
 
 class GetCygnssSoilMoistureArgs(BaseModel):
-    lat: float
-    lon: float
-    days_back: Optional[int] = 90
-    resolution_km: Optional[int] = 9
+    lat: float = Field(..., description="Latitude in WGS84 decimal degrees.")
+    lon: float = Field(..., description="Longitude in WGS84 decimal degrees.")
+    days_back: int = Field(
+        ...,
+        description="Lookback window in days (typical: 90). Pass 0 to use the default of 90.",
+    )
+    resolution_km: int = Field(
+        ...,
+        description="Spatial resolution in km (9 or 36). Pass 0 to use the default of 9.",
+    )
 
 
 class GetCygnssWatermaskArgs(BaseModel):
-    bbox: str
-    date: Optional[str] = None
-    product: Optional[str] = "watermask_daily"
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    date: str = Field(
+        ...,
+        description="Date YYYY-MM-DD, OR empty string '' to use the most recent product.",
+    )
+    product: str = Field(
+        ...,
+        description="CYGNSS product name, OR empty string '' to use the default 'watermask_daily'.",
+    )
 
 
 async def check_cygnss_availability(
@@ -31,7 +45,7 @@ async def check_cygnss_availability(
     from src.services.cygnss import get_cygnss_service, RWANDA_BBOX
 
     svc = get_cygnss_service()
-    bbox = _parse_bbox(args.bbox) if args.bbox else RWANDA_BBOX
+    bbox = _parse_bbox(args.bbox) if (args.bbox and args.bbox.strip()) else RWANDA_BBOX
     return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.check_data_availability(bbox)
     )
@@ -48,8 +62,8 @@ async def get_cygnss_soil_moisture(
         None,
         lambda: svc.get_soil_moisture(
             lat=args.lat, lon=args.lon,
-            days_back=args.days_back or 90,
-            resolution_km=args.resolution_km or 9,
+            days_back=args.days_back if args.days_back > 0 else 90,
+            resolution_km=args.resolution_km if args.resolution_km > 0 else 9,
         ),
     )
 
@@ -62,10 +76,11 @@ async def get_cygnss_watermask(
 
     svc = get_cygnss_service()
     bbox = _parse_bbox(args.bbox)
+    date = args.date.strip() if (args.date and args.date.strip()) else None
+    product = args.product.strip() if (args.product and args.product.strip()) else "watermask_daily"
     return await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: svc.get_watermask(
-            bbox=bbox, date=args.date,
-            product=args.product or "watermask_daily",
+            bbox=bbox, date=date, product=product,
         ),
     )

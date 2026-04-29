@@ -1,7 +1,7 @@
 import asyncio
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.tools.pyd import IngabeToolCallMetaArgs
 
@@ -13,20 +13,30 @@ def _parse_bbox(bbox_str: str) -> tuple[float, float, float, float]:
     return (parts[0], parts[1], parts[2], parts[3])
 
 
+def _none_if_empty(s: Optional[str]) -> Optional[str]:
+    return s.strip() if s and s.strip() else None
+
+
 class PredictNdviFromSarArgs(BaseModel):
-    bbox: str
-    target_date: Optional[str] = None
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    target_date: str = Field(
+        ...,
+        description="Target date YYYY-MM-DD, OR empty string '' to use the most recent SAR scene.",
+    )
 
 
 class DetectWaterBodiesArgs(BaseModel):
-    bbox: str
-    date: Optional[str] = None
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    date: str = Field(
+        ...,
+        description="Date YYYY-MM-DD, OR empty string '' to use the most recent scene.",
+    )
 
 
 class DetectFloodExtentArgs(BaseModel):
-    bbox: str
-    date_before: str
-    date_after: str
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    date_before: str = Field(..., description="Pre-flood date YYYY-MM-DD.")
+    date_after: str = Field(..., description="Post-flood date YYYY-MM-DD.")
 
 
 async def predict_ndvi_from_sar(
@@ -38,7 +48,7 @@ async def predict_ndvi_from_sar(
     svc = get_sar_ndvi_predictor()
     bbox = _parse_bbox(args.bbox)
     return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: svc.predict_ndvi(bbox, args.target_date)
+        None, lambda: svc.predict_ndvi(bbox, _none_if_empty(args.target_date))
     )
 
 
@@ -51,7 +61,7 @@ async def detect_water_bodies(
     svc = get_sar_water_service()
     bbox = _parse_bbox(args.bbox)
     return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: svc.detect_water(bbox, args.date)
+        None, lambda: svc.detect_water(bbox, _none_if_empty(args.date))
     )
 
 
