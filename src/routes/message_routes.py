@@ -5226,6 +5226,13 @@ async def process_chat_interaction_task(
                                     except Exception:
                                         logger.warning("insurance brain save failed", exc_info=True)
                                     tool_result.pop("_report_for_brain", None)
+                                # Strip the admin-boundary GeoJSON before sending the
+                                # tool result back to the LLM. The geometry is needed
+                                # only for the Brain page save above; leaving it in
+                                # the tool response bloats conversation history by
+                                # 100-185 KB per call and overflows context after a
+                                # handful of turns.
+                                tool_result.pop("geometry", None)
                             except Exception:
                                 logger.exception("get_insurance_intelligence tool failed")
                                 tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}
