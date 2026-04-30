@@ -420,6 +420,22 @@ def _embed_layer_sync(
     # and avoids threading/asyncio interactions that hang silently when torch
     # operates inside run_in_executor on this image.
     inserted, elapsed = _do_embed()
+
+    # Stamp the raster brain page so a future search_brain query can see
+    # "this layer has 16 Clay tile embeddings in clay_tiles_v1" without
+    # round-tripping to Milvus, and the embedding event lands on the
+    # layer's timeline.
+    if inserted > 0:
+        try:
+            from src.services.raster_brain_link import record_clay_embedding_status_sync
+            record_clay_embedding_status_sync(
+                layer_id=layer_id,
+                tile_count=inserted,
+                owner_uuid=owner_uuid,
+            )
+        except Exception:
+            logger.debug("Brain frontmatter stamp skipped for layer %s", layer_id, exc_info=True)
+
     return {
         "layer_id": layer_id,
         "status": "ok" if inserted > 0 else "no_valid_tiles",

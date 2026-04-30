@@ -358,6 +358,24 @@ async def interpret_raster_health(
 
     if desc.get("sanity_warning"):
         response["sanity_warning"] = desc["sanity_warning"]
+
+    # Append to Brain timeline so the verdict survives the conversation.
+    try:
+        from src.services.raster_brain_link import record_raster_analysis
+        await record_raster_analysis(
+            layer_id=args.layer_id,
+            summary=(
+                f"Health verdict: {verdict['level']}. "
+                f"{args.crop} at {stage}, NDVI {mean_ndvi:.2f} "
+                f"vs healthy {healthy_low:.2f}-{healthy_high:.2f}."
+            ),
+            source="interpret_raster_health",
+            detail=json.dumps(response.get("evidence", {}), default=str)[:4000],
+            owner_uuid=str(meta.user_uuid),
+        )
+    except Exception:
+        logger.debug("Brain timeline write skipped for interpret_raster_health", exc_info=True)
+
     return response
 
 
@@ -565,13 +583,42 @@ async def find_stress_zones(
         )
         if "error" in result:
             return result
-        return {
+        response = {
             "layer_id": args.layer_id,
             "name": desc["name"],
             "ndvi_threshold": ndvi_threshold,
             "min_area_ha": min_area_ha,
             **result,
         }
+        # Append to Brain timeline so future Sage queries can recall the
+        # zone count without re-running the connected-components compute.
+        try:
+            from src.services.raster_brain_link import record_raster_analysis
+            zones = result.get("stress_zones", [])
+            total_ha = result.get("total_stress_area_ha", 0.0)
+            await record_raster_analysis(
+                layer_id=args.layer_id,
+                summary=(
+                    f"Found {len(zones)} stress zone(s), total {total_ha} ha "
+                    f"at NDVI threshold {ndvi_threshold}, min area {min_area_ha} ha."
+                ),
+                source="find_stress_zones",
+                detail=json.dumps({
+                    "ndvi_threshold": ndvi_threshold,
+                    "min_area_ha": min_area_ha,
+                    "zones": [
+                        {k: z.get(k) for k in ("zone_id", "area_ha", "mean_ndvi",
+                                               "severity", "center_lon", "center_lat")}
+                        for z in zones[:20]
+                    ],
+                    "total_stress_area_ha": total_ha,
+                    "zone_count": result.get("zone_count"),
+                }, default=str)[:4000],
+                owner_uuid=str(meta.user_uuid),
+            )
+        except Exception:
+            logger.debug("Brain timeline write skipped for find_stress_zones", exc_info=True)
+        return response
     except asyncio.TimeoutError:
         return {"error": "find_stress_zones timed out after 90 seconds."}
     except Exception as e:
@@ -934,7 +981,7 @@ async def compare_rasters(
             f"{stage_t1 or 'unknown'} → {stage_t2 or 'unknown'}. Worth monitoring."
         )
 
-    return {
+    response = {
         "verdict": verdict,
         "message": verdict_msg,
         "evidence": {
@@ -975,6 +1022,30 @@ async def compare_rasters(
             "rainfall_days_with_data": rainfall_days_with_data,
         },
     }
+    # Append timeline entries to BOTH layers' brain pages so the comparison
+    # event shows up in either flight's history.
+    try:
+        from src.services.raster_brain_link import record_raster_analysis
+        compare_summary = (
+            f"Compared with {t2_row['name']} ({t2_date.date()}): "
+            f"verdict={verdict}, delta_NDVI={diff_result['delta_mean']:+.2f}, "
+            f"interval={round(interval_days,1)}d."
+        )
+        for which, layer in (("t1", t1_row), ("t2", t2_row)):
+            other = t2_row if which == "t1" else t1_row
+            await record_raster_analysis(
+                layer_id=layer["layer_id"],
+                summary=(
+                    f"compare_rasters vs {other['name']}: {verdict}, "
+                    f"delta NDVI {diff_result['delta_mean']:+.2f}."
+                ),
+                source="compare_rasters",
+                detail=json.dumps(response.get("evidence", {}), default=str)[:4000],
+                owner_uuid=str(meta.user_uuid),
+            )
+    except Exception:
+        logger.debug("Brain timeline write skipped for compare_rasters", exc_info=True)
+    return response
 
 
 # ── evaluate_insurance_trigger ──────────────────────────────────────────────
@@ -1210,7 +1281,7 @@ async def evaluate_insurance_trigger(
         else:
             payout_rec = "NO_PAYOUT — signals do not indicate insurable damage."
 
-    return {
+    response = {
         "triggered": triggered,
         "composite_score": composite_score,
         "payout_recommendation": payout_rec,
@@ -1262,3 +1333,30 @@ async def evaluate_insurance_trigger(
         "compare_rasters_verdict": cmp.get("verdict"),
         "compare_rasters_message": cmp.get("message"),
     }
+    # Append timeline entries to BOTH layers' brain pages so the trigger
+    # evaluation is recorded in either flight's history.
+    try:
+        from src.services.raster_brain_link import record_raster_analysis
+        for lid in (args.layer_id_after, args.layer_id_before):
+            if not lid:
+                continue
+            await record_raster_analysis(
+                layer_id=lid,
+                summary=(
+                    f"Insurance trigger: {payout_rec.split(' — ')[0]}, "
+                    f"composite_score={composite_score}, triggered={triggered}, "
+                    f"crop={args.crop}, stage={stage_t2}."
+                ),
+                source="evaluate_insurance_trigger",
+                detail=json.dumps({
+                    "triggered": triggered,
+                    "composite_score": composite_score,
+                    "payout_recommendation": payout_rec,
+                    "signals": {k: {"score": v["score"], "status": v["status"]}
+                                for k, v in response["signals"].items()},
+                }, default=str)[:4000],
+                owner_uuid=str(meta.user_uuid),
+            )
+    except Exception:
+        logger.debug("Brain timeline write skipped for evaluate_insurance_trigger", exc_info=True)
+    return response
