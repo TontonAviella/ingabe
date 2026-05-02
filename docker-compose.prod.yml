@@ -109,37 +109,34 @@ services:
   # mc: kept — one-shot S3 user setup (~3s, exits immediately)
   # backup: already has restart: unless-stopped in base
 
-  # --- Milvus Standalone for Phase 2 Clay embedding similarity search ---
-  # Single-container deployment with embedded etcd. Stores 768-dim Clay v1.5
+  # --- Qdrant for Phase 2 Clay embedding similarity search ---
+  # Single Rust binary, no etcd/minio dependencies. Stores 1024-dim Clay v1.5
   # tile embeddings tagged with (layer_id, partner_id, tile_x, tile_y) for
   # find_similar_tiles. No host port binding — only mundi-app reaches it.
-  milvus:
-    container_name: mundi-milvus
-    image: milvusdb/milvus:v2.6.14
-    command: ["milvus", "run", "standalone"]
-    security_opt:
-      - "seccomp:unconfined"
+  # Replaced Milvus standalone (image was 1.7 GB + etcd + minio bundled);
+  # Qdrant is one process, ~50-100 MiB resident at our scale.
+  qdrant:
+    container_name: mundi-qdrant
+    image: qdrant/qdrant:v1.17.1
     environment:
-      - ETCD_USE_EMBED=true
-      - ETCD_DATA_DIR=/var/lib/milvus/etcd
-      - ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml
-      - COMMON_STORAGETYPE=local
-      - DEPLOY_MODE=STANDALONE
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      # Storage on a named volume so data survives container restarts.
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
     volumes:
-      - milvus_data:/var/lib/milvus
-      - ./milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro
-      - ./milvus/user.yaml:/milvus/configs/user.yaml:ro
+      - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
       interval: 30s
-      start_period: 90s
-      timeout: 20s
+      start_period: 30s
+      timeout: 10s
       retries: 3
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 2G
     networks:
       - default
 
@@ -160,4 +157,4 @@ services:
     profiles: ["dev"]
 
 volumes:
-  milvus_data:
+  qdrant_data:

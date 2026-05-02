@@ -1,17 +1,25 @@
 """Brain embedding pipeline: chunk text and generate vector embeddings.
 
 Chunks brain page content (compiled_truth + timeline) into ~500-token pieces,
-calls text-embedding-3-large via OpenAI-compatible API (OpenRouter, OpenAI, etc.),
-and stores via BrainService.upsert_chunks().
+calls Ollama's nomic-embed-text (local, sovereign, 768-dim) by default, and
+stores via BrainService.upsert_chunks().
+
+A previous version used OpenAI text-embedding-3-large via OpenAI-compatible API.
+That broke in prod because OPENAI_API_KEY started pointing at OpenRouter (which
+does not host embedding models), producing a 401 storm. Local Ollama avoids
+that class of bug entirely and keeps partner_internal brain pages from leaving
+the box. Override path remains for any future cloud swap.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
-import textwrap
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 from typing import Optional
 
@@ -27,34 +35,84 @@ _AUTH_BACKOFF_SECONDS = 600
 _EXPAND_CACHE: dict[str, tuple[float, list[str]]] = {}
 _EXPAND_CACHE_TTL = 300  # 5 minutes
 
-# Model config
-_OPENAI_EMBED_MODEL = "text-embedding-3-large"
-_EMBED_DIMS = 1536
+# Model config — defaults to local Ollama nomic-embed-text (768-dim, English-strong,
+# Apache 2.0). Override via env if you ever need to swap to a cloud provider.
+_DEFAULT_PROVIDER = "ollama"  # "ollama" | "openai"
+_OLLAMA_DEFAULT_MODEL = "nomic-embed-text"
+_OLLAMA_DEFAULT_DIMS = 768
+_OPENAI_DEFAULT_MODEL = "text-embedding-3-large"
+_OPENAI_DEFAULT_DIMS = 1536
 _CHUNK_SIZE = 500  # tokens (~2000 chars)
 _CHUNK_OVERLAP = 50  # tokens overlap between chunks
 
 
-def _resolve_embed_config() -> tuple[str, str, str]:
-    """Return (api_key, base_url, model) for the embeddings client.
+def _resolve_embed_config() -> dict:
+    """Return {provider, base_url, api_key, model, dims} for the embeddings client.
 
-    Supports two configurations:
-      1. Dedicated: BRAIN_EMBEDDINGS_API_KEY + BRAIN_EMBEDDINGS_BASE_URL
-      2. Direct OpenAI: OPENAI_API_KEY + api.openai.com/v1 (default)
-    OPENAI_BASE_URL is intentionally NOT used — it points to OpenRouter
-    in prod, which cannot serve embedding models.
+    Provider selection:
+      1. BRAIN_EMBEDDINGS_PROVIDER env ("ollama" or "openai") wins if set.
+      2. Otherwise default to "ollama" (local nomic-embed-text).
+
+    For Ollama: base_url defaults to http://ollama:11434/api/embeddings (the
+    docker-internal hostname). Model + dims default to nomic-embed-text/768.
+
+    For OpenAI: requires BRAIN_EMBEDDINGS_API_KEY (must be a real OpenAI key —
+    we deliberately do NOT fall back to OPENAI_API_KEY since that points at
+    OpenRouter in prod and OpenRouter has no embeddings endpoint).
     """
-    api_key = (
-        os.environ.get("BRAIN_EMBEDDINGS_API_KEY")
-        or os.environ.get("OPENAI_API_KEY", "")
+    provider = (
+        os.environ.get("BRAIN_EMBEDDINGS_PROVIDER", "").strip().lower()
+        or _DEFAULT_PROVIDER
     )
-    base_url = (
-        os.environ.get("BRAIN_EMBEDDINGS_BASE_URL")
-        or "https://api.openai.com/v1"
+
+    if provider == "openai":
+        return {
+            "provider": "openai",
+            "base_url": (
+                os.environ.get("BRAIN_EMBEDDINGS_BASE_URL", "").strip()
+                or "https://api.openai.com/v1"
+            ),
+            "api_key": os.environ.get("BRAIN_EMBEDDINGS_API_KEY", ""),
+            "model": (
+                os.environ.get("BRAIN_EMBEDDINGS_MODEL", "").strip()
+                or _OPENAI_DEFAULT_MODEL
+            ),
+            "dims": int(
+                os.environ.get("BRAIN_EMBEDDINGS_DIMS", "").strip()
+                or _OPENAI_DEFAULT_DIMS
+            ),
+        }
+
+    # Default: local Ollama nomic-embed-text
+    base = (
+        os.environ.get("BRAIN_EMBEDDINGS_BASE_URL", "").strip()
+        or os.environ.get("OLLAMA_BASE_URL", "").strip()
+        or "http://ollama:11434"
     )
-    model = _OPENAI_EMBED_MODEL
-    if "openrouter.ai" in base_url:
-        model = f"openai/{_OPENAI_EMBED_MODEL}"
-    return api_key, base_url, model
+    # Allow OLLAMA_BASE_URL to come in as either "host:port" or "host:port/v1"
+    # (the OpenAI-compat suffix). Strip /v1 — we want the native /api/embeddings
+    # endpoint here, which doesn't follow OpenAI's REST shape.
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return {
+        "provider": "ollama",
+        "base_url": base.rstrip("/"),
+        "api_key": "",
+        "model": (
+            os.environ.get("BRAIN_EMBEDDINGS_MODEL", "").strip()
+            or _OLLAMA_DEFAULT_MODEL
+        ),
+        "dims": int(
+            os.environ.get("BRAIN_EMBEDDINGS_DIMS", "").strip()
+            or _OLLAMA_DEFAULT_DIMS
+        ),
+    }
+
+
+def get_embed_dims() -> int:
+    """Public accessor for the active embedding dimension. Used by callers who
+    need to size pgvector columns or sanity-check vectors before write."""
+    return _resolve_embed_config()["dims"]
 
 
 def _estimate_tokens(text: str) -> int:
@@ -218,36 +276,99 @@ def _chunk_text_fixed(text: str, chunk_size: int = _CHUNK_SIZE, overlap: int = _
     return chunks
 
 
+def _ollama_embed_one(base_url: str, model: str, text: str, timeout: int = 60) -> list[float]:
+    """Call Ollama /api/embeddings for a single string. Synchronous: Ollama
+    serializes inference per model anyway, so async wouldn't buy throughput.
+    """
+    payload = json.dumps({"model": model, "prompt": text}).encode()
+    req = urllib.request.Request(
+        f"{base_url}/api/embeddings",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read())
+    emb = body.get("embedding")
+    if not isinstance(emb, list) or not emb:
+        raise RuntimeError(f"Ollama returned no embedding (model={model}, body keys={list(body.keys())})")
+    return [float(x) for x in emb]
+
+
 async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
-    """Call embeddings API (OpenAI, OpenRouter, or compatible). Returns (embeddings, resolved_model)."""
+    """Generate embeddings for a batch of texts.
+
+    Default provider is local Ollama (nomic-embed-text, 768-dim). Override to
+    OpenAI by setting BRAIN_EMBEDDINGS_PROVIDER=openai +
+    BRAIN_EMBEDDINGS_API_KEY=<real-OpenAI-key>.
+
+    Returns (embeddings, resolved_model_name).
+    """
     global _auth_failed_at
-    from openai import AsyncOpenAI, AuthenticationError
+
+    # Hard-disable flag: short-circuits all provider calls. Set this if you
+    # ever need to silence the embedding path (e.g. provider outage, debugging).
+    if os.environ.get("BRAIN_EMBEDDINGS_DISABLED", "").strip().lower() in ("1", "true", "yes"):
+        raise RuntimeError("Embeddings disabled via BRAIN_EMBEDDINGS_DISABLED env")
 
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
-        raise RuntimeError("Embeddings disabled: auth failed recently, retrying in %ds" % int(
-            _AUTH_BACKOFF_SECONDS - (time.monotonic() - _auth_failed_at)))
+        raise RuntimeError(
+            "Embeddings disabled: auth failed recently, retrying in %ds"
+            % int(_AUTH_BACKOFF_SECONDS - (time.monotonic() - _auth_failed_at))
+        )
 
-    api_key, base_url, model = _resolve_embed_config()
-    if not api_key:
-        raise RuntimeError("No API key for embeddings (set BRAIN_EMBEDDINGS_API_KEY or OPENAI_API_KEY)")
+    cfg = _resolve_embed_config()
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    if cfg["provider"] == "ollama":
+        # Ollama's /api/embeddings is one-text-per-call. Loop in a thread pool
+        # so we don't block the asyncio event loop on the (CPU-bound,
+        # single-stream) inference. nomic-embed-text on 8 vCPU CPU is ~50ms
+        # per text for chunks of our size, so a 20-chunk page takes ~1s.
+        import asyncio
 
+        loop = asyncio.get_event_loop()
+
+        async def _embed_one(t: str) -> list[float]:
+            return await loop.run_in_executor(
+                None, _ollama_embed_one, cfg["base_url"], cfg["model"], t
+            )
+
+        embeddings = await asyncio.gather(*(_embed_one(t) for t in texts))
+
+        # Sanity-check the dim — if Ollama is serving a different model than
+        # we expect, fail loud rather than silently writing wrong-dim vectors
+        # into pgvector (where a dim mismatch would error on insert anyway).
+        if embeddings and len(embeddings[0]) != cfg["dims"]:
+            raise RuntimeError(
+                f"Ollama embedding dim mismatch: expected {cfg['dims']}, got {len(embeddings[0])} "
+                f"(model={cfg['model']}, base_url={cfg['base_url']})"
+            )
+        return list(embeddings), cfg["model"]
+
+    # OpenAI provider path (kept for the eventual cloud-tier swap)
+    from openai import AsyncOpenAI, AuthenticationError
+
+    if not cfg["api_key"]:
+        raise RuntimeError(
+            "OpenAI embeddings selected but BRAIN_EMBEDDINGS_API_KEY is empty. "
+            "Set a real OpenAI key, or remove BRAIN_EMBEDDINGS_PROVIDER to fall "
+            "back to the local Ollama default."
+        )
+
+    client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
     try:
         response = await client.embeddings.create(
-            model=model,
-            input=texts,
-            dimensions=_EMBED_DIMS,
+            model=cfg["model"], input=texts, dimensions=cfg["dims"],
         )
     except AuthenticationError:
         _auth_failed_at = time.monotonic()
         logger.error(
             "Embeddings auth failed against %s, disabling for %ds.",
-            base_url, _AUTH_BACKOFF_SECONDS,
+            cfg["base_url"], _AUTH_BACKOFF_SECONDS,
         )
         raise
 
-    return [item.embedding for item in response.data], model
+    return [item.embedding for item in response.data], cfg["model"]
 
 
 async def expand_query(query: str, n_variants: int = 3) -> list[str]:
@@ -271,14 +392,22 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
         return [query]
 
-    api_key, base_url, _ = _resolve_embed_config()
+    # expand_query is a CHAT call, not an embedding call. Use the same LLM
+    # client config the rest of Sage uses (OPENAI_API_KEY/OPENAI_BASE_URL),
+    # which currently routes via OpenRouter or local Ollama. The embedding
+    # provider is independent and may be a different service.
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    chat_model = os.environ.get("BRAIN_QUERY_EXPANSION_MODEL", "").strip() or os.environ.get(
+        "OPENAI_MODEL", "gpt-4.1-nano"
+    )
     if not api_key:
         return [query]
 
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
     try:
         resp = await client.chat.completions.create(
-            model="gpt-4.1-nano",
+            model=chat_model,
             messages=[
                 {
                     "role": "system",
@@ -372,6 +501,8 @@ async def embed_all_stale(
 
     Returns: {embedded: int, skipped: int, errors: int}
     """
+    if os.environ.get("BRAIN_EMBEDDINGS_DISABLED", "").strip().lower() in ("1", "true", "yes"):
+        return {"embedded": 0, "skipped": 0, "errors": 0, "disabled_by_env": True}
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
         return {"embedded": 0, "skipped": 0, "errors": 0, "auth_disabled": True}
 

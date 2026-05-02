@@ -157,7 +157,7 @@ pytest-timeout==2.3.1
 pytest-xdist==3.8.0
 python-dateutil==2.8.2
 python-dotenv==1.1.0
-pymilvus==2.6.2
+qdrant-client==1.17.1
 python-multipart==0.0.20
 pythran==0.11.0
 pytz==2022.7.1
@@ -206,7 +206,7 @@ tzdata==2025.2
 ufolib2==0.14.0
 unidiff==0.7.5
 uritemplate==4.1.1
-urllib3==1.26.12
+urllib3==1.26.20
 utm==0.7.0
 uvicorn==0.34.3
 uvloop==0.21.0

@@ -1,9 +1,9 @@
 """Phase 2 Sage tool: find tiles visually similar to a query point in a
 user-uploaded raster, across ALL the user's other rasters.
 
-Powered by Clay v1.5 embeddings stored in Milvus. The query is a (layer_id,
-longitude, latitude) point — we look up the embedding of the tile that
-contains the query point, then run cosine similarity search in Milvus
+Powered by Clay v1.5 embeddings stored in Qdrant. The query is a (layer_id,
+longitude, latitude) point. We look up the embedding of the tile that
+contains the query point, then run cosine similarity search in Qdrant
 restricted to layers the partner can see.
 
 Use case: "find other fields in my flights that look like this damaged
@@ -46,13 +46,12 @@ class FindSimilarTilesArgs(BaseModel):
 async def find_similar_tiles(
     args: FindSimilarTilesArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
-    """Find tiles visually similar to a point in a user's raster, across all of that user's other rasters. Powered by Clay v1.5 visual embeddings in Milvus. Use this when the user asks 'find other fields that look like this stressed patch', 'have we seen this damage pattern in any other flight?', 'show me similar areas across my orthophotos', or any cross-flight visual similarity question. Returns top-K similar tiles ranked by cosine similarity (1.0 = identical, lower = less similar). For exact-match analysis at a single point use read_pixel_at; for whole-field health verdict use interpret_raster_health. Only works on rgb_visual rasters that have been embedded (orthophotos auto-embed after COG conversion completes)."""
+    """Find tiles visually similar to a point in a user's raster, across all of that user's other rasters. Powered by Clay v1.5 visual embeddings in Qdrant. Use this when the user asks 'find other fields that look like this stressed patch', 'have we seen this damage pattern in any other flight?', 'show me similar areas across my orthophotos', or any cross-flight visual similarity question. Returns top-K similar tiles ranked by cosine similarity (1.0 = identical, lower = less similar). For exact-match analysis at a single point use read_pixel_at; for whole-field health verdict use interpret_raster_health. Only works on rgb_visual rasters that have been embedded (orthophotos auto-embed after COG conversion completes)."""
     from src.structures import get_async_read_connection
-    from src.services.milvus_client import (
+    from src.services.qdrant_client import (
         ensure_clay_tiles_collection, search_similar_tiles,
-        get_milvus_client, COLLECTION_CLAY_TILES,
+        get_tiles_for_layer,
     )
-    from pymilvus import Collection
 
     top_k = args.top_k if args.top_k > 0 else 10
     top_k = max(1, min(int(top_k), 50))
@@ -89,17 +88,11 @@ async def find_similar_tiles(
             }
 
     # 2. Find the embedding of the tile that contains the query point.
-    get_milvus_client()
     ensure_clay_tiles_collection()
-    coll = Collection(COLLECTION_CLAY_TILES)
 
     # Pull all tiles for the source layer; pick the one whose bbox covers the
     # query point. Tiles are typically <500/layer so this is cheap.
-    src_tiles = coll.query(
-        expr=f'layer_id == "{args.layer_id}"',
-        output_fields=["embedding", "tile_x", "tile_y", "bbox_wgs84"],
-        limit=2000,
-    )
+    src_tiles = get_tiles_for_layer(args.layer_id, limit=2000)
     if not src_tiles:
         return {
             "error": "no_embeddings",
@@ -168,7 +161,7 @@ async def find_similar_tiles(
         for r in owned
     }
 
-    # 4. Search Milvus for top-K similar tiles
+    # 4. Search Qdrant for top-K similar tiles
     raw_hits = search_similar_tiles(
         query_embedding=query_emb,
         visible_layer_ids=visible_ids,

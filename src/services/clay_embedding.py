@@ -240,9 +240,9 @@ def _embed_layer_sync(
     import psycopg2
     import psycopg2.extras
     import boto3
-    from src.services.milvus_client import (
+    from src.services.qdrant_client import (
         ensure_clay_tiles_collection, insert_tile_embeddings,
-        delete_layer_embeddings,
+        delete_layer_embeddings, get_layer_embedding_count,
     )
     from src.tools.raster_query import _detect_raster_type
 
@@ -289,17 +289,7 @@ def _embed_layer_sync(
 
     ensure_clay_tiles_collection()
     if skip_if_already_embedded:
-        from src.services.milvus_client import (
-            get_milvus_client, COLLECTION_CLAY_TILES,
-        )
-        from pymilvus import Collection
-        get_milvus_client()
-        coll = Collection(COLLECTION_CLAY_TILES)
-        existing = coll.query(
-            expr=f'layer_id == "{layer_id}"',
-            output_fields=["id"], limit=1,
-        )
-        if existing:
+        if get_layer_embedding_count(layer_id) > 0:
             return {
                 "layer_id": layer_id, "status": "already_embedded",
                 "tiles_embedded": 0,

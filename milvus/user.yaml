@@ -1,3 +1,0 @@
-# Extra config to override default milvus.yaml
-# Phase 2 Clay+Milvus integration. Empty by default — Milvus uses built-in
-# defaults. Add overrides here as needed (queryNode tuning, etc).
