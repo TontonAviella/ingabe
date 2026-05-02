@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------------
+# scripts/prod — operational wrapper for prod docker compose
+#
+# Why this exists:
+#   On 2026-05-02 mundi-app was restarted with
+#     docker compose --env-file .env.prod up -d --force-recreate app
+#   This silently DROPPED docker-compose.prod.yml, which is the only
+#   place GDAL_HTTP_UNSAFESSL=YES, S3 extra_hosts aliases, and other
+#   prod overrides live. COG tile rendering broke for hours because
+#   GDAL/vsicurl rejected the docker-internal s3-gis hostname's cert
+#   without that flag. The container runs, /health returns 200, but
+#   every map tile is a 334-byte transparent placeholder.
+#
+#   Memory note: ~/.claude/.../feedback_prod_compose_files.md.
+#
+#   The class of bug: on the prod box, ad-hoc `docker compose ...`
+#   commands forget to pass both -f files. There's no way to detect
+#   the drop except "weird tile rendering bug a few hours later."
+#
+# What this wrapper does:
+#   * Always pass -f docker-compose.yml -f docker-compose.prod.yml
+#     --env-file .env.prod, no exceptions.
+#   * After `recreate app`, automatically `nginx -s reload` to clear
+#     the upstream-IP cache on the nginx container (separate bug we
+#     hit twice, also documented in memory).
+#   * After `recreate app`, verify the critical env vars actually
+#     made it into the container, and FAIL LOUDLY if any are missing.
+#     This catches the exact silent-drop bug above.
+#
+# Usage:
+#   scripts/prod up [service]          # docker compose up -d
+#   scripts/prod restart [service]     # restart preserving overrides
+#   scripts/prod recreate <service>    # force-recreate + reload nginx + verify
+#   scripts/prod logs [service]        # tail logs
+#   scripts/prod status                # all containers + health
+#   scripts/prod verify [service]      # check critical env vars in-container
+#   scripts/prod exec <service> <cmd>  # docker compose exec
+#   scripts/prod dry-run <args...>     # print the command, don't run
+#
+# Anything not listed above is passed through to docker compose with
+# the enforced flags. Example: `scripts/prod ps` becomes
+#   docker compose -f ... -f docker-compose.prod.yml --env-file ... ps
+#
+# This script is intentionally simple. It does not deploy code; for
+# that, use scripts/deploy.sh from your local checkout.
+# ------------------------------------------------------------------
+set -euo pipefail
+
+PROD_DIR=/home/deploy/mundi.ai
+
+# Colors. Disable if not a tty (e.g. piped to less).
+if [[ -t 1 ]]; then
+  C_OK=$'\033[1;32m'; C_WARN=$'\033[1;33m'; C_ERR=$'\033[1;31m'
+  C_INFO=$'\033[1;36m'; C_DIM=$'\033[2m'; C_RST=$'\033[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_INFO=""; C_DIM=""; C_RST=""
+fi
+
+info() { printf '%s[prod]%s %s\n' "$C_INFO" "$C_RST" "$*"; }
+ok()   { printf '%s[prod]%s %s\n' "$C_OK"   "$C_RST" "$*"; }
+warn() { printf '%s[prod]%s %s\n' "$C_WARN" "$C_RST" "$*" >&2; }
+die()  { printf '%s[prod]%s %s\n' "$C_ERR"  "$C_RST" "$*" >&2; exit 1; }
+
+# Refuse to run anywhere except prod. Cheap insurance against pasting
+# this command into the wrong shell.
+if [[ ! -d "$PROD_DIR" ]]; then
+  die "$PROD_DIR not found. This script only runs on the Hetzner prod box."
+fi
+
+cd "$PROD_DIR"
+
+for f in docker-compose.yml docker-compose.prod.yml .env.prod; do
+  [[ -f "$f" ]] || die "missing $PROD_DIR/$f"
+done
+
+COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod)
+
+# Critical env vars that MUST be present in mundi-app for the app to
+# actually function (not just respond to /health). Each one is here
+# because we already had an outage caused by it being missing.
+#
+# GDAL_HTTP_UNSAFESSL — without this, vsicurl rejects the
+#   docker-internal s3-gis hostname's cert, and every COG tile
+#   render returns a 334-byte transparent placeholder.
+# S3_ENDPOINT_URL — without it set to s3-gis.nozalabs.rw, browser
+#   uploads fail with TLS handshake error at the Cloudflare edge.
+APP_REQUIRED_ENV=(
+  GDAL_HTTP_UNSAFESSL
+  S3_ENDPOINT_URL
+  POSTGRES_HOST
+  REDIS_HOST
+)
+
+usage() {
+  sed -n '/^# Usage:/,/^# This script is intentionally simple/p' "$0" | sed 's/^# \?//'
+}
+
+run() {
+  printf '%s+ %s%s\n' "$C_DIM" "$*" "$C_RST"
+  "$@"
+}
+
+verify_app_env() {
+  local container="${1:-mundi-app}"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$container"; then
+    die "container $container is not running"
+  fi
+  info "verifying $container env vars"
+  local missing=()
+  for var in "${APP_REQUIRED_ENV[@]}"; do
+    local value
+    value=$(docker exec "$container" sh -c "printenv $var" 2>/dev/null || true)
+    if [[ -z "$value" ]]; then
+      printf '  %s✗%s %-32s MISSING\n' "$C_ERR" "$C_RST" "$var"
+      missing+=("$var")
+    else
+      # Mask anything that looks like a secret. Otherwise show it.
+      local display
+      if [[ "$var" == *KEY* || "$var" == *SECRET* || "$var" == *PASSWORD* || "$var" == *TOKEN* ]]; then
+        display="${value:0:4}…${value: -4}"
+      else
+        display="$value"
+      fi
+      printf '  %s✓%s %-32s %s\n' "$C_OK" "$C_RST" "$var" "$display"
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    warn ""
+    warn "${#missing[@]} critical env var(s) missing: ${missing[*]}"
+    warn "This means $container was started without -f docker-compose.prod.yml."
+    warn "Fix: $0 recreate ${container#mundi-}"
+    exit 1
+  fi
+  ok "all critical env vars present"
+}
+
+reload_nginx_after_app() {
+  local svc="${1:-}"
+  case "$svc" in
+    app|mundi-app)
+      if docker ps --format '{{.Names}}' | grep -qx mundi-nginx; then
+        info "reloading nginx (app container IP may have changed)"
+        run docker exec mundi-nginx nginx -s reload
+      fi
+      ;;
+  esac
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  -h|--help|help|"")
+    usage
+    ;;
+
+  up)
+    run "${COMPOSE[@]}" up -d "$@"
+    ;;
+
+  restart)
+    run "${COMPOSE[@]}" restart "$@"
+    reload_nginx_after_app "${1:-}"
+    if [[ "${1:-}" == "app" || "${1:-}" == "mundi-app" || $# -eq 0 ]]; then
+      sleep 3
+      verify_app_env mundi-app
+    fi
+    ;;
+
+  recreate)
+    [[ $# -gt 0 ]] || die "'recreate' requires a service name. Use 'up' for all."
+    run "${COMPOSE[@]}" up -d --force-recreate "$@"
+    reload_nginx_after_app "$1"
+    if [[ "$1" == "app" || "$1" == "mundi-app" ]]; then
+      sleep 3
+      verify_app_env mundi-app
+    fi
+    ;;
+
+  logs)
+    run "${COMPOSE[@]}" logs --tail=200 -f "$@"
+    ;;
+
+  status)
+    docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+    ;;
+
+  verify)
+    verify_app_env "${1:-mundi-app}"
+    ;;
+
+  exec)
+    [[ $# -ge 2 ]] || die "exec needs <service> <command...>"
+    svc="$1"; shift
+    run "${COMPOSE[@]}" exec "$svc" "$@"
+    ;;
+
+  dry-run)
+    printf 'would run: %s %s\n' "${COMPOSE[*]}" "$*"
+    ;;
+
+  *)
+    # Pass-through for any other docker compose subcommand. Still
+    # gets the enforced -f and --env-file flags.
+    run "${COMPOSE[@]}" "$cmd" "$@"
+    ;;
+esac
