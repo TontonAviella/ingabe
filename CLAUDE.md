@@ -10,7 +10,7 @@ AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and poi
 
 ### Docker (primary development method)
 ```bash
-docker compose up                              # Start all services (app, postgres, redis, minio, qgis-processing)
+docker compose up                              # Start all services (app, postgres+pgvector, redis, minio, qgis-processing, qdrant, ollama)
 docker compose build                           # Rebuild images
 docker compose run app pytest -xvs -n auto     # Run all tests in Docker
 ```
@@ -52,14 +52,22 @@ npm run watch                                  # Watch mode (tsc + vite)
 ### AI/LLM Integration
 - OpenAI function calling with tools defined in `src/geoprocessing/tools.json`
 - `src/dependencies/chat_completions.py` and `src/dependencies/pydantic_tools.py` wire up tool dispatch
-- `src/tools/` contains Pydantic tool handler modules (ALOS, CYGNSS, SAR, WaPOR, food security, insurance, spectral index, etc.)
+- `src/tools/` contains Pydantic tool handler modules (ALOS, CYGNSS, SAR, WaPOR, food security, insurance, spectral index, raster interpretation, similarity search, etc.)
 - `src/symbology/llm.py` generates MapLibre styles via LLM
 - WebSocket streaming for real-time chat completions and tool execution updates
 
+### Sage Tool Surface
+- **Phase 1 raster interpretation** (`src/tools/raster_interpret.py`): mechanical (`describe_user_raster`, `compute_zonal_stats`, `get_value_distribution`, `read_pixel_at`, `find_stress_zones`) + verdicts (`interpret_raster_health`, `compare_rasters`, `evaluate_insurance_trigger`)
+- **Phase 2 visual similarity** (`src/tools/similarity.py` + `src/services/clay_embedding.py`): Clay v1.5 cls_token embeddings → Qdrant cosine search, drone tile auto-embedding on COG completion
+- **Insurance intelligence** (`src/services/insurance_engine.py`): location-based agricultural reports combining CHIRPS, NDVI, WaPOR, SAR, soil moisture across Rwanda's Season A/B/C calendar
+
 ### Storage & Services
-- **PostgreSQL 15**: App metadata + PostGIS for spatial data
+- **PostgreSQL 15 + pgvector 0.8.2**: App metadata, PostGIS spatial data, brain page embeddings (768-dim from Ollama nomic-embed-text)
 - **MinIO/S3**: File storage for layers (FlatGeoBuf, GeoJSON, LAZ, GeoTIFF)
+- **Cloudflare R2** (optional, when 4 R2_* env vars set): transit upload layer for fast uploads from Africa edges; background worker pulls R2 → MinIO. 1-day lifecycle delete on R2 bucket.
 - **Redis**: Caching layer
+- **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
+- **Ollama**: Local LLM container hosting nomic-embed-text (Brain embeddings) + qwen2.5:7b-64k (Sage fallback). Sage primary uses gemma4:31b via Ollama Cloud direct API.
 - **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)
@@ -87,8 +95,15 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `S3_*` | S3/MinIO connection (ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT_URL, BUCKET, DEFAULT_REGION) |
 | `POSTGRES_*` | Database connection (HOST, PORT, DB, USER, PASSWORD) |
 | `REDIS_HOST/PORT` | Redis cache |
-| `OPENAI_API_KEY` | LLM provider key |
-| `OPENAI_BASE_URL` | Optional, for local LLMs (e.g., Ollama) |
+| `OPENAI_API_KEY` | LLM provider key (used as bearer for `OPENAI_BASE_URL`) |
+| `OPENAI_BASE_URL` | LLM endpoint. Prod: `https://ollama.com/v1` for Gemma 4 31B Cloud. |
+| `OPENAI_MODEL` | Primary chat model. Prod: `gemma4:31b` |
+| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to local Ollama container. Prod: `ollama:qwen2.5:7b-64k` |
+| `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
+| `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
+| `BRAIN_EMBEDDINGS_API_KEY` | Required when `BRAIN_EMBEDDINGS_PROVIDER=openai`. Distinct from `OPENAI_API_KEY` so Brain auth is isolated from Sage chat auth. |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_GRPC_PORT` | Qdrant connection. Defaults: `qdrant` / `6333` / `6334` |
+| `R2_ENDPOINT_URL` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` | All four required to activate Cloudflare R2 transit upload layer. Without them, uploads go direct to MinIO. |
 | `QGIS_PROCESSING_URL` | QGIS service endpoint |
 | `POSTGIS_LOCALHOST_POLICY` | `docker_rewrite` or `disallow` |
 
