@@ -1367,10 +1367,8 @@ async def process_chat_interaction_task(
                 return sum(len(json.dumps(m)) // 3 for m in msgs)
 
             # Max estimated input (msgs+tools) that won't overflow when
-            # real tokens are up to 1.6x our estimate:
-            #   real_input = est_input * 1.6
-            #   real_input + output <= limit
-            #   est_input <= (limit - output) / 1.6
+            # real tokens are up to 2x our estimate:
+            #   est_input <= (limit - output) / 2.0
             _max_estimated_input = int(
                 (_MODEL_CONTEXT_LIMIT - _DESIRED_OUTPUT_TOKENS) / _UNDERESTIMATE_FACTOR
             )
@@ -5118,38 +5116,89 @@ async def process_chat_interaction_task(
                         elif function_name == "get_insurance_intelligence":
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
+                                _ins_raw_crop = tool_args.get("crop", "auto")
+                                _ins_crop = "auto" if _ins_raw_crop in ("maize", "auto") else _ins_raw_crop
+                                _ins_crop_explicit = _ins_crop != "auto"
+                                _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
-                                    crop=tool_args.get("crop", "maize"),
+                                    crop=_ins_crop,
                                     season=tool_args.get("season"),
                                     district=tool_args.get("district"),
                                     sector=tool_args.get("sector"),
                                     cell=tool_args.get("cell"),
                                     village=tool_args.get("village"),
-                                    audience=tool_args.get("audience", "farmer"),
+                                    audience=tool_args.get("audience", "agronomist"),
+                                    compare_level=_ins_compare,
                                 )
-                                # Save to Brain for audit trail + future retrieval
-                                if tool_result.get("status") == "ok":
+                                if tool_result.get("mode") == "comparison" and tool_result.get("status") == "ok":
+                                    tool_result["instruction"] = (
+                                        "Present the comparison naturally. Highlight which areas stand out "
+                                        "(wettest, driest, best NDVI, worst soil moisture, etc). "
+                                        "Use a short table if >3 areas, otherwise describe in sentences. "
+                                        "Mention the most interesting contrasts — don't list every number for every area. "
+                                        "End with sources in parentheses."
+                                    )
+                                elif tool_result.get("status") == "ok":
+                                    tool_result["_report_for_brain"] = tool_result.pop("report", "")
+                                    _ins_d = tool_result.get("data", {})
+                                    _ins_triggers = _ins_d.get("triggers", [])
+                                    _fired = [t for t in _ins_triggers if t.get("triggered")]
+                                    _fired_summary = ", ".join(
+                                        f"{t['signal']} ({t['current_value']} vs threshold {t['threshold']})"
+                                        for t in _fired
+                                    ) if _fired else "none"
+                                    _headline = (
+                                        f"{_ins_d.get('location', '?')} — {_ins_d.get('crop', '?')} Season {_ins_d.get('season', '?')}, "
+                                        f"{_ins_d.get('growth_phase', '?')} phase (day {_ins_d.get('days_after_planting', '?')}). "
+                                        f"Status: {_ins_d.get('overall_status', '?')} | Confidence: {_ins_d.get('confidence_score', '?')}/100"
+                                    )
+                                    _key_numbers = (
+                                        f"Rain: {_ins_d.get('season_rainfall_mm', '?')}mm total, SPI {_ins_d.get('spi', '?')}. "
+                                        f"Longest dry spell: {_ins_d.get('max_dry_spell_days', '?')} days. "
+                                        f"NDVI z-score: {_ins_d.get('ndvi_z_score', 'n/a')}. "
+                                        f"ET anomaly: {_ins_d.get('et_anomaly_pct', 'n/a')}%. "
+                                        f"Soil moisture: {_ins_d.get('soil_moisture_pct', 'n/a')}%."
+                                    )
+                                    tool_result["summary"] = _headline
+                                    tool_result["key_numbers"] = _key_numbers
+                                    tool_result["triggers_fired"] = _fired_summary
+                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)}"
+                                    tool_result["recommendation"] = _ins_d.get("recommendation", "")
+                                    tool_result["sources"] = _ins_d.get("sources", [])
+                                    tool_result["period"] = f"{_ins_d.get('period_start', '')} to {_ins_d.get('period_end', '')}"
+                                    del tool_result["data"]
+                                    tool_result["instruction"] = (
+                                        "Respond like a knowledgeable colleague in 2-4 sentences. "
+                                        "Lead with what's most notable (a trigger firing, drought stress, or healthy conditions). "
+                                        "Mention only 2-3 numbers that matter most — skip the rest. "
+                                        "Do NOT list every metric. Do NOT use bullet points or tables. "
+                                        "End with sources in parentheses."
+                                    )
+                                if not _ins_crop_explicit and tool_result.get("status") == "ok" and not _ins_compare:
+                                    _auto_crop = tool_result.get("data", {}).get("crop", "beans")
+                                    tool_result["note"] = f"The user did not specify a crop, so this report uses {_auto_crop} (the primary crop for this area). Mention this naturally — e.g. 'Here is the report for {_auto_crop}, the main crop grown here.' If the user wants a different crop, they can ask."
+                                # Save to Brain for audit trail + future retrieval (skip for comparisons)
+                                if tool_result.get("status") == "ok" and not _ins_compare:
                                     try:
                                         from src.dependencies.brain_dep import get_brain_service
                                         from src.services.brain_service import PageInput, TimelineInput
                                         _ins_brain = get_brain_service()
                                         _ins_slug = tool_result.get("slug", "insurance-report").lower()
-                                        _ins_data = tool_result.get("data", {})
                                         _ins_geom = tool_result.get("geometry")
                                         _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
                                         _page_input = PageInput(
                                             type="insurance_intelligence",
-                                            title=f"Insurance: {_ins_data.get('crop', '')} in {_ins_data.get('location', '')} Season {_ins_data.get('season', '')}",
-                                            compiled_truth=tool_result.get("report", ""),
+                                            title=f"Insurance: {_ins_d.get('crop', '')} in {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
+                                            compiled_truth=tool_result.get("_report_for_brain", ""),
                                             frontmatter={
                                                 "type": "insurance_intelligence",
-                                                "crop": _ins_data.get("crop"),
-                                                "season": _ins_data.get("season"),
-                                                "location": _ins_data.get("location"),
-                                                "admin_level": _ins_data.get("admin_level"),
-                                                "confidence_score": _ins_data.get("confidence_score"),
-                                                "overall_status": _ins_data.get("overall_status"),
+                                                "crop": _ins_d.get("crop"),
+                                                "season": _ins_d.get("season"),
+                                                "location": _ins_d.get("location"),
+                                                "admin_level": _ins_d.get("admin_level"),
+                                                "confidence_score": _ins_d.get("confidence_score"),
+                                                "overall_status": _ins_d.get("overall_status"),
                                             },
                                             geom_geojson=_ins_geom_str,
                                         )
@@ -5161,14 +5210,14 @@ async def process_chat_interaction_task(
                                         _tl_input = TimelineInput(
                                             date=_date_cls.today(),
                                             summary=(
-                                                f"{_ins_data.get('overall_status', 'UNKNOWN')}: "
-                                                f"{_ins_data.get('crop', '')} in {_ins_data.get('location', '')} "
-                                                f"Season {_ins_data.get('season', '')} — "
-                                                f"confidence {_ins_data.get('confidence_score', 0)}/100, "
-                                                f"{_ins_data.get('triggers_activated', 0)}/{_ins_data.get('triggers_total', 0)} triggers"
+                                                f"{_ins_d.get('overall_status', 'UNKNOWN')}: "
+                                                f"{_ins_d.get('crop', '')} in {_ins_d.get('location', '')} "
+                                                f"Season {_ins_d.get('season', '')} — "
+                                                f"confidence {_ins_d.get('confidence_score', 0)}/100, "
+                                                f"{_ins_d.get('triggers_activated', 0)}/{_ins_d.get('triggers_total', 0)} triggers"
                                             ),
                                             source="insurance_engine",
-                                            detail=json.dumps(_ins_data, default=str),
+                                            detail=json.dumps(_ins_d, default=str),
                                         )
                                         await _ins_brain.add_timeline_entry(
                                             conn, _ins_slug, _tl_input,
@@ -5176,6 +5225,14 @@ async def process_chat_interaction_task(
                                         )
                                     except Exception:
                                         logger.warning("insurance brain save failed", exc_info=True)
+                                    tool_result.pop("_report_for_brain", None)
+                                # Strip the admin-boundary GeoJSON before sending the
+                                # tool result back to the LLM. The geometry is needed
+                                # only for the Brain page save above; leaving it in
+                                # the tool response bloats conversation history by
+                                # 100-185 KB per call and overflows context after a
+                                # handful of turns.
+                                tool_result.pop("geometry", None)
                             except Exception:
                                 logger.exception("get_insurance_intelligence tool failed")
                                 tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}

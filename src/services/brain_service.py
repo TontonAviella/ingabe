@@ -198,8 +198,20 @@ def _extract_link_targets(page: PageInput) -> set[str]:
             except ValueError:
                 pass
     if page.frontmatter:
+        # PageInput.frontmatter is typed Optional[dict], but defensive: if a
+        # caller passed a JSON string (postgres rows often arrive that way
+        # depending on driver codec config), parse it here instead of crashing
+        # with AttributeError on .get().
+        fm = page.frontmatter
+        if isinstance(fm, str):
+            try:
+                fm = json.loads(fm) if fm.strip() else {}
+            except json.JSONDecodeError:
+                fm = {}
+        if not isinstance(fm, dict):
+            fm = {}
         for key in _FRONTMATTER_REF_KEYS:
-            val = page.frontmatter.get(key)
+            val = fm.get(key)
             if isinstance(val, list):
                 for item in val:
                     if isinstance(item, str):

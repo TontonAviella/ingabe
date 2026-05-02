@@ -1,20 +1,26 @@
 import asyncio
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.tools.sar import _parse_bbox
 
 
 class GetAlosLBandStatsArgs(BaseModel):
-    bbox: str
-    years: Optional[str] = None
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    years: str = Field(
+        ...,
+        description="Comma-separated year list (e.g. '2020,2021,2022') OR empty string '' for all available years.",
+    )
 
 
 class GetAlosTemporalVariationArgs(BaseModel):
-    bbox: str
-    years: Optional[str] = None
+    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
+    years: str = Field(
+        ...,
+        description="Comma-separated year list (e.g. '2020,2021,2022') OR empty string '' for all available years.",
+    )
 
 
 def _parse_years(years_str: Optional[str]) -> Optional[list[int]]:

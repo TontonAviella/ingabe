@@ -259,11 +259,29 @@ async def _run_maintenance_cycle() -> None:
             """
         )
         for row in rows:
+            import json as _json
             from src.services.brain_service import PageInput, _extract_link_targets
+            # PageInput requires type + title; _extract_link_targets only reads
+            # compiled_truth + frontmatter, so empty placeholders are safe.
+            # frontmatter comes back from postgres as a JSON string (column is
+            # JSONB but psql/asyncpg may serialize on the way out depending on
+            # codec config). PageInput.frontmatter is typed Optional[dict], and
+            # _extract_link_targets calls .get() on it, so we must parse it
+            # here. Previous bug: passed the raw string and crashed at
+            # brain_service.py:202 with "'str' object has no attribute 'get'".
+            raw_fm = row["frontmatter"]
+            if isinstance(raw_fm, str):
+                try:
+                    fm_dict = _json.loads(raw_fm) if raw_fm.strip() else None
+                except _json.JSONDecodeError:
+                    fm_dict = None
+            else:
+                fm_dict = raw_fm or None
             page_input = PageInput(
-                slug=row["slug"],
+                type="",
+                title="",
                 compiled_truth=row["compiled_truth"],
-                frontmatter=row["frontmatter"] if row["frontmatter"] else None,
+                frontmatter=fm_dict,
             )
             targets = _extract_link_targets(page_input)
             if targets:

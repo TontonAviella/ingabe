@@ -766,7 +766,7 @@
     "type": "function",
     "function": {
       "name": "get_crop_classifications",
-      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use when the user asks about crop types, land use, or classification maps. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
+      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report — use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -1280,14 +1280,14 @@
     "type": "function",
     "function": {
       "name": "get_insurance_intelligence",
-      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, growth phase, and parametric trigger thresholds into one unified report. Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
+      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Also use this tool when the user asks about OTHER CROPS or says 'what about beans/rice/etc' after a previous situation report — just call it again with a different crop parameter. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, temperature, dry spells, growth phase, and parametric trigger thresholds into one unified report. Supports 50+ crops (change the crop parameter). Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. COMPARISON MODE: when the user asks to compare areas (e.g. 'compare sectors in Nyamasheke', 'which districts get more rain', 'difference between sectors'), set compare_level to the level being compared. This returns ALL signals (rainfall, SPI, NDVI, soil moisture, ET, temperature, SAR, dry spells) for every child area in one call. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "crop": {
             "type": "string",
-            "description": "Crop type (default: maize). Supported: maize, beans, rice, sorghum, wheat, finger_millet, potato, sweet_potato, cassava, yam, taro, soybean, groundnut, peas, cowpea, pigeon_pea, tomato, onion, cabbage, carrot, chili, eggplant, green_pepper, garlic, amaranth, leek, lettuce, spinach, cucumber, watermelon, pumpkin, banana, avocado, mango, passion_fruit, pineapple, papaya, citrus, strawberry, tree_tomato, guava, cape_gooseberry, coffee, tea, sugarcane, pyrethrum, tobacco, sunflower, macadamia, sesame, oil_palm, soya"
+            "description": "Crop type. ONLY set this if the user explicitly names a crop (e.g. 'how is rice in Rusizi'). If the user asks about a location without naming a crop ('what about Musanze?'), do NOT include this parameter at all — the tool auto-selects the primary crop for that district (potato for Musanze, beans for Nyamasheke, rice for Rusizi, maize for Bugesera, etc). Supported: maize, beans, rice, sorghum, wheat, finger_millet, potato, sweet_potato, cassava, yam, taro, soybean, groundnut, peas, cowpea, pigeon_pea, tomato, onion, cabbage, carrot, chili, eggplant, green_pepper, garlic, amaranth, leek, lettuce, spinach, cucumber, watermelon, pumpkin, banana, avocado, mango, passion_fruit, pineapple, papaya, citrus, strawberry, tree_tomato, guava, cape_gooseberry, coffee, tea, sugarcane, pyrethrum, tobacco, sunflower, macadamia, sesame, oil_palm, soya"
           },
           "season": {
             "type": "string",
@@ -1314,6 +1314,11 @@
             "type": "string",
             "enum": ["farmer", "insurance", "agronomist", "scientist"],
             "description": "Who is reading this report. Default: farmer"
+          },
+          "compare_level": {
+            "type": "string",
+            "enum": ["district", "sector", "cell"],
+            "description": "COMPARISON MODE: set this to compare all child areas at this admin level. 'sector' with district=X compares all sectors in district X. 'cell' with sector=Y compares all cells in sector Y. 'district' compares all 30 districts nationwide. Returns rainfall, SPI, NDVI, soil moisture, ET, temperature, SAR, and dry spells for every area. Only set this when the user asks to COMPARE areas — omit for single-location reports."
           }
         },
         "required": []

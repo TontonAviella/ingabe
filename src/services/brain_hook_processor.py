@@ -626,15 +626,33 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
     but has no chunks yet. This keeps search/sage retrieval consistent with
     the continuous-ops SLA — freshly ingested pages become queryable on the
     next hook tick (30s), not on the next nightly batch.
+
+    Concurrency: prod runs uvicorn with 6 workers, each spawning its own
+    _brain_hook_loop in wsgi.py lifespan. Without coordination, a single
+    30s tick fires 6 concurrent embed_all_stale calls, swamping Ollama and
+    spamming logs. Use the same pg_try_advisory_lock pattern the per-source
+    ingest jobs use (scheduler._fire_source_job): first worker acquires,
+    others return immediately with skipped_lock_held. Postgres advisory
+    locks are session-scoped and database-global, so this also covers
+    multi-container scale-out.
     """
     from src.database.pool import _build_postgres_url
     from src.services.brain_embeddings import embed_all_stale
 
     url = _build_postgres_url()
     conn = await asyncpg.connect(url)
+    lock_held = False
     try:
         # Empty user_id bypasses RLS (background worker mode)
         await conn.execute("SELECT set_config('app.user_id', '', false)")
+
+        lock_held = await conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+            "brain_hook_processor",
+        )
+        if not lock_held:
+            return {"processed": 0, "failed": 0, "skipped_lock_held": True}
+
         brain = BrainService()
         hook_result = await process_pending_hooks(conn, brain, limit=limit)
 
@@ -648,4 +666,6 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
 
         return {**hook_result, "embeddings": embed_result}
     finally:
+        # Closing the conn auto-releases any session-scoped advisory locks
+        # we acquired above; explicit unlock would be redundant.
         await conn.close()

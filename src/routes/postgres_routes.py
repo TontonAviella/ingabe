@@ -35,6 +35,9 @@ import asyncio
 from src.utils import (
     get_bucket_name,
     get_async_s3_client,
+    get_async_r2_client,
+    get_r2_bucket_name,
+    is_r2_enabled,
 )
 from src.structures import get_async_db_connection, async_conn
 from src.tile_cache import tile_cache
@@ -819,9 +822,8 @@ async def presign_layer_upload(
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
     s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
-    bucket_name = get_bucket_name()
 
-    s3_client = await get_async_s3_client()
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
     upload_url = await s3_client.generate_presigned_url(
         "put_object",
         Params={"Bucket": bucket_name, "Key": s3_key},
@@ -837,11 +839,256 @@ async def presign_layer_upload(
     )
 
 
+class MultipartInitResponse(DAGEditOperationResponse):
+    upload_id: str
+    s3_key: str
+    layer_id: str
+    part_size: int
+    total_parts: int
+
+
+class MultipartPresignRequest(BaseModel):
+    s3_key: str
+    upload_id: str
+    part_numbers: List[int]
+
+
+class MultipartPresignResponse(BaseModel):
+    urls: dict[int, str]
+
+
+class MultipartCompletePartInfo(BaseModel):
+    part_number: int
+    etag: str
+
+
+class MultipartCompleteRequest(BaseModel):
+    s3_key: str
+    upload_id: str
+    parts: List[MultipartCompletePartInfo]
+    layer_id: str
+    filename: str
+    layer_name: Optional[str] = None
+    add_layer_to_map: bool = True
+
+
+class MultipartStatusResponse(BaseModel):
+    exists: bool
+    parts: List[MultipartCompletePartInfo]
+
+
+MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _use_r2_transit() -> bool:
+    """R2 transit upload path is enabled when STORAGE_TIER=r2-transit AND
+    R2 credentials are configured. Falls back to MinIO direct otherwise."""
+    return os.environ.get("STORAGE_TIER") == "r2-transit" and is_r2_enabled()
+
+
+async def _get_upload_client_and_bucket():
+    """Returns the (client, bucket) tuple to use for the upload path:
+    R2 if r2-transit enabled, otherwise MinIO."""
+    if _use_r2_transit():
+        return await get_async_r2_client(), get_r2_bucket_name()
+    return await get_async_s3_client(), get_bucket_name()
+
+
+async def _r2_delete_object(s3_key: str):
+    """Best-effort delete of a transit object from R2 after MinIO mirror.
+
+    R2 has a 1-day lifecycle policy as the safety net, so failures here are
+    logged but not fatal — orphaned objects get GC'd within 24h regardless.
+    """
+    try:
+        r2_client = await get_async_r2_client()
+        r2_bucket = get_r2_bucket_name()
+        await r2_client.delete_object(Bucket=r2_bucket, Key=s3_key)
+        logger.info("R2 transit cleanup: deleted %s", s3_key)
+    except Exception as e:
+        logger.warning(
+            "R2 transit cleanup failed for %s (lifecycle GC will handle): %s",
+            s3_key, e,
+        )
+
+
+@router.post(
+    "/{original_map_id}/upload-multipart-init",
+    response_model=MultipartInitResponse,
+    operation_id="init_multipart_upload",
+    summary="Initiate S3 multipart upload for large files",
+)
+async def init_multipart_upload(
+    original_map_id: str,
+    filename: str,
+    file_size: int,
+    forked_map: MundiMap = Depends(forked_map_by_user),
+    session: UserContext = Depends(verify_session_required),
+):
+    user_id = session.get_user_id()
+    file_ext = os.path.splitext(filename)[1].lower() or ".bin"
+    layer_id = generate_id(prefix="L")
+    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+
+    total_parts = max(1, -(-file_size // MULTIPART_CHUNK_SIZE))  # ceil division
+
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
+    resp = await s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
+    upload_id = resp["UploadId"]
+
+    return MultipartInitResponse(
+        dag_child_map_id=forked_map.id,
+        dag_parent_map_id=original_map_id,
+        upload_id=upload_id,
+        s3_key=s3_key,
+        layer_id=layer_id,
+        part_size=MULTIPART_CHUNK_SIZE,
+        total_parts=total_parts,
+    )
+
+
+@router.post(
+    "/{map_id}/upload-multipart-presign",
+    response_model=MultipartPresignResponse,
+    operation_id="presign_multipart_parts",
+    summary="Get presigned URLs for multipart upload parts",
+)
+async def presign_multipart_parts(
+    map_id: str,
+    body: MultipartPresignRequest,
+    session: UserContext = Depends(verify_session_required),
+):
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
+
+    urls = {}
+    for part_num in body.part_numbers:
+        url = await s3_client.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": bucket_name,
+                "Key": body.s3_key,
+                "UploadId": body.upload_id,
+                "PartNumber": part_num,
+            },
+            ExpiresIn=3600,
+        )
+        urls[part_num] = url
+
+    return MultipartPresignResponse(urls=urls)
+
+
+@router.get(
+    "/{map_id}/upload-multipart-status",
+    response_model=MultipartStatusResponse,
+    operation_id="get_multipart_upload_status",
+    summary="List parts S3 has confirmed for an in-progress multipart upload",
+)
+async def get_multipart_upload_status(
+    map_id: str,
+    upload_id: str,
+    s3_key: str,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Returns the parts S3 has actually received for a given multipart upload.
+    Used by the frontend to resume an interrupted upload — localStorage is just
+    a hint, S3 is the source of truth. If the upload was aborted or expired,
+    returns exists=false so the client can clear its local state.
+    """
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
+
+    try:
+        parts: List[MultipartCompletePartInfo] = []
+        next_marker = 0
+        while True:
+            kwargs = {"Bucket": bucket_name, "Key": s3_key, "UploadId": upload_id}
+            if next_marker:
+                kwargs["PartNumberMarker"] = next_marker
+            resp = await s3_client.list_parts(**kwargs)
+            for p in resp.get("Parts", []):
+                parts.append(
+                    MultipartCompletePartInfo(
+                        part_number=p["PartNumber"],
+                        etag=p["ETag"].replace('"', ""),
+                    )
+                )
+            if resp.get("IsTruncated"):
+                next_marker = resp["NextPartNumberMarker"]
+            else:
+                break
+        return MultipartStatusResponse(exists=True, parts=parts)
+    except Exception as e:
+        msg = str(e)
+        if "NoSuchUpload" in msg or "404" in msg:
+            return MultipartStatusResponse(exists=False, parts=[])
+        raise
+
+
+@router.post(
+    "/{map_id}/upload-multipart-complete",
+    response_model=dict,
+    operation_id="complete_multipart_upload",
+    summary="Complete S3 multipart upload",
+)
+async def complete_multipart_upload(
+    map_id: str,
+    body: MultipartCompleteRequest,
+    session: UserContext = Depends(verify_session_required),
+):
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
+
+    parts = [
+        {"PartNumber": p.part_number, "ETag": p.etag}
+        for p in sorted(body.parts, key=lambda x: x.part_number)
+    ]
+
+    await s3_client.complete_multipart_upload(
+        Bucket=bucket_name,
+        Key=body.s3_key,
+        UploadId=body.upload_id,
+        MultipartUpload={"Parts": parts},
+    )
+
+    return {
+        "status": "assembled",
+        "s3_key": body.s3_key,
+        "layer_id": body.layer_id,
+        "filename": body.filename,
+    }
+
+
+def _is_already_cog(path: str) -> bool:
+    """Heuristic COG check: tiled GeoTIFF with overviews.
+
+    Strict COG validation would also verify IFD ordering and ghost-area layout,
+    but rio-tiler tolerates lenient COGs. Worst case: a borderline file gets
+    treated as COG and tiles render slightly slower (more HTTP range requests).
+    Best case: user converts locally with `gdal_translate -of COG -co COMPRESS=WEBP`
+    and we skip the server-side gdalwarp pass entirely.
+    """
+    try:
+        import rasterio
+        with rasterio.open(path) as ds:
+            if ds.driver != "GTiff":
+                return False
+            if not ds.profile.get("tiled", False):
+                return False
+            if not ds.overviews(1):
+                return False
+            return True
+    except Exception:
+        return False
+
+
 async def _background_generate_cog(layer_id: str, s3_key: str):
     """Generate COG in the background after upload-complete returns.
 
     Downloads the raw raster from S3, converts to COG via gdalwarp subprocess,
     uploads the COG, and updates the layer metadata with the cog_key.
+
+    Fast path: if the uploaded file is already a COG (user converted locally
+    with `gdal_translate -of COG`), we skip gdalwarp and just server-side-copy
+    the object to the canonical cog_key. Saves several minutes per file plus
+    the temp-disk usage of an unnecessary re-encode.
     """
     from src.structures import get_async_db_connection
     import shutil
@@ -858,12 +1105,48 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         await s3.download_file(bucket_name, s3_key, local_input)
         logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
 
+        # Fast path: already a COG. Server-side copy to canonical key, skip gdalwarp.
+        if _is_already_cog(local_input):
+            cog_key = f"cog/layer/{layer_id}.cog.tif"
+            logger.info("Background COG: input %s already COG-shaped, copying to %s without re-encode", layer_id, cog_key)
+            await s3.copy_object(
+                Bucket=bucket_name,
+                CopySource={"Bucket": bucket_name, "Key": s3_key},
+                Key=cog_key,
+            )
+            async with get_async_db_connection() as conn:
+                row = await conn.fetchrow("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+                metadata = {}
+                if row and row["metadata"]:
+                    import json as _json
+                    metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+                metadata["cog_key"] = cog_key
+                metadata["cog_source"] = "client_provided"
+                await conn.execute(
+                    "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                    json.dumps(metadata), layer_id,
+                )
+            logger.info("Background COG fast-path complete for %s", layer_id)
+            # Phase 2: kick off Clay embedding now that COG is ready. Errors
+            # are logged but don't block the COG path — find_similar_tiles
+            # will skip layers without embeddings.
+            try:
+                from src.services.clay_embedding import embed_layer
+                emb_res = await embed_layer(layer_id)
+                logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
+            except Exception:
+                logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
+            return
+
         # Always use gdalwarp subprocess for COG generation.
         # The in-process Dask/rasterio path can segfault on multi-band rasters,
         # killing the uvicorn worker.  A subprocess crash is isolated.
+        # BIGTIFF=YES is required for outputs > 4 GB (drone orthos with overview
+        # pyramids routinely exceed Classic TIFF's 32-bit offset limit).
         proc = await asyncio.create_subprocess_exec(
             "gdalwarp",
             "-of", "COG",
+            "-co", "BIGTIFF=YES",
             "-co", "BLOCKSIZE=512",
             "-co", "COMPRESS=DEFLATE",
             "-co", "OVERVIEWS=AUTO",
@@ -893,6 +1176,14 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                 json.dumps(metadata), layer_id,
             )
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
+        # Phase 2: kick off Clay embedding now that COG is ready. Errors
+        # are logged but don't block the COG path.
+        try:
+            from src.services.clay_embedding import embed_layer
+            emb_res = await embed_layer(layer_id)
+            logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
+        except Exception:
+            logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
     finally:
@@ -976,6 +1267,12 @@ async def complete_layer_upload(
     s3_client = await get_async_s3_client()
 
     filename = body.filename
+    # If the upload was gzipped client-side (Phase 2 of upload pipeline), the
+    # filename has a trailing .gz. Strip it for downstream processing — the
+    # rest of the pipeline expects the original extension (.tif, .geojson...).
+    is_gzipped = filename.lower().endswith(".gz")
+    if is_gzipped:
+        filename = filename[:-3]
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_name = body.layer_name or os.path.splitext(filename)[0]
 
@@ -985,13 +1282,53 @@ async def complete_layer_upload(
 
     # Download the already-uploaded file from S3 to a temp path
     tmp_dir = tempfile.mkdtemp()
+    download_ext = ".gz" if is_gzipped else file_ext
+    download_path = os.path.join(tmp_dir, f"{body.layer_id}{download_ext}")
     tmp_path = os.path.join(tmp_dir, f"{body.layer_id}{file_ext}")
     try:
         one_shot = TransferConfig(multipart_threshold=5 * 1024 * 1024 * 1024)
-        await s3_op(
-            s3_client.download_file(bucket_name, body.s3_key, tmp_path, Config=one_shot),
-            "download", f"layer {body.layer_id}",
-        )
+        # When R2 transit is enabled, the upload USUALLY landed in R2. But pre-R2
+        # uploads (or any path that bypasses presign) live in MinIO. So we probe
+        # R2 first and only fall back to MinIO if the object isn't there.
+        landed_in_r2 = False
+        if _use_r2_transit():
+            r2_client = await get_async_r2_client()
+            r2_bucket = get_r2_bucket_name()
+            try:
+                await r2_client.head_object(Bucket=r2_bucket, Key=body.s3_key)
+                landed_in_r2 = True
+            except Exception:
+                landed_in_r2 = False
+
+        if landed_in_r2:
+            # Pull bytes server-side from R2, mirror to MinIO at the canonical
+            # s3_key so downstream pipelines (COG, raw-data fetches) work
+            # unchanged, then schedule R2 cleanup. R2's 1-day lifecycle is the
+            # safety net for missed cleanups.
+            await s3_op(
+                r2_client.download_file(r2_bucket, body.s3_key, download_path, Config=one_shot),
+                "r2-pull", f"layer {body.layer_id}",
+            )
+            await s3_op(
+                s3_client.upload_file(download_path, bucket_name, body.s3_key, Config=one_shot),
+                "minio-mirror", f"layer {body.layer_id}",
+            )
+            background_tasks.add_task(_r2_delete_object, body.s3_key)
+        else:
+            await s3_op(
+                s3_client.download_file(bucket_name, body.s3_key, download_path, Config=one_shot),
+                "download", f"layer {body.layer_id}",
+            )
+
+        # Decompress gzipped uploads in-place to a sibling temp file. Streaming
+        # gunzip — never loads the whole file in memory. Crucial for 1 GB+ tifs.
+        if is_gzipped:
+            import gzip
+            with gzip.open(download_path, "rb") as src, open(tmp_path, "wb") as dst:
+                shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
+            os.remove(download_path)
+        else:
+            tmp_path = download_path
 
         file_size = os.path.getsize(tmp_path)
 

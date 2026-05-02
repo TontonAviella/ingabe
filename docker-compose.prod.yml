@@ -26,6 +26,7 @@ services:
         aliases:
           - gis.nozalabs.rw
           - s3.gis.nozalabs.rw
+          - s3-gis.nozalabs.rw
 
   # --- App: production overrides ---
   app:
@@ -46,6 +47,18 @@ services:
       - GDAL_BAND_BLOCK_CACHE=HASHSET
       - VSI_CACHE=TRUE
       - VSI_CACHE_SIZE=33554432
+      # Skip TLS verification for vsicurl — internal Docker network only,
+      # cert is for s3.gis but URL hostname is s3-gis (no MITM risk on loopback).
+      - GDAL_HTTP_UNSAFESSL=YES
+      # Phase 2 Clay embedding paths (checkpoint bind-mounted from host).
+      - CLAY_CHECKPOINT_PATH=/app/data/clay-checkpoints/clay-v1.5.ckpt
+      - CLAY_METADATA_PATH=/app/clay-source/configs/metadata.yaml
+    volumes:
+      # Phase 2 — Clay v1.5 checkpoint (4.9 GB). Read-only bind mount from
+      # host so the heavy file lives outside the image. To populate on a
+      # new host: download via `curl -fsSL -o data/clay-checkpoints/clay-v1.5.ckpt
+      # https://huggingface.co/made-with-clay/Clay/resolve/main/v1.5/clay-v1.5.ckpt`
+      - ./data/clay-checkpoints:/app/data/clay-checkpoints:ro
     deploy:
       resources:
         limits:
@@ -96,6 +109,40 @@ services:
   # mc: kept — one-shot S3 user setup (~3s, exits immediately)
   # backup: already has restart: unless-stopped in base
 
+  # --- Qdrant for Phase 2 Clay embedding similarity search ---
+  # Single Rust binary, no etcd/minio dependencies. Stores 1024-dim Clay v1.5
+  # tile embeddings tagged with (layer_id, partner_id, tile_x, tile_y) for
+  # find_similar_tiles. No host port binding — only mundi-app reaches it.
+  # Replaced Milvus standalone (image was 1.7 GB + etcd + minio bundled);
+  # Qdrant is one process, ~50-100 MiB resident at our scale.
+  qdrant:
+    container_name: mundi-qdrant
+    image: qdrant/qdrant:v1.17.1
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+      # Storage on a named volume so data survives container restarts.
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # qdrant image ships neither wget nor curl, but bash has /dev/tcp for a
+      # cheap TCP-level liveness probe. The HTTP /healthz endpoint can't be
+      # checked from inside the container without adding a tool to the image.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333' || exit 1"]
+      interval: 30s
+      start_period: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    networks:
+      - default
+
   # --- Disable dev-only services ---
   dagster-daemon:
     profiles: ["dev"]
@@ -111,3 +158,6 @@ services:
 
   tempo:
     profiles: ["dev"]
+
+volumes:
+  qdrant_data:
