@@ -68,11 +68,54 @@ def get_bucket_name():
     return os.environ["S3_BUCKET"]
 
 
+# ── Cloudflare R2 (upload transit layer) ──────────────────────────────
+# Pattern: user uploads land in R2 (Africa edge POPs, fast).
+# Server pulls from R2 → MinIO at the canonical s3_key, runs the existing
+# upload-complete pipeline, then deletes the R2 object.
+# R2 bucket has 1-day lifecycle delete as a safety net.
+_r2_clients = {}
+
+
+def is_r2_enabled() -> bool:
+    """R2 transit is enabled when all four env vars are set."""
+    return all(
+        os.environ.get(k)
+        for k in ("R2_ENDPOINT_URL", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET")
+    )
+
+
+async def get_async_r2_client():
+    """Async R2 client (S3-compatible). Cached per event loop.
+
+    R2 supports presigned URLs identically to S3 — same boto3/aioboto3 paths.
+    Different bucket, different credentials, different endpoint.
+    """
+    loop = asyncio.get_running_loop()
+    if loop not in _r2_clients:
+        config = boto3.session.Config(signature_version="s3v4")
+        _r2_clients[loop] = await _session.client(
+            "s3",
+            endpoint_url=os.environ["R2_ENDPOINT_URL"],
+            aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+            aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+            region_name=os.environ.get("R2_REGION", "auto"),
+            config=config,
+        ).__aenter__()
+    return _r2_clients[loop]
+
+
+def get_r2_bucket_name() -> str:
+    return os.environ["R2_BUCKET"]
+
+
 async def close_s3_clients() -> None:
-    """Close all cached async S3 clients. Call during shutdown."""
+    """Close all cached async S3 + R2 clients. Call during shutdown."""
     for client in _clients.values():
         await client.close()
     _clients.clear()
+    for client in _r2_clients.values():
+        await client.close()
+    _r2_clients.clear()
 
 
 async def process_zip_with_shapefile(zip_file_path):

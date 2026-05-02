@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import JSONResponse
-from typing import List, Union
+from typing import List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel
 import logging
@@ -1421,34 +1421,110 @@ async def process_chat_interaction_task(
                 with tracer.start_as_current_span(
                     "kue.openai.chat.completions.create"
                 ):
-                    try:
-                        content_parts: list[str] = []
-                        tool_calls_acc: dict[int, dict] = {}
-                        stream = await client.chat.completions.create(
-                            **_llm_kwargs, stream=True,
-                        )
-                        async for chunk in stream:
-                            if not chunk.choices:
+                    # Build the model fallback chain. Tries primary first, then
+                    # walks through OPENROUTER_FALLBACK_MODELS (comma-separated, in
+                    # order). Falls back ONLY on upstream 5xx and ONLY if no tokens
+                    # have streamed yet (so we never deliver a half-written response).
+                    # OPENROUTER_FALLBACK_MODEL (singular, legacy) still works as a
+                    # single-item chain.
+                    _primary_model = _llm_kwargs.get("model")
+                    _chain_env = (
+                        os.environ.get("OPENROUTER_FALLBACK_MODELS", "").strip()
+                        or os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+                    )
+                    _model_chain: list[str] = [_primary_model] + [
+                        m.strip()
+                        for m in _chain_env.split(",")
+                        if m.strip() and m.strip() != _primary_model
+                    ]
+                    # Dedupe while preserving order
+                    _seen: set[str] = set()
+                    _model_chain = [m for m in _model_chain if not (m in _seen or _seen.add(m))]
+
+                    _last_err: Optional[APIError] = None
+                    _attempted_models: list[str] = []
+
+                    content_parts: list[str] = []
+                    tool_calls_acc: dict[int, dict] = {}
+
+                    for _model_idx, _model_name in enumerate(_model_chain):
+                        # Reset accumulators for each attempt
+                        content_parts = []
+                        tool_calls_acc = {}
+                        _attempted_models.append(_model_name)
+                        _attempt_kwargs = {**_llm_kwargs, "model": _model_name}
+                        # Provider routing: an `ollama:<tag>` chain entry is
+                        # served by the local Ollama container (OpenAI-compat
+                        # endpoint). Everything else uses the configured cloud
+                        # client (OpenRouter / Vercel / OpenAI / etc).
+                        if _model_name.startswith("ollama:"):
+                            from openai import AsyncOpenAI
+                            _attempt_kwargs["model"] = _model_name.split(":", 1)[1]
+                            _attempt_client = AsyncOpenAI(
+                                base_url=os.environ.get(
+                                    "OLLAMA_BASE_URL", "http://ollama:11434/v1"
+                                ),
+                                api_key="ollama",
+                            )
+                        else:
+                            _attempt_client = client
+                        try:
+                            stream = await _attempt_client.chat.completions.create(
+                                **_attempt_kwargs, stream=True,
+                            )
+                            async for chunk in stream:
+                                if not chunk.choices:
+                                    continue
+                                delta = chunk.choices[0].delta
+                                if delta.content:
+                                    content_parts.append(delta.content)
+                                    await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
+                                if delta.tool_calls:
+                                    for tc in delta.tool_calls:
+                                        idx = tc.index
+                                        if idx not in tool_calls_acc:
+                                            tool_calls_acc[idx] = {
+                                                "id": "", "type": "function",
+                                                "function": {"name": "", "arguments": ""},
+                                            }
+                                        if tc.id:
+                                            tool_calls_acc[idx]["id"] = tc.id
+                                        if tc.function:
+                                            if tc.function.name:
+                                                tool_calls_acc[idx]["function"]["name"] += tc.function.name
+                                            if tc.function.arguments:
+                                                tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            # Success
+                            _last_err = None
+                            break
+                        except APIError as _api_err:
+                            _last_err = _api_err
+                            _err_str = str(_api_err)
+                            _is_upstream_5xx = (
+                                "Provider returned error" in _err_str
+                                or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
+                                or (hasattr(_api_err, "code") and str(getattr(_api_err, "code", "") or "") in ("502", "503", "504"))
+                            )
+                            _has_more_in_chain = _model_idx + 1 < len(_model_chain)
+                            _can_retry = (
+                                _has_more_in_chain
+                                and _is_upstream_5xx
+                                and len(content_parts) == 0
+                                and len(tool_calls_acc) == 0
+                            )
+                            if _can_retry:
+                                _next = _model_chain[_model_idx + 1]
+                                logger.warning(
+                                    "LLM model %s failed (%s) with no content streamed — falling back to %s (chain step %d/%d)",
+                                    _model_name, _err_str[:120], _next,
+                                    _model_idx + 2, len(_model_chain),
+                                )
                                 continue
-                            delta = chunk.choices[0].delta
-                            if delta.content:
-                                content_parts.append(delta.content)
-                                await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
-                            if delta.tool_calls:
-                                for tc in delta.tool_calls:
-                                    idx = tc.index
-                                    if idx not in tool_calls_acc:
-                                        tool_calls_acc[idx] = {
-                                            "id": "", "type": "function",
-                                            "function": {"name": "", "arguments": ""},
-                                        }
-                                    if tc.id:
-                                        tool_calls_acc[idx]["id"] = tc.id
-                                    if tc.function:
-                                        if tc.function.name:
-                                            tool_calls_acc[idx]["function"]["name"] += tc.function.name
-                                        if tc.function.arguments:
-                                            tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            break
+
+                    try:
+                        if _last_err is not None:
+                            raise _last_err
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
@@ -1462,6 +1538,11 @@ async def process_chat_interaction_task(
                             content=full_content,
                             tool_calls=full_tool_calls,
                         )
+                        if len(_attempted_models) > 1:
+                            logger.info(
+                                "LLM completion succeeded with fallback model after primary failed. attempted=%s",
+                                _attempted_models,
+                            )
                     except APIError as e:
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
@@ -5116,13 +5197,10 @@ async def process_chat_interaction_task(
                         elif function_name == "get_insurance_intelligence":
                             try:
                                 from src.services.insurance_engine import compute_insurance_intelligence
-                                _ins_raw_crop = tool_args.get("crop", "auto")
-                                _ins_crop = "auto" if _ins_raw_crop in ("maize", "auto") else _ins_raw_crop
-                                _ins_crop_explicit = _ins_crop != "auto"
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
-                                    crop=_ins_crop,
+                                    crop=tool_args.get("crop", ""),
                                     season=tool_args.get("season"),
                                     district=tool_args.get("district"),
                                     sector=tool_args.get("sector"),
@@ -5144,40 +5222,133 @@ async def process_chat_interaction_task(
                                     _ins_d = tool_result.get("data", {})
                                     _ins_triggers = _ins_d.get("triggers", [])
                                     _fired = [t for t in _ins_triggers if t.get("triggered")]
-                                    _fired_summary = ", ".join(
-                                        f"{t['signal']} ({t['current_value']} vs threshold {t['threshold']})"
-                                        for t in _fired
-                                    ) if _fired else "none"
-                                    _headline = (
-                                        f"{_ins_d.get('location', '?')} — {_ins_d.get('crop', '?')} Season {_ins_d.get('season', '?')}, "
-                                        f"{_ins_d.get('growth_phase', '?')} phase (day {_ins_d.get('days_after_planting', '?')}). "
-                                        f"Status: {_ins_d.get('overall_status', '?')} | Confidence: {_ins_d.get('confidence_score', '?')}/100"
-                                    )
-                                    _key_numbers = (
-                                        f"Rain: {_ins_d.get('season_rainfall_mm', '?')}mm total, SPI {_ins_d.get('spi', '?')}. "
-                                        f"Longest dry spell: {_ins_d.get('max_dry_spell_days', '?')} days. "
-                                        f"NDVI z-score: {_ins_d.get('ndvi_z_score', 'n/a')}. "
-                                        f"ET anomaly: {_ins_d.get('et_anomaly_pct', 'n/a')}%. "
-                                        f"Soil moisture: {_ins_d.get('soil_moisture_pct', 'n/a')}%."
-                                    )
-                                    tool_result["summary"] = _headline
-                                    tool_result["key_numbers"] = _key_numbers
-                                    tool_result["triggers_fired"] = _fired_summary
-                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)}"
+
+                                    # --- Build context-rich briefing ---
+                                    _loc = _ins_d.get("location", "?")
+                                    _season = _ins_d.get("season", "?")
+                                    _phase = _ins_d.get("growth_phase", "?")
+                                    _dap = _ins_d.get("days_after_planting", "?")
+                                    _status = _ins_d.get("overall_status", "?")
+                                    _confidence = _ins_d.get("confidence_score", "?")
+
+                                    _rain = _ins_d.get("season_rainfall_mm", "?")
+                                    _spi = _ins_d.get("spi", None)
+                                    _spi_str = ""
+                                    if _spi is not None:
+                                        if _spi <= -2.0:
+                                            _spi_str = f"SPI is {_spi} — this is an extreme drought signal, meaning rainfall is far below what's normal for this time of year"
+                                        elif _spi <= -1.5:
+                                            _spi_str = f"SPI is {_spi} — severe drought conditions, significantly less rain than expected"
+                                        elif _spi <= -1.0:
+                                            _spi_str = f"SPI is {_spi} — moderate drought, rainfall noticeably below normal"
+                                        elif _spi >= 1.0:
+                                            _spi_str = f"SPI is {_spi} — wetter than normal conditions"
+                                        else:
+                                            _spi_str = f"SPI is {_spi} — within normal range"
+
+                                    _ndvi = _ins_d.get("ndvi_z_score")
+                                    _ndvi_str = ""
+                                    if _ndvi is not None:
+                                        if _ndvi >= 1.0:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is thriving, well above average greenness for this area and time of year"
+                                        elif _ndvi >= 0.3:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation looks healthy, slightly above average"
+                                        elif _ndvi >= -0.5:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is about normal"
+                                        elif _ndvi >= -1.0:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is showing stress, below average greenness"
+                                        else:
+                                            _ndvi_str = f"NDVI z-score {_ndvi} — vegetation is in poor condition, significantly less green than normal"
+
+                                    _sm = _ins_d.get("soil_moisture_pct")
+                                    _sm_str = ""
+                                    if _sm is not None:
+                                        if _sm >= 80:
+                                            _sm_str = f"Soil moisture at {_sm}% — the ground is well saturated, plenty of water available to roots"
+                                        elif _sm >= 50:
+                                            _sm_str = f"Soil moisture at {_sm}% — adequate water in the soil"
+                                        elif _sm >= 30:
+                                            _sm_str = f"Soil moisture at {_sm}% — getting low, plants may start feeling water stress"
+                                        else:
+                                            _sm_str = f"Soil moisture at {_sm}% — very dry soil, crops are likely under water stress"
+
+                                    _et = _ins_d.get("et_anomaly_pct")
+                                    _et_str = ""
+                                    if _et is not None:
+                                        if _et < -20:
+                                            _et_str = f"ET anomaly {_et}% — plants are transpiring much less than normal, a sign of water stress or poor crop condition"
+                                        elif _et < -5:
+                                            _et_str = f"ET anomaly {_et}% — slightly reduced water uptake by plants"
+                                        elif _et > 10:
+                                            _et_str = f"ET anomaly +{_et}% — plants are actively growing and using more water than usual"
+                                        else:
+                                            _et_str = f"ET anomaly {_et}% — normal plant water use"
+
+                                    _dry = _ins_d.get("max_dry_spell_days")
+                                    _dry_str = ""
+                                    if _dry is not None:
+                                        if _dry >= 15:
+                                            _dry_str = f"Longest dry spell: {_dry} consecutive days without rain — this is damaging, especially during flowering"
+                                        elif _dry >= 10:
+                                            _dry_str = f"Longest dry spell: {_dry} days — worth watching but not yet critical"
+                                        elif _dry > 0:
+                                            _dry_str = f"Longest dry spell: {_dry} days — not a concern"
+
+                                    _drought_diag = _ins_d.get("drought_diagnostic_label", "")
+
+                                    _fired_str = ""
+                                    if _fired:
+                                        _parts = []
+                                        for t in _fired:
+                                            _parts.append(f"{t['signal']}: current {t['current_value']} crossed the {t['threshold']} threshold")
+                                        _fired_str = "TRIGGERED ALERTS: " + "; ".join(_parts)
+
+                                    # Assemble briefing
+                                    _briefing_parts = [
+                                        f"Location: {_loc}, Season {_season}, currently in {_phase} (day {_dap}). Overall status: {_status} (confidence {_confidence}/100).",
+                                        f"Rainfall this season: {_rain}mm so far. {_spi_str}.",
+                                    ]
+                                    if _ndvi_str: _briefing_parts.append(_ndvi_str + ".")
+                                    if _sm_str: _briefing_parts.append(_sm_str + ".")
+                                    if _et_str: _briefing_parts.append(_et_str + ".")
+                                    if _dry_str: _briefing_parts.append(_dry_str + ".")
+                                    if _drought_diag: _briefing_parts.append(f"Drought assessment: {_drought_diag}.")
+                                    if _fired_str: _briefing_parts.append(_fired_str)
+
+                                    tool_result["situation"] = " ".join(_briefing_parts)
+
+                                    if _fired:
+                                        tool_result["triggers_fired"] = _fired_str
+                                    tool_result["triggers_total"] = f"{_ins_d.get('triggers_activated', 0)} of {_ins_d.get('triggers_total', 0)} thresholds crossed"
                                     tool_result["recommendation"] = _ins_d.get("recommendation", "")
                                     tool_result["sources"] = _ins_d.get("sources", [])
                                     tool_result["period"] = f"{_ins_d.get('period_start', '')} to {_ins_d.get('period_end', '')}"
+
+                                    _fo = _ins_d.get("forecast_outlook")
+                                    if _fo:
+                                        _fo_risk = _fo.get("rainfall_trigger_risk", "?")
+                                        _fo_prob = round(_fo.get("rainfall_trigger_probability", 0) * 100)
+                                        _fo_total = _fo.get("projected_season_total_mm", "?")
+                                        _fo_thresh = _fo.get("rainfall_trigger_threshold_mm", "?")
+                                        _fo_models = ", ".join(_fo.get("models_used", []))
+                                        tool_result["forecast"] = (
+                                            f"Looking ahead: 4 weather models ({_fo_models}) project the season will end with about {_fo_total}mm total rainfall "
+                                            f"(range {_fo.get('projected_season_p10_mm', '?')}-{_fo.get('projected_season_p90_mm', '?')}mm). "
+                                            f"The insurance payout threshold is {_fo_thresh}mm — "
+                                            f"risk of triggering a payout is {_fo_risk} ({_fo_prob}% probability). "
+                                            f"{'The models agree closely on this.' if _fo.get('model_agreement') == 'HIGH' else 'There is some disagreement between models, so uncertainty is higher.' if _fo.get('model_agreement') == 'LOW' else 'Models are in moderate agreement.'}"
+                                        )
+
                                     del tool_result["data"]
                                     tool_result["instruction"] = (
-                                        "Respond like a knowledgeable colleague in 2-4 sentences. "
-                                        "Lead with what's most notable (a trigger firing, drought stress, or healthy conditions). "
-                                        "Mention only 2-3 numbers that matter most — skip the rest. "
-                                        "Do NOT list every metric. Do NOT use bullet points or tables. "
+                                        "You are briefing someone who cares about this area. "
+                                        "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
+                                        "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
+                                        "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
+                                        "If the forecast is present, weave it in — don't list it separately. "
+                                        "3-5 sentences. No bullet points, no tables, no metric dumps. "
                                         "End with sources in parentheses."
                                     )
-                                if not _ins_crop_explicit and tool_result.get("status") == "ok" and not _ins_compare:
-                                    _auto_crop = tool_result.get("data", {}).get("crop", "beans")
-                                    tool_result["note"] = f"The user did not specify a crop, so this report uses {_auto_crop} (the primary crop for this area). Mention this naturally — e.g. 'Here is the report for {_auto_crop}, the main crop grown here.' If the user wants a different crop, they can ask."
                                 # Save to Brain for audit trail + future retrieval (skip for comparisons)
                                 if tool_result.get("status") == "ok" and not _ins_compare:
                                     try:
@@ -5189,7 +5360,7 @@ async def process_chat_interaction_task(
                                         _ins_geom_str = json.dumps(_ins_geom) if _ins_geom else None
                                         _page_input = PageInput(
                                             type="insurance_intelligence",
-                                            title=f"Insurance: {_ins_d.get('crop', '')} in {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
+                                            title=f"Insurance: {_ins_d.get('location', '')} Season {_ins_d.get('season', '')}",
                                             compiled_truth=tool_result.get("_report_for_brain", ""),
                                             frontmatter={
                                                 "type": "insurance_intelligence",
