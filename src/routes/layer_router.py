@@ -815,7 +815,15 @@ async def get_raster_xyz_tile(
 
     def _render_tile() -> bytes:
         with _Reader(asset_url) as src:
-            img = src.tile(x, y, z)
+            # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
+            # mask, so a 4-band drone ortho becomes 5 bands at encode and
+            # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
+            # raster with >3 bands; the mask becomes the alpha channel.
+            band_count = (metadata or {}).get("band_count")
+            if isinstance(band_count, int) and band_count > 3:
+                img = src.tile(x, y, z, indexes=(1, 2, 3))
+            else:
+                img = src.tile(x, y, z)
 
             if "raster_value_stats_b1" in metadata:
                 min_val = metadata["raster_value_stats_b1"]["min"]
