@@ -50,9 +50,66 @@ jobs:
             --load
         timeout-minutes: 45
 
+      - name: System info pre-test
+        run: |
+          echo "=== CPU ==="
+          nproc
+          echo "=== Memory baseline ==="
+          free -mh
+          echo "=== /proc/meminfo top ==="
+          head -10 /proc/meminfo
+          echo "=== Docker info ==="
+          docker info 2>/dev/null | grep -iE 'memory|cpus|limit' || true
+
+      - name: Start memory monitor
+        run: |
+          mkdir -p /tmp/ci-diag
+          (
+            while true; do
+              echo "$(date -Iseconds) $(free -m | awk '/^Mem:/ {print "total="$2" used="$3" available="$7}')"
+              sleep 5
+            done
+          ) > /tmp/ci-diag/memory.log 2>&1 &
+          echo $! > /tmp/ci-diag/monitor.pid
+
       - name: Run tests
-        run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
-        timeout-minutes: 10
+        # -n 2 (was -n auto): pytest-xdist on ubuntu-latest's 4 vCPUs/7 GB RAM
+        # was OOM-killing workers because conftest.py imports the full FastAPI
+        # app (Clay v1.5, pymilvus, rasterio/GDAL) into every worker. 4 workers
+        # × ~2 GB resident = 8 GB > 7 GB ceiling. -n 2 caps at ~4 GB.
+        # --dist=loadfile keeps each test file's tests in one worker so
+        # import cost amortizes across the file.
+        # timeout 10→20 because lower parallelism = longer wall clock.
+        run: docker compose run app pytest -vs -n 2 --dist=loadfile --ignore=src/test_worldcover.py
+        timeout-minutes: 20
+
+      - name: Post-test diagnostics
+        if: always()
+        run: |
+          kill "$(cat /tmp/ci-diag/monitor.pid 2>/dev/null)" 2>/dev/null || true
+          echo "=== Memory peak from monitor ==="
+          if [ -f /tmp/ci-diag/memory.log ]; then
+            awk '/total=/ {
+              for (i=2; i<=NF; i++) {
+                if ($i ~ /^used=/) { gsub("used=", "", $i); u=$i+0 }
+                if ($i ~ /^total=/) { gsub("total=", "", $i); t=$i+0 }
+              }
+              if (u > peak) peak = u
+              total = t
+              count++
+            } END {
+              print "samples=" count " peak_used_mb=" peak " total_mb=" total
+              if (total > 0) printf "peak_pct=%.1f%%\n", (peak/total)*100
+            }' /tmp/ci-diag/memory.log
+            echo "=== Last 10 memory samples ==="
+            tail -10 /tmp/ci-diag/memory.log
+          fi
+          echo "=== OOM kills in dmesg ==="
+          sudo dmesg 2>/dev/null | grep -iE 'killed process|out of memory|oom-killer' | tail -20 || echo "(dmesg unavailable)"
+          echo "=== Final memory ==="
+          free -mh
+          echo "=== Docker containers ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'
 
       - name: Start services for E2E
         run: |
