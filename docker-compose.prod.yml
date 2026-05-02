@@ -127,7 +127,10 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:6333/healthz || exit 1"]
+      # qdrant image ships neither wget nor curl, but bash has /dev/tcp for a
+      # cheap TCP-level liveness probe. The HTTP /healthz endpoint can't be
+      # checked from inside the container without adding a tool to the image.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333' || exit 1"]
       interval: 30s
       start_period: 30s
       timeout: 10s
