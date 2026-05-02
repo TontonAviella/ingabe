@@ -4,3 +4,4 @@ node_modules/
 .env.local
 .npm-cache/
 .clerk/
+.vercel/
