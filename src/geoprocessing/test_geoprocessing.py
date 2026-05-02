@@ -10,6 +10,16 @@ from openai.types.chat import (
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
+def next_state_msg(ws):
+    """Read next non-streaming WebSocket message. message_routes.py emits
+    StreamingTokenPayload events between state messages while the LLM streams;
+    tests that assert on state-message keys (action/role/status) need to skip
+    past those streaming-token events."""
+    while True:
+        m = ws.receive_json()
+        if m.get("streaming"):
+            continue
+        return m
 
 
 class MockChoice:
@@ -175,7 +185,7 @@ async def test_chat_completions(
             assert "message_id" in data
 
             # our own message
-            sent_msg = websocket.receive_json()
+            sent_msg = next_state_msg(websocket)
             assert sent_msg["role"] == "user"
             assert (
                 sent_msg["content"] == "Buffer the beaches layer with a distance of 100"
@@ -187,15 +197,15 @@ async def test_chat_completions(
             assert sent_msg["conversation_id"] == conversation_id
 
             # Sage is thinking
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
 
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             # Assistant response with tool call
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["role"] == "assistant"
             assert (
                 "I'll help you buffer the beaches layer with a 100-unit distance"
@@ -208,17 +218,17 @@ async def test_chat_completions(
             assert msg["conversation_id"] == conversation_id
 
             # Execute geoprocessing
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "QGIS running native:buffer..."
             assert msg["status"] == "active"
 
             # QGIS processing completion
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "QGIS running native:buffer..."
             assert msg["status"] == "completed"
 
             # Tool response message after tool execution completes
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["role"] == "tool"
             assert msg["tool_response"]["id"] == "call_1"
             assert msg["tool_response"]["status"] == "success"
@@ -260,16 +270,16 @@ async def test_chat_completions(
                 tool_call_created_layer_id = created_layer["layer_id"]
 
             # loops once
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "active"
 
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             # Adding layer to map
-            assistant_msg = websocket.receive_json()
+            assistant_msg = next_state_msg(websocket)
             assert assistant_msg["role"] == "assistant"
             assert (
                 "Now I'll add the buffered layer to your map."
@@ -280,7 +290,7 @@ async def test_chat_completions(
             assert assistant_msg["tool_calls"][0]["tagline"] == "Adding layer to map..."
             assert assistant_msg["tool_calls"][0]["icon"] == "map-plus"
 
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Adding layer to map..."
             assert msg["status"] == "active"
 
@@ -288,7 +298,7 @@ async def test_chat_completions(
             # ephemeral(s), and tool response can arrive in any order
             pending_messages = []
             for _ in range(6):  # collect up to 6 messages (generous)
-                pending_messages.append(websocket.receive_json())
+                pending_messages.append(next_state_msg(websocket))
                 # Stop once we have both the tool response and the
                 # "Adding layer" completed ephemeral
                 has_tool = any(
@@ -329,14 +339,14 @@ async def test_chat_completions(
                 assert layer_metadata["feature_count"] == 37
                 assert layer_metadata["geometry_type"] == "multipolygon"
 
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
 
-            msg = websocket.receive_json()
+            msg = next_state_msg(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
-            assistant_msg = websocket.receive_json()
+            assistant_msg = next_state_msg(websocket)
             assert assistant_msg["role"] == "assistant"
             assert (
                 "I've successfully created a buffer around the beaches with a 100-unit distance"

@@ -7,6 +7,16 @@ from openai.types.chat import (
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
+def next_state_msg(ws):
+    """Read next non-streaming WebSocket message. message_routes.py emits
+    StreamingTokenPayload events between state messages while the LLM streams;
+    tests that assert on state-message keys (action/role/status) need to skip
+    past those streaming-token events."""
+    while True:
+        m = ws.receive_json()
+        if m.get("streaming"):
+            continue
+        return m
 
 
 class MockChoice:
@@ -148,24 +158,24 @@ async def test_set_layer_style_via_chat_completion(
             assert response.status_code == 200
             assert response.json()["status"] == "processing_started"
 
-            msg1 = websocket.receive_json()
+            msg1 = next_state_msg(websocket)
             assert msg1["role"] == "user"
             assert "style layer" in msg1["content"]
             assert msg1["has_tool_calls"] is False
 
-            msg2 = websocket.receive_json()
+            msg2 = next_state_msg(websocket)
             assert msg2["ephemeral"] is True
             assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
             assert msg2["updates"]["style_json"] is False
 
-            msg3 = websocket.receive_json()
+            msg3 = next_state_msg(websocket)
             assert msg3["ephemeral"] is True
             assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
             assert msg3["updates"]["style_json"] is False
 
-            msg4 = websocket.receive_json()
+            msg4 = next_state_msg(websocket)
             assert msg4["role"] == "assistant"
             assert "apply a custom style" in msg4["content"]
             assert msg4["has_tool_calls"] is True
@@ -173,36 +183,36 @@ async def test_set_layer_style_via_chat_completion(
             assert msg4["tool_calls"][0]["tagline"] == "Setting layer style..."
             assert msg4["tool_calls"][0]["icon"] == "brush"
 
-            msg5 = websocket.receive_json()
+            msg5 = next_state_msg(websocket)
             assert msg5["ephemeral"] is True
             assert "Styling layer" in msg5["action"]
             assert msg5["status"] == "active"
             assert msg5["updates"]["style_json"] is True
 
-            msg6 = websocket.receive_json()
+            msg6 = next_state_msg(websocket)
             assert msg6["ephemeral"] is True
             assert "Styling layer" in msg6["action"]
             assert msg6["status"] == "completed"
             assert msg6["updates"]["style_json"] is True
 
             # Tool response message after styling completes
-            msg6_tool = websocket.receive_json()
+            msg6_tool = next_state_msg(websocket)
             assert msg6_tool["role"] == "tool"
             assert msg6_tool["tool_response"]["status"] == "success"
 
-            msg7 = websocket.receive_json()
+            msg7 = next_state_msg(websocket)
             assert msg7["ephemeral"] is True
             assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
             assert msg7["updates"]["style_json"] is False
 
-            msg8 = websocket.receive_json()
+            msg8 = next_state_msg(websocket)
             assert msg8["ephemeral"] is True
             assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
             assert msg8["updates"]["style_json"] is False
 
-            msg9 = websocket.receive_json()
+            msg9 = next_state_msg(websocket)
             assert msg9["role"] == "assistant"
             assert "applied a custom style" in msg9["content"]
             assert msg9["has_tool_calls"] is False

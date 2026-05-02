@@ -10,6 +10,16 @@ from openai.types.chat import (
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
+def next_state_msg(ws):
+    """Read next non-streaming WebSocket message. message_routes.py emits
+    StreamingTokenPayload events between state messages while the LLM streams;
+    tests that assert on state-message keys (action/role/status) need to skip
+    past those streaming-token events."""
+    while True:
+        m = ws.receive_json()
+        if m.get("streaming"):
+            continue
+        return m
 
 
 class MockChoice:
@@ -137,24 +147,24 @@ async def test_chat_completions(
             assert "message_id" in data
 
             # Message 1: User message
-            msg1 = websocket.receive_json()
+            msg1 = next_state_msg(websocket)
             assert msg1["role"] == "user"
             assert msg1["content"] == "Count how many cafes have name=Starbucks"
 
             # Message 2: Sage is thinking (start)
-            msg2 = websocket.receive_json()
+            msg2 = next_state_msg(websocket)
             assert msg2["ephemeral"]
             assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
 
             # Message 3: Sage is thinking (completed)
-            msg3 = websocket.receive_json()
+            msg3 = next_state_msg(websocket)
             assert msg3["ephemeral"]
             assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
 
             # Message 4: Assistant message with tool call
-            msg4 = websocket.receive_json()
+            msg4 = next_state_msg(websocket)
             assert msg4["role"] == "assistant"
             assert (
                 msg4["content"]
@@ -165,19 +175,19 @@ async def test_chat_completions(
             assert msg4["tool_calls"][0]["id"] == "call_1"
 
             # Message 5: Querying with SQL (start)
-            msg5 = websocket.receive_json()
+            msg5 = next_state_msg(websocket)
             assert msg5["ephemeral"]
             assert msg5["action"] == "Querying with SQL..."
             assert msg5["status"] == "active"
 
             # Message 6: Querying with SQL (completed)
-            msg6 = websocket.receive_json()
+            msg6 = next_state_msg(websocket)
             assert msg6["ephemeral"]
             assert msg6["action"] == "Querying with SQL..."
             assert msg6["status"] == "completed"
 
             # Tool response message after SQL query completes
-            msg6_tool = websocket.receive_json()
+            msg6_tool = next_state_msg(websocket)
             assert msg6_tool["role"] == "tool"
             assert msg6_tool["tool_response"]["id"] == "call_1"
 
@@ -217,19 +227,19 @@ async def test_chat_completions(
                 assert tool_response["row_count"] == 1
 
             # Message 7: Final thinking (start)
-            msg7 = websocket.receive_json()
+            msg7 = next_state_msg(websocket)
             assert msg7["ephemeral"]
             assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
 
             # Message 8: Final thinking (completed)
-            msg8 = websocket.receive_json()
+            msg8 = next_state_msg(websocket)
             assert msg8["ephemeral"]
             assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
 
             # Message 9: Final assistant response
-            msg9 = websocket.receive_json()
+            msg9 = next_state_msg(websocket)
             assert msg9["role"] == "assistant"
             assert "18 cafes where name=Starbucks" in msg9["content"]
 
@@ -312,24 +322,24 @@ async def test_chat_completions_with_error(
             assert "message_id" in data
 
             # Message 1: User message
-            msg1 = websocket.receive_json()
+            msg1 = next_state_msg(websocket)
             assert msg1["role"] == "user"
             assert msg1["content"] == "Run an invalid SQL query that will fail"
 
             # Message 2: Sage is thinking (start)
-            msg2 = websocket.receive_json()
+            msg2 = next_state_msg(websocket)
             assert msg2["ephemeral"]
             assert msg2["action"] == "Sage is thinking..."
             assert msg2["status"] == "active"
 
             # Message 3: Sage is thinking (completed)
-            msg3 = websocket.receive_json()
+            msg3 = next_state_msg(websocket)
             assert msg3["ephemeral"]
             assert msg3["action"] == "Sage is thinking..."
             assert msg3["status"] == "completed"
 
             # Message 4: Assistant message with tool call
-            msg4 = websocket.receive_json()
+            msg4 = next_state_msg(websocket)
             assert msg4["role"] == "assistant"
             assert (
                 msg4["content"]
@@ -340,19 +350,19 @@ async def test_chat_completions_with_error(
             assert msg4["tool_calls"][0]["id"] == "call_1"
 
             # Message 5: Querying with SQL (start)
-            msg5 = websocket.receive_json()
+            msg5 = next_state_msg(websocket)
             assert msg5["ephemeral"]
             assert msg5["action"] == "Querying with SQL..."
             assert msg5["status"] == "active"
 
             # Message 6: Querying with SQL (completed)
-            msg6 = websocket.receive_json()
+            msg6 = next_state_msg(websocket)
             assert msg6["ephemeral"]
             assert msg6["action"] == "Querying with SQL..."
             assert msg6["status"] == "completed"
 
             # Tool response message after SQL query fails
-            msg6_tool = websocket.receive_json()
+            msg6_tool = next_state_msg(websocket)
             assert msg6_tool["role"] == "tool"
             assert msg6_tool["tool_response"]["id"] == "call_1"
             assert msg6_tool["tool_response"]["status"] == "error"
@@ -378,18 +388,18 @@ async def test_chat_completions_with_error(
                 assert "error" in tool_response
 
             # Message 7: Final thinking (start)
-            msg7 = websocket.receive_json()
+            msg7 = next_state_msg(websocket)
             assert msg7["ephemeral"]
             assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
 
             # Message 8: Final thinking (completed)
-            msg8 = websocket.receive_json()
+            msg8 = next_state_msg(websocket)
             assert msg8["ephemeral"]
             assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
 
             # Message 9: Final assistant response
-            msg9 = websocket.receive_json()
+            msg9 = next_state_msg(websocket)
             assert msg9["role"] == "assistant"
             assert "error" in msg9["content"].lower()
