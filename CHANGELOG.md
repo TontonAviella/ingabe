@@ -2,6 +2,29 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.4.0.0] - 2026-05-02
+
+### Added
+- Phase 1 raster interpretation tool surface for Sage. Five mechanical tools (`describe_user_raster`, `compute_zonal_stats`, `get_value_distribution`, `read_pixel_at`, `find_stress_zones`) plus three semantic verdict tools (`interpret_raster_health`, `compare_rasters`, `evaluate_insurance_trigger`) that turn drone NDVI/RGB orthophotos into queryable insurance-grade verdicts.
+- Phase 2 visual similarity search via Clay v1.5 foundation model + Qdrant. New Sage tool `find_similar_tiles` lets a user point at a stressed patch in one drone flight and surface visually similar tiles across all their other rasters. Embeddings are auto-generated when COG conversion completes; partner-isolated by default.
+- Brain pipeline now runs entirely on local infrastructure. Embeddings switch from OpenAI `text-embedding-3-large` to local Ollama `nomic-embed-text` (768-dim), removing the cloud auth dependency for partner-internal documents and silencing the upstream 401 storm.
+- Brain timeline auto-write from Phase 1 verdict tools and Phase 2 Clay status, so every Sage tool call leaves a permanent trace on the relevant `raster-{layer_id}` brain page.
+
+### Changed
+- Replaced Milvus standalone with Qdrant 1.17.1 for Clay tile embeddings. Single Rust binary, ~50-100 MiB resident vs Milvus's ~180 MiB plus bundled etcd/minio. Same public API in `qdrant_client.py` so call sites needed only import-line changes.
+- Insurance Intelligence Engine refactored: 638-line gut renovation removing pre-Phase-1 prototype paths in favor of the composition layer that ships in this PR.
+- Drone orthophoto rendering now serves at full resolution with no edge flicker, even for large uploads (multi-gigabyte COGs handled cleanly through proxy_request_buffering).
+- All Sage chat completions now route through `OPENAI_BASE_URL=https://ollama.com/v1` with `gemma4:31b` as primary and `ollama:qwen2.5:7b-64k` (local) as fallback. Frees ~12 GB on the Hetzner box that previously hosted Milvus.
+
+### Fixed
+- Brain maintenance scheduler stops crashing on every tick. Frontmatter is now defensively parsed when arriving as a JSON string, and `embed_all_stale` SELECT applies the same partner-aware filter that `get_page` applies, eliminating the "page not found" WARN spam at ~36 lines/min.
+- Brain hook processor (which runs every 30s in each of 6 uvicorn workers) now uses `pg_try_advisory_lock` to ensure only one worker per tick runs the embed cycle, mirroring the per-source ingest job pattern.
+- pgvector dimension migrated from `vector(1536)` to `vector(768)` with HNSW index rebuilt for the new Ollama embeddings.
+- Multiple Sage tools converted to strict-mode arg models (Field(...) sentinels) to match OpenAI tool-calling format.
+
+### Removed
+- `src/services/milvus_client.py` and `milvus/*.yaml` configs. Milvus standalone container retired in favor of Qdrant.
+
 ## [0.3.0.0] - 2026-04-24
 
 ### Added
