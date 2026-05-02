@@ -3,8 +3,7 @@
 Part 1: Pure function tests (no DB/API required).
 Part 2: Mocked async tests for DB/API functions:
   _load_triggers, _fetch_ndvi_anomaly, compute_insurance_intelligence,
-  _resolve_location_name, _get_planting_date, _get_harvest_dap,
-  compute_insurance_accuracy_safe
+  _resolve_location_name, compute_insurance_accuracy_safe
 """
 
 import asyncio
