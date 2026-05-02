@@ -5308,12 +5308,18 @@ async def process_chat_interaction_task(
                                         f"Location: {_loc}, Season {_season}, currently in {_phase} (day {_dap}). Overall status: {_status} (confidence {_confidence}/100).",
                                         f"Rainfall this season: {_rain}mm so far. {_spi_str}.",
                                     ]
-                                    if _ndvi_str: _briefing_parts.append(_ndvi_str + ".")
-                                    if _sm_str: _briefing_parts.append(_sm_str + ".")
-                                    if _et_str: _briefing_parts.append(_et_str + ".")
-                                    if _dry_str: _briefing_parts.append(_dry_str + ".")
-                                    if _drought_diag: _briefing_parts.append(f"Drought assessment: {_drought_diag}.")
-                                    if _fired_str: _briefing_parts.append(_fired_str)
+                                    if _ndvi_str:
+                                        _briefing_parts.append(_ndvi_str + ".")
+                                    if _sm_str:
+                                        _briefing_parts.append(_sm_str + ".")
+                                    if _et_str:
+                                        _briefing_parts.append(_et_str + ".")
+                                    if _dry_str:
+                                        _briefing_parts.append(_dry_str + ".")
+                                    if _drought_diag:
+                                        _briefing_parts.append(f"Drought assessment: {_drought_diag}.")
+                                    if _fired_str:
+                                        _briefing_parts.append(_fired_str)
 
                                     tool_result["situation"] = " ".join(_briefing_parts)
 
