@@ -478,17 +478,334 @@ export default function ProjectView() {
     }
   }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient]);
 
-  // Helper function to upload a single file with progress tracking
-  // Uses 3-step presigned URL flow to bypass server timeout limits:
-  //   1. POST /upload-presign → get presigned PUT URL + forked map
-  //   2. PUT file directly to S3/R2 (unlimited time, progress tracked)
-  //   3. POST /upload-complete → server processes the uploaded file
+  const MULTIPART_THRESHOLD = 50 * 1024 * 1024; // 50 MB
+  // Browsers cap parallel HTTP requests to one origin at 6. Going higher just
+  // queues the extras. 6 is the right ceiling for s3.gis.nozalabs.rw.
+  const MULTIPART_CONCURRENCY = 6;
+  const RESUME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+  type MultipartResumeState = {
+    upload_id: string;
+    s3_key: string;
+    layer_id: string;
+    dag_child_map_id: string;
+    dag_parent_map_id: string;
+    total_parts: number;
+    part_size: number;
+    completed_parts: { part_number: number; etag: string }[];
+    filename: string;
+    file_size: number;
+    created_at: number;
+  };
+
+  // Stable per-file fingerprint. Hashes filename + size + lastModified + first
+  // 1MB of content. Skips hashing the whole file (3 GB → minutes); first 1MB
+  // + metadata is unique enough to detect "same file, same machine, same upload".
+  const computeFileFingerprint = async (file: File): Promise<string> => {
+    const headBuf = await file.slice(0, 1024 * 1024).arrayBuffer();
+    const enc = new TextEncoder();
+    const metaBuf = enc.encode(`${file.name}|${file.size}|${file.lastModified}`);
+    const combined = new Uint8Array(metaBuf.length + headBuf.byteLength);
+    combined.set(metaBuf, 0);
+    combined.set(new Uint8Array(headBuf), metaBuf.length);
+    const hashBuf = await crypto.subtle.digest('SHA-1', combined);
+    return Array.from(new Uint8Array(hashBuf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  };
+
+  const resumeKey = (pid: string, fp: string) => `mundi-multipart-resume-${pid}-${fp}`;
+
+  const loadResumeState = (pid: string, fp: string): MultipartResumeState | null => {
+    try {
+      const raw = localStorage.getItem(resumeKey(pid, fp));
+      if (!raw) return null;
+      const state = JSON.parse(raw) as MultipartResumeState;
+      if (Date.now() - state.created_at > RESUME_TTL_MS) {
+        localStorage.removeItem(resumeKey(pid, fp));
+        return null;
+      }
+      return state;
+    } catch {
+      return null;
+    }
+  };
+
+  const saveResumeState = (pid: string, fp: string, state: MultipartResumeState): void => {
+    try {
+      localStorage.setItem(resumeKey(pid, fp), JSON.stringify(state));
+    } catch {
+      // localStorage full or disabled - non-fatal
+    }
+  };
+
+  const clearResumeState = (pid: string, fp: string): void => {
+    try {
+      localStorage.removeItem(resumeKey(pid, fp));
+    } catch {
+      // ignore
+    }
+  };
+
   const uploadFile = useMutation({
-    retry: false, // Never auto-retry uploads — large files + server processing make retries destructive
+    retry: false,
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 
-      // Step 1: Get presigned URL and fork the map
+      const useMultipart = file.size >= MULTIPART_THRESHOLD;
+
+      if (useMultipart) {
+        // --- Multipart upload: parallel chunks for large files ---
+        // Send the file as-is. No client-side compression, no client-side
+        // transformation. Browser only reads the file off disk and sends bytes.
+        // All compute (decompression, COG generation, processing) is on the
+        // server where it belongs.
+        const uploadFilename = file.name;
+        const payload: Blob = file;
+        const payloadSize = payload.size;
+
+        // Step 1: try to resume an interrupted prior upload of this same file.
+        const fingerprint = await computeFileFingerprint(file);
+        const saved = loadResumeState(projectId, fingerprint);
+        type InitShape = {
+          upload_id: string;
+          s3_key: string;
+          layer_id: string;
+          part_size: number;
+          total_parts: number;
+          dag_child_map_id: string;
+          dag_parent_map_id: string;
+        };
+        let init: InitShape | null = null;
+        const completedParts: { part_number: number; etag: string }[] = [];
+
+        if (saved) {
+          // Cross-reference localStorage with S3 (S3 is the source of truth).
+          // Saved upload_id may be expired / aborted; in that case start fresh.
+          const statusRes = await fetchMaybeAuth(
+            `/api/maps/${saved.dag_child_map_id}/upload-multipart-status?upload_id=${encodeURIComponent(saved.upload_id)}&s3_key=${encodeURIComponent(saved.s3_key)}`,
+          );
+          if (statusRes.ok) {
+            const status = (await statusRes.json()) as {
+              exists: boolean;
+              parts: { part_number: number; etag: string }[];
+            };
+            if (status.exists && status.parts.length > 0) {
+              const s3Set = new Set(status.parts.map((p) => p.part_number));
+              const confirmed = saved.completed_parts.filter((p) => s3Set.has(p.part_number));
+              const pct = Math.round((confirmed.length / saved.total_parts) * 100);
+              const ok = window.confirm(
+                `Resume previous upload of "${saved.filename}"?\n\n` +
+                  `${confirmed.length} of ${saved.total_parts} chunks already on the server (~${pct}%).\n\n` +
+                  `OK = resume from where it left off.\n` +
+                  `Cancel = start over from 0%.`,
+              );
+              if (ok) {
+                completedParts.push(...confirmed);
+                init = {
+                  upload_id: saved.upload_id,
+                  s3_key: saved.s3_key,
+                  layer_id: saved.layer_id,
+                  part_size: saved.part_size,
+                  total_parts: saved.total_parts,
+                  dag_child_map_id: saved.dag_child_map_id,
+                  dag_parent_map_id: saved.dag_parent_map_id,
+                };
+              }
+            }
+          }
+          if (!init) clearResumeState(projectId, fingerprint);
+        }
+
+        if (!init) {
+          // Fresh init (no saved state, expired, or resume declined).
+          const initRes = await fetchMaybeAuth(
+            `/api/maps/${versionId}/upload-multipart-init?filename=${encodeURIComponent(uploadFilename)}&file_size=${payloadSize}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+          );
+          if (!initRes.ok) {
+            const err = await initRes.json().catch(() => ({ detail: initRes.statusText }));
+            throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to init multipart upload');
+          }
+          init = (await initRes.json()) as InitShape;
+        }
+
+        const partSize = init.part_size;
+        const totalParts = init.total_parts;
+        // Persist initial resume state so a crash mid-upload is recoverable.
+        const persistResume = () => {
+          saveResumeState(projectId, fingerprint, {
+            upload_id: init.upload_id,
+            s3_key: init.s3_key,
+            layer_id: init.layer_id,
+            dag_child_map_id: init.dag_child_map_id,
+            dag_parent_map_id: init.dag_parent_map_id,
+            total_parts: init.total_parts,
+            part_size: init.part_size,
+            completed_parts: [...completedParts],
+            filename: file.name,
+            file_size: file.size,
+            created_at: Date.now(),
+          });
+        };
+        persistResume();
+
+        // Track bytes-in-flight per part so the bar reflects ALL streams,
+        // not just completed parts. High-water mark prevents the bar from
+        // ever moving backward when a part fails and resets to 0.
+        const inFlightBytes = new Map<number, number>();
+        // Resumed parts count as already-completed bytes. Last part may be smaller.
+        let completedBytes = Math.min(payloadSize, completedParts.length * partSize);
+        let highWaterPercent = 0;
+
+        // XHR progress events fire 30-60 times/sec across 6 streams. Re-rendering
+        // React on every event burns the laptop's CPU for no visual benefit.
+        // Only update state when the displayed percentage actually changes.
+        let lastDisplayedPercent = -1;
+        const updateProgress = () => {
+          let inFlight = 0;
+          for (const v of inFlightBytes.values()) inFlight += v;
+          const totalUploaded = completedBytes + inFlight;
+          const raw = Math.min(90, Math.round((totalUploaded / payloadSize) * 90));
+          if (raw > highWaterPercent) highWaterPercent = raw;
+          if (highWaterPercent === lastDisplayedPercent) return;
+          lastDisplayedPercent = highWaterPercent;
+          setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: highWaterPercent } : f)));
+        };
+
+        const putPartOnce = (partUrl: string, blob: Blob, partNum: number): Promise<XMLHttpRequest> =>
+          new Promise<XMLHttpRequest>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            // 15 min per 50MB chunk → tolerates ~55 KB/s sustained on a single
+            // stream. With 6 parallel streams, overall throughput floor ~330 KB/s.
+            xhr.timeout = 15 * 60 * 1000;
+            xhr.upload.addEventListener('progress', (ev) => {
+              if (ev.lengthComputable) {
+                inFlightBytes.set(partNum, ev.loaded);
+                updateProgress();
+              }
+            });
+            xhr.addEventListener('load', () => {
+              if (xhr.status >= 200 && xhr.status < 300) resolve(xhr);
+              else reject(new Error(`HTTP ${xhr.status}`));
+            });
+            xhr.addEventListener('error', () => reject(new Error('network error')));
+            xhr.addEventListener('timeout', () => reject(new Error('timeout')));
+            xhr.addEventListener('abort', () => reject(new Error('aborted')));
+            xhr.open('PUT', partUrl);
+            xhr.send(blob);
+          });
+
+        const uploadPart = async (partNum: number): Promise<void> => {
+          const start = (partNum - 1) * partSize;
+          const end = Math.min(start + partSize, payloadSize);
+          const blob = payload.slice(start, end);
+
+          // Up to 4 attempts per part with exponential backoff (1s, 2s, 4s).
+          let lastErr: unknown = null;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            try {
+              // Re-presign on each attempt (URL expires in 1h, attempt may be late).
+              const presignRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-multipart-presign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ s3_key: init.s3_key, upload_id: init.upload_id, part_numbers: [partNum] }),
+              });
+              if (!presignRes.ok) throw new Error(`presign HTTP ${presignRes.status}`);
+              const { urls } = (await presignRes.json()) as { urls: Record<number, string> };
+
+              inFlightBytes.set(partNum, 0);
+              const resp = await putPartOnce(urls[partNum], blob, partNum);
+              const etag = (resp.getResponseHeader('ETag') || '').replace(/"/g, '');
+              completedParts.push({ part_number: partNum, etag });
+              inFlightBytes.delete(partNum);
+              completedBytes += end - start;
+              updateProgress();
+              // Persist after each successful part so a crash leaves us
+              // recoverable from this exact point.
+              persistResume();
+              return;
+            } catch (e) {
+              lastErr = e;
+              inFlightBytes.delete(partNum);
+              if (attempt < 3) {
+                await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+              }
+            }
+          }
+          throw new Error(`Part ${partNum} failed after 4 attempts: ${(lastErr as Error)?.message ?? 'unknown'}`);
+        };
+
+        // Workers pull from a shared queue → true bounded concurrency.
+        // Skip parts already confirmed by S3 (resumed uploads).
+        const completedSet = new Set(completedParts.map((p) => p.part_number));
+        const queue = Array.from({ length: totalParts }, (_, i) => i + 1).filter((pn) => !completedSet.has(pn));
+        // Initial paint: show resumed % immediately so user sees "Resumed at 67%"
+        // not "0% then jumps".
+        updateProgress();
+        const worker = async (): Promise<void> => {
+          while (queue.length > 0) {
+            const pn = queue.shift();
+            if (pn === undefined) return;
+            await uploadPart(pn);
+          }
+        };
+        const workerCount = Math.min(MULTIPART_CONCURRENCY, queue.length || 1);
+        await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 92 } : f)));
+
+        // Complete multipart upload (assembles parts in S3). Send the upload
+        // filename — backend strips .gz and decompresses if needed.
+        // Long timeout: S3 has to assemble all parts. For 60+ parts on a
+        // 3 GB file this can take a couple of minutes. Default 30s aborts.
+        const assembleRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-multipart-complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(10 * 60 * 1000),
+          body: JSON.stringify({
+            s3_key: init.s3_key,
+            upload_id: init.upload_id,
+            parts: completedParts,
+            layer_id: init.layer_id,
+            filename: uploadFilename,
+            add_layer_to_map: true,
+          }),
+        });
+        if (!assembleRes.ok) {
+          const err = await assembleRes.json().catch(() => ({ detail: assembleRes.statusText }));
+          throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to assemble multipart upload');
+        }
+
+        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 95 } : f)));
+
+        // Process the uploaded file (same as single-PUT flow). Backend
+        // strips .gz from filename and decompresses before processing.
+        // Long timeout: backend downloads from S3, runs preprocessing
+        // (gunzip if compressed, COG generation, raster reprojection, etc).
+        // For a 3 GB file this is 5-15 minutes. Default 30s aborts.
+        const completeRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-complete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(60 * 60 * 1000),
+          body: JSON.stringify({
+            s3_key: init.s3_key,
+            layer_id: init.layer_id,
+            filename: uploadFilename,
+            add_layer_to_map: true,
+          }),
+        });
+        if (!completeRes.ok) {
+          const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
+          throw new Error(typeof err.detail === 'string' ? err.detail : 'Processing failed after upload');
+        }
+
+        // Successful round trip: resume state is no longer needed.
+        clearResumeState(projectId, fingerprint);
+        return await completeRes.json();
+      }
+
+      // --- Single PUT for small files (< 50 MB) ---
       const presignRes = await fetchMaybeAuth(`/api/maps/${versionId}/upload-presign?filename=${encodeURIComponent(file.name)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -506,35 +823,23 @@ export default function ProjectView() {
         dag_parent_map_id: string;
       };
 
-      // Step 2: Upload file directly to S3/R2 via presigned PUT URL
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-
         xhr.upload.addEventListener('progress', (event) => {
           if (event.lengthComputable) {
-            // Reserve last 5% for server-side processing
             const progress = Math.round((event.loaded / event.total) * 95);
             setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress } : f)));
           }
         });
-
         xhr.addEventListener('load', () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`S3 upload failed (HTTP ${xhr.status})`));
-          }
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`S3 upload failed (HTTP ${xhr.status})`));
         });
-
-        xhr.addEventListener('error', () => {
-          reject(new Error('Upload failed due to network error'));
-        });
-
+        xhr.addEventListener('error', () => reject(new Error('Upload failed due to network error')));
         xhr.open('PUT', presign.upload_url);
         xhr.send(file);
       });
 
-      // Step 3: Tell the server to process the uploaded file
       setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
 
       const completeRes = await fetchMaybeAuth(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
