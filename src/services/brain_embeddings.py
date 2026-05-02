@@ -506,11 +506,26 @@ async def embed_all_stale(
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
         return {"embedded": 0, "skipped": 0, "errors": 0, "auth_disabled": True}
 
-    # Find pages that have content but no chunks with embeddings
+    # Find pages that have content but no chunks with embeddings.
+    # Match brain_service.get_page's partner-aware filter so this SELECT only
+    # returns rows the same connection can actually resolve. Without this,
+    # partner_internal pages slip through to embed_page() where get_page
+    # filters them out and we log "page not found" forever (the rows never
+    # get embeddings, so the next tick finds them again — infinite WARN
+    # loop). The maintenance + hook-processor connections run with empty
+    # app.partner_id, so this excludes partner_internal rows from them and
+    # leaves those rows for embedding inside the partner's own session.
     rows = await conn.fetch(
         """
         SELECT p.slug FROM brain_pages p
         WHERE (p.compiled_truth != '' OR p.timeline != '')
+          AND (
+              p.access_scope IS NULL
+              OR p.access_scope = 'public'
+              OR (p.access_scope = 'partner_internal'
+                  AND p.partner_id IS NOT NULL
+                  AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
+          )
           AND NOT EXISTS (
               SELECT 1 FROM brain_content_chunks cc
               WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
