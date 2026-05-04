@@ -56,7 +56,7 @@ class DisplayLayerArgs(BaseModel):
             "GeoJSON URLs and S3 protocol URLs are not yet supported in this version."
         ),
     )
-    title: str = Field(
+    layer_name: str = Field(
         ...,
         description="Human-readable layer name shown in the layers panel, e.g. 'Soil Nitrogen — Cyampirita'",
     )
@@ -123,7 +123,7 @@ async def display_layer(
 
     async with kue_ephemeral_action(
         meta.conversation_id,
-        f"Adding layer: {args.title}",
+        f"Adding layer: {args.layer_name}",
         bounds=bbox,
     ) as payload:
         payload.updates["add_tile_layer"] = {
@@ -131,7 +131,7 @@ async def display_layer(
             "tiles": [tile_url],
             "tileSize": 256,
             "maxzoom": 14,
-            "name": args.title,
+            "name": args.layer_name,
             "bounds": bbox,
             "style_hint": args.style_hint,
         }
@@ -140,11 +140,165 @@ async def display_layer(
     return {
         "status": "displayed",
         "source_id": source_id,
-        "title": args.title,
+        "title": args.layer_name,
         "style_hint": args.style_hint,
         "asset_url": args.asset_url,
         "bbox": bbox,
         "tile_template": tile_url,
+    }
+
+
+# Vector polygon styling presets — when display_geojson_layer is called with
+# a style_hint, the frontend uses these to pick fill-color expressions.
+# Each preset names the property key on the GeoJSON features whose value drives
+# the color, plus a list of (threshold, color) stops.
+GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    # Insurance composite score (0-100): red < 40 (no payout zone) → orange 40-60
+    # (monitor) → yellow 60-80 (partial) → dark red 80+ (full payout / triggered)
+    "insurance_composite_score": {
+        "color_property": "composite_score",
+        "stops": [
+            {"max": 40,  "color": "#2ecc71"},  # green — no payout
+            {"max": 60,  "color": "#f1c40f"},  # yellow — monitor
+            {"max": 80,  "color": "#e67e22"},  # orange — partial payout
+            {"max": 100, "color": "#c0392b"},  # red — full payout / triggered
+        ],
+        "fill_opacity": 0.55,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 2,
+    },
+    # NDVI-based field health: red < 0.3 → yellow 0.3-0.55 → green 0.55+
+    "field_health": {
+        "color_property": "ndvi_mean",
+        "stops": [
+            {"max": 0.30, "color": "#c0392b"},
+            {"max": 0.55, "color": "#f1c40f"},
+            {"max": 1.00, "color": "#2ecc71"},
+        ],
+        "fill_opacity": 0.55,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 2,
+    },
+    # Stress zones: severity 0-3 from find_stress_zones
+    "stress_zones": {
+        "color_property": "severity",
+        "stops": [
+            {"max": 1.0, "color": "#f1c40f"},
+            {"max": 2.0, "color": "#e67e22"},
+            {"max": 3.0, "color": "#c0392b"},
+        ],
+        "fill_opacity": 0.6,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 2,
+    },
+    # Plain neutral outline — for AOI polygons or non-data overlays
+    "outline": {
+        "color_property": None,
+        "fill_opacity": 0.0,
+        "stroke_color": "#0ea5e9",
+        "stroke_width": 3,
+    },
+}
+
+
+class DisplayGeojsonLayerArgs(BaseModel):
+    geojson: str = Field(
+        ...,
+        description=(
+            "Inline GeoJSON FeatureCollection or Feature as a JSON string. "
+            "Each feature should carry the property used by the style_hint's "
+            "color_property (e.g. 'composite_score' for insurance_composite_score, "
+            "'ndvi_mean' for field_health, 'severity' for stress_zones)."
+        ),
+    )
+    layer_name: str = Field(
+        ...,
+        description="Human-readable name for this vector layer in the layers panel.",
+    )
+    style_hint: str = Field(
+        ...,
+        description=(
+            "Vector style preset. One of: insurance_composite_score, field_health, "
+            "stress_zones, outline."
+        ),
+    )
+    bbox: str = Field(
+        ...,
+        description="Bounding box of the GeoJSON, as 'west,south,east,north' WGS84. Used for auto-zoom.",
+    )
+
+
+async def display_geojson_layer(
+    args: DisplayGeojsonLayerArgs, meta: IngabeToolCallMetaArgs
+) -> Dict[str, Any]:
+    """Display inline GeoJSON polygons on the map with categorical fill colors.
+
+    Use this when an analytical tool returns vector polygons (e.g. an insured
+    parcel boundary with a composite_score, stress-zone clusters with severity,
+    or AOI outlines). Pair with evaluate_insurance_trigger, find_stress_zones,
+    or any tool that produces polygon evidence the user should SEE.
+
+    The style_hint picks a categorical color ramp keyed off a property on each
+    feature (composite_score, ndvi_mean, severity). The frontend renders the
+    layer immediately and adds it to the user's layer panel.
+
+    Pattern: compute (returns polygons + scored properties) → display_geojson_layer
+    (paints them).
+    """
+    import json as _json
+
+    try:
+        bbox = [float(x.strip()) for x in args.bbox.split(",")]
+        if len(bbox) != 4:
+            return {"status": "error", "error": "bbox must have 4 values: west,south,east,north"}
+    except ValueError:
+        return {"status": "error", "error": "bbox values must be numbers"}
+
+    preset = GEOJSON_STYLE_PRESETS.get(args.style_hint)
+    if preset is None:
+        return {
+            "status": "error",
+            "error": f"Unknown style_hint '{args.style_hint}'. Valid: {sorted(GEOJSON_STYLE_PRESETS.keys())}",
+        }
+
+    try:
+        geojson = _json.loads(args.geojson)
+    except _json.JSONDecodeError as e:
+        return {"status": "error", "error": f"geojson is not valid JSON: {e}"}
+
+    if not isinstance(geojson, dict) or geojson.get("type") not in ("FeatureCollection", "Feature"):
+        return {"status": "error", "error": "geojson must be a Feature or FeatureCollection"}
+
+    source_id = f"sage-geojson-{uuid.uuid4().hex[:8]}"
+
+    async with kue_ephemeral_action(
+        meta.conversation_id,
+        f"Adding layer: {args.layer_name}",
+        bounds=bbox,
+    ) as payload:
+        payload.updates["add_geojson_layer"] = {
+            "source_id": source_id,
+            "geojson": geojson,
+            "name": args.layer_name,
+            "bounds": bbox,
+            "style_hint": args.style_hint,
+            "style": preset,
+        }
+        await asyncio.sleep(0.2)
+
+    feature_count = (
+        len(geojson.get("features", []))
+        if geojson.get("type") == "FeatureCollection"
+        else 1
+    )
+
+    return {
+        "status": "displayed",
+        "source_id": source_id,
+        "title": args.layer_name,
+        "style_hint": args.style_hint,
+        "feature_count": feature_count,
+        "bbox": bbox,
     }
 
 

@@ -1359,4 +1359,59 @@ async def evaluate_insurance_trigger(
             )
     except Exception:
         logger.debug("Brain timeline write skipped for evaluate_insurance_trigger", exc_info=True)
+
+    # Build a displayable polygon: the insured field boundary, tagged with the
+    # composite_score + verdict. The LLM passes this to display_geojson_layer
+    # with style_hint="insurance_composite_score" to paint the parcel in
+    # green/yellow/orange/red based on score. This is the visual answer to
+    # "should this claim pay out?" — underwriter sees the colored parcel, not
+    # just a paragraph.
+    try:
+        if args.polygon_geojson and args.polygon_geojson.strip():
+            _polygon_obj = json.loads(args.polygon_geojson)
+            # Normalize: accept Polygon geometry, Feature, or FeatureCollection
+            if _polygon_obj.get("type") == "Polygon":
+                _geom = _polygon_obj
+            elif _polygon_obj.get("type") == "Feature":
+                _geom = _polygon_obj.get("geometry")
+            elif _polygon_obj.get("type") == "FeatureCollection":
+                _feats = _polygon_obj.get("features", [])
+                _geom = _feats[0].get("geometry") if _feats else None
+            else:
+                _geom = None
+
+            if _geom is not None:
+                feature = {
+                    "type": "Feature",
+                    "geometry": _geom,
+                    "properties": {
+                        "composite_score": composite_score,
+                        "triggered": triggered,
+                        "payout_recommendation": payout_rec.split(" — ")[0] if " — " in payout_rec else payout_rec,
+                        "crop": args.crop,
+                        "growth_stage": stage_t2,
+                        "ndvi_mean": mean_after,
+                    },
+                }
+                fc = {"type": "FeatureCollection", "features": [feature]}
+                # Compute bbox from the polygon's coordinates
+                try:
+                    from shapely.geometry import shape as _shape
+                    _b = _shape(_geom).bounds
+                    _bbox_str = f"{_b[0]},{_b[1]},{_b[2]},{_b[3]}"
+                except Exception:
+                    _bbox_str = ""
+
+                response["displayable_geojson"] = {
+                    "geojson": fc,
+                    "style_hint": "insurance_composite_score",
+                    "title": (
+                        f"Insurance Trigger — {args.crop} "
+                        f"({payout_rec.split(' — ')[0] if ' — ' in payout_rec else 'Verdict'})"
+                    ),
+                    "bbox": _bbox_str,
+                }
+    except Exception:
+        logger.debug("displayable_geojson build skipped for evaluate_insurance_trigger", exc_info=True)
+
     return response
