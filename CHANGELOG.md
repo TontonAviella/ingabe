@@ -2,6 +2,26 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.5.0.0] - 2026-05-04
+
+### Added
+- Sage's analytical tools now paint the map. Ask "show me NDVI in Cyampirita" or "any flood damage in Eastern Province?" and Sage paints the actual layer instead of just typing back numbers. Two new tools — `display_layer` (raster overlays from public COG URLs) and `display_geojson_layer` (vector polygons with categorical fills) — backed by 28 typed style presets covering soil chemistry, vegetation indices, drought, soil moisture, evapotranspiration, SAR backscatter, food security IPC phases, insurance trigger scores, and visual similarity gradients.
+- 12 existing analytical tools retrofitted to surface map output: `get_soil_properties`, `get_soil_moisture`, `get_evapotranspiration`, `evaluate_insurance_trigger`, `interpret_raster_health`, `analyze_rgb_field`, `find_stress_zones`, `find_similar_tiles`, `detect_water_bodies`, `detect_flood_extent`, `compute_zonal_stats`, `get_food_security_alerts`, `get_alos_l_band_stats`. Each now returns a `displayable_layers` or `displayable_geojson` payload that Sage dispatches via the new display tools.
+- AOI grounding for every spatial tool call. New `<CurrentAOI>` system block synthesizes the user's spatial focus from `selected_feature` (parcel clicked on map) → `viewport_bounds` → country default. Sage stops defaulting to district names when a parcel is selected.
+- Drone multispectral display path. `describe_user_raster` surfaces a 6-hour presigned COG URL plus per-band style hints for known layouts: 4-band [R, NDVI, NDRE, alpha] drone exports auto-suggest band 2 (`ndvi_band` style) and band 3 (`ndre_band` style); single-band NDVI/NDRE rasters auto-detect from filename. Multispectral with unknown band semantics asks the user to confirm.
+- New raster style presets: `ndvi_band`, `ndre_band`, `sar_backscatter_db`. New vector style presets: `insurance_composite_score`, `field_health`, `rgb_field_health`, `stress_zones`, `outline`, `water`, `flood_extent`, `similarity_score`, `food_security_ipc`.
+- COG tile router (`/api/cog-tiles/{z}/{x}/{y}.png`) gains a `single_band` rendering mode with per-request `colormap`, `rescale`, and `band_index` params. Reads any band of any public COG and renders it with a colormap, regardless of the source raster's intended band layout.
+- Frontend handler in `ProjectView.tsx` for the new `add_geojson_layer` WebSocket action. Renders a fill + stroke layer pair per source, using a MapLibre `step` color expression keyed off categorical stops.
+
+### Changed
+- `cog_tile_router` `single_band` mode now uses rio-tiler's `ImageData.mask` instead of hardcoded `band == 0` for nodata. Fixes an issue where valid bare-soil pixels (NDRE ≈ 0), at-mean anomaly z-scores (z = 0), and 0°C temperature pixels would render as transparent holes in the new style presets. iSDAsoil rasters keep masking 0 correctly because their COG nodata tag says so.
+- `pool.py:get_async_db_connection` and the related read-replica/sync helpers now thread `viewport_bounds` through to `map_state.get_system_messages` so the AOI block reflects the actual user view at the time of the chat turn.
+
+### Deferred
+- CYGNSS family display (service computes water_fraction from netCDF in-memory but doesn't preserve a rasterio transform to vectorize from). Service-level change required.
+- `compare_rasters` display (diff lives in numpy memory, no public URL). Would need to write the diff to S3 first.
+- Hyperspectral support. `describe_user_raster` does not auto-suggest layers for >>10 band cubes. Would need a dedicated tool to pick RGB-equivalent bands from spectral cubes.
+
 ## [0.4.0.0] - 2026-05-02
 
 ### Added
