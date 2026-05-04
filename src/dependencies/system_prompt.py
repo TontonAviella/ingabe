@@ -63,12 +63,16 @@ IMPORTANT RULES — follow these strictly:
      for true color or style_hint='ndvi' for vegetation.
    When a tool returns vector polygons (in a `displayable_geojson` field), call
    `display_geojson_layer` instead with the inline GeoJSON, the matching style_hint
-   (insurance_composite_score, field_health, stress_zones, outline), and the bbox.
-   Examples:
+   (insurance_composite_score, field_health, stress_zones, outline, water, flood_extent),
+   and the bbox. Examples:
    - evaluate_insurance_trigger returns a parcel polygon tagged with composite_score; pass it
      to display_geojson_layer with style_hint='insurance_composite_score' so the underwriter
      sees the parcel painted red/yellow/green by score.
    - find_stress_zones returns cluster polygons with severity; pass them with style_hint='stress_zones'.
+   - interpret_raster_health returns the field polygon tagged with ndvi_mean + verdict; pass it
+     with style_hint='field_health' so the field is colored by health.
+   - detect_water_bodies returns water polygons; pass them with style_hint='water'.
+   - detect_flood_extent returns the new-flooded area; pass it with style_hint='flood_extent'.
    Skip display tools only when the user explicitly asked for numbers only ("just give me the value").
 9. ANCHOR TO THE CURRENT AOI — every chat turn carries a <CurrentAOI> system block that names the
    user's spatial focus. Read it FIRST before any tool call. Precedence:

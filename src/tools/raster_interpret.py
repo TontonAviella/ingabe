@@ -359,6 +359,34 @@ async def interpret_raster_health(
     if desc.get("sanity_warning"):
         response["sanity_warning"] = desc["sanity_warning"]
 
+    # Build displayable_geojson tagging the field polygon with ndvi_mean + verdict
+    # so Sage can paint the field with the field_health style preset.
+    try:
+        if args.polygon_geojson and args.polygon_geojson.strip():
+            from shapely.geometry import shape as _shape
+            geom = json.loads(args.polygon_geojson)
+            if isinstance(geom, dict) and geom.get("type") in ("Polygon", "MultiPolygon"):
+                feature = {
+                    "type": "Feature",
+                    "geometry": geom,
+                    "properties": {
+                        "ndvi_mean": mean_ndvi,
+                        "verdict": verdict["level"],
+                        "crop": args.crop,
+                        "growth_stage": stage,
+                    },
+                }
+                fc = {"type": "FeatureCollection", "features": [feature]}
+                b = _shape(geom).bounds
+                response["displayable_geojson"] = {
+                    "geojson": fc,
+                    "style_hint": "field_health",
+                    "title": f"Field Health — {desc['name']} ({verdict['level']})",
+                    "bbox": f"{b[0]},{b[1]},{b[2]},{b[3]}",
+                }
+    except Exception:
+        logger.debug("displayable_geojson build skipped for interpret_raster_health", exc_info=True)
+
     # Append to Brain timeline so the verdict survives the conversation.
     try:
         from src.services.raster_brain_link import record_raster_analysis
@@ -590,6 +618,51 @@ async def find_stress_zones(
             "min_area_ha": min_area_ha,
             **result,
         }
+        # Build displayable_geojson so Sage can paint the stress zones on the
+        # map. We don't have polygon geometry from the connected-components
+        # compute (only centroids + area), so buffer each center by its area
+        # to make a small circular polygon that's good enough for visualization.
+        try:
+            import math as _math
+            from shapely.geometry import Point as _Point, mapping as _mapping
+            zones = result.get("stress_zones", [])
+            severity_to_int = {"mild": 1, "moderate": 2, "severe": 3}
+            features = []
+            min_lon = min_lat = float("inf")
+            max_lon = max_lat = float("-inf")
+            for z in zones:
+                lon, lat = z.get("center_lon"), z.get("center_lat")
+                if lon is None or lat is None:
+                    continue
+                area_ha = float(z.get("area_ha") or 0.0)
+                radius_m = _math.sqrt(max(area_ha, 0.01) * 10000.0 / _math.pi)
+                radius_deg = radius_m / 111000.0
+                poly = _Point(lon, lat).buffer(radius_deg)
+                if not poly.is_valid or poly.is_empty:
+                    continue
+                features.append({
+                    "type": "Feature",
+                    "geometry": _mapping(poly),
+                    "properties": {
+                        "zone_id": z.get("zone_id"),
+                        "severity": severity_to_int.get(z.get("severity"), 2),
+                        "severity_label": z.get("severity"),
+                        "area_ha": area_ha,
+                        "mean_ndvi": z.get("mean_ndvi"),
+                    },
+                })
+                b = poly.bounds
+                min_lon, min_lat = min(min_lon, b[0]), min(min_lat, b[1])
+                max_lon, max_lat = max(max_lon, b[2]), max(max_lat, b[3])
+            if features:
+                response["displayable_geojson"] = {
+                    "geojson": {"type": "FeatureCollection", "features": features},
+                    "style_hint": "stress_zones",
+                    "title": f"Stress Zones — {desc['name']} ({len(features)} cluster{'s' if len(features) != 1 else ''})",
+                    "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+                }
+        except Exception:
+            logger.debug("displayable_geojson build skipped for find_stress_zones", exc_info=True)
         # Append to Brain timeline so future Sage queries can recall the
         # zone count without re-running the connected-components compute.
         try:
