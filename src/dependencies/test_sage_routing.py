@@ -200,8 +200,9 @@ def test_route_chat_uncertain_falls_through() -> None:
 
 
 def test_route_chat_blocks_small_talk_when_tools_in_flight() -> None:
-    """Once a tool round has started, an "ok" might mean "yes proceed" —
-    we must not strip tools from the request."""
+    """While the LLM is mid-tool-round (tool_calls issued, no follow-up
+    assistant text yet), an "ok" might mean "yes proceed" — we must not
+    strip tools from the request."""
     history = [
         {"role": "user", "content": "show me the NDVI in Huye"},
         {
@@ -222,6 +223,37 @@ def test_route_chat_blocks_small_talk_when_tools_in_flight() -> None:
     ]
     decision = route_chat("ok", history=history)
     assert decision.is_small_talk is False
+
+
+def test_route_chat_allows_small_talk_after_completed_tool_round() -> None:
+    """A finished tool round (assistant tool_calls -> tool responses ->
+    assistant text) is closed. A "thanks" reply afterward is genuine
+    small-talk and should take the fast-path."""
+    history = [
+        {"role": "user", "content": "show me the NDVI in Huye"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "compute_spectral_index",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "{\"mean\": 0.62}"},
+        {
+            "role": "assistant",
+            "content": "NDVI in Huye averages 0.62 — healthy vegetation.",
+        },
+    ]
+    decision = route_chat("thanks", history=history)
+    assert decision.is_small_talk is True
+    assert decision.reason == "small_talk"
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ more latency than the problem we're trying to solve.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Iterable
@@ -49,6 +50,13 @@ BRAIN = "brain"
 # "uncategorized" and included whenever we cannot rule them out (i.e.
 # whenever we fall back to the full list). Category labels reflect what
 # the tool is *for*, not which file it lives in.
+#
+# Fail-open contract: when a new tool is added to `tools.json` or the
+# Pydantic registry without a matching entry here, the router will keep
+# it in the filtered set. That means new tools work immediately at the
+# cost of slightly looser filtering until they are categorized. This
+# trades some latency for correctness — the alternative (silently
+# dropping uncategorized tools) is the failure mode we never want.
 _TOOL_CATEGORIES: dict[str, str] = {
     # --- Always available: trivial display + geocoding ---
     # `add_layer_to_map`, `display_satellite_layer`, `search_satellite_imagery`
@@ -320,9 +328,6 @@ SMALL_TALK_SYSTEM_PROMPT = (
 
 # Default fast model for small-talk turns. Local container, no transatlantic
 # RTT, ~7B params. Override via env if the deployment has something better.
-import os  # noqa: E402  -- kept low-priority, only read at decision time
-
-
 def _small_talk_model() -> str:
     return os.environ.get("SAGE_SMALL_TALK_MODEL", "ollama:qwen2.5:7b-64k")
 
@@ -348,21 +353,27 @@ class RoutingDecision:
     reason: str
 
 
-def _history_has_tool_calls(history: list[dict] | None) -> bool:
-    """True if the conversation already contains assistant tool calls or
-    tool responses. We never small-talk-route once a tool round is in
-    flight — the user's "ok" might mean "yes proceed with the suggestion
-    that uses tools."
+def _tool_round_in_flight(history: list[dict] | None) -> bool:
+    """True if the most recent assistant message issued tool_calls and the
+    LLM has not yet produced a follow-up text message. In this state the
+    user's "ok" might mean "yes proceed" rather than chitchat, so we must
+    not strip tools from the request.
+
+    A completed earlier tool round (assistant tool_calls -> tool responses
+    -> assistant text) does NOT count: that round is closed, and a
+    "thanks" or "ok" reply afterward is genuine small-talk that should
+    take the fast-path. We look at the *most recent* assistant message
+    only, because OpenAI's chat protocol guarantees any pending tool_calls
+    live there (the LLM cannot start a new turn while older tool_calls
+    remain).
     """
     if not history:
         return False
-    for msg in history:
+    for msg in reversed(history):
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "tool":
-            return True
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            return True
+        if msg.get("role") == "assistant":
+            return bool(msg.get("tool_calls"))
     return False
 
 
@@ -384,7 +395,7 @@ def route_chat(
     """
     if (
         detect_small_talk(user_message)
-        and not _history_has_tool_calls(history)
+        and not _tool_round_in_flight(history)
     ):
         return RoutingDecision(
             is_small_talk=True,
