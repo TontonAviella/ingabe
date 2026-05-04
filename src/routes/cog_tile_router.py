@@ -219,8 +219,15 @@ async def get_cog_tile(
                     img = src.tile(x, y, z, indexes=[band_index], tilesize=256)
                     band = img.data[0].astype(np.float32)
 
-                    # iSDAsoil + many other rasters use 0 as nodata; mask it
-                    nodata_mask = (band == 0)
+                    # Use rio-tiler's mask — it respects the COG's nodata metadata
+                    # (nodata tag, internal mask band, alpha band). Hardcoding
+                    # `band == 0` masks valid pixels for many style presets:
+                    # NDVI=0 (no veg), NDRE=0 (bare soil), z-score=0 (at-mean),
+                    # 0°C temperature, 0 dB SAR backscatter, etc. iSDAsoil happens
+                    # to encode nodata as 0 but its COG nodata tag says so —
+                    # img.mask handles both cases correctly.
+                    # img.mask convention: 255 = valid data, 0 = nodata.
+                    nodata_mask = img.mask == 0
 
                     scaled = np.clip((band - lo) / (hi - lo), 0, 1)
                     scaled_uint8 = (scaled * 255).astype(np.uint8)
