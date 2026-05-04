@@ -6137,9 +6137,11 @@ async def send_map_message(
     )
     description_text = current_map_description.body.decode("utf-8")
 
-    # Get system messages from the provider
+    # Get system messages from the provider. Thread viewport_bounds so the
+    # provider can synthesize a <CurrentAOI> hint anchoring every spatial tool
+    # call to the user's actual map focus (selected_feature → viewport → country).
     system_messages = await map_state.get_system_messages(
-        current_messages, description_text, body.selected_feature
+        current_messages, description_text, body.selected_feature, body.viewport_bounds
     )
 
     # Inject brain context: knowledge pages near viewport or recent (≤2000 tokens)
