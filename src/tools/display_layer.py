@@ -229,6 +229,21 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#7f1d1d",
         "stroke_width": 2,
     },
+    # Visual-similarity hits (find_similar_tiles): cosine score 0..1, sequential
+    # color from pale yellow (weak) → red (top match). Same-flight neighbors
+    # typically 0.65-0.85; cross-flight matches above 0.7 are meaningful.
+    "similarity_score": {
+        "color_property": "similarity",
+        "stops": [
+            {"max": 0.70, "color": "#fef3c7"},  # pale yellow — weak
+            {"max": 0.85, "color": "#fcd34d"},  # yellow
+            {"max": 0.95, "color": "#f97316"},  # orange
+            {"max": 1.01, "color": "#dc2626"},  # red — top match / self
+        ],
+        "fill_opacity": 0.55,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 1,
+    },
 }
 
 
@@ -250,7 +265,7 @@ class DisplayGeojsonLayerArgs(BaseModel):
         ...,
         description=(
             "Vector style preset. One of: insurance_composite_score, field_health, "
-            "rgb_field_health, stress_zones, outline, water, flood_extent."
+            "rgb_field_health, stress_zones, outline, water, flood_extent, similarity_score."
         ),
     )
     bbox: str = Field(
