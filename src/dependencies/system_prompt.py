@@ -64,7 +64,7 @@ IMPORTANT RULES — follow these strictly:
    When a tool returns vector polygons (in a `displayable_geojson` field), call
    `display_geojson_layer` instead with the inline GeoJSON, the matching style_hint
    (insurance_composite_score, field_health, rgb_field_health, stress_zones, outline,
-   water, flood_extent, similarity_score), and the bbox. Examples:
+   water, flood_extent, similarity_score, food_security_ipc), and the bbox. Examples:
    - evaluate_insurance_trigger returns a parcel polygon tagged with composite_score; pass it
      to display_geojson_layer with style_hint='insurance_composite_score' so the underwriter
      sees the parcel painted red/yellow/green by score.

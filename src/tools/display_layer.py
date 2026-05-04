@@ -229,6 +229,22 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#7f1d1d",
         "stroke_width": 2,
     },
+    # FEWS NET IPC food security phases. Standard IPC color scheme: 1=Minimal
+    # (green), 2=Stressed (yellow), 3=Crisis (orange), 4=Emergency (red),
+    # 5=Famine (dark red). Painted on Rwanda district polygons.
+    "food_security_ipc": {
+        "color_property": "ipc_phase",
+        "stops": [
+            {"max": 1.5, "color": "#c5e0b3"},  # 1 Minimal — light green
+            {"max": 2.5, "color": "#fae61e"},  # 2 Stressed — yellow
+            {"max": 3.5, "color": "#e67c00"},  # 3 Crisis — orange
+            {"max": 4.5, "color": "#c80000"},  # 4 Emergency — red
+            {"max": 5.5, "color": "#5e0000"},  # 5 Famine — dark red
+        ],
+        "fill_opacity": 0.55,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 1.5,
+    },
     # Visual-similarity hits (find_similar_tiles): cosine score 0..1, sequential
     # color from pale yellow (weak) → red (top match). Same-flight neighbors
     # typically 0.65-0.85; cross-flight matches above 0.7 are meaningful.
@@ -265,7 +281,8 @@ class DisplayGeojsonLayerArgs(BaseModel):
         ...,
         description=(
             "Vector style preset. One of: insurance_composite_score, field_health, "
-            "rgb_field_health, stress_zones, outline, water, flood_extent, similarity_score."
+            "rgb_field_health, stress_zones, outline, water, flood_extent, "
+            "similarity_score, food_security_ipc."
         ),
     )
     bbox: str = Field(
