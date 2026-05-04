@@ -23,6 +23,12 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
     "ndwi":               {"expression": "ndwi", "colormap": "rdbu_r",   "rescale": "-0.5,0.8"},
     "nbr":                {"expression": "nbr",  "colormap": "rdylgn",   "rescale": "-0.5,0.8"},
     "visual":             {"expression": "visual", "colormap": "",       "rescale": ""},
+    # Single-band drone-export indices already packed into a band (NDVI/NDRE in
+    # 4-band drone orthos, or single-band NDVI/NDRE rasters). NDRE saturates
+    # earlier than NDVI so its useful range is tighter (0..0.7 typical, 0.6+
+    # already healthy). Painted by reading the named band with band_index.
+    "ndvi_band":          {"expression": "single_band", "colormap": "rdylgn",   "rescale": "-0.2,0.9"},
+    "ndre_band":          {"expression": "single_band", "colormap": "rdylgn",   "rescale": "0,0.7"},
     # Soil chemistry — back-transformed values in real units (g/kg, ppm, pH)
     "soil_nitrogen":      {"expression": "single_band", "colormap": "ylgn",     "rescale": "0,5"},     # g/kg
     "soil_phosphorus":    {"expression": "single_band", "colormap": "ylorrd",   "rescale": "0,30"},    # ppm
@@ -68,10 +74,10 @@ class DisplayLayerArgs(BaseModel):
         ...,
         description=(
             "Style preset that picks the colormap and value range. One of: "
-            "ndvi, ndwi, nbr, visual, soil_nitrogen, soil_phosphorus, soil_potassium, "
-            "soil_ph, soil_organic_carbon, soil_clay, soil_sand, anomaly_zscore, "
-            "drought_severity, soil_moisture, evapotranspiration, temperature, rainfall, "
-            "sar_backscatter_db."
+            "ndvi, ndwi, nbr, visual, ndvi_band, ndre_band, soil_nitrogen, "
+            "soil_phosphorus, soil_potassium, soil_ph, soil_organic_carbon, soil_clay, "
+            "soil_sand, anomaly_zscore, drought_severity, soil_moisture, "
+            "evapotranspiration, temperature, rainfall, sar_backscatter_db."
         ),
     )
     bbox: str = Field(

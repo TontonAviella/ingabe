@@ -359,6 +359,23 @@ async def interpret_raster_health(
     if desc.get("sanity_warning"):
         response["sanity_warning"] = desc["sanity_warning"]
 
+    # Surface a paintable view of the analyzed NDVI band itself, in addition to
+    # the verdict polygon. describe_user_raster has already minted a 6h presigned
+    # COG URL — reuse it so Sage doesn't have to round-trip another tool.
+    try:
+        cog_url = desc.get("displayable_cog_url")
+        if cog_url and desc.get("bounds_wgs84"):
+            west, south, east, north = desc["bounds_wgs84"]
+            response["displayable_layers"] = [{
+                "asset_url": cog_url,
+                "style_hint": "ndvi_band",
+                "bbox": f"{west},{south},{east},{north}",
+                "band_index": args.band,
+                "layer_name": f"{desc['name']} — NDVI (band {args.band})",
+            }]
+    except Exception:
+        logger.debug("displayable_layers build skipped for interpret_raster_health", exc_info=True)
+
     # Build displayable_geojson tagging the field polygon with ndvi_mean + verdict
     # so Sage can paint the field with the field_health style preset.
     try:

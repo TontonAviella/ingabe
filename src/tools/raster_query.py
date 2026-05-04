@@ -167,7 +167,7 @@ async def describe_user_raster(
     else:
         area_label = None
 
-    return {
+    response = {
         "layer_id": row["layer_id"],
         "name": row["name"],
         "raster_type": raster_type,
@@ -198,6 +198,62 @@ async def describe_user_raster(
         "sanity_warning": sanity_warning,
         "compatible_tools": _compatible_tools_for_type(raster_type),
     }
+
+    # Surface a long-expiry (6h) presigned COG URL plus per-band display hints
+    # so Sage can pass them to display_layer for proper colormapped rendering of
+    # specific drone-export bands (NDVI in band 2, NDRE in band 3, etc.). The
+    # default user-raster tile endpoint shows the first 3 bands as RGB, which
+    # gives a useless false-color view for packed-indices drone exports.
+    if cog_key and bounds and len(bounds) == 4:
+        try:
+            from src.utils import get_async_s3_client, get_bucket_name
+            s3_client = await get_async_s3_client()
+            bucket = get_bucket_name()
+            display_url = await s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": cog_key},
+                ExpiresIn=21600,  # 6 hours, long enough for a chat session
+            )
+            west, south, east, north = bounds
+            bbox_str = f"{west},{south},{east},{north}"
+            response["displayable_cog_url"] = display_url
+            # Auto-suggest displayable_layers when the band layout is known.
+            # Sage can dispatch any of these via display_layer.
+            name_lower = (metadata.get("original_filename") or row["name"] or "").lower()
+            layers: list[dict] = []
+            if raster_type == "rgb_with_packed_indices":
+                layers.append({
+                    "asset_url": display_url, "style_hint": "ndvi_band",
+                    "bbox": bbox_str, "band_index": 2,
+                    "layer_name": f"{row['name']} — NDVI band",
+                })
+                if (metadata.get("band_count") or 0) >= 3:
+                    layers.append({
+                        "asset_url": display_url, "style_hint": "ndre_band",
+                        "bbox": bbox_str, "band_index": 3,
+                        "layer_name": f"{row['name']} — NDRE band",
+                    })
+            elif raster_type == "ndvi_single":
+                style = "ndre_band" if "ndre" in name_lower else "ndvi_band"
+                layers.append({
+                    "asset_url": display_url, "style_hint": style,
+                    "bbox": bbox_str, "band_index": 1,
+                    "layer_name": f"{row['name']} — {style.split('_')[0].upper()}",
+                })
+            elif raster_type == "multispectral":
+                # Can't auto-pick which band is NIR vs red — Sage must inspect
+                # band names and decide. Surface the URL only.
+                response["display_note"] = (
+                    "Multispectral layer — band semantics depend on the sensor. "
+                    "Use displayable_cog_url with display_layer once you know which "
+                    "band is which (ask the user or check band names)."
+                )
+            if layers:
+                response["displayable_layers"] = layers
+        except Exception:
+            logger.debug("displayable_cog_url generation skipped", exc_info=True)
+
+    return response
 
 
 # ── native-projection geometry reader ───────────────────────────────────────

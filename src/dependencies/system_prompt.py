@@ -63,6 +63,13 @@ IMPORTANT RULES — follow these strictly:
      for true color or style_hint='ndvi' for vegetation.
    - get_alos_l_band_stats returns a `displayable_layers` payload with the HH COG URL; pass it
      to display_layer with style_hint='sar_backscatter_db' to paint the L-band biomass map.
+   - describe_user_raster on drone exports surfaces `displayable_cog_url` (6h presigned) plus,
+     for known band layouts, a `displayable_layers` list. Use it for multispectral / packed-
+     indices drone rasters: 4-band [R, NDVI, NDRE, alpha] exports auto-suggest band 2
+     (style_hint='ndvi_band') and band 3 (style_hint='ndre_band'). For 5+ band multispectral
+     where band semantics aren't known from the filename, ASK the user which band is which
+     and then call display_layer manually with the cog URL + correct band_index. Hyperspectral
+     (>>10 bands) is not yet supported — describe_user_raster will not auto-suggest layers.
    When a tool returns vector polygons (in a `displayable_geojson` field), call
    `display_geojson_layer` instead with the inline GeoJSON, the matching style_hint
    (insurance_composite_score, field_health, rgb_field_health, stress_zones, outline,
