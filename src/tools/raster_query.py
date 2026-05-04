@@ -592,12 +592,39 @@ async def compute_zonal_stats(
         )
         if isinstance(result, dict) and "error" in result:
             return result
-        return {
+        response = {
             "layer_id": args.layer_id,
             "band": band,
             "polygon_used": polygon_used,
             **result,
         }
+        # Build displayable_geojson outlining the analyzed polygon so the user
+        # can verify Sage analyzed the right area. We don't paint by value because
+        # band semantics vary (NDVI vs NDRE vs raw red) — the `outline` preset
+        # just shows the polygon boundary in blue.
+        try:
+            from shapely.geometry import shape as _shape
+            if polygon and polygon.get("type") in ("Polygon", "MultiPolygon"):
+                feature = {
+                    "type": "Feature",
+                    "geometry": polygon,
+                    "properties": {
+                        "band": band,
+                        "mean": result.get("mean"),
+                        "polygon_used": polygon_used,
+                    },
+                }
+                fc = {"type": "FeatureCollection", "features": [feature]}
+                b = _shape(polygon).bounds
+                response["displayable_geojson"] = {
+                    "geojson": fc,
+                    "style_hint": "outline",
+                    "title": f"Zonal Stats — band {band} (mean {result.get('mean')})",
+                    "bbox": f"{b[0]},{b[1]},{b[2]},{b[3]}",
+                }
+        except Exception:
+            logger.debug("displayable_geojson build skipped for compute_zonal_stats", exc_info=True)
+        return response
     except asyncio.TimeoutError:
         return {
             "error": (

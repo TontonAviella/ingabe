@@ -43,6 +43,10 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
     "temperature":        {"expression": "single_band", "colormap": "rdylbu_r", "rescale": "-10,40"},
     # Rainfall accumulation (mm, 0..500 covers a Rwandan growing season)
     "rainfall":           {"expression": "single_band", "colormap": "blues",    "rescale": "0,500"},
+    # SAR backscatter in dB (e.g. ALOS PALSAR HH gamma0). Forest = bright
+    # (high backscatter), water = dark (specular reflection). Range -25..+5 dB
+    # covers the typical Rwanda biome span; viridis is the convention for SAR.
+    "sar_backscatter_db": {"expression": "single_band", "colormap": "viridis",  "rescale": "-25,5"},
 }
 
 
@@ -66,7 +70,8 @@ class DisplayLayerArgs(BaseModel):
             "Style preset that picks the colormap and value range. One of: "
             "ndvi, ndwi, nbr, visual, soil_nitrogen, soil_phosphorus, soil_potassium, "
             "soil_ph, soil_organic_carbon, soil_clay, soil_sand, anomaly_zscore, "
-            "drought_severity, soil_moisture, evapotranspiration, temperature, rainfall."
+            "drought_severity, soil_moisture, evapotranspiration, temperature, rainfall, "
+            "sar_backscatter_db."
         ),
     )
     bbox: str = Field(
