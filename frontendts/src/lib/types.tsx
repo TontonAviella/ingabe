@@ -88,9 +88,27 @@ export interface TileLayerUpdate {
   bounds?: [number, number, number, number];
 }
 
+export interface GeoJsonLayerStyle {
+  color_property?: string | null;
+  stops?: Array<{ max: number; color: string }>;
+  fill_opacity?: number;
+  stroke_color?: string;
+  stroke_width?: number;
+}
+
+export interface GeoJsonLayerUpdate {
+  source_id: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  geojson: any;
+  name?: string;
+  style?: GeoJsonLayerStyle;
+  bounds?: [number, number, number, number];
+}
+
 export interface EphemeralUpdates {
   style_json: boolean;
   add_tile_layer?: TileLayerUpdate;
+  add_geojson_layer?: GeoJsonLayerUpdate;
 }
 
 export interface EphemeralAction {

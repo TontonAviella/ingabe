@@ -10,7 +10,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import type { Conversation, EphemeralAction, MapProject, MapTreeResponse, PostgresConnectionDetails, TileLayerUpdate } from '../lib/types';
+import type {
+  Conversation,
+  EphemeralAction,
+  GeoJsonLayerUpdate,
+  MapProject,
+  MapTreeResponse,
+  PostgresConnectionDetails,
+  TileLayerUpdate,
+} from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
 const DROPZONE_ACCEPT: Accept = {
@@ -162,7 +170,7 @@ export default function ProjectView() {
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
-  const [, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
+  const [, setEphemeralTileLayers] = useState<Array<TileLayerUpdate | GeoJsonLayerUpdate>>([]);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
