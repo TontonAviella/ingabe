@@ -198,6 +198,22 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#0ea5e9",
         "stroke_width": 3,
     },
+    # Water bodies (SAR-detected): solid blue fill, no per-feature property needed
+    "water": {
+        "color_property": None,
+        "stops": [{"max": 1.0, "color": "#1d4ed8"}],
+        "fill_opacity": 0.55,
+        "stroke_color": "#1e40af",
+        "stroke_width": 1,
+    },
+    # Flood extent (new water after a flood event): solid red-orange, alarm color
+    "flood_extent": {
+        "color_property": None,
+        "stops": [{"max": 1.0, "color": "#dc2626"}],
+        "fill_opacity": 0.6,
+        "stroke_color": "#7f1d1d",
+        "stroke_width": 2,
+    },
 }
 
 
@@ -219,7 +235,7 @@ class DisplayGeojsonLayerArgs(BaseModel):
         ...,
         description=(
             "Vector style preset. One of: insurance_composite_score, field_health, "
-            "stress_zones, outline."
+            "stress_zones, outline, water, flood_extent."
         ),
     )
     bbox: str = Field(
