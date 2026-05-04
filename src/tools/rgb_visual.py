@@ -276,7 +276,7 @@ async def analyze_rgb_field(
             else "low (field looks fairly uniform)"
         )
 
-        return {
+        response = {
             "verdict": verdict,
             "message": verdict_message,
             "interpretation": (
@@ -302,6 +302,33 @@ async def analyze_rgb_field(
                 "resolution_note": result["resolution_note"],
             },
         }
+
+        # Build displayable_geojson tagging the analyzed polygon with grvi_mean
+        # so Sage can paint the field with the rgb_field_health style preset.
+        try:
+            from shapely.geometry import shape as _shape
+            if polygon and polygon.get("type") in ("Polygon", "MultiPolygon"):
+                feature = {
+                    "type": "Feature",
+                    "geometry": polygon,
+                    "properties": {
+                        "grvi_mean": grvi_mean,
+                        "verdict": verdict,
+                        "valid_area_ha": valid_area_ha,
+                    },
+                }
+                fc = {"type": "FeatureCollection", "features": [feature]}
+                b = _shape(polygon).bounds
+                response["displayable_geojson"] = {
+                    "geojson": fc,
+                    "style_hint": "rgb_field_health",
+                    "title": f"RGB Field Health — {row['name']} ({verdict})",
+                    "bbox": f"{b[0]},{b[1]},{b[2]},{b[3]}",
+                }
+        except Exception:
+            logger.debug("displayable_geojson build skipped for analyze_rgb_field", exc_info=True)
+
+        return response
     except asyncio.TimeoutError:
         return {"error": "RGB analysis timed out after 60 seconds."}
     except Exception as e:

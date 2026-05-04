@@ -179,6 +179,21 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#1a1a1a",
         "stroke_width": 2,
     },
+    # GRVI-based field health for RGB-only drone orthos. GRVI saturates earlier
+    # and ranges roughly -0.05..+0.30 for typical canopy. Thresholds match the
+    # rgb_visual.GRVI_VERDICT_BANDS so colors match the verdict text.
+    "rgb_field_health": {
+        "color_property": "grvi_mean",
+        "stops": [
+            {"max": 0.03, "color": "#c0392b"},  # bare_or_dry / sparse_or_stressed
+            {"max": 0.10, "color": "#f1c40f"},  # moderate_canopy
+            {"max": 0.20, "color": "#82c91e"},  # healthy_canopy
+            {"max": 1.00, "color": "#2ecc71"},  # lush_canopy
+        ],
+        "fill_opacity": 0.5,
+        "stroke_color": "#1a1a1a",
+        "stroke_width": 2,
+    },
     # Stress zones: severity 0-3 from find_stress_zones
     "stress_zones": {
         "color_property": "severity",
@@ -235,7 +250,7 @@ class DisplayGeojsonLayerArgs(BaseModel):
         ...,
         description=(
             "Vector style preset. One of: insurance_composite_score, field_health, "
-            "stress_zones, outline, water, flood_extent."
+            "rgb_field_health, stress_zones, outline, water, flood_extent."
         ),
     )
     bbox: str = Field(
