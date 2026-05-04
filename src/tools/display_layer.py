@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from typing import Any, Dict
+from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +11,141 @@ from src.services.stac_service import STACService
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
+
+
+# Style presets — maps a domain-meaningful style_hint to a (colormap, rescale, expression)
+# triple that cog_tile_router knows how to render. The convention is: callers pass a
+# style_hint that names what they're displaying ("soil_nitrogen", "ndvi", "drought_severity"),
+# and the tool resolves it here. Adding a new domain layer = one row in this dict.
+STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    # Spectral indices (already supported by cog_tile_router as expression modes)
+    "ndvi":               {"expression": "ndvi", "colormap": "rdylgn",   "rescale": "-0.2,0.9"},
+    "ndwi":               {"expression": "ndwi", "colormap": "rdbu_r",   "rescale": "-0.5,0.8"},
+    "nbr":                {"expression": "nbr",  "colormap": "rdylgn",   "rescale": "-0.5,0.8"},
+    "visual":             {"expression": "visual", "colormap": "",       "rescale": ""},
+    # Soil chemistry — back-transformed values in real units (g/kg, ppm, pH)
+    "soil_nitrogen":      {"expression": "single_band", "colormap": "ylgn",     "rescale": "0,5"},     # g/kg
+    "soil_phosphorus":    {"expression": "single_band", "colormap": "ylorrd",   "rescale": "0,30"},    # ppm
+    "soil_potassium":     {"expression": "single_band", "colormap": "ylgnbu",   "rescale": "0,300"},   # ppm
+    "soil_ph":            {"expression": "single_band", "colormap": "rdbu",     "rescale": "4,8"},
+    "soil_organic_carbon":{"expression": "single_band", "colormap": "ylorbr",   "rescale": "0,40"},    # g/kg
+    "soil_clay":          {"expression": "single_band", "colormap": "ylorbr",   "rescale": "0,80"},    # %
+    "soil_sand":          {"expression": "single_band", "colormap": "ylorbr_r", "rescale": "0,80"},    # %
+    # Vegetation/anomaly z-scores (-3 stress → +3 healthy)
+    "anomaly_zscore":     {"expression": "single_band", "colormap": "rdbu",     "rescale": "-3,3"},
+    # Drought severity (VCI 0=worst → 1=normal, or DroughtCondCat 0..4)
+    "drought_severity":   {"expression": "single_band", "colormap": "reds",     "rescale": "0,4"},
+    # Soil moisture (volumetric water content 0..0.5 m³/m³)
+    "soil_moisture":      {"expression": "single_band", "colormap": "blues",    "rescale": "0,0.5"},
+    # Evapotranspiration (mm/day, 0..10)
+    "evapotranspiration": {"expression": "single_band", "colormap": "viridis",  "rescale": "0,10"},
+    # Temperature (degrees C, -10..40 covers Rwanda comfortably)
+    "temperature":        {"expression": "single_band", "colormap": "rdylbu_r", "rescale": "-10,40"},
+    # Rainfall accumulation (mm, 0..500 covers a Rwandan growing season)
+    "rainfall":           {"expression": "single_band", "colormap": "blues",    "rescale": "0,500"},
+}
+
+
+class DisplayLayerArgs(BaseModel):
+    asset_url: str = Field(
+        ...,
+        description=(
+            "Public HTTPS URL of a Cloud-Optimized GeoTIFF (COG). Examples: "
+            "'https://isdasoil.s3.amazonaws.com/soil_data/nitrogen_total/nitrogen_total.tif', "
+            "'https://earth-search.aws.element84.com/...../B04.tif'. "
+            "GeoJSON URLs and S3 protocol URLs are not yet supported in this version."
+        ),
+    )
+    title: str = Field(
+        ...,
+        description="Human-readable layer name shown in the layers panel, e.g. 'Soil Nitrogen — Cyampirita'",
+    )
+    style_hint: str = Field(
+        ...,
+        description=(
+            "Style preset that picks the colormap and value range. One of: "
+            "ndvi, ndwi, nbr, visual, soil_nitrogen, soil_phosphorus, soil_potassium, "
+            "soil_ph, soil_organic_carbon, soil_clay, soil_sand, anomaly_zscore, "
+            "drought_severity, soil_moisture, evapotranspiration, temperature, rainfall."
+        ),
+    )
+    bbox: str = Field(
+        ...,
+        description="Bounding box of the area to display, as 'west,south,east,north' in WGS84. Used for auto-zoom.",
+    )
+    band_index: int = Field(
+        ...,
+        description="1-based band index for single-band rasters (use 1 for most soil COGs and z-score rasters).",
+    )
+
+
+async def display_layer(
+    args: DisplayLayerArgs, meta: IngabeToolCallMetaArgs
+) -> Dict[str, Any]:
+    """Display any public Cloud-Optimized GeoTIFF on the map with a styled colormap.
+
+    This is the GENERIC display tool. Use it after computing or identifying a spatial
+    raster you want the user to SEE. Pair it with analytical tools that return a URL:
+    1. Call the analytical tool (e.g. get_soil_properties returns iSDAsoil COG URL).
+    2. Call display_layer with that URL + a style_hint that names the domain.
+
+    The frontend renders the layer immediately and adds it to the user's layer panel
+    so they can toggle it on/off.
+
+    Style hints map to colormaps and value ranges defined in STYLE_PRESETS. Pick the
+    one that matches the data's domain — soil_nitrogen for N maps, ndvi for NDVI,
+    drought_severity for VCI, etc.
+    """
+    try:
+        bbox = [float(x.strip()) for x in args.bbox.split(",")]
+        if len(bbox) != 4:
+            return {"status": "error", "error": "bbox must have 4 values: west,south,east,north"}
+    except ValueError:
+        return {"status": "error", "error": "bbox values must be numbers"}
+
+    preset = STYLE_PRESETS.get(args.style_hint)
+    if preset is None:
+        return {
+            "status": "error",
+            "error": f"Unknown style_hint '{args.style_hint}'. Valid: {sorted(STYLE_PRESETS.keys())}",
+        }
+
+    # Build the cog-tiles URL with the right query params for this style preset.
+    # The frontend will use this template; MapLibre fills {z}/{x}/{y} per tile.
+    params = [f"url={quote(args.asset_url, safe='')}", f"expression={preset['expression']}"]
+    if preset["expression"] == "single_band":
+        params.append(f"colormap={preset['colormap']}")
+        params.append(f"rescale={preset['rescale']}")
+        params.append(f"band_index={args.band_index}")
+
+    tile_url = "/api/cog-tiles/{z}/{x}/{y}.png?" + "&".join(params)
+    source_id = f"sage-display-{uuid.uuid4().hex[:8]}"
+
+    async with kue_ephemeral_action(
+        meta.conversation_id,
+        f"Adding layer: {args.title}",
+        bounds=bbox,
+    ) as payload:
+        payload.updates["add_tile_layer"] = {
+            "source_id": source_id,
+            "tiles": [tile_url],
+            "tileSize": 256,
+            "maxzoom": 14,
+            "name": args.title,
+            "bounds": bbox,
+            "style_hint": args.style_hint,
+        }
+        await asyncio.sleep(0.3)
+
+    return {
+        "status": "displayed",
+        "source_id": source_id,
+        "title": args.title,
+        "style_hint": args.style_hint,
+        "asset_url": args.asset_url,
+        "bbox": bbox,
+        "tile_template": tile_url,
+    }
 
 
 class DisplaySatelliteLayerArgs(BaseModel):

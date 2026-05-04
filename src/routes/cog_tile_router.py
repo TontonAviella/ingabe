@@ -106,12 +106,15 @@ async def get_cog_tile(
     url: str = Query(..., description="COG URL (Earth Search S3 or any public COG)"),
     expression: str = Query(
         "visual",
-        description="Rendering mode: visual (RGB), ndvi, ndwi, nbr",
-        pattern="^(visual|ndvi|ndwi|nbr)$",
+        description="Rendering mode: visual (RGB), ndvi, ndwi, nbr, single_band",
+        pattern="^(visual|ndvi|ndwi|nbr|single_band)$",
     ),
     nir_url: str = Query("", description="NIR band COG URL (B08) for index computation"),
     green_url: str = Query("", description="Green band COG URL (B03) for NDWI"),
     swir_url: str = Query("", description="SWIR2 band COG URL (B12) for NBR"),
+    colormap: str = Query("", description="rio-tiler colormap name for single_band mode (e.g. viridis, RdYlGn, YlGn)"),
+    rescale: str = Query("", description="Min,max range for single_band mode, e.g. '0,5' or '4,8'"),
+    band_index: int = Query(1, ge=1, le=8, description="Band index for single_band mode (1-based, default 1)"),
 ):
     if z < 0 or z > 18 or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
@@ -121,7 +124,7 @@ async def get_cog_tile(
             validate_remote_url(u, "raster")
 
     url_hash = hashlib.sha256(
-        f"{url}:{nir_url}:{green_url}:{swir_url}".encode()
+        f"{url}:{nir_url}:{green_url}:{swir_url}:{colormap}:{rescale}:{band_index}".encode()
     ).hexdigest()[:16]
     cache_id = _cache_key(url_hash, expression)
 
@@ -196,8 +199,42 @@ async def get_cog_tile(
                     buf = io.BytesIO()
                     img_pil.save(buf, format="PNG")
                     return buf.getvalue()
+            elif expression == "single_band":
+                # Generic colormap rendering for any single-band raster (soil
+                # properties, anomaly z-scores, drought severity, etc.).
+                # Caller passes explicit colormap + rescale via query string.
+                if not colormap:
+                    raise ValueError("colormap query param required for single_band mode")
+                if not rescale:
+                    raise ValueError("rescale query param required (e.g. '0,5')")
+                try:
+                    lo_str, hi_str = rescale.split(",", 1)
+                    lo, hi = float(lo_str), float(hi_str)
+                except ValueError:
+                    raise ValueError(f"rescale must be 'min,max' floats, got: {rescale}")
+                if hi <= lo:
+                    raise ValueError(f"rescale max ({hi}) must be > min ({lo})")
+
+                with _Reader(url) as src:
+                    img = src.tile(x, y, z, indexes=[band_index], tilesize=256)
+                    band = img.data[0].astype(np.float32)
+
+                    # iSDAsoil + many other rasters use 0 as nodata; mask it
+                    nodata_mask = (band == 0)
+
+                    scaled = np.clip((band - lo) / (hi - lo), 0, 1)
+                    scaled_uint8 = (scaled * 255).astype(np.uint8)
+
+                    cm_lut = _colormap_lut(colormap)
+                    rgba = cm_lut[scaled_uint8]
+                    rgba[nodata_mask] = [0, 0, 0, 0]
+
+                    img_pil = _Image.fromarray(rgba, "RGBA")
+                    buf = io.BytesIO()
+                    img_pil.save(buf, format="PNG")
+                    return buf.getvalue()
             else:
-                raise ValueError("expression must be one of: visual, ndvi, ndwi, nbr")
+                raise ValueError("expression must be one of: visual, ndvi, ndwi, nbr, single_band")
 
     try:
         async with _COG_TILE_SEMAPHORE:
