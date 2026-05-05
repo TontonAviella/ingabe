@@ -48,6 +48,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_openai_client
+from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
     generate_id,
