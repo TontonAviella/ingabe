@@ -7,7 +7,7 @@ from openai.types.chat import (
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
 
-from src._test_streaming_mock import MockResponse
+from src._test_streaming_mock import MockResponse, recv_non_streaming
 
 
 @pytest.fixture
@@ -99,19 +99,19 @@ async def test_zoom_integration_with_real_openai(
             assert "message_id" in data
 
             # our own message
-            sent_msg = websocket.receive_json()
+            sent_msg = recv_non_streaming(websocket)
             assert sent_msg["role"] == "user"
             assert "zoom to downtown Seattle" in sent_msg["content"]
 
             # Sage is thinking
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
             assert msg["status"] == "completed"
 
             # Message 4: Zoom action (start)
-            msg4 = websocket.receive_json()
+            msg4 = recv_non_streaming(websocket)
             # Message 4: Assistant message with tool call
             assert msg4["role"] == "assistant"
             assert msg4["content"] == "I'll zoom to downtown Seattle for you."
@@ -120,7 +120,7 @@ async def test_zoom_integration_with_real_openai(
             assert msg4["tool_calls"][0]["id"] == "call_1"
 
             # Message 5: Zoom action (start)
-            msg5 = websocket.receive_json()
+            msg5 = recv_non_streaming(websocket)
             assert msg5["ephemeral"]
             assert "Zooming to downtown Seattle" in msg5["action"]
             assert "bounds" in msg5
@@ -128,30 +128,30 @@ async def test_zoom_integration_with_real_openai(
             assert msg5["status"] == "active"
 
             # Message 6: Zoom action (completed)
-            msg6 = websocket.receive_json()
+            msg6 = recv_non_streaming(websocket)
             assert msg6["ephemeral"]
             assert "Zooming to downtown Seattle" in msg6["action"]
             assert msg6["status"] == "completed"
 
             # Tool response message after zoom action completes
-            msg6_tool = websocket.receive_json()
+            msg6_tool = recv_non_streaming(websocket)
             assert msg6_tool["role"] == "tool"
             assert msg6_tool["tool_response"]["id"] == "call_1"
             assert msg6_tool["tool_response"]["status"] == "success"
 
             # Message 7: Final thinking (start)
-            msg7 = websocket.receive_json()
+            msg7 = recv_non_streaming(websocket)
             assert msg7["ephemeral"]
             assert msg7["action"] == "Sage is thinking..."
             assert msg7["status"] == "active"
 
             # Message 8: Final thinking (completed)
-            msg8 = websocket.receive_json()
+            msg8 = recv_non_streaming(websocket)
             assert msg8["ephemeral"]
             assert msg8["action"] == "Sage is thinking..."
             assert msg8["status"] == "completed"
 
             # Message 9: Final assistant response
-            msg9 = websocket.receive_json()
+            msg9 = recv_non_streaming(websocket)
             assert msg9["role"] == "assistant"
             assert "zoomed to downtown Seattle" in msg9["content"]

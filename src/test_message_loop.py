@@ -3,7 +3,7 @@ import uuid
 import os
 from unittest.mock import patch, AsyncMock
 
-from src._test_streaming_mock import MockResponse
+from src._test_streaming_mock import MockResponse, recv_non_streaming
 
 
 @pytest.fixture
@@ -94,22 +94,22 @@ async def test_message_simple_response(
             result = response.json()
             assert result["status"] == "processing_started"
 
-            sent_msg = websocket.receive_json()
+            sent_msg = recv_non_streaming(websocket)
             assert sent_msg["role"] == "user"
             assert "tell me about this map" in sent_msg["content"]
             assert not sent_msg["has_tool_calls"]
             assert sent_msg["conversation_id"] == conversation_id
 
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert (
                 msg["ephemeral"]
                 and msg["action"] == "Sage is thinking..."
                 and msg["status"] == "completed"
             )
 
-            assistant_msg = websocket.receive_json()
+            assistant_msg = recv_non_streaming(websocket)
             assert assistant_msg["role"] == "assistant"
             assert "test map without layers" in assistant_msg["content"]
             assert assistant_msg["conversation_id"] == conversation_id
@@ -249,21 +249,21 @@ async def test_sequential_response_handling(
 
             assert response.status_code == 200
 
-            sent_msg = websocket.receive_json()
+            sent_msg = recv_non_streaming(websocket)
             assert sent_msg["role"] == "user"
             assert not sent_msg["has_tool_calls"]
             assert sent_msg["conversation_id"] == conversation_id
 
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert (
                 msg["ephemeral"]
                 and msg["action"] == "Sage is thinking..."
                 and msg["status"] == "completed"
             )
 
-            assistant_msg = websocket.receive_json()
+            assistant_msg = recv_non_streaming(websocket)
             assert assistant_msg["role"] == "assistant"
             assert "GIS" in assistant_msg["content"]
             assert assistant_msg["conversation_id"] == conversation_id

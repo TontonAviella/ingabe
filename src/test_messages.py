@@ -2,7 +2,7 @@ import pytest
 import uuid
 from unittest.mock import patch, AsyncMock
 
-from src._test_streaming_mock import MockResponse
+from src._test_streaming_mock import MockResponse, recv_non_streaming
 from src.models.messages import _parse_tool_args
 
 
@@ -113,22 +113,22 @@ async def test_send_and_get_messages(
             assert response.status_code == 200
             assert response.json()["status"] == "processing_started"
 
-            sent_msg = websocket.receive_json()
+            sent_msg = recv_non_streaming(websocket)
             assert sent_msg["role"] == "user"
             assert "analyze this map" in sent_msg["content"]
             assert not sent_msg["has_tool_calls"]
             assert sent_msg["conversation_id"] == conversation_id
 
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert msg["ephemeral"] and msg["action"] == "Sage is thinking..."
-            msg = websocket.receive_json()
+            msg = recv_non_streaming(websocket)
             assert (
                 msg["ephemeral"]
                 and msg["action"] == "Sage is thinking..."
                 and msg["status"] == "completed"
             )
 
-            assistant_msg = websocket.receive_json()
+            assistant_msg = recv_non_streaming(websocket)
             assert assistant_msg["role"] == "assistant"
             assert "analyze" in assistant_msg["content"]
             assert assistant_msg["conversation_id"] == conversation_id

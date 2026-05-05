@@ -95,3 +95,18 @@ class MockResponse:
                 ),
             )
         ]
+
+
+def recv_non_streaming(websocket):
+    """Receive next websocket JSON message, skipping streaming token payloads.
+
+    Production interleaves StreamingTokenPayload({streaming: True, token: ...})
+    between ephemeral active/completed during streaming chat completion. Tests
+    written against the pre-streaming protocol must skip these to see the
+    ephemeral and assistant messages they assert on.
+    """
+    while True:
+        msg = websocket.receive_json()
+        if msg.get("streaming") is True:
+            continue
+        return msg
