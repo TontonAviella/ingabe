@@ -111,6 +111,78 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _watermask_to_geojson(
+    arr: np.ndarray,
+    valid: np.ndarray,
+    lat_coords: np.ndarray,
+    lon_coords: np.ndarray,
+    max_features: int = 500,
+) -> Dict[str, Any]:
+    """Vectorize CYGNSS binary watermask to a GeoJSON FeatureCollection.
+
+    arr is the watermask array (1=water, 0=land, -99=nodata). valid masks the
+    pixels worth keeping. lat/lon coords come straight from the xarray DataArray
+    and define the regular grid we hand to rasterio.features.shapes via an
+    Affine transform built from grid spacing and the top-left origin.
+    """
+    if arr.ndim != 2 or lat_coords.size < 2 or lon_coords.size < 2:
+        return {"type": "FeatureCollection", "features": []}
+
+    try:
+        import rasterio.features
+        from rasterio.transform import from_origin
+        from shapely.geometry import shape, mapping
+    except ImportError:
+        logger.warning("rasterio/shapely missing — skipping watermask vectorization")
+        return {"type": "FeatureCollection", "features": []}
+
+    pixel_w = abs(float(lon_coords[1] - lon_coords[0]))
+    pixel_h = abs(float(lat_coords[1] - lat_coords[0]))
+    if pixel_w == 0 or pixel_h == 0:
+        return {"type": "FeatureCollection", "features": []}
+
+    # rasterio expects the array in north-up, west-left orientation
+    if lat_coords[0] < lat_coords[-1]:
+        arr = arr[::-1, :]
+        valid = valid[::-1, :]
+    if lon_coords[0] > lon_coords[-1]:
+        arr = arr[:, ::-1]
+        valid = valid[:, ::-1]
+
+    transform = from_origin(
+        float(lon_coords.min()),
+        float(lat_coords.max()),
+        pixel_w,
+        pixel_h,
+    )
+
+    water = ((arr == 1) & valid).astype(np.uint8)
+    if water.sum() == 0:
+        return {"type": "FeatureCollection", "features": []}
+
+    features: List[Dict[str, Any]] = []
+    try:
+        for geom, val in rasterio.features.shapes(water, transform=transform):
+            if val != 1:
+                continue
+            poly = shape(geom)
+            if not poly.is_valid or poly.area <= 0:
+                continue
+            simplified = poly.simplify(tolerance=0.001, preserve_topology=True)
+            features.append({
+                "type": "Feature",
+                "geometry": mapping(simplified),
+                "properties": {"class": "water"},
+            })
+            if len(features) >= max_features:
+                logger.warning("CYGNSS watermask GeoJSON capped at %d features", max_features)
+                break
+    except Exception as e:
+        logger.warning("Failed to vectorize CYGNSS watermask: %s", e)
+
+    return {"type": "FeatureCollection", "features": features}
+
+
 class CYGNSSService:
     """CYGNSS GNSS-R data access via NASA CMR + PO.DAAC.
 
@@ -468,6 +540,25 @@ class CYGNSSService:
                 land_count = int(land.sum())
                 water_fraction = water_count / total_valid if total_valid > 0 else 0.0
 
+                lat_coords: Optional[np.ndarray] = None
+                lon_coords: Optional[np.ndarray] = None
+                for lat_name in ("latitude", "lat"):
+                    if lat_name in watermask.coords:
+                        lat_coords = np.asarray(watermask[lat_name].values)
+                        break
+                for lon_name in ("longitude", "lon"):
+                    if lon_name in watermask.coords:
+                        lon_coords = np.asarray(watermask[lon_name].values)
+                        break
+
+                geojson_fc: Dict[str, Any] = {"type": "FeatureCollection", "features": []}
+                if (
+                    arr.ndim == 2
+                    and lat_coords is not None
+                    and lon_coords is not None
+                ):
+                    geojson_fc = _watermask_to_geojson(arr, valid, lat_coords, lon_coords)
+
                 ds.close()
 
                 return {
@@ -482,6 +573,7 @@ class CYGNSSService:
                     "land_pixels": land_count,
                     "water_fraction": _safe_round(water_fraction),
                     "water_area_km2": _safe_round(water_count * 1.0),  # ~1km² per pixel
+                    "geojson": geojson_fc,
                     "note": "CYGNSS detects water under vegetation canopy. "
                             "Individual ponds <100m are below resolution, but "
                             "pond clusters and persistently wet areas are detectable.",

@@ -3,7 +3,7 @@ import asyncio
 from pydantic import BaseModel, Field
 
 from src.tools.pyd import IngabeToolCallMetaArgs
-from src.tools.sar import _parse_bbox
+from src.tools.sar import _enrich_with_displayable_geojson, _parse_bbox
 
 
 class CheckCygnssAvailabilityArgs(BaseModel):
@@ -71,16 +71,22 @@ async def get_cygnss_soil_moisture(
 async def get_cygnss_watermask(
     args: GetCygnssWatermaskArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
-    """Get CYGNSS water body detection mask for an area."""
+    """Get CYGNSS L-band water body detection mask for an area. Detects water UNDER vegetation canopy where C-band SAR fails. Returns water polygons in 'displayable_geojson' — call display_geojson_layer with style_hint='water' to paint the detected water on the map."""
     from src.services.cygnss import get_cygnss_service
 
     svc = get_cygnss_service()
     bbox = _parse_bbox(args.bbox)
     date = args.date.strip() if (args.date and args.date.strip()) else None
     product = args.product.strip() if (args.product and args.product.strip()) else "watermask_daily"
-    return await asyncio.get_running_loop().run_in_executor(
+    result = await asyncio.get_running_loop().run_in_executor(
         None,
         lambda: svc.get_watermask(
             bbox=bbox, date=date, product=product,
         ),
+    )
+    scene_date = result.get("date") if isinstance(result, dict) else None
+    return _enrich_with_displayable_geojson(
+        result, bbox,
+        style_hint="water",
+        title=f"CYGNSS Watermask — {scene_date or 'recent scene'}",
     )

@@ -218,6 +218,53 @@ class TestCYGNSSService:
         assert out["status"] == "auth_required"
         assert out["product"] == "watermask_daily"
 
+    def test_watermask_to_geojson_vectorizes_water_pixels(self):
+        """Helper turns a binary water array on a regular lat/lon grid into a FeatureCollection."""
+        from src.services.cygnss import _watermask_to_geojson
+
+        # 5x5 grid spanning Rwanda centroid, water in a 2x2 corner cluster
+        lat_coords = np.array([-1.0, -1.1, -1.2, -1.3, -1.4])  # north → south
+        lon_coords = np.array([29.0, 29.1, 29.2, 29.3, 29.4])  # west → east
+        arr = np.zeros((5, 5), dtype=np.float32)
+        arr[1:3, 1:3] = 1.0  # 2x2 water block
+        arr[4, 4] = -99      # nodata
+        valid = (arr != -99)
+
+        fc = _watermask_to_geojson(arr, valid, lat_coords, lon_coords)
+        assert fc["type"] == "FeatureCollection"
+        assert len(fc["features"]) == 1  # contiguous block → one polygon
+        feat = fc["features"][0]
+        assert feat["geometry"]["type"] == "Polygon"
+        assert feat["properties"]["class"] == "water"
+
+    def test_watermask_to_geojson_empty_when_no_water(self):
+        from src.services.cygnss import _watermask_to_geojson
+
+        lat_coords = np.array([-1.0, -1.1, -1.2])
+        lon_coords = np.array([29.0, 29.1, 29.2])
+        arr = np.zeros((3, 3), dtype=np.float32)
+        valid = np.ones((3, 3), dtype=bool)
+
+        fc = _watermask_to_geojson(arr, valid, lat_coords, lon_coords)
+        assert fc == {"type": "FeatureCollection", "features": []}
+
+    def test_watermask_to_geojson_handles_ascending_latitude(self):
+        """If xarray hands us south→north lat coords, the helper must flip the array."""
+        from src.services.cygnss import _watermask_to_geojson
+
+        lat_coords = np.array([-1.4, -1.3, -1.2, -1.1, -1.0])  # ascending
+        lon_coords = np.array([29.0, 29.1, 29.2, 29.3, 29.4])
+        arr = np.zeros((5, 5), dtype=np.float32)
+        arr[0, 0] = 1.0  # in ascending-lat orientation, this is the SW corner
+        valid = np.ones((5, 5), dtype=bool)
+
+        fc = _watermask_to_geojson(arr, valid, lat_coords, lon_coords)
+        assert len(fc["features"]) == 1
+        # SW pixel polygon should sit at southern latitudes
+        coords = fc["features"][0]["geometry"]["coordinates"][0]
+        lats = [c[1] for c in coords]
+        assert min(lats) < -1.3  # the south edge is included
+
     def test_check_data_availability_aggregates_products(self, monkeypatch):
         from src.services import cygnss
         svc = cygnss.CYGNSSService()
@@ -295,10 +342,10 @@ class TestAlosCygnssToolsIntegrity:
         assert t["function"]["parameters"]["required"] == []
 
     def test_dispatch_blocks_wired(self):
-        """Each new tool name must appear as an elif branch in message_routes.py."""
+        """Each new tool name must be registered in the Pydantic tool registry."""
         import pathlib
-        routes_path = pathlib.Path(__file__).parent.parent / "routes" / "message_routes.py"
-        src = routes_path.read_text()
+        registry_path = pathlib.Path(__file__).parent.parent / "dependencies" / "pydantic_tools.py"
+        src = registry_path.read_text()
         for name in [
             "get_alos_l_band_stats",
             "get_alos_temporal_variation",
@@ -306,7 +353,7 @@ class TestAlosCygnssToolsIntegrity:
             "get_cygnss_soil_moisture",
             "get_cygnss_watermask",
         ]:
-            assert f'function_name == "{name}"' in src, f"dispatch missing for {name}"
+            assert f'"{name}"' in src, f"pydantic registry missing for {name}"
 
     def test_system_prompt_capabilities_updated(self):
         import pathlib
