@@ -5,6 +5,38 @@ from openai.types.chat import (
     ChatCompletionMessage,
 )
 
+from src.models.messages import _parse_tool_args
+
+
+class TestParseToolArgs:
+    def test_well_formed(self):
+        assert _parse_tool_args('{"a": 1, "b": "x"}') == {"a": 1, "b": "x"}
+
+    def test_empty_object(self):
+        assert _parse_tool_args("{}") == {}
+
+    def test_trailing_garbage_after_object(self):
+        # gemma4:31b sometimes appends a stray token after the closing brace.
+        assert _parse_tool_args('{"a": 1}garbage') == {"a": 1}
+
+    def test_two_concatenated_objects_keeps_first(self):
+        # The crash that produced "Error connecting to LLM" in prod.
+        assert _parse_tool_args('{"a": 1}{"b": 2}') == {"a": 1}
+
+    def test_unparseable_returns_empty_dict(self):
+        # Total failure must NOT raise — chat must survive.
+        assert _parse_tool_args("not json at all") == {}
+
+    def test_empty_string_returns_empty_dict(self):
+        assert _parse_tool_args("") == {}
+
+    def test_leading_whitespace_tolerated_by_fallback(self):
+        assert _parse_tool_args('   {"a": 1}xx') == {"a": 1}
+
+    def test_top_level_array_returns_empty_dict(self):
+        # raw_decode would parse [1, 2] but it is not a dict; fall through to {}.
+        assert _parse_tool_args("[1, 2]") == {}
+
 
 class MockChoice:
     def __init__(self, content: str, tool_calls=None):

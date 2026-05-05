@@ -25,18 +25,22 @@ def _parse_tool_args(raw: str) -> dict:
     # concatenated JSON objects. Strict json.loads crashes the WS handler
     # ("Error connecting to LLM"). Fall back to raw_decode to extract the
     # first valid object; on total failure, return {} so the chat survives.
+    # Also enforce dict output: downstream args.get(...) breaks on lists/scalars.
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
     except json.JSONDecodeError:
         pass
     try:
         obj, end = json.JSONDecoder().raw_decode(raw.lstrip())
         if isinstance(obj, dict):
-            logger.warning(
-                "tool_call arguments had trailing data after %d chars; discarded: %r",
-                end,
-                raw[end : end + 64],
-            )
+            if end < len(raw.lstrip()):
+                logger.warning(
+                    "tool_call arguments had trailing data after %d chars; discarded: %r",
+                    end,
+                    raw[end : end + 64],
+                )
             return obj
     except json.JSONDecodeError:
         pass
