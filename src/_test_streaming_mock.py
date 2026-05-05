@@ -80,3 +80,18 @@ class MockResponse:
 
     def __aiter__(self):
         return _make_stream(self._content, self._tool_calls).__aiter__()
+
+    @property
+    def choices(self):
+        return [
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=self._content,
+                    tool_calls=self._tool_calls,
+                ),
+                delta=SimpleNamespace(
+                    content=self._content,
+                    tool_calls=self._tool_calls,
+                ),
+            )
+        ]
