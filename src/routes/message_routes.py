@@ -1107,6 +1107,14 @@ async def process_chat_interaction_task(
                     # args + repair name via longest-prefix match.
                     _tcs = m.get("tool_calls")
                     if _tcs:
+                        # Full tool name universe: pydantic/qgis tools + hardcoded
+                        # message_routes tools that aren't in get_tools().
+                        _HARDCODED_TOOL_NAMES = {
+                            "add_layer_to_map", "zoom_to_bounds", "set_layer_style",
+                            "query_duckdb_sql", "query_postgis_database",
+                            "new_layer_from_postgis", "download_from_openstreetmap",
+                            "execute_shell_in_vm", "create_point_layer",
+                        }
                         _all_tool_names: list[str] | None = None
                         for _tc in _tcs:
                             _fn = _tc.get("function") if isinstance(_tc, dict) else None
@@ -1115,9 +1123,10 @@ async def process_chat_interaction_task(
                             _tc_name = _fn.get("name", "")
                             if _tc_name:
                                 if _all_tool_names is None:
-                                    _all_tool_names = [
-                                        t["function"]["name"] for t in get_tools()
-                                    ]
+                                    _all_tool_names = list(
+                                        _HARDCODED_TOOL_NAMES
+                                        | {t["function"]["name"] for t in get_tools()}
+                                    )
                                 if _tc_name not in _all_tool_names:
                                     _match = max(
                                         (n for n in _all_tool_names if _tc_name.startswith(n)),
@@ -1130,6 +1139,12 @@ async def process_chat_interaction_task(
                                             _tc_name, _match,
                                         )
                                         _fn["name"] = _match
+                                    else:
+                                        logger.warning(
+                                            "Dropping unrepaiable tool_call name %r from history replay",
+                                            _tc_name,
+                                        )
+                                        _fn["name"] = "__dropped__"
                             if isinstance(_fn.get("arguments"), str):
                                 try:
                                     _fn["arguments"] = json.dumps(
@@ -1137,6 +1152,15 @@ async def process_chat_interaction_task(
                                     )
                                 except Exception:
                                     pass
+                        # Remove tool calls with dropped/invalid names
+                        m["tool_calls"] = [
+                            _tc for _tc in _tcs
+                            if not (isinstance(_tc, dict)
+                                    and isinstance(_tc.get("function"), dict)
+                                    and _tc["function"].get("name") == "__dropped__")
+                        ] or None  # type: ignore[assignment]
+                        if m["tool_calls"] is None:
+                            m.pop("tool_calls", None)
                 openai_messages.append(m)
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
@@ -1623,9 +1647,13 @@ async def process_chat_interaction_task(
                         # cause HTTP 400 from Ollama on next turn. Fix at write
                         # time so the DB record is always clean.
                         if tool_calls_acc:
-                            _wt_tool_names = [
-                                t["function"]["name"] for t in get_tools()
-                            ]
+                            _wt_tool_names = list(
+                                {"add_layer_to_map", "zoom_to_bounds", "set_layer_style",
+                                 "query_duckdb_sql", "query_postgis_database",
+                                 "new_layer_from_postgis", "download_from_openstreetmap",
+                                 "execute_shell_in_vm", "create_point_layer"}
+                                | {t["function"]["name"] for t in get_tools()}
+                            )
                             for _wt_idx in tool_calls_acc:
                                 _wt_fn = tool_calls_acc[_wt_idx].get("function", {})
                                 _wt_name = _wt_fn.get("name", "")
