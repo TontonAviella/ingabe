@@ -10,7 +10,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
-import type { Conversation, EphemeralAction, MapProject, MapTreeResponse, PostgresConnectionDetails, TileLayerUpdate } from '../lib/types';
+import type {
+  Conversation,
+  EphemeralAction,
+  GeoJsonLayerUpdate,
+  MapProject,
+  MapTreeResponse,
+  PostgresConnectionDetails,
+  TileLayerUpdate,
+} from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
 const DROPZONE_ACCEPT: Accept = {
@@ -162,7 +170,7 @@ export default function ProjectView() {
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
-  const [, setEphemeralTileLayers] = useState<TileLayerUpdate[]>([]);
+  const [, setEphemeralTileLayers] = useState<Array<TileLayerUpdate | GeoJsonLayerUpdate>>([]);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
@@ -443,6 +451,65 @@ export default function ProjectView() {
               setEphemeralTileLayers((prev) => {
                 if (prev.some((l) => l.source_id === tl.source_id)) return prev;
                 return [...prev, tl];
+              });
+            }
+          }
+
+          // Vector polygon layer from display_geojson_layer tool. Backend sends
+          // inline GeoJSON + a style preset with categorical color stops (insurance
+          // composite_score, ndvi-driven field health, stress zone severity, etc).
+          // We render two MapLibre layers: a fill (data-driven color from stops)
+          // plus a stroke outline. Both keyed off source_id so they get bundled.
+          if (action.updates?.add_geojson_layer && mapRef.current) {
+            const gl = action.updates.add_geojson_layer;
+            const map = mapRef.current;
+            if (!map.getSource(gl.source_id)) {
+              map.addSource(gl.source_id, {
+                type: 'geojson',
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                data: gl.geojson as any,
+              });
+              const style = gl.style || {};
+              const colorProperty: string | null = style.color_property ?? null;
+              const stops: Array<{ max: number; color: string }> = style.stops || [];
+              const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
+              const strokeColor = style.stroke_color || '#1a1a1a';
+              const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
+              // Build a MapLibre 'step' expression from the categorical stops so each
+              // feature gets the color matching its property bucket.
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              let fillColorExpr: any = stops[0]?.color || '#888';
+              if (colorProperty && stops.length > 0) {
+                // step format: ['step', input, base_output, stop1, output1, stop2, output2, ...]
+                // We treat each stop's max as the lower-edge boundary for the NEXT bucket.
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const expr: any[] = ['step', ['get', colorProperty], stops[0].color];
+                for (let i = 0; i < stops.length - 1; i++) {
+                  expr.push(stops[i].max, stops[i + 1].color);
+                }
+                fillColorExpr = expr;
+              }
+              map.addLayer({
+                id: `${gl.source_id}-fill`,
+                type: 'fill',
+                source: gl.source_id,
+                paint: {
+                  'fill-color': fillColorExpr,
+                  'fill-opacity': fillOpacity,
+                },
+              });
+              map.addLayer({
+                id: `${gl.source_id}-stroke`,
+                type: 'line',
+                source: gl.source_id,
+                paint: {
+                  'line-color': strokeColor,
+                  'line-width': strokeWidth,
+                },
+              });
+              setEphemeralTileLayers((prev) => {
+                if (prev.some((l) => l.source_id === gl.source_id)) return prev;
+                return [...prev, gl];
               });
             }
           }

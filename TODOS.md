@@ -1,5 +1,31 @@
 # TODOS
 
+## Deferred from display_layer Pattern (2026-05-04)
+
+### CYGNSS family — display path
+- **What**: `get_cygnss_soil_moisture` and `get_cygnss_watermask` compute aggregated stats (water_fraction, water_pixels, water_area_km2) from netCDF in-memory. They don't preserve a rasterio transform from the lat/lon coordinate arrays, so there's no way to vectorize the watermask into polygons or render the soil moisture as a tile layer.
+- **Why deferred**: A retrofit needs the existing return shape preserved; building polygons requires modifying the service to compute an affine from the netCDF coordinate arrays and call `rasterio.features.shapes`. That's a service-level change, not a return-dict enrichment.
+- **Depends on**: Nothing. Mechanical work in `src/services/cygnss.py:get_watermask` (around line 461) to vectorize the mask before returning.
+- **When to revisit**: When BK Insurance asks "show me the saturated soil zones" and the answer needs to be a map, not a single number.
+
+### compare_rasters — display path
+- **What**: `compare_rasters` computes a change-detection diff array entirely in numpy. There's no public URL for the diff so `display_layer` has nothing to point at.
+- **Why deferred**: Would need to write the diff array as a COG to S3, presign for 6h, surface URL via `displayable_layers`. Worth it once partners actually ask for visual diffs.
+- **Depends on**: A short helper that writes a numpy array as a COG and returns a presigned URL.
+- **When to revisit**: First time a partner wants "show me what changed between week 8 and week 12 of the season."
+
+### Hyperspectral support
+- **What**: `describe_user_raster` does not auto-suggest displayable layers for hyperspectral cubes (>>10 bands). The default user-raster tile endpoint shows the first 3 bands as RGB, which is meaningless for spectral cubes.
+- **Why deferred**: Needs a dedicated tool to pick RGB-equivalent bands (e.g., 50nm windows around 650/550/450nm) from arbitrary spectral configurations. Not in current partner roadmap.
+- **Depends on**: Knowing the sensor's wavelength-to-band mapping. Currently no metadata pipeline for this.
+- **When to revisit**: When a partner shows up with a hyperspectral drone export and asks for analysis.
+
+### Tests for the display_layer pattern (low confidence on payload shapes)
+- **What**: 11 retrofits + 1 fix landed in v0.5.0.0, ~1145 insertions, zero new test files. Pydantic schemas validate at startup but `displayable_geojson` / `displayable_layers` payload shapes have no test coverage. A bug in any retrofit's enrichment logic would break visualization but not the analytical answer, so it would silently degrade the UX.
+- **Why deferred**: Each test is ~20 lines (Pydantic round-trip + helper unit test). Total ~5h for 12 tools. Real partner risk is low because the LLM ignores malformed `displayable_*` payloads.
+- **Depends on**: Nothing.
+- **When to revisit**: First time a tool's display payload misbehaves in production, or before a major refactor.
+
 ## Deferred from Insurance Intelligence Engine (2026-04-24)
 
 ### accuracy_components not serialized in InsuranceReport.to_dict()

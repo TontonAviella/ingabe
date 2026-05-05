@@ -196,7 +196,7 @@ async def find_similar_tiles(
         if len(hits) >= top_k:
             break
 
-    return {
+    response = {
         "query": {
             "layer_id": args.layer_id,
             "layer_name": row["name"],
@@ -208,3 +208,71 @@ async def find_similar_tiles(
         "metric": "cosine_similarity",
         "metric_note": "1.0 = identical visual content; lower = less similar. Same-flight nearby tiles typically score 0.65-0.85; cross-flight matches above 0.7 indicate genuinely similar features.",
     }
+
+    # Build displayable_geojson — query tile + all hits as one FeatureCollection
+    # tagged with similarity (query tile = 1.0). Sage can paint them with the
+    # similarity_score style preset so the user sees a sequential color gradient
+    # over the matched fields.
+    try:
+        features = []
+        min_lon = min_lat = float("inf")
+        max_lon = max_lat = float("-inf")
+
+        def _bbox_to_polygon(bbox: list) -> dict | None:
+            if not bbox or len(bbox) != 4:
+                return None
+            w, s, e, n = bbox
+            return {
+                "type": "Polygon",
+                "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]],
+            }
+
+        # Query tile (similarity = 1.0)
+        q_bbox = list(query_tile.get("bbox_wgs84") or [])
+        q_poly = _bbox_to_polygon(q_bbox)
+        if q_poly is not None:
+            features.append({
+                "type": "Feature",
+                "geometry": q_poly,
+                "properties": {
+                    "similarity": 1.0,
+                    "role": "query",
+                    "layer_id": args.layer_id,
+                    "layer_name": row["name"],
+                },
+            })
+            min_lon, min_lat = min(min_lon, q_bbox[0]), min(min_lat, q_bbox[1])
+            max_lon, max_lat = max(max_lon, q_bbox[2]), max(max_lat, q_bbox[3])
+
+        for h in hits:
+            poly = _bbox_to_polygon(h.get("tile_bbox_wgs84"))
+            if poly is None:
+                continue
+            features.append({
+                "type": "Feature",
+                "geometry": poly,
+                "properties": {
+                    "similarity": h["similarity"],
+                    "role": "hit",
+                    "layer_id": h["layer_id"],
+                    "layer_name": h.get("layer_name"),
+                },
+            })
+            b = h["tile_bbox_wgs84"]
+            min_lon, min_lat = min(min_lon, b[0]), min(min_lat, b[1])
+            max_lon, max_lat = max(max_lon, b[2]), max(max_lat, b[3])
+
+        if features and min_lon < float("inf"):
+            response["displayable_geojson"] = {
+                "geojson": {"type": "FeatureCollection", "features": features},
+                "style_hint": "similarity_score",
+                "title": (
+                    f"Similar Tiles — query in {row['name']} "
+                    f"({len(features) - 1} match{'es' if len(features) - 1 != 1 else ''})"
+                ),
+                "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+            }
+    except Exception:
+        logger.debug("displayable_geojson build skipped for find_similar_tiles", exc_info=True)
+
+    return response

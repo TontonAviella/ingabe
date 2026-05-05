@@ -3507,7 +3507,10 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_soil_properties":
                             try:
-                                from src.services.isdasoil_service import query_soil_point
+                                from src.services.isdasoil_service import (
+                                    query_soil_point,
+                                    _cog_url,
+                                )
 
                                 lon = tool_args.get("longitude")
                                 lat = tool_args.get("latitude")
@@ -3526,6 +3529,34 @@ async def process_chat_interaction_task(
                                 if "error" in result_data:
                                     tool_result = {"status": "error", "error": result_data["error"]}
                                 else:
+                                    # Enrich with display metadata so the LLM can pair this
+                                    # with display_layer to actually paint the map.
+                                    # Maps iSDAsoil property name → display_layer style_hint.
+                                    _style_hint_map = {
+                                        "nitrogen_total": "soil_nitrogen",
+                                        "phosphorous_extractable": "soil_phosphorus",
+                                        "potassium_extractable": "soil_potassium",
+                                        "ph": "soil_ph",
+                                        "carbon_organic": "soil_organic_carbon",
+                                        "clay_content": "soil_clay",
+                                        "sand_content": "soil_sand",
+                                    }
+                                    _display_layers: list[dict] = []
+                                    for prop_name in (result_data.get("properties") or {}).keys():
+                                        if prop_name in _style_hint_map:
+                                            _display_layers.append({
+                                                "asset_url": _cog_url(prop_name),
+                                                "style_hint": _style_hint_map[prop_name],
+                                                "title": result_data["properties"][prop_name].get("label", prop_name),
+                                                "band_index": 1 if depth == "0-20" else 2,
+                                            })
+                                    # Suggest ~5km bbox around the queried point for auto-zoom.
+                                    _half_deg = 0.05
+                                    result_data["display_bbox"] = (
+                                        f"{lon - _half_deg},{lat - _half_deg},"
+                                        f"{lon + _half_deg},{lat + _half_deg}"
+                                    )
+                                    result_data["displayable_layers"] = _display_layers
                                     tool_result = result_data
                             except Exception as e:
                                 logger.exception("get_soil_properties tool failed")
@@ -6153,9 +6184,11 @@ async def send_map_message(
     )
     description_text = current_map_description.body.decode("utf-8")
 
-    # Get system messages from the provider
+    # Get system messages from the provider. Thread viewport_bounds so the
+    # provider can synthesize a <CurrentAOI> hint anchoring every spatial tool
+    # call to the user's actual map focus (selected_feature → viewport → country).
     system_messages = await map_state.get_system_messages(
-        current_messages, description_text, body.selected_feature
+        current_messages, description_text, body.selected_feature, body.viewport_bounds
     )
 
     # Inject brain context: knowledge pages near viewport or recent (≤2000 tokens)

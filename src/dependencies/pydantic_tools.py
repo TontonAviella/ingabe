@@ -36,6 +36,10 @@ from src.tools.search_place import (
 from src.tools.display_layer import (
     display_satellite_layer,
     DisplaySatelliteLayerArgs,
+    display_layer,
+    DisplayLayerArgs,
+    display_geojson_layer,
+    DisplayGeojsonLayerArgs,
 )
 from src.tools.spectral_index import (
     compute_spectral_index,
@@ -134,6 +138,16 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "display_satellite_layer": (
             display_satellite_layer,
             DisplaySatelliteLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "display_layer": (
+            display_layer,
+            DisplayLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "display_geojson_layer": (
+            display_geojson_layer,
+            DisplayGeojsonLayerArgs,
             IngabeToolCallMetaArgs,
         ),
         "compute_spectral_index": (
