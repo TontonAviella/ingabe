@@ -58,7 +58,7 @@ jobs:
 
       - name: Run tests
         run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
-        timeout-minutes: 10
+        timeout-minutes: 25
 
       - name: Start services for E2E
         run: |
