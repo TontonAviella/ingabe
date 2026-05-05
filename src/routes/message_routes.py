@@ -1097,6 +1097,46 @@ async def process_chat_interaction_task(
                     m = {k: v for k, v in m.items()
                          if k not in _ALWAYS_STRIP_FIELDS and
                          (k not in _STRIP_NULL_FIELDS or (v is not None and v != []))}
+                    # Defense-in-depth for rows persisted before write-time
+                    # cleaning landed. gemma4:31b sometimes (a) streams
+                    # tool_call.arguments with trailing tokens / concatenated
+                    # JSON objects, or (b) fuses two tool names into one string
+                    # (e.g. "add_layer_to_mapnative_buffer"). Both cause Ollama
+                    # to reject the replayed history with HTTP 400 "invalid tool
+                    # call arguments" → "Error connecting to LLM". Fix: clean
+                    # args + repair name via longest-prefix match.
+                    _tcs = m.get("tool_calls")
+                    if _tcs:
+                        _all_tool_names: list[str] | None = None
+                        for _tc in _tcs:
+                            _fn = _tc.get("function") if isinstance(_tc, dict) else None
+                            if not _fn:
+                                continue
+                            _tc_name = _fn.get("name", "")
+                            if _tc_name:
+                                if _all_tool_names is None:
+                                    _all_tool_names = [
+                                        t["function"]["name"] for t in get_tools()
+                                    ]
+                                if _tc_name not in _all_tool_names:
+                                    _match = max(
+                                        (n for n in _all_tool_names if _tc_name.startswith(n)),
+                                        key=len,
+                                        default=None,
+                                    )
+                                    if _match:
+                                        logger.warning(
+                                            "Repaired malformed tool_call name %r → %r in history replay",
+                                            _tc_name, _match,
+                                        )
+                                        _fn["name"] = _match
+                            if isinstance(_fn.get("arguments"), str):
+                                try:
+                                    _fn["arguments"] = json.dumps(
+                                        _clean_tool_args(_fn["arguments"])
+                                    )
+                                except Exception:
+                                    pass
                 openai_messages.append(m)
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
@@ -1549,8 +1589,9 @@ async def process_chat_interaction_task(
                             _err_str = str(_api_err)
                             _is_upstream_5xx = (
                                 "Provider returned error" in _err_str
-                                or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
-                                or (hasattr(_api_err, "code") and str(getattr(_api_err, "code", "") or "") in ("502", "503", "504"))
+                                or " 500" in _err_str or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
+                                or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) >= 500)
+                                or (hasattr(_api_err, "code") and str(getattr(_api_err, "code", "") or "") in ("500", "502", "503", "504"))
                             )
                             _has_more_in_chain = _model_idx + 1 < len(_model_chain)
                             _can_retry = (
@@ -1575,6 +1616,36 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
+                        # gemma4:31b sometimes streams tool_call.function.name
+                        # as two fused tool names (e.g. "add_layer_to_map" +
+                        # "native_buffer" → "add_layer_to_mapnative_buffer") and
+                        # tool_call.arguments as concatenated JSON objects. Both
+                        # cause HTTP 400 from Ollama on next turn. Fix at write
+                        # time so the DB record is always clean.
+                        if tool_calls_acc:
+                            _wt_tool_names = [
+                                t["function"]["name"] for t in get_tools()
+                            ]
+                            for _wt_idx in tool_calls_acc:
+                                _wt_fn = tool_calls_acc[_wt_idx].get("function", {})
+                                _wt_name = _wt_fn.get("name", "")
+                                if _wt_name and _wt_name not in _wt_tool_names:
+                                    _wt_match = max(
+                                        (n for n in _wt_tool_names if _wt_name.startswith(n)),
+                                        key=len,
+                                        default=None,
+                                    )
+                                    if _wt_match:
+                                        logger.warning(
+                                            "Write-time: repaired fused tool_call name %r → %r",
+                                            _wt_name, _wt_match,
+                                        )
+                                        _wt_fn["name"] = _wt_match
+                                _wt_raw_args = _wt_fn.get("arguments", "")
+                                if _wt_raw_args:
+                                    _wt_fn["arguments"] = json.dumps(
+                                        _clean_tool_args(_wt_raw_args)
+                                    )
                         full_tool_calls = (
                             [ChatCompletionMessageToolCall(**tool_calls_acc[i])
                              for i in sorted(tool_calls_acc)]
