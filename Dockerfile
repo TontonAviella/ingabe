@@ -34,8 +34,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
-        "torch==2.4.1" "torchvision==0.19.1" && \
-    uv pip install /app/clay-source
+        --index-strategy unsafe-best-match \
+        "torch==2.4.1" "torchvision==0.19.1" \
+        /app/clay-source
 
 # ── Frontend build ──
 FROM node:20-bookworm-slim AS frontend-builder
