@@ -4,24 +4,13 @@ import aiohttp
 from unittest.mock import patch
 from src.structures import async_conn
 from openai.types.chat import (
-    ChatCompletionMessage,
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
 import json
 from unittest.mock import AsyncMock
 
-
-class MockChoice:
-    def __init__(self, content: str, tool_calls=None):
-        self.message = ChatCompletionMessage(
-            content=content, tool_calls=tool_calls, role="assistant"
-        )
-
-
-class MockOSMResponse:
-    def __init__(self, content: str, tool_calls=None):
-        self.choices = [MockChoice(content, tool_calls)]
+from src._test_streaming_mock import MockResponse as MockOSMResponse
 
 
 @pytest.mark.anyio

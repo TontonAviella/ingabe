@@ -1,10 +1,8 @@
 import pytest
 import uuid
 from unittest.mock import patch, AsyncMock
-from openai.types.chat import (
-    ChatCompletionMessage,
-)
 
+from src._test_streaming_mock import MockResponse
 from src.models.messages import _parse_tool_args
 
 
@@ -36,18 +34,6 @@ class TestParseToolArgs:
     def test_top_level_array_returns_empty_dict(self):
         # raw_decode would parse [1, 2] but it is not a dict; fall through to {}.
         assert _parse_tool_args("[1, 2]") == {}
-
-
-class MockChoice:
-    def __init__(self, content: str, tool_calls=None):
-        self.message = ChatCompletionMessage(
-            content=content, tool_calls=tool_calls, role="assistant"
-        )
-
-
-class MockResponse:
-    def __init__(self, content: str, tool_calls=None):
-        self.choices = [MockChoice(content, tool_calls)]
 
 
 @pytest.fixture
