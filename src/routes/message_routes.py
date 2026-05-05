@@ -74,6 +74,12 @@ from src.dependencies.system_prompt import (
     SystemPromptProvider,
     get_system_prompt_provider,
 )
+from src.dependencies.sage_routing import (
+    SMALL_TALK_SYSTEM_PROMPT,
+    extract_last_user_text,
+    filter_tools_by_categories,
+    route_chat,
+)
 from src.dependencies.session import (
     verify_session_required,
     UserContext,
@@ -1342,10 +1348,51 @@ async def process_chat_interaction_task(
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
             )
+
+            # --- Sage routing fast-path ---
+            # On every turn we send ~6.7K tokens of system prompt and ~13.4K
+            # tokens of tool schemas. For trivial small-talk this is wasted
+            # transatlantic prefill on a 31B model. The router classifies the
+            # last user message:
+            #   - small-talk ("hi", "thanks") -> drop tools, swap in a 1-line
+            #     system prompt, route to the local 7B model.
+            #   - high-confidence intent (clearly map-edit / agriculture /
+            #     user-raster / brain) -> filter the tool list to that domain
+            #     plus an always-on display set.
+            #   - uncertain -> fall through to current behavior (full list).
+            _last_user_text = extract_last_user_text(openai_messages)
+            _routing = route_chat(_last_user_text, history=openai_messages)
+
+            if _routing.is_small_talk:
+                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
+                tools_payload = []
+                if _routing.primary_model_override:
+                    chat_completions_args = {
+                        **chat_completions_args,
+                        "model": _routing.primary_model_override,
+                    }
+                logger.info(
+                    "sage_routing: small-talk fast-path engaged (model=%s, "
+                    "msg_len=%d)",
+                    chat_completions_args.get("model"),
+                    len(_last_user_text),
+                )
+            else:
+                _system_prompt_content = system_prompt_provider.get_system_prompt()
+                if _routing.selected_categories:
+                    _before = len(tools_payload)
+                    tools_payload = filter_tools_by_categories(
+                        tools_payload, _routing.selected_categories
+                    )
+                    logger.info(
+                        "sage_routing: filtered tools by %s (%d -> %d)",
+                        _routing.reason, _before, len(tools_payload),
+                    )
+
             _llm_messages = [
                 {
                     "role": "system",
-                    "content": system_prompt_provider.get_system_prompt(),
+                    "content": _system_prompt_content,
                 }
             ] + openai_messages
 
