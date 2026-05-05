@@ -194,6 +194,7 @@ interface MapLibreMapProps {
   hiddenLayerIDs: string[];
   toggleLayerVisibility: (layerId: string) => void;
   mapRef: React.RefObject<MLMap | null>;
+  replayEphemeralLayers?: () => void;
   activeActions: EphemeralAction[];
   setActiveActions: React.Dispatch<React.SetStateAction<EphemeralAction[]>>;
   streamingText?: string;
@@ -241,6 +242,7 @@ export default function MapLibreMap({
   hiddenLayerIDs,
   toggleLayerVisibility,
   mapRef,
+  replayEphemeralLayers,
   activeActions,
   setActiveActions,
   streamingText,
@@ -1162,6 +1164,7 @@ export default function MapLibreMap({
       if (cancelled) return;
       bridge = new StyleBridge(map);
       styleBridgeRef.current = bridge;
+      if (replayEphemeralLayers) bridge.onStyleReset(replayEphemeralLayers);
     };
 
     if (map.isStyleLoaded()) {
@@ -1176,7 +1179,7 @@ export default function MapLibreMap({
       if (bridge) bridge.destroy();
       styleBridgeRef.current = null;
     };
-  }, [mapRef, mapId, mapInstanceId]);
+  }, [mapRef, mapId, mapInstanceId, replayEphemeralLayers]);
 
   // Monotonically increasing counter that triggers style.json refetch.
   // Previously this counted activeActions with style_json, but since completed

@@ -170,7 +170,74 @@ export default function ProjectView() {
   const [zoomHistoryIndex, setZoomHistoryIndex] = useState(-1);
   const mapRef = useRef<MLMap | null>(null);
   const processedBoundsActionIds = useRef<Set<string>>(new Set());
-  const [, setEphemeralTileLayers] = useState<Array<TileLayerUpdate | GeoJsonLayerUpdate>>([]);
+  // Sage-created tile/geojson layers. Held in a ref so StyleBridge can replay
+  // them after setStyle() wipes the map (basemap switch, style.json refetch).
+  // No UI consumer reads this list, so a ref avoids needless re-renders.
+  const ephemeralLayersRef = useRef<Array<TileLayerUpdate | GeoJsonLayerUpdate>>([]);
+
+  const replayEphemeralLayers = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const layer of ephemeralLayersRef.current) {
+      try {
+        if ('tiles' in layer) {
+          const tl = layer;
+          if (map.getSource(tl.source_id)) continue;
+          map.addSource(tl.source_id, {
+            type: 'raster',
+            tiles: tl.tiles,
+            tileSize: tl.tileSize || 256,
+            maxzoom: tl.maxzoom || 14,
+            bounds: tl.bounds,
+          });
+          map.addLayer({
+            id: tl.source_id,
+            type: 'raster',
+            source: tl.source_id,
+            paint: { 'raster-opacity': 0.85 },
+          });
+        } else {
+          const gl = layer;
+          if (map.getSource(gl.source_id)) continue;
+          map.addSource(gl.source_id, {
+            type: 'geojson',
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            data: gl.geojson as any,
+          });
+          const style = gl.style || {};
+          const colorProperty: string | null = style.color_property ?? null;
+          const stops: Array<{ max: number; color: string }> = style.stops || [];
+          const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
+          const strokeColor = style.stroke_color || '#1a1a1a';
+          const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let fillColorExpr: any = stops[0]?.color || '#888';
+          if (colorProperty && stops.length > 0) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const expr: any[] = ['step', ['get', colorProperty], stops[0].color];
+            for (let i = 0; i < stops.length - 1; i++) {
+              expr.push(stops[i].max, stops[i + 1].color);
+            }
+            fillColorExpr = expr;
+          }
+          map.addLayer({
+            id: `${gl.source_id}-fill`,
+            type: 'fill',
+            source: gl.source_id,
+            paint: { 'fill-color': fillColorExpr, 'fill-opacity': fillOpacity },
+          });
+          map.addLayer({
+            id: `${gl.source_id}-stroke`,
+            type: 'line',
+            source: gl.source_id,
+            paint: { 'line-color': strokeColor, 'line-width': strokeWidth },
+          });
+        }
+      } catch (e) {
+        console.error('Failed to replay ephemeral layer', layer.source_id, e);
+      }
+    }
+  }, []);
 
   // Helper function to add a new error
   const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
@@ -448,10 +515,9 @@ export default function ProjectView() {
                 source: tl.source_id,
                 paint: { 'raster-opacity': 0.85 },
               });
-              setEphemeralTileLayers((prev) => {
-                if (prev.some((l) => l.source_id === tl.source_id)) return prev;
-                return [...prev, tl];
-              });
+              if (!ephemeralLayersRef.current.some((l) => l.source_id === tl.source_id)) {
+                ephemeralLayersRef.current = [...ephemeralLayersRef.current, tl];
+              }
             }
           }
 
@@ -507,10 +573,9 @@ export default function ProjectView() {
                   'line-width': strokeWidth,
                 },
               });
-              setEphemeralTileLayers((prev) => {
-                if (prev.some((l) => l.source_id === gl.source_id)) return prev;
-                return [...prev, gl];
-              });
+              if (!ephemeralLayersRef.current.some((l) => l.source_id === gl.source_id)) {
+                ephemeralLayersRef.current = [...ephemeralLayersRef.current, gl];
+              }
             }
           }
 
@@ -1085,6 +1150,7 @@ export default function ProjectView() {
         hiddenLayerIDs={hiddenLayerIDs}
         toggleLayerVisibility={toggleLayerVisibility}
         mapRef={mapRef}
+        replayEphemeralLayers={replayEphemeralLayers}
         activeActions={activeActions}
         setActiveActions={setActiveActions}
         streamingText={streamingText}
