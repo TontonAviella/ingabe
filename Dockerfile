@@ -34,9 +34,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
-        --index-strategy unsafe-best-match \
-        "torch==2.4.1" "torchvision==0.19.1" \
-        /app/clay-source
+        "torch==2.4.1" "torchvision==0.19.1" && \
+    uv pip install /app/clay-source && \
+    uv pip uninstall \
+        nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
+        nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 \
+        nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 \
+        nvidia-nccl-cu12 nvidia-nvjitlink-cu12 nvidia-nvtx-cu12 triton \
+        2>/dev/null || true
 
 # ── Frontend build ──
 FROM node:20-bookworm-slim AS frontend-builder
