@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 from typing import Literal, Optional
 
 from openai.types.chat import ChatCompletionMessageToolCallParam
@@ -15,6 +16,36 @@ from pydantic import BaseModel
 
 from src.database.models import MundiChatCompletionMessage
 from src.geoprocessing.dispatch import get_tools
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_tool_args(raw: str) -> dict:
+    # gemma4:31b occasionally emits arguments with trailing tokens or two
+    # concatenated JSON objects. Strict json.loads crashes the WS handler
+    # ("Error connecting to LLM"). Fall back to raw_decode to extract the
+    # first valid object; on total failure, return {} so the chat survives.
+    # Also enforce dict output: downstream args.get(...) breaks on lists/scalars.
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    try:
+        obj, end = json.JSONDecoder().raw_decode(raw.lstrip())
+        if isinstance(obj, dict):
+            if end < len(raw.lstrip()):
+                logger.warning(
+                    "tool_call arguments had trailing data after %d chars; discarded: %r",
+                    end,
+                    raw[end : end + 64],
+                )
+            return obj
+    except json.JSONDecodeError:
+        pass
+    logger.error("tool_call arguments unparseable, using empty dict: %r", raw[:200])
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +136,7 @@ def sanitized_fc_table_from_args(args: dict) -> dict:
 def convert_openai_tool_call_to_sanitized_tool_call(
     tool_call: ChatCompletionMessageToolCallParam,
 ) -> SanitizedToolCall:
-    args = json.loads(tool_call["function"]["arguments"])
+    args = _parse_tool_args(tool_call["function"]["arguments"])
     function_name = tool_call["function"]["name"]
 
     all_tools = get_tools()
@@ -114,20 +145,23 @@ def convert_openai_tool_call_to_sanitized_tool_call(
 
     code_block: CodeBlock | None = None
     if function_name == "query_duckdb_sql":
-        code_block = CodeBlock(language="sql", code=args["sql_query"])
+        code_block = CodeBlock(language="sql", code=args.get("sql_query", ""))
     elif function_name == "query_postgis_database":
-        code_block = CodeBlock(language="sql", code=args["sql_query"])
+        code_block = CodeBlock(language="sql", code=args.get("sql_query", ""))
     elif function_name == "new_layer_from_postgis":
-        code_block = CodeBlock(language="sql", code=args["query"])
+        code_block = CodeBlock(language="sql", code=args.get("query", ""))
 
     table: dict | None = None
     if function_name == "download_from_openstreetmap":
-        table = sanitized_fc_table_from_args(
-            {
-                "tags": args["tags"],
-                "bbox": ", ".join(map(str, args["bbox"])),
-            }
-        )
+        tags = args.get("tags")
+        bbox = args.get("bbox")
+        if tags is not None and bbox is not None:
+            table = sanitized_fc_table_from_args(
+                {
+                    "tags": tags,
+                    "bbox": ", ".join(map(str, bbox)),
+                }
+            )
     elif is_geoprocessing_tool:
         table = sanitized_fc_table_from_args(args)
 

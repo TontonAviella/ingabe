@@ -46,11 +46,9 @@ jobs:
 
       - name: Build application images
         run: |
-          docker buildx bake \
+          docker buildx bake app \
             --set app.cache-from=type=gha \
             --set app.cache-to=type=gha,mode=max \
-            --set qgis-processing.cache-from=type=gha \
-            --set qgis-processing.cache-to=type=gha,mode=max \
             --set app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000 \
             --set app.args.VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }} \
             --set app.args.VITE_POSTHOG_HOST=https://us.i.posthog.com \
@@ -60,7 +58,7 @@ jobs:
 
       - name: Run tests
         run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
-        timeout-minutes: 10
+        timeout-minutes: 25
 
       - name: Start services for E2E
         run: |

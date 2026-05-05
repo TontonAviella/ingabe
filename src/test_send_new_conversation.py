@@ -3,21 +3,8 @@ import os
 import random
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
-from openai.types.chat import (
-    ChatCompletionMessage,
-)
 
-
-class MockChoice:
-    def __init__(self, content: str, tool_calls=None):
-        self.message = ChatCompletionMessage(
-            content=content, tool_calls=tool_calls, role="assistant"
-        )
-
-
-class MockResponse:
-    def __init__(self, content: str, tool_calls=None):
-        self.choices = [MockChoice(content, tool_calls)]
+from src._test_streaming_mock import MockResponse, recv_non_streaming
 
 
 @pytest.fixture
@@ -127,22 +114,22 @@ async def test_chat_completions(
             assert data["status"] == "processing_started"
 
             # Receive the second response
-            receive_json = websocket.receive_json()
+            receive_json = recv_non_streaming(websocket)
             assert receive_json["role"] == "user"
             assert receive_json["content"] == "second message"
             assert receive_json["conversation_id"] == conversation_id
 
-            receive_json = websocket.receive_json()
+            receive_json = recv_non_streaming(websocket)
             assert receive_json["ephemeral"]
             assert receive_json["action"] == "Sage is thinking..."
             assert receive_json["status"] == "active"
 
-            receive_json = websocket.receive_json()
+            receive_json = recv_non_streaming(websocket)
             assert receive_json["ephemeral"]
             assert receive_json["action"] == "Sage is thinking..."
             assert receive_json["status"] == "completed"
 
-            receive_json = websocket.receive_json()
+            receive_json = recv_non_streaming(websocket)
             assert receive_json["role"] == "assistant"
             assert receive_json["content"] == "hi"
             assert receive_json["conversation_id"] == conversation_id
