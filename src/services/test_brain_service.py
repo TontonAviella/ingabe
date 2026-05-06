@@ -40,17 +40,33 @@ TEST_OWNER = str(uuid.uuid4())
 TEST_OWNER_B = str(uuid.uuid4())
 
 
-@pytest.fixture(scope="session")
+_MIGRATIONS_DONE = False
+
+
+@pytest.fixture
 async def brain_conn():
-    """Session-scoped asyncpg connection with brain tables + RLS context."""
-    from src.database.migrate import run_migrations
-    await run_migrations()
+    """Per-test asyncpg connection with brain tables + RLS context.
+
+    Function-scoped (not session-scoped) because pytest-xdist with parallel
+    workers AND multiple tests sharing one asyncpg connection produces
+    "another operation is in progress" errors — asyncpg connections are
+    not concurrency-safe. Each test gets a fresh connection.
+
+    Migrations run once per worker via the module-level flag. asyncpg is
+    cheap to connect (~10-50ms) so per-test cost is acceptable.
+    """
+    global _MIGRATIONS_DONE
+    if not _MIGRATIONS_DONE:
+        from src.database.migrate import run_migrations
+        await run_migrations()
+        _MIGRATIONS_DONE = True
 
     url = _build_postgres_url()
     c = await asyncpg.connect(url)
     await c.execute("SELECT set_config('app.user_id', $1, false)", TEST_OWNER)
 
-    # Seed one page for tests that need an existing page
+    # Seed one page for tests that need an existing page. Use ON CONFLICT
+    # via put_page (which upserts) so re-seeding from prior tests is safe.
     svc = BrainService()
     await svc.put_page(
         c,
@@ -63,8 +79,10 @@ async def brain_conn():
         owner_uuid=TEST_OWNER,
     )
 
-    yield c
-    await c.close()
+    try:
+        yield c
+    finally:
+        await c.close()
 
 
 @pytest.fixture
