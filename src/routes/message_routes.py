@@ -740,7 +740,7 @@ async def run_geoprocessing_tool(
                 input_urls = {}
 
                 for key, val in mapped_args.items():
-                    if key == "OUTPUT":
+                    if key in ("OUTPUT", "map_id", "user_uuid"):
                         continue
                     elif is_layer_id(val):
                         # Get OGR source for any layer type (S3, remote URL, PostGIS)
@@ -759,7 +759,10 @@ async def run_geoprocessing_tool(
                             layer = MapLayer(**dict(layer_row))
 
                             ogr_source_context = await layer.get_ogr_source(
-                                never_return_local_file=True
+                                never_return_local_file=True,
+                                presigned_url_endpoint_override=os.environ.get(
+                                    "S3_INTERNAL_ENDPOINT_URL"
+                                ),
                             )
                             async with ogr_source_context as ogr_source:
                                 input_urls[key] = ogr_source
@@ -850,9 +853,13 @@ async def run_geoprocessing_tool(
                         err_body = response.json()
                         detail = err_body.get("detail", err_body)
                         if isinstance(detail, dict):
+                            # 500: QGIS process failure uses stderr/stdout keys
+                            # 400: pre-flight checks use error/message keys
                             stderr = detail.get("stderr", "")
                             stdout = detail.get("stdout", "")
-                            qgis_error_detail = stderr or stdout
+                            err_msg = detail.get("error", "")
+                            err_detail = detail.get("message", "")
+                            qgis_error_detail = stderr or stdout or f"{err_msg}: {err_detail}".strip(": ")
                         else:
                             qgis_error_detail = str(detail)
                     except Exception:

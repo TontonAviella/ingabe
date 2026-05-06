@@ -50,6 +50,12 @@ services:
       # Skip TLS verification for vsicurl — internal Docker network only,
       # cert is for s3.gis but URL hostname is s3-gis (no MITM risk on loopback).
       - GDAL_HTTP_UNSAFESSL=YES
+      # Internal MinIO endpoint for QGIS geoprocessing presigned URLs.
+      # The QGIS container uses urllib (not GDAL) to download input layers, and
+      # urllib validates TLS certs — the external S3 cert doesn't cover s3-gis.nozalabs.rw
+      # when accessed via Docker-internal DNS, so we sign presigned URLs with the
+      # internal hostname instead. QGIS container can reach minio:9000 on Docker network.
+      - S3_INTERNAL_ENDPOINT_URL=http://minio:9000
       # Phase 2 Clay embedding paths (checkpoint bind-mounted from host).
       - CLAY_CHECKPOINT_PATH=/app/data/clay-checkpoints/clay-v1.5.ckpt
       - CLAY_METADATA_PATH=/app/clay-source/configs/metadata.yaml
