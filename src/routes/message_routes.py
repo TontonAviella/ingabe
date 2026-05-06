@@ -34,7 +34,7 @@ from openai.types.chat.chat_completion_message_param import (
     ChatCompletionMessageParam,
 )
 from openai.types.chat import ChatCompletionMessageToolCall
-from openai import APIError
+from openai import APIError, BadRequestError
 
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
 
@@ -1631,10 +1631,34 @@ async def process_chat_interaction_task(
                                 or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) >= 500)
                                 or (hasattr(_api_err, "code") and str(getattr(_api_err, "code", "") or "") in ("500", "502", "503", "504"))
                             )
+                            # Gemma/Ollama payload rejection (HTTP 400). Common
+                            # patterns: "invalid message content type: <nil>",
+                            # "invalid tool call arguments", "invalid_request_error"
+                            # — all from gemma's stricter-than-OpenAI parser.
+                            # Qwen accepts these payloads, so fall over to it
+                            # automatically. Excludes context_length_exceeded
+                            # (handled by its own UX path at line 1710+) and
+                            # auth 4xx (401/403/404 — not recoverable by retry).
+                            _err_lower = _err_str.lower()
+                            _is_context_overflow_err = (
+                                "context_length_exceeded" in _err_lower
+                                or "context length" in _err_lower
+                                or "maximum context" in _err_lower
+                                or "context window" in _err_lower
+                            )
+                            _is_payload_400 = (
+                                not _is_context_overflow_err
+                                and (
+                                    isinstance(_api_err, BadRequestError)
+                                    or " 400" in _err_str
+                                    or "Error code: 400" in _err_str
+                                    or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) == 400)
+                                )
+                            )
                             _has_more_in_chain = _model_idx + 1 < len(_model_chain)
                             _can_retry = (
                                 _has_more_in_chain
-                                and _is_upstream_5xx
+                                and (_is_upstream_5xx or _is_payload_400)
                                 and len(content_parts) == 0
                                 and len(tool_calls_acc) == 0
                             )
