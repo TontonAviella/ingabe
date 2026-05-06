@@ -1131,9 +1131,11 @@ async def process_chat_interaction_task(
                             _tc_name = _fn.get("name", "")
                             if _tc_name:
                                 if _all_tool_names is None:
+                                    from src.dependencies.pydantic_tools import get_pydantic_tool_calls
                                     _all_tool_names = list(
                                         _HARDCODED_TOOL_NAMES
                                         | {t["function"]["name"] for t in get_tools()}
+                                        | set(get_pydantic_tool_calls().keys())
                                     )
                                 if _tc_name not in _all_tool_names:
                                     _match = max(
@@ -1685,12 +1687,14 @@ async def process_chat_interaction_task(
                         # cause HTTP 400 from Ollama on next turn. Fix at write
                         # time so the DB record is always clean.
                         if tool_calls_acc:
+                            from src.dependencies.pydantic_tools import get_pydantic_tool_calls
                             _wt_tool_names = list(
                                 {"add_layer_to_map", "zoom_to_bounds", "set_layer_style",
                                  "query_duckdb_sql", "query_postgis_database",
                                  "new_layer_from_postgis", "download_from_openstreetmap",
                                  "execute_shell_in_vm", "create_point_layer"}
                                 | {t["function"]["name"] for t in get_tools()}
+                                | set(get_pydantic_tool_calls().keys())
                             )
                             for _wt_idx in tool_calls_acc:
                                 _wt_fn = tool_calls_acc[_wt_idx].get("function", {})
