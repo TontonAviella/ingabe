@@ -1169,6 +1169,12 @@ async def process_chat_interaction_task(
                         ] or None  # type: ignore[assignment]
                         if m["tool_calls"] is None:
                             m.pop("tool_calls", None)
+                    # OpenAI spec allows content=null for assistant messages with
+                    # tool_calls, but Ollama's gemma adapter rejects with HTTP 400
+                    # "invalid message content type: <nil>". Coerce to empty string
+                    # so the replayed history is accepted across providers.
+                    if "content" in m and m["content"] is None:
+                        m["content"] = ""
                 openai_messages.append(m)
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
