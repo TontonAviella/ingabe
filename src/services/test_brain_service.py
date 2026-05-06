@@ -35,7 +35,7 @@ from src.services.brain_hook_processor import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 TEST_OWNER = str(uuid.uuid4())
 TEST_OWNER_B = str(uuid.uuid4())
@@ -44,7 +44,7 @@ TEST_OWNER_B = str(uuid.uuid4())
 _MIGRATIONS_DONE = False
 
 
-@pytest_asyncio.fixture(loop_scope="session")
+@pytest_asyncio.fixture(loop_scope="module")
 async def brain_conn():
     """Per-test asyncpg connection with brain tables + RLS context.
 

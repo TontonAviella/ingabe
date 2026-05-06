@@ -31,7 +31,7 @@ from src.services.brain_service import BrainService, PageInput
 # async tests share a loop — asyncpg attaches futures to a specific loop and
 # will refuse cross-loop reuse. Applies to sync helper tests too, but that
 # only generates a cosmetic PytestWarning; it doesn't affect correctness.
-pytestmark = pytest.mark.asyncio(loop_scope="session")
+pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ async def test_write_page_still_requires_partner_id_when_flag_on(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(scope="function", loop_scope="session")
+@pytest_asyncio.fixture(scope="function", loop_scope="module")
 async def flag_test_conn():
     """Fresh asyncpg connection seeded with one public + one partner page.
 
