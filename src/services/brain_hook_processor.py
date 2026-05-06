@@ -199,7 +199,14 @@ async def _create_pages_from_s3_vector(
                     page_type = _infer_page_type(props, geometry_type)
                     truth = _build_feature_truth(props, layer_name, page_type)
 
-                    geom_json = json.dumps(geom) if geom else None
+                    # fiona 1.10 returns Geometry objects (not dicts) which json.dumps
+                    # can't handle. Use __geo_interface__ to get the GeoJSON-shaped dict.
+                    if geom is None:
+                        geom_json = None
+                    elif hasattr(geom, "__geo_interface__"):
+                        geom_json = json.dumps(geom.__geo_interface__)
+                    else:
+                        geom_json = json.dumps(geom)
 
                     await brain.put_page(
                         conn,

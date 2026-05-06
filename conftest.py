@@ -43,7 +43,7 @@ def run_alembic_operation():
             else:
                 raise ValueError(f"Unknown operation: {operation}")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         with ThreadPoolExecutor() as executor:
             await loop.run_in_executor(executor, run_operation)
 
