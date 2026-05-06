@@ -25,7 +25,9 @@ def rls_conn():
     conn.autocommit = True
     cur = conn.cursor()
 
-    # Create a non-superuser role (superusers bypass RLS unconditionally)
+    # Create a non-superuser role (superusers bypass RLS unconditionally).
+    # mundiuser had SUPERUSER + BYPASSRLS revoked in migration a0b1c2d3e4f5,
+    # so SET ROLE now requires mundiuser to be a MEMBER of rls_test_role.
     cur.execute("""
         DO $$
         BEGIN
@@ -37,6 +39,7 @@ def rls_conn():
     cur.execute("GRANT USAGE ON SCHEMA public TO rls_test_role")
     cur.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO rls_test_role")
     cur.execute("GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO rls_test_role")
+    cur.execute("GRANT rls_test_role TO CURRENT_USER")
 
     conn.autocommit = False
     cur.execute("SET ROLE rls_test_role")

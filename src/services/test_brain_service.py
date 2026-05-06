@@ -11,6 +11,7 @@ from datetime import date, datetime
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from src.database.pool import _build_postgres_url
 from src.services.brain_service import (
@@ -43,7 +44,7 @@ TEST_OWNER_B = str(uuid.uuid4())
 _MIGRATIONS_DONE = False
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def brain_conn():
     """Per-test asyncpg connection with brain tables + RLS context.
 

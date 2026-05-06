@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from src.database.pool import _build_postgres_url
 from src.services.brain_ingestion import normalizer
@@ -114,7 +115,7 @@ async def test_write_page_still_requires_partner_id_when_flag_on(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="function")
+@pytest_asyncio.fixture(scope="function", loop_scope="session")
 async def flag_test_conn():
     """Fresh asyncpg connection seeded with one public + one partner page.
 
