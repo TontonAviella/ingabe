@@ -478,6 +478,11 @@ async def _process_partner_url_hook(
 
     from src.routes.partner_routes import _validate_url_safety
 
+    # TOCTOU defense: re-validate at fetch time. DNS records can change
+    # between partner submit and async hook processing, and a public domain
+    # could rebind to a private IP after submit-time validation passed.
+    _validate_url_safety(url)
+
     async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
         for _attempt in range(5):
             resp = await client.get(url)
