@@ -3,22 +3,10 @@ import uuid
 import json
 from unittest.mock import patch, AsyncMock
 from openai.types.chat import (
-    ChatCompletionMessage,
     ChatCompletionMessageToolCall,
 )
 from openai.types.chat.chat_completion_message_tool_call import Function
-
-
-class MockChoice:
-    def __init__(self, content: str, tool_calls=None):
-        self.message = ChatCompletionMessage(
-            content=content, tool_calls=tool_calls, role="assistant"
-        )
-
-
-class MockResponse:
-    def __init__(self, content: str, tool_calls=None):
-        self.choices = [MockChoice(content, tool_calls)]
+from src.test_helpers.mock_llm_stream import MockStreamResponse as MockResponse
 
 
 @pytest.fixture
