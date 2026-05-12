@@ -2,7 +2,8 @@ import pytest
 import uuid
 import time
 from unittest.mock import patch, AsyncMock
-from src.test_helpers.mock_llm_stream import MockStreamResponse as MockResponse
+
+from src._test_streaming_mock import MockResponse, recv_non_streaming
 
 
 @pytest.fixture
@@ -101,7 +102,7 @@ def test_websocket_receive_ephemeral_action(
             ephemeral_msg = None
             max_attempts = 10
             for _ in range(max_attempts):
-                recv_msg = websocket.receive_json()
+                recv_msg = recv_non_streaming(websocket)
                 if recv_msg.get("ephemeral") is True:
                     ephemeral_msg = recv_msg
                     break
@@ -165,7 +166,7 @@ def test_websocket_missed_messages(
             ephemeral_msg = None
             max_attempts = 10
             for _ in range(max_attempts):
-                recv_msg = websocket.receive_json()
+                recv_msg = recv_non_streaming(websocket)
                 if recv_msg.get("ephemeral") is True:
                     ephemeral_msg = recv_msg
                     break

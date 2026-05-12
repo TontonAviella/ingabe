@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import JSONResponse
-from typing import List, Union
+from typing import List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel
 import logging
@@ -34,7 +34,7 @@ from openai.types.chat.chat_completion_message_param import (
     ChatCompletionMessageParam,
 )
 from openai.types.chat import ChatCompletionMessageToolCall
-from openai import APIError
+from openai import APIError, BadRequestError
 
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
 
@@ -48,6 +48,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_openai_client
+from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
     generate_id,
@@ -73,6 +74,12 @@ from src.dependencies.map_state import (
 from src.dependencies.system_prompt import (
     SystemPromptProvider,
     get_system_prompt_provider,
+)
+from src.dependencies.sage_routing import (
+    SMALL_TALK_SYSTEM_PROMPT,
+    extract_last_user_text,
+    filter_tools_by_categories,
+    route_chat,
 )
 from src.dependencies.session import (
     verify_session_required,
@@ -733,7 +740,7 @@ async def run_geoprocessing_tool(
                 input_urls = {}
 
                 for key, val in mapped_args.items():
-                    if key == "OUTPUT":
+                    if key in ("OUTPUT", "map_id", "user_uuid"):
                         continue
                     elif is_layer_id(val):
                         # Get OGR source for any layer type (S3, remote URL, PostGIS)
@@ -752,7 +759,10 @@ async def run_geoprocessing_tool(
                             layer = MapLayer(**dict(layer_row))
 
                             ogr_source_context = await layer.get_ogr_source(
-                                never_return_local_file=True
+                                never_return_local_file=True,
+                                presigned_url_endpoint_override=os.environ.get(
+                                    "S3_INTERNAL_ENDPOINT_URL"
+                                ),
                             )
                             async with ogr_source_context as ogr_source:
                                 input_urls[key] = ogr_source
@@ -843,9 +853,13 @@ async def run_geoprocessing_tool(
                         err_body = response.json()
                         detail = err_body.get("detail", err_body)
                         if isinstance(detail, dict):
+                            # 500: QGIS process failure uses stderr/stdout keys
+                            # 400: pre-flight checks use error/message keys
                             stderr = detail.get("stderr", "")
                             stdout = detail.get("stdout", "")
-                            qgis_error_detail = stderr or stdout
+                            err_msg = detail.get("error", "")
+                            err_detail = detail.get("message", "")
+                            qgis_error_detail = stderr or stdout or f"{err_msg}: {err_detail}".strip(": ")
                         else:
                             qgis_error_detail = str(detail)
                     except Exception:
@@ -1091,54 +1105,79 @@ async def process_chat_interaction_task(
                     m = {k: v for k, v in m.items()
                          if k not in _ALWAYS_STRIP_FIELDS and
                          (k not in _STRIP_NULL_FIELDS or (v is not None and v != []))}
+                    # Defense-in-depth for rows persisted before write-time
+                    # cleaning landed. gemma4:31b sometimes (a) streams
+                    # tool_call.arguments with trailing tokens / concatenated
+                    # JSON objects, or (b) fuses two tool names into one string
+                    # (e.g. "add_layer_to_mapnative_buffer"). Both cause Ollama
+                    # to reject the replayed history with HTTP 400 "invalid tool
+                    # call arguments" → "Error connecting to LLM". Fix: clean
+                    # args + repair name via longest-prefix match.
+                    _tcs = m.get("tool_calls")
+                    if _tcs:
+                        # Full tool name universe: pydantic/qgis tools + hardcoded
+                        # message_routes tools that aren't in get_tools().
+                        _HARDCODED_TOOL_NAMES = {
+                            "add_layer_to_map", "zoom_to_bounds", "set_layer_style",
+                            "query_duckdb_sql", "query_postgis_database",
+                            "new_layer_from_postgis", "download_from_openstreetmap",
+                            "execute_shell_in_vm", "create_point_layer",
+                        }
+                        _all_tool_names: list[str] | None = None
+                        for _tc in _tcs:
+                            _fn = _tc.get("function") if isinstance(_tc, dict) else None
+                            if not _fn:
+                                continue
+                            _tc_name = _fn.get("name", "")
+                            if _tc_name:
+                                if _all_tool_names is None:
+                                    from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+                                    _all_tool_names = list(
+                                        _HARDCODED_TOOL_NAMES
+                                        | {t["function"]["name"] for t in get_tools()}
+                                        | set(get_pydantic_tool_calls().keys())
+                                    )
+                                if _tc_name not in _all_tool_names:
+                                    _match = max(
+                                        (n for n in _all_tool_names if _tc_name.startswith(n)),
+                                        key=len,
+                                        default=None,
+                                    )
+                                    if _match:
+                                        logger.warning(
+                                            "Repaired malformed tool_call name %r → %r in history replay",
+                                            _tc_name, _match,
+                                        )
+                                        _fn["name"] = _match
+                                    else:
+                                        logger.warning(
+                                            "Dropping unrepaiable tool_call name %r from history replay",
+                                            _tc_name,
+                                        )
+                                        _fn["name"] = "__dropped__"
+                            if isinstance(_fn.get("arguments"), str):
+                                try:
+                                    _fn["arguments"] = json.dumps(
+                                        _clean_tool_args(_fn["arguments"])
+                                    )
+                                except Exception:
+                                    pass
+                        # Remove tool calls with dropped/invalid names
+                        m["tool_calls"] = [
+                            _tc for _tc in _tcs
+                            if not (isinstance(_tc, dict)
+                                    and isinstance(_tc.get("function"), dict)
+                                    and _tc["function"].get("name") == "__dropped__")
+                        ] or None  # type: ignore[assignment]
+                        if m["tool_calls"] is None:
+                            m.pop("tool_calls", None)
+                    # OpenAI spec allows content=null for assistant messages with
+                    # tool_calls, but Ollama's gemma adapter rejects with HTTP 400
+                    # "invalid message content type: <nil>". Coerce to empty string
+                    # so the replayed history is accepted across providers.
+                    if "content" in m and m["content"] is None:
+                        m["content"] = ""
                 openai_messages.append(m)
-
-            # Sanitize tool call / tool result pairing.
-            # Providers (Bedrock, DeepSeek, etc.) return 400 if:
-            #   - a tool message references a tool_call_id with no preceding assistant tool_call
-            #   - an assistant message has tool_calls with no corresponding tool results
-            # Two-pass fix: collect what exists, then strip orphans from both sides.
-            _tool_result_ids: set[str] = set()
-            _tool_call_ids: set[str] = set()
-            for _m in openai_messages:
-                if not isinstance(_m, dict):
-                    continue
-                if _m.get("role") == "assistant":
-                    for _tc in (_m.get("tool_calls") or []):
-                        _tc_id = _tc.get("id") if isinstance(_tc, dict) else getattr(_tc, "id", None)
-                        if _tc_id:
-                            _tool_call_ids.add(_tc_id)
-                elif _m.get("role") == "tool":
-                    _tc_ref = _m.get("tool_call_id")
-                    if _tc_ref:
-                        _tool_result_ids.add(_tc_ref)
-
-            _sanitized: list = []
-            for _m in openai_messages:
-                if not isinstance(_m, dict):
-                    _sanitized.append(_m)
-                    continue
-                _role = _m.get("role")
-                if _role == "tool":
-                    if _m.get("tool_call_id") not in _tool_call_ids:
-                        logger.debug("Dropping orphaned tool result for tool_call_id=%s", _m.get("tool_call_id"))
-                        continue
-                    _sanitized.append(_m)
-                elif _role == "assistant" and _m.get("tool_calls"):
-                    _kept = [tc for tc in _m["tool_calls"]
-                             if (tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)) in _tool_result_ids]
-                    if _kept:
-                        _m = {**_m, "tool_calls": _kept}
-                        _sanitized.append(_m)
-                    else:
-                        _stripped = {k: v for k, v in _m.items() if k != "tool_calls"}
-                        if _stripped.get("content"):
-                            _sanitized.append(_stripped)
-                        else:
-                            logger.debug("Dropping assistant message with orphaned tool_calls (no results exist)")
-                else:
-                    _sanitized.append(_m)
-            openai_messages = _sanitized
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
@@ -1389,10 +1428,51 @@ async def process_chat_interaction_task(
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
             )
+
+            # --- Sage routing fast-path ---
+            # On every turn we send ~6.7K tokens of system prompt and ~13.4K
+            # tokens of tool schemas. For trivial small-talk this is wasted
+            # transatlantic prefill on a 31B model. The router classifies the
+            # last user message:
+            #   - small-talk ("hi", "thanks") -> drop tools, swap in a 1-line
+            #     system prompt, route to the local 7B model.
+            #   - high-confidence intent (clearly map-edit / agriculture /
+            #     user-raster / brain) -> filter the tool list to that domain
+            #     plus an always-on display set.
+            #   - uncertain -> fall through to current behavior (full list).
+            _last_user_text = extract_last_user_text(openai_messages)
+            _routing = route_chat(_last_user_text, history=openai_messages)
+
+            if _routing.is_small_talk:
+                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
+                tools_payload = []
+                if _routing.primary_model_override:
+                    chat_completions_args = {
+                        **chat_completions_args,
+                        "model": _routing.primary_model_override,
+                    }
+                logger.info(
+                    "sage_routing: small-talk fast-path engaged (model=%s, "
+                    "msg_len=%d)",
+                    chat_completions_args.get("model"),
+                    len(_last_user_text),
+                )
+            else:
+                _system_prompt_content = system_prompt_provider.get_system_prompt()
+                if _routing.selected_categories:
+                    _before = len(tools_payload)
+                    tools_payload = filter_tools_by_categories(
+                        tools_payload, _routing.selected_categories
+                    )
+                    logger.info(
+                        "sage_routing: filtered tools by %s (%d -> %d)",
+                        _routing.reason, _before, len(tools_payload),
+                    )
+
             _llm_messages = [
                 {
                     "role": "system",
-                    "content": system_prompt_provider.get_system_prompt(),
+                    "content": _system_prompt_content,
                 }
             ] + openai_messages
 
@@ -1468,37 +1548,174 @@ async def process_chat_interaction_task(
                 with tracer.start_as_current_span(
                     "kue.openai.chat.completions.create"
                 ):
-                    try:
-                        content_parts: list[str] = []
-                        tool_calls_acc: dict[int, dict] = {}
-                        stream = await client.chat.completions.create(
-                            **_llm_kwargs, stream=True,
-                        )
-                        async for chunk in stream:
-                            if not chunk.choices:
+                    # Build the model fallback chain. Tries primary first, then
+                    # walks through OPENROUTER_FALLBACK_MODELS (comma-separated, in
+                    # order). Falls back ONLY on upstream 5xx and ONLY if no tokens
+                    # have streamed yet (so we never deliver a half-written response).
+                    # OPENROUTER_FALLBACK_MODEL (singular, legacy) still works as a
+                    # single-item chain.
+                    _primary_model = _llm_kwargs.get("model")
+                    _chain_env = (
+                        os.environ.get("OPENROUTER_FALLBACK_MODELS", "").strip()
+                        or os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+                    )
+                    _model_chain: list[str] = [_primary_model] + [
+                        m.strip()
+                        for m in _chain_env.split(",")
+                        if m.strip() and m.strip() != _primary_model
+                    ]
+                    # Dedupe while preserving order
+                    _seen: set[str] = set()
+                    _model_chain = [m for m in _model_chain if not (m in _seen or _seen.add(m))]
+
+                    _last_err: Optional[APIError] = None
+                    _attempted_models: list[str] = []
+
+                    content_parts: list[str] = []
+                    tool_calls_acc: dict[int, dict] = {}
+
+                    for _model_idx, _model_name in enumerate(_model_chain):
+                        # Reset accumulators for each attempt
+                        content_parts = []
+                        tool_calls_acc = {}
+                        _attempted_models.append(_model_name)
+                        _attempt_kwargs = {**_llm_kwargs, "model": _model_name}
+                        # Provider routing: an `ollama:<tag>` chain entry is
+                        # served by the local Ollama container (OpenAI-compat
+                        # endpoint). Everything else uses the configured cloud
+                        # client (OpenRouter / Vercel / OpenAI / etc).
+                        if _model_name.startswith("ollama:"):
+                            from openai import AsyncOpenAI
+                            _attempt_kwargs["model"] = _model_name.split(":", 1)[1]
+                            _attempt_client = AsyncOpenAI(
+                                base_url=os.environ.get(
+                                    "OLLAMA_BASE_URL", "http://ollama:11434/v1"
+                                ),
+                                api_key="ollama",
+                            )
+                        else:
+                            _attempt_client = client
+                        try:
+                            stream = await _attempt_client.chat.completions.create(
+                                **_attempt_kwargs, stream=True,
+                            )
+                            async for chunk in stream:
+                                if not chunk.choices:
+                                    continue
+                                delta = chunk.choices[0].delta
+                                if delta.content:
+                                    content_parts.append(delta.content)
+                                    await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
+                                if delta.tool_calls:
+                                    for tc in delta.tool_calls:
+                                        idx = tc.index
+                                        if idx not in tool_calls_acc:
+                                            tool_calls_acc[idx] = {
+                                                "id": "", "type": "function",
+                                                "function": {"name": "", "arguments": ""},
+                                            }
+                                        if tc.id:
+                                            tool_calls_acc[idx]["id"] = tc.id
+                                        if tc.function:
+                                            if tc.function.name:
+                                                tool_calls_acc[idx]["function"]["name"] += tc.function.name
+                                            if tc.function.arguments:
+                                                tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            # Success
+                            _last_err = None
+                            break
+                        except APIError as _api_err:
+                            _last_err = _api_err
+                            _err_str = str(_api_err)
+                            _is_upstream_5xx = (
+                                "Provider returned error" in _err_str
+                                or " 500" in _err_str or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
+                                or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) >= 500)
+                                or (hasattr(_api_err, "code") and str(getattr(_api_err, "code", "") or "") in ("500", "502", "503", "504"))
+                            )
+                            # Gemma/Ollama payload rejection (HTTP 400). Common
+                            # patterns: "invalid message content type: <nil>",
+                            # "invalid tool call arguments", "invalid_request_error"
+                            # — all from gemma's stricter-than-OpenAI parser.
+                            # Qwen accepts these payloads, so fall over to it
+                            # automatically. Excludes context_length_exceeded
+                            # (handled by its own UX path at line 1710+) and
+                            # auth 4xx (401/403/404 — not recoverable by retry).
+                            _err_lower = _err_str.lower()
+                            _is_context_overflow_err = (
+                                "context_length_exceeded" in _err_lower
+                                or "context length" in _err_lower
+                                or "maximum context" in _err_lower
+                                or "context window" in _err_lower
+                            )
+                            _is_payload_400 = (
+                                not _is_context_overflow_err
+                                and (
+                                    isinstance(_api_err, BadRequestError)
+                                    or " 400" in _err_str
+                                    or "Error code: 400" in _err_str
+                                    or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) == 400)
+                                )
+                            )
+                            _has_more_in_chain = _model_idx + 1 < len(_model_chain)
+                            _can_retry = (
+                                _has_more_in_chain
+                                and (_is_upstream_5xx or _is_payload_400)
+                                and len(content_parts) == 0
+                                and len(tool_calls_acc) == 0
+                            )
+                            if _can_retry:
+                                _next = _model_chain[_model_idx + 1]
+                                logger.warning(
+                                    "LLM model %s failed (%s) with no content streamed — falling back to %s (chain step %d/%d)",
+                                    _model_name, _err_str[:120], _next,
+                                    _model_idx + 2, len(_model_chain),
+                                )
                                 continue
-                            delta = chunk.choices[0].delta
-                            if delta.content:
-                                content_parts.append(delta.content)
-                                await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
-                            if delta.tool_calls:
-                                for tc in delta.tool_calls:
-                                    idx = tc.index
-                                    if idx not in tool_calls_acc:
-                                        tool_calls_acc[idx] = {
-                                            "id": "", "type": "function",
-                                            "function": {"name": "", "arguments": ""},
-                                        }
-                                    if tc.id:
-                                        tool_calls_acc[idx]["id"] = tc.id
-                                    if tc.function:
-                                        if tc.function.name:
-                                            tool_calls_acc[idx]["function"]["name"] += tc.function.name
-                                        if tc.function.arguments:
-                                            tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            break
+
+                    try:
+                        if _last_err is not None:
+                            raise _last_err
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
+                        # gemma4:31b sometimes streams tool_call.function.name
+                        # as two fused tool names (e.g. "add_layer_to_map" +
+                        # "native_buffer" → "add_layer_to_mapnative_buffer") and
+                        # tool_call.arguments as concatenated JSON objects. Both
+                        # cause HTTP 400 from Ollama on next turn. Fix at write
+                        # time so the DB record is always clean.
+                        if tool_calls_acc:
+                            from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+                            _wt_tool_names = list(
+                                {"add_layer_to_map", "zoom_to_bounds", "set_layer_style",
+                                 "query_duckdb_sql", "query_postgis_database",
+                                 "new_layer_from_postgis", "download_from_openstreetmap",
+                                 "execute_shell_in_vm", "create_point_layer"}
+                                | {t["function"]["name"] for t in get_tools()}
+                                | set(get_pydantic_tool_calls().keys())
+                            )
+                            for _wt_idx in tool_calls_acc:
+                                _wt_fn = tool_calls_acc[_wt_idx].get("function", {})
+                                _wt_name = _wt_fn.get("name", "")
+                                if _wt_name and _wt_name not in _wt_tool_names:
+                                    _wt_match = max(
+                                        (n for n in _wt_tool_names if _wt_name.startswith(n)),
+                                        key=len,
+                                        default=None,
+                                    )
+                                    if _wt_match:
+                                        logger.warning(
+                                            "Write-time: repaired fused tool_call name %r → %r",
+                                            _wt_name, _wt_match,
+                                        )
+                                        _wt_fn["name"] = _wt_match
+                                _wt_raw_args = _wt_fn.get("arguments", "")
+                                if _wt_raw_args:
+                                    _wt_fn["arguments"] = json.dumps(
+                                        _clean_tool_args(_wt_raw_args)
+                                    )
                         full_tool_calls = (
                             [ChatCompletionMessageToolCall(**tool_calls_acc[i])
                              for i in sorted(tool_calls_acc)]
@@ -1509,6 +1726,11 @@ async def process_chat_interaction_task(
                             content=full_content,
                             tool_calls=full_tool_calls,
                         )
+                        if len(_attempted_models) > 1:
+                            logger.info(
+                                "LLM completion succeeded with fallback model after primary failed. attempted=%s",
+                                _attempted_models,
+                            )
                     except APIError as e:
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
@@ -1580,18 +1802,7 @@ async def process_chat_interaction_task(
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
-                    try:
-                        tool_args = json.loads(tool_call.function.arguments)
-                    except (json.JSONDecodeError, TypeError) as e:
-                        logger.warning("Malformed tool arguments for %s: %s", function_name, e)
-                        await add_chat_completion_message(
-                            ChatCompletionToolMessageParam(
-                                role="tool",
-                                tool_call_id=tool_call.id,
-                                content=json.dumps({"status": "error", "error": f"Invalid JSON arguments: {e}"}),
-                            ),
-                        )
-                        continue
+                    tool_args = json.loads(tool_call.function.arguments)
                     tool_result = {}
 
                     if function_name in pydantic_tool_calls:
@@ -3437,7 +3648,10 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_soil_properties":
                             try:
-                                from src.services.isdasoil_service import query_soil_point
+                                from src.services.isdasoil_service import (
+                                    query_soil_point,
+                                    _cog_url,
+                                )
 
                                 lon = tool_args.get("longitude")
                                 lat = tool_args.get("latitude")
@@ -3456,6 +3670,34 @@ async def process_chat_interaction_task(
                                 if "error" in result_data:
                                     tool_result = {"status": "error", "error": result_data["error"]}
                                 else:
+                                    # Enrich with display metadata so the LLM can pair this
+                                    # with display_layer to actually paint the map.
+                                    # Maps iSDAsoil property name → display_layer style_hint.
+                                    _style_hint_map = {
+                                        "nitrogen_total": "soil_nitrogen",
+                                        "phosphorous_extractable": "soil_phosphorus",
+                                        "potassium_extractable": "soil_potassium",
+                                        "ph": "soil_ph",
+                                        "carbon_organic": "soil_organic_carbon",
+                                        "clay_content": "soil_clay",
+                                        "sand_content": "soil_sand",
+                                    }
+                                    _display_layers: list[dict] = []
+                                    for prop_name in (result_data.get("properties") or {}).keys():
+                                        if prop_name in _style_hint_map:
+                                            _display_layers.append({
+                                                "asset_url": _cog_url(prop_name),
+                                                "style_hint": _style_hint_map[prop_name],
+                                                "title": result_data["properties"][prop_name].get("label", prop_name),
+                                                "band_index": 1 if depth == "0-20" else 2,
+                                            })
+                                    # Suggest ~5km bbox around the queried point for auto-zoom.
+                                    _half_deg = 0.05
+                                    result_data["display_bbox"] = (
+                                        f"{lon - _half_deg},{lat - _half_deg},"
+                                        f"{lon + _half_deg},{lat + _half_deg}"
+                                    )
+                                    result_data["displayable_layers"] = _display_layers
                                     tool_result = result_data
                             except Exception as e:
                                 logger.exception("get_soil_properties tool failed")
@@ -5380,6 +5622,13 @@ async def process_chat_interaction_task(
                                     except Exception:
                                         logger.warning("insurance brain save failed", exc_info=True)
                                     tool_result.pop("_report_for_brain", None)
+                                # Strip the admin-boundary GeoJSON before sending the
+                                # tool result back to the LLM. The geometry is needed
+                                # only for the Brain page save above; leaving it in
+                                # the tool response bloats conversation history by
+                                # 100-185 KB per call and overflows context after a
+                                # handful of turns.
+                                tool_result.pop("geometry", None)
                             except Exception:
                                 logger.exception("get_insurance_intelligence tool failed")
                                 tool_result = {"status": "error", "error": "Insurance intelligence computation failed. Please try again."}
@@ -5970,15 +6219,7 @@ async def process_chat_interaction_task(
                                 ),
                             )
                         else:
-                            logger.warning("Unknown tool name: %s", function_name)
-                            tool_result = {"status": "error", "error": f"Unknown tool: {function_name}"}
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                ),
-                            )
+                            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 
             # Track consecutive rounds where tool calls returned errors.
             # This prevents the LLM from retrying the same failing tool in a
@@ -6084,9 +6325,11 @@ async def send_map_message(
     )
     description_text = current_map_description.body.decode("utf-8")
 
-    # Get system messages from the provider
+    # Get system messages from the provider. Thread viewport_bounds so the
+    # provider can synthesize a <CurrentAOI> hint anchoring every spatial tool
+    # call to the user's actual map focus (selected_feature → viewport → country).
     system_messages = await map_state.get_system_messages(
-        current_messages, description_text, body.selected_feature
+        current_messages, description_text, body.selected_feature, body.viewport_bounds
     )
 
     # Inject brain context: knowledge pages near viewport or recent (≤2000 tokens)

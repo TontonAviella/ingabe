@@ -9,6 +9,7 @@ accidentally re-granted), these application-layer filters are the last gate.
 """
 
 import uuid
+from datetime import date
 
 import asyncpg
 import pytest
@@ -92,7 +93,7 @@ async def seeded():
     await brain.add_timeline_entry(
         conn, slug_a,
         TimelineInput(
-            date="2026-04-21",
+            date=date(2026, 4, 21),
             summary="Initial upload",
             source="partner_upload",
         ),

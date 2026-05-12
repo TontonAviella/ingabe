@@ -76,6 +76,9 @@ def get_lakehouse_connection() -> duckdb.DuckDBPyConnection:
     # Cap DuckDB memory to avoid OOM (standard plan=2GB, shared with app+pools)
     con.execute("SET memory_limit='256MB';")
     con.execute("SET threads=1;")
+    # Container's appuser has HOME=/home/appuser but no such dir; point DuckDB
+    # at /cache (created+chowned in Dockerfile) so install_extension can write.
+    con.execute("SET home_directory='/cache';")
 
     # Load extensions (install is a no-op if already cached on disk from Dockerfile)
     con.install_extension("spatial")
@@ -113,6 +116,7 @@ async def execute_duckdb_query(
             con = duckdb.connect(":memory:")
             con.execute("SET memory_limit='256MB';")
             con.execute("SET threads=1;")
+            con.execute("SET home_directory='/cache';")
             con.install_extension("spatial")
             con.load_extension("spatial")
 

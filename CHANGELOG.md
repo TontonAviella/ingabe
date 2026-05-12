@@ -2,6 +2,49 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.5.0.0] - 2026-05-04
+
+### Added
+- Sage's analytical tools now paint the map. Ask "show me NDVI in Cyampirita" or "any flood damage in Eastern Province?" and Sage paints the actual layer instead of just typing back numbers. Two new tools — `display_layer` (raster overlays from public COG URLs) and `display_geojson_layer` (vector polygons with categorical fills) — backed by 28 typed style presets covering soil chemistry, vegetation indices, drought, soil moisture, evapotranspiration, SAR backscatter, food security IPC phases, insurance trigger scores, and visual similarity gradients.
+- 12 existing analytical tools retrofitted to surface map output: `get_soil_properties`, `get_soil_moisture`, `get_evapotranspiration`, `evaluate_insurance_trigger`, `interpret_raster_health`, `analyze_rgb_field`, `find_stress_zones`, `find_similar_tiles`, `detect_water_bodies`, `detect_flood_extent`, `compute_zonal_stats`, `get_food_security_alerts`, `get_alos_l_band_stats`. Each now returns a `displayable_layers` or `displayable_geojson` payload that Sage dispatches via the new display tools.
+- AOI grounding for every spatial tool call. New `<CurrentAOI>` system block synthesizes the user's spatial focus from `selected_feature` (parcel clicked on map) → `viewport_bounds` → country default. Sage stops defaulting to district names when a parcel is selected.
+- Drone multispectral display path. `describe_user_raster` surfaces a 6-hour presigned COG URL plus per-band style hints for known layouts: 4-band [R, NDVI, NDRE, alpha] drone exports auto-suggest band 2 (`ndvi_band` style) and band 3 (`ndre_band` style); single-band NDVI/NDRE rasters auto-detect from filename. Multispectral with unknown band semantics asks the user to confirm.
+- New raster style presets: `ndvi_band`, `ndre_band`, `sar_backscatter_db`. New vector style presets: `insurance_composite_score`, `field_health`, `rgb_field_health`, `stress_zones`, `outline`, `water`, `flood_extent`, `similarity_score`, `food_security_ipc`.
+- COG tile router (`/api/cog-tiles/{z}/{x}/{y}.png`) gains a `single_band` rendering mode with per-request `colormap`, `rescale`, and `band_index` params. Reads any band of any public COG and renders it with a colormap, regardless of the source raster's intended band layout.
+- Frontend handler in `ProjectView.tsx` for the new `add_geojson_layer` WebSocket action. Renders a fill + stroke layer pair per source, using a MapLibre `step` color expression keyed off categorical stops.
+
+### Changed
+- `cog_tile_router` `single_band` mode now uses rio-tiler's `ImageData.mask` instead of hardcoded `band == 0` for nodata. Fixes an issue where valid bare-soil pixels (NDRE ≈ 0), at-mean anomaly z-scores (z = 0), and 0°C temperature pixels would render as transparent holes in the new style presets. iSDAsoil rasters keep masking 0 correctly because their COG nodata tag says so.
+- `pool.py:get_async_db_connection` and the related read-replica/sync helpers now thread `viewport_bounds` through to `map_state.get_system_messages` so the AOI block reflects the actual user view at the time of the chat turn.
+
+### Deferred
+- CYGNSS family display (service computes water_fraction from netCDF in-memory but doesn't preserve a rasterio transform to vectorize from). Service-level change required.
+- `compare_rasters` display (diff lives in numpy memory, no public URL). Would need to write the diff to S3 first.
+- Hyperspectral support. `describe_user_raster` does not auto-suggest layers for >>10 band cubes. Would need a dedicated tool to pick RGB-equivalent bands from spectral cubes.
+
+## [0.4.0.0] - 2026-05-02
+
+### Added
+- Phase 1 raster interpretation tool surface for Sage. Five mechanical tools (`describe_user_raster`, `compute_zonal_stats`, `get_value_distribution`, `read_pixel_at`, `find_stress_zones`) plus three semantic verdict tools (`interpret_raster_health`, `compare_rasters`, `evaluate_insurance_trigger`) that turn drone NDVI/RGB orthophotos into queryable insurance-grade verdicts.
+- Phase 2 visual similarity search via Clay v1.5 foundation model + Qdrant. New Sage tool `find_similar_tiles` lets a user point at a stressed patch in one drone flight and surface visually similar tiles across all their other rasters. Embeddings are auto-generated when COG conversion completes; partner-isolated by default.
+- Brain pipeline now runs entirely on local infrastructure. Embeddings switch from OpenAI `text-embedding-3-large` to local Ollama `nomic-embed-text` (768-dim), removing the cloud auth dependency for partner-internal documents and silencing the upstream 401 storm.
+- Brain timeline auto-write from Phase 1 verdict tools and Phase 2 Clay status, so every Sage tool call leaves a permanent trace on the relevant `raster-{layer_id}` brain page.
+
+### Changed
+- Replaced Milvus standalone with Qdrant 1.17.1 for Clay tile embeddings. Single Rust binary, ~50-100 MiB resident vs Milvus's ~180 MiB plus bundled etcd/minio. Same public API in `qdrant_client.py` so call sites needed only import-line changes.
+- Insurance Intelligence Engine refactored: 638-line gut renovation removing pre-Phase-1 prototype paths in favor of the composition layer that ships in this PR.
+- Drone orthophoto rendering now serves at full resolution with no edge flicker, even for large uploads (multi-gigabyte COGs handled cleanly through proxy_request_buffering).
+- All Sage chat completions now route through `OPENAI_BASE_URL=https://ollama.com/v1` with `gemma4:31b` as primary and `ollama:qwen2.5:7b-64k` (local) as fallback. Frees ~12 GB on the Hetzner box that previously hosted Milvus.
+
+### Fixed
+- Brain maintenance scheduler stops crashing on every tick. Frontmatter is now defensively parsed when arriving as a JSON string, and `embed_all_stale` SELECT applies the same partner-aware filter that `get_page` applies, eliminating the "page not found" WARN spam at ~36 lines/min.
+- Brain hook processor (which runs every 30s in each of 6 uvicorn workers) now uses `pg_try_advisory_lock` to ensure only one worker per tick runs the embed cycle, mirroring the per-source ingest job pattern.
+- pgvector dimension migrated from `vector(1536)` to `vector(768)` with HNSW index rebuilt for the new Ollama embeddings.
+- Multiple Sage tools converted to strict-mode arg models (Field(...) sentinels) to match OpenAI tool-calling format.
+
+### Removed
+- `src/services/milvus_client.py` and `milvus/*.yaml` configs. Milvus standalone container retired in favor of Qdrant.
+
 ## [0.3.0.0] - 2026-04-24
 
 ### Added

@@ -9,7 +9,9 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion_message_tool_call import Function
 import json
 from unittest.mock import AsyncMock
-from src.test_helpers.mock_llm_stream import MockStreamResponse as MockOSMResponse
+
+from src._test_streaming_mock import MockResponse as MockOSMResponse
+from src._test_streaming_mock import recv_non_streaming
 
 
 @pytest.mark.anyio
@@ -119,7 +121,7 @@ async def test_download_from_openstreetmap_layers_created(
                     )
                     assert response.status_code == 200
 
-                    msg1 = websocket.receive_json()
+                    msg1 = recv_non_streaming(websocket)
                     assert msg1["role"] == "user"
                     assert (
                         msg1["content"]
@@ -128,17 +130,17 @@ async def test_download_from_openstreetmap_layers_created(
                     assert not msg1["has_tool_calls"]
                     assert msg1["tool_calls"] == []
 
-                    msg2 = websocket.receive_json()
+                    msg2 = recv_non_streaming(websocket)
                     assert msg2["ephemeral"]
                     assert msg2["action"] == "Sage is thinking..."
                     assert msg2["status"] == "active"
 
-                    msg3 = websocket.receive_json()
+                    msg3 = recv_non_streaming(websocket)
                     assert msg3["ephemeral"]
                     assert msg3["action"] == "Sage is thinking..."
                     assert msg3["status"] == "completed"
 
-                    msg4 = websocket.receive_json()
+                    msg4 = recv_non_streaming(websocket)
                     assert msg4["role"] == "assistant"
                     assert (
                         msg4["content"]
@@ -153,7 +155,7 @@ async def test_download_from_openstreetmap_layers_created(
                     )
                     assert msg4["tool_calls"][0]["icon"] == "cloud-download"
 
-                    msg5 = websocket.receive_json()
+                    msg5 = recv_non_streaming(websocket)
                     assert msg5["ephemeral"]
                     assert (
                         "Downloading data from OpenStreetMap: emergency=lifeguard"
@@ -161,7 +163,7 @@ async def test_download_from_openstreetmap_layers_created(
                     )
                     assert msg5["status"] == "active"
 
-                    msg6 = websocket.receive_json()
+                    msg6 = recv_non_streaming(websocket)
                     assert msg6["ephemeral"]
                     assert (
                         "Downloading data from OpenStreetMap: emergency=lifeguard"
@@ -169,22 +171,22 @@ async def test_download_from_openstreetmap_layers_created(
                     )
                     assert msg6["status"] == "completed"
 
-                    msg7 = websocket.receive_json()
+                    msg7 = recv_non_streaming(websocket)
                     assert msg7["role"] == "tool"
                     assert msg7["tool_response"]["id"] == "call_1"
                     assert msg7["tool_response"]["status"] == "success"
 
-                    msg8 = websocket.receive_json()
+                    msg8 = recv_non_streaming(websocket)
                     assert msg8["ephemeral"]
                     assert msg8["action"] == "Sage is thinking..."
                     assert msg8["status"] == "active"
 
-                    msg9 = websocket.receive_json()
+                    msg9 = recv_non_streaming(websocket)
                     assert msg9["ephemeral"]
                     assert msg9["action"] == "Sage is thinking..."
                     assert msg9["status"] == "completed"
 
-                    msg10 = websocket.receive_json()
+                    msg10 = recv_non_streaming(websocket)
                     assert msg10["role"] == "assistant"
                     assert "Ok downloaded" in msg10["content"]
 

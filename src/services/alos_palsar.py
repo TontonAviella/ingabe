@@ -214,6 +214,9 @@ class ALOSPALSARService:
             all_hv_db: List[np.ndarray] = []
             all_valid: List[np.ndarray] = []
             tiles_used = 0
+            # Track a representative HH COG URL so the tool can paint the
+            # backscatter raster on the map without re-doing the STAC search.
+            representative_hh_href: Optional[str] = None
 
             for item in items:
                 assets = item.get("assets", {})
@@ -224,6 +227,8 @@ class ALOSPALSARService:
                 hv_res = _read_window(assets["hv"]["href"], bbox)
                 if hh_res is None or hv_res is None:
                     continue
+                if representative_hh_href is None:
+                    representative_hh_href = assets["hh"]["href"]
 
                 hh_dn, _ = hh_res
                 hv_dn, _ = hv_res
@@ -279,6 +284,7 @@ class ALOSPALSARService:
                 "tiles_used": tiles_used,
                 "total_pixels": int(combined_hh.size),
                 "valid_pixels": int(combined_valid.sum()),
+                "hh_asset_url": representative_hh_href,
                 "hh_db": _band_stats(combined_hh, combined_valid),
                 "hv_db": _band_stats(combined_hv, combined_valid),
                 "hh_hv_ratio_db": _band_stats(ratio_db, combined_valid),

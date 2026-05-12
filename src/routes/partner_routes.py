@@ -374,8 +374,16 @@ async def list_documents(
 # ---------------------------------------------------------------------------
 
 def _validate_url_safety(url: str) -> None:
-    """Block URLs targeting private/internal networks."""
+    """Block URLs targeting private/internal networks.
+
+    Resolves hostname to IP(s) and rejects if any resolution maps to a
+    private, loopback, link-local, multicast, reserved, or cloud-metadata
+    address. Closes the DNS-rebinding bypass where a public domain points
+    at a private IP. Caller MUST re-validate before each network use to
+    defeat TOCTOU (DNS records can change between submit time and fetch time).
+    """
     import ipaddress
+    import socket
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
@@ -387,25 +395,77 @@ def _validate_url_safety(url: str) -> None:
             detail="Only http and https URLs are allowed.",
         )
 
-    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
-    if hostname.lower() in blocked_hosts:
+    if not hostname:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="URLs targeting localhost are not allowed.",
+            detail="Invalid URL: missing hostname.",
         )
 
+    # Block obvious internal-looking suffixes before doing any DNS work.
+    if hostname.endswith(".internal") or hostname.endswith(".local"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="URLs targeting internal domains are not allowed.",
+        )
+
+    # Resolve hostname to all IPs. This catches:
+    #   - Public domains with A-records pointing at 127.0.0.1 / RFC1918 / metadata
+    #   - IPv4 + IPv6 both. AF_UNSPEC returns both families.
     try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+        addr_info = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
+    except socket.gaierror:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot resolve hostname: {hostname}",
+        )
+
+    cloud_metadata_ips = {
+        "169.254.169.254",  # AWS / GCP / Azure
+        "169.254.170.2",    # ECS task metadata
+        "100.100.100.200",  # Alibaba Cloud
+        "fd00:ec2::254",    # AWS IPv6 metadata
+    }
+
+    for info in addr_info:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            # Reject unparseable IPs rather than skipping them.
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="URLs targeting private or reserved IP addresses are not allowed.",
+                detail=f"Invalid IP address format for {hostname}: {ip_str}",
             )
-    except ValueError:
-        # hostname is not an IP, that's fine (it's a domain name)
-        # Check for common internal domains
-        if hostname.endswith(".internal") or hostname.endswith(".local"):
+
+        if ip.is_private:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="URLs targeting internal domains are not allowed.",
+                detail=f"URLs resolving to private IP addresses are not allowed: {ip_str}",
+            )
+        if ip.is_loopback:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URLs resolving to loopback addresses are not allowed: {ip_str}",
+            )
+        if ip.is_link_local:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URLs resolving to link-local addresses are not allowed: {ip_str}",
+            )
+        if ip.is_multicast:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URLs resolving to multicast addresses are not allowed: {ip_str}",
+            )
+        if ip.is_reserved:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URLs resolving to reserved addresses are not allowed: {ip_str}",
+            )
+        if ip_str in cloud_metadata_ips:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"URLs resolving to cloud metadata endpoints are not allowed: {ip_str}",
             )

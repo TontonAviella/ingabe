@@ -22,10 +22,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt /app/
+COPY clay-source /app/clay-source
+# Install CPU-only torch before clay-source so its `torch>=2.4.0` transitive dep
+# is already satisfied. Default PyPI torch wheel is CUDA (~2GB compressed) which
+# OOMs the ubuntu-latest CI runner during unpack. Hetzner CPX42 has no GPU so
+# CUDA torch was wasted bytes anyway.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
     uv pip install -r requirements.txt && \
-    uv pip install hyperdx-opentelemetry
+    uv pip install hyperdx-opentelemetry && \
+    uv pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple \
+        "torch==2.4.1" "torchvision==0.19.1" && \
+    uv pip install /app/clay-source && \
+    uv pip uninstall \
+        nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
+        nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 \
+        nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 \
+        nvidia-nccl-cu12 nvidia-nvjitlink-cu12 nvidia-nvtx-cu12 triton \
+        2>/dev/null || true
 
 # ── Frontend build ──
 FROM node:20-bookworm-slim AS frontend-builder

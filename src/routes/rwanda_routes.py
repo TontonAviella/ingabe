@@ -43,7 +43,7 @@ from typing import Optional
 
 import h3
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from src.dependencies.session import UserContext, verify_session_required
@@ -1802,6 +1802,175 @@ async def get_parcel_ndvi_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Cache query failed: {e}",
         )
+
+
+# ── On-demand parcel NDVI recompute ──────────────────────────────────────
+# Boundary edits in the UI mark cached rows stale, then a background task
+# recomputes per-feature NDVI against Digital Earth Africa. This bridges the
+# gap between an edit and the next 3 AM Dagster run.
+
+_LAYER_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+async def _recompute_parcel_ndvi_for_layer(layer_id: str) -> None:
+    import json
+    import math
+    import uuid
+    from datetime import datetime, timedelta
+
+    import numpy as np
+
+    from src.services.deafrica_stac import get_deafrica_service
+    from src.structures import get_async_db_connection
+
+    if not _LAYER_ID_RE.match(layer_id):
+        logger.error("recompute: invalid layer_id %r — refusing", layer_id)
+        return
+
+    dea = get_deafrica_service()
+    now = datetime.utcnow()
+    date_from = (now - timedelta(days=14)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
+    week_start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    layer_table = "postgis_layer_" + layer_id.replace("-", "_")
+
+    async with get_async_db_connection() as conn:
+        try:
+            feature_rows = await conn.fetch(
+                f"""
+                SELECT
+                    COALESCE(properties->>'name', properties->>'id',
+                             properties->>'parcel_id',
+                             'parcel_' || ROW_NUMBER() OVER ()) AS pname,
+                    ST_AsGeoJSON(geom) AS geom_json
+                FROM {layer_table}
+                WHERE geom IS NOT NULL
+                LIMIT 500
+                """
+            )
+        except Exception as e:
+            logger.warning("recompute: no PostGIS table for layer %s: %s", layer_id, e)
+            feature_rows = []
+
+        if not feature_rows:
+            logger.info("recompute: no features for layer %s", layer_id)
+            return
+
+        inserted = 0
+        for row in feature_rows:
+            parcel_name = row["pname"]
+            geom_json = row["geom_json"]
+            if not geom_json:
+                continue
+            try:
+                geometry = json.loads(geom_json)
+                stats = await asyncio.to_thread(
+                    dea.get_field_stats,
+                    geometry=geometry,
+                    date_from=date_from,
+                    date_to=date_to,
+                    index="ndvi",
+                )
+                if "error" in stats:
+                    continue
+                intervals = stats.get("intervals", [])
+                ndvi_means = [
+                    iv["ndvi"]["mean"]
+                    for iv in intervals
+                    if "ndvi" in iv
+                    and iv["ndvi"].get("valid_pixels", 0) > 0
+                    and not math.isnan(iv["ndvi"]["mean"])
+                ]
+                if not ndvi_means:
+                    continue
+                mean_ndvi = float(np.mean(ndvi_means))
+                std_ndvi = float(np.std(ndvi_means))
+                min_ndvi = float(np.min(ndvi_means))
+                max_ndvi = float(np.max(ndvi_means))
+                total_pixels = sum(
+                    iv["ndvi"].get("valid_pixels", 0)
+                    for iv in intervals
+                    if "ndvi" in iv
+                )
+                area_ha = round(total_pixels * 0.01, 2)
+                parcel_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"{layer_id}/{parcel_name}",
+                ))
+                await conn.execute(
+                    """
+                    INSERT INTO ndvi_parcel_cache
+                        (parcel_id, parcel_name, layer_id, week_start,
+                         mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
+                         valid_pixels, area_ha, stale, last_recomputed_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, false, NOW())
+                    """,
+                    parcel_id, parcel_name, layer_id, week_start,
+                    mean_ndvi, std_ndvi, min_ndvi, max_ndvi,
+                    total_pixels, area_ha,
+                )
+                inserted += 1
+            except Exception as e:
+                logger.warning("recompute: parcel %s failed: %s", parcel_name, e)
+
+        await conn.execute(
+            "DELETE FROM ndvi_parcel_cache WHERE layer_id = $1 AND stale = true",
+            layer_id,
+        )
+        logger.info(
+            "recompute: layer %s — inserted %d rows, dropped stale rows",
+            layer_id, inserted,
+        )
+
+
+@rwanda_router.post(
+    "/rwanda/parcels/{layer_id}/recompute",
+    operation_id="recompute_parcel_ndvi",
+)
+async def recompute_parcel_ndvi(
+    layer_id: str,
+    background_tasks: BackgroundTasks,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Mark cached NDVI for a parcel layer stale and queue a fresh recompute.
+
+    Used by the boundary editor after a user reshapes a parcel polygon. Returns
+    immediately — the recompute runs in a background task. The frontend can
+    poll ``/rwanda/ndvi/parcels?layer_id=...`` and look at ``last_recomputed_at``
+    to know when fresh stats are ready.
+    """
+    from src.structures import get_async_db_connection
+
+    if not _LAYER_ID_RE.match(layer_id):
+        raise HTTPException(status_code=400, detail="Invalid layer_id")
+
+    async with get_async_db_connection() as conn:
+        # Ownership-gated SELECT so a 404 covers both "doesn't exist" and "not
+        # yours" — we don't disclose other users' layer_ids via the error code
+        # delta. Same pattern as Phase 1 raster tools (see e.g. similarity.py
+        # owner_uuid check). RLS already filters at the connection level for
+        # tenant_isolation, but we double-gate with an explicit predicate
+        # because background_tasks runs OUTSIDE this connection and shouldn't
+        # carry forward any assumption that we already authorized.
+        layer = await conn.fetchrow(
+            "SELECT layer_id, type FROM map_layers "
+            "WHERE layer_id = $1 AND owner_uuid = $2",
+            layer_id, session.get_user_id(),
+        )
+        if not layer:
+            raise HTTPException(status_code=404, detail="Layer not found")
+        if layer["type"] != "vector":
+            raise HTTPException(
+                status_code=400,
+                detail="Only vector parcel layers can be recomputed",
+            )
+        await conn.execute(
+            "UPDATE ndvi_parcel_cache SET stale = true WHERE layer_id = $1",
+            layer_id,
+        )
+
+    background_tasks.add_task(_recompute_parcel_ndvi_for_layer, layer_id)
+    return {"status": "queued", "layer_id": layer_id}
 
 
 # ── Vector tile endpoints ────────────────────────────────────────────────

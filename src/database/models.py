@@ -251,7 +251,11 @@ class MapLayer(Base):
         if self.metadata is not None:
             return json.loads(self.metadata)
 
-    async def get_ogr_source(self, never_return_local_file: bool = False):
+    async def get_ogr_source(
+        self,
+        never_return_local_file: bool = False,
+        presigned_url_endpoint_override: str | None = None,
+    ):
         """Return OGR-compatible source string for this layer
 
         For PostGIS layers, returns a PostgreSQL connection string with the layer's query.
@@ -262,6 +266,9 @@ class MapLayer(Base):
 
         Args:
             never_return_local_file: If True, return presigned URLs for S3 instead of downloading
+            presigned_url_endpoint_override: If set, generate presigned URLs using this endpoint
+                instead of the default S3 endpoint. Useful for internal services (e.g., QGIS
+                processing container) that can't reach the external S3 endpoint due to SSL issues.
         """
 
         from src.structures import async_conn
@@ -366,12 +373,31 @@ class MapLayer(Base):
                 bucket_name = get_bucket_name()
 
                 if never_return_local_file:
-                    # Generate presigned GET URL for remote access
+                    # Generate presigned GET URL for remote access.
+                    # When presigned_url_endpoint_override is set (e.g. internal Docker MinIO
+                    # hostname), sign against that endpoint so internal services can download
+                    # without going through the external HTTPS proxy.
                     from src.utils import s3_op
-                    presigned_url = await s3_op(
-                        s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": self.s3_key}, ExpiresIn=3600),
-                        "presigned URL", f"layer {self.layer_id}", raise_http=False,
-                    )
+                    if presigned_url_endpoint_override:
+                        import aioboto3 as _aioboto3
+                        import os as _os
+                        _session = _aioboto3.Session()
+                        async with _session.client(
+                            "s3",
+                            endpoint_url=presigned_url_endpoint_override,
+                            aws_access_key_id=_os.environ.get("S3_ACCESS_KEY_ID"),
+                            aws_secret_access_key=_os.environ.get("S3_SECRET_ACCESS_KEY"),
+                            region_name=_os.environ.get("S3_DEFAULT_REGION", "auto"),
+                        ) as _internal_s3:
+                            presigned_url = await s3_op(
+                                _internal_s3.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": self.s3_key}, ExpiresIn=3600),
+                                "presigned URL (internal)", f"layer {self.layer_id}", raise_http=False,
+                            )
+                    else:
+                        presigned_url = await s3_op(
+                            s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": self.s3_key}, ExpiresIn=3600),
+                            "presigned URL", f"layer {self.layer_id}", raise_http=False,
+                        )
                     yield presigned_url
                 else:
                     # Download to temporary file for local access

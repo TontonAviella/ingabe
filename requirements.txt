@@ -26,7 +26,7 @@ boto3==1.37.3
 botocore==1.37.3
 brotli==1.0.9
 cdsapi==0.7.7
-certifi==2022.9.24
+certifi==2024.7.4
 cffi==1.17.1
 cftime==1.6.5
 chardet==5.1.0
@@ -35,7 +35,7 @@ click==8.1.8
 click-plugins==1.1.1
 cligj==0.7.2
 contourpy==1.0.7
-cryptography==38.0.4
+cryptography==44.0.0
 cycler==0.11.0
 dagster==1.9.13
 dagster-aws==0.25.13
@@ -151,12 +151,13 @@ pyroscope-io==0.8.7
 pystac==1.12.2
 pytest==8.3.5
 pytest-alembic==0.12.1
-pytest-asyncio==1.0.0
+pytest-asyncio==0.25.0
 pytest-metadata==3.1.1
 pytest-timeout==2.3.1
 pytest-xdist==3.8.0
 python-dateutil==2.8.2
 python-dotenv==1.1.0
+qdrant-client==1.17.1
 python-multipart==0.0.20
 pythran==0.11.0
 pytz==2022.7.1
@@ -205,7 +206,7 @@ tzdata==2025.2
 ufolib2==0.14.0
 unidiff==0.7.5
 uritemplate==4.1.1
-urllib3==1.26.12
+urllib3==1.26.20
 utm==0.7.0
 uvicorn==0.34.3
 uvloop==0.21.0

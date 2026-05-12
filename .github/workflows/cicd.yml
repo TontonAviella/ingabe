@@ -28,21 +28,27 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          df -h /
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Report disk space
+        run: df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build application images
         run: |
-          docker buildx bake \
+          docker buildx bake app \
             --set app.cache-from=type=gha \
             --set app.cache-to=type=gha,mode=max \
-            --set qgis-processing.cache-from=type=gha \
-            --set qgis-processing.cache-to=type=gha,mode=max \
             --set app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000 \
             --set app.args.VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }} \
             --set app.args.VITE_POSTHOG_HOST=https://us.i.posthog.com \
@@ -52,7 +58,7 @@ jobs:
 
       - name: Run tests
         run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
-        timeout-minutes: 10
+        timeout-minutes: 25
 
       - name: Start services for E2E
         run: |
