@@ -109,6 +109,71 @@ tracer = trace.get_tracer(__name__)
 _RWANDA_INTERNAL_CONN_ID = "CRwandaIntDB"
 
 
+class _ToolCallTextScrubber:
+    """Drops `<tool_call>...</tool_call>` XML/markup that some thinking models
+    (Nemotron 3 Super 120B specifically) sometimes emit as visible text content
+    instead of routing through the OpenAI structured `tool_calls` field.
+
+    Stateful streaming scrubber: maintains a small lookbehind buffer to detect
+    open/close tags that arrive split across multiple delta chunks. Discards
+    any content between `<tool_call>` and `</tool_call>` (inclusive of the
+    tags). At end-of-stream call `.flush()` to drain anything not inside a tag.
+    Unclosed tags at stream end are dropped silently (user sees clean output;
+    the real tool_call already routed through delta.tool_calls).
+
+    Why this exists: see prod incident 2026-05-13 where BK testing screenshot
+    showed raw `<tool_call><function=display_satellite_layer><parameter=bbox>
+    ...` text leaking into Sage's chat reply.
+    """
+    _OPEN = "<tool_call>"
+    _CLOSE = "</tool_call>"
+
+    def __init__(self) -> None:
+        self._buffer: str = ""
+        self._inside: bool = False
+        self._lookback: int = max(len(self._OPEN), len(self._CLOSE))
+
+    def feed(self, delta: str) -> str:
+        """Append `delta`, return whatever's safe to stream to the user now."""
+        self._buffer += delta
+        out: list[str] = []
+        while self._buffer:
+            if self._inside:
+                idx = self._buffer.find(self._CLOSE)
+                if idx == -1:
+                    # No close yet. Keep buffering, retain lookback for split tag.
+                    keep = min(len(self._buffer), self._lookback)
+                    self._buffer = self._buffer[-keep:] if keep else ""
+                    break
+                # Close found — discard everything up to and including close.
+                self._buffer = self._buffer[idx + len(self._CLOSE):]
+                self._inside = False
+            else:
+                idx = self._buffer.find(self._OPEN)
+                if idx == -1:
+                    # No open in buffer. Emit all but the lookback tail in case
+                    # the open is split across the next delta.
+                    safe_len = max(0, len(self._buffer) - self._lookback)
+                    out.append(self._buffer[:safe_len])
+                    self._buffer = self._buffer[safe_len:]
+                    break
+                # Open found — emit content BEFORE it, then drop the open tag.
+                out.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx + len(self._OPEN):]
+                self._inside = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        """End-of-stream flush. Returns any safe-to-emit remainder."""
+        if self._inside:
+            # Unclosed tag — discard entirely.
+            self._buffer = ""
+            return ""
+        out = self._buffer
+        self._buffer = ""
+        return out
+
+
 async def _ensure_rwanda_postgis_connection(
     conn, project_id: str, user_id: str,
 ) -> str | None:
@@ -1596,6 +1661,10 @@ async def process_chat_interaction_task(
                         else:
                             _attempt_client = client
                         try:
+                            # Per-attempt scrubber so Nemotron's
+                            # `<tool_call>...</tool_call>` text emissions don't
+                            # leak into the user-visible chat. See class docstring.
+                            _xml_scrub = _ToolCallTextScrubber()
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
@@ -1604,8 +1673,10 @@ async def process_chat_interaction_task(
                                     continue
                                 delta = chunk.choices[0].delta
                                 if delta.content:
-                                    content_parts.append(delta.content)
-                                    await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
+                                    _safe = _xml_scrub.feed(delta.content)
+                                    if _safe:
+                                        content_parts.append(_safe)
+                                        await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
                                         idx = tc.index
@@ -1621,6 +1692,14 @@ async def process_chat_interaction_task(
                                                 tool_calls_acc[idx]["function"]["name"] += tc.function.name
                                             if tc.function.arguments:
                                                 tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            # End of stream — flush the XML scrubber's lookback
+                            # tail. Anything still inside an unclosed `<tool_call>`
+                            # is silently dropped (real tool_call already routed
+                            # via delta.tool_calls accumulation above).
+                            _tail = _xml_scrub.flush()
+                            if _tail:
+                                content_parts.append(_tail)
+                                await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
                             # Success
                             _last_err = None
                             break
