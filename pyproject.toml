@@ -17,7 +17,7 @@ dependencies = [
     "httpx-ws==0.7.2",
     "laspy==2.6.1",
     "numpy==2.3.1",
-    "openai==1.78.1",
+    "openai==2.36.0",
     "opentelemetry-api==1.36.0",
     "opentelemetry-exporter-otlp-proto-http==1.36.0",
     "opentelemetry-sdk==1.36.0",
