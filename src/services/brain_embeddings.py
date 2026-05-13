@@ -420,7 +420,10 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
                 {"role": "user", "content": query},
             ],
             temperature=0.7,
-            max_tokens=200,
+            # 400 (not 200) to accommodate reasoning-model overhead.
+            # Thinking models (Nemotron) emit reasoning_tokens that count toward
+            # this budget; tight caps truncate the alternative-query list.
+            max_tokens=400,
         )
     except AuthenticationError:
         _auth_failed_at = time.monotonic()

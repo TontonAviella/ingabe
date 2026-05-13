@@ -37,8 +37,12 @@ from src.services.brain_hook_processor import (
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-TEST_OWNER = str(uuid.uuid4())
-TEST_OWNER_B = str(uuid.uuid4())
+# Deterministic so pytest-xdist workers share owner across the shared
+# `test-field-001` slug they upsert. Random uuid4 at module import caused
+# the first worker to win ownership and subsequent workers to fail RLS
+# on tag/timeline INSERTs (page belongs to a different owner_uuid).
+TEST_OWNER = "00000000-0000-0000-0000-000000000111"
+TEST_OWNER_B = "00000000-0000-0000-0000-000000000112"
 
 
 _MIGRATIONS_DONE = False
