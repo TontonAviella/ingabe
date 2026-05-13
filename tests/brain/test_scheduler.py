@@ -159,6 +159,14 @@ async def test_run_source_job_skips_inactive_source():
     admin = await asyncpg.connect(_build_postgres_url())
     await admin.execute("SELECT set_config('app.user_id', '', false)")
     try:
+        # Clear brain_pages first too — _TEST_SOURCE_ID is shared across tests
+        # in this file, and pytest-xdist may leave rows from a prior worker's
+        # test_run_source_job_inserts_pages run. Without this, the n==0 assertion
+        # below races with whatever order xdist picks.
+        await admin.execute(
+            "DELETE FROM brain_pages WHERE source_id = $1",
+            _TEST_SOURCE_ID,
+        )
         await admin.execute(
             "DELETE FROM brain_sources WHERE source_id = $1",
             _TEST_SOURCE_ID,
