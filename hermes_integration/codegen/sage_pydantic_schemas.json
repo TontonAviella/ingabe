@@ -1,0 +1,914 @@
+{
+  "zoom_to_bounds": {
+    "name": "zoom_to_bounds",
+    "description": "Zoom the map to a specific bounding box in WGS84 coordinates. This will save the user's current zoom location to history and navigate to the new bounds.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bounds": {
+          "description": "Bounding box in WGS84 format [xmin, ymin, xmax, ymax]",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Bounds",
+          "type": "array"
+        },
+        "zoom_description": {
+          "description": "Complete message to display to the user while zooming, e.g. \"Zooming to 39 selected parcels near Ohio\"",
+          "title": "Zoom Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bounds",
+        "zoom_description"
+      ]
+    }
+  },
+  "create_point_layer": {
+    "name": "create_point_layer",
+    "description": "Create a new point layer from coordinates. Use this when the user provides lat/lon coordinates and you need a layer to mark that location, buffer into a circle, or use as input for geoprocessing tools.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "longitude": {
+          "description": "Longitude in decimal degrees (WGS84), e.g. 30.1127",
+          "title": "Longitude",
+          "type": "number"
+        },
+        "latitude": {
+          "description": "Latitude in decimal degrees (WGS84), e.g. -2.2321",
+          "title": "Latitude",
+          "type": "number"
+        },
+        "label": {
+          "description": "Human-readable label for the point, e.g. 'Rusumo Falls'",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "longitude",
+        "latitude",
+        "label"
+      ]
+    }
+  },
+  "search_location": {
+    "name": "search_location",
+    "description": "Search for a location by name and return its bounding box and coordinates. Use this when the user mentions a place name and you need geographic coordinates for satellite imagery tools.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Place name to search for, e.g. 'Musanze district, Rwanda' or 'Kigali'",
+          "title": "Query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  "display_satellite_layer": {
+    "name": "display_satellite_layer",
+    "description": "Display satellite imagery (true color) on the map for a specific area and date range. Searches Earth Search for the best Sentinel-2 scene and adds it as a visible tile layer. Use this when the user wants to see satellite imagery on the map.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'west,south,east,north' in WGS84 coordinates, e.g. '29.44,-1.72,29.68,-1.50'",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "date_from": {
+          "description": "Start date in ISO 8601 format, e.g. '2025-01-01'",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "End date in ISO 8601 format, e.g. '2025-01-31'",
+          "title": "Date To",
+          "type": "string"
+        },
+        "layer_name": {
+          "description": "Display name for the map layer, e.g. 'Musanze TCI Jan 2025'",
+          "title": "Layer Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "date_from",
+        "date_to",
+        "layer_name"
+      ]
+    }
+  },
+  "display_layer": {
+    "name": "display_layer",
+    "description": "Display any public Cloud-Optimized GeoTIFF on the map with a styled colormap.\n\n    This is the GENERIC display tool. Use it after computing or identifying a spatial\n    raster you want the user to SEE. Pair it with analytical tools that return a URL:\n    1. Call the analytical tool (e.g. get_soil_properties returns iSDAsoil COG URL).\n    2. Call display_layer with that URL + a style_hint that names the domain.\n\n    The frontend renders the layer immediately and adds it to the user's layer panel\n    so they can toggle it on/off.\n\n    Style hints map to colormaps and value ranges defined in STYLE_PRESETS. Pick the\n    one that matches the data's domain \u2014 soil_nitrogen for N maps, ndvi for NDVI,\n    drought_severity for VCI, etc.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "asset_url": {
+          "description": "Public HTTPS URL of a Cloud-Optimized GeoTIFF (COG). Examples: 'https://isdasoil.s3.amazonaws.com/soil_data/nitrogen_total/nitrogen_total.tif', 'https://earth-search.aws.element84.com/...../B04.tif'. GeoJSON URLs and S3 protocol URLs are not yet supported in this version.",
+          "title": "Asset Url",
+          "type": "string"
+        },
+        "layer_name": {
+          "description": "Human-readable layer name shown in the layers panel, e.g. 'Soil Nitrogen \u2014 Cyampirita'",
+          "title": "Layer Name",
+          "type": "string"
+        },
+        "style_hint": {
+          "description": "Style preset that picks the colormap and value range. One of: ndvi, ndwi, nbr, visual, ndvi_band, ndre_band, soil_nitrogen, soil_phosphorus, soil_potassium, soil_ph, soil_organic_carbon, soil_clay, soil_sand, anomaly_zscore, drought_severity, soil_moisture, evapotranspiration, temperature, rainfall, sar_backscatter_db.",
+          "title": "Style Hint",
+          "type": "string"
+        },
+        "bbox": {
+          "description": "Bounding box of the area to display, as 'west,south,east,north' in WGS84. Used for auto-zoom.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "band_index": {
+          "description": "1-based band index for single-band rasters (use 1 for most soil COGs and z-score rasters).",
+          "title": "Band Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "asset_url",
+        "layer_name",
+        "style_hint",
+        "bbox",
+        "band_index"
+      ]
+    }
+  },
+  "display_geojson_layer": {
+    "name": "display_geojson_layer",
+    "description": "Display inline GeoJSON polygons on the map with categorical fill colors.\n\n    Use this when an analytical tool returns vector polygons (e.g. an insured\n    parcel boundary with a composite_score, stress-zone clusters with severity,\n    or AOI outlines). Pair with evaluate_insurance_trigger, find_stress_zones,\n    or any tool that produces polygon evidence the user should SEE.\n\n    The style_hint picks a categorical color ramp keyed off a property on each\n    feature (composite_score, ndvi_mean, severity). The frontend renders the\n    layer immediately and adds it to the user's layer panel.\n\n    Pattern: compute (returns polygons + scored properties) \u2192 display_geojson_layer\n    (paints them).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "geojson": {
+          "description": "Inline GeoJSON FeatureCollection or Feature as a JSON string. Each feature should carry the property used by the style_hint's color_property (e.g. 'composite_score' for insurance_composite_score, 'ndvi_mean' for field_health, 'severity' for stress_zones).",
+          "title": "Geojson",
+          "type": "string"
+        },
+        "layer_name": {
+          "description": "Human-readable name for this vector layer in the layers panel.",
+          "title": "Layer Name",
+          "type": "string"
+        },
+        "style_hint": {
+          "description": "Vector style preset. One of: insurance_composite_score, field_health, rgb_field_health, stress_zones, outline, water, flood_extent, similarity_score, food_security_ipc.",
+          "title": "Style Hint",
+          "type": "string"
+        },
+        "bbox": {
+          "description": "Bounding box of the GeoJSON, as 'west,south,east,north' WGS84. Used for auto-zoom.",
+          "title": "Bbox",
+          "type": "string"
+        }
+      },
+      "required": [
+        "geojson",
+        "layer_name",
+        "style_hint",
+        "bbox"
+      ]
+    }
+  },
+  "compute_spectral_index": {
+    "name": "compute_spectral_index",
+    "description": "Compute a spectral index (NDVI, NDWI, or NBR) over an area and display it on the map with a colormap. Returns area statistics (mean, std, min, max). Use this for vegetation health analysis, water/flood detection, or burn severity mapping.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'west,south,east,north' in WGS84 coordinates",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "index": {
+          "description": "Spectral index to compute: 'ndvi' (vegetation health), 'ndwi' (water/flooding), or 'nbr' (burn severity)",
+          "title": "Index",
+          "type": "string"
+        },
+        "date_from": {
+          "description": "Start date in ISO 8601 format, e.g. '2025-01-01'",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "End date in ISO 8601 format, e.g. '2025-01-31'",
+          "title": "Date To",
+          "type": "string"
+        },
+        "layer_name": {
+          "description": "Display name for the map layer, e.g. 'NDVI Musanze Jan 2025'",
+          "title": "Layer Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "index",
+        "date_from",
+        "date_to",
+        "layer_name"
+      ]
+    }
+  },
+  "get_soil_moisture": {
+    "name": "get_soil_moisture",
+    "description": "Get soil moisture data from WaPOR for a specific location.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "latitude": {
+          "description": "Latitude in decimal degrees, WGS84.",
+          "title": "Latitude",
+          "type": "number"
+        },
+        "longitude": {
+          "description": "Longitude in decimal degrees, WGS84.",
+          "title": "Longitude",
+          "type": "number"
+        },
+        "date_from": {
+          "description": "Start date in YYYY-MM-DD format. Pass empty string '' for no lower bound.",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "End date in YYYY-MM-DD format. Pass empty string '' for no upper bound.",
+          "title": "Date To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "latitude",
+        "longitude",
+        "date_from",
+        "date_to"
+      ]
+    }
+  },
+  "get_evapotranspiration": {
+    "name": "get_evapotranspiration",
+    "description": "Get evapotranspiration data from WaPOR for a specific location.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "latitude": {
+          "description": "Latitude in decimal degrees, WGS84.",
+          "title": "Latitude",
+          "type": "number"
+        },
+        "longitude": {
+          "description": "Longitude in decimal degrees, WGS84.",
+          "title": "Longitude",
+          "type": "number"
+        },
+        "date_from": {
+          "description": "Start date in YYYY-MM-DD format. Pass empty string '' for no lower bound.",
+          "title": "Date From",
+          "type": "string"
+        },
+        "date_to": {
+          "description": "End date in YYYY-MM-DD format. Pass empty string '' for no upper bound.",
+          "title": "Date To",
+          "type": "string"
+        },
+        "include_components": {
+          "description": "If true, return ET broken down into transpiration + interception + evaporation. If false, return total ET only.",
+          "title": "Include Components",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "latitude",
+        "longitude",
+        "date_from",
+        "date_to",
+        "include_components"
+      ]
+    }
+  },
+  "get_food_security_alerts": {
+    "name": "get_food_security_alerts",
+    "description": "Get FEWS NET food security alerts for Rwanda. Returns IPC phase classifications by district. When district-level data is present, the response includes a 'displayable_geojson' payload \u2014 pass it to display_geojson_layer with style_hint='food_security_ipc' to paint the districts with the standard IPC color scale (green=Minimal \u2192 dark red=Famine).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "district": {
+          "description": "Rwanda district name to filter by. Pass empty string '' for all districts.",
+          "title": "District",
+          "type": "string"
+        },
+        "period": {
+          "description": "Reporting period: 'current' for the present situation, 'projected' for forecast. Empty string '' defaults to 'current'.",
+          "title": "Period",
+          "type": "string"
+        }
+      },
+      "required": [
+        "district",
+        "period"
+      ]
+    }
+  },
+  "predict_ndvi_from_sar": {
+    "name": "predict_ndvi_from_sar",
+    "description": "Predict NDVI from Sentinel-1 SAR backscatter using ML model.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "target_date": {
+          "description": "Target date YYYY-MM-DD, OR empty string '' to use the most recent SAR scene.",
+          "title": "Target Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "target_date"
+      ]
+    }
+  },
+  "detect_water_bodies": {
+    "name": "detect_water_bodies",
+    "description": "Detect water bodies from Sentinel-1 SAR imagery. Returns water area, fraction, and polygon evidence in 'displayable_geojson' \u2014 call display_geojson_layer with style_hint='water' to paint the detected water on the map.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "date": {
+          "description": "Date YYYY-MM-DD, OR empty string '' to use the most recent scene.",
+          "title": "Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "date"
+      ]
+    }
+  },
+  "detect_flood_extent": {
+    "name": "detect_flood_extent",
+    "description": "Detect flood extent by comparing two SAR images (before/after). Returns flood area, fraction, and polygon evidence in 'displayable_geojson' \u2014 call display_geojson_layer with style_hint='flood_extent' to paint the new flooded area on the map.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "date_before": {
+          "description": "Pre-flood date YYYY-MM-DD.",
+          "title": "Date Before",
+          "type": "string"
+        },
+        "date_after": {
+          "description": "Post-flood date YYYY-MM-DD.",
+          "title": "Date After",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "date_before",
+        "date_after"
+      ]
+    }
+  },
+  "get_alos_l_band_stats": {
+    "name": "get_alos_l_band_stats",
+    "description": "Get ALOS PALSAR L-band backscatter statistics for an area. When at least one year has tiles, the response includes 'displayable_layers' with the most-recent year's HH backscatter COG URL \u2014 pass it to display_layer with style_hint='sar_backscatter_db' to paint the L-band map (forest = bright, water = dark).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "years": {
+          "description": "Comma-separated year list (e.g. '2020,2021,2022') OR empty string '' for all available years.",
+          "title": "Years",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "years"
+      ]
+    }
+  },
+  "get_alos_temporal_variation": {
+    "name": "get_alos_temporal_variation",
+    "description": "Get ALOS PALSAR temporal variation analysis for an area.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "years": {
+          "description": "Comma-separated year list (e.g. '2020,2021,2022') OR empty string '' for all available years.",
+          "title": "Years",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "years"
+      ]
+    }
+  },
+  "check_cygnss_availability": {
+    "name": "check_cygnss_availability",
+    "description": "Check CYGNSS data availability for a region.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat', OR empty string '' to default to all of Rwanda.",
+          "title": "Bbox",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox"
+      ]
+    }
+  },
+  "get_cygnss_soil_moisture": {
+    "name": "get_cygnss_soil_moisture",
+    "description": "Get CYGNSS-derived soil moisture for a location.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "lat": {
+          "description": "Latitude in WGS84 decimal degrees.",
+          "title": "Lat",
+          "type": "number"
+        },
+        "lon": {
+          "description": "Longitude in WGS84 decimal degrees.",
+          "title": "Lon",
+          "type": "number"
+        },
+        "days_back": {
+          "description": "Lookback window in days (typical: 90). Pass 0 to use the default of 90.",
+          "title": "Days Back",
+          "type": "integer"
+        },
+        "resolution_km": {
+          "description": "Spatial resolution in km (9 or 36). Pass 0 to use the default of 9.",
+          "title": "Resolution Km",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "lat",
+        "lon",
+        "days_back",
+        "resolution_km"
+      ]
+    }
+  },
+  "get_cygnss_watermask": {
+    "name": "get_cygnss_watermask",
+    "description": "Get CYGNSS L-band water body detection mask for an area. Detects water UNDER vegetation canopy where C-band SAR fails. Returns water polygons in 'displayable_geojson' \u2014 call display_geojson_layer with style_hint='water' to paint the detected water on the map.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box as 'minLon,minLat,maxLon,maxLat'.",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "date": {
+          "description": "Date YYYY-MM-DD, OR empty string '' to use the most recent product.",
+          "title": "Date",
+          "type": "string"
+        },
+        "product": {
+          "description": "CYGNSS product name, OR empty string '' to use the default 'watermask_daily'.",
+          "title": "Product",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "date",
+        "product"
+      ]
+    }
+  },
+  "describe_user_raster": {
+    "name": "describe_user_raster",
+    "description": "Describe a user-uploaded raster layer in plain language: bounds, area in hectares, band count, dimensions, file size, COG status, capture date if known. Performs a sanity check that this layer's geographic location is reasonable relative to other rasters in the same project (catches CRS errors where a Rwanda field gets georeferenced to Florida by a misconfigured drone export). Use this whenever the user asks ABOUT one of their uploaded rasters \u2014 drone orthophotos, NDVI rasters, multispectral tiffs. Do NOT use for satellite-data questions (use get_ndvi_stats or get_field_health for those).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded raster (starts with 'L', visible in the project's layer panel). Example: 'LwQ6VWK64bvL'.",
+          "title": "Layer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer_id"
+      ]
+    }
+  },
+  "compute_zonal_stats": {
+    "name": "compute_zonal_stats",
+    "description": "Compute pixel statistics (mean, min, max, std, p10, p50, p90) over a polygon area within a user-uploaded raster, on a specified band. NoData pixels are excluded from the calculation and the percentage of valid pixels is reported. If polygon_geojson is empty, computes stats over the whole raster. Use this whenever you need numerical stats from a user's drone or NDVI raster \u2014 for example, \"what's the average NDVI in this field?\". Do NOT use for satellite stats (those have their own tools).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded raster.",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "polygon_geojson": {
+          "description": "A GeoJSON Polygon string defining the area to analyze (use this if the user drew a polygon or wants stats over a specific field). Pass empty string '' to analyze the whole raster.",
+          "title": "Polygon Geojson",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which raster band to analyze (1-indexed). For typical 4-band drone NDVI exports, NDVI is in band 2. For dedicated single-band NDVI rasters, use band 1. Default to 1 if uncertain.",
+          "title": "Band",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer_id",
+        "polygon_geojson",
+        "band"
+      ]
+    }
+  },
+  "interpret_raster_health": {
+    "name": "interpret_raster_health",
+    "description": "Interpret pixel data from a user-uploaded NDVI raster as a farmer-language verdict on field health, given a crop type, growth stage, and field polygon. Composes describe_user_raster (for metadata + CRS sanity) plus compute_zonal_stats (for pixel statistics) plus the agricultural crop calendar (to map capture date to growth stage) plus a curated NDVI threshold table (to convert numbers to verdicts). Returns a verdict (exceptional / healthy / moderate_stress / severe_stress) plus evidence and recommended action \u2014 NOT raw band statistics. ALWAYS use this when the user asks about the health of a field they have a drone NDVI or NDVI raster for. Do NOT use for satellite-only questions (use get_field_health for those).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded NDVI raster (drone export, computed NDVI from satellite, etc.).",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "crop": {
+          "description": "The crop in the field. Supported: 'maize', 'beans', 'rice', 'sorghum', 'wheat'. Pass 'unknown' if the user hasn't specified \u2014 defaults will be used.",
+          "title": "Crop",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which band of the raster contains NDVI (1-indexed). For typical drone exports with 4 bands [R, NDVI, NDRE, alpha], use band=2. For dedicated single-band NDVI rasters, use band=1. Default to 1 if uncertain.",
+          "title": "Band",
+          "type": "integer"
+        },
+        "polygon_geojson": {
+          "description": "GeoJSON Polygon string defining the field boundary, OR empty string '' to evaluate the whole raster.",
+          "title": "Polygon Geojson",
+          "type": "string"
+        },
+        "captured_date": {
+          "description": "Date the imagery was captured, YYYY-MM-DD format. Pass empty string '' if unknown \u2014 today's date will be used as an approximation (less accurate for growth-stage inference).",
+          "title": "Captured Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer_id",
+        "crop",
+        "band",
+        "polygon_geojson",
+        "captured_date"
+      ]
+    }
+  },
+  "analyze_rgb_field": {
+    "name": "analyze_rgb_field",
+    "description": "Analyze a user-uploaded RGB visual orthophoto for greenness and field coverage. Computes GRVI (Green-Red Vegetation Index) which is the only vegetation index derivable from RGB without a near-infrared band \u2014 about 70% as informative as true NDVI for distinguishing healthy from stressed canopy. Reports valid coverage in hectares (alpha-mask aware), GRVI mean / std / percentiles, and a coarse verdict (lush/healthy/moderate/sparse/bare). Use this for RGB-only drone orthos when the user asks about field coverage or visible greenness. ALWAYS prefer interpret_raster_health when the layer has a true NDVI band \u2014 true NDVI is more accurate. This tool is the honest fallback for RGB-only data.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded RGB visual orthophoto (3-band ortho, no NIR).",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "polygon_geojson": {
+          "description": "GeoJSON Polygon string defining the field area, OR empty string '' to analyze the whole raster.",
+          "title": "Polygon Geojson",
+          "type": "string"
+        },
+        "red_band": {
+          "description": "Which band contains the Red channel (1-indexed). For typical RGB drone orthos, Red is band 1. For BGR-ordered exports it may be band 3.",
+          "title": "Red Band",
+          "type": "integer"
+        },
+        "green_band": {
+          "description": "Which band contains the Green channel (1-indexed). For typical RGB drone orthos, Green is band 2.",
+          "title": "Green Band",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer_id",
+        "polygon_geojson",
+        "red_band",
+        "green_band"
+      ]
+    }
+  },
+  "read_pixel_at": {
+    "name": "read_pixel_at",
+    "description": "Read the per-band raw pixel value at a specific lon/lat location in a user-uploaded raster. Validates the point falls inside the layer's bounds first \u2014 if the user clicks at Rwanda coordinates against a Florida-georeferenced raster, returns a clear \"outside bounds\" error instead of silently returning NoData. Use this when the user clicks a specific spot on the map and asks \"what's the value here?\". For statistics over an area, use compute_zonal_stats. For a verdict on the whole field, use interpret_raster_health or analyze_rgb_field.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded raster.",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "longitude": {
+          "description": "Longitude in WGS84 decimal degrees (e.g. 30.4245 for Rwanda).",
+          "title": "Longitude",
+          "type": "number"
+        },
+        "latitude": {
+          "description": "Latitude in WGS84 decimal degrees (e.g. -1.6970 for Rwanda).",
+          "title": "Latitude",
+          "type": "number"
+        }
+      },
+      "required": [
+        "layer_id",
+        "longitude",
+        "latitude"
+      ]
+    }
+  },
+  "get_value_distribution": {
+    "name": "get_value_distribution",
+    "description": "Compute the value distribution (histogram + percentiles) of a raster band over a polygon (or whole raster). Returns: bin edges, bin counts, percentiles (5/10/25/50/75/90/95), mean, std, min, max, mode-bin. Skips NoData. Use this when the user asks about the spread, distribution, or variability of pixel values \u2014 for example, \"what's the NDVI distribution across this field?\", \"are values bimodal?\", \"what's the worst 10% of pixels?\". For a single number, use compute_zonal_stats. For a verdict on the field, use interpret_raster_health.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded raster.",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which band to sample (1-indexed). For NDVI in 4-band drone exports use 2; for single-band NDVI use 1.",
+          "title": "Band",
+          "type": "integer"
+        },
+        "polygon_geojson": {
+          "description": "GeoJSON Polygon string to constrain the histogram, OR empty string '' to sample the whole raster.",
+          "title": "Polygon Geojson",
+          "type": "string"
+        },
+        "bins": {
+          "description": "Number of histogram bins. Use 20 as a default for human-readable display; up to 100 for fine analysis.",
+          "title": "Bins",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer_id",
+        "band",
+        "polygon_geojson",
+        "bins"
+      ]
+    }
+  },
+  "find_stress_zones": {
+    "name": "find_stress_zones",
+    "description": "Find connected clusters of low-NDVI pixels in a user-uploaded NDVI raster \u2014 the spatial answer to \"where is the stress in my field?\". Returns a list of stress zones with each zone's center coordinate, area in hectares, mean NDVI inside the cluster, and severity label (severe/moderate/mild). Refuses non-NDVI rasters with a pointer to the right tool. Useful for: locating drought patches, finding diseased zones, prioritizing field walks. For a single overall verdict use interpret_raster_health; for a histogram use get_value_distribution.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of a user-uploaded NDVI raster (single-band float, or band 2 of a 4-band drone NDVI export).",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which band contains NDVI (1-indexed). For single-band NDVI use 1; for typical 4-band drone NDVI export use 2.",
+          "title": "Band",
+          "type": "integer"
+        },
+        "ndvi_threshold": {
+          "description": "Pixels with NDVI BELOW this threshold are considered stressed. Reasonable defaults: 0.30 for severe stress, 0.40 for moderate. For a vegetative-stage maize field expecting NDVI ~0.55-0.70, use 0.40 to flag clear stress patches.",
+          "title": "Ndvi Threshold",
+          "type": "number"
+        },
+        "min_area_ha": {
+          "description": "Skip stress clusters smaller than this many hectares. Use 0.5 to filter out noise patches; use 0.1 for fine-grained analysis. Connected stress patches below this size are not reported.",
+          "title": "Min Area Ha",
+          "type": "number"
+        }
+      },
+      "required": [
+        "layer_id",
+        "band",
+        "ndvi_threshold",
+        "min_area_ha"
+      ]
+    }
+  },
+  "compare_rasters": {
+    "name": "compare_rasters",
+    "description": "Compare two user-uploaded NDVI rasters of the same field at different times to detect change. Method 3: per-pixel NDVI diff at downsampled resolution + crop-stage-aware expected delta + CHIRPS rainfall context. Returns: time interval in days, observed mean NDVI delta, expected delta given crop stage transitions, anomaly (observed - expected), rainfall between captures, area declining significantly, and a verdict (no_significant_change / expected_growth / mild_decline / drought_signature / harvest_pattern / suspicious_pattern). Refuses if bounds don't overlap or either layer is RGB-only. The keystone tool for insurance change detection.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id_a": {
+          "description": "The first user-uploaded NDVI raster (typically the EARLIER flight or 'before' timepoint).",
+          "title": "Layer Id A",
+          "type": "string"
+        },
+        "layer_id_b": {
+          "description": "The second user-uploaded NDVI raster (typically the LATER flight or 'after' timepoint). Must overlap with layer_id_a.",
+          "title": "Layer Id B",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which band contains NDVI (1-indexed). For single-band NDVI use 1; for typical 4-band drone NDVI export use 2.",
+          "title": "Band",
+          "type": "integer"
+        },
+        "crop": {
+          "description": "The crop in the field \u2014 used to look up the expected NDVI delta between the two captures' growth stages. Supported: 'maize', 'beans', 'rice', 'sorghum', 'wheat'. Pass 'unknown' if no crop information.",
+          "title": "Crop",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer_id_a",
+        "layer_id_b",
+        "band",
+        "crop"
+      ]
+    }
+  },
+  "evaluate_insurance_trigger": {
+    "name": "evaluate_insurance_trigger",
+    "description": "Evaluate parametric insurance trigger conditions on a user's drone NDVI flights. Composes compare_rasters (change detection) + zonal stats on the 'after' raster (current absolute health) + a per-crop-stage threshold table. Computes a 0-100 composite_score across 4 weighted signals (absolute health, NDVI decline vs expected, area declining significantly, drought context from rainfall) and returns triggered=True if score >= 60. Returns triggered (bool), composite_score (0-100), per-signal status with thresholds, payout_recommendation, plus full underlying compare_rasters evidence. ALWAYS use this when the user asks 'should this claim pay out?', 'is the trigger fired?', 'evaluate the insurance', or any parametric-trigger question on drone NDVI data. Source='drone' \u2014 for satellite-based triggers use get_insurance_intelligence.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id_before": {
+          "description": "The layer_id of the EARLIER drone NDVI raster ('before' / baseline). For policy onboarding without a prior flight, pass the same id as layer_id_after \u2014 degenerate case will be reported.",
+          "title": "Layer Id Before",
+          "type": "string"
+        },
+        "layer_id_after": {
+          "description": "The layer_id of the LATER drone NDVI raster ('after' / current claim flight).",
+          "title": "Layer Id After",
+          "type": "string"
+        },
+        "band": {
+          "description": "Which band contains NDVI (1-indexed). For single-band NDVI use 1; for typical 4-band drone NDVI export use 2.",
+          "title": "Band",
+          "type": "integer"
+        },
+        "crop": {
+          "description": "Crop in the field. Supported: 'maize', 'beans', 'rice', 'sorghum', 'wheat'. Pass 'unknown' if not specified \u2014 accuracy will be reduced.",
+          "title": "Crop",
+          "type": "string"
+        },
+        "polygon_geojson": {
+          "description": "GeoJSON Polygon string defining the insured field boundary, OR empty string '' to use the whole 'after' raster. Used to compute the current absolute-NDVI signal.",
+          "title": "Polygon Geojson",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer_id_before",
+        "layer_id_after",
+        "band",
+        "crop",
+        "polygon_geojson"
+      ]
+    }
+  },
+  "find_similar_tiles": {
+    "name": "find_similar_tiles",
+    "description": "Find tiles visually similar to a point in a user's raster, across all of that user's other rasters. Powered by Clay v1.5 visual embeddings in Qdrant. Use this when the user asks 'find other fields that look like this stressed patch', 'have we seen this damage pattern in any other flight?', 'show me similar areas across my orthophotos', or any cross-flight visual similarity question. Returns top-K similar tiles ranked by cosine similarity (1.0 = identical, lower = less similar). For exact-match analysis at a single point use read_pixel_at; for whole-field health verdict use interpret_raster_health. Only works on rgb_visual rasters that have been embedded (orthophotos auto-embed after COG conversion completes).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "layer_id": {
+          "description": "The layer_id of the user-uploaded raster the query point lives in.",
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "longitude": {
+          "description": "Longitude in WGS84 decimal degrees of the query point.",
+          "title": "Longitude",
+          "type": "number"
+        },
+        "latitude": {
+          "description": "Latitude in WGS84 decimal degrees of the query point.",
+          "title": "Latitude",
+          "type": "number"
+        },
+        "top_k": {
+          "description": "How many similar tiles to return. Use 5-10 for a quick scan, up to 50 for a thorough audit. Pass 0 to use the default of 10.",
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "layer_id",
+        "longitude",
+        "latitude",
+        "top_k"
+      ]
+    }
+  },
+  "render_map_snapshot": {
+    "name": "render_map_snapshot",
+    "description": "Render a static PNG snapshot of the current map and dispatch it to a delivery channel.\n\n    WHEN TO USE: the user wants a snapshot they can SHARE outside the browser \u2014\n    Telegram message, WhatsApp message, email attachment \u2014 or wants a permalink\n    PNG of the current view. Also use for cron-fired reports to insurance partners.\n\n    WHEN NOT TO USE: the user wants to keep working in the browser (they already\n    see the map). Numeric/tabular results \u2014 use the specific stats tool. Adding a\n    NEW data layer on the map \u2014 use display_satellite_layer or compute_spectral_index.\n\n    Delivery model: renders PNG, uploads to MinIO under snapshots/{map_id}/, then\n    publishes a payload on the 'mundi:render_snapshot' Redis channel. A separate\n    sender process consumes the channel, filters on delivery_channel and partner_id,\n    and performs the actual send. Returns once the payload is published; does NOT\n    block on the sender. Snapshot URLs are valid for 24 hours.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box 'west,south,east,north' in WGS84, e.g. '29.44,-1.72,29.68,-1.50'",
+          "title": "Bbox",
+          "type": "string"
+        },
+        "width": {
+          "description": "Image width in pixels. Use 1024 for chat attachments, 1600 for reports.",
+          "title": "Width",
+          "type": "integer"
+        },
+        "height": {
+          "description": "Image height in pixels. Use 600 for chat, 1000 for reports.",
+          "title": "Height",
+          "type": "integer"
+        },
+        "caption": {
+          "description": "One-line caption shown to the recipient, e.g. 'NDVI Cyampirita 2026-05-12, mean=0.62'.",
+          "title": "Caption",
+          "type": "string"
+        },
+        "delivery_channel": {
+          "description": "Where to send the snapshot. 'browser' = the user's current map view. 'telegram'/'whatsapp'/'email' route to an out-of-band sender; recipient must be set for those.",
+          "enum": [
+            "browser",
+            "telegram",
+            "whatsapp",
+            "email"
+          ],
+          "title": "Delivery Channel",
+          "type": "string"
+        },
+        "recipient": {
+          "description": "Destination for non-browser channels: Telegram chat_id, WhatsApp E.164 number, or email address. Pass an empty string for 'browser'.",
+          "title": "Recipient",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bbox",
+        "width",
+        "height",
+        "caption",
+        "delivery_channel",
+        "recipient"
+      ]
+    }
+  }
+}

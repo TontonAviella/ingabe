@@ -15,3 +15,8 @@ yolo*.pt
 
 # Phase 2: Clay v1.5 checkpoint lives here (4.9 GB), bind-mounted via compose
 data/clay-checkpoints/
+
+# Hermes migration artifacts
+.venv-hermes/
+vendor/hermes-agent/
+hermes_integration/**/__pycache__/

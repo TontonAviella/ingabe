@@ -1,0 +1,17 @@
+name: ingabe-sage
+version: 0.1.0
+description: >
+  Ingabe Sage tools for Hermes Agent. Day 3 PoC stage — one minimal tool
+  (search_location via Nominatim) proves the registration shape end-to-end.
+  Future phases will import the 60 Pydantic tools from mundi.ai's src/tools/
+  and wire IngabeToolCallMetaArgs context (user_uuid, conversation_id, map_id,
+  project_id, session) through Hermes's task_id kwarg pattern.
+author: Ingabe (TontonAviella)
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - search_location
+  - ingabe_whoami
+hooks: []
