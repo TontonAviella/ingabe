@@ -164,10 +164,17 @@ class _ToolCallTextScrubber:
         return "".join(out)
 
     def flush(self) -> str:
-        """End-of-stream flush. Returns any safe-to-emit remainder."""
+        """End-of-stream flush. Returns any safe-to-emit remainder.
+
+        Also resets state so the scrubber is safe to reuse if a caller chooses
+        to (prod creates a fresh scrubber per attempt; this is defence-in-depth
+        against future reuse footguns).
+        """
         if self._inside:
-            # Unclosed tag — discard entirely.
+            # Unclosed tag — discard buffer AND reset state, otherwise a
+            # reused scrubber would keep silently dropping all input.
             self._buffer = ""
+            self._inside = False
             return ""
         out = self._buffer
         self._buffer = ""
