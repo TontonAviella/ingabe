@@ -2,6 +2,18 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## [0.5.1.0] - 2026-05-14
+
+### Added
+- RLS partner-isolation hardening across 10 tables: `WITH CHECK` clauses on the brain writeside (`brain_pages`, `brain_content_chunks`, `brain_tags`, `brain_raw_data`, `brain_timeline_entries`, `brain_page_versions`, `brain_links`, `brain_files`) prevent INSERT spoofing of `owner_uuid`. `brain_pending_hooks` and `brain_ingest_log` gain an `owner_uuid` column with a `NULLIF(current_setting('app.user_id', ''))::uuid` default plus a tenant-isolation policy. `brain_entity_refs` policy switches to `AS RESTRICTIVE` so partner-isolation's public-access branch can't OR-defeat owner scoping. `maps`, `map_layers`, `map_styles`, `chat_messages`, and `postgis_connections` get matching tenant-isolation policies wired through to `app.user_id`.
+- Two new tables as Phase 3/4 scaffolds, unused by code yet: `alert_subscriptions` (per-partner cron-driven snapshot reports → existing WhatsApp/Telegram sender pipeline; `src/cron/sage_alerts.py` is the planned consumer) and `partner_skills` (per-partner tool allowlist for Sage runtime to filter the LLM's tool payload).
+
+### Changed
+- Existing RLS policies that join via `ANY(uuid[])` rewrap `current_setting('app.user_id', true)::uuid` with `NULLIF(..., '')` so INSERTs under empty-GUC admin context no longer throw `invalid input syntax for type uuid`.
+
+### Notes
+- All new policies are inert on production today because `mundiuser` still has `BYPASSRLS` (rolsuper). They become active once `mundiuser` is downgraded to a non-superuser app role — a separate operational change tracked outside this PR. Landing this PR now reconciles main with prod's already-running schema (prod alembic head was already `c1d2e3f4a5bc` from a prior bind-mount migration apply) and gives the policies a soak window before the BYPASSRLS flip.
+
 ## [0.5.0.0] - 2026-05-04
 
 ### Added
