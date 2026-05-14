@@ -30,6 +30,7 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes.inbox_routes import router as inbox_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -550,6 +551,13 @@ app.include_router(
     conversation_routes.router,
     prefix="/api",
     tags=["Conversations"],
+)
+# Internal inbox: Hermes gateway → mundi-app handoff for inbound channel messages
+# (WhatsApp, Telegram, Slack, ...). Route is HMAC-gated. Default off via
+# MUNDI_INBOX_ENABLED=0. See src/routes/inbox_routes.py for the seam.
+app.include_router(
+    inbox_router,
+    tags=["Internal/Inbox"],
 )
 app.include_router(
     lakehouse_router,
