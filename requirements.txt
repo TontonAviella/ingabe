@@ -75,6 +75,13 @@ html5lib==1.1
 # Hermes when MUNDI_USE_HERMES=1. Pinned to date-versioned tag (NOT 0.13.0,
 # whose exact pins conflict with our openai 2.36). NOT on PyPI; git install.
 hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7
+# Agent Client Protocol — programmatic client mundi-app uses to talk to the
+# hermes-gateway sidecar. Hermes ships an `hermes-acp` server binary; mundi-app
+# uses this client lib to send chat turns over the protocol. Required for
+# run_sage_turn_via_hermes() once wired. Hermes's own [acp] extra wants
+# >=0.9.0,<1.0; latest stable 0.10.0 satisfies. Pin tight — protocol shape is
+# the contract between mundi-app and the gateway.
+agent-client-protocol==0.10.0
 httpcore==1.0.9
 httplib2==0.20.4
 httptools==0.6.4
