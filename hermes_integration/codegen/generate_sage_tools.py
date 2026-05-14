@@ -55,16 +55,26 @@ EASY_WINS = {
 def _emoji_for(tool_name: str) -> str:
     """Best-effort emoji classification for the tools list display."""
     n = tool_name.lower()
-    if "raster" in n or "ndvi" in n or "spectral" in n: return "🛰️"
-    if "vector" in n or "geom" in n or "polygon" in n: return "📐"
-    if "buffer" in n or "intersect" in n or "union" in n: return "⊕"
-    if "layer" in n or "display" in n: return "🗺️"
-    if "warp" in n or "reproject" in n or "transform" in n: return "🔄"
-    if "extract" in n or "clip" in n: return "✂️"
-    if "soil" in n or "moisture" in n or "weather" in n: return "💧"
-    if "alos" in n or "sar" in n or "cygnss" in n: return "📡"
-    if "insurance" in n or "trigger" in n: return "🛡️"
-    if "search" in n or "find" in n or "query" in n: return "🔍"
+    if "raster" in n or "ndvi" in n or "spectral" in n:
+        return "🛰️"
+    if "vector" in n or "geom" in n or "polygon" in n:
+        return "📐"
+    if "buffer" in n or "intersect" in n or "union" in n:
+        return "⊕"
+    if "layer" in n or "display" in n:
+        return "🗺️"
+    if "warp" in n or "reproject" in n or "transform" in n:
+        return "🔄"
+    if "extract" in n or "clip" in n:
+        return "✂️"
+    if "soil" in n or "moisture" in n or "weather" in n:
+        return "💧"
+    if "alos" in n or "sar" in n or "cygnss" in n:
+        return "📡"
+    if "insurance" in n or "trigger" in n:
+        return "🛡️"
+    if "search" in n or "find" in n or "query" in n:
+        return "🔍"
     return "🔧"
 
 
