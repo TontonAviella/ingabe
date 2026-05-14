@@ -11,6 +11,7 @@ column after one synthetic fetch cycle.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 import asyncpg
@@ -22,8 +23,12 @@ from src.services.brain_ingestion.models import FetchedContent
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
-_TEST_SOURCE_ID = "test-sched-src"
-_TEST_URL = "https://example.test/doc"
+# pytest-xdist isolation: each worker process gets a distinct RUN_TAG so
+# parallel runs don't race on shared brain_sources/brain_pages rows. See
+# tests/brain/test_partner_isolation.py for the same pattern.
+RUN_TAG = uuid.uuid4().hex[:8]
+_TEST_SOURCE_ID = f"test-sched-src-{RUN_TAG}"
+_TEST_URL = f"https://example.test/doc-{RUN_TAG}"
 
 
 async def _reset_source(conn: asyncpg.Connection) -> None:
@@ -159,6 +164,14 @@ async def test_run_source_job_skips_inactive_source():
     admin = await asyncpg.connect(_build_postgres_url())
     await admin.execute("SELECT set_config('app.user_id', '', false)")
     try:
+        # Clear brain_pages first too — _TEST_SOURCE_ID is shared across tests
+        # in this file, and pytest-xdist may leave rows from a prior worker's
+        # test_run_source_job_inserts_pages run. Without this, the n==0 assertion
+        # below races with whatever order xdist picks.
+        await admin.execute(
+            "DELETE FROM brain_pages WHERE source_id = $1",
+            _TEST_SOURCE_ID,
+        )
         await admin.execute(
             "DELETE FROM brain_sources WHERE source_id = $1",
             _TEST_SOURCE_ID,

@@ -37,12 +37,30 @@ from src.services.brain_hook_processor import (
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-# Deterministic so pytest-xdist workers share owner across the shared
-# `test-field-001` slug they upsert. Random uuid4 at module import caused
-# the first worker to win ownership and subsequent workers to fail RLS
-# on tag/timeline INSERTs (page belongs to a different owner_uuid).
-TEST_OWNER = "00000000-0000-0000-0000-000000000111"
-TEST_OWNER_B = "00000000-0000-0000-0000-000000000112"
+# pytest-xdist isolation: every shared identifier (slugs, owners) must be
+# unique per worker process, otherwise workers race against each other on
+# the shared postgres database. The proven pattern in this codebase is
+# RUN_TAG = uuid.uuid4().hex[:8] at module level (see test_partner_isolation.py
+# and test_rls_*.py for prior art) which gives each worker a distinct
+# namespace. Module-level globals are evaluated once per Python process,
+# and xdist spawns one process per worker, so the tag is worker-local.
+RUN_TAG = uuid.uuid4().hex[:8]
+TEST_OWNER = str(uuid.uuid4())
+TEST_OWNER_B = str(uuid.uuid4())
+
+# Slugs suffixed with RUN_TAG so worker A's "test-field" cannot collide
+# with worker B's "test-field" on the shared brain_pages table.
+SLUG_FIELD = f"test-field-001-{RUN_TAG}"
+SLUG_FARMER = f"test-farmer-alice-{RUN_TAG}"
+SLUG_DELETE_ME = f"test-delete-me-{RUN_TAG}"
+SLUG_DISTRICT = f"test-district-kigali-{RUN_TAG}"
+SLUG_SEARCH = f"test-search-banana-{RUN_TAG}"
+SLUG_GRAPH_FARMER = f"test-graph-farmer-{RUN_TAG}"
+SLUG_GRAPH_FIELD = f"test-graph-field-{RUN_TAG}"
+SLUG_VERSION = f"test-version-page-{RUN_TAG}"
+SLUG_SPATIAL_KIGALI = f"test-spatial-kigali-{RUN_TAG}"
+SLUG_SPATIAL_BUTARE = f"test-spatial-butare-{RUN_TAG}"
+SLUG_EMBED = f"test-embed-page-{RUN_TAG}"
 
 
 _MIGRATIONS_DONE = False
@@ -75,7 +93,7 @@ async def brain_conn():
     svc = BrainService()
     await svc.put_page(
         c,
-        "test-field-001",
+        SLUG_FIELD,
         PageInput(
             type="field",
             title="Gasabo Test Field",
@@ -110,7 +128,7 @@ async def test_put_and_get_page(conn, brain):
     """Create a page and read it back — all fields must match."""
     page = await brain.put_page(
         conn,
-        "test-farmer-alice",
+        SLUG_FARMER,
         PageInput(
             type="farmer",
             title="Alice Uwimana",
@@ -121,11 +139,11 @@ async def test_put_and_get_page(conn, brain):
     )
 
     assert isinstance(page, Page)
-    assert page.slug == "test-farmer-alice"
+    assert page.slug == SLUG_FARMER
     assert page.type == "farmer"
     assert page.title == "Alice Uwimana"
 
-    fetched = await brain.get_page(conn, "test-farmer-alice")
+    fetched = await brain.get_page(conn, SLUG_FARMER)
     assert fetched is not None
     assert fetched.slug == page.slug
     assert fetched.compiled_truth == page.compiled_truth
@@ -142,7 +160,7 @@ async def test_put_page_upsert(conn, brain):
     """put_page on an existing slug updates rather than duplicates."""
     await brain.put_page(
         conn,
-        "test-field-001",
+        SLUG_FIELD,
         PageInput(
             type="field",
             title="Gasabo Test Field (Updated)",
@@ -151,7 +169,7 @@ async def test_put_page_upsert(conn, brain):
         owner_uuid=TEST_OWNER,
     )
 
-    page = await brain.get_page(conn, "test-field-001")
+    page = await brain.get_page(conn, SLUG_FIELD)
     assert page is not None
     assert "3-hectare" in page.compiled_truth
     assert page.title == "Gasabo Test Field (Updated)"
@@ -167,14 +185,14 @@ async def test_delete_page(conn, brain):
     """Delete a page and confirm it's gone."""
     await brain.put_page(
         conn,
-        "test-delete-me",
+        SLUG_DELETE_ME,
         PageInput(type="field", title="Delete Me", compiled_truth="Temporary."),
         owner_uuid=TEST_OWNER,
     )
-    assert await brain.get_page(conn, "test-delete-me") is not None
+    assert await brain.get_page(conn, SLUG_DELETE_ME) is not None
 
-    await brain.delete_page(conn, "test-delete-me")
-    assert await brain.get_page(conn, "test-delete-me") is None
+    await brain.delete_page(conn, SLUG_DELETE_ME)
+    assert await brain.get_page(conn, SLUG_DELETE_ME) is None
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +205,7 @@ async def test_list_pages_type_filter(conn, brain):
     """list_pages filters by type correctly."""
     await brain.put_page(
         conn,
-        "test-district-kigali",
+        SLUG_DISTRICT,
         PageInput(type="district", title="Kigali", compiled_truth="Capital city."),
         owner_uuid=TEST_OWNER,
     )
@@ -200,7 +218,7 @@ async def test_list_pages_type_filter(conn, brain):
 
     assert field_types <= {"field"}
     assert district_types <= {"district"}
-    assert any(p.slug == "test-district-kigali" for p in districts)
+    assert any(p.slug == SLUG_DISTRICT for p in districts)
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +231,7 @@ async def test_search_keyword(conn, brain):
     """Keyword search finds pages by compiled_truth content."""
     await brain.put_page(
         conn,
-        "test-search-banana",
+        SLUG_SEARCH,
         PageInput(
             type="crop",
             title="Banana Variety EAH",
@@ -225,7 +243,7 @@ async def test_search_keyword(conn, brain):
     results = await brain.search_keyword(conn, "banana highland Rwanda")
     assert len(results) > 0
     slugs = [r.slug for r in results]
-    assert "test-search-banana" in slugs
+    assert SLUG_SEARCH in slugs
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +256,7 @@ async def test_timeline_crud(conn, brain):
     """Add timeline entries and retrieve them sorted by date."""
     await brain.add_timeline_entry(
         conn,
-        "test-field-001",
+        SLUG_FIELD,
         TimelineInput(
             date=date(2026, 3, 1),
             summary="Field planted with Season A maize",
@@ -248,7 +266,7 @@ async def test_timeline_crud(conn, brain):
     )
     await brain.add_timeline_entry(
         conn,
-        "test-field-001",
+        SLUG_FIELD,
         TimelineInput(
             date=date(2026, 4, 10),
             summary="NDVI dropped below 0.3 — possible drought stress",
@@ -257,7 +275,7 @@ async def test_timeline_crud(conn, brain):
         owner_uuid=TEST_OWNER,
     )
 
-    timeline = await brain.get_timeline(conn, "test-field-001")
+    timeline = await brain.get_timeline(conn, SLUG_FIELD)
     assert len(timeline) >= 2
     # Should be ordered by date desc
     dates = [e["date"] for e in timeline]
@@ -272,15 +290,15 @@ async def test_timeline_crud(conn, brain):
 @pytest.mark.postgres
 async def test_tags(conn, brain):
     """Add, list, and remove tags from a page."""
-    await brain.add_tag(conn, "test-field-001", "insurance-monitored")
-    await brain.add_tag(conn, "test-field-001", "season-a-2026")
+    await brain.add_tag(conn, SLUG_FIELD, "insurance-monitored")
+    await brain.add_tag(conn, SLUG_FIELD, "season-a-2026")
 
-    tags = await brain.get_tags(conn, "test-field-001")
+    tags = await brain.get_tags(conn, SLUG_FIELD)
     assert "insurance-monitored" in tags
     assert "season-a-2026" in tags
 
-    await brain.remove_tag(conn, "test-field-001", "season-a-2026")
-    tags = await brain.get_tags(conn, "test-field-001")
+    await brain.remove_tag(conn, SLUG_FIELD, "season-a-2026")
+    tags = await brain.get_tags(conn, SLUG_FIELD)
     assert "season-a-2026" not in tags
     assert "insurance-monitored" in tags
 
@@ -295,32 +313,32 @@ async def test_links_and_graph(conn, brain):
     """Create links between pages and traverse the graph."""
     await brain.put_page(
         conn,
-        "test-graph-farmer",
+        SLUG_GRAPH_FARMER,
         PageInput(type="farmer", title="Graph Farmer", compiled_truth="Farmer for graph test."),
         owner_uuid=TEST_OWNER,
     )
     await brain.put_page(
         conn,
-        "test-graph-field",
+        SLUG_GRAPH_FIELD,
         PageInput(type="field", title="Graph Field", compiled_truth="Field for graph test."),
         owner_uuid=TEST_OWNER,
     )
 
-    await brain.add_link(conn, "test-graph-farmer", "test-graph-field", link_type="owns", context="Primary field")
+    await brain.add_link(conn, SLUG_GRAPH_FARMER, SLUG_GRAPH_FIELD, link_type="owns", context="Primary field")
 
-    links = await brain.get_links(conn, "test-graph-farmer")
+    links = await brain.get_links(conn, SLUG_GRAPH_FARMER)
     assert len(links) >= 1
-    assert any(l["to_slug"] == "test-graph-field" for l in links)
+    assert any(l["to_slug"] == SLUG_GRAPH_FIELD for l in links)
 
-    backlinks = await brain.get_backlinks(conn, "test-graph-field")
-    assert any(l["from_slug"] == "test-graph-farmer" for l in backlinks)
+    backlinks = await brain.get_backlinks(conn, SLUG_GRAPH_FIELD)
+    assert any(l["from_slug"] == SLUG_GRAPH_FARMER for l in backlinks)
 
     # Traverse graph from farmer — should reach field at depth 1
-    graph = await brain.traverse_graph(conn, "test-graph-farmer", depth=2)
+    graph = await brain.traverse_graph(conn, SLUG_GRAPH_FARMER, depth=2)
     assert len(graph) >= 2
     slugs = {n.slug for n in graph}
-    assert "test-graph-farmer" in slugs
-    assert "test-graph-field" in slugs
+    assert SLUG_GRAPH_FARMER in slugs
+    assert SLUG_GRAPH_FIELD in slugs
 
 
 # ---------------------------------------------------------------------------
@@ -333,31 +351,31 @@ async def test_versioning(conn, brain):
     """Create a version snapshot, modify page, revert to snapshot."""
     await brain.put_page(
         conn,
-        "test-version-page",
+        SLUG_VERSION,
         PageInput(type="field", title="Version Test", compiled_truth="Version 1 content."),
         owner_uuid=TEST_OWNER,
     )
 
     # Create snapshot
-    await brain.create_version(conn, "test-version-page")
+    await brain.create_version(conn, SLUG_VERSION)
 
     # Modify page
     await brain.put_page(
         conn,
-        "test-version-page",
+        SLUG_VERSION,
         PageInput(type="field", title="Version Test", compiled_truth="Version 2 content."),
         owner_uuid=TEST_OWNER,
     )
-    modified = await brain.get_page(conn, "test-version-page")
+    modified = await brain.get_page(conn, SLUG_VERSION)
     assert "Version 2" in modified.compiled_truth
 
     # Get versions
-    versions = await brain.get_versions(conn, "test-version-page")
+    versions = await brain.get_versions(conn, SLUG_VERSION)
     assert len(versions) >= 1
 
     # Revert
-    await brain.revert_to_version(conn, "test-version-page", versions[0]["id"])
-    reverted = await brain.get_page(conn, "test-version-page")
+    await brain.revert_to_version(conn, SLUG_VERSION, versions[0]["id"])
+    reverted = await brain.get_page(conn, SLUG_VERSION)
     assert "Version 1" in reverted.compiled_truth
 
 
@@ -440,7 +458,7 @@ async def test_spatial_pages_in_bbox(conn, brain):
     kigali_geom = '{"type":"Point","coordinates":[29.87,-1.95]}'
     await brain.put_page(
         conn,
-        "test-spatial-kigali",
+        SLUG_SPATIAL_KIGALI,
         PageInput(
             type="field",
             title="Kigali Spatial Field",
@@ -454,7 +472,7 @@ async def test_spatial_pages_in_bbox(conn, brain):
     butare_geom = '{"type":"Point","coordinates":[29.74,-2.60]}'
     await brain.put_page(
         conn,
-        "test-spatial-butare",
+        SLUG_SPATIAL_BUTARE,
         PageInput(
             type="field",
             title="Butare Spatial Field",
@@ -468,15 +486,15 @@ async def test_spatial_pages_in_bbox(conn, brain):
     kigali_bbox = (29.8, -2.0, 29.95, -1.9)
     pages = await brain.get_pages_in_bbox(conn, kigali_bbox)
     slugs = [p.slug for p in pages]
-    assert "test-spatial-kigali" in slugs
-    assert "test-spatial-butare" not in slugs
+    assert SLUG_SPATIAL_KIGALI in slugs
+    assert SLUG_SPATIAL_BUTARE not in slugs
 
     # Query wider Rwanda bbox — should find both
     rwanda_bbox = (28.0, -3.0, 31.0, -1.0)
     pages = await brain.get_pages_in_bbox(conn, rwanda_bbox)
     slugs = [p.slug for p in pages]
-    assert "test-spatial-kigali" in slugs
-    assert "test-spatial-butare" in slugs
+    assert SLUG_SPATIAL_KIGALI in slugs
+    assert SLUG_SPATIAL_BUTARE in slugs
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +530,7 @@ async def test_upsert_chunks_with_embedding(conn, brain):
     """Chunks with embeddings can be stored and retrieved."""
     await brain.put_page(
         conn,
-        "test-embed-page",
+        SLUG_EMBED,
         PageInput(type="field", title="Embed Test", compiled_truth="Test content for embedding."),
         owner_uuid=TEST_OWNER,
     )
@@ -535,9 +553,9 @@ async def test_upsert_chunks_with_embedding(conn, brain):
         ),
     ]
 
-    await brain.upsert_chunks(conn, "test-embed-page", chunks)
+    await brain.upsert_chunks(conn, SLUG_EMBED, chunks)
 
-    stored = await brain.get_chunks(conn, "test-embed-page")
+    stored = await brain.get_chunks(conn, SLUG_EMBED)
     assert len(stored) == 2
     assert stored[0]["chunk_text"] == "First chunk of content."
     assert stored[0]["embedded_at"] is not None
@@ -559,7 +577,7 @@ async def test_vector_search_with_embeddings(conn, brain):
     # Should find the test-embed-page
     assert len(results) > 0
     slugs = [r.slug for r in results]
-    assert "test-embed-page" in slugs
+    assert SLUG_EMBED in slugs
     assert results[0].score > 0.5  # High similarity to identical vector
 
 
