@@ -70,6 +70,18 @@ h3==4.1.0
 h2==4.2.0
 hpack==4.1.0
 html5lib==1.1
+# Hermes Agent — Nous Research's MIT Python agent framework.
+# Phase 2 of the Sage migration installs this so the runtime can route through
+# Hermes when MUNDI_USE_HERMES=1. Pinned to date-versioned tag (NOT 0.13.0,
+# whose exact pins conflict with our openai 2.36). NOT on PyPI; git install.
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7
+# Agent Client Protocol — programmatic client mundi-app uses to talk to the
+# hermes-gateway sidecar. Hermes ships an `hermes-acp` server binary; mundi-app
+# uses this client lib to send chat turns over the protocol. Required for
+# run_sage_turn_via_hermes() once wired. Hermes's own [acp] extra wants
+# >=0.9.0,<1.0; latest stable 0.10.0 satisfies. Pin tight — protocol shape is
+# the contract between mundi-app and the gateway.
+agent-client-protocol==0.10.0
 httpcore==1.0.9
 httplib2==0.20.4
 httptools==0.6.4
@@ -80,7 +92,7 @@ hyperframe==6.1.0
 idna==3.3
 iniconfig==1.1.1
 jinja2==3.1.6
-jiter==0.9.0
+jiter==0.13.0
 jmespath==1.0.1
 jsonpointer==2.3
 jsonschema==4.23.0
@@ -109,7 +121,7 @@ scikit-learn==1.6.1
 sentinelhub==3.11.3
 oauthlib==3.2.2
 olefile==0.46
-openai==1.78.1
+openai==2.36.0
 opentelemetry-api==1.36.0
 opentelemetry-sdk==1.36.0
 opentelemetry-exporter-otlp-proto-http==1.36.0
@@ -134,12 +146,12 @@ planetary-computer==1.0.0
 pystac-client==0.7.7
 pyarrow==18.1.0
 pycryptodome==3.20.0
-pyiceberg[s3fs]==0.8.1
-pydantic==2.11.4
-pydantic-core==2.33.2
+pyiceberg[s3fs]==0.10.0
+pydantic==2.13.4
+pydantic-core==2.46.4
 pydantic-settings==2.9.1
 pygments==2.14.0
-pyjwt==2.6.0
+pyjwt==2.12.1
 pyotp==2.9.0
 pyparsing==3.1.4
 pypdf==5.1.0
@@ -156,20 +168,20 @@ pytest-metadata==3.1.1
 pytest-timeout==2.3.1
 pytest-xdist==3.8.0
 python-dateutil==2.8.2
-python-dotenv==1.1.0
+python-dotenv==1.2.2
 qdrant-client==1.17.1
 python-multipart==0.0.20
 pythran==0.11.0
 pytz==2022.7.1
-pyyaml==6.0
+pyyaml==6.0.2
 referencing==0.35.1
 redis==6.1.0
-requests==2.32.3
+requests==2.33.0
 requests-file==2.1.0
 requests-oauthlib==2.0.0
 rfc3987==1.3.8
 rpds-py==0.22.3
-rich==13.9.4
+rich==14.3.4
 rich-toolkit==0.14.6
 rio-tiler==7.8.1
 rioxarray==0.17.0
@@ -188,7 +200,7 @@ sse-starlette==2.3.5
 starlette==0.46.2
 supertokens-python==0.29.1
 synchronicity==0.9.12
-tenacity==8.5.0
+tenacity==9.1.4
 tifffile==2024.12.12
 tldextract==5.3.0
 toml==0.10.2
@@ -200,8 +212,8 @@ twilio==9.6.1
 typer==0.15.4
 types-certifi==2021.10.8.3
 types-toml==0.10.8.20240310
-typing-extensions==4.13.2
-typing-inspection==0.4.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2
 tzdata==2025.2
 ufolib2==0.14.0
 unidiff==0.7.5

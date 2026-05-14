@@ -234,8 +234,16 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
 
 def get_openai_client(request: Request) -> AsyncOpenAI:
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    # openai>=2.0 raises ImmediatePropagationError on AsyncOpenAI() construction
+    # when no api_key is passed AND OPENAI_API_KEY is unset in the environment.
+    # openai 1.x was lazy and deferred the credential check to first call. CI
+    # test envs don't set OPENAI_API_KEY (intentionally — no real LLM calls
+    # happen) and were broken by the 1.x→2.x bump in PR #41. We pass a
+    # placeholder so the constructor succeeds; any actual chat completion
+    # call will still fail with the same upstream auth error as before.
+    api_key = os.environ.get("OPENAI_API_KEY") or "missing-OPENAI_API_KEY"
     extra_headers = {}
     if "openrouter.ai" in base_url:
         extra_headers["HTTP-Referer"] = "https://mundi.ai"
         extra_headers["X-Title"] = "Mundi.ai"
-    return AsyncOpenAI(base_url=base_url, default_headers=extra_headers)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)

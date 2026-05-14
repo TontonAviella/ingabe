@@ -70,6 +70,75 @@ services:
         limits:
           memory: 10G
 
+  # --- Hermes Agent gateway (Phase 2 sidecar; default profile off until configured) ---
+  # Re-uses the mundi-public:local image (Hermes is installed there via PR #44).
+  # Runs `hermes gateway run` as a long-lived daemon. Holds messaging channel
+  # state (WhatsApp QR pairings, Telegram tokens, Slack manifests) and the
+  # ingabe-sage plugin in /app/hermes_integration/plugins.
+  #
+  # The gateway is only reachable from the docker-internal network; UFW on the
+  # host doesn't expose it externally. mundi-app talks to it over the docker
+  # bridge at hermes-gateway:<acp-port> (port wired in PR #47 once ACP dep is
+  # added).
+  #
+  # State directory: /home/appuser/.hermes is a named volume so QR pairings +
+  # session checkpoints + profiles survive container restarts.
+  #
+  # SAFETY: this service is in the compose file but the runtime cutover is
+  # gated by MUNDI_USE_HERMES=0 on the app service. The gateway can be
+  # running while users continue on the hand-rolled chat loop — no automatic
+  # routing happens until the flag flips.
+  hermes-gateway:
+    # Gated behind the `hermes` compose profile so `docker compose up -d`
+    # (default) does NOT bring this up. Operators opt in once first-run
+    # config is in place:
+    #   docker compose --profile hermes -f ...prod.yml up -d hermes-gateway
+    # Before first up: bootstrap config.yaml + at least one profile via
+    # `docker run --rm -v hermes-state:/home/appuser mundi-public:local
+    #  /app/.venv/bin/hermes setup` (interactive). See PR #44 deploy notes.
+    profiles: ["hermes"]
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-hermes-gateway
+    # `hermes gateway run` is the foreground daemon. -v for INFO logs (we want
+    # to see channel handshakes during early soak). --accept-hooks avoids TTY
+    # prompts for shell-script hook consent (we don't ship hooks today).
+    command: >
+      /app/.venv/bin/hermes gateway run -v --accept-hooks
+    environment:
+      # Inherit LLM provider config from .env (same key as mundi-app uses).
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Force HOME so `hermes` finds its state directory inside the volume.
+      - HOME=/home/appuser
+      # Acknowledge first-run prompts non-interactively (we're in a daemon).
+      - HERMES_ACCEPT_HOOKS=1
+    volumes:
+      # Hermes state — profiles, sessions, channel credentials, hooks allowlist.
+      # Named volume = survives restarts but stays isolated from host filesystem.
+      - hermes-state:/home/appuser
+      # Plugin mount intentionally deferred to PR #46+ when actual plugin
+      # source has been deployed to prod host. Mounting an empty host dir
+      # here as `:/home/appuser/.hermes/plugins:ro` causes the gateway to
+      # crash with PermissionError on /home/appuser/.hermes/logs (the
+      # bind-mount interaction creates root-owned overlays on the named
+      # volume). Add the plugin mount once `hermes_integration/plugins/`
+      # is deployed to `/home/deploy/mundi.ai/hermes_integration/plugins/`
+      # on the host with correct ownership.
+    restart: unless-stopped
+    # No `ports:` block — the gateway is internal-only. mundi-app reaches it
+    # via docker DNS at `hermes-gateway:<port>` once ACP wiring lands.
+    depends_on:
+      # Gateway doesn't need the app, but waits for postgres in case future
+      # plugin handlers want to call back into mundi-app for tool execution
+      # (the reverse-callback pattern in project_unified_account_design.md).
+      - postgresdb
+    deploy:
+      resources:
+        limits:
+          # Modest cap — gateway is the orchestrator brain, not heavy compute.
+          # Real LLM cost lives on OpenRouter; gateway just shepherds requests.
+          memory: 1G
+
   # --- PostgreSQL: tuned for PostGIS on 16 GB host ---
   postgresdb:
     restart: unless-stopped
@@ -167,3 +236,7 @@ services:
 
 volumes:
   qdrant_data:
+  # Hermes Agent gateway state: profiles, sessions, channel credentials,
+  # checkpoints. Lives outside the host filesystem so it can't be clobbered
+  # by deploy.sh; `hermes backup` is the canonical export path.
+  hermes-state:
