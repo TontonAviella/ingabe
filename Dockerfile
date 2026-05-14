@@ -13,9 +13,13 @@ FROM ${BASE_IMAGE} AS python-builder
 COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
-# Install development headers for building Python packages + gfortran for DSSAT
+# Install development headers for building Python packages + gfortran for DSSAT.
+# `git` added 2026-05-14 because requirements.txt now references
+# `hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7`
+# (Hermes is not on PyPI). `uv pip install` shells out to git for git+ URLs;
+# without it, the build fails with "could not execute process `git init`".
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-dev build-essential gfortran \
+        python3-dev build-essential gfortran git \
         libdbus-1-dev libdbus-glib-1-dev pkg-config \
         libgirepository1.0-dev libcairo2-dev \
     && rm -rf /var/lib/apt/lists/*
