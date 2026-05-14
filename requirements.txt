@@ -206,7 +206,7 @@ typer==0.15.4
 types-certifi==2021.10.8.3
 types-toml==0.10.8.20240310
 typing-extensions==4.15.0
-typing-inspection==0.4.0
+typing-inspection==0.4.2
 tzdata==2025.2
 ufolib2==0.14.0
 unidiff==0.7.5
