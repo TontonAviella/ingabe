@@ -97,11 +97,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-RUN useradd -r -s /bin/false appuser \
+RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
     && mkdir -p /cache \
-    && chown appuser:appuser /cache
+    && chown appuser:appuser /cache \
+    && chown appuser:appuser /home/appuser \
+    && chmod 755 /home/appuser
+# /home/appuser must be appuser-owned BEFORE first volume mount, because docker
+# initializes named-volume contents from the image layer's existing dir state.
+# Without this chown, the hermes-gateway service (running as appuser) cannot
+# create /home/appuser/.hermes/logs on a fresh mundiai_hermes-state volume.
+# The `-m` flag to useradd ensures /home/appuser is created in the first place;
+# `-r` alone (system user) skips home directory creation.
 USER appuser
 
 CMD ["/entrypoint.sh"]
