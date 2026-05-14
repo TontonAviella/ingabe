@@ -11,6 +11,7 @@ column after one synthetic fetch cycle.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 
 import asyncpg
@@ -22,8 +23,12 @@ from src.services.brain_ingestion.models import FetchedContent
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
-_TEST_SOURCE_ID = "test-sched-src"
-_TEST_URL = "https://example.test/doc"
+# pytest-xdist isolation: each worker process gets a distinct RUN_TAG so
+# parallel runs don't race on shared brain_sources/brain_pages rows. See
+# tests/brain/test_partner_isolation.py for the same pattern.
+RUN_TAG = uuid.uuid4().hex[:8]
+_TEST_SOURCE_ID = f"test-sched-src-{RUN_TAG}"
+_TEST_URL = f"https://example.test/doc-{RUN_TAG}"
 
 
 async def _reset_source(conn: asyncpg.Connection) -> None:
