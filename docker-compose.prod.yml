@@ -89,6 +89,14 @@ services:
   # running while users continue on the hand-rolled chat loop — no automatic
   # routing happens until the flag flips.
   hermes-gateway:
+    # Gated behind the `hermes` compose profile so `docker compose up -d`
+    # (default) does NOT bring this up. Operators opt in once first-run
+    # config is in place:
+    #   docker compose --profile hermes -f ...prod.yml up -d hermes-gateway
+    # Before first up: bootstrap config.yaml + at least one profile via
+    # `docker run --rm -v hermes-state:/home/appuser mundi-public:local
+    #  /app/.venv/bin/hermes setup` (interactive). See PR #44 deploy notes.
+    profiles: ["hermes"]
     image: "${APP_IMAGE:-mundi-public:local}"
     container_name: mundi-hermes-gateway
     # `hermes gateway run` is the foreground daemon. -v for INFO logs (we want
