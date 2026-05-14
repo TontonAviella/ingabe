@@ -6,6 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and point cloud data. Connects to PostGIS databases and uses LLMs (OpenAI function calling) to invoke geoprocessing algorithms and edit symbology.
 
+**Multi-partner platform.** Mundi.ai serves N partner organizations (BK Insurance is the first active pilot). Every architecture decision must pass the "what if Partner #2 shows up next month" test. Per-partner isolation via Clerk org + Postgres RLS on `app.partner_id` GUC. Sage's identity stays "Sage" to every partner; per-partner skills/prompts/context are composed on top of a base persona.
+
+## Production reality (verified 2026-05-14)
+
+- **Image**: `mundi-public:local` built on prod host (Hetzner CPX42 178.104.18.44, `/home/deploy/mundi.ai`). No registry push. Deploy = SCP source or pull migrations + `docker compose -f docker-compose.yml -f docker-compose.prod.yml build app && up -d app`.
+- **Sage LLM**: openai SDK 2.36 → OpenRouter (`https://openrouter.ai/api/v1`) → `nvidia/nemotron-3-super-120b-a12b:free` primary, `openai/gpt-4o-mini` then local `ollama:qwen2.5:7b-64k` as fallbacks.
+- **Turn loop**: `process_chat_interaction_task` in `src/routes/message_routes.py:1109` (6500-line file). Hand-rolled. Hermes Agent is declared in `pyproject.toml` but NOT YET installed in prod and NOT YET powering Sage. Cutover planned (see "Hermes Phase 2" below).
+- **DB roles**: `mundiuser` (app, `rolsuper=False`, `rolbypassrls=False`); RLS is FULLY ENFORCED on brain/maps/layers tables since ~Apr 22, 2026. NO superuser/admin role exists right now — if RLS locks the app out, recovery is shell-into-container with image-bootstrap creds only. A `mundi_admin` safety net is on the to-do list.
+- **PostHog observability**: traces exist for `$ai_generation` events. Current p50 latency ~26s, p95 ~60s. Input tokens 124k-136k/turn (system prompt + tools dominates). 0 errors over the last 7 days. `traceName` / `partner_id` not yet attached to traces — observability work pending.
+
+## Hermes Phase 2 — runtime swap plan
+
+Goal: replace the hand-rolled chat loop in `process_chat_interaction_task` with Hermes Agent (`v2026.5.7` tag, GitHub-only, MIT) running the `ingabe-sage` plugin from `hermes_integration/plugins/ingabe-sage/`. User-visible name stays "Sage". 75 tool schemas already declared in `generated_tools.py` as stubs; Phase 2 wires real handlers via a universal-shim pattern that delegates to existing dispatch in `src/dependencies/pydantic_tools.py`.
+
+Cutover is **flag-gated**: `MUNDI_USE_HERMES=0` keeps the existing path; `=1` routes through `src/services/hermes_runtime.py` (the runtime module). Default OFF until verified. Rollback = set flag to 0 and restart.
+
+Hermes does NOT ship a WhatsApp adapter (only Telegram, Discord, Slack, Matrix, DingTalk, Feishu). BK WhatsApp inbound is a separate native track, not gated on Phase 2.
+
 ## Build & Run Commands
 
 ### Docker (primary development method)
@@ -14,6 +32,10 @@ docker compose up                              # Start all services (app, postgr
 docker compose build                           # Rebuild images
 docker compose run app pytest -xvs -n auto     # Run all tests in Docker
 ```
+
+### Dep upgrades — Dockerfile installs from requirements.txt, NOT pyproject.toml
+
+When bumping any Python dep, you MUST update `requirements.txt` (the actual install source for the image). Bumping `pyproject.toml` + `uv.lock` alone does not change what's in the running container. Audit transitive deps too: `openai==2.36.0` needs `typing-extensions>=4.14` and `jiter>=0.10.0`, not the older pins. Memory `feedback_dockerfile_uses_requirements_txt` has the full story.
 
 ### Python Backend
 ```bash
@@ -25,6 +47,10 @@ pytest -xvs -k "test_name"                     # Single test by name
 alembic upgrade head                           # Run migrations
 alembic revision -m "description"              # Create migration
 ```
+
+### Test isolation under pytest-xdist
+
+Every shared identifier in tests that touch postgres must be namespaced per worker with `RUN_TAG = uuid.uuid4().hex[:8]` (module-level). Hardcoded slugs collide across workers on the shared DB. Pattern used in `tests/brain/test_partner_isolation.py`. See `feedback_xdist_run_tag_pattern` memory.
 
 ### Frontend (frontendts/)
 ```bash
@@ -95,10 +121,11 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `S3_*` | S3/MinIO connection (ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT_URL, BUCKET, DEFAULT_REGION) |
 | `POSTGRES_*` | Database connection (HOST, PORT, DB, USER, PASSWORD) |
 | `REDIS_HOST/PORT` | Redis cache |
-| `OPENAI_API_KEY` | LLM provider key (used as bearer for `OPENAI_BASE_URL`) |
-| `OPENAI_BASE_URL` | LLM endpoint. Prod: `https://ollama.com/v1` for Gemma 4 31B Cloud. |
-| `OPENAI_MODEL` | Primary chat model. Prod: `gemma4:31b` |
-| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to local Ollama container. Prod: `ollama:qwen2.5:7b-64k` |
+| `OPENAI_API_KEY` | LLM provider key (used as bearer for `OPENAI_BASE_URL`). Prod uses an OpenRouter key (`sk-or-v1-…`). Rotate via OpenRouter dashboard → update `/home/deploy/mundi.ai/.env` → restart `mundi-app` with prod compose files. |
+| `OPENAI_BASE_URL` | LLM endpoint. **Prod: `https://openrouter.ai/api/v1`.** (Old CLAUDE.md said Ollama Cloud; that's wrong, we switched.) |
+| `OPENAI_MODEL` | Primary chat model. **Prod: `nvidia/nemotron-3-super-120b-a12b:free`.** (Old CLAUDE.md said `gemma4:31b`; that's wrong.) Reasoning model → reasoning tokens count toward `max_tokens`; floor `max_tokens` at 150 for short outputs. |
+| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to local Ollama container. Prod: `openai/gpt-4o-mini,ollama:qwen2.5:7b-64k`. |
+| `MUNDI_USE_HERMES` | `0` (default) → existing hand-rolled chat loop in `process_chat_interaction_task`. `1` → route through `src/services/hermes_runtime.py` (Hermes Agent runtime). Toggle this flag for the Phase 2 cutover. Rollback = back to `0` + restart. |
 | `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
 | `BRAIN_EMBEDDINGS_API_KEY` | Required when `BRAIN_EMBEDDINGS_PROVIDER=openai`. Distinct from `OPENAI_API_KEY` so Brain auth is isolated from Sage chat auth. |

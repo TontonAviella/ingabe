@@ -1118,6 +1118,25 @@ async def process_chat_interaction_task(
     connection_manager: PostgresConnectionManager,
     pydantic_tool_calls: PydanticToolRegistry,
 ):
+    # Phase 2 cutover fork: when MUNDI_USE_HERMES=1, hand the turn off to
+    # the Hermes Agent runtime. Default is OFF — the existing hand-rolled
+    # chat loop below runs as it did before. See src/services/hermes_runtime.py
+    # for the wiring contract and rollback procedure.
+    from src.services.hermes_runtime import hermes_is_enabled, run_sage_turn_via_hermes
+    if hermes_is_enabled():
+        logger.info(
+            "MUNDI_USE_HERMES=1 → routing chat turn through Hermes runtime "
+            "(map=%s user=%s conversation=%s)",
+            map_id, user_id, conversation.id,
+        )
+        return await run_sage_turn_via_hermes(
+            request=request, map_id=map_id, session=session, user_id=user_id,
+            chat_args=chat_args, map_state=map_state, conversation=conversation,
+            system_prompt_provider=system_prompt_provider,
+            connection_manager=connection_manager,
+            pydantic_tool_calls=pydantic_tool_calls,
+        )
+
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
     partner_id = session.get_org_id()

@@ -70,6 +70,11 @@ h3==4.1.0
 h2==4.2.0
 hpack==4.1.0
 html5lib==1.1
+# Hermes Agent — Nous Research's MIT Python agent framework.
+# Phase 2 of the Sage migration installs this so the runtime can route through
+# Hermes when MUNDI_USE_HERMES=1. Pinned to date-versioned tag (NOT 0.13.0,
+# whose exact pins conflict with our openai 2.36). NOT on PyPI; git install.
+hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7
 httpcore==1.0.9
 httplib2==0.20.4
 httptools==0.6.4
