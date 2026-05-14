@@ -203,21 +203,199 @@ def hermes_is_enabled() -> bool:
     return val in {"1", "true", "yes"}
 
 
-async def run_sage_turn_via_hermes(*args, **kwargs) -> None:
-    """Run one Sage turn through Hermes Agent's runtime.
+async def run_sage_turn_via_hermes(
+    request,
+    map_id: str,
+    session,
+    user_id: str,
+    chat_args,
+    map_state,
+    conversation,
+    system_prompt_provider,
+    connection_manager,
+    pydantic_tool_calls,
+) -> None:
+    """Run one Sage turn through Hermes Agent's runtime via ACP.
 
-    NOT YET IMPLEMENTED — see module docstring for the CORRECTED wiring
-    punch list (sidecar gateway service + ACP protocol, NOT a library
-    import as initially assumed).
+    Architecture:
+      mundi-app  ─TCP→  hermes-acp-bridge  ─stdio→  hermes-acp subprocess
+                                                     └─ Hermes gateway state
 
-    Raises a clear error so operators who flip the flag prematurely get
-    an explicit signal, not silent breakage.
+    Per chat turn:
+      1. Open async TCP connection to the bridge.
+      2. Build an `IngabeAcpClient` that maps streaming session updates
+         to `kue_stream_token(conversation.id, ...)`.
+      3. `acp.connect_to_agent(client, reader, writer)` → ClientSideConnection.
+      4. `await conn.initialize(...)` (protocol handshake).
+      5. `await conn.new_session(...)` (per-turn fresh session).
+      6. `await conn.prompt(...)` (sends the user message, streams response).
+      7. Persist the final assistant message via the same
+         `add_chat_completion_message` pattern as the hand-rolled loop.
+      8. Close the connection cleanly.
+
+    The first invocation may be slower than steady-state (~300ms subprocess
+    spawn). LLM round-trip dominates at 8-60s, so the subprocess cost is
+    in the noise.
+
+    SAFETY: this function is only invoked when MUNDI_USE_HERMES=1. Rollback
+    is "flip to 0 + restart app" — the existing chat loop takes over
+    immediately. No data or schema changes.
+
+    NOT YET ROUTED to users in prod even when the wiring lands — needs
+    MUNDI_USE_HERMES_PARTNERS allowlist (TODO, PR #46+).
     """
-    raise NotImplementedError(
-        "Hermes runtime invocation is not yet wired. The correct "
-        "integration is a sidecar `hermes gateway run` container + the "
-        "ACP (Agent Client Protocol) — NOT a Python library import "
-        "(Hermes does not expose a library API). See module docstring "
-        "for the punch list. Rollback to MUNDI_USE_HERMES=0 + container "
-        "restart is the safe state."
+    import asyncio
+    import json
+    import os
+    import uuid
+
+    bridge_host = os.environ.get("HERMES_ACP_BRIDGE_HOST", "hermes-acp-bridge")
+    bridge_port = int(os.environ.get("HERMES_ACP_BRIDGE_PORT", "9999"))
+
+    logger.info(
+        "Sage→Hermes turn: map=%s user=%s conv=%s bridge=%s:%d",
+        map_id, user_id, conversation.id, bridge_host, bridge_port,
     )
+
+    # Lazy imports — keep top-level src.services.* import lightweight
+    # for environments without acp installed (CI without Hermes deps).
+    try:
+        import acp
+    except ImportError as e:
+        # Defensive: if MUNDI_USE_HERMES=1 was set on a host where the
+        # acp package isn't installed (mismatched deploy), surface a
+        # clear error instead of silently failing.
+        raise RuntimeError(
+            "MUNDI_USE_HERMES=1 but agent-client-protocol is not installed. "
+            "Either set the flag back to 0 or rebuild the image with the "
+            "feat/hermes-acp-wiring branch's requirements.txt."
+        ) from e
+
+    from src.routes.websocket import kue_stream_token, kue_notify_error
+    from src.services.hermes_acp_client import build_ingabe_acp_client
+
+    # ── 1. Open TCP connection to the bridge ─────────────────────────────
+    try:
+        reader, writer = await asyncio.open_connection(bridge_host, bridge_port)
+    except OSError as e:
+        await kue_notify_error(
+            conversation.id,
+            f"Hermes gateway unreachable ({bridge_host}:{bridge_port}). "
+            f"Sage is temporarily unavailable on this profile. Operator: "
+            f"check `docker ps | grep hermes-acp-bridge` on the host."
+        )
+        raise RuntimeError(f"ACP bridge connection failed: {e}") from e
+
+    client = build_ingabe_acp_client(
+        stream_token=kue_stream_token,
+        notify_error=kue_notify_error,
+        conversation_id=conversation.id,
+    )
+
+    conn = acp.connect_to_agent(client, reader, writer)
+
+    try:
+        # ── 2. Protocol handshake ────────────────────────────────────────
+        # Standard ACP initialize; specifies which client capabilities
+        # we support. We claim none — Hermes does ALL the heavy lifting,
+        # mundi-app is just the user-facing chat surface.
+        await conn.initialize(
+            acp.InitializeRequest(
+                protocol_version=acp.PROTOCOL_VERSION,
+                client_capabilities=acp.InitializeRequest.ClientCapabilities(
+                    fs=acp.InitializeRequest.ClientCapabilities.Fs(
+                        read_text_file=False,
+                        write_text_file=False,
+                    ),
+                    terminal=False,
+                ),
+            )
+        )
+
+        # ── 3. New session for this turn ─────────────────────────────────
+        # cwd is required by the protocol; pass /tmp since we don't expose
+        # a real working directory to Hermes (filesystem ops are denied).
+        session_resp = await conn.new_session(
+            acp.NewSessionRequest(
+                cwd="/tmp",
+                mcp_servers=[],
+            )
+        )
+        session_id = session_resp.session_id
+
+        # ── 4. Send the user prompt + history ────────────────────────────
+        # For first cut: just send the last user message. Conversation
+        # history wiring lands in a follow-up — see TODO at the bottom.
+        # Hermes's session_id is ephemeral per turn; we'll persist mapping
+        # to mundi conversation.id in chat_completion_messages if needed.
+        last_user_msg = await _extract_last_user_message(conversation, request, session)
+        if not last_user_msg:
+            logger.warning("No user message to send to Hermes for conv=%s", conversation.id)
+            return
+
+        await conn.prompt(
+            acp.PromptRequest(
+                session_id=session_id,
+                prompt=[acp.text_block(last_user_msg)],
+                message_id=str(uuid.uuid4()),
+            )
+        )
+        # `prompt` returns once the agent's turn is complete. Streaming
+        # chunks reached the user along the way via the client's
+        # session_update() callback.
+
+    except Exception:
+        logger.exception("Hermes ACP turn failed for conv=%s", conversation.id)
+        await kue_notify_error(
+            conversation.id,
+            "Sage is having trouble responding right now. Please retry. "
+            "If this persists, contact your operator."
+        )
+        raise
+    finally:
+        # ── 5. Always close cleanly ──────────────────────────────────────
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+    # TODO (PR #46+):
+    #   - Pass conversation history into the prompt, not just last message
+    #   - Persist the final assistant message back to chat_completion_messages
+    #     so the next turn sees it in history. Currently Sage's web UI
+    #     reconstructs history from chat_completion_messages, so without
+    #     this step a Hermes-served turn vanishes from history on reload.
+    #   - Bridge cancellation: check redis `messages:{map_id}:cancelled`
+    #     periodically and call conn.cancel(session_id, message_id).
+    #   - Per-partner profile selection: pass `profile_id=partner_id` so
+    #     the gateway routes through the right hermes profile (model, tools).
+
+
+async def _extract_last_user_message(conversation, request, session) -> str | None:
+    """Pull the most recent user message out of the conversation.
+
+    The hand-rolled chat loop reconstructs history via
+    `get_all_conversation_messages(conversation.id, session)`. We reuse
+    that same query to find the last user-role message and forward it
+    to Hermes. Full-history support is the follow-up.
+    """
+    try:
+        from src.routes.postgres_routes import get_all_conversation_messages
+        messages = await get_all_conversation_messages(conversation.id, session)
+        for msg in reversed(messages):
+            m = msg.message_json if hasattr(msg, "message_json") else {}
+            if isinstance(m, dict) and m.get("role") == "user":
+                content = m.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+                if isinstance(content, list):
+                    # OpenAI content blocks: pick the first text part
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            t = part.get("text")
+                            if t:
+                                return t
+    except Exception:
+        logger.exception("Failed to extract last user message")
+    return None
