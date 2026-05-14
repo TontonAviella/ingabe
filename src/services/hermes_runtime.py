@@ -5,88 +5,129 @@ When `MUNDI_USE_HERMES=1`, the dispatch in
 `src/routes/message_routes.py:process_chat_interaction_task` calls
 `run_sage_turn_via_hermes(...)` instead of running the hand-rolled chat loop.
 
-WHY THIS FILE EXISTS RIGHT NOW (2026-05-14)
-─────────────────────────────────────────────
-The flag fork exists in prod. `hermes-agent` is installed. The plugin
-scaffolding (`hermes_integration/plugins/ingabe-sage/`) is in place. The
-last unfinished piece is the runtime invocation itself — the call that
-hands a turn to Hermes and bridges its streaming hooks back to mundi.ai's
-WebSocket emit functions.
+## STATE AS OF 2026-05-14 (after introspecting the installed package)
 
-The runtime invocation MUST be wired with fresh judgment, not at 3am.
-Doing it tired is exactly how a turn-loop replacement breaks prod for
-every user simultaneously. So this module DELIBERATELY raises a clear
-NotImplementedError when called. The flag is off by default. The error
-only surfaces if an operator turns it on prematurely.
+The flag fork is in prod. `hermes-agent` is installed (~30 transitive deps
+including anthropic, firecrawl-py, fal-client, parallel-web, exa-py,
+edge-tts, prompt_toolkit, fire, croniter, etc.). The plugin scaffolding
+(`hermes_integration/plugins/ingabe-sage/`) is on the branch.
 
-WHAT'S MISSING
-──────────────
-1. Construct Hermes's runtime/session object with the ingabe-sage plugin
-   loaded. Hermes's entry point is in `run_agent.py` upstream (750kB file)
-   and the session interface is at `gateway/session.py`. The right pattern
-   is to import the runtime class, instantiate per-request, NOT module-
-   scoped — each chat turn gets its own runtime to isolate context.
+But the architecture is NOT what we initially assumed.
 
-2. Pre-call setup:
-   - `IngabeContext` contextvar (already scaffolded in
-     `hermes_integration/plugins/ingabe-sage/context.py`) must be set
-     with user_uuid / partner_id / map_id BEFORE invoking Hermes, so the
-     plugin's universal tool shim can read it.
-   - The chat history → Hermes input-state translation. Hermes uses its
-     own message shape (closer to OpenAI but with extras for tool turns).
-     The existing `openai_messages` list in `process_chat_interaction_task`
-     is the source.
+## ARCHITECTURAL TRUTH (do not skip this section)
 
-3. Streaming bridge. Hermes's hook system fires events like `agent:step`,
-   `agent:end`. Map those to `kue_stream_token(conversation.id, delta)`
-   from `src.routes.websocket`. Token-level streaming requires Hermes's
-   per-delta hook (not yet identified in the gateway/hooks.py file).
+Hermes Agent v2026.5.7 is **a CLI app + a long-running gateway service**,
+NOT a Python library you import and instantiate.
 
-4. Tool dispatch — see `hermes_integration/plugins/ingabe-sage/tools.py`.
-   The plugin has 75 stubbed tool schemas registered. The universal shim
-   pattern: every tool's handler reads IngabeContext, looks up the
-   matching handler in mundi.ai's existing `pydantic_tool_calls` registry,
-   awaits it, returns the JSON-string result. ONE shim function, not 75.
+What's actually installed:
+- `/app/.venv/bin/hermes`          — main CLI binary
+- `/app/.venv/bin/hermes-agent`    — alias of the above
+- `/app/.venv/bin/hermes-acp`      — Agent Client Protocol adapter
+                                     (requires `acp` extra; NOT installed)
+- `hermes_cli/` package            — 68 .py files, internal CLI commands
+- `hermes_constants.py`, `hermes_logging.py`,
+  `hermes_state.py`, `hermes_time.py`  — loose top-level modules
+                                          (no namespace package)
+- `plugins/` directory             — for `hermes plugins add ...` style
 
-5. Error path. When Hermes raises, surface via `kue_notify_error(
-   conversation.id, error_message)` and write a synthetic
-   ChatCompletionMessage with role="assistant" to chat_completion_messages
-   so the conversation history stays coherent.
+There is NO `import hermes_agent` top-level package. No `Runtime` class.
+No `Session` class you can construct. The agent loop lives inside the
+gateway process, not exposed as a public Python API.
 
-6. Output capture. After Hermes finishes the turn, persist the final
-   assistant message (and any tool-call messages it produced) via the
-   `add_chat_completion_message` closure that the caller already has.
-   Cleanest: pass that closure in as a callback.
+`hermes gateway` is the long-running service that handles:
+- Messaging integrations (Telegram, Discord, WhatsApp, Slack, Matrix,
+  DingTalk, Feishu) — yes WhatsApp IS supported, via QR-pair config,
+  not a separate library dep
+- Plugin loading (`hermes_integration/plugins/ingabe-sage/` would be
+  loaded by the gateway, not by mundi-app)
+- Agent turn execution
 
-7. Cancellation. The existing loop checks `redis.get(f"messages:{map_id}:
-   cancelled")` per iteration. Hermes doesn't know about Redis. Either:
-   (a) bridge with a hook that fires per agent:step and raises asyncio.
-   CancelledError when the key is set, or (b) wrap the whole call in a
-   `wait_for(..., timeout=...)` with cancellation propagation.
+## INTEGRATION OPTIONS (revised, ranked by realism)
 
-ROLLBACK
-────────
-Set `MUNDI_USE_HERMES=0` in `/home/deploy/mundi.ai/.env` and restart
-`mundi-app` with prod compose files. The fork in
-`process_chat_interaction_task` falls back to the existing hand-rolled
-chat loop. Zero schema or data changes were made, so no migration
-rollback is needed.
+### Option A: Hermes Gateway as a sidecar service + ACP protocol
 
-CUTOVER ORDER (per partner, not global)
-───────────────────────────────────────
-Even after wiring is complete, the safe rollout is per-partner:
-1. Flip MUNDI_USE_HERMES=1 in staging. Watch p50/p95 latency, error rate
-   on PostHog traces tagged with `partner_id`. Compare to the existing
-   path for the same partner. Bail if regression.
-2. Flip MUNDI_USE_HERMES_PARTNERS=`bk-insurance` (env-var allowlist) in
-   prod. Sage routes BK users through Hermes; everyone else stays on the
-   old path. Soak for 48h.
-3. Expand allowlist by one partner at a time, soaking between each.
-4. Once stable for all partners, retire the env-var allowlist and the
-   old chat loop in a separate cleanup PR.
+Add `hermes gateway run` (foreground mode) as a second service in
+docker-compose-prod.yml. Mount the ingabe-sage plugin into it. Configure
+its model via `hermes model select` (OpenRouter+Nemotron). Then
+`run_sage_turn_via_hermes(...)` opens an ACP session to the gateway and
+forwards the conversation. The gateway streams back; mundi-app proxies
+those deltas to its websocket.
 
-(The MUNDI_USE_HERMES_PARTNERS allowlist isn't implemented yet either;
-it lives in the same future PR as the runtime invocation.)
+Required additions:
+- New compose service: `hermes-gateway`
+- `acp` Python package (the `[acp]` extra) in requirements.txt
+- Volume mount: plugin code into gateway container
+- Inter-container networking for mundi-app ↔ hermes-gateway
+
+Effort: ~3-5 days human-team / ~1.5 days CC+gstack.
+
+### Option B: Subprocess `hermes chat -z "..." -m nemotron ...` per turn
+
+Spawn `hermes` CLI per request. Returns full response on stdout. Slow
+(no streaming), no concurrent turn support, lose websocket UX.
+Realistic only for batch/cron jobs, not interactive Sage.
+
+### Option C: Reuse `hermes_cli` internals directly
+
+Import functions from `hermes_cli.commands`, `hermes_cli.gateway`, etc.
+Build our own turn loop on top of Hermes primitives. Fragile — none of
+that is public API; would break on every Hermes upgrade.
+
+### Recommended: Option A.
+
+Hermes was DESIGNED to be the orchestration brain across channels. The
+gateway model is right for "many people, many companies" (Hermes has
+a profile/multi-tenancy model — `hermes gateway list` shows multiple
+profiles). The sidecar architecture also means partner-specific config
+(WhatsApp accounts, model preferences, etc.) lives in Hermes profiles,
+not in mundi-app code.
+
+## CORRECTED WIRING PUNCH LIST (for the next PR)
+
+1. **docker-compose-prod.yml**: add a `hermes-gateway` service. Image
+   = `mundi-public:local` (same image — Hermes is installed there).
+   Command = `hermes gateway run`. Mount plugin dir read-only. Expose
+   ACP socket/port to mundi-app on the docker network.
+
+2. **acp dep**: add `agent-client-protocol>=0.9.0,<1.0` to
+   requirements.txt. Rebuild image.
+
+3. **Plugin config**: `hermes_integration/plugins/ingabe-sage/plugin.yaml`
+   already declares the tool surface. Mount it via volume so the gateway
+   loads it on startup.
+
+4. **`run_sage_turn_via_hermes`**: open an ACP session to the gateway
+   (via `acp` Python client), forward user message + history, stream
+   response back to mundi-app's websocket via `kue_stream_token(...)`.
+   Persist final assistant message via the `add_chat_completion_message`
+   closure.
+
+5. **Tool dispatch back to mundi**: the ingabe-sage plugin's tool handlers
+   currently are stubs. When the gateway runs a tool, the plugin handler
+   must somehow reach back to mundi-app's existing dispatch. Options:
+   (a) HTTP callback from gateway to mundi-app at a `/internal/tool-call`
+   endpoint, (b) shared filesystem state, (c) PostGIS-driven tool execution
+   in-gateway. (a) is simplest.
+
+6. **Per-partner profiles**: `hermes profile <partner-id>` creates a
+   profile. Profile-scoped model config, WhatsApp credentials, tool
+   allowlists. The dispatch passes `--profile <partner_id>` per turn.
+
+7. **Cancellation, error path, output capture**: same as before but
+   bridged through ACP events instead of in-process hooks.
+
+## ROLLBACK (always-available)
+
+`MUNDI_USE_HERMES=0` in `/home/deploy/mundi.ai/.env` and
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml restart app`.
+Existing chat loop runs. No data or schema changes were made.
+
+## WHAT THIS MODULE STILL DOES (TODAY)
+
+For now, the seam is functional but the runtime invocation is not wired.
+`run_sage_turn_via_hermes` raises NotImplementedError with the rollback
+recipe. The flag stays at 0 in prod. Nobody is on Hermes after PR #44
+merges. The wiring PR (#45) is the sidecar service work above.
 """
 from __future__ import annotations
 
@@ -112,19 +153,18 @@ def hermes_is_enabled() -> bool:
 async def run_sage_turn_via_hermes(*args, **kwargs) -> None:
     """Run one Sage turn through Hermes Agent's runtime.
 
-    NOT YET IMPLEMENTED — see module docstring for the wiring punch list.
-    This raises a clear error so operators who flip the flag prematurely
-    get an explicit signal, not silent breakage.
+    NOT YET IMPLEMENTED — see module docstring for the CORRECTED wiring
+    punch list (sidecar gateway service + ACP protocol, NOT a library
+    import as initially assumed).
 
-    Once implemented, this function takes the same arguments as
-    `process_chat_interaction_task` and produces the same observable
-    side effects: streamed tokens to the websocket, chat messages
-    persisted, tool calls dispatched, conversation history advanced.
+    Raises a clear error so operators who flip the flag prematurely get
+    an explicit signal, not silent breakage.
     """
     raise NotImplementedError(
-        "Hermes runtime invocation is not yet wired. "
-        "Set MUNDI_USE_HERMES=0 to use the existing chat loop, or "
-        "complete the wiring in src/services/hermes_runtime.py per the "
-        "module docstring. Rollback to MUNDI_USE_HERMES=0 + container "
+        "Hermes runtime invocation is not yet wired. The correct "
+        "integration is a sidecar `hermes gateway run` container + the "
+        "ACP (Agent Client Protocol) — NOT a Python library import "
+        "(Hermes does not expose a library API). See module docstring "
+        "for the punch list. Rollback to MUNDI_USE_HERMES=0 + container "
         "restart is the safe state."
     )
