@@ -84,37 +84,90 @@ not in mundi-app code.
 
 ## CORRECTED WIRING PUNCH LIST (for the next PR)
 
-1. **docker-compose-prod.yml**: add a `hermes-gateway` service. Image
-   = `mundi-public:local` (same image — Hermes is installed there).
-   Command = `hermes gateway run`. Mount plugin dir read-only. Expose
-   ACP socket/port to mundi-app on the docker network.
+Status checked off marks what's done by PR #44.
 
-2. **acp dep**: add `agent-client-protocol>=0.9.0,<1.0` to
-   requirements.txt. Rebuild image.
+[x] 1. docker-compose-prod.yml: hermes-gateway sidecar service. Same
+       image as mundi-app (Hermes is installed there). `hermes gateway
+       run` daemon. Named volume `hermes-state`. `profiles: ["hermes"]`
+       gate so default `up` doesn't include it.
 
-3. **Plugin config**: `hermes_integration/plugins/ingabe-sage/plugin.yaml`
-   already declares the tool surface. Mount it via volume so the gateway
-   loads it on startup.
+[x] 2. acp dep: `agent-client-protocol==0.10.0` added to requirements.txt.
+       Rebuild triggered 2026-05-15 ~22:40 UTC.
 
-4. **`run_sage_turn_via_hermes`**: open an ACP session to the gateway
-   (via `acp` Python client), forward user message + history, stream
-   response back to mundi-app's websocket via `kue_stream_token(...)`.
-   Persist final assistant message via the `add_chat_completion_message`
-   closure.
+[ ] 3. Plugin config: still TODO. `hermes_integration/plugins/ingabe-sage/`
+       lives on `feat/hermes-migration` branch (PR #42, draft). Need to
+       either merge that or copy plugin code onto this branch, then add
+       the volume mount back to compose service (was deferred because
+       empty host dir caused a PermissionError interaction).
 
-5. **Tool dispatch back to mundi**: the ingabe-sage plugin's tool handlers
-   currently are stubs. When the gateway runs a tool, the plugin handler
-   must somehow reach back to mundi-app's existing dispatch. Options:
-   (a) HTTP callback from gateway to mundi-app at a `/internal/tool-call`
-   endpoint, (b) shared filesystem state, (c) PostGIS-driven tool execution
-   in-gateway. (a) is simplest.
+[ ] 4. **run_sage_turn_via_hermes** — THE BIG ONE.
+       ACP architecture finding (2026-05-15 verified):
+       - acp Python SDK's default transport is STDIO (subprocess pipes).
+         `connect_to_agent(client_impl, stdin, stdout)` spawns the
+         agent as a child process and talks over its stdin/stdout.
+       - For our sidecar arch (hermes-gateway is a separate CONTAINER,
+         not a child process), we have two paths:
+         (a) STDIO-over-docker-exec: mundi-app runs
+             `docker exec mundi-hermes-gateway hermes-acp` as a
+             subprocess per session, talks ACP over its pipes.
+             Requires mundi-app container to have docker socket access.
+             Adds privilege scope.
+         (b) Network transport: check if acp SDK supports TCP/socket
+             transports (the SDK docs hint at "asyncio transports"
+             plural — there may be a network option, OR we wire our
+             own JSON-RPC-over-WebSocket variant).
+             Cleanest if available.
+         (c) Embed an ACP server inside mundi-app and have hermes-gateway
+             be the client — inverted but reuses the same protocol.
+             Probably not what Hermes expects.
+       - Decision: investigate acp.transports module in the next session,
+         then pick (a) or (b).
 
-6. **Per-partner profiles**: `hermes profile <partner-id>` creates a
-   profile. Profile-scoped model config, WhatsApp credentials, tool
-   allowlists. The dispatch passes `--profile <partner_id>` per turn.
+       Per-turn flow once transport is chosen:
+       - Implement an `IngabeAcpClient(acp.Client)` subclass with
+         `session_update()` mapping to `kue_stream_token(...)` deltas.
+       - `await conn.new_session(mcp_servers=[], cwd=...)` per chat turn.
+       - `await conn.prompt(session_id, [text_block(user_msg)],
+         message_id=conversation.id)` sends the user message.
+       - Streamed deltas arrive via `session_update()` callback.
+       - On `AgentMessageChunk`/`TextContentBlock` chunks, call
+         `kue_stream_token(conversation.id, text)`.
+       - On final state, persist via `add_chat_completion_message`.
 
-7. **Cancellation, error path, output capture**: same as before but
-   bridged through ACP events instead of in-process hooks.
+[ ] 5. Tool dispatch back to mundi: when Hermes gateway runs a Sage tool
+       (via the ingabe-sage plugin), the handler hits mundi-app's
+       /internal/tool-call HTTP endpoint with HMAC. Currently NOT BUILT.
+       Scope for PR #46 alongside the inbox endpoint dispatch.
+
+[x] 6. Per-partner profiles: `default` + `bk-insurance` profiles created
+       on the live gateway. Both configured with Nemotron 120B free tier
+       via OpenRouter. `bk-insurance` profile is dormant (stopped) until
+       MUNDI_USE_HERMES_PARTNERS allowlist points at it.
+
+[ ] 7. Cancellation, error path, output capture: comes for free with
+       proper ACP wiring — the protocol has cancel + error messages.
+       Map them to the existing Redis cancellation key + kue_notify_error.
+
+## ACP transport choice — research needed
+
+The acp SDK's stdio-default is a real friction point for sidecar
+architecture. Possible resolutions ranked by preference:
+
+1. **acp.transports has network option** — best case. Single docker
+   network call, no subprocess management. Investigate first thing in
+   the next session.
+
+2. **hermes-acp accepts --port flag for TCP server mode** — also clean.
+   Check `hermes acp --help` after the rebuild (which installs the acp
+   module that hermes-acp needs to import).
+
+3. **Subprocess pattern with docker exec** — workable but requires
+   mundi-app to have docker socket access (`/var/run/docker.sock`
+   volume mount, security implications). Adds startup latency per turn.
+
+4. **Custom JSON-RPC over WebSocket bridge** — implement our own thin
+   transport that wraps the ACP message types in WebSocket frames.
+   Last resort.
 
 ## ROLLBACK (always-available)
 

@@ -116,11 +116,14 @@ services:
       # Hermes state — profiles, sessions, channel credentials, hooks allowlist.
       # Named volume = survives restarts but stays isolated from host filesystem.
       - hermes-state:/home/appuser
-      # ingabe-sage plugin read-only from the host project tree. The gateway
-      # picks up plugins from ~/.hermes/plugins; we symlink in via volume.
-      # NOTE: the actual plugin loading wiring is in PR #45+ — for now this
-      # mount is forward-compatible but unused by the running gateway.
-      - ./hermes_integration/plugins:/home/appuser/.hermes/plugins:ro
+      # Plugin mount intentionally deferred to PR #46+ when actual plugin
+      # source has been deployed to prod host. Mounting an empty host dir
+      # here as `:/home/appuser/.hermes/plugins:ro` causes the gateway to
+      # crash with PermissionError on /home/appuser/.hermes/logs (the
+      # bind-mount interaction creates root-owned overlays on the named
+      # volume). Add the plugin mount once `hermes_integration/plugins/`
+      # is deployed to `/home/deploy/mundi.ai/hermes_integration/plugins/`
+      # on the host with correct ownership.
     restart: unless-stopped
     # No `ports:` block — the gateway is internal-only. mundi-app reaches it
     # via docker DNS at `hermes-gateway:<port>` once ACP wiring lands.
