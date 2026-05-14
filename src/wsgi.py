@@ -155,10 +155,15 @@ def _configure_app_logging():
     sys.stderr = os.fdopen(sys.stderr.fileno(), "w", buffering=1, closefd=False)
 
     # dictConfig can disable pre-existing loggers even with
-    # disable_existing_loggers=False.  Force-enable all src.* loggers
-    # that were created during module import (before lifespan ran).
+    # disable_existing_loggers=False.  Force-enable all src.* and mundi.*
+    # loggers that were created during module import (before lifespan ran).
+    # mundi.* covers cron workers and channel senders (sage_alerts, telegram,
+    # whatsapp) whose caplog-asserting tests otherwise see empty records once
+    # any test in the same pytest invocation triggers lifespan.
     for name, lgr in logging.Logger.manager.loggerDict.items():
-        if isinstance(lgr, logging.Logger) and name.startswith("src"):
+        if isinstance(lgr, logging.Logger) and (
+            name.startswith("src") or name.startswith("mundi")
+        ):
             lgr.disabled = False
 
     src_logger = logging.getLogger("src")

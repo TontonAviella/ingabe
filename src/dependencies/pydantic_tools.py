@@ -105,6 +105,10 @@ from src.tools.similarity import (
     find_similar_tiles,
     FindSimilarTilesArgs,
 )
+from src.tools.render_snapshot import (
+    render_map_snapshot,
+    RenderMapSnapshotArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -258,6 +262,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "find_similar_tiles": (
             find_similar_tiles,
             FindSimilarTilesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "render_map_snapshot": (
+            render_map_snapshot,
+            RenderMapSnapshotArgs,
             IngabeToolCallMetaArgs,
         ),
     }

@@ -60,6 +60,10 @@ from src.geoprocessing.dispatch import (
     InvalidInputFormatError,
     get_tools,
 )
+from src.services.partner_skills import (
+    fetch_allowed_skills,
+    filter_tools_payload,
+)
 from src.dependencies.conversation import get_or_create_conversation
 from src.duckdb import execute_duckdb_query
 from src.utils import get_async_s3_client, get_bucket_name
@@ -1034,6 +1038,73 @@ async def _generate_postgis_pmtiles_background(
         )
 
 
+async def _build_brain_context_block(
+    user_id: str,
+    partner_id: str | None,
+    user_message: str,
+    limit: int = 5,
+) -> str | None:
+    # Pre-inject brain hits into the system prompt so most turns answer
+    # from the <BrainContext> block instead of forcing the LLM to call
+    # search_brain. The system prompt at src/dependencies/system_prompt.py
+    # already references <BrainContext>; this fills that template.
+    if not user_message or not user_message.strip():
+        return None
+    with tracer.start_as_current_span("pattern_a.active_memory") as _span:
+        _span.set_attribute("query_len", len(user_message))
+        try:
+            from src.dependencies.brain_dep import get_brain_service
+            from src.database.pool import get_async_db_connection
+            from src.services.brain_embeddings import _get_embeddings
+            _brain = get_brain_service()
+            try:
+                _embs, _ = await _get_embeddings([user_message])
+                _emb = _embs[0] if _embs else None
+            except Exception:
+                logger.debug("Pattern A: embedding failed, keyword-only", exc_info=True)
+                _emb = None
+            async with get_async_db_connection(
+                user_id=user_id, partner_id=partner_id
+            ) as _conn:
+                _results = await _brain.search_hybrid(
+                    _conn, user_message, embedding=_emb, limit=limit
+                )
+            _span.set_attribute("hits", len(_results))
+            if not _results:
+                return None
+            _lines = ["<BrainContext>"]
+            for _r in _results:
+                _txt = (_r.chunk_text or "").strip().replace("\n", " ")
+                if len(_txt) > 400:
+                    _txt = _txt[:400] + "..."
+                _lines.append(
+                    f"- [{_r.type}] {_r.title} (slug={_r.slug}): {_txt}"
+                )
+            _lines.append("</BrainContext>")
+            return "\n".join(_lines)
+        except Exception:
+            logger.exception("Pattern A active-memory injection failed")
+            _span.set_attribute("error", True)
+            return None
+
+
+def _latest_user_text(messages: list) -> str | None:
+    for m in reversed(messages):
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            parts = [p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"]
+            joined = " ".join(p for p in parts if p)
+            if joined:
+                return joined
+    return None
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -1075,6 +1146,23 @@ async def process_chat_interaction_task(
     with tracer.start_as_current_span("app.process_chat_interaction") as span:
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
+
+        _pattern_a_enabled = os.environ.get(
+            "INGABE_PATTERN_A_ACTIVE_MEMORY", "1"
+        ) == "1"
+        _brain_ctx_cache: dict[str, str] = {}
+
+        _pattern_d_enabled = os.environ.get(
+            "INGABE_PATTERN_D_COMPOSITION", "1"
+        ) == "1"
+        _pattern_d_tool_timeout = float(
+            os.environ.get("INGABE_PATTERN_D_TOOL_TIMEOUT_SEC", "60")
+        )
+        _pd_steps = 0
+        _pd_tool_calls_total = 0
+        _pd_max_per_step = 0
+        _pd_timeouts = 0
+        _pd_exit_reason = "max_iter"
 
         for i in range(25):
             # Check if the message processing has been cancelled
@@ -1425,6 +1513,22 @@ async def process_chat_interaction_task(
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)
 
+            # Phase 4: partner skill allowlist. Filter tools_payload so the LLM
+            # only sees what this partner is registered for. Unrestricted (None)
+            # for legacy/unscoped sessions.
+            try:
+                async with async_conn("partner_skills_filter") as _ps_conn:
+                    _allowed = await fetch_allowed_skills(_ps_conn, partner_id)
+                if _allowed is not None:
+                    _before = len(tools_payload)
+                    tools_payload = filter_tools_payload(tools_payload, _allowed)
+                    logger.info(
+                        "partner_skills filter: partner=%s allowed=%d kept=%d/%d",
+                        partner_id, len(_allowed), len(tools_payload), _before,
+                    )
+            except Exception as _ps_err:
+                logger.warning("partner_skills filter skipped: %s", _ps_err)
+
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
             )
@@ -1444,7 +1548,7 @@ async def process_chat_interaction_task(
             _routing = route_chat(_last_user_text, history=openai_messages)
 
             if _routing.is_small_talk:
-                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
+                _system_content = SMALL_TALK_SYSTEM_PROMPT
                 tools_payload = []
                 if _routing.primary_model_override:
                     chat_completions_args = {
@@ -1458,7 +1562,7 @@ async def process_chat_interaction_task(
                     len(_last_user_text),
                 )
             else:
-                _system_prompt_content = system_prompt_provider.get_system_prompt()
+                _system_content = system_prompt_provider.get_system_prompt()
                 if _routing.selected_categories:
                     _before = len(tools_payload)
                     tools_payload = filter_tools_by_categories(
@@ -1469,10 +1573,25 @@ async def process_chat_interaction_task(
                         _routing.reason, _before, len(tools_payload),
                     )
 
+                # Pattern A active-memory injection (skipped on small-talk path).
+                if _pattern_a_enabled:
+                    _latest_user = _latest_user_text(openai_messages)
+                    if _latest_user:
+                        import hashlib as _h
+                        _ck = _h.sha1(_latest_user.encode("utf-8")).hexdigest()
+                        _brain_block = _brain_ctx_cache.get(_ck)
+                        if _brain_block is None and _ck not in _brain_ctx_cache:
+                            _brain_block = await _build_brain_context_block(
+                                user_id, partner_id, _latest_user, limit=5
+                            )
+                            _brain_ctx_cache[_ck] = _brain_block or ""
+                        if _brain_block:
+                            _system_content = _system_content + "\n\n" + _brain_block
+
             _llm_messages = [
                 {
                     "role": "system",
-                    "content": _system_prompt_content,
+                    "content": _system_content,
                 }
             ] + openai_messages
 
@@ -1785,7 +1904,22 @@ async def process_chat_interaction_task(
             await add_chat_completion_message(assistant_message)
 
             if not assistant_message.tool_calls:
+                _pd_exit_reason = "final_assistant"
                 break
+
+            if _pattern_d_enabled:
+                _pd_steps += 1
+                _calls_this_step = len(assistant_message.tool_calls)
+                _pd_tool_calls_total += _calls_this_step
+                if _calls_this_step > _pd_max_per_step:
+                    _pd_max_per_step = _calls_this_step
+                span.add_event(
+                    "pattern_d.composition_step",
+                    {
+                        "step": _pd_steps,
+                        "tool_calls_in_step": _calls_this_step,
+                    },
+                )
 
             # Fetch project_id for this map once for all tool calls
             async with async_conn("tool.project_id_for_map") as proj_conn:
@@ -1837,8 +1971,25 @@ async def process_chat_interaction_task(
                                     project_id=current_project_id,
                                     session=session,
                                 )
-                                tool_result = await fn(parsed_args, mundi_args)
+                                if _pattern_d_enabled:
+                                    tool_result = await asyncio.wait_for(
+                                        fn(parsed_args, mundi_args),
+                                        timeout=_pattern_d_tool_timeout,
+                                    )
+                                else:
+                                    tool_result = await fn(parsed_args, mundi_args)
 
+                            except asyncio.TimeoutError:
+                                _pd_timeouts += 1
+                                logger.warning(
+                                    "Pattern D: tool %s exceeded %.1fs timeout",
+                                    function_name,
+                                    _pattern_d_tool_timeout,
+                                )
+                                tool_result = {
+                                    "status": "error",
+                                    "error": f"{function_name} timed out after {_pattern_d_tool_timeout:.0f}s",
+                                }
                             except Exception as e:
                                 logger.exception("Tool execution failed for %s", tool_call.function.name)
                                 tool_result = {
@@ -6241,7 +6392,29 @@ async def process_chat_interaction_task(
                         "The tool keeps failing. Please try rephrasing your request "
                         "or start a new chat.",
                     )
+                    _pd_exit_reason = "consecutive_errors"
                     break
+
+        if _pattern_d_enabled:
+            span.set_attribute("pattern_d.enabled", True)
+            span.set_attribute("pattern_d.steps", _pd_steps)
+            span.set_attribute("pattern_d.tool_calls_total", _pd_tool_calls_total)
+            span.set_attribute("pattern_d.max_calls_per_step", _pd_max_per_step)
+            span.set_attribute("pattern_d.timeouts", _pd_timeouts)
+            span.set_attribute("pattern_d.exit_reason", _pd_exit_reason)
+            span.set_attribute(
+                "pattern_d.tool_timeout_sec", _pattern_d_tool_timeout
+            )
+            logger.info(
+                "pattern_d summary: conv=%s steps=%d calls=%d max_per_step=%d "
+                "timeouts=%d exit=%s",
+                conversation.id,
+                _pd_steps,
+                _pd_tool_calls_total,
+                _pd_max_per_step,
+                _pd_timeouts,
+                _pd_exit_reason,
+            )
 
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":

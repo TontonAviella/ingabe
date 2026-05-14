@@ -125,13 +125,28 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # Idempotent bootstrap: every step is safe on re-run.
+    # `mc admin user add` errors on existing user; `mc ilm rule add` errors on
+    # duplicate prefix. The previous version masked both with `2>/dev/null || echo`,
+    # which hid genuine failures and printed misleading success messages.
     entrypoint: >
       /bin/sh -c "
+      set -e;
       /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-admin} ${MINIO_ROOT_PASSWORD:-changeme};
-      /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
-      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} ||
-      (sleep 3 && /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user});
-      echo 'S3 user setup complete!';
+      if /usr/bin/mc admin user info myminio ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1; then
+        echo '[mc] user ${S3_ACCESS_KEY_ID:-s3user} already exists';
+      else
+        /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
+        echo '[mc] created user ${S3_ACCESS_KEY_ID:-s3user}';
+      fi;
+      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1 || true;
+      echo '[mc] policy readwrite ensured on ${S3_ACCESS_KEY_ID:-s3user}';
+      RULES=$$(/usr/bin/mc ilm rule list myminio/${S3_BUCKET:-test-bucket} 2>/dev/null) || RULES='';
+      case $$RULES in
+        *snapshots/*) echo '[mc] lifecycle rule for snapshots/ already present';;
+        *) /usr/bin/mc ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket}; echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day';;
+      esac;
+      echo '[mc] bootstrap complete';
       "
 
   postgresdb:
@@ -178,6 +193,104 @@ services:
       timeout: 30s
       retries: 3
       start_period: 10s
+
+  # --- Sage snapshot senders ---
+  # Both subscribe to Redis 'mundi:render_snapshot', drop payloads that don't
+  # match their MUNDI_*_PARTNER_ID, download PNG from MinIO, post to the
+  # respective channel. Default MUNDI_*_LIVE=0 → log-only stub.
+  #
+  # WhatsApp is the dominant messaging channel in Rwanda — it is a first-class
+  # peer to Telegram, not a Phase 2 add-on. Run both by default; let env vars
+  # gate which one actually delivers.
+
+  whatsapp-sender:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-whatsapp-sender
+    command: python -m src.senders.whatsapp_sender
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_WHATSAPP_LIVE=${MUNDI_WHATSAPP_LIVE:-0}
+      - MUNDI_WHATSAPP_ACCESS_TOKEN=${MUNDI_WHATSAPP_ACCESS_TOKEN:-}
+      - MUNDI_WHATSAPP_PHONE_NUMBER_ID=${MUNDI_WHATSAPP_PHONE_NUMBER_ID:-}
+      - MUNDI_WHATSAPP_PARTNER_ID=${MUNDI_WHATSAPP_PARTNER_ID:-}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
+  telegram-sender:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-telegram-sender
+    command: python -m src.senders.telegram_sender
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_TELEGRAM_LIVE=${MUNDI_TELEGRAM_LIVE:-0}
+      - MUNDI_TELEGRAM_BOT_TOKEN=${MUNDI_TELEGRAM_BOT_TOKEN:-}
+      - MUNDI_TELEGRAM_PARTNER_ID=${MUNDI_TELEGRAM_PARTNER_ID:-}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
+  # --- Phase 3: Proactive Sage cron-fired alerts ---
+  # Reads alert_subscriptions every TICK_INTERVAL_SEC; for each due row renders
+  # the configured map+bbox, uploads PNG to MinIO, publishes on
+  # 'mundi:render_snapshot'. WhatsApp/Telegram senders deliver. NO LLM in loop.
+  sage-alerts-cron:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-sage-alerts-cron
+    command: python -m src.cron.sage_alerts
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgresdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_SAGE_ALERTS_TICK_SEC=${MUNDI_SAGE_ALERTS_TICK_SEC:-30}
+      - MUNDI_SAGE_ALERTS_MAX_PER_TICK=${MUNDI_SAGE_ALERTS_MAX_PER_TICK:-20}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
 
   # --- Optional: PostgreSQL read replica (uncomment to scale read-heavy workloads) ---
   # Requires the primary to have wal_level=replica (default in PostgreSQL 10+).
