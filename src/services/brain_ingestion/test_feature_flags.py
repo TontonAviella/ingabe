@@ -116,7 +116,7 @@ async def test_write_page_still_requires_partner_id_when_flag_on(monkeypatch):
 
 
 @pytest_asyncio.fixture(scope="function", loop_scope="module")
-async def flag_test_conn():
+async def flag_test_conn(_migrations_done):
     """Fresh asyncpg connection seeded with one public + one partner page.
 
     Function-scoped so each test gets a clean slate on the rows we insert —
@@ -124,8 +124,10 @@ async def flag_test_conn():
     accumulates state across tests and the partner rows would contaminate
     other tests.
 
-    Migrations are assumed already applied by compose startup — running them
-    here trips on unrelated in-flight alembic revisions.
+    Depends on `_migrations_done` (session-scoped, defined in conftest.py)
+    so the brain_pages table exists. Without this, xdist workers that don't
+    happen to instantiate sync_client first hit `relation "brain_pages" does
+    not exist`.
     """
     owner = str(uuid.uuid4())
     partner = str(uuid.uuid4())
