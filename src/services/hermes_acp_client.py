@@ -78,16 +78,28 @@ def build_ingabe_acp_client(
             streaming, we care about `AgentMessageChunk` and the
             `TextContentBlock` inside it. We both stream to the
             WebSocket AND accumulate for post-turn persistence.
+
+            ACP wire format gotcha caught 2026-05-15: for the chunk
+            update kinds (agent_message_chunk, thought_chunk, etc.),
+            `update.content` is a SINGLE block object, NOT a list of
+            blocks — wire JSON is:
+              "content": {"text": "hello", "type": "text"}
+            not:
+              "content": [{"text": "hello", "type": "text"}]
+            Earlier code did `for block in content:` which iterated
+            the model's field names and silently dropped every chunk.
+            Detection: zero chars accumulated despite Hermes happily
+            sending agent_message_chunk notifications (verified via
+            direct subprocess JSON-RPC probe). Handle both shapes
+            defensively in case future update types use lists.
             """
             try:
                 update = notification.update
                 content = getattr(update, "content", None)
                 if content is None:
                     return
-                # content is a list of content blocks; we currently emit
-                # only TextContentBlock chunks. Future: handle Image,
-                # Audio, ResourceLink for richer Sage output.
-                for block in content:
+                blocks = content if isinstance(content, list) else [content]
+                for block in blocks:
                     text = getattr(block, "text", None)
                     if text:
                         self.accumulated_text.append(text)
