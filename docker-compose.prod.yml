@@ -139,6 +139,56 @@ services:
           # Real LLM cost lives on OpenRouter; gateway just shepherds requests.
           memory: 1G
 
+  # --- Hermes ACP TCP bridge ---
+  # mundi-app talks ACP (Agent Client Protocol) to the hermes-gateway, but
+  # hermes-acp speaks JSON-RPC over stdin/stdout only. This bridge listens
+  # on a docker-internal TCP port and spawns hermes-acp per connection,
+  # piping the socket's bytes to/from the subprocess.
+  #
+  # See hermes_integration/bridge/acp_tcp_bridge.py for the implementation.
+  # Internal-only: no `ports:` exposure to the host network.
+  #
+  # Profile-gated: `--profile hermes` activation, same as the gateway.
+  # When mundi-app's MUNDI_USE_HERMES=0 (default), this service can be
+  # stopped without affecting users. When MUNDI_USE_HERMES=1, this service
+  # MUST be running for run_sage_turn_via_hermes() to function.
+  hermes-acp-bridge:
+    profiles: ["hermes"]
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-hermes-acp-bridge
+    command: >
+      /app/.venv/bin/python -m hermes_integration.bridge.acp_tcp_bridge
+    environment:
+      - HOME=/home/appuser
+      - ACP_BRIDGE_PORT=9999
+      - ACP_BRIDGE_HOST=0.0.0.0
+      # Use the same OPENAI_API_KEY the gateway uses — the spawned
+      # hermes-acp subprocess hits OpenRouter to drive the LLM.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    volumes:
+      # The bridge needs to spawn hermes-acp, which reads ~/.hermes/config.yaml
+      # for model + provider settings. Share the same state volume as the
+      # gateway (read-only is fine — bridge doesn't write Hermes state).
+      - hermes-state:/home/appuser:ro
+      # The bridge module itself lives in the application source tree.
+      # We mount the worktree's hermes_integration/ at the matching path
+      # inside the container so `python -m hermes_integration.bridge....`
+      # resolves. NOTE: this requires the bridge code to be deployed on
+      # the host before bringing this service up.
+      - ./hermes_integration:/app/hermes_integration:ro
+    restart: unless-stopped
+    depends_on:
+      - postgresdb
+    deploy:
+      resources:
+        limits:
+          # Bridge is just byte-pumping. Each connection spawns a
+          # hermes-acp subprocess which is the heavier process. Cap at
+          # 512M for the bridge itself; subprocesses are accounted to
+          # this cgroup but get their own implicit budget.
+          memory: 512M
+
   # --- PostgreSQL: tuned for PostGIS on 16 GB host ---
   postgresdb:
     restart: unless-stopped

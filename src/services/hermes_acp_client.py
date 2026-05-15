@@ -1,0 +1,123 @@
+"""ACP client adapter — bridges Hermes Agent's streaming output to mundi-app's
+WebSocket emit functions.
+
+The ACP Client base class (from `agent-client-protocol` package) defines
+hooks the agent can call BACK into the client for: streaming session
+updates, requesting permission for a file/terminal op, reading/writing
+text files, creating terminals, etc.
+
+Mundi-app is a chat client only — we don't expose filesystem or terminal
+to Sage. So most hooks return method_not_found. The one that matters is
+`session_update`, which is how streaming agent message chunks reach us.
+We map those to `kue_stream_token` on the conversation WebSocket.
+"""
+from __future__ import annotations
+
+import logging
+from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# NOTE: this module imports `acp` only inside functions/methods so that
+# importing src.services.* doesn't pull in agent-client-protocol on
+# environments where it isn't installed (e.g. CI without Hermes deps).
+# When MUNDI_USE_HERMES=0, the runtime never instantiates this class.
+
+
+def build_ingabe_acp_client(
+    stream_token: Callable[[str, str], None],
+    notify_error: Callable[[str, str], None],
+    conversation_id: str,
+):
+    """Construct an IngabeAcpClient bound to a conversation's WebSocket emit
+    functions. Done as a factory so the `acp` import is lazy.
+
+    Args:
+        stream_token: async callable (conversation_id, text) → None.
+            For each incremental text delta, emit to the WebSocket.
+            Typically `src.routes.websocket.kue_stream_token`.
+        notify_error: async callable (conversation_id, msg) → None.
+            For surface-able errors. Typically `kue_notify_error`.
+        conversation_id: mundi-app's conversation id; used as the
+            stable identifier in WebSocket emits.
+
+    Returns:
+        An instance of IngabeAcpClient ready to pass to
+        `acp.connect_to_agent(client, reader, writer)`.
+    """
+    import acp  # local import — see module docstring
+
+    class IngabeAcpClient(acp.Client):
+        """Minimal ACP Client implementation for a chat-only host.
+
+        We deny all filesystem/terminal capabilities because mundi-app
+        does not expose any of those to Sage. Tool dispatch back into
+        mundi-app happens via the /internal/tool-call HTTP endpoint
+        (PR #46), NOT via ACP client hooks. The ACP Client interface here
+        is purely the "deliver streaming output to the user" path.
+        """
+
+        async def session_update(self, notification) -> None:
+            """Called by the agent for every streaming chunk.
+
+            The `notification` is an `acp.SessionNotification` whose
+            `.update` payload can be one of several types. For chat
+            streaming, we care about `AgentMessageChunk` and the
+            `TextContentBlock` inside it.
+            """
+            try:
+                update = notification.update
+                content = getattr(update, "content", None)
+                if content is None:
+                    return
+                # content is a list of content blocks; we currently emit
+                # only TextContentBlock chunks. Future: handle Image,
+                # Audio, ResourceLink for richer Sage output.
+                for block in content:
+                    text = getattr(block, "text", None)
+                    if text:
+                        await stream_token(conversation_id, text)
+            except Exception:
+                logger.exception(
+                    "ACP session_update handler failed for conv=%s",
+                    conversation_id,
+                )
+
+        async def request_permission(self, request) -> "acp.RequestPermissionResponse":
+            """Agent asks for permission to do something privileged.
+
+            Mundi-app's policy: deny everything. Sage operates within
+            the partner's RLS-scoped data plane via /internal/tool-call,
+            not via ACP-mediated host actions.
+            """
+            # acp.RequestPermissionResponse with outcome="cancelled" is
+            # the standard "client refuses" response.
+            return acp.RequestPermissionResponse(
+                outcome=acp.RequestPermissionResponse.Outcome(
+                    outcome="cancelled"
+                )
+            )
+
+        async def read_text_file(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def write_text_file(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def create_terminal(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def terminal_output(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def kill_terminal(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def wait_for_terminal_exit(self, request):
+            raise acp.RequestError.method_not_found()
+
+        async def release_terminal(self, request):
+            raise acp.RequestError.method_not_found()
+
+    return IngabeAcpClient()

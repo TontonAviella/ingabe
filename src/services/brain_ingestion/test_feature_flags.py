@@ -124,9 +124,15 @@ async def flag_test_conn():
     accumulates state across tests and the partner rows would contaminate
     other tests.
 
-    Migrations are assumed already applied by compose startup — running them
-    here trips on unrelated in-flight alembic revisions.
+    Migrations are triggered in-line on first use. Can't depend on the
+    session-scoped `_migrations_done` in conftest.py — it's a sync fixture
+    that calls asyncio.run(), which closes its loop and leaves the thread
+    without a current loop for our module-scoped pytest_asyncio loop. The
+    Redis lock inside run_migrations handles xdist concurrency.
     """
+    from src.database.migrate import run_migrations
+    await run_migrations()
+
     owner = str(uuid.uuid4())
     partner = str(uuid.uuid4())
     c = await asyncpg.connect(_build_postgres_url())
