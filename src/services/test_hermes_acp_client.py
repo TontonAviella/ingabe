@@ -39,9 +39,11 @@ class _FakeUpdate:
         self.session_update = "agent_message_chunk"
 
 
-class _FakeNotification:
-    def __init__(self, update):
-        self.update = update
+# Sentinel session_id used in tests. The SDK's actual session_update
+# signature is (session_id, update) — verified against acp v0.10.0's
+# Client base class on 2026-05-15. Test calls mirror the real shape
+# instead of the earlier wrong-but-existing _FakeNotification wrapper.
+_SESSION_ID = "sess-test-1"
 
 
 @pytest.fixture
@@ -76,7 +78,8 @@ async def test_session_update_single_block_emits_text(collected, monkeypatch):
         conversation_id="conv-1",
     )
     await client.session_update(
-        _FakeNotification(_FakeUpdate(content=_FakeBlock(text="hello")))
+        _SESSION_ID,
+        _FakeUpdate(content=_FakeBlock(text="hello")),
     )
     assert captured == [("conv-1", "hello")], (
         "single-block content should emit one stream_token call"
@@ -96,10 +99,11 @@ async def test_session_update_list_of_blocks_still_works(collected, monkeypatch)
         conversation_id="conv-2",
     )
     await client.session_update(
-        _FakeNotification(_FakeUpdate(content=[
+        _SESSION_ID,
+        _FakeUpdate(content=[
             _FakeBlock(text="part1 "),
             _FakeBlock(text="part2"),
-        ]))
+        ]),
     )
     assert captured == [("conv-2", "part1 "), ("conv-2", "part2")]
     assert client.accumulated_text == ["part1 ", "part2"]
@@ -116,7 +120,7 @@ async def test_session_update_no_content_is_noop(collected, monkeypatch):
         notify_error=notify_error,
         conversation_id="conv-3",
     )
-    await client.session_update(_FakeNotification(_FakeUpdate(content=None)))
+    await client.session_update(_SESSION_ID, _FakeUpdate(content=None))
     assert captured == []
     assert client.accumulated_text == []
 
@@ -141,9 +145,49 @@ async def test_session_update_non_text_block_skipped(collected, monkeypatch):
         conversation_id="conv-4",
     )
     await client.session_update(
-        _FakeNotification(_FakeUpdate(content=[_ImageBlock(), _FakeBlock(text="hi")]))
+        _SESSION_ID,
+        _FakeUpdate(content=[_ImageBlock(), _FakeBlock(text="hi")]),
     )
     assert captured == [("conv-4", "hi")]
+
+
+@pytest.mark.asyncio
+async def test_session_update_signature_takes_two_args(collected, monkeypatch):
+    """Regression test for the silent TypeError that swallowed every chunk.
+
+    The acp v0.10.0 SDK calls `client.session_update(session_id, update)`
+    with two positional args. An earlier signature
+    `session_update(self, notification)` raised TypeError on every call —
+    the SDK caught and dropped it, so 0 chunks ever flowed.
+
+    This test calls with the correct shape AND verifies the handler
+    accepts it without raising. Source-grep the signature too so a
+    future refactor can't quietly re-add the wrapper.
+    """
+    import inspect
+    captured, stream_token, notify_error = collected
+    monkeypatch.setitem(__import__("sys").modules, "acp", _StubAcpModule())
+
+    client = build_ingabe_acp_client(
+        stream_token=stream_token,
+        notify_error=notify_error,
+        conversation_id="conv-sig",
+    )
+
+    sig = inspect.signature(client.session_update)
+    params = list(sig.parameters.keys())
+    assert params == ["session_id", "update"], (
+        f"session_update must accept (session_id, update) per acp v0.10.0 "
+        f"Client base class. Got: {params}. Earlier (notification,) signature "
+        f"silently TypeError'd and dropped every chunk."
+    )
+
+    # Smoke: real call with correct args returns without raising.
+    await client.session_update(
+        "sess-x",
+        _FakeUpdate(content=_FakeBlock(text="ok")),
+    )
+    assert captured == [("conv-sig", "ok")]
 
 
 # ---------------------------------------------------------------------------
