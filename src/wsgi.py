@@ -31,6 +31,7 @@ from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
 from src.routes.inbox_routes import router as inbox_router
+from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -558,6 +559,14 @@ app.include_router(
 app.include_router(
     inbox_router,
     tags=["Internal/Inbox"],
+)
+# Internal tool-call: Hermes-side ingabe-sage plugin → mundi-app callback for
+# dispatching Sage tools against partner-scoped data. Same HMAC scheme as
+# /inbox. Default off via MUNDI_TOOL_CALL_ENABLED=0. See
+# src/routes/tool_call_routes.py for the security boundary docs.
+app.include_router(
+    tool_call_router,
+    tags=["Internal/ToolCall"],
 )
 app.include_router(
     lakehouse_router,
