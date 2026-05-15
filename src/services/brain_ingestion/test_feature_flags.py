@@ -116,7 +116,7 @@ async def test_write_page_still_requires_partner_id_when_flag_on(monkeypatch):
 
 
 @pytest_asyncio.fixture(scope="function", loop_scope="module")
-async def flag_test_conn(_migrations_done):
+async def flag_test_conn():
     """Fresh asyncpg connection seeded with one public + one partner page.
 
     Function-scoped so each test gets a clean slate on the rows we insert —
@@ -124,11 +124,15 @@ async def flag_test_conn(_migrations_done):
     accumulates state across tests and the partner rows would contaminate
     other tests.
 
-    Depends on `_migrations_done` (session-scoped, defined in conftest.py)
-    so the brain_pages table exists. Without this, xdist workers that don't
-    happen to instantiate sync_client first hit `relation "brain_pages" does
-    not exist`.
+    Migrations are triggered in-line on first use. Can't depend on the
+    session-scoped `_migrations_done` in conftest.py — it's a sync fixture
+    that calls asyncio.run(), which closes its loop and leaves the thread
+    without a current loop for our module-scoped pytest_asyncio loop. The
+    Redis lock inside run_migrations handles xdist concurrency.
     """
+    from src.database.migrate import run_migrations
+    await run_migrations()
+
     owner = str(uuid.uuid4())
     partner = str(uuid.uuid4())
     c = await asyncpg.connect(_build_postgres_url())
