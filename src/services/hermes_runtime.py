@@ -301,7 +301,16 @@ async def run_sage_turn_via_hermes(
         conversation_id=conversation.id,
     )
 
-    conn = acp.connect_to_agent(client, reader, writer)
+    # acp.connect_to_agent(client, input_stream, output_stream) where:
+    #   - input_stream is the stream we WRITE TO the agent  → StreamWriter
+    #   - output_stream is the stream we READ FROM the agent → StreamReader
+    # Verified against acp v0.10.0 ClientSideConnection.__init__ which
+    # asserts isinstance(input_stream, StreamWriter) AND
+    # isinstance(output_stream, StreamReader). Previous code had these
+    # reversed (`acp.connect_to_agent(client, reader, writer)`) and crashed
+    # immediately with `TypeError: ClientSideConnection requires asyncio
+    # StreamWriter/StreamReader` on every MUNDI_USE_HERMES=1 invocation.
+    conn = acp.connect_to_agent(client, writer, reader)
 
     cancel_watchdog: asyncio.Task | None = None
     message_id = str(uuid.uuid4())
