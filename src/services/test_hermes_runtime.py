@@ -269,3 +269,73 @@ def test_session_ttl_is_24h():
 def test_cancel_poll_interval_under_2s():
     """User-facing cancel button should feel responsive."""
     assert CANCEL_POLL_INTERVAL_SECONDS <= 2.0
+
+
+# ---------------------------------------------------------------------------
+# ACP connect_to_agent arg order — regression test for the bug that would
+# crash every MUNDI_USE_HERMES=1 invocation with TypeError before PR #48
+# ---------------------------------------------------------------------------
+
+
+def test_acp_connect_to_agent_arg_order_in_source():
+    """The runtime MUST call connect_to_agent(client, writer, reader).
+
+    Reading: acp v0.10.0 ClientSideConnection.__init__ checks
+    `isinstance(input_stream, asyncio.StreamWriter)` AND
+    `isinstance(output_stream, asyncio.StreamReader)`. The SDK's
+    convention is "input/output FROM THE AGENT'S perspective":
+      - input_stream  = stream the agent reads from (client writes to it)
+      - output_stream = stream the agent writes to (client reads from it)
+
+    Before PR #48 the order was (client, reader, writer) — every call
+    raised `TypeError: ClientSideConnection requires asyncio
+    StreamWriter/StreamReader`. This test source-greps the runtime
+    module so a future refactor can't silently re-reverse the args.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/services/hermes_runtime.py"
+    ).read_text()
+    # Allow whitespace/newlines between the args; what matters is order.
+    import re
+    m = re.search(
+        r"acp\.connect_to_agent\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,)]+)",
+        src,
+    )
+    assert m is not None, "could not find acp.connect_to_agent call in hermes_runtime.py"
+    arg1, arg2, arg3 = (a.strip() for a in m.groups())
+    assert arg1 == "client", f"first arg should be client, got {arg1!r}"
+    assert arg2 == "writer", (
+        f"second arg should be writer (input_stream from agent's pov), got {arg2!r}. "
+        f"Reversing this resurrects the TypeError bug we caught 2026-05-15."
+    )
+    assert arg3 == "reader", (
+        f"third arg should be reader (output_stream from agent's pov), got {arg3!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bridge stderr handling — regression test against the silent-failure mode
+# ---------------------------------------------------------------------------
+
+
+def test_bridge_stderr_not_devnull():
+    """acp_tcp_bridge.py must NOT use DEVNULL for the hermes-acp subprocess.
+
+    Dropping stderr made the empty-prompt and read-only-volume failures
+    invisible — we burned ~30min spawning hermes-acp manually outside
+    the bridge just to see what it was saying. Per-connection log files
+    keep concurrent connections' output separate and make future bugs
+    a `tail` away.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "hermes_integration/bridge/acp_tcp_bridge.py"
+    ).read_text()
+    # The fallback-to-DEVNULL path is fine (no permissions / disk full).
+    # What we forbid is unconditionally using DEVNULL for stderr in the
+    # primary spawn call.
+    assert "stderr=stderr_fp" in src, (
+        "primary spawn must use stderr=stderr_fp (log file). "
+        "Going back to DEVNULL would make future bridge failures invisible."
+    )

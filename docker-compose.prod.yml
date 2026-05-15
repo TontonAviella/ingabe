@@ -162,15 +162,24 @@ services:
       - HOME=/home/appuser
       - ACP_BRIDGE_PORT=9999
       - ACP_BRIDGE_HOST=0.0.0.0
-      # Use the same OPENAI_API_KEY the gateway uses — the spawned
-      # hermes-acp subprocess hits OpenRouter to drive the LLM.
+      # hermes-acp's `_resolve_custom_runtime` reads ALL THREE of these
+      # to build the LLM client. Missing OPENAI_BASE_URL was the cause of
+      # the "no endpoint credentials" warning + empty prompt response we
+      # caught 2026-05-15: config.yaml had the base_url, but hermes-acp's
+      # auxiliary-client resolver falls back to env when its internal
+      # `resolve_runtime_provider("custom")` doesn't return a complete dict.
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     volumes:
       # The bridge needs to spawn hermes-acp, which reads ~/.hermes/config.yaml
-      # for model + provider settings. Share the same state volume as the
-      # gateway (read-only is fine — bridge doesn't write Hermes state).
-      - hermes-state:/home/appuser:ro
+      # for model + provider settings AND writes ~/.hermes/logs/agent.log
+      # during session/new. Must be `:rw` — the gateway is single-process,
+      # spawned hermes-acp subprocesses are short-lived per-turn, so write
+      # contention isn't a real concern. Earlier `:ro` blocked session/new
+      # with Errno 30 (read-only fs) caught 2026-05-15.
+      - hermes-state:/home/appuser:rw
       # The bridge module itself lives in the application source tree.
       # We mount the worktree's hermes_integration/ at the matching path
       # inside the container so `python -m hermes_integration.bridge....`

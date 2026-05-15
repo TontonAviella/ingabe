@@ -48,7 +48,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("acp_tcp_bridge")
 logger.setLevel(logging.INFO)
@@ -91,6 +91,9 @@ async def _pump(
 _next_conn_id = 0
 
 
+STDERR_LOG_DIR = os.environ.get("ACP_BRIDGE_STDERR_DIR", "/tmp/hermes-acp-stderr")
+
+
 async def _handle_client(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -101,17 +104,37 @@ async def _handle_client(
     peer = writer.get_extra_info("peername")
     logger.info("conn=%d open from %s — spawning %s", conn_id, peer, ACP_BIN)
 
+    # Capture hermes-acp's stderr to a per-connection log file. The old
+    # `stderr=DEVNULL` made every Hermes-side failure invisible — we
+    # caught the empty-prompt bug (2026-05-15) only by spawning hermes-acp
+    # standalone outside the bridge. Per-connection files keep races
+    # between concurrent connections from clobbering each other.
+    try:
+        os.makedirs(STDERR_LOG_DIR, exist_ok=True)
+        stderr_path = os.path.join(STDERR_LOG_DIR, f"conn-{conn_id}.log")
+        stderr_fp: Any = open(stderr_path, "ab", buffering=0)
+    except OSError:
+        # If we can't open the log file (perms, full disk), fall back to
+        # DEVNULL rather than crashing the bridge. Connections still work.
+        logger.exception("conn=%d failed to open stderr log; using DEVNULL", conn_id)
+        stderr_fp = asyncio.subprocess.DEVNULL
+        stderr_path = "<devnull>"
+
     try:
         proc = await asyncio.create_subprocess_exec(
             ACP_BIN,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=stderr_fp,
         )
     except FileNotFoundError:
         logger.error("conn=%d hermes-acp binary not found at %s", conn_id, ACP_BIN)
         writer.close()
+        if hasattr(stderr_fp, "close"):
+            stderr_fp.close()
         return
+
+    logger.info("conn=%d stderr → %s", conn_id, stderr_path)
 
     if proc.stdin is None or proc.stdout is None:
         logger.error("conn=%d subprocess pipes are None — bailing", conn_id)
@@ -151,6 +174,13 @@ async def _handle_client(
         await writer.wait_closed()
     except Exception:
         pass
+
+    # Close the stderr log file so fd doesn't leak between connections.
+    if hasattr(stderr_fp, "close"):
+        try:
+            stderr_fp.close()
+        except Exception:
+            pass
 
     logger.info("conn=%d closed (rc=%s)", conn_id, proc.returncode)
 
