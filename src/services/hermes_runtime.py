@@ -557,7 +557,13 @@ async def _extract_last_user_message(conversation, request, session) -> str | No
     to Hermes. Full-history support is the follow-up.
     """
     try:
-        from src.routes.postgres_routes import get_all_conversation_messages
+        # `get_all_conversation_messages` lives in src.routes.message_routes,
+        # NOT postgres_routes — the import path used to be wrong, the bare
+        # except below swallowed the ImportError, and every Hermes turn
+        # returned None here, early-returning before `conn.prompt(...)`
+        # could fire. Caught 2026-05-15 from the bridge log signature
+        # (init OK + session/new OK + peer-closed by mundi-app before prompt).
+        from src.routes.message_routes import get_all_conversation_messages
         messages = await get_all_conversation_messages(conversation.id, session)
         for msg in reversed(messages):
             m = msg.message_json if hasattr(msg, "message_json") else {}
