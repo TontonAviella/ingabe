@@ -44,7 +44,11 @@ def build_ingabe_acp_client(
 
     Returns:
         An instance of IngabeAcpClient ready to pass to
-        `acp.connect_to_agent(client, reader, writer)`.
+        `acp.connect_to_agent(client, reader, writer)`. The instance
+        exposes `accumulated_text: list[str]` — every text chunk seen
+        via session_update is appended. After `conn.prompt(...)` returns,
+        `"".join(client.accumulated_text)` is the full assistant message
+        to persist via chat_completion_messages.
     """
     import acp  # local import — see module docstring
 
@@ -53,10 +57,18 @@ def build_ingabe_acp_client(
 
         We deny all filesystem/terminal capabilities because mundi-app
         does not expose any of those to Sage. Tool dispatch back into
-        mundi-app happens via the /internal/tool-call HTTP endpoint
-        (PR #46), NOT via ACP client hooks. The ACP Client interface here
-        is purely the "deliver streaming output to the user" path.
+        mundi-app happens via the /internal/tool-call HTTP endpoint,
+        NOT via ACP client hooks. The ACP Client interface here is
+        purely the "deliver streaming output to the user" path.
+
+        The `accumulated_text` list captures every text delta in turn
+        order. The factory returns a fresh client per turn, so the list
+        starts empty each call and ends as the full assistant message.
         """
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.accumulated_text: list[str] = []
 
         async def session_update(self, notification) -> None:
             """Called by the agent for every streaming chunk.
@@ -64,7 +76,8 @@ def build_ingabe_acp_client(
             The `notification` is an `acp.SessionNotification` whose
             `.update` payload can be one of several types. For chat
             streaming, we care about `AgentMessageChunk` and the
-            `TextContentBlock` inside it.
+            `TextContentBlock` inside it. We both stream to the
+            WebSocket AND accumulate for post-turn persistence.
             """
             try:
                 update = notification.update
@@ -77,6 +90,7 @@ def build_ingabe_acp_client(
                 for block in content:
                     text = getattr(block, "text", None)
                     if text:
+                        self.accumulated_text.append(text)
                         await stream_token(conversation_id, text)
             except Exception:
                 logger.exception(
