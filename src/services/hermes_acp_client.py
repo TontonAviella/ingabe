@@ -70,31 +70,43 @@ def build_ingabe_acp_client(
             super().__init__()
             self.accumulated_text: list[str] = []
 
-        async def session_update(self, notification) -> None:
+        async def session_update(self, session_id: str, update) -> None:
             """Called by the agent for every streaming chunk.
 
-            The `notification` is an `acp.SessionNotification` whose
-            `.update` payload can be one of several types. For chat
-            streaming, we care about `AgentMessageChunk` and the
-            `TextContentBlock` inside it. We both stream to the
-            WebSocket AND accumulate for post-turn persistence.
+            CALLBACK SIGNATURE caught 2026-05-15 via raw-socket probe:
+            the SDK calls `client.session_update(session_id, update)`
+            with TWO positional args — not `session_update(notification)`
+            with a wrapping `notification.update` attribute. The earlier
+            (notification-wrapper) signature silently TypeError'd before
+            the body ran, swallowed by the SDK's exception handler, with
+            zero chunks ever reaching `accumulated_text`. The actual
+            base-class signature in acp v0.10.0 is:
 
-            ACP wire format gotcha caught 2026-05-15: for the chunk
-            update kinds (agent_message_chunk, thought_chunk, etc.),
-            `update.content` is a SINGLE block object, NOT a list of
-            blocks — wire JSON is:
-              "content": {"text": "hello", "type": "text"}
-            not:
-              "content": [{"text": "hello", "type": "text"}]
-            Earlier code did `for block in content:` which iterated
-            the model's field names and silently dropped every chunk.
-            Detection: zero chars accumulated despite Hermes happily
-            sending agent_message_chunk notifications (verified via
-            direct subprocess JSON-RPC probe). Handle both shapes
-            defensively in case future update types use lists.
+                async def session_update(
+                    self, session_id: str,
+                    update: UserMessageChunk | AgentMessageChunk |
+                            AgentThoughtChunk | ToolCallUpdate | ...,
+                ) -> None
+
+            For chat streaming, we care about `AgentMessageChunk` and
+            the `TextContentBlock` inside its `.content` field. We
+            stream to the WebSocket AND accumulate for post-turn
+            persistence.
+
+            ACP wire format quirk: for chunk-bearing updates the
+            `content` field is a SINGLE block, not a list — wire JSON
+            is `{"content": {"text": "...", "type": "text"}}` not
+            `{"content": [{"text": "...", "type": "text"}]}`. Handle
+            both shapes defensively in case future update types use
+            lists.
+
+            We also surface `agent_thought_chunk` text alongside
+            `agent_message_chunk` — Nemotron is a reasoning model and
+            its `<think>` content arrives as thought chunks. Showing
+            them to the user keeps parity with the hand-rolled path
+            which streams reasoning tokens too.
             """
             try:
-                update = notification.update
                 content = getattr(update, "content", None)
                 if content is None:
                     return
