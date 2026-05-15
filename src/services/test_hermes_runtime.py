@@ -296,13 +296,24 @@ def test_acp_connect_to_agent_arg_order_in_source():
     src = pathlib.Path(
         "src/services/hermes_runtime.py"
     ).read_text()
-    # Allow whitespace/newlines between the args; what matters is order.
+    # Strip comment lines first — the file intentionally has a comment
+    # that quotes the OLD buggy form for documentation, and we don't
+    # want that to be what we test against.
+    code_lines = [
+        line for line in src.splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    code = "\n".join(code_lines)
+    # The assigned call: `conn = acp.connect_to_agent(...)`
     import re
     m = re.search(
-        r"acp\.connect_to_agent\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,)]+)",
-        src,
+        r"conn\s*=\s*acp\.connect_to_agent\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,)]+)",
+        code,
     )
-    assert m is not None, "could not find acp.connect_to_agent call in hermes_runtime.py"
+    assert m is not None, (
+        "could not find `conn = acp.connect_to_agent(...)` call in "
+        "hermes_runtime.py (non-comment lines)"
+    )
     arg1, arg2, arg3 = (a.strip() for a in m.groups())
     assert arg1 == "client", f"first arg should be client, got {arg1!r}"
     assert arg2 == "writer", (
