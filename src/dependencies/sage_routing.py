@@ -191,6 +191,34 @@ _DOMAIN_BLOCKERS = re.compile(
 )
 
 
+# Trailing chars to strip before matching small-talk patterns. Users hit
+# any of these as typos or stylistic flourishes after a greeting:
+#   "hi'"  "hi!"  "hi."  "hi..."  "hi ?"  "hi !!"  "hi 😀"
+# Stripping them widens the regex's catch radius without rewriting it.
+# Emoji + miscellaneous Unicode punctuation get the same treatment via
+# the str.isalnum() filter in _normalize_for_smalltalk_match.
+_SMALL_TALK_TRAILING_STRIP = r"""!.,?'"`~*_-…—:;)]}>/\\"""
+
+
+def _normalize_for_smalltalk_match(text: str) -> str:
+    """Strip whitespace + trailing non-word punctuation/emoji before matching.
+
+    The small-talk regex needs an exact-end anchor (`$`) so it doesn't
+    accidentally match phrases that *start* with a greeting. But that
+    same anchor makes `hi'`, `hi!`, `hi 😀` slip through to the slow
+    path. Normalize-then-match keeps the regex strict while accepting
+    the common typo / decoration patterns users actually send.
+    """
+    s = text.strip()
+    # Drop trailing whitespace + any chars in our explicit strip set.
+    s = s.rstrip(_SMALL_TALK_TRAILING_STRIP + " \t")
+    # Drop trailing non-alphanumeric chars (catches emoji, smart quotes,
+    # zero-width joiners, etc.). Loop is bounded by str length.
+    while s and not s[-1].isalnum():
+        s = s[:-1]
+    return s
+
+
 def detect_small_talk(text: str) -> bool:
     """Return True if `text` is pure small-talk that needs no tools.
 
@@ -206,7 +234,10 @@ def detect_small_talk(text: str) -> bool:
         return False
     if _DOMAIN_BLOCKERS.search(stripped):
         return False
-    return any(p.match(stripped) for p in _SMALL_TALK_PATTERNS)
+    normalized = _normalize_for_smalltalk_match(stripped)
+    if not normalized:
+        return False
+    return any(p.match(normalized) for p in _SMALL_TALK_PATTERNS)
 
 
 # ---------------------------------------------------------------------------

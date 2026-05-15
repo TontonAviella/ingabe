@@ -55,6 +55,25 @@ from src.dependencies.sage_routing import (
         "who are you",
         "Hello!",
         "thanks.",
+        # Trailing apostrophe (real prod miss 2026-05-15 — user typed "hi'"
+        # and hit the slow path because the regex's `$` anchor rejected it).
+        "hi'",
+        "hi`",
+        # Other punctuation users actually send.
+        "hi!!",
+        "hi...",
+        "hi ?",
+        "hi !",
+        "thanks!!",
+        "ok.",
+        "yes!",
+        # Smart quotes from auto-correct.
+        "hi’",   # right single quotation mark
+        "thanks”",  # right double quotation mark
+        # Trailing emoji.
+        "hi \U0001F44B",   # waving hand
+        "thanks \U0001F64F",  # folded hands
+        "ok \U0001F44D",     # thumbs up
     ],
 )
 def test_detect_small_talk_positive(msg: str) -> None:
