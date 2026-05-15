@@ -351,11 +351,23 @@ async def run_sage_turn_via_hermes(
         # `client.accumulated_text`.
 
         # ── 7. Persist the assistant response ────────────────────────────
+        # Wrap in its own try/except: the streamed response already
+        # reached the user via WebSocket, so a persistence failure
+        # shouldn't trigger the "Sage is having trouble" notification.
+        # Worst case here: next page reload doesn't show this turn
+        # (we'd see a gap in chat_completion_messages, surfaced in logs).
         assistant_text = "".join(client.accumulated_text)
         if assistant_text.strip():
-            await _persist_assistant_message(
-                map_id, user_id, conversation.id, assistant_text,
-            )
+            try:
+                await _persist_assistant_message(
+                    map_id, user_id, conversation.id, assistant_text,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist Hermes response for conv=%s "
+                    "(user saw streamed response, but it'll be missing on reload)",
+                    conversation.id,
+                )
         else:
             logger.warning(
                 "Hermes returned empty response for conv=%s — nothing to persist",
