@@ -61,6 +61,11 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Header, status
 from pydantic import BaseModel
 
+from src.dependencies.hermes_auth import (
+    get_gateway_secret,
+    verify_hermes_signature,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -93,21 +98,14 @@ def inbox_is_enabled() -> bool:
 
 
 def _verify_hmac(raw_body: bytes, signature: Optional[str]) -> bool:
-    """Constant-time HMAC verification.
+    """Thin wrapper kept for back-compat with existing call sites + tests.
 
-    Returns True iff `signature` matches HMAC-SHA256(raw_body,
-    HERMES_GATEWAY_SECRET). False if either is missing.
-
-    Currently a placeholder — proper implementation lands in the follow-
-    up PR alongside Hermes gateway sidecar wiring. Returns False today.
+    The actual verification lives in `src.dependencies.hermes_auth` so
+    /internal/tool-call can share the exact same implementation. Both
+    endpoints MUST use the identical scheme or the gateway side gets
+    two slightly-different signing recipes to keep straight.
     """
-    secret = os.environ.get("HERMES_GATEWAY_SECRET")
-    if not secret or not signature:
-        return False
-    # TODO: implement hmac.compare_digest(hmac.new(secret, raw_body,
-    # 'sha256').hexdigest(), signature) when the gateway is signing
-    # for real. Default to False until verified end-to-end.
-    return False
+    return verify_hermes_signature(raw_body, signature)
 
 
 @router.post("/inbox")
@@ -139,10 +137,20 @@ async def inbox(
             ),
         )
 
+    # Secret-not-configured is an OPERATOR fault — surface it as 503 so
+    # ops dashboards alert on it. A 401 here would look like a caller
+    # auth failure and mask the deployment misconfiguration.
+    if get_gateway_secret() is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="HERMES_GATEWAY_SECRET not set in mundi-app environment",
+        )
+
     raw = await request.body()
-    if not _verify_hmac(raw, x_hermes_signature):
-        # Generic 401 — don't leak whether the secret is unset vs sig
-        # mismatch. Either way the caller is not authorized.
+    if not verify_hermes_signature(raw, x_hermes_signature):
+        # 401 = caller didn't authenticate. Generic message — don't tell
+        # the caller WHY their signature failed (would leak: wrong key
+        # vs missing header vs wrong algorithm).
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="signature_required",
