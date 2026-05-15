@@ -1559,6 +1559,15 @@ async def process_chat_interaction_task(
                         "sage_routing: filtered tools by %s (%d -> %d)",
                         _routing.reason, _before, len(tools_payload),
                     )
+                else:
+                    # Always log the default-path decision so we can spot
+                    # small-talk that's slipping through the regex. Truncate
+                    # to 60 chars to avoid leaking long user input to logs.
+                    _preview = _last_user_text[:60].replace("\n", " ")
+                    logger.info(
+                        "sage_routing: default path (reason=%s, msg_len=%d, preview=%r)",
+                        _routing.reason, len(_last_user_text), _preview,
+                    )
 
             _llm_messages = [
                 {
