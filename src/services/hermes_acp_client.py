@@ -100,13 +100,41 @@ def build_ingabe_acp_client(
             both shapes defensively in case future update types use
             lists.
 
-            We also surface `agent_thought_chunk` text alongside
-            `agent_message_chunk` — Nemotron is a reasoning model and
-            its `<think>` content arrives as thought chunks. Showing
-            them to the user keeps parity with the hand-rolled path
-            which streams reasoning tokens too.
+            REASONING STRIP (PR #53, 2026-05-16):
+            We only forward `agent_message_chunk` text. Earlier code
+            also surfaced `agent_thought_chunk` text under the
+            (wrong) rationale that it kept "parity with the hand-rolled
+            path which streams reasoning tokens too." It doesn't —
+            the hand-rolled loop strips reasoning fields before sending
+            history to the LLM and before persisting (see
+            `_ALWAYS_STRIP_FIELDS = {"reasoning", "reasoning_details"}`
+            at src/routes/message_routes.py:1190). Streaming thought
+            chunks here meant Nemotron's `<think>` text reached the
+            WebSocket as user-visible answer ("The user wants to see
+            'nyamagabe'. This likely refers to...") AND got persisted
+            to `chat_completion_messages`, doubling assistant text
+            when the thought happened to mirror the final answer
+            ("Hello! How can I assist you today?Hello! How can I
+            assist you today?"). Caught 2026-05-16 during the
+            MUNDI_USE_HERMES=1 smoke test on prod. Future work can
+            route thought chunks to a separate UI affordance
+            (collapsible "Sage is thinking…" panel); for now we
+            match the hand-rolled path's strip behavior exactly.
+
+            Tool-call updates (`tool_call`, `tool_call_update`) are
+            also currently dropped here — PR #55 will route them to
+            `kue_notify_tool_call` so the frontend renders pending /
+            running / complete status. Until that lands, the gateway's
+            tool dispatch is the only thing the user "sees" via the
+            persisted assistant message text.
             """
             try:
+                update_kind = getattr(update, "session_update", None)
+                if update_kind != "agent_message_chunk":
+                    # Drop thought chunks, tool-call updates, plan
+                    # updates, and anything else that isn't the
+                    # assistant's user-facing message stream.
+                    return
                 content = getattr(update, "content", None)
                 if content is None:
                     return

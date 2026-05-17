@@ -190,6 +190,120 @@ async def test_session_update_signature_takes_two_args(collected, monkeypatch):
     assert captured == [("conv-sig", "ok")]
 
 
+@pytest.mark.asyncio
+async def test_session_update_thought_chunk_is_dropped(collected, monkeypatch):
+    """Regression test for the 2026-05-16 UI pollution / dup-text issue.
+
+    Nemotron's `<think>` reasoning arrived as `agent_thought_chunk`
+    with the same content shape as `agent_message_chunk`. The previous
+    handler appended both kinds to `accumulated_text`, leaking
+    reasoning into the WebSocket stream and persisting duplicate text
+    when the thought happened to mirror the final answer. The
+    hand-rolled chat loop strips reasoning fields via
+    `_ALWAYS_STRIP_FIELDS = {"reasoning", "reasoning_details"}` at
+    src/routes/message_routes.py:1190 — the Hermes path now matches
+    that parity. PR #53.
+    """
+    captured, stream_token, notify_error = collected
+    monkeypatch.setitem(__import__("sys").modules, "acp", _StubAcpModule())
+
+    class _ThoughtUpdate:
+        """Same content shape as _FakeUpdate, but kind=thought."""
+        def __init__(self, content):
+            self.content = content
+            self.session_update = "agent_thought_chunk"
+
+    client = build_ingabe_acp_client(
+        stream_token=stream_token,
+        notify_error=notify_error,
+        conversation_id="conv-thought",
+    )
+    await client.session_update(
+        _SESSION_ID,
+        _ThoughtUpdate(
+            content=_FakeBlock(text="The user wants to see 'nyamagabe'..."),
+        ),
+    )
+    assert captured == [], "thought chunks must not reach stream_token"
+    assert client.accumulated_text == [], (
+        "thought chunks must not be persisted via accumulated_text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_update_thought_then_message_emits_only_message(
+    collected, monkeypatch,
+):
+    """Realistic streaming order: thought chunk(s) then message chunk(s).
+
+    Sage's reply on a chat turn looks like:
+        thought: "Hmm, let me think about Nyamagabe..."
+        thought: "It's a Rwandan district in the Southern Province."
+        message: "Nyamagabe is in the Southern Province."
+
+    Only the final `agent_message_chunk` text should reach the user.
+    """
+    captured, stream_token, notify_error = collected
+    monkeypatch.setitem(__import__("sys").modules, "acp", _StubAcpModule())
+
+    class _Update:
+        def __init__(self, kind, content):
+            self.session_update = kind
+            self.content = content
+
+    client = build_ingabe_acp_client(
+        stream_token=stream_token,
+        notify_error=notify_error,
+        conversation_id="conv-mixed",
+    )
+    await client.session_update(
+        _SESSION_ID,
+        _Update("agent_thought_chunk", _FakeBlock(text="Hmm, let me think...")),
+    )
+    await client.session_update(
+        _SESSION_ID,
+        _Update("agent_thought_chunk", _FakeBlock(text="Rwandan district...")),
+    )
+    await client.session_update(
+        _SESSION_ID,
+        _Update("agent_message_chunk", _FakeBlock(text="Nyamagabe is in the South.")),
+    )
+    assert captured == [("conv-mixed", "Nyamagabe is in the South.")]
+    assert client.accumulated_text == ["Nyamagabe is in the South."]
+
+
+@pytest.mark.asyncio
+async def test_session_update_unknown_kind_is_dropped(collected, monkeypatch):
+    """Defensive: future update kinds (plan, tool_call, tool_call_update,
+    user_message_chunk, etc.) must NOT leak text via this handler. PR #55
+    will route tool-call updates to kue_notify_tool_call; until then they
+    are silently dropped here, same as anything else that isn't an
+    agent_message_chunk.
+    """
+    captured, stream_token, notify_error = collected
+    monkeypatch.setitem(__import__("sys").modules, "acp", _StubAcpModule())
+
+    class _Update:
+        def __init__(self, kind, content):
+            self.session_update = kind
+            self.content = content
+
+    client = build_ingabe_acp_client(
+        stream_token=stream_token,
+        notify_error=notify_error,
+        conversation_id="conv-unknown",
+    )
+    for kind in ("plan", "tool_call", "tool_call_update", "user_message_chunk"):
+        await client.session_update(
+            _SESSION_ID,
+            _Update(kind, _FakeBlock(text=f"leaked {kind} content")),
+        )
+    assert captured == [], (
+        "non-agent_message_chunk update kinds must never reach stream_token"
+    )
+    assert client.accumulated_text == []
+
+
 # ---------------------------------------------------------------------------
 # Test scaffolding: stub the `acp` module so the factory function imports.
 # ---------------------------------------------------------------------------
