@@ -647,14 +647,23 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(StarletteHTTPException)
 async def spa_server(request: Request, exc: StarletteHTTPException):
-    # Don't handle API 404s - let them bubble up as real 404s
+    # Don't handle API 404s - let them bubble up as real 404s.
+    #
+    # /internal/* is the Hermes plugin callback surface (inbox + tool-call). PR #50
+    # added /internal/inbox but only tested the auth helper, not the HTTP route — so
+    # the omission of `/internal/` here went unnoticed until PR #55 wrote the first
+    # HTTP-level tests for /internal/tool-call. Symptom: any raise HTTPException
+    # from /internal/* routes was rewritten as 200 + SPA index.html because this
+    # fallback served HTML instead of bubbling the status. Add `/internal/` to the
+    # bypass list so the dispatch tests can see 503 / 401 / 422 / 404 as documented.
     if (
         request.url.path.startswith("/api/")
+        or request.url.path.startswith("/internal/")
         or request.url.path.startswith("/supertokens/")
         or request.url.path.startswith("/mcp")
     ):
-        # Return standard 404 response for API routes and MCP routes
-        # Preserve structured detail (dict/list) instead of stringifying
+        # Return standard JSON status response for API/internal/MCP routes.
+        # Preserve structured detail (dict/list) instead of stringifying.
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     # For all other routes, return the SPA's index.html
