@@ -14,7 +14,7 @@ mundi-app to actually execute a tool against partner-scoped data.
      {
        partner_id: "<uuid>",
        user_id: "<uuid>",
-       conversation_id: "<uuid>",
+       conversation_id: "<int as string>",
        tool_name: "compute_zonal_stats",
        arguments: {"layer_id": "L...", "geometry": {...}}
      }
@@ -23,17 +23,6 @@ mundi-app to actually execute a tool against partner-scoped data.
 6. mundi-app dispatches to the existing pydantic_tools handler
 7. Result returned to Hermes, who feeds it back to the LLM, who streams response
 ```
-
-## Why this endpoint exists vs. tools-in-Hermes-plugin
-
-Sage's tools (raster interpretation, similarity, insurance engine, etc.)
-need partner-scoped data via Postgres RLS. They run inside mundi-app's
-process where the DB GUCs are set per-request. Re-implementing them
-inside the Hermes plugin would mean duplicating the data-access layer,
-the RLS-aware connection pool, the brain ingestion path, etc.
-
-Cheaper: keep tools in mundi-app, let Hermes call back over HTTP. Same
-HMAC scheme as /inbox so the gateway side has one signing recipe.
 
 ## Security boundary
 
@@ -46,33 +35,31 @@ for whatever Hermes asked).
 Apply HMAC check BEFORE setting any GUCs. Order matters: never set GUCs
 based on caller-supplied IDs unless we've authenticated the caller.
 
-## Why 503-scaffold today, not full dispatch
+## Tool whitelisting
 
-This PR locks in the SECURITY boundary (HMAC). The actual tool dispatch
-(routing payload.tool_name → pydantic_tools handler with RLS-bound
-connection) is a separate concern that depends on:
-
-  - The ingabe-sage plugin existing (currently empty per CLAUDE.md TODO)
-  - GUC-setting connection pool work
-  - Result-shape contract aligned with what Hermes expects
-
-Returning 503 after auth means: operator who configures the secret AND
-flips MUNDI_USE_HERMES=1 sees a clear "auth works, dispatch wiring
-deferred" signal — not a confusing 401 or 500.
+`payload.tool_name` is looked up in `get_pydantic_tool_calls()` — a
+hard-coded registry. Any name not in that registry returns 404. This
+is the key safety property: even a forged signature cannot dispatch
+arbitrary code, only the tools mundi-app has chosen to expose.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from src.database.pool import async_conn
 from src.dependencies.hermes_auth import (
     get_gateway_secret,
     verify_hermes_signature,
 )
+from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+from src.dependencies.session import ServiceUserContext
+from src.routes.websocket import kue_ephemeral_action
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +89,56 @@ def tool_call_is_enabled() -> bool:
     return val in {"1", "true", "yes"}
 
 
+async def _resolve_map_and_project(
+    conversation_id: int,
+    user_id: str,
+) -> tuple[str, str]:
+    """Look up (map_id, project_id) for a conversation, RLS-scoped to user_id.
+
+    Conversation rows have project_id directly. map_id lives on
+    chat_completion_messages — a conversation can have messages across
+    multiple maps in the DAG. We pick the most-recent message's map_id,
+    matching what the active chat UI is most likely showing.
+
+    RLS scoping: opens the lookup connection with app.user_id set from the
+    HMAC-verified payload. The conversations RLS policy
+    (tenant_isolation_conversations) returns TRUE on an empty GUC as a
+    system-query escape hatch — without scoping we'd read ANY conversation
+    by ID, which would let a holder of the gateway secret guess IDs and
+    trigger frontend WebSocket notifications on other partners' chats.
+    Scoping makes the policy enforce ownership: if user_id doesn't own
+    the conversation, the lookup returns nothing and we 404 cleanly.
+
+    Raises HTTPException(404) if the conversation doesn't exist, isn't
+    accessible to user_id under RLS, or has no messages — in any case
+    there's nothing safe to dispatch against.
+    """
+    async with async_conn("tool-call.lookup_conv", user_id=user_id) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT c.project_id, m.map_id
+            FROM conversations c
+            LEFT JOIN chat_completion_messages m
+              ON m.conversation_id = c.id
+            WHERE c.id = $1 AND c.soft_deleted_at IS NULL
+            ORDER BY m.created_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            conversation_id,
+        )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conversation {conversation_id} not found",
+        )
+    if row["map_id"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"conversation {conversation_id} has no messages yet — nothing to scope tools against",
+        )
+    return row["map_id"], row["project_id"]
+
+
 @router.post("/tool-call")
 async def tool_call(
     request: Request,
@@ -113,9 +150,12 @@ async def tool_call(
     - 503: route is disabled (default; flip MUNDI_TOOL_CALL_ENABLED=1 to open)
     - 503: HERMES_GATEWAY_SECRET not configured on mundi-app
     - 401: HMAC signature missing or mismatched
-    - 422: payload shape invalid (FastAPI auto-handles via Pydantic)
-    - 503: auth ok but dispatch wiring not yet implemented (current state)
-    - 200: tool executed, result returned (future state, after wiring lands)
+    - 422: payload shape invalid (Pydantic-driven)
+    - 404: tool_name not in the dispatch registry OR conversation not found
+    - 200: tool executed, result returned as `{"result": <tool output>}`
+    - 200: tool raised — returned as `{"result": {"status": "error", ...}}`
+      (caller-visible failure, not endpoint failure: we still authed and
+      dispatched correctly, the tool just couldn't do its job)
     """
     if not tool_call_is_enabled():
         raise HTTPException(
@@ -145,25 +185,107 @@ async def tool_call(
             detail="signature_required",
         )
 
-    # Once the wiring lands:
-    #   payload = ToolCallPayload.model_validate_json(raw)
-    #   async with rls_scoped_conn(partner_id=payload.partner_id,
-    #                              user_id=payload.user_id) as conn:
-    #       result = await dispatch_tool(payload.tool_name, payload.arguments, conn)
-    #   return {"result": result}
-    #
-    # Three things must hold before flipping that on:
-    #   1. ingabe-sage plugin exists on the Hermes side (currently empty)
-    #   2. rls_scoped_conn helper sets app.partner_id + app.user_id GUCs
-    #      atomically with the SELECT, so a long-lived pool connection
-    #      can't leak GUC state across requests
-    #   3. dispatch_tool whitelists tool_name against a known set —
-    #      never eval-style-dispatch on caller input
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=(
-            "Tool-call endpoint scaffold is live (auth verified) but the "
-            "dispatch wiring is not yet implemented. See PR #51+ for "
-            "the wiring. Rollback: set MUNDI_TOOL_CALL_ENABLED=0."
-        ),
+    try:
+        payload = ToolCallPayload.model_validate_json(raw)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid tool-call payload: {e.errors()}",
+        )
+
+    # Whitelist check — payload.tool_name must be a known Sage tool. Without
+    # this guard, a forged signature could dispatch arbitrary code in the
+    # process. Even with auth, only the curated registry is dispatchable.
+    registry = get_pydantic_tool_calls()
+    if payload.tool_name not in registry:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"unknown tool: {payload.tool_name!r}",
+        )
+    fn, ArgModel, MetaModel = registry[payload.tool_name]
+
+    # conversation_id arrives as str (Hermes plugin stringifies); the DB
+    # column is int. Coerce explicitly so we get a clean 422 on garbage.
+    try:
+        conversation_id_int = int(payload.conversation_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"conversation_id is not an integer: {payload.conversation_id!r}",
+        )
+
+    # Resolve map + project from the conversation, RLS-scoped to the caller's
+    # user_id so we can't trigger notifications on other partners' chats by
+    # guessing conversation IDs.
+    map_id, project_id = await _resolve_map_and_project(
+        conversation_id_int, user_id=payload.user_id,
     )
+
+    # Parse tool-specific arguments. Validation failure is a CALLER error
+    # (200 with status=error in the result body), not a 4xx — Hermes still
+    # wants to feed an error string back to the LLM so it can retry.
+    try:
+        parsed_args = ArgModel(**(payload.arguments or {}))
+    except (ValidationError, TypeError, ValueError) as e:
+        return {
+            "result": {
+                "status": "error",
+                "error": f"Invalid arguments for {payload.tool_name}: {e}",
+            },
+        }
+
+    # IMPORTANT — RLS scoping is each TOOL's responsibility, not ours.
+    #
+    # Tools open their own `async_conn(user_id=..., partner_id=...)` per
+    # query (matching the in-process chat loop pattern). GUCs set on a
+    # connection in this dispatch frame would NOT propagate into those
+    # nested acquisitions — every pooled connection sets GUCs at the
+    # `__aenter__` boundary, not inherited from the caller's frame.
+    #
+    # The (user_id, partner_id) pair is threaded into IngabeToolCallMetaArgs
+    # via the `session=ServiceUserContext(...)` field. Tools that need
+    # partner-scoped data MUST call `meta.session.get_org_id()` to read
+    # partner_id and pass it to their own `async_conn(partner_id=...)`.
+    ephemeral_label = f"Sage is running {payload.tool_name}…"
+    async with kue_ephemeral_action(conversation_id_int, ephemeral_label):
+        try:
+            meta_args = MetaModel(
+                user_uuid=payload.user_id,
+                conversation_id=conversation_id_int,
+                map_id=map_id,
+                project_id=project_id,
+                session=ServiceUserContext(
+                    user_uuid=payload.user_id,
+                    partner_id=payload.partner_id,
+                ),
+            )
+            tool_result = await fn(parsed_args, meta_args)
+        except Exception as e:
+            # Bubbled tool failures: do NOT 500. Hermes turn loop must
+            # see a parseable result so it can apologize. Same shape as
+            # the in-process chat-loop uses (src/routes/message_routes.py).
+            logger.exception(
+                "tool-call dispatch failed (tool=%s conv=%s partner=%s)",
+                payload.tool_name, conversation_id_int, payload.partner_id,
+            )
+            tool_result = {
+                "status": "error",
+                "error": f"{payload.tool_name} failed: {e}",
+            }
+
+    # Confirm the result is JSON-serializable before returning — FastAPI
+    # will otherwise emit a confusing 500. Round-tripping catches any
+    # non-JSON tool outputs (e.g. raw numpy arrays) early.
+    try:
+        json.dumps(tool_result)
+    except (TypeError, ValueError) as e:
+        logger.error(
+            "tool-call result not JSON-serializable (tool=%s): %s",
+            payload.tool_name, e,
+        )
+        tool_result = {
+            "status": "error",
+            "error": f"{payload.tool_name} returned non-serializable result",
+        }
+
+    return {"result": tool_result}
