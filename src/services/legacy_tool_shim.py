@@ -4312,6 +4312,140 @@ async def _handle_add_land_cover_layer(ctx: LegacyToolContext) -> Dict[str, Any]
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_create_management_zones(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Sync precision_ag_service.create_management_zones in executor.
+
+    Lifted byte-for-byte from message_routes.py:3106-3122.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.precision_ag_service import create_management_zones
+
+        result_data = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: create_management_zones(
+                geometry=args.get("geometry"),
+                num_zones=args.get("num_zones", 3),
+                date_from=args.get("date_from"),
+                date_to=args.get("date_to"),
+            ),
+        )
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+        return {"status": "success", "management_zones": result_data}
+    except Exception as e:
+        logger.exception("create_management_zones failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_create_prescription_map(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Sync precision_ag_service.create_prescription_map in executor.
+
+    Lifted byte-for-byte from message_routes.py:3135-3150.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.precision_ag_service import create_prescription_map
+
+        result_data = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: create_prescription_map(
+                geometry=args.get("geometry"),
+                crop_type=args.get("crop_type", "maize"),
+                num_zones=args.get("num_zones", 3),
+            ),
+        )
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+        return {"status": "success", "prescription_map": result_data}
+    except Exception as e:
+        logger.exception("create_prescription_map failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_create_soil_sampling_plan(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Sync precision_ag_service.create_soil_sampling_plan in executor.
+
+    Lifted byte-for-byte from message_routes.py:3163-3177.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.precision_ag_service import create_soil_sampling_plan
+
+        result_data = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: create_soil_sampling_plan(
+                geometry=args.get("geometry"),
+                num_zones=args.get("num_zones", 3),
+            ),
+        )
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+        return {"status": "success", "sampling_plan": result_data}
+    except Exception as e:
+        logger.exception("create_soil_sampling_plan failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_query_rwanda_zonal_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Rwanda lakehouse query (district summary or NDVI timeseries).
+
+    Two query_types:
+    - district_summary: by province and/or week_start
+    - ndvi_timeseries: by h3_index OR parcel_id, with date range
+
+    Lifted byte-for-byte from message_routes.py:2944-2992.
+    """
+    args = ctx.arguments
+    query_type = args.get("query_type")
+
+    try:
+        from fastapi import HTTPException
+        from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
+        rwanda_mgr = get_rwanda_lakehouse_manager()
+
+        if query_type == "district_summary":
+            province = args.get("province")
+            week_start = args.get("week_start")
+            result_data = rwanda_mgr.query_district_summary(
+                province=province,
+                week_start=week_start,
+            )
+            return {"status": "success", "data": result_data}
+
+        if query_type == "ndvi_timeseries":
+            h3_index = args.get("h3_index")
+            parcel_id = args.get("parcel_id")
+            date_from = args.get("date_from")
+            date_to = args.get("date_to")
+            result_data = rwanda_mgr.query_ndvi_timeseries(
+                h3_index=h3_index,
+                parcel_id=parcel_id,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            return {"status": "success", "data": result_data}
+
+        return {
+            "status": "error",
+            "error": f"Unknown query_type: {query_type}. Must be 'district_summary' or 'ndvi_timeseries'."
+        }
+    except HTTPException as e:
+        return {
+            "status": "error",
+            "error": f"Rwanda lakehouse query error: {e.detail}",
+        }
+    except Exception as e:
+        logger.exception(
+            "Error querying Rwanda lakehouse: query_type=%s",
+            query_type,
+        )
+        return {
+            "status": "error",
+            "error": f"Failed to query Rwanda lakehouse: {str(e)}",
+        }
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -4327,12 +4461,11 @@ _NOT_YET_EXTRACTED: list[str] = [
     # query_postgis_database, query_duckdb_sql, zonal_statistics,
     # reverse_geocode_coordinates. None remain in this section.
     # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
-    "query_rwanda_zonal_stats",
+    # query_rwanda_zonal_stats extracted (Rwanda lakehouse query router).
     # search_satellite_imagery extracted (STAC + NDVI sample).
     # NOTE: get_field_health + get_parcel_ndvi_stats extracted.
-    "create_management_zones",
-    "create_prescription_map",
-    "create_soil_sampling_plan",
+    # create_management_zones + create_prescription_map +
+    # create_soil_sampling_plan extracted (precision_ag service trio).
     # identify_parcel_crop + confirm_crop_prediction extracted.
     # get_ndvi_stats + get_cell_ndvi_stats extracted.
     # get_soil_properties extracted (iSDAsoil + display_layer hints).
@@ -4433,6 +4566,10 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "search_satellite_imagery": _handle_search_satellite_imagery,
     "query_worldcover_stats": _handle_query_worldcover_stats,
     "add_land_cover_layer": _handle_add_land_cover_layer,
+    "create_management_zones": _handle_create_management_zones,
+    "create_prescription_map": _handle_create_prescription_map,
+    "create_soil_sampling_plan": _handle_create_soil_sampling_plan,
+    "query_rwanda_zonal_stats": _handle_query_rwanda_zonal_stats,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
