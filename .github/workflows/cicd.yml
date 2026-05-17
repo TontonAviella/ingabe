@@ -70,7 +70,21 @@ jobs:
         # PR #57 twice in a row even though the tests pass in isolation.
         # Capping at -n 6 keeps wall-clock under the 25 min timeout and
         # eliminates the memory contention.
-        run: docker compose run app pytest -vs -n 6 --ignore=src/test_worldcover.py
+        #
+        # --dist=loadfile: keep all tests in a single FILE on the same
+        # worker. Several test files (tests/brain/test_org_context.py,
+        # test_partner_isolation.py) share module-scoped fixtures that
+        # create rows the later tests look up. The default dist=load
+        # distributes individual tests across workers, so the create-row
+        # test runs on gw0 with one RUN_TAG but the lookup test runs on
+        # gw5 with a different RUN_TAG (each worker imports the module
+        # fresh, generating a new uuid.uuid4() RUN_TAG at module top).
+        # That made test_role_check_constraint /
+        # test_cascade_delete_org_removes_memberships fail with
+        # NotNullViolationError once the OOM cascade was fixed and the
+        # tests actually had a chance to run. loadfile preserves the
+        # author's intended same-worker test ordering inside each file.
+        run: docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
         timeout-minutes: 25
 
       - name: Start services for E2E
