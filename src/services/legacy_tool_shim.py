@@ -3093,6 +3093,490 @@ async def _handle_get_crop_growth_stage(ctx: LegacyToolContext) -> Dict[str, Any
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_get_soil_properties(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Query iSDAsoil for a single lat/lon, enrich with display_layer hints.
+
+    Returns soil property values + a `displayable_layers` list keyed by
+    style_hint so Sage can paint the map with the same COG it just queried.
+    `display_bbox` suggests a ~5km auto-zoom around the queried point.
+
+    Lifted byte-for-byte from message_routes.py:3763-3815.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.isdasoil_service import (
+            query_soil_point,
+            _cog_url,
+        )
+
+        lon = args.get("longitude")
+        lat = args.get("latitude")
+        properties = args.get("properties")
+        depth = args.get("depth", "0-20")
+
+        result_data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: query_soil_point(
+                lon=lon,
+                lat=lat,
+                properties=properties,
+                depth=depth,
+            )
+        )
+
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+
+        _style_hint_map = {
+            "nitrogen_total": "soil_nitrogen",
+            "phosphorous_extractable": "soil_phosphorus",
+            "potassium_extractable": "soil_potassium",
+            "ph": "soil_ph",
+            "carbon_organic": "soil_organic_carbon",
+            "clay_content": "soil_clay",
+            "sand_content": "soil_sand",
+        }
+        _display_layers: list[dict] = []
+        for prop_name in (result_data.get("properties") or {}).keys():
+            if prop_name in _style_hint_map:
+                _display_layers.append({
+                    "asset_url": _cog_url(prop_name),
+                    "style_hint": _style_hint_map[prop_name],
+                    "title": result_data["properties"][prop_name].get("label", prop_name),
+                    "band_index": 1 if depth == "0-20" else 2,
+                })
+        _half_deg = 0.05
+        result_data["display_bbox"] = (
+            f"{lon - _half_deg},{lat - _half_deg},"
+            f"{lon + _half_deg},{lat + _half_deg}"
+        )
+        result_data["displayable_layers"] = _display_layers
+        return result_data
+    except Exception as e:
+        logger.exception("get_soil_properties tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_weather_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """AgERA5 (PostgreSQL cache) + Open-Meteo recent-gap fill, merged by date.
+
+    AgERA5 is the source of truth for historical (~5-8 day latency); Open-Meteo
+    NWP reanalysis fills the recent days. Returns up to 300 records sorted by
+    date desc, district. Auto-provisions Rwanda PostGIS connection.
+
+    Lifted byte-for-byte from message_routes.py:5137-5288.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        # ── 1. Query AgERA5 cache (PostgreSQL) ──
+        _agera5_rows: list = []
+        try:
+            _where: list[str] = []
+            _params: list[Any] = []
+            _pidx = 1
+            if args.get("district"):
+                _where.append(f"district = ${_pidx}")
+                _params.append(args["district"])
+                _pidx += 1
+            if args.get("date_from"):
+                _where.append(f"observation_date >= ${_pidx}")
+                _params.append(args["date_from"])
+                _pidx += 1
+            if args.get("date_to"):
+                _where.append(f"observation_date <= ${_pidx}")
+                _params.append(args["date_to"])
+                _pidx += 1
+            if not args.get("date_from") and not args.get("date_to"):
+                _where.append("observation_date >= CURRENT_DATE - INTERVAL '30 days'")
+            _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+            _agera5_rows = await ctx.conn.fetch(
+                f"SELECT district, observation_date, temperature_mean, "
+                f"temperature_max, temperature_min, precipitation, "
+                f"solar_radiation "
+                f"FROM weather_daily_cache {_where_sql} "
+                f"ORDER BY observation_date DESC, district LIMIT 500",
+                *_params,
+            )
+        except Exception:
+            logger.debug("PostgreSQL cache not available, will use Open-Meteo only")
+
+        # Build result list from AgERA5
+        _agera5_dates: set[str] = set()
+        _weather_stats: list[Dict[str, Any]] = []
+        for r in _agera5_rows:
+            _dt = str(r["observation_date"]) if r["observation_date"] else None
+            if _dt:
+                _agera5_dates.add(_dt)
+            _weather_stats.append({
+                "district": r["district"],
+                "date": _dt,
+                "temperature_mean_c": r["temperature_mean"],
+                "temperature_max_c": r["temperature_max"],
+                "temperature_min_c": r["temperature_min"],
+                "precipitation_mm_day": r["precipitation"],
+                "solar_radiation_mj_m2_day": r["solar_radiation"],
+                "source": "agera5",
+            })
+
+        # ── 2. Fill recent gap with Open-Meteo ──
+        _openmeteo_stats: list[Dict[str, Any]] = []
+        try:
+            from src.services.weather_service import get_weather_service as _get_ws
+
+            _centroids: list = []
+            async with ctx.conn.transaction():
+                _cent_rows = await ctx.conn.fetch(
+                    "SELECT district, "
+                    "round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                    "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                    "FROM rwanda_district_boundaries ORDER BY district"
+                )
+                _centroids = [
+                    {"district": r["district"], "lat": float(r["lat"]), "lon": float(r["lon"])}
+                    for r in _cent_rows
+                ]
+
+            if _centroids:
+                _ws = _get_ws()
+                if _ws:
+                    _om_data = _ws.fetch_openmeteo_districts(_centroids, past_days=10)
+                    _filter_district = args.get("district")
+                    _filter_from = args.get("date_from")
+                    _filter_to = args.get("date_to")
+                    for om in _om_data:
+                        if om["date"] in _agera5_dates:
+                            continue  # AgERA5 is more accurate, skip
+                        if _filter_district and om["district"] != _filter_district:
+                            continue
+                        if _filter_from and om["date"] < _filter_from:
+                            continue
+                        if _filter_to and om["date"] > _filter_to:
+                            continue
+                        _openmeteo_stats.append({
+                            "district": om["district"],
+                            "date": om["date"],
+                            "temperature_mean_c": om["temperature_mean"],
+                            "temperature_max_c": om["temperature_max"],
+                            "temperature_min_c": om["temperature_min"],
+                            "precipitation_mm_day": om["precipitation"],
+                            "solar_radiation_mj_m2_day": om["solar_radiation"],
+                            "source": "nwp-reanalysis",
+                        })
+        except Exception as _om_err:
+            logger.warning("Open-Meteo supplement failed: %s", _om_err)
+
+        # ── 3. Merge and sort ──
+        _all_stats = _weather_stats + _openmeteo_stats
+        _all_stats.sort(key=lambda s: (s.get("date") or "", s.get("district") or ""), reverse=True)
+        _all_stats = _all_stats[:300]
+
+        if _all_stats:
+            _sources = set(s.get("source", "agera5") for s in _all_stats)
+            _source_str = " + ".join(sorted(_sources))
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": _source_str,
+                "spatial_resolution": "district-level (~10km grid, one value per district)",
+                "count": len(_all_stats),
+                "agera5_records": len(_weather_stats),
+                "openmeteo_records": len(_openmeteo_stats),
+                "note": (
+                    "This data is aggregated at DISTRICT level from a ~10km grid. "
+                    "Actual weather varies within a district due to elevation and terrain. "
+                    "If the user asks about a specific sector or location, note that these are "
+                    "district-level averages and suggest using get_forecast with exact lat/lon "
+                    "for more precise local conditions. "
+                    "AgERA5 (Copernicus reanalysis) covers older dates. "
+                    "NWP reanalysis (ECMWF/GFS/ICON) covers recent days."
+                ),
+                "weather_stats": _all_stats,
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise weather data on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Available tables: rwanda_district_boundaries (district, geom). "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style to colour by temperature or precipitation. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "weather_stats": [],
+            "message": (
+                "No weather data available. DuckDB cache is empty and real-time weather "
+                "fetch did not return results. Check network connectivity."
+            ),
+        }
+    except Exception as e:
+        logger.exception("get_weather_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_forecast_accuracy(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Forecast vs AgERA5 reanalysis (ground truth), MAE + bias per district.
+
+    Compares forecast.daily.temperature_max & precipitation_mm against the
+    weather_daily_cache. Defaults to 30-day lookback, configurable. Iterates
+    district centroids; failures per-district are silently skipped (LLM gets
+    the surviving sample).
+
+    Lifted byte-for-byte from message_routes.py:5355-5473.
+    """
+    args = ctx.arguments
+    try:
+        import asyncio as _aio2
+        from src.services.forecast_service import get_farm_forecast
+
+        _acc_district = args.get("district")
+
+        if _acc_district:
+            _acc_rows = await ctx.conn.fetch(
+                "SELECT district, "
+                "round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                "FROM rwanda_district_boundaries WHERE district ILIKE $1",
+                _acc_district,
+            )
+        else:
+            _acc_rows = await ctx.conn.fetch(
+                "SELECT district, "
+                "round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                "FROM rwanda_district_boundaries ORDER BY district"
+            )
+
+        from datetime import date as _date, timedelta as _td
+        _lookback = int(args.get("lookback_days", 30))
+        _cutoff = _date.today() - _td(days=_lookback)
+        _obs_rows = await ctx.conn.fetch(
+            "SELECT district, observation_date, temperature_mean, "
+            "temperature_max, temperature_min, precipitation "
+            "FROM weather_daily_cache "
+            "WHERE observation_date >= $1 "
+            "ORDER BY observation_date DESC, district",
+            _cutoff,
+        )
+
+        _obs_lookup: Dict[tuple, Dict[str, Any]] = {}
+        for r in _obs_rows:
+            key = (r["district"], str(r["observation_date"]))
+            _obs_lookup[key] = {
+                "temp_mean": float(r["temperature_mean"]) if r["temperature_mean"] else None,
+                "temp_max": float(r["temperature_max"]) if r["temperature_max"] else None,
+                "temp_min": float(r["temperature_min"]) if r["temperature_min"] else None,
+                "precip": float(r["precipitation"]) if r["precipitation"] else None,
+            }
+
+        _model_errors: Dict[str, list] = {"temp_errors": [], "precip_errors": [], "comparisons": []}
+
+        for _r in _acc_rows:
+            _d_name = _r["district"]
+            _d_lat, _d_lon = float(_r["lat"]), float(_r["lon"])
+
+            try:
+                _fc = await _aio2.get_event_loop().run_in_executor(
+                    None,
+                    lambda lat=_d_lat, lon=_d_lon: get_farm_forecast(
+                        lat, lon, forecast_days=3,
+                    ),
+                )
+            except Exception:
+                continue
+
+            _fc_daily = _fc.get("daily", [])
+            for _fd in _fc_daily:
+                _fd_date = _fd.get("date")
+                _obs = _obs_lookup.get((_d_name, _fd_date))
+                if not _obs:
+                    continue
+
+                _fc_tmax = _fd.get("temperature_max")
+                _fc_precip = _fd.get("precipitation_mm")
+
+                if _fc_tmax is not None and _obs["temp_max"] is not None:
+                    _fc_t = _fc_tmax["mean"] if isinstance(_fc_tmax, dict) else _fc_tmax
+                    _model_errors["temp_errors"].append(_fc_t - _obs["temp_max"])
+
+                if _fc_precip is not None and _obs["precip"] is not None:
+                    _fc_p = _fc_precip["mean"] if isinstance(_fc_precip, dict) else _fc_precip
+                    _model_errors["precip_errors"].append(_fc_p - _obs["precip"])
+
+                _model_errors["comparisons"].append({
+                    "district": _d_name,
+                    "date": _fd_date,
+                    "forecast_tmax": _fc_tmax["mean"] if isinstance(_fc_tmax, dict) else _fc_tmax,
+                    "observed_tmax": _obs["temp_max"],
+                    "forecast_precip": _fc_precip["mean"] if isinstance(_fc_precip, dict) else _fc_precip,
+                    "observed_precip": _obs["precip"],
+                })
+
+        _te = _model_errors["temp_errors"]
+        _pe = _model_errors["precip_errors"]
+        _accuracy_result = {
+            "comparison_count": len(_model_errors["comparisons"]),
+            "temperature": {
+                "mae_celsius": round(sum(abs(e) for e in _te) / len(_te), 2) if _te else None,
+                "bias_celsius": round(sum(_te) / len(_te), 2) if _te else None,
+            },
+            "precipitation": {
+                "mae_mm": round(sum(abs(e) for e in _pe) / len(_pe), 2) if _pe else None,
+                "bias_mm": round(sum(_pe) / len(_pe), 2) if _pe else None,
+            },
+            "sample_comparisons": _model_errors["comparisons"][:10],
+        }
+
+        _obs_dates = sorted(set(str(r["observation_date"]) for r in _obs_rows))
+        return {
+            "status": "success",
+            "source": "Multi-model ensemble — ECMWF IFS + GFS + ICON + GraphCast",
+            "note": (
+                "Accuracy = forecast vs AgERA5 reanalysis (ground truth). "
+                "MAE = mean absolute error. Bias = systematic over/under prediction. "
+                "Positive bias = forecast runs hot/wet. "
+                "AgERA5 has ~5-8 day latency so comparisons are for recent overlapping dates."
+            ),
+            "observed_dates": _obs_dates,
+            **_accuracy_result,
+        }
+    except Exception as e:
+        logger.exception("get_forecast_accuracy tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_insurance_accuracy(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Thin wrapper around weather_accuracy.compute_insurance_accuracy.
+
+    Lifted byte-for-byte from message_routes.py:5509-5520.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.weather_accuracy import compute_insurance_accuracy as _compute_ins
+        return await _compute_ins(
+            ctx.conn,
+            district=args.get("district"),
+            season=args.get("season"),
+            threshold_mm=float(args.get("threshold_mm", 5.0)),
+        )
+    except Exception as e:
+        logger.exception("get_insurance_accuracy tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_emissions_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """EDGAR v8.0 emissions cache, multi-dim filter (year, type, sector, district).
+
+    Returns up to 500 records sorted by year desc. Defaults to last 7 years
+    when no year filter is given. Auto-provisions Rwanda PostGIS connection
+    with a join-template in kue_instructions for choropleth maps.
+
+    Lifted byte-for-byte from message_routes.py:5758-5850.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _em_where: list[str] = []
+        _em_params: list[Any] = []
+        _em_pidx = 1
+        if args.get("district"):
+            _em_where.append(f"district = ${_em_pidx}")
+            _em_params.append(args["district"])
+            _em_pidx += 1
+        if args.get("year"):
+            _em_where.append(f"year = ${_em_pidx}")
+            _em_params.append(int(args["year"]))
+            _em_pidx += 1
+        if args.get("year_from"):
+            _em_where.append(f"year >= ${_em_pidx}")
+            _em_params.append(int(args["year_from"]))
+            _em_pidx += 1
+        if args.get("year_to"):
+            _em_where.append(f"year <= ${_em_pidx}")
+            _em_params.append(int(args["year_to"]))
+            _em_pidx += 1
+        if args.get("emission_type"):
+            _em_where.append(f"emission_type = ${_em_pidx}")
+            _em_params.append(args["emission_type"])
+            _em_pidx += 1
+        if args.get("sector"):
+            _em_where.append(f"sector = ${_em_pidx}")
+            _em_params.append(args["sector"])
+            _em_pidx += 1
+        if not args.get("year") and not args.get("year_from") and not args.get("year_to"):
+            _em_where.append("year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 6")
+
+        _em_where_sql = f"WHERE {' AND '.join(_em_where)}" if _em_where else ""
+        _em_rows = await ctx.conn.fetch(
+            f"SELECT district, year, emission_type, sector, "
+            f"sector_label, total_tonnes, grid_cells "
+            f"FROM emissions_annual_cache {_em_where_sql} "
+            f"ORDER BY year DESC, district, emission_type, sector "
+            f"LIMIT 500",
+            *_em_params,
+        )
+
+        _emissions_stats: list[Dict[str, Any]] = []
+        for r in _em_rows:
+            _emissions_stats.append({
+                "district": r["district"],
+                "year": r["year"],
+                "emission_type": r["emission_type"],
+                "sector": r["sector"],
+                "sector_label": r["sector_label"],
+                "total_tonnes": round(r["total_tonnes"], 2) if r["total_tonnes"] else None,
+                "grid_cells": r["grid_cells"],
+            })
+
+        if _emissions_stats:
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "EDGAR v8.0 (JRC)",
+                "count": len(_emissions_stats),
+                "note": (
+                    "EDGAR v8.0 emissions data from the Joint Research Centre. "
+                    "Values are total tonnes per district per year. "
+                    "Sectors: AGS=Agricultural soils, ENF=Enteric fermentation, "
+                    "MNM=Manure management, AWB=Agricultural waste burning."
+                ),
+                "emissions_stats": _emissions_stats,
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise emissions data on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Join emissions_annual_cache with rwanda_district_boundaries on district. "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, e.district, e.total_tonnes, e.emission_type, "
+                    "e.year, b.geom FROM emissions_annual_cache e JOIN rwanda_district_boundaries b "
+                    "ON e.district = b.district WHERE e.emission_type = 'CH4' AND e.year = 2022 "
+                    "Then add_layer_to_map and set_layer_style to colour by total_tonnes. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "emissions_stats": [],
+            "message": (
+                "No emissions data available. The emissions_annual_cache table "
+                "may not be populated yet. Trigger the annual_emissions_ingest "
+                "Dagster asset to load EDGAR data."
+            ),
+        }
+    except Exception as e:
+        logger.exception("get_emissions_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -3116,17 +3600,15 @@ _NOT_YET_EXTRACTED: list[str] = [
     "create_soil_sampling_plan",
     # identify_parcel_crop + confirm_crop_prediction extracted.
     # get_ndvi_stats + get_cell_ndvi_stats extracted.
-    "get_soil_properties",
+    # get_soil_properties extracted (iSDAsoil + display_layer hints).
     # get_agri_indices extracted (cache + DE Africa + inline layer creation).
     "query_worldcover_stats",
     # get_crop_classifications + get_anomaly_alerts + get_yield_risk +
     # get_drought_status + get_crop_growth_stage extracted (5 cache-read tools).
-    "get_weather_stats",
     # NOTE: get_forecast + detect_dry_spells + get_insurance_intelligence
     # have been extracted (the insurance flow).
-    "get_forecast_accuracy",
-    "get_emissions_stats",
-    "get_insurance_accuracy",
+    # get_weather_stats + get_forecast_accuracy + get_emissions_stats +
+    # get_insurance_accuracy extracted (weather/accuracy/emissions batch).
     "search_brain",
     "get_entity",
     "add_observation",
@@ -3207,6 +3689,11 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_yield_risk": _handle_get_yield_risk,
     "get_drought_status": _handle_get_drought_status,
     "get_crop_growth_stage": _handle_get_crop_growth_stage,
+    "get_soil_properties": _handle_get_soil_properties,
+    "get_weather_stats": _handle_get_weather_stats,
+    "get_forecast_accuracy": _handle_get_forecast_accuracy,
+    "get_insurance_accuracy": _handle_get_insurance_accuracy,
+    "get_emissions_stats": _handle_get_emissions_stats,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
