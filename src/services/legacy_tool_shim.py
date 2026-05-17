@@ -2038,6 +2038,420 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_get_agri_indices(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Multi-index Sentinel-2 stats (NDVI, EVI, NDWI, SAVI, NDRE, NDBI) for
+    Rwanda admin boundaries, with cache write-back and direct layer creation.
+
+    Extracted from src/routes/message_routes.py:3896-4305. The biggest
+    inline handler — does six things in sequence:
+
+      1. Selects the right admin table (district/sector/cell) based on
+         the admin_level argument.
+      2. Reads cache from agri_indices_cache with a 7-day TTL (Sentinel-2
+         revisit ~5 days).
+      3. For cache misses, calls satellite_analytics.get_agri_stats per
+         admin unit, aggregates the six indices via numpy.
+      4. Writes the fresh rows back to agri_indices_cache.
+      5. Auto-provisions the Rwanda PostGIS connection and builds a
+         `SELECT … FROM admin_tbl JOIN (VALUES …)` query embedding all
+         the computed stats inline.
+      6. CREATES the layer directly (inserts map_layers + layer_styles +
+         map_layer_styles + appends to user_mundiai_maps.layers) with a
+         red→green NDVI choropleth + 3D extrusion metadata. The LLM is
+         instructed NOT to also call new_layer_from_postgis/set_layer_style
+         because the work is already done.
+
+    The inline layer-creation logic duplicates pieces of
+    _handle_new_layer_from_postgis + _handle_set_layer_style. A
+    follow-up PR can refactor this to call those shared helpers; for
+    now keeping byte-for-byte parity with the inline handler to avoid
+    behavior drift.
+
+    Args (from ctx.arguments):
+      - admin_level: 'district' (default) | 'sector' | 'cell'
+      - name: str (optional, ILIKE on the admin name column)
+      - district: str (optional, parent filter for sector/cell levels)
+      - date_from / date_to: ISO date strings (defaults: last 7 days)
+    """
+    import json as _json
+    from datetime import date as _date, datetime as _datetime, timedelta as _td
+
+    try:
+        from src.services.satellite_analytics import get_agri_stats as _get_agri_stats
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+        from src.routes.websocket import kue_ephemeral_action
+        from src.utils import generate_id
+        import numpy as _np
+
+        AGRI_INDICES = ["ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
+        CACHE_TTL_DAYS = 7  # Sentinel-2 revisit ~5 days
+
+        level = ctx.arguments.get("admin_level", "district")
+        name_filter = ctx.arguments.get("name")
+        district_filter = ctx.arguments.get("district")
+        date_from = ctx.arguments.get("date_from")
+        date_to = ctx.arguments.get("date_to")
+        if not date_to:
+            date_to = _datetime.utcnow().strftime("%Y-%m-%d")
+        if not date_from:
+            date_from = (_datetime.utcnow() - _td(days=7)).strftime("%Y-%m-%d")
+
+        table_map = {
+            "district": ("rwanda_district_boundaries", "district", None),
+            "sector": ("rwanda_sector_boundaries", "sector_name", "district_name"),
+            "cell": ("rwanda_cell_boundaries", "cell_name", "district_name"),
+        }
+        tbl, name_col, parent_col = table_map.get(level, table_map["district"])
+
+        # Build WHERE for admin boundary lookup.
+        conditions: list[str] = []
+        params: list[Any] = []
+        pidx = 1
+        if name_filter:
+            conditions.append(f"{name_col} ILIKE ${pidx}")
+            params.append(f"%{name_filter}%")
+            pidx += 1
+        if district_filter and parent_col:
+            conditions.append(f"{parent_col} ILIKE ${pidx}")
+            params.append(f"%{district_filter}%")
+            pidx += 1
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        # Fetch admin boundaries (cap at 30 — covers all 30 districts, more
+        # would slow real-time fetches beyond reasonable LLM-turn budget).
+        async with ctx.conn.transaction():
+            admin_rows = await ctx.conn.fetch(
+                f"SELECT {name_col} AS name, "
+                f"{parent_col + ' AS parent,' if parent_col else ''} "
+                f"ST_AsGeoJSON(geom) AS geom "
+                f"FROM {tbl} {where} "
+                f"ORDER BY {name_col} LIMIT 30",
+                *params,
+            )
+
+        if not admin_rows:
+            return {
+                "status": "success",
+                "agri_indices": [],
+                "message": f"No {level} boundaries found matching filters.",
+            }
+
+        # ---- Step 1: read cache ----
+        admin_names = [r["name"] for r in admin_rows]
+        cutoff = _datetime.utcnow() - _td(days=CACHE_TTL_DAYS)
+        cached_rows = await ctx.conn.fetch(
+            "SELECT admin_name, parent_name, week_start, "
+            "ndvi_mean, ndvi_std, evi_mean, evi_std, "
+            "ndwi_mean, ndwi_std, savi_mean, savi_std, "
+            "ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
+            "valid_pixels, computed_at "
+            "FROM agri_indices_cache "
+            "WHERE admin_level = $1 "
+            "AND admin_name = ANY($2::text[]) "
+            "AND computed_at >= $3 "
+            "ORDER BY computed_at DESC",
+            level, admin_names, cutoff,
+        )
+
+        # Dedup cache rows: keep most-recent per admin_name.
+        cached_by_name: Dict[str, Dict[str, Any]] = {}
+        for cr in cached_rows:
+            cname = cr["admin_name"]
+            if cname not in cached_by_name:
+                cached_by_name[cname] = {
+                    "admin_level": level,
+                    "name": cname,
+                    "district": cr["parent_name"] if cr["parent_name"] else None,
+                    "date_from": str(cr["week_start"]),
+                    "date_to": date_to,
+                    "ndvi_mean": cr["ndvi_mean"], "ndvi_std": cr["ndvi_std"],
+                    "evi_mean": cr["evi_mean"], "evi_std": cr["evi_std"],
+                    "ndwi_mean": cr["ndwi_mean"], "ndwi_std": cr["ndwi_std"],
+                    "savi_mean": cr["savi_mean"], "savi_std": cr["savi_std"],
+                    "ndre_mean": cr["ndre_mean"], "ndre_std": cr["ndre_std"],
+                    "ndbi_mean": cr["ndbi_mean"], "ndbi_std": cr["ndbi_std"],
+                    "valid_pixels": cr["valid_pixels"],
+                    "source": "cache",
+                }
+
+        # ---- Step 2: identify cache misses ----
+        miss_rows = [r for r in admin_rows if r["name"] not in cached_by_name]
+        cache_hits = len(admin_names) - len(miss_rows)
+        logger.info(
+            "agri_indices cache: %d hits, %d misses for %s level",
+            cache_hits, len(miss_rows), level,
+        )
+
+        # ---- Step 3: realtime fetch for misses + cache write-back ----
+        results: list[Dict[str, Any]] = list(cached_by_name.values())
+        errors: list[str] = []
+        if miss_rows:
+            for ar in miss_rows:
+                geom = _json.loads(ar["geom"])
+                aname = ar["name"]
+                aparent = ar.get("parent")
+                try:
+                    stats = _get_agri_stats(
+                        geometry=geom, date_from=date_from, date_to=date_to,
+                    )
+                    if "error" in stats:
+                        errors.append(f"{aname}: {stats['error']}")
+                        continue
+                    intervals = stats.get("intervals", [])
+                    if not intervals:
+                        continue
+
+                    row: Dict[str, Any] = {"admin_level": level, "name": aname}
+                    if aparent:
+                        row["district"] = aparent
+                    row["date_from"] = date_from
+                    row["date_to"] = date_to
+
+                    total_px = 0
+                    for idx in AGRI_INDICES:
+                        means = [
+                            iv[idx]["mean"]
+                            for iv in intervals
+                            if idx in iv and iv[idx].get("valid_pixels", 0) > 0
+                        ]
+                        if means:
+                            row[f"{idx}_mean"] = round(float(_np.mean(means)), 4)
+                            row[f"{idx}_std"] = round(float(_np.std(means)), 4)
+                        else:
+                            row[f"{idx}_mean"] = None
+                            row[f"{idx}_std"] = None
+                    for iv in intervals:
+                        if "ndvi" in iv:
+                            total_px += iv["ndvi"].get("valid_pixels", 0)
+                    row["valid_pixels"] = total_px
+                    row["source"] = stats.get("backend", "satellite_realtime")
+                    results.append(row)
+
+                    # Step 4: cache write-back (best-effort).
+                    try:
+                        week_start_date = (
+                            _date.fromisoformat(date_from)
+                            if isinstance(date_from, str) else date_from
+                        )
+                        await ctx.conn.execute(
+                            "INSERT INTO agri_indices_cache "
+                            "(admin_level, admin_name, parent_name, week_start, "
+                            "ndvi_mean, ndvi_std, evi_mean, evi_std, "
+                            "ndwi_mean, ndwi_std, savi_mean, savi_std, "
+                            "ndre_mean, ndre_std, ndbi_mean, ndbi_std, "
+                            "valid_pixels) VALUES "
+                            "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                            level, aname, aparent, week_start_date,
+                            row.get("ndvi_mean"), row.get("ndvi_std"),
+                            row.get("evi_mean"), row.get("evi_std"),
+                            row.get("ndwi_mean"), row.get("ndwi_std"),
+                            row.get("savi_mean"), row.get("savi_std"),
+                            row.get("ndre_mean"), row.get("ndre_std"),
+                            row.get("ndbi_mean"), row.get("ndbi_std"),
+                            total_px,
+                        )
+                    except Exception as ce:
+                        logger.warning("Cache write failed for %s: %s", aname, ce)
+                except Exception as e:
+                    errors.append(f"{aname}: {str(e)}")
+
+        results.sort(key=lambda r: r.get("name", ""))
+        source_desc = "cache" if not miss_rows else (
+            "satellite_realtime" if cache_hits == 0
+            else f"mixed ({cache_hits} cached, {len(miss_rows)} realtime)"
+        )
+
+        tool_result: Dict[str, Any] = {
+            "status": "success",
+            "source": source_desc,
+            "admin_level": level,
+            "date_range": f"{date_from} to {date_to}",
+            "count": len(results),
+            "cache_hits": cache_hits,
+            "cache_misses": len(miss_rows),
+            "indices": list(AGRI_INDICES),
+            "note": (
+                "Sentinel-2 L2A data with SCL cloud masking. "
+                "Cache TTL: 7 days (satellite revisit ~5 days). "
+                "NDVI 0.6-0.8=dense vegetation, 0.3-0.5=cropland, <0.1=bare. "
+                "EVI less sensitive to atmosphere. "
+                "NDWI <0=vegetation, >0=water. "
+                "SAVI adjusts for soil. NDRE=nitrogen/chlorophyll. "
+                "NDBI >0=built-up, <0=vegetation."
+            ),
+            "agri_indices": results,
+        }
+        if errors:
+            tool_result["errors"] = errors
+
+        # ---- Steps 5-6: auto-provision PostGIS conn + create the layer ----
+        pgc_id = await _ensure_rwanda_postgis_connection(
+            ctx.conn, ctx.project_id, ctx.user_id,
+        )
+        if not (pgc_id and results):
+            return tool_result
+
+        tool_result["postgis_connection_id"] = pgc_id
+
+        pg_tbl_map = {
+            "district": ("rwanda_district_boundaries", "district"),
+            "sector": ("rwanda_sector_boundaries", "sector_name"),
+            "cell": ("rwanda_cell_boundaries", "cell_name"),
+        }
+        pg_tbl, pg_col = pg_tbl_map.get(level, pg_tbl_map["district"])
+
+        # Build VALUES clause embedding the computed indices. Single-quote
+        # escaping handled at row-build time (replace ' with '').
+        val_rows: list[str] = []
+        for r in results:
+            sn = r["name"].replace("'", "''")
+            nv = r.get("ndvi_mean") or 0
+            ev = r.get("evi_mean") or 0
+            wv = r.get("ndwi_mean") or 0
+            sv = r.get("savi_mean") or 0
+            rv = r.get("ndre_mean") or 0
+            bv = r.get("ndbi_mean") or 0
+            val_rows.append(f"('{sn}',{nv},{ev},{wv},{sv},{rv},{bv})")
+        values_sql = ",".join(val_rows)
+        postgis_query = (
+            f"SELECT ROW_NUMBER() OVER() AS id, "
+            f"d.{pg_col} AS name, "
+            f"v.ndvi, v.evi, v.ndwi, v.savi, v.ndre, v.ndbi, "
+            f"d.geom FROM {pg_tbl} d "
+            f"JOIN (VALUES {values_sql}) "
+            f"AS v(name,ndvi,evi,ndwi,savi,ndre,ndbi) "
+            f"ON d.{pg_col} = v.name"
+        )
+
+        # Create the layer + style inline (bypasses Sage). Same DB-write
+        # pattern as _handle_new_layer_from_postgis but with hardcoded
+        # Rwanda bounds + 3D extrusion metadata. Follow-up PR can DRY this
+        # up by calling the shared helper; for now byte-for-byte parity.
+        layer_id = generate_id(prefix="L")
+        layer_name = f"{level.title()} Agri Indices"
+        nvals = [r.get("ndvi_mean", 0) for r in results if r.get("ndvi_mean") is not None]
+        nmin = round(min(nvals), 2) if nvals else 0.0
+        nmax = round(max(nvals), 2) if nvals else 0.8
+        nmid1 = round(nmin + (nmax - nmin) * 0.33, 2)
+        nmid2 = round(nmin + (nmax - nmin) * 0.66, 2)
+        meta = {"deckgl_3d": True}
+        attr_cols = ["name", "ndvi", "evi", "ndwi", "savi", "ndre", "ndbi"]
+        bounds = [28.86, -2.84, 30.90, -1.05]  # Rwanda approximate bbox
+
+        async with kue_ephemeral_action(
+            ctx.conversation_id, "Creating agri indices layer...",
+            update_style_json=True, bounds=bounds,
+        ):
+            await ctx.conn.execute(
+                """
+                INSERT INTO map_layers
+                (layer_id, owner_uuid, name, type,
+                 postgis_connection_id, postgis_query,
+                 metadata, feature_count, bounds,
+                 geometry_type, source_map_id,
+                 created_on, last_edited,
+                 postgis_attribute_column_list)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                        CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,$12)
+                """,
+                layer_id, ctx.user_id, layer_name, "postgis",
+                pgc_id, postgis_query, _json.dumps(meta),
+                len(results), bounds, "multipolygon",
+                ctx.map_id, attr_cols,
+            )
+
+            # MapLibre choropleth + outline + label layers. source-layer
+            # must match the MVT_LAYER_NAME constant ("reprojectedfgb").
+            sl = "reprojectedfgb"
+            ml_layers = [
+                {
+                    "id": f"{layer_id}-fill",
+                    "type": "fill",
+                    "source": layer_id,
+                    "source-layer": sl,
+                    "paint": {
+                        "fill-color": [
+                            "interpolate", ["linear"], ["get", "ndvi"],
+                            nmin, "#d73027",
+                            nmid1, "#fc8d59",
+                            nmid2, "#fee08b",
+                            nmax, "#1a9850",
+                        ],
+                        "fill-opacity": 0.85,
+                    },
+                },
+                {
+                    "id": f"{layer_id}-outline",
+                    "type": "line",
+                    "source": layer_id,
+                    "source-layer": sl,
+                    "paint": {"line-color": "#222222", "line-width": 1.5},
+                },
+                {
+                    "id": f"{layer_id}-label",
+                    "type": "symbol",
+                    "source": layer_id,
+                    "source-layer": sl,
+                    "layout": {
+                        "text-field": [
+                            "concat", ["get", "name"], "\n",
+                            "NDVI ", ["to-string", ["get", "ndvi"]],
+                        ],
+                        "text-size": 11,
+                        "text-anchor": "center",
+                        "text-allow-overlap": True,
+                    },
+                    "paint": {
+                        "text-color": "#ffffff",
+                        "text-halo-color": "#000000",
+                        "text-halo-width": 1.5,
+                    },
+                },
+            ]
+
+            style_id = generate_id(prefix="S")
+            await ctx.conn.execute(
+                """
+                INSERT INTO layer_styles
+                (style_id, layer_id, style_json, created_by, created_on)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                """,
+                style_id, layer_id, _json.dumps(ml_layers), ctx.user_id,
+            )
+            await ctx.conn.execute(
+                """
+                INSERT INTO map_layer_styles (map_id, layer_id, style_id)
+                VALUES ($1, $2, $3)
+                """,
+                ctx.map_id, layer_id, style_id,
+            )
+            await ctx.conn.execute(
+                """
+                UPDATE user_mundiai_maps
+                SET layers = CASE WHEN layers IS NULL THEN ARRAY[$1]
+                                  ELSE array_append(layers, $1) END
+                WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
+                """,
+                layer_id, ctx.map_id,
+            )
+
+        tool_result["layer_id"] = layer_id
+        tool_result["kue_instructions"] = (
+            f"The layer '{layer_name}' (ID: {layer_id}) has been created "
+            f"and added to the map with a Red→Green choropleth (NDVI) and 3D "
+            f"extrusion. Do NOT call new_layer_from_postgis or set_layer_style "
+            f"— it is already done.\n\nDescribe the results to the user: "
+            f"which {level}s have the highest NDVI (greenest, healthiest "
+            f"vegetation) and which have the lowest (stressed). Mention the "
+            f"3D extrusion where taller = higher NDVI. Highlight any notable "
+            f"patterns or outliers."
+        )
+        return tool_result
+    except Exception as e:
+        logger.exception("get_agri_indices tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -2063,7 +2477,7 @@ _NOT_YET_EXTRACTED: list[str] = [
     "confirm_crop_prediction",
     # get_ndvi_stats + get_cell_ndvi_stats extracted.
     "get_soil_properties",
-    "get_agri_indices",
+    # get_agri_indices extracted (cache + DE Africa + inline layer creation).
     "query_worldcover_stats",
     "get_crop_classifications",
     "get_anomaly_alerts",
@@ -2148,6 +2562,7 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_parcel_ndvi_stats": _handle_get_parcel_ndvi_stats,
     "get_ndvi_stats": _handle_get_ndvi_stats,
     "get_cell_ndvi_stats": _handle_get_cell_ndvi_stats,
+    "get_agri_indices": _handle_get_agri_indices,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
