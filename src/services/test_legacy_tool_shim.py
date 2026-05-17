@@ -82,11 +82,14 @@ async def test_registry_includes_all_53_legacy_names():
 async def test_not_yet_extracted_returns_structured_message():
     """A stub handler must return a parseable dict with status=not_yet_extracted,
     NOT raise. The LLM downstream pattern-matches on `status` to decide
-    whether to apologize, retry, or give up."""
-    result = await execute_legacy_tool("get_forecast", _make_ctx({"lat": -1.95, "lon": 30.06}))
+    whether to apologize, retry, or give up. We pick a tool we know is
+    still on the not-yet-extracted list (a QGIS-processing tool — they're
+    all still stubs since the qgis-processing sidecar dispatch hasn't
+    been ported yet)."""
+    result = await execute_legacy_tool("native_buffer", _make_ctx({}))
     assert isinstance(result, dict)
     assert result["status"] == "not_yet_extracted"
-    assert result["tool_name"] == "get_forecast"
+    assert result["tool_name"] == "native_buffer"
     assert "message" in result and "MUNDI_USE_HERMES=0" in result["message"]
 
 

@@ -1084,6 +1084,378 @@ async def _handle_reverse_geocode_coordinates(ctx: LegacyToolContext) -> Dict[st
         await pg.close()
 
 
+async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Multi-model weather forecast (ECMWF + GFS + ICON + GraphCast) for a
+    Rwanda location.
+
+    Extracted from src/routes/message_routes.py:5301-5353. Delegates the
+    actual model fusion to `get_farm_forecast`. Adds a district→centroid
+    convenience lookup so Sage can say "forecast for Bugesera" without
+    knowing coordinates. Defaults to Kigali if everything is missing.
+
+    Args (from ctx.arguments):
+      - latitude / longitude: float (optional if district given)
+      - district: str (optional; resolved to centroid via rwanda_district_boundaries)
+      - forecast_days: int (1-16, default 10)
+    """
+    import asyncio as _aio
+
+    try:
+        from src.services.forecast_service import get_farm_forecast
+
+        lat = ctx.arguments.get("latitude")
+        lon = ctx.arguments.get("longitude")
+        district = ctx.arguments.get("district")
+        days = min(max(1, ctx.arguments.get("forecast_days", 10)), 16)
+
+        # District → centroid fallback if no explicit lat/lon.
+        if district and (lat is None or lon is None):
+            try:
+                row = await ctx.conn.fetchrow(
+                    "SELECT round(ST_Y(ST_Centroid(geom))::numeric, 4) as lat, "
+                    "round(ST_X(ST_Centroid(geom))::numeric, 4) as lon "
+                    "FROM rwanda_district_boundaries "
+                    "WHERE district ILIKE $1 LIMIT 1",
+                    district,
+                )
+                if row:
+                    lat = float(row["lat"])
+                    lon = float(row["lon"])
+            except Exception:
+                pass  # Centroid lookup is best-effort; fall through to Kigali default.
+
+        # Final fallback: center of Kigali.
+        if lat is None:
+            lat = -1.9403
+        if lon is None:
+            lon = 29.8739
+
+        # `get_farm_forecast` is sync (calls weather model HTTP APIs serially),
+        # so we offload to the default executor so the event loop can serve
+        # other requests during the multi-second fetch.
+        result = await _aio.get_event_loop().run_in_executor(
+            None,
+            lambda: get_farm_forecast(lat, lon, forecast_days=days),
+        )
+        return {"status": "success", **result}
+    except Exception as e:
+        logger.exception("get_forecast tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_detect_dry_spells(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Detect historical dry spells (consecutive days under a rainfall
+    threshold) from AgERA5 observed weather data.
+
+    Extracted from src/routes/message_routes.py:5486-5507. Pure delegation
+    to `detect_dry_spells` in src.services.weather_accuracy — same shape
+    as the inline handler. Defaults match the chat loop (2mm/day threshold,
+    10-day minimum duration).
+
+    Args (from ctx.arguments):
+      - district: str (optional, filters to one district)
+      - date_from / date_to: ISO date strings
+      - threshold_mm: float (default 2.0)
+      - min_duration_days: int (default 10)
+    """
+    try:
+        from src.services.weather_accuracy import detect_dry_spells as _detect_ds
+        return await _detect_ds(
+            ctx.conn,
+            district=ctx.arguments.get("district"),
+            date_from=ctx.arguments.get("date_from"),
+            date_to=ctx.arguments.get("date_to"),
+            threshold_mm=float(ctx.arguments.get("threshold_mm", 2.0)),
+            min_duration_days=int(ctx.arguments.get("min_duration_days", 10)),
+        )
+    except Exception as e:
+        logger.exception("detect_dry_spells tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
+    """Render the insurance-intelligence dict into a natural-language briefing.
+
+    Extracted unchanged from src/routes/message_routes.py:5559-5657. Sage's
+    LLM consumes the briefing string as a pre-digested summary so it doesn't
+    have to interpret raw SPI/NDVI/ET numbers itself. Kept verbatim for
+    output parity with the hand-rolled path.
+    """
+    loc = data.get("location", "?")
+    season = data.get("season", "?")
+    phase = data.get("growth_phase", "?")
+    dap = data.get("days_after_planting", "?")
+    status_ = data.get("overall_status", "?")
+    confidence = data.get("confidence_score", "?")
+    rain = data.get("season_rainfall_mm", "?")
+    spi = data.get("spi")
+
+    spi_str = ""
+    if spi is not None:
+        if spi <= -2.0:
+            spi_str = f"SPI is {spi} — this is an extreme drought signal, meaning rainfall is far below what's normal for this time of year"
+        elif spi <= -1.5:
+            spi_str = f"SPI is {spi} — severe drought conditions, significantly less rain than expected"
+        elif spi <= -1.0:
+            spi_str = f"SPI is {spi} — moderate drought, rainfall noticeably below normal"
+        elif spi >= 1.0:
+            spi_str = f"SPI is {spi} — wetter than normal conditions"
+        else:
+            spi_str = f"SPI is {spi} — within normal range"
+
+    ndvi = data.get("ndvi_z_score")
+    ndvi_str = ""
+    if ndvi is not None:
+        if ndvi >= 1.0:
+            ndvi_str = f"NDVI z-score {ndvi} — vegetation is thriving, well above average greenness for this area and time of year"
+        elif ndvi >= 0.3:
+            ndvi_str = f"NDVI z-score {ndvi} — vegetation looks healthy, slightly above average"
+        elif ndvi >= -0.5:
+            ndvi_str = f"NDVI z-score {ndvi} — vegetation is about normal"
+        elif ndvi >= -1.0:
+            ndvi_str = f"NDVI z-score {ndvi} — vegetation is showing stress, below average greenness"
+        else:
+            ndvi_str = f"NDVI z-score {ndvi} — vegetation is in poor condition, significantly less green than normal"
+
+    sm = data.get("soil_moisture_pct")
+    sm_str = ""
+    if sm is not None:
+        if sm >= 80:
+            sm_str = f"Soil moisture at {sm}% — the ground is well saturated, plenty of water available to roots"
+        elif sm >= 50:
+            sm_str = f"Soil moisture at {sm}% — adequate water in the soil"
+        elif sm >= 30:
+            sm_str = f"Soil moisture at {sm}% — getting low, plants may start feeling water stress"
+        else:
+            sm_str = f"Soil moisture at {sm}% — very dry soil, crops are likely under water stress"
+
+    et = data.get("et_anomaly_pct")
+    et_str = ""
+    if et is not None:
+        if et < -20:
+            et_str = f"ET anomaly {et}% — plants are transpiring much less than normal, a sign of water stress or poor crop condition"
+        elif et < -5:
+            et_str = f"ET anomaly {et}% — slightly reduced water uptake by plants"
+        elif et > 10:
+            et_str = f"ET anomaly +{et}% — plants are actively growing and using more water than usual"
+        else:
+            et_str = f"ET anomaly {et}% — normal plant water use"
+
+    dry = data.get("max_dry_spell_days")
+    dry_str = ""
+    if dry is not None:
+        if dry >= 15:
+            dry_str = f"Longest dry spell: {dry} consecutive days without rain — this is damaging, especially during flowering"
+        elif dry >= 10:
+            dry_str = f"Longest dry spell: {dry} days — worth watching but not yet critical"
+        elif dry > 0:
+            dry_str = f"Longest dry spell: {dry} days — not a concern"
+
+    drought_diag = data.get("drought_diagnostic_label", "")
+
+    fired_str = ""
+    if fired:
+        parts = [
+            f"{t['signal']}: current {t['current_value']} crossed the {t['threshold']} threshold"
+            for t in fired
+        ]
+        fired_str = "TRIGGERED ALERTS: " + "; ".join(parts)
+
+    briefing_parts = [
+        f"Location: {loc}, Season {season}, currently in {phase} (day {dap}). Overall status: {status_} (confidence {confidence}/100).",
+        f"Rainfall this season: {rain}mm so far. {spi_str}.",
+    ]
+    if ndvi_str:
+        briefing_parts.append(ndvi_str + ".")
+    if sm_str:
+        briefing_parts.append(sm_str + ".")
+    if et_str:
+        briefing_parts.append(et_str + ".")
+    if dry_str:
+        briefing_parts.append(dry_str + ".")
+    if drought_diag:
+        briefing_parts.append(f"Drought assessment: {drought_diag}.")
+    if fired_str:
+        briefing_parts.append(fired_str)
+    return " ".join(briefing_parts)
+
+
+async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Comprehensive agricultural situation report for a Rwanda location.
+
+    Extracted from src/routes/message_routes.py:5530-5756. The flagship
+    Sage tool for BK Insurance underwriters. Calls the insurance engine
+    to compute the multi-signal status (SPI, NDVI, soil moisture, ET,
+    dry spells, parametric triggers), renders the result into a natural-
+    language briefing (via _build_insurance_briefing), and saves the
+    full report to the Brain knowledge graph as a page + timeline entry
+    for audit trail / future retrieval.
+
+    Args (from ctx.arguments):
+      - crop, season, district, sector, cell, village: location/crop scope
+      - audience: 'agronomist' | 'underwriter' | 'farmer'
+      - compare_level: if set, returns comparison mode across multiple areas
+    """
+    import json as _json
+    from datetime import date as _date_cls
+
+    try:
+        from src.services.insurance_engine import compute_insurance_intelligence
+
+        compare_level = ctx.arguments.get("compare_level")
+        result = await compute_insurance_intelligence(
+            ctx.conn,
+            crop=ctx.arguments.get("crop", ""),
+            season=ctx.arguments.get("season"),
+            district=ctx.arguments.get("district"),
+            sector=ctx.arguments.get("sector"),
+            cell=ctx.arguments.get("cell"),
+            village=ctx.arguments.get("village"),
+            audience=ctx.arguments.get("audience", "agronomist"),
+            compare_level=compare_level,
+        )
+
+        # Comparison mode: light formatting hint for the LLM and we're done.
+        if result.get("mode") == "comparison" and result.get("status") == "ok":
+            result["instruction"] = (
+                "Present the comparison naturally. Highlight which areas stand out "
+                "(wettest, driest, best NDVI, worst soil moisture, etc). "
+                "Use a short table if >3 areas, otherwise describe in sentences. "
+                "Mention the most interesting contrasts — don't list every number for every area. "
+                "End with sources in parentheses."
+            )
+            result.pop("geometry", None)
+            return result
+
+        # Single-location mode: build the briefing + persist to Brain.
+        if result.get("status") == "ok":
+            result["_report_for_brain"] = result.pop("report", "")
+            data = result.get("data", {})
+            triggers = data.get("triggers", [])
+            fired = [t for t in triggers if t.get("triggered")]
+
+            result["situation"] = _build_insurance_briefing(data, fired)
+
+            if fired:
+                result["triggers_fired"] = "TRIGGERED ALERTS: " + "; ".join(
+                    f"{t['signal']}: current {t['current_value']} crossed the {t['threshold']} threshold"
+                    for t in fired
+                )
+            result["triggers_total"] = (
+                f"{data.get('triggers_activated', 0)} of "
+                f"{data.get('triggers_total', 0)} thresholds crossed"
+            )
+            result["recommendation"] = data.get("recommendation", "")
+            result["sources"] = data.get("sources", [])
+            result["period"] = f"{data.get('period_start', '')} to {data.get('period_end', '')}"
+
+            # Forecast narrative (multi-model consensus on payout risk).
+            fo = data.get("forecast_outlook")
+            if fo:
+                fo_risk = fo.get("rainfall_trigger_risk", "?")
+                fo_prob = round(fo.get("rainfall_trigger_probability", 0) * 100)
+                fo_total = fo.get("projected_season_total_mm", "?")
+                fo_thresh = fo.get("rainfall_trigger_threshold_mm", "?")
+                fo_models = ", ".join(fo.get("models_used", []))
+                agreement = fo.get("model_agreement")
+                if agreement == "HIGH":
+                    agreement_str = "The models agree closely on this."
+                elif agreement == "LOW":
+                    agreement_str = "There is some disagreement between models, so uncertainty is higher."
+                else:
+                    agreement_str = "Models are in moderate agreement."
+                result["forecast"] = (
+                    f"Looking ahead: 4 weather models ({fo_models}) project the season "
+                    f"will end with about {fo_total}mm total rainfall "
+                    f"(range {fo.get('projected_season_p10_mm', '?')}-"
+                    f"{fo.get('projected_season_p90_mm', '?')}mm). "
+                    f"The insurance payout threshold is {fo_thresh}mm — "
+                    f"risk of triggering a payout is {fo_risk} ({fo_prob}% probability). "
+                    f"{agreement_str}"
+                )
+
+            del result["data"]
+            result["instruction"] = (
+                "You are briefing someone who cares about this area. "
+                "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
+                "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
+                "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
+                "If the forecast is present, weave it in — don't list it separately. "
+                "3-5 sentences. No bullet points, no tables, no metric dumps. "
+                "End with sources in parentheses."
+            )
+
+        # Brain save — best-effort audit trail. Failure here MUST NOT
+        # propagate; the user still gets their briefing.
+        if result.get("status") == "ok" and not compare_level:
+            try:
+                from src.dependencies.brain_dep import get_brain_service
+                from src.services.brain_service import PageInput, TimelineInput
+                brain = get_brain_service()
+                slug = result.get("slug", "insurance-report").lower()
+                geom = result.get("geometry")
+                geom_str = _json.dumps(geom) if geom else None
+                page_data = result.get("data", {}) if "data" in result else {}
+                # Re-pull data from the original result snapshot — we already
+                # deleted result["data"] above for the LLM-facing output,
+                # but the Brain save needs the structured fields.
+                # Recompute from what's still in result.
+                data_for_brain = {
+                    "crop": ctx.arguments.get("crop"),
+                    "season": ctx.arguments.get("season"),
+                    "location": (
+                        ctx.arguments.get("village")
+                        or ctx.arguments.get("cell")
+                        or ctx.arguments.get("sector")
+                        or ctx.arguments.get("district")
+                    ),
+                }
+                page_input = PageInput(
+                    type="insurance_intelligence",
+                    title=f"Insurance: {data_for_brain['location'] or ''} Season {data_for_brain['season'] or ''}",
+                    compiled_truth=result.get("_report_for_brain", ""),
+                    frontmatter={
+                        "type": "insurance_intelligence",
+                        **data_for_brain,
+                    },
+                    geom_geojson=geom_str,
+                )
+                await brain.put_page(
+                    ctx.conn, slug, page_input,
+                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                )
+                timeline_input = TimelineInput(
+                    date=_date_cls.today(),
+                    summary=(
+                        f"insurance_intelligence: {data_for_brain['crop'] or ''} "
+                        f"in {data_for_brain['location'] or ''} "
+                        f"Season {data_for_brain['season'] or ''}"
+                    ),
+                    source="insurance_engine",
+                    detail=_json.dumps(data_for_brain, default=str),
+                )
+                await brain.add_timeline_entry(
+                    ctx.conn, slug, timeline_input,
+                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                )
+            except Exception:
+                logger.warning("insurance brain save failed", exc_info=True)
+            result.pop("_report_for_brain", None)
+
+        # Strip geometry from the LLM-facing result. The admin-boundary
+        # GeoJSON is needed only for the Brain page geom_geojson above;
+        # leaving it in here bloats conversation history by 100-185 KB per
+        # call and overflows context after a handful of turns.
+        result.pop("geometry", None)
+        return result
+    except Exception:
+        logger.exception("get_insurance_intelligence tool failed")
+        return {
+            "status": "error",
+            "error": "Insurance intelligence computation failed. Please try again.",
+        }
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -1119,12 +1491,11 @@ _NOT_YET_EXTRACTED: list[str] = [
     "get_drought_status",
     "get_crop_growth_stage",
     "get_weather_stats",
-    "get_forecast",
+    # NOTE: get_forecast + detect_dry_spells + get_insurance_intelligence
+    # have been extracted (the insurance flow).
     "get_forecast_accuracy",
     "get_emissions_stats",
-    "detect_dry_spells",
     "get_insurance_accuracy",
-    "get_insurance_intelligence",
     "search_brain",
     "get_entity",
     "add_observation",
@@ -1190,6 +1561,9 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "query_postgis_database": _handle_query_postgis_database,
     "zonal_statistics": _handle_zonal_statistics,
     "reverse_geocode_coordinates": _handle_reverse_geocode_coordinates,
+    "get_forecast": _handle_get_forecast,
+    "detect_dry_spells": _handle_detect_dry_spells,
+    "get_insurance_intelligence": _handle_get_insurance_intelligence,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
