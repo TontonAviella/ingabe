@@ -1167,11 +1167,25 @@ async def process_chat_interaction_task(
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
 
+        # Initialised inside the loop per LLM call, but referenced by the
+        # pre-LLM cancellation break too (so the WS clear event below has
+        # a turn_id to attach when the very first iteration cancels).
+        turn_id: str | None = None
+
         for i in range(25):
             # Check if the message processing has been cancelled
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    # Emit a WS done=True so the frontend clears the loading
+                    # state and finalises whatever partial message it has.
+                    # Without this, the cancel button "succeeds" on the server
+                    # but the UI sits on a zombie spinner until the user
+                    # refreshes. See feedback memory on cancel WS-emit.
+                    try:
+                        await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+                    except Exception:
+                        logger.debug("kue_stream_token done=True (pre-LLM cancel) failed", exc_info=True)
                     break
             except Exception:
                 logger.debug("Redis unavailable for cancellation check")
@@ -1891,6 +1905,12 @@ async def process_chat_interaction_task(
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    # Same WS done=True signal as the pre-LLM cancel branch,
+                    # so the frontend clears its spinner.
+                    try:
+                        await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+                    except Exception:
+                        logger.debug("kue_stream_token done=True (post-LLM cancel) failed", exc_info=True)
                     break
             except Exception:
                 logger.debug("Redis unavailable for cancellation check")
