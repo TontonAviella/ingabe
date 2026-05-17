@@ -2452,6 +2452,647 @@ async def _handle_get_agri_indices(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_identify_parcel_crop(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Identify the dominant crop in a parcel from NDVI time-series.
+
+    Pipeline: fetch NDVI intervals via satellite_analytics (DE Africa primary,
+    SH fallback) → convert to time-series → run ml_inference.identify_crop.
+    Auto-buffers Point geometries to 500m polygon (UTM 32735 → WGS84) so the
+    LLM can pass a single pin and still get a usable result.
+
+    Lifted byte-for-byte from message_routes.py:3190-3253.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.satellite_analytics import get_field_timeseries as _sa_get_field_timeseries
+        from src.services.ml_inference import get_ml_service
+
+        _ic_geom = args.get("geometry")
+        if not _ic_geom:
+            return {"status": "error", "error": "geometry is required for crop identification"}
+
+        _ic_months = args.get("months", 6)
+        if _ic_months < 3:
+            _ic_months = 3
+
+        # Auto-buffer Point geometries
+        if _ic_geom.get("type") in ("Point", "MultiPoint"):
+            from shapely.geometry import shape as _shape, mapping as _mapping
+            from pyproj import Transformer as _Transformer
+            from shapely.ops import transform as _stransform
+            _pt = _shape(_ic_geom)
+            _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
+            _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
+            _pt_utm = _stransform(_to_utm.transform, _pt)
+            _buf_utm = _pt_utm.buffer(500)
+            _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
+            _ic_geom = _mapping(_buf_wgs)
+            logger.info("identify_parcel_crop: auto-buffered Point to 500m polygon")
+
+        # Step 1: Get NDVI time-series (DE Africa primary, SH fallback)
+        ts_result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _sa_get_field_timeseries(
+                geometry=_ic_geom,
+                months=_ic_months,
+            )
+        )
+        if "error" in ts_result:
+            return {"status": "error", "error": ts_result["error"]}
+
+        # Convert intervals to time-series format
+        _ndvi_ts = []
+        for interval in ts_result.get("intervals", []):
+            _ndvi_data = interval.get("ndvi", {})
+            if _ndvi_data.get("mean") is not None:
+                _ndvi_ts.append({
+                    "date": interval.get("date_from", ""),
+                    "mean_ndvi": _ndvi_data["mean"],
+                })
+
+        if len(_ndvi_ts) < 4:
+            return {
+                "status": "error",
+                "error": (
+                    f"Insufficient data: only {len(_ndvi_ts)} cloud-free observations "
+                    f"in {_ic_months} months. Need at least 4 for crop identification."
+                ),
+            }
+
+        # Step 2: Run crop identification
+        ml_service = get_ml_service()
+        crop_result = ml_service.identify_crop(_ndvi_ts)
+        if "error" in crop_result:
+            return {"status": "error", "error": crop_result["error"]}
+        return {"status": "success", "crop_identification": crop_result}
+    except Exception as e:
+        logger.exception("identify_parcel_crop failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_confirm_crop_prediction(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Record farmer feedback on a crop prediction into crop_feedback table.
+
+    Auto-detects Rwanda agricultural season from current date when not given
+    (Season A: Sep-Feb, Season B: Feb-Jul). Falls back to log-only if the
+    crop_feedback table is missing — feedback is never silently dropped.
+
+    Lifted byte-for-byte from message_routes.py:3263-3340.
+    """
+    args = ctx.arguments
+    try:
+        from datetime import date as _cdate
+
+        _predicted = args.get("predicted_crop", "")
+        _actual = args.get("actual_crop", "")
+        _confirmed = args.get("confirmed", False)
+        _season = args.get("season")
+        _geom = args.get("geometry")
+
+        # Auto-detect season from current date
+        if not _season:
+            _today = _cdate.today()
+            _yr = _today.year
+            if _today.month >= 9:
+                _season = f"{_yr + 1}A"
+            elif _today.month <= 2:
+                _season = f"{_yr}A"
+            else:
+                _season = f"{_yr}B"
+
+        # Store feedback in PostgreSQL
+        try:
+            await ctx.conn.execute(
+                """INSERT INTO crop_feedback
+                   (user_id, predicted_crop, actual_crop, confirmed,
+                    season, geometry, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, NOW())""",
+                str(ctx.user_id) if ctx.user_id else "anonymous",
+                _predicted,
+                _actual,
+                _confirmed,
+                _season,
+                json.dumps(_geom) if _geom else None,
+            )
+            return {
+                "status": "success",
+                "message": (
+                    f"Thank you! Recorded: prediction was '{_predicted}', "
+                    f"actual crop is '{_actual}' "
+                    f"({'confirmed correct' if _confirmed else 'corrected'}). "
+                    f"Season: {_season}. This feedback improves future predictions."
+                ),
+                "feedback": {
+                    "predicted_crop": _predicted,
+                    "actual_crop": _actual,
+                    "confirmed": _confirmed,
+                    "season": _season,
+                },
+            }
+        except Exception as _db_err:
+            # Table might not exist yet — log feedback anyway
+            logger.warning(
+                "crop_feedback table not found (%s) — logging feedback",
+                _db_err,
+            )
+            logger.info(
+                "CROP_FEEDBACK: predicted=%s actual=%s confirmed=%s season=%s user=%s",
+                _predicted, _actual, _confirmed, _season, ctx.user_id,
+            )
+            return {
+                "status": "success",
+                "message": (
+                    f"Feedback recorded (log): prediction '{_predicted}', "
+                    f"actual '{_actual}' ({'correct' if _confirmed else 'corrected'}). "
+                    f"Season: {_season}."
+                ),
+                "feedback": {
+                    "predicted_crop": _predicted,
+                    "actual_crop": _actual,
+                    "confirmed": _confirmed,
+                    "season": _season,
+                },
+            }
+    except Exception as e:
+        logger.exception("confirm_crop_prediction failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_crop_classifications(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read crop_classification_cache, optionally reverse-geocoded by lat/lon.
+
+    The cache is populated by a weekly Dagster job. On hit, auto-provisions a
+    PostGIS connection so Sage can call new_layer_from_postgis to visualise
+    classifications by district.
+
+    Lifted byte-for-byte from message_routes.py:4669-4747.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _district = args.get("district")
+        _cc_lat = args.get("lat")
+        _cc_lon = args.get("lon")
+
+        # Reverse-geocode lat/lon to district if not explicitly provided.
+        # Opens its own asyncpg connection (no RLS scope needed for boundary lookup).
+        if _cc_lat is not None and _cc_lon is not None and not _district:
+            try:
+                import asyncpg as _asyncpg_cc
+                _pg_host_cc = os.environ.get("POSTGRES_HOST", "postgresdb")
+                _pg_port_cc = int(os.environ.get("POSTGRES_PORT", "5432"))
+                _pg_db_cc = os.environ.get("POSTGRES_DB", "mundidb")
+                _pg_user_cc = os.environ.get("POSTGRES_USER", "mundiuser")
+                _pg_pass_cc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                _pg_conn_cc = await _asyncpg_cc.connect(
+                    host=_pg_host_cc, port=_pg_port_cc,
+                    database=_pg_db_cc, user=_pg_user_cc, password=_pg_pass_cc,
+                )
+                try:
+                    _rg_row = await _pg_conn_cc.fetchrow(
+                        "SELECT district FROM rwanda_district_boundaries "
+                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                        "LIMIT 1",
+                        float(_cc_lon), float(_cc_lat),
+                    )
+                    if _rg_row:
+                        _district = _rg_row["district"]
+                        logger.info("Crop classifications: reverse-geocoded → district=%s", _district)
+                finally:
+                    await _pg_conn_cc.close()
+            except Exception as _rg_err:
+                logger.warning("Reverse-geocode failed for crop classifications: %s", _rg_err)
+
+        if _district:
+            _rows = await ctx.conn.fetch(
+                "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
+                "FROM crop_classification_cache WHERE district = $1 "
+                "ORDER BY computed_at DESC LIMIT 50",
+                _district,
+            )
+        else:
+            _rows = await ctx.conn.fetch(
+                "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
+                "FROM crop_classification_cache ORDER BY computed_at DESC LIMIT 50"
+            )
+
+        if _rows:
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(_rows),
+                "classifications": [
+                    {"district": r["district"], "class_label": r["class_label"], "area_ha": r["area_ha"],
+                     "pixel_count": r["pixel_count"], "confidence": r["confidence"], "job_id": r["job_id"]}
+                    for r in _rows
+                ],
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise crop classifications on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "classifications": [],
+            "message": "No classification data yet — Dagster weekly schedule populates this cache",
+        }
+    except Exception as e:
+        logger.exception("get_crop_classifications tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read anomaly_alerts_cache filtered by severity/district.
+
+    Returns z-score-sorted alerts (most negative first = worst anomalies).
+    Auto-provisions PostGIS connection so Sage can colour districts by severity.
+
+    Lifted byte-for-byte from message_routes.py:4757-4813.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _where: list[str] = []
+        _params: list[Any] = []
+        _pidx = 1
+        if args.get("severity"):
+            _where.append(f"severity = ${_pidx}")
+            _params.append(args["severity"])
+            _pidx += 1
+        if args.get("district"):
+            _where.append(f"district = ${_pidx}")
+            _params.append(args["district"])
+            _pidx += 1
+        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+        _rows = await ctx.conn.fetch(
+            f"SELECT district, anomaly_date, observed_ndvi, expected_ndvi, "
+            f"z_score, severity FROM anomaly_alerts_cache {_where_sql} "
+            f"ORDER BY z_score ASC LIMIT 30",
+            *_params,
+        )
+
+        if _rows:
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(_rows),
+                "alerts": [
+                    {"district": r["district"], "date": str(r["anomaly_date"]) if r["anomaly_date"] else None,
+                     "observed_ndvi": r["observed_ndvi"], "expected_ndvi": r["expected_ndvi"],
+                     "z_score": round(r["z_score"], 3) if r["z_score"] else None, "severity": r["severity"]}
+                    for r in _rows
+                ],
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise these anomaly alerts on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Available tables: rwanda_district_boundaries (district, geom). "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style to colour districts by severity. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "alerts": [],
+            "message": "No anomaly alerts yet — Dagster weekly schedule populates this cache",
+        }
+    except Exception as e:
+        logger.exception("get_anomaly_alerts tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_yield_risk(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read yield_risk_cache (Mann-Kendall + seasonal deviation analysis).
+
+    Lifted byte-for-byte from message_routes.py:4823-4870.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _district = args.get("district")
+        _where = "WHERE district = $1" if _district else ""
+        _params = [_district] if _district else []
+        _rows = await ctx.conn.fetch(
+            f"SELECT district, risk_level, risk_description, trend_slope, "
+            f"kendall_tau, latest_ndvi, mean_ndvi, seasonal_deviation, observations "
+            f"FROM yield_risk_cache {_where} "
+            f"ORDER BY computed_at DESC LIMIT 50",
+            *_params,
+        )
+
+        if _rows:
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(_rows),
+                "assessments": [
+                    {"district": r["district"], "risk_level": r["risk_level"], "risk_description": r["risk_description"],
+                     "trend_slope": r["trend_slope"], "kendall_tau": r["kendall_tau"], "latest_ndvi": r["latest_ndvi"],
+                     "mean_ndvi": r["mean_ndvi"], "seasonal_deviation": r["seasonal_deviation"], "observations": r["observations"]}
+                    for r in _rows
+                ],
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise yield risk on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Available tables: rwanda_district_boundaries (district, geom). "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style to colour by risk level. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "assessments": [],
+            "message": "No yield risk data yet — Dagster weekly schedule populates this cache",
+        }
+    except Exception as e:
+        logger.exception("get_yield_risk tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read drought_cache OR fall back to real-time STAC COG computation.
+
+    Two-tier: postgres cache (fast) → STAC Sentinel-2 COG (60-80s/district,
+    capped at 3 districts when no specific district requested).
+
+    Hardens against fabrication: marks insufficient_data districts explicitly
+    AND adds a top-level note when ALL districts are insufficient, so the
+    LLM does NOT claim drought from missing data.
+
+    Lifted byte-for-byte from message_routes.py:4880-5061.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _where: list[str] = []
+        _params: list[Any] = []
+        _pidx = 1
+        if args.get("district"):
+            _where.append(f"district = ${_pidx}")
+            _params.append(args["district"])
+            _pidx += 1
+        if args.get("status"):
+            _where.append(f"drought_status = ${_pidx}")
+            _params.append(args["status"])
+            _pidx += 1
+        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+        _rows = await ctx.conn.fetch(
+            f"SELECT district, drought_status, current_vci, latest_ndvi, "
+            f"latest_ndwi, drought_period_count, description "
+            f"FROM drought_cache {_where_sql} "
+            f"ORDER BY current_vci ASC LIMIT 50",
+            *_params,
+        )
+
+        if _rows:
+            _districts_out: list[Dict[str, Any]] = []
+            for r in _rows:
+                _d: Dict[str, Any] = {
+                    "district": r["district"],
+                    "drought_status": r["drought_status"],
+                    "vci": r["current_vci"],
+                    "latest_ndvi": r["latest_ndvi"],
+                    "latest_ndwi": r["latest_ndwi"],
+                    "drought_period_count": r["drought_period_count"],
+                    "description": r["description"],
+                }
+                if r["drought_status"] == "insufficient_data":
+                    _d["note"] = (
+                        "Not enough historical data to assess "
+                        "drought for this district yet."
+                    )
+                _districts_out.append(_d)
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(_rows),
+                "districts": _districts_out,
+            }
+            if all(
+                d["drought_status"] == "insufficient_data"
+                for d in _districts_out
+            ):
+                tool_result["note"] = (
+                    "All queried districts have insufficient "
+                    "historical NDVI data (<8 weeks) to compute "
+                    "a reliable drought index. Do NOT report "
+                    "drought status — instead tell the user that "
+                    "not enough data has been collected yet."
+                )
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise drought status on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Available tables: rwanda_district_boundaries (district, geom). "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style to colour by drought status. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+
+        # ── STAC COG real-time fallback ──
+        try:
+            from src.services.stac_service import get_stac_service as _get_stac
+
+            _stac = _get_stac()
+            _drought_district = args.get("district")
+
+            if _drought_district:
+                _bbox_rows = await ctx.conn.fetch(
+                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
+                    _drought_district,
+                )
+            else:
+                _bbox_rows = await ctx.conn.fetch(
+                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries ORDER BY district"
+                )
+
+            _stac_districts: list[Dict[str, Any]] = []
+            for _br in _bbox_rows:
+                _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
+                           float(_br["bbox_east"]), float(_br["bbox_north"])]
+                _drought_result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
+                )
+                if "error" not in _drought_result:
+                    _stac_districts.append({
+                        "district": _br["district"],
+                        "drought_status": _drought_result.get("drought_status"),
+                        "vci": _drought_result.get("current_vci"),
+                        "latest_ndvi": _drought_result.get("latest_ndvi"),
+                        "latest_ndwi": None,
+                        "drought_period_count": None,
+                        "description": _drought_result.get("description"),
+                        "trend_slope": _drought_result.get("trend_slope"),
+                        "scene_count": _drought_result.get("scene_count"),
+                    })
+                else:
+                    logger.debug("STAC drought failed for %s: %s", _br["district"], _drought_result.get("error"))
+                if not _drought_district and len(_stac_districts) >= 3:
+                    break
+
+            if _stac_districts:
+                _all_insufficient = all(
+                    d["drought_status"] == "insufficient_data"
+                    for d in _stac_districts
+                )
+                if _all_insufficient:
+                    _stac_note = (
+                        "Not enough cloud-free Sentinel-2 scenes to compute "
+                        "a reliable drought index. Do NOT report drought "
+                        "status — tell the user there is insufficient data. "
+                        "The weekly Dagster pipeline will accumulate enough "
+                        "history over time for accurate VCI analysis."
+                    )
+                else:
+                    _stac_note = (
+                        "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
+                        "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
+                        "20-35=moderate, 35-50=mild, >50=no drought."
+                    )
+                tool_result = {
+                    "status": "success",
+                    "source": "stac_cog_realtime",
+                    "count": len(_stac_districts),
+                    "note": _stac_note,
+                    "districts": _stac_districts,
+                }
+                _pgc_id = await _ensure_rwanda_postgis_connection(
+                    ctx.conn, ctx.project_id, ctx.user_id,
+                )
+                if _pgc_id:
+                    tool_result["postgis_connection_id"] = _pgc_id
+                    tool_result["kue_instructions"] = (
+                        "To visualise drought status on the map, call new_layer_from_postgis with "
+                        f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                        "Available tables: rwanda_district_boundaries (district, geom). "
+                        "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                        "Then add_layer_to_map and set_layer_style to colour by drought status. "
+                        "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                    )
+                return tool_result
+            return {
+                "status": "success",
+                "source": "stac_cog_realtime",
+                "districts": [],
+                "message": (
+                    "Could not compute drought indicators — insufficient cloud-free "
+                    "Sentinel-2 scenes in the last 90 days for this area."
+                ),
+            }
+        except Exception as _stac_err:
+            logger.warning("STAC drought fallback failed: %s", _stac_err)
+            return {
+                "status": "success",
+                "source": "postgres_cache",
+                "districts": [],
+                "message": "No drought data yet — Dagster weekly schedule populates this cache",
+            }
+    except Exception as e:
+        logger.exception("get_drought_status tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_crop_growth_stage(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read phenology_cache (current growth stage by district/stage filter).
+
+    Lifted byte-for-byte from message_routes.py:5071-5127.
+    """
+    args = ctx.arguments
+    try:
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        _where: list[str] = []
+        _params: list[Any] = []
+        _pidx = 1
+        if args.get("district"):
+            _where.append(f"district = ${_pidx}")
+            _params.append(args["district"])
+            _pidx += 1
+        if args.get("stage"):
+            _where.append(f"current_stage = ${_pidx}")
+            _params.append(args["stage"])
+            _pidx += 1
+        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+        _rows = await ctx.conn.fetch(
+            f"SELECT district, current_stage, peak_ndvi, peak_date, "
+            f"green_up_start, senescence_start, harvest_date, observations "
+            f"FROM phenology_cache {_where_sql} "
+            f"ORDER BY computed_at DESC LIMIT 50",
+            *_params,
+        )
+
+        if _rows:
+            tool_result: Dict[str, Any] = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(_rows),
+                "districts": [
+                    {"district": r["district"], "current_stage": r["current_stage"], "peak_ndvi": r["peak_ndvi"],
+                     "peak_date": r["peak_date"], "green_up_start": r["green_up_start"],
+                     "senescence_start": r["senescence_start"], "harvest_date": r["harvest_date"], "observations": r["observations"]}
+                    for r in _rows
+                ],
+            }
+            _pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if _pgc_id:
+                tool_result["postgis_connection_id"] = _pgc_id
+                tool_result["kue_instructions"] = (
+                    "To visualise crop growth stages on the map, call new_layer_from_postgis with "
+                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
+                    "Available tables: rwanda_district_boundaries (district, geom). "
+                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
+                    "Then add_layer_to_map and set_layer_style to colour by growth stage. "
+                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
+                )
+            return tool_result
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "districts": [],
+            "message": "No phenology data yet — Dagster weekly schedule populates this cache",
+        }
+    except Exception as e:
+        logger.exception("get_crop_growth_stage tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -2473,17 +3114,13 @@ _NOT_YET_EXTRACTED: list[str] = [
     "create_management_zones",
     "create_prescription_map",
     "create_soil_sampling_plan",
-    "identify_parcel_crop",
-    "confirm_crop_prediction",
+    # identify_parcel_crop + confirm_crop_prediction extracted.
     # get_ndvi_stats + get_cell_ndvi_stats extracted.
     "get_soil_properties",
     # get_agri_indices extracted (cache + DE Africa + inline layer creation).
     "query_worldcover_stats",
-    "get_crop_classifications",
-    "get_anomaly_alerts",
-    "get_yield_risk",
-    "get_drought_status",
-    "get_crop_growth_stage",
+    # get_crop_classifications + get_anomaly_alerts + get_yield_risk +
+    # get_drought_status + get_crop_growth_stage extracted (5 cache-read tools).
     "get_weather_stats",
     # NOTE: get_forecast + detect_dry_spells + get_insurance_intelligence
     # have been extracted (the insurance flow).
@@ -2563,6 +3200,13 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_ndvi_stats": _handle_get_ndvi_stats,
     "get_cell_ndvi_stats": _handle_get_cell_ndvi_stats,
     "get_agri_indices": _handle_get_agri_indices,
+    "identify_parcel_crop": _handle_identify_parcel_crop,
+    "confirm_crop_prediction": _handle_confirm_crop_prediction,
+    "get_crop_classifications": _handle_get_crop_classifications,
+    "get_anomaly_alerts": _handle_get_anomaly_alerts,
+    "get_yield_risk": _handle_get_yield_risk,
+    "get_drought_status": _handle_get_drought_status,
+    "get_crop_growth_stage": _handle_get_crop_growth_stage,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
