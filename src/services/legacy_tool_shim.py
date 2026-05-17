@@ -1456,6 +1456,133 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
         }
 
 
+async def _handle_get_field_health(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Live vegetation health stats for a polygon (NDVI/NDWI/BSI via Sentinel Hub).
+
+    Extracted from src/routes/message_routes.py:3062-3104. Auto-buffers
+    Point/MultiPoint geometries to a 500m polygon so the LLM can pass a
+    single coordinate without having to call new_layer + buffer first.
+    Sync `_sa_get_field_stats` is offloaded to the default executor.
+
+    Args (from ctx.arguments):
+      - geometry: GeoJSON dict (any type; Points auto-buffered to 500m)
+      - date_from, date_to: ISO date strings
+      - index: 'ndvi' (default), 'ndwi', 'bsi'
+    """
+    import asyncio as _aio
+
+    try:
+        from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
+
+        geom = ctx.arguments.get("geometry")
+        # Auto-buffer Point/MultiPoint geometries to 500m so the LLM doesn't
+        # have to create a buffer first. Lifted verbatim from the inline.
+        if geom and geom.get("type") in ("Point", "MultiPoint"):
+            from shapely.geometry import shape as _shape, mapping as _mapping
+            from shapely.ops import transform as _stransform
+            from pyproj import Transformer as _Transformer
+
+            pt = _shape(geom)
+            to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
+            to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
+            pt_utm = _stransform(to_utm.transform, pt)
+            buf_utm = pt_utm.buffer(500)  # 500m radius
+            buf_wgs = _stransform(to_wgs.transform, buf_utm)
+            geom = _mapping(buf_wgs)
+            logger.info("get_field_health: auto-buffered Point to 500m polygon")
+
+        result_data = await _aio.get_event_loop().run_in_executor(
+            None,
+            lambda: _sa_get_field_stats(
+                geometry=geom,
+                date_from=ctx.arguments.get("date_from"),
+                date_to=ctx.arguments.get("date_to"),
+                index=ctx.arguments.get("index", "ndvi"),
+            ),
+        )
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+        return {"status": "success", "field_stats": result_data}
+    except Exception as e:
+        logger.exception("get_field_health tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Read parcel-level NDVI from the postgres cache (ndvi_parcel_cache).
+
+    Extracted from src/routes/message_routes.py:3828-3894. Returns the
+    last 100 most-recently-computed rows, optionally filtered by parcel
+    name (ILIKE) or by layer_id. Pure cache read — never falls back to
+    real-time (parcel boundaries are user-uploaded so cache freshness is
+    the nightly Dagster job's problem).
+
+    Args (from ctx.arguments):
+      - parcel_name: str (optional, ILIKE %name%)
+      - layer_id: str (optional, exact match)
+    """
+    try:
+        parcel = ctx.arguments.get("parcel_name")
+        layer = ctx.arguments.get("layer_id")
+
+        # Build WHERE clause + params positionally — safer than f-string
+        # interpolation of values. Column names ARE hardcoded.
+        where: list[str] = []
+        params: list[Any] = []
+        idx = 1
+        if parcel:
+            where.append(f"parcel_name ILIKE ${idx}")
+            params.append(f"%{parcel}%")
+            idx += 1
+        if layer:
+            where.append(f"layer_id = ${idx}")
+            params.append(layer)
+            idx += 1
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+        rows = await ctx.conn.fetch(
+            f"SELECT parcel_id, parcel_name, layer_id, week_start, "
+            f"mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels, area_ha "
+            f"FROM ndvi_parcel_cache {where_sql} "
+            f"ORDER BY computed_at DESC LIMIT 100",
+            *params,
+        )
+        if not rows:
+            return {
+                "status": "success",
+                "source": "postgres_cache",
+                "parcel_ndvi_stats": [],
+                "message": (
+                    "No parcel NDVI data yet. Upload field boundaries through "
+                    "Mundi UI and tag with rwanda_parcels=true in layer "
+                    "metadata. The nightly pipeline processes them."
+                ),
+            }
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "count": len(rows),
+            "parcel_ndvi_stats": [
+                {
+                    "parcel_id": r["parcel_id"],
+                    "parcel_name": r["parcel_name"],
+                    "layer_id": r["layer_id"],
+                    "week_start": str(r["week_start"]) if r["week_start"] else None,
+                    "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                    "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                    "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                    "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                    "valid_pixels": r["valid_pixels"],
+                    "area_ha": r["area_ha"],
+                }
+                for r in rows
+            ],
+        }
+    except Exception as e:
+        logger.exception("get_parcel_ndvi_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -1473,16 +1600,15 @@ _NOT_YET_EXTRACTED: list[str] = [
     # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
     "query_rwanda_zonal_stats",
     "search_satellite_imagery",
-    "get_field_health",
+    # NOTE: get_field_health + get_parcel_ndvi_stats extracted.
     "create_management_zones",
     "create_prescription_map",
     "create_soil_sampling_plan",
     "identify_parcel_crop",
     "confirm_crop_prediction",
-    "get_ndvi_stats",
-    "get_cell_ndvi_stats",
+    "get_ndvi_stats",            # big cache+realtime cascade, ~243 lines
+    "get_cell_ndvi_stats",       # similar pattern, ~168 lines
     "get_soil_properties",
-    "get_parcel_ndvi_stats",
     "get_agri_indices",
     "query_worldcover_stats",
     "get_crop_classifications",
@@ -1564,6 +1690,8 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_forecast": _handle_get_forecast,
     "detect_dry_spells": _handle_detect_dry_spells,
     "get_insurance_intelligence": _handle_get_insurance_intelligence,
+    "get_field_health": _handle_get_field_health,
+    "get_parcel_ndvi_stats": _handle_get_parcel_ndvi_stats,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
