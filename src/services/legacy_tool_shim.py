@@ -865,6 +865,225 @@ async def _handle_query_postgis_database(ctx: LegacyToolContext) -> Dict[str, An
         }
 
 
+async def _handle_zonal_statistics(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Compute zonal statistics (mean, sum, min, max, count, stdev) for raster
+    values within polygon boundaries.
+
+    Extracted from src/routes/message_routes.py:2865-2942. Delegates the
+    actual raster-over-polygon math to compute_zonal_statistics in
+    src/geoprocessing/zonal_stats.py. This handler just owns the
+    ownership-checks-then-dispatch pattern.
+
+    Args (from ctx.arguments):
+      - raster_layer_id: str
+      - zones_layer_id: str
+      - stats: list[str] (optional; defaults to mean/sum/min/max/count/stdev)
+    """
+    from fastapi import HTTPException
+
+    from src.routes.websocket import kue_ephemeral_action
+
+    raster_layer_id = ctx.arguments.get("raster_layer_id")
+    zones_layer_id = ctx.arguments.get("zones_layer_id")
+    stats = ctx.arguments.get("stats")
+
+    if not raster_layer_id or not zones_layer_id:
+        return {
+            "status": "error",
+            "error": "Missing required parameters (raster_layer_id or zones_layer_id).",
+        }
+
+    raster_exists = await ctx.conn.fetchrow(
+        "SELECT layer_id, type FROM map_layers WHERE layer_id = $1 AND owner_uuid = $2",
+        raster_layer_id, ctx.user_id,
+    )
+    zones_exists = await ctx.conn.fetchrow(
+        "SELECT layer_id, type FROM map_layers WHERE layer_id = $1 AND owner_uuid = $2",
+        zones_layer_id, ctx.user_id,
+    )
+    if not raster_exists:
+        return {
+            "status": "error",
+            "error": (
+                f"Raster layer '{raster_layer_id}' not found or you do not "
+                f"have access to it."
+            ),
+        }
+    if not zones_exists:
+        return {
+            "status": "error",
+            "error": (
+                f"Zones layer '{zones_layer_id}' not found or you do not "
+                f"have access to it."
+            ),
+        }
+
+    try:
+        async with kue_ephemeral_action(
+            ctx.conversation_id, "Computing zonal statistics...",
+        ):
+            # Local import: avoid GDAL/rasterio at module load if the shim
+            # is imported in a context that doesn't need this tool.
+            from src.geoprocessing.zonal_stats import compute_zonal_statistics
+
+            return await compute_zonal_statistics(
+                raster_layer_id=raster_layer_id,
+                zones_layer_id=zones_layer_id,
+                stats=stats,
+                timeout=30,
+            )
+    except HTTPException as e:
+        return {"status": "error", "error": f"Zonal statistics error: {e.detail}"}
+    except Exception as e:
+        logger.exception(
+            "Error computing zonal statistics for raster=%s, zones=%s",
+            raster_layer_id, zones_layer_id,
+        )
+        return {
+            "status": "error",
+            "error": f"Failed to compute zonal statistics: {str(e)}",
+        }
+
+
+# Province-to-district mapping (stable since the 2006 administrative reform).
+# Lifted verbatim from message_routes.py:6061-6074 — keeping the same list so
+# the shim and the hand-rolled loop return identical province values.
+_RWANDA_DISTRICT_TO_PROVINCE: Dict[str, str] = {
+    # Kigali City (3 districts)
+    "Gasabo": "Kigali City", "Kicukiro": "Kigali City", "Nyarugenge": "Kigali City",
+    # Northern (5)
+    "Burera": "Northern", "Gakenke": "Northern", "Gicumbi": "Northern",
+    "Musanze": "Northern", "Rulindo": "Northern",
+    # Southern (8)
+    "Gisagara": "Southern", "Huye": "Southern", "Kamonyi": "Southern",
+    "Muhanga": "Southern", "Nyamagabe": "Southern", "Nyanza": "Southern",
+    "Nyaruguru": "Southern", "Ruhango": "Southern",
+    # Eastern (7)
+    "Bugesera": "Eastern", "Gatsibo": "Eastern", "Kayonza": "Eastern",
+    "Kirehe": "Eastern", "Ngoma": "Eastern", "Nyagatare": "Eastern",
+    "Rwamagana": "Eastern",
+    # Western (7)
+    "Karongi": "Western", "Ngororero": "Western", "Nyabihu": "Western",
+    "Nyamasheke": "Western", "Rubavu": "Western", "Rusizi": "Western",
+    "Rutsiro": "Western",
+}
+
+
+async def _handle_reverse_geocode_coordinates(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Resolve lat/lon to Rwanda admin hierarchy (province → district → sector
+    → cell → village).
+
+    Extracted from src/routes/message_routes.py:6053-6171. Cascades through
+    boundary tables in order of specificity (most-precise village first,
+    fall back to coarser admin levels). Province is derived from district
+    via a hardcoded table since rwanda_district_boundaries doesn't store
+    province directly.
+
+    Args (from ctx.arguments):
+      - lat: float
+      - lon: float
+
+    Returns hierarchy with whatever level was the most specific match.
+    Returns status=not_found if the point is outside Rwanda.
+    """
+    import os
+    import asyncpg
+
+    lat = ctx.arguments.get("lat")
+    lon = ctx.arguments.get("lon")
+    if lat is None or lon is None:
+        return {"status": "error", "error": "lat and lon are required"}
+
+    # Open a fresh asyncpg connection — same pattern as the inline handler.
+    # Future cleanup: consider using ctx.conn (mundi's mundiuser conn already
+    # has the right credentials) once we verify the rwanda_*_boundaries
+    # tables don't have RLS that filters on session GUCs.
+    try:
+        pg = await asyncpg.connect(
+            host=os.environ.get("POSTGRES_HOST", "postgresdb"),
+            port=int(os.environ.get("POSTGRES_PORT", "5432")),
+            database=os.environ.get("POSTGRES_DB", "mundidb"),
+            user=os.environ.get("POSTGRES_USER", "mundiuser"),
+            password=os.environ.get("POSTGRES_PASSWORD", "gdalpassword"),
+        )
+    except Exception as e:
+        logger.exception("reverse_geocode_coordinates: connection failed")
+        return {"status": "error", "error": str(e)}
+
+    result: Dict[str, Any] = {
+        "province": None, "district": None,
+        "sector": None, "cell": None, "village": None,
+    }
+    try:
+        # Cascade: village → cell → sector → district. Stop at the most
+        # specific match.
+        row = await pg.fetchrow(
+            "SELECT village_name, cell_name, sector_name, district_name "
+            "FROM rwanda_village_boundaries "
+            "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+            "LIMIT 1",
+            float(lon), float(lat),
+        )
+        if row:
+            result["village"] = row["village_name"]
+            result["cell"] = row["cell_name"]
+            result["sector"] = row["sector_name"]
+            result["district"] = row["district_name"]
+        else:
+            row = await pg.fetchrow(
+                "SELECT cell_name, sector_name, district_name "
+                "FROM rwanda_cell_boundaries "
+                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                "LIMIT 1",
+                float(lon), float(lat),
+            )
+            if row:
+                result["cell"] = row["cell_name"]
+                result["sector"] = row["sector_name"]
+                result["district"] = row["district_name"]
+            else:
+                row = await pg.fetchrow(
+                    "SELECT sector_name, district_name "
+                    "FROM rwanda_sector_boundaries "
+                    "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                    "LIMIT 1",
+                    float(lon), float(lat),
+                )
+                if row:
+                    result["sector"] = row["sector_name"]
+                    result["district"] = row["district_name"]
+                else:
+                    row = await pg.fetchrow(
+                        "SELECT district FROM rwanda_district_boundaries "
+                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                        "LIMIT 1",
+                        float(lon), float(lat),
+                    )
+                    if row:
+                        result["district"] = row["district"]
+
+        # Derive province from the district name table lookup.
+        if result["district"]:
+            result["province"] = _RWANDA_DISTRICT_TO_PROVINCE.get(result["district"])
+
+        if result["district"]:
+            return {
+                "status": "success",
+                "coordinates": {"lat": lat, "lon": lon},
+                **result,
+            }
+        return {
+            "status": "not_found",
+            "error": f"Coordinates ({lat}, {lon}) are not within Rwanda boundaries.",
+            "coordinates": {"lat": lat, "lon": lon},
+        }
+    except Exception as e:
+        logger.exception("reverse_geocode_coordinates failed")
+        return {"status": "error", "error": str(e)}
+    finally:
+        await pg.close()
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -875,12 +1094,10 @@ async def _handle_query_postgis_database(ctx: LegacyToolContext) -> Dict[str, An
 # Derived from message_routes.py's `elif function_name == "X":` chain.
 # Verify with: `grep -E 'elif function_name == "[a-z_]+"' src/routes/message_routes.py`
 _NOT_YET_EXTRACTED: list[str] = [
-    # Map/layer plumbing (7 hardcoded — no schemas in tools.json or pydantic_tools.py)
-    # NOTE: set_layer_style + add_layer_to_map + query_postgis_database +
-    # query_duckdb_sql + new_layer_from_postgis have been extracted into real
-    # handlers above. Remaining 2 hardcoded:
-    "zonal_statistics",
-    "reverse_geocode_coordinates",
+    # Map/layer plumbing — all 7 hardcoded tools NOW EXTRACTED:
+    # new_layer_from_postgis, add_layer_to_map, set_layer_style,
+    # query_postgis_database, query_duckdb_sql, zonal_statistics,
+    # reverse_geocode_coordinates. None remain in this section.
     # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
     "query_rwanda_zonal_stats",
     "search_satellite_imagery",
@@ -971,6 +1188,8 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "set_layer_style": _handle_set_layer_style,
     "query_duckdb_sql": _handle_query_duckdb_sql,
     "query_postgis_database": _handle_query_postgis_database,
+    "zonal_statistics": _handle_zonal_statistics,
+    "reverse_geocode_coordinates": _handle_reverse_geocode_coordinates,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)

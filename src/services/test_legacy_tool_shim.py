@@ -158,6 +158,28 @@ async def test_set_layer_style_rejects_invalid_json():
 
 
 @pytest.mark.asyncio
+async def test_zonal_statistics_rejects_missing_args():
+    """Both raster_layer_id and zones_layer_id are required."""
+    result = await execute_legacy_tool("zonal_statistics", _make_ctx({}))
+    assert result["status"] == "error"
+    assert "Missing required parameters" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_reverse_geocode_requires_coords():
+    """lat and lon are required. Missing either should return a clean error
+    before opening any DB connection."""
+    result = await execute_legacy_tool("reverse_geocode_coordinates", _make_ctx({}))
+    assert result["status"] == "error"
+    assert "lat and lon are required" in result["error"]
+
+    result2 = await execute_legacy_tool(
+        "reverse_geocode_coordinates", _make_ctx({"lat": -1.9})
+    )
+    assert result2["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_query_postgis_database_requires_limit_clause():
     """query_postgis_database hard-blocks queries without an explicit LIMIT
     clause. Prevents accidental million-row pulls that would OOM the worker
