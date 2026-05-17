@@ -102,8 +102,19 @@ services:
     # `hermes gateway run` is the foreground daemon. -v for INFO logs (we want
     # to see channel handshakes during early soak). --accept-hooks avoids TTY
     # prompts for shell-script hook consent (we don't ship hooks today).
+    #
+    # The leading `mkdir -p ... && ln -sfn ...` symlinks our in-image plugin
+    # path into the directory Hermes scans for user plugins (~/.hermes/plugins).
+    # See `hermes_cli/plugins.py:get_bundled_plugins_dir()` — Hermes checks
+    # ${HERMES_HOME}/plugins/<name>/ alongside its own bundled plugins dir.
+    # We can't override HERMES_BUNDLED_PLUGINS because that would clobber the
+    # built-in channel adapters (Telegram/WhatsApp/Slack/etc). User-plugin
+    # scan is additive and the right hook.
     command: >
-      /app/.venv/bin/hermes gateway run -v --accept-hooks
+      sh -c "mkdir -p /home/appuser/.hermes/plugins
+      && ln -sfn /app/hermes_integration/plugins/ingabe-sage
+      /home/appuser/.hermes/plugins/ingabe-sage
+      && exec /app/.venv/bin/hermes gateway run -v --accept-hooks"
     environment:
       # Inherit LLM provider config from .env (same key as mundi-app uses).
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -112,18 +123,21 @@ services:
       - HOME=/home/appuser
       # Acknowledge first-run prompts non-interactively (we're in a daemon).
       - HERMES_ACCEPT_HOOKS=1
+      # Tool-call proxy: ingabe-sage's proxied handlers POST to this URL
+      # with an HMAC-signed body. Service-DNS resolves inside the compose
+      # network; both fields are required for tool dispatch to work.
+      - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
+      - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
     volumes:
       # Hermes state — profiles, sessions, channel credentials, hooks allowlist.
       # Named volume = survives restarts but stays isolated from host filesystem.
       - hermes-state:/home/appuser
-      # Plugin mount intentionally deferred to PR #46+ when actual plugin
-      # source has been deployed to prod host. Mounting an empty host dir
-      # here as `:/home/appuser/.hermes/plugins:ro` causes the gateway to
-      # crash with PermissionError on /home/appuser/.hermes/logs (the
-      # bind-mount interaction creates root-owned overlays on the named
-      # volume). Add the plugin mount once `hermes_integration/plugins/`
-      # is deployed to `/home/deploy/mundi.ai/hermes_integration/plugins/`
-      # on the host with correct ownership.
+      # NOTE: plugin code lives inside the image at /app/hermes_integration/
+      # (baked by `COPY . /app/` in the Dockerfile). The `ln -sfn` in the
+      # command above exposes it to Hermes via the user-plugins scan path.
+      # We do NOT bind-mount the plugin dir from the host because mounting
+      # under /home/appuser/.hermes/ interacts badly with the named volume
+      # (root-owned overlays + PermissionError on /home/appuser/.hermes/logs).
     restart: unless-stopped
     # No `ports:` block — the gateway is internal-only. mundi-app reaches it
     # via docker DNS at `hermes-gateway:<port>` once ACP wiring lands.
