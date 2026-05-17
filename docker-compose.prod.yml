@@ -40,6 +40,19 @@ services:
     environment:
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-6}
       - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
+      # Hermes Phase 2 flags.
+      # MUNDI_USE_HERMES=0 (default) → existing hand-rolled chat loop.
+      # MUNDI_USE_HERMES=1 → src/services/hermes_runtime.py dispatches
+      # through the Hermes Agent gateway sidecar. Rollback = back to 0
+      # + restart. See CLAUDE.md "Hermes Phase 2".
+      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
+      # MUNDI_TOOL_CALL_ENABLED=0 (default) → /internal/tool-call returns
+      # 503. Flip to 1 to let the Hermes plugin call back into mundi for
+      # Sage tools (PR #55 dispatch + PR #57 shim — every legacy tool now
+      # has a real handler). Should be 1 in any deployment that also runs
+      # MUNDI_USE_HERMES=1, otherwise Hermes turns will dead-letter on
+      # the first tool call.
+      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       # GDAL env vars for rio-tiler COG reads via S3/HTTP
       - GDAL_CACHEMAX=256
       - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
