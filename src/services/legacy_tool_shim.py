@@ -649,6 +649,222 @@ async def _handle_set_layer_style(ctx: LegacyToolContext) -> Dict[str, Any]:
         }
 
 
+async def _handle_query_duckdb_sql(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Run a DuckDB SQL query against vector-layer attributes.
+
+    Extracted from src/routes/message_routes.py:2537-2619. Sage uses this
+    for tabular analysis on user-uploaded vector layers (FlatGeoBuf,
+    GeoJSON, KML) — DuckDB loads each layer_id as a virtual table.
+
+    Args (from ctx.arguments):
+      - layer_ids: list[str] (only the FIRST layer_id is used; multi-layer
+        joins inside DuckDB aren't supported by the underlying executor)
+      - sql_query: str (DuckDB-flavored SELECT)
+      - head_n_rows: int (default 20, used to truncate the result)
+
+    Returns the tool_result dict in CSV-string form. 25,000-char ceiling
+    on the result to keep token usage reasonable for the LLM.
+    """
+    import csv
+    import io
+    import json  # noqa: F401 — kept for parity with message_routes.py shape
+
+    from fastapi import HTTPException
+
+    from src.duckdb import execute_duckdb_query
+    from src.routes.websocket import kue_ephemeral_action
+
+    layer_ids = ctx.arguments.get("layer_ids") or []
+    layer_id = layer_ids[0] if layer_ids else None
+    sql_query = ctx.arguments.get("sql_query")
+    head_n_rows = ctx.arguments.get("head_n_rows", 20)
+
+    layer_exists = await ctx.conn.fetchrow(
+        """
+        SELECT layer_id FROM map_layers
+        WHERE layer_id = $1 AND owner_uuid = $2
+        """,
+        layer_id, ctx.user_id,
+    )
+    if not layer_exists:
+        return {
+            "status": "error",
+            "error": (
+                f"Layer ID '{layer_id}' not found or you do not have "
+                f"permission to access it."
+            ),
+        }
+
+    try:
+        async with kue_ephemeral_action(
+            ctx.conversation_id, "Querying with SQL...", layer_id=layer_id,
+        ):
+            result = await execute_duckdb_query(
+                sql_query=sql_query, layer_id=layer_id,
+                max_n_rows=head_n_rows, timeout=30,
+            )
+        # CSV-format result so the LLM can read tabular data without parsing
+        # JSON. Same format the chat loop emits.
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(result["headers"])
+        writer.writerows(result["result"])
+        result_text = buf.getvalue()
+        if len(result_text) > 25000:
+            return {
+                "status": "error",
+                "error": (
+                    f"DuckDB CSV result too large: {len(result_text)} "
+                    f"characters exceeds 25,000 character limit, try "
+                    f"reducing columns or head_n_rows"
+                ),
+            }
+        return {
+            "status": "success",
+            "result": result_text,
+            "row_count": result["row_count"],
+            "query": sql_query,
+        }
+    except HTTPException as e:
+        return {"status": "error", "error": f"DuckDB query error: {e.detail}"}
+    except Exception as e:
+        return {"status": "error", "error": f"Error executing SQL query: {str(e)}"}
+
+
+async def _handle_query_postgis_database(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Run a PostGIS SQL query against a partner-connected database.
+
+    Extracted from src/routes/message_routes.py:2691-2863. Sage uses this
+    for ad-hoc data exploration (e.g. "how many districts in BK's
+    portfolio", "what crops are in this season's data"). Hard-cap of
+    LIMIT 1000 prevents accidental result-set flooding.
+
+    Args (from ctx.arguments):
+      - postgis_connection_id: str (12-char C-prefixed)
+      - sql_query: str (must contain LIMIT clause, value <= 1000)
+
+    Returns the tool_result dict in tab-separated text form (mirrors the
+    chat loop's formatting). 25,000-char ceiling on the result.
+    """
+    import re
+    import json  # noqa: F401 — parity with message_routes.py shape
+
+    from fastapi import HTTPException
+
+    from src.routes.message_routes import validate_sql_query
+    from src.dependencies.postgres_connection import PostgresConnectionManager
+    from src.routes.websocket import kue_ephemeral_action
+
+    postgis_connection_id = ctx.arguments.get("postgis_connection_id")
+    raw_query = ctx.arguments.get("sql_query")
+    sql_query = raw_query
+
+    # Validate before any execution. validate_sql_query raises HTTPException;
+    # we catch + return so the LLM gets a parseable result rather than 500.
+    if sql_query:
+        try:
+            sql_query = validate_sql_query(sql_query)
+        except HTTPException as e:
+            return {"status": "error", "error": f"Query validation failed: {e.detail}"}
+
+    if not postgis_connection_id or not sql_query:
+        return {
+            "status": "error",
+            "error": "Missing required parameters (postgis_connection_id or sql_query)",
+        }
+
+    # Owner / project access check, same fallback as new_layer_from_postgis.
+    connection_result = await ctx.conn.fetchrow(
+        """
+        SELECT connection_uri FROM project_postgres_connections
+        WHERE id = $1 AND (user_id = $2 OR project_id = $3)
+        AND soft_deleted_at IS NULL
+        """,
+        postgis_connection_id, ctx.user_id, ctx.project_id,
+    )
+    if not connection_result:
+        return {
+            "status": "error",
+            "error": (
+                f"PostGIS connection '{postgis_connection_id}' not found or "
+                f"you do not have access to it."
+            ),
+        }
+
+    limited_query = sql_query.strip()
+    limit_match = re.search(r"\bLIMIT\s+(\d+)\b", limited_query, re.IGNORECASE)
+    if not limit_match:
+        return {
+            "status": "error",
+            "error": "Query must include a LIMIT clause with a value less than 1000",
+        }
+    if int(limit_match.group(1)) > 1000:
+        return {
+            "status": "error",
+            "error": (
+                f"LIMIT value {int(limit_match.group(1))} exceeds maximum "
+                f"allowed limit of 1000"
+            ),
+        }
+
+    connection_manager = PostgresConnectionManager()
+    try:
+        async with kue_ephemeral_action(
+            ctx.conversation_id, "Querying PostgreSQL database...",
+        ):
+            postgres_conn = await connection_manager.connect_to_postgres(
+                postgis_connection_id
+            )
+            try:
+                rows = await postgres_conn.fetch(limited_query)
+                if not rows:
+                    return {
+                        "status": "success",
+                        "message": "Query executed successfully but returned no rows",
+                        "row_count": 0,
+                        "query": limited_query,
+                    }
+                result_data = [dict(row) for row in rows]
+                # Format: single-value, or tab-separated table.
+                if len(result_data) == 1 and len(result_data[0]) == 1:
+                    single_value = next(iter(result_data[0].values()))
+                    result_text = f"Query result: {single_value}"
+                else:
+                    headers = list(result_data[0].keys())
+                    lines = ["\t".join(headers)]
+                    for row in result_data:
+                        lines.append("\t".join(str(row.get(h, "")) for h in headers))
+                    result_text = "\n".join(lines)
+                if len(result_text) > 25000:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Query result too large: {len(result_text)} "
+                            f"characters exceeds 25,000 character limit. Try "
+                            f"reducing the number of columns or rows."
+                        ),
+                    }
+                return {
+                    "status": "success",
+                    "result": result_text,
+                    "row_count": len(result_data),
+                    "query": limited_query,
+                }
+            finally:
+                await postgres_conn.close()
+    except HTTPException as e:
+        return {
+            "status": "error",
+            "error": f"Failed to connect to PostGIS database: {e.detail}",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"PostgreSQL query error: {str(e)}",
+            "query": limited_query,
+        }
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -660,10 +876,9 @@ async def _handle_set_layer_style(ctx: LegacyToolContext) -> Dict[str, Any]:
 # Verify with: `grep -E 'elif function_name == "[a-z_]+"' src/routes/message_routes.py`
 _NOT_YET_EXTRACTED: list[str] = [
     # Map/layer plumbing (7 hardcoded — no schemas in tools.json or pydantic_tools.py)
-    # NOTE: set_layer_style + add_layer_to_map were here but have been
-    # extracted (see _handle_set_layer_style + _handle_add_layer_to_map above).
-    "query_postgis_database",
-    "query_duckdb_sql",
+    # NOTE: set_layer_style + add_layer_to_map + query_postgis_database +
+    # query_duckdb_sql + new_layer_from_postgis have been extracted into real
+    # handlers above. Remaining 2 hardcoded:
     "zonal_statistics",
     "reverse_geocode_coordinates",
     # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
@@ -754,6 +969,8 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "new_layer_from_postgis": _handle_new_layer_from_postgis,
     "add_layer_to_map": _handle_add_layer_to_map,
     "set_layer_style": _handle_set_layer_style,
+    "query_duckdb_sql": _handle_query_duckdb_sql,
+    "query_postgis_database": _handle_query_postgis_database,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)

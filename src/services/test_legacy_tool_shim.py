@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,15 +20,26 @@ from src.services.legacy_tool_shim import (
 
 
 def _make_ctx(arguments: dict[str, Any] | None = None) -> LegacyToolContext:
-    """Build a context for tests. The conn is a Mock since no test should
-    actually hit the DB — handlers that need the DB are stubbed."""
+    """Build a context for tests. The conn is an AsyncMock with sensible
+    async-method defaults so handlers that hit the DB return None (=
+    "no row found", = "owner not found", = error path) without raising
+    a `TypeError: object MagicMock can't be used in 'await' expression`.
+
+    Tests that need specific DB return values override `ctx.conn.fetchrow`
+    etc. with their own AsyncMock(return_value=...).
+    """
+    conn = MagicMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(return_value=None)
+    conn.fetch = AsyncMock(return_value=[])
+    conn.execute = AsyncMock(return_value=None)
     return LegacyToolContext(
         user_id="user-test-aaa",
         partner_id="partner-test-bbb",
         conversation_id=42,
         map_id="MTESTAAAAAAA",
         project_id="PTESTBBBBBBB",
-        conn=MagicMock(),
+        conn=conn,
         arguments=arguments or {},
     )
 
@@ -144,6 +155,48 @@ async def test_set_layer_style_rejects_invalid_json():
     assert result["status"] == "error"
     assert "Invalid JSON format" in result["error"]
     assert result["layer_id"] == "Labcd1234abcd"
+
+
+@pytest.mark.asyncio
+async def test_query_postgis_database_requires_limit_clause():
+    """query_postgis_database hard-blocks queries without an explicit LIMIT
+    clause. Prevents accidental million-row pulls that would OOM the worker
+    OR flood the LLM context window."""
+    # Need to set up the connection lookup to succeed first. Mock the conn
+    # to return a result for the connection_uri check.
+    from unittest.mock import AsyncMock
+    ctx = _make_ctx({
+        "postgis_connection_id": "C00000000001",
+        "sql_query": "SELECT * FROM districts",  # no LIMIT
+    })
+    ctx.conn.fetchrow = AsyncMock(return_value={"connection_uri": "postgresql://..."})
+
+    result = await execute_legacy_tool("query_postgis_database", ctx)
+    assert result["status"] == "error"
+    assert "LIMIT clause" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_query_postgis_database_caps_limit_at_1000():
+    """LIMIT > 1000 should be rejected as a guard against runaway queries."""
+    from unittest.mock import AsyncMock
+    ctx = _make_ctx({
+        "postgis_connection_id": "C00000000001",
+        "sql_query": "SELECT * FROM districts LIMIT 5000",
+    })
+    ctx.conn.fetchrow = AsyncMock(return_value={"connection_uri": "postgresql://..."})
+
+    result = await execute_legacy_tool("query_postgis_database", ctx)
+    assert result["status"] == "error"
+    assert "exceeds maximum allowed limit" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_query_postgis_database_rejects_missing_args():
+    """Both postgis_connection_id and sql_query are required."""
+    result = await execute_legacy_tool("query_postgis_database", _make_ctx({}))
+    assert result["status"] == "error"
+    assert "Missing required parameters" in result["error"]
 
 
 @pytest.mark.asyncio
