@@ -472,6 +472,183 @@ async def _handle_new_layer_from_postgis(
     return tool_result
 
 
+async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Attach an existing (unattached) layer to the current map, renaming it.
+
+    Extracted from src/routes/message_routes.py:2463-2536. Sage calls this
+    when the user wants to surface a layer that was created earlier (e.g.
+    output of a previous geoprocessing tool) but isn't currently on the
+    map. Verifies owner_uuid matches the caller so a holder of the
+    HMAC gateway secret can't surface another partner's layers.
+
+    Args (from ctx.arguments):
+      - layer_id: str (must already exist in map_layers, owner_uuid = ctx.user_id)
+      - new_name: str (sets the displayed legend label)
+
+    Returns a tool_result dict; auto-zooms to the layer's bounds.
+    """
+    import asyncio
+    import json  # noqa: F401 — kept for parity with message_routes.py shape
+
+    from src.routes.websocket import kue_ephemeral_action
+
+    layer_id_to_add = ctx.arguments.get("layer_id")
+    new_name = ctx.arguments.get("new_name")
+    if not layer_id_to_add or not new_name:
+        return {
+            "status": "error",
+            "error": "Missing required parameters (layer_id or new_name).",
+        }
+
+    _layer_bounds = None
+    tool_result: Dict[str, Any]
+    async with kue_ephemeral_action(
+        ctx.conversation_id, "Adding layer to map...", update_style_json=True,
+    ):
+        layer_exists = await ctx.conn.fetchrow(
+            """
+            SELECT layer_id, bounds FROM map_layers
+            WHERE layer_id = $1 AND owner_uuid = $2
+            """,
+            layer_id_to_add, ctx.user_id,
+        )
+        if not layer_exists:
+            tool_result = {
+                "status": "error",
+                "error": (
+                    f"Layer ID '{layer_id_to_add}' not found or you do not "
+                    f"have permission to use it."
+                ),
+            }
+        else:
+            await ctx.conn.execute(
+                "UPDATE map_layers SET name = $1 WHERE layer_id = $2",
+                new_name, layer_id_to_add,
+            )
+            await ctx.conn.execute(
+                """
+                UPDATE user_mundiai_maps
+                SET layers = CASE WHEN layers IS NULL THEN ARRAY[$1]
+                                  ELSE array_append(layers, $1) END
+                WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
+                """,
+                layer_id_to_add, ctx.map_id,
+            )
+            _layer_bounds = layer_exists["bounds"]
+            tool_result = {
+                "status": (
+                    f"Layer '{new_name}' (ID: {layer_id_to_add}) added to "
+                    f"map '{ctx.map_id}'."
+                ),
+                "layer_id": layer_id_to_add,
+                "name": new_name,
+            }
+            if _layer_bounds and len(_layer_bounds) == 4:
+                tool_result["bounds"] = list(_layer_bounds)
+                tool_result["kue_instructions"] = (
+                    f"Layer added. Call zoom_to_bounds with bounds "
+                    f"{list(_layer_bounds)} so the user can see it."
+                )
+
+    # Auto-zoom to the newly added layer (separate ephemeral action so the
+    # UI shows the "Zooming…" status distinct from "Adding…").
+    if _layer_bounds and len(_layer_bounds) == 4:
+        async with kue_ephemeral_action(
+            ctx.conversation_id, f"Zooming to {new_name}...",
+            bounds=list(_layer_bounds),
+        ):
+            await asyncio.sleep(0.3)
+
+    return tool_result
+
+
+async def _handle_set_layer_style(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Apply a new MapLibre style to an existing layer.
+
+    Extracted from src/routes/message_routes.py:2620-2690. Sage calls this
+    after a geoprocessing result the user should SEE differently (drought
+    severity → red ramp, NDVI → green ramp, etc.). Delegates the actual
+    style-record creation to set_layer_style_route in layer_router.py so
+    we share the same style insertion + map_layer_styles linkage logic.
+
+    Args (from ctx.arguments):
+      - layer_id: str
+      - maplibre_json_layers_str: str (JSON-encoded array of MapLibre layer objects)
+
+    Returns a tool_result dict with the new style_id on success.
+    """
+    import json
+    from fastapi import HTTPException
+
+    from src.database.models import MapLayer
+    from src.routes.layer_router import (
+        SetStyleRequest,
+        set_layer_style as set_layer_style_route,
+    )
+    from src.routes.websocket import kue_ephemeral_action
+
+    layer_id = ctx.arguments.get("layer_id")
+    maplibre_json_layers_str = ctx.arguments.get("maplibre_json_layers_str")
+    if not layer_id or not maplibre_json_layers_str:
+        return {
+            "status": "error",
+            "error": "Missing required parameters (layer_id or maplibre_json_layers_str).",
+        }
+
+    try:
+        layers = json.loads(maplibre_json_layers_str)
+        layer_row = await ctx.conn.fetchrow(
+            """
+            SELECT * FROM map_layers
+            WHERE layer_id = $1 AND owner_uuid = $2
+            """,
+            layer_id, ctx.user_id,
+        )
+        if not layer_row:
+            raise HTTPException(404, f"Layer {layer_id} not found")
+        layer = MapLayer(**dict(layer_row))
+
+        async with kue_ephemeral_action(
+            ctx.conversation_id, f"Styling layer {layer.name}...",
+            update_style_json=True,
+        ):
+            style_response = await set_layer_style_route(
+                request=SetStyleRequest(
+                    maplibre_json_layers=layers,
+                    map_id=ctx.map_id,
+                ),
+                layer=layer,
+                user_id=ctx.user_id,
+            )
+        return {
+            "status": "success",
+            "style_id": style_response.style_id,
+            "layer_id": style_response.layer_id,
+            "message": (
+                f"Style {style_response.style_id} created and applied to "
+                f"layer {layer_id}"
+            ),
+        }
+    except json.JSONDecodeError as e:
+        return {
+            "status": "error",
+            "error": f"Invalid JSON format: {str(e)}",
+            "layer_id": layer_id,
+        }
+    except HTTPException as e:
+        return {
+            "status": "error",
+            "error": f"Failed to create and apply style: {e.detail}",
+            "layer_id": layer_id,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to create and apply style: {str(e)}",
+            "layer_id": layer_id,
+        }
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -483,8 +660,8 @@ async def _handle_new_layer_from_postgis(
 # Verify with: `grep -E 'elif function_name == "[a-z_]+"' src/routes/message_routes.py`
 _NOT_YET_EXTRACTED: list[str] = [
     # Map/layer plumbing (7 hardcoded — no schemas in tools.json or pydantic_tools.py)
-    "set_layer_style",
-    "add_layer_to_map",
+    # NOTE: set_layer_style + add_layer_to_map were here but have been
+    # extracted (see _handle_set_layer_style + _handle_add_layer_to_map above).
     "query_postgis_database",
     "query_duckdb_sql",
     "zonal_statistics",
@@ -569,11 +746,14 @@ def _make_not_yet_extracted_handler(tool_name: str) -> LegacyHandlerFn:
 
 
 # Registry: tool name → handler function. Grows one entry per migrated tool.
-# Currently: 1 real handler (new_layer_from_postgis, stub'd) + 52 not-yet-extracted
-# stubs. Each not_yet_extracted stub returns a structured message instead of 404,
-# so the LLM can pattern-match on status and apologize cleanly to the user.
+# As of this commit: 3 real handlers (new_layer_from_postgis, add_layer_to_map,
+# set_layer_style) + 50 not-yet-extracted stubs. Each not_yet_extracted stub
+# returns a structured message instead of 404, so the LLM can pattern-match
+# on status and apologize cleanly to the user.
 LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "new_layer_from_postgis": _handle_new_layer_from_postgis,
+    "add_layer_to_map": _handle_add_layer_to_map,
+    "set_layer_style": _handle_set_layer_style,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)

@@ -110,6 +110,43 @@ async def test_result_is_json_serializable():
 
 
 @pytest.mark.asyncio
+async def test_add_layer_to_map_rejects_missing_args():
+    """add_layer_to_map needs both layer_id AND new_name. Missing either
+    returns a structured error without raising or touching the DB."""
+    result = await execute_legacy_tool("add_layer_to_map", _make_ctx({}))
+    assert result["status"] == "error"
+    assert "Missing required parameters" in result["error"]
+
+    result2 = await execute_legacy_tool("add_layer_to_map", _make_ctx({
+        "layer_id": "Labcd1234abcd",  # missing new_name
+    }))
+    assert result2["status"] == "error"
+    assert "Missing required parameters" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_set_layer_style_rejects_missing_args():
+    """set_layer_style needs both layer_id AND maplibre_json_layers_str."""
+    result = await execute_legacy_tool("set_layer_style", _make_ctx({}))
+    assert result["status"] == "error"
+    assert "Missing required parameters" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_set_layer_style_rejects_invalid_json():
+    """The maplibre_json_layers_str argument must be valid JSON. If the
+    LLM emits garbage, fail fast with a status=error result instead of
+    propagating the JSONDecodeError as a 500."""
+    result = await execute_legacy_tool("set_layer_style", _make_ctx({
+        "layer_id": "Labcd1234abcd",
+        "maplibre_json_layers_str": "not actually json {{{",
+    }))
+    assert result["status"] == "error"
+    assert "Invalid JSON format" in result["error"]
+    assert result["layer_id"] == "Labcd1234abcd"
+
+
+@pytest.mark.asyncio
 async def test_new_layer_from_postgis_rejects_missing_args():
     """The real handler (extracted from message_routes.py:1977-2462) must
     validate its 3 required args before touching the DB. Pins the
