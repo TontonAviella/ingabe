@@ -1583,6 +1583,270 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
         return {"status": "error", "error": str(e)}
 
 
+_NDVI_VIS_INSTRUCTIONS = (
+    "To visualise these NDVI stats on the map, call new_layer_from_postgis with "
+    "postgis_connection_id='{pgc_id}'. IMPORTANT: the query MUST return columns "
+    "named 'id' and 'geom'. Available tables: rwanda_district_boundaries (district, "
+    "geom), rwanda_cell_boundaries (cell_id, cell_name, district_name, geom). "
+    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom "
+    "FROM rwanda_district_boundaries. Then call add_layer_to_map and "
+    "set_layer_style to colour districts by NDVI. DO NOT reuse an existing layer "
+    "— always create a NEW layer from PostGIS."
+)
+
+
+async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """District-level NDVI stats with 3-tier fallback (cache → DE Africa
+    real-time → STAC COG).
+
+    Extracted from src/routes/message_routes.py:3350-3592. Big handler
+    with three independent data sources tried in order:
+
+      1. PostgreSQL `ndvi_field_cache` populated by the nightly Dagster
+         job. Returns recent rows (top 50 per district, top 200 across
+         all districts).
+      2. If cache is empty OR latest week is >14 days stale, fetch live
+         from Digital Earth Africa via `satellite_analytics.get_field_stats`
+         for each district's PostGIS geometry. Aggregates per-district
+         means/stdev/min/max from the satellite-returned intervals.
+      3. If both above produce nothing, STAC COG fallback via
+         `stac_service.compute_admin_ndvi` over each district's bbox.
+
+    Returns 'source' field indicating which tier(s) the data came from.
+    Includes kue_instructions for the LLM to visualize via PostGIS.
+
+    Args (from ctx.arguments):
+      - district: str (optional; filters to one district)
+    """
+    import asyncio as _aio
+    import json as _json
+    from datetime import date as _date, datetime as _datetime, timedelta as _td
+
+    try:
+        # Tier 1: postgres cache read.
+        cached_rows: list = []
+        try:
+            district = ctx.arguments.get("district")
+            if district:
+                cached_rows = await ctx.conn.fetch(
+                    "SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, "
+                    "max_ndvi, valid_pixels FROM ndvi_field_cache "
+                    "WHERE district = $1 ORDER BY week_start DESC LIMIT 50",
+                    district,
+                )
+            else:
+                cached_rows = await ctx.conn.fetch(
+                    "SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, "
+                    "max_ndvi, valid_pixels FROM ndvi_field_cache "
+                    "ORDER BY week_start DESC, district LIMIT 200"
+                )
+        except Exception:
+            logger.debug(
+                "PostgreSQL NDVI cache not available, will try real-time DE Africa"
+            )
+
+        ndvi_stats: list = []
+        for r in cached_rows:
+            ndvi_stats.append({
+                "district": r["district"],
+                "week_start": str(r["week_start"]) if r["week_start"] else None,
+                "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                "valid_pixels": r["valid_pixels"],
+                "source": "deafrica_cache",
+            })
+
+        # Tier 2: DE Africa real-time fallback if cache is empty OR stale (>14d).
+        need_realtime = len(ndvi_stats) == 0
+        if ndvi_stats:
+            latest = max(
+                (s["week_start"] for s in ndvi_stats if s["week_start"]),
+                default=None,
+            )
+            if latest and latest < str(_date.today() - _td(days=14)):
+                need_realtime = True
+
+        realtime_stats: list = []
+        if need_realtime:
+            try:
+                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
+                import numpy as _np
+
+                dfilter = ctx.arguments.get("district")
+                where_clause = "WHERE district = $1" if dfilter else ""
+                query_params: list = [dfilter] if dfilter else []
+                async with ctx.conn.transaction():
+                    dist_rows = await ctx.conn.fetch(
+                        f"SELECT district, ST_AsGeoJSON(geom) as geom "
+                        f"FROM rwanda_district_boundaries {where_clause} "
+                        f"ORDER BY district",
+                        *query_params,
+                    )
+
+                now = _datetime.utcnow()
+                rt_from = (now - _td(days=7)).strftime("%Y-%m-%d")
+                rt_to = now.strftime("%Y-%m-%d")
+
+                for dr in dist_rows:
+                    try:
+                        geom = _json.loads(dr["geom"])
+                        stats = _sa_get_field_stats(
+                            geometry=geom, date_from=rt_from,
+                            date_to=rt_to, index="ndvi",
+                        )
+                        if "error" in stats:
+                            continue
+                        intervals = stats.get("intervals", [])
+                        if not intervals:
+                            continue
+                        means = [
+                            iv["ndvi"]["mean"]
+                            for iv in intervals
+                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
+                        ]
+                        if not means:
+                            continue
+                        backend_tag = stats.get("backend", "satellite")
+                        realtime_stats.append({
+                            "district": dr["district"],
+                            "week_start": rt_from,
+                            "mean_ndvi": round(float(_np.mean(means)), 4),
+                            "std_ndvi": round(float(_np.std(means)), 4),
+                            "min_ndvi": round(float(_np.min(means)), 4),
+                            "max_ndvi": round(float(_np.max(means)), 4),
+                            "valid_pixels": sum(
+                                iv["ndvi"].get("valid_pixels", 0)
+                                for iv in intervals if "ndvi" in iv
+                            ),
+                            "source": f"{backend_tag}_realtime",
+                        })
+                    except Exception as e:
+                        logger.debug(
+                            "Satellite realtime failed for %s: %s", dr["district"], e
+                        )
+            except Exception as e:
+                logger.warning("Satellite real-time NDVI failed: %s", e)
+
+        # Merge + sort by week descending.
+        all_stats = ndvi_stats + realtime_stats
+        all_stats.sort(
+            key=lambda s: (s.get("week_start") or "", s.get("district") or ""),
+            reverse=True,
+        )
+
+        # Lazy-import the rwanda PostGIS connection helper (defined in
+        # message_routes.py — same file as the inline handler we lifted from).
+        from src.routes.message_routes import _ensure_rwanda_postgis_connection
+
+        if all_stats:
+            sources = sorted(set(s.get("source", "cache") for s in all_stats))
+            result = {
+                "status": "success",
+                "source": " + ".join(sources),
+                "count": len(all_stats),
+                "cached_records": len(ndvi_stats),
+                "realtime_records": len(realtime_stats),
+                "note": (
+                    "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
+                    "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
+                    "Negative values indicate heavy cloud cover during the observation period. "
+                    "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
+                    "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
+                    "or 'deafrica_realtime' (live COG query)."
+                ),
+                "ndvi_stats": all_stats,
+            }
+            pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if pgc_id:
+                result["postgis_connection_id"] = pgc_id
+                result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
+            return result
+
+        # Tier 3: STAC COG fallback (free, no API key).
+        stac_stats: list = []
+        try:
+            from src.services.stac_service import get_stac_service as _get_stac
+
+            stac = _get_stac()
+            sdist = ctx.arguments.get("district")
+            if sdist:
+                bbox_rows = await ctx.conn.fetch(
+                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
+                    sdist,
+                )
+            else:
+                bbox_rows = await ctx.conn.fetch(
+                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries ORDER BY district LIMIT 10"
+                )
+
+            for sbr in bbox_rows:
+                bbox = [
+                    float(sbr["bbox_west"]), float(sbr["bbox_south"]),
+                    float(sbr["bbox_east"]), float(sbr["bbox_north"]),
+                ]
+                stac_ts = await _aio.get_event_loop().run_in_executor(
+                    None,
+                    lambda bb=bbox: stac.compute_admin_ndvi(bb, days=30, max_scenes=4),
+                )
+                if "error" in stac_ts:
+                    continue
+                for obs in stac_ts.get("observations", []):
+                    stac_stats.append({
+                        "district": sbr["district"],
+                        "week_start": obs.get("datetime", "")[:10] if obs.get("datetime") else None,
+                        "mean_ndvi": obs.get("mean_ndvi"),
+                        "std_ndvi": obs.get("std_ndvi"),
+                        "min_ndvi": obs.get("min_ndvi"),
+                        "max_ndvi": obs.get("max_ndvi"),
+                        "valid_pixels": obs.get("valid_pixel_count"),
+                        "source": "stac_cog_realtime",
+                    })
+        except Exception as e:
+            logger.warning("STAC NDVI fallback failed: %s", e)
+
+        if stac_stats:
+            result = {
+                "status": "success",
+                "source": "stac_cog_realtime",
+                "count": len(stac_stats),
+                "cached_records": 0,
+                "realtime_records": len(stac_stats),
+                "note": (
+                    "NDVI computed in real-time from Sentinel-2 COGs via STAC "
+                    "(free, no API key). Values: 0.6-0.8 = dense vegetation, "
+                    "0.3-0.5 = cropland, 0.1-0.3 = sparse vegetation, <0.1 = bare soil."
+                ),
+                "ndvi_stats": stac_stats,
+            }
+            pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if pgc_id:
+                result["postgis_connection_id"] = pgc_id
+                result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
+            return result
+
+        # All three tiers empty.
+        return {
+            "status": "success",
+            "ndvi_stats": [],
+            "message": (
+                "No NDVI data available. Cache is empty and real-time query "
+                "found no cloud-free Sentinel-2 scenes via Digital Earth Africa. "
+                "The nightly job populates this cache automatically."
+            ),
+        }
+    except Exception as e:
+        logger.exception("get_ndvi_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -1606,7 +1870,7 @@ _NOT_YET_EXTRACTED: list[str] = [
     "create_soil_sampling_plan",
     "identify_parcel_crop",
     "confirm_crop_prediction",
-    "get_ndvi_stats",            # big cache+realtime cascade, ~243 lines
+    # get_ndvi_stats extracted (3-tier fallback).
     "get_cell_ndvi_stats",       # similar pattern, ~168 lines
     "get_soil_properties",
     "get_agri_indices",
@@ -1692,6 +1956,7 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_insurance_intelligence": _handle_get_insurance_intelligence,
     "get_field_health": _handle_get_field_health,
     "get_parcel_ndvi_stats": _handle_get_parcel_ndvi_stats,
+    "get_ndvi_stats": _handle_get_ndvi_stats,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
