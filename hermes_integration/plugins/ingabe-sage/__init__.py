@@ -14,6 +14,7 @@ Two tiers of tools:
 from __future__ import annotations
 
 from .generated_tools import GENERATED_SCHEMAS
+from .hidden_tools import HIDDEN_SCHEMAS
 from .proxy import make_proxy_handler
 from .tools import (
     SEARCH_LOCATION_SCHEMA,
@@ -44,13 +45,33 @@ def register(ctx) -> None:
     )
 
     # --- Tier 2: proxied handlers (HMAC → mundi-app /internal/tool-call) --
-    # All schemas from generated_tools.py get a proxy handler. The real
-    # dispatch happens in mundi-app, where partner-scoped DB access is set
-    # up. PR #54 ships the gateway-side wiring; PR #55 wires the mundi-app
-    # dispatch side so these tools start returning real results instead of
-    # 503 ("upstream_unavailable").
+    # All schemas from generated_tools.py + hidden_tools.py get a proxy
+    # handler. The real dispatch happens in mundi-app, where partner-scoped
+    # DB access is set up. PR #54 ships the gateway-side wiring; PR #55
+    # wires the mundi-app dispatch side so these tools start returning real
+    # results instead of 503 ("upstream_unavailable").
+    #
+    # hidden_tools.py exists because 7 of Sage's most-used tools
+    # (new_layer_from_postgis #1, set_layer_style #3, add_layer_to_map #4,
+    # query_postgis_database #5, query_duckdb_sql, reverse_geocode_coordinates,
+    # zonal_statistics) live as inline elif handlers in message_routes.py and
+    # were never registered in tools.json or the Pydantic registry. The
+    # auto-generator that produces generated_tools.py only reads those two
+    # sources, so those 7 schemas were silently missing from the LLM's tool
+    # catalogue. Without them, asking "show me Nyamagabe on the map" via the
+    # Hermes path produces a wall of reasoning text because the LLM can't see
+    # the tools that would actually do the job. PR #57 added the
+    # corresponding handlers in legacy_tool_shim.py so /internal/tool-call
+    # already accepts these names — this file is the matching schema side.
+    #
+    # By construction the two registries are disjoint (hidden tools are not
+    # in tools.json or Pydantic, generated tools are). The test
+    # test_hidden_tools_disjoint_from_generated guards against accidental
+    # overlap. If a name ever appears in both, GENERATED_SCHEMAS wins (it's
+    # second in the dict merge below).
     NATIVE = {"search_location", "ingabe_whoami"}
-    for name, schema in GENERATED_SCHEMAS.items():
+    merged_schemas: dict = {**HIDDEN_SCHEMAS, **GENERATED_SCHEMAS}
+    for name, schema in merged_schemas.items():
         if name in NATIVE:
             continue  # don't shadow our native handlers
         ctx.register_tool(
