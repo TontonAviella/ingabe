@@ -1847,6 +1847,197 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Sector/cell-level NDVI stats with cache → real-time fallback.
+
+    Extracted from src/routes/message_routes.py:3594-3761. Like
+    get_ndvi_stats but one admin level finer (cell granularity, with
+    sector_name from the boundary join). Falls back to sector-level
+    real-time DE Africa NDVI if the cell-level cache is empty.
+
+    Args (from ctx.arguments):
+      - cell_name: str (optional, ILIKE %name%)
+      - sector: str (optional, ILIKE)
+      - district: str (optional, ILIKE on the cell row's district_name)
+    """
+    import json as _json
+    from datetime import datetime as _datetime, timedelta as _td
+
+    try:
+        cell = ctx.arguments.get("cell_name")
+        sector = ctx.arguments.get("sector")
+        district = ctx.arguments.get("district")
+
+        # Tier 1: cache JOIN against rwanda_cell_boundaries to pick up sector.
+        where: list[str] = []
+        params: list[Any] = []
+        pidx = 1
+        if cell:
+            where.append(f"nc.cell_name ILIKE ${pidx}")
+            params.append(f"%{cell}%")
+            pidx += 1
+        if sector:
+            where.append(f"cb.sector_name ILIKE ${pidx}")
+            params.append(f"%{sector}%")
+            pidx += 1
+        if district:
+            where.append(f"nc.district_name ILIKE ${pidx}")
+            params.append(f"%{district}%")
+            pidx += 1
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        rows = await ctx.conn.fetch(
+            f"SELECT nc.cell_name, cb.sector_name, nc.district_name, nc.week_start, "
+            f"nc.mean_ndvi, nc.std_ndvi, nc.min_ndvi, nc.max_ndvi, nc.valid_pixels "
+            f"FROM ndvi_cell_cache nc "
+            f"JOIN rwanda_cell_boundaries cb "
+            f"ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+            f"{where_sql} "
+            f"ORDER BY cb.sector_name, nc.cell_name, nc.computed_at DESC LIMIT 200",
+            *params,
+        )
+
+        result: Dict[str, Any]
+        if rows:
+            result = {
+                "status": "success",
+                "source": "postgres_cache",
+                "count": len(rows),
+                "cell_ndvi_stats": [
+                    {
+                        "cell_name": r["cell_name"],
+                        "sector_name": r["sector_name"],
+                        "district_name": r["district_name"],
+                        "week_start": str(r["week_start"]) if r["week_start"] else None,
+                        "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
+                        "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
+                        "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
+                        "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                        "valid_pixels": r["valid_pixels"],
+                    }
+                    for r in rows
+                ],
+            }
+        else:
+            # Tier 2: sector-level real-time fallback. Note: drops to sector
+            # granularity since cell-level DE Africa pulls would be too slow.
+            realtime_stats: list = []
+            try:
+                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
+                import numpy as _np
+
+                now = _datetime.utcnow()
+                rt_from = (now - _td(days=10)).strftime("%Y-%m-%d")
+                rt_to = now.strftime("%Y-%m-%d")
+
+                sec_where: list[str] = []
+                sec_params: list[Any] = []
+                sec_pidx = 1
+                if sector:
+                    sec_where.append(f"sector_name ILIKE ${sec_pidx}")
+                    sec_params.append(f"%{sector}%")
+                    sec_pidx += 1
+                if district:
+                    sec_where.append(f"district_name ILIKE ${sec_pidx}")
+                    sec_params.append(f"%{district}%")
+                    sec_pidx += 1
+                sec_where_sql = (
+                    f"WHERE {' AND '.join(sec_where)}" if sec_where else ""
+                )
+                sec_rows = await ctx.conn.fetch(
+                    f"SELECT sector_name, district_name, ST_AsGeoJSON(geom) as geom "
+                    f"FROM rwanda_sector_boundaries {sec_where_sql} "
+                    f"ORDER BY sector_name",
+                    *sec_params,
+                )
+
+                for sr in sec_rows:
+                    try:
+                        geom = _json.loads(sr["geom"])
+                        stats = _sa_get_field_stats(
+                            geometry=geom, date_from=rt_from,
+                            date_to=rt_to, index="ndvi",
+                        )
+                        if "error" in stats:
+                            continue
+                        intervals = stats.get("intervals", [])
+                        if not intervals:
+                            continue
+                        means = [
+                            iv["ndvi"]["mean"]
+                            for iv in intervals
+                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
+                        ]
+                        if not means:
+                            continue
+                        realtime_stats.append({
+                            "sector_name": sr["sector_name"],
+                            "district_name": sr["district_name"],
+                            "week_start": rt_from,
+                            "mean_ndvi": round(float(_np.mean(means)), 4),
+                            "std_ndvi": round(float(_np.std(means)), 4),
+                            "min_ndvi": round(float(_np.min(means)), 4),
+                            "max_ndvi": round(float(_np.max(means)), 4),
+                            "valid_pixels": sum(
+                                iv["ndvi"].get("valid_pixels", 0)
+                                for iv in intervals if "ndvi" in iv
+                            ),
+                        })
+                    except Exception as e:
+                        logger.debug(
+                            "Sector realtime NDVI failed for %s: %s",
+                            sr["sector_name"], e,
+                        )
+            except Exception as e:
+                logger.warning("Sector real-time NDVI fallback failed: %s", e)
+
+            if realtime_stats:
+                result = {
+                    "status": "success",
+                    "source": "deafrica_realtime",
+                    "level": "sector",
+                    "count": len(realtime_stats),
+                    "note": (
+                        "Real-time sector-level NDVI (cell-level cache not "
+                        "yet populated)"
+                    ),
+                    "sector_ndvi_stats": realtime_stats,
+                }
+            else:
+                result = {
+                    "status": "success",
+                    "source": "none",
+                    "cell_ndvi_stats": [],
+                    "message": (
+                        "No NDVI data available — cache empty and real-time "
+                        "satellite fetch returned no results for this area."
+                    ),
+                }
+
+        # Auto-provision PostGIS connection so the LLM can visualize via
+        # new_layer_from_postgis. Mentions cell + sector boundary tables.
+        if result.get("count", 0) > 0:
+            from src.routes.message_routes import _ensure_rwanda_postgis_connection
+            pgc_id = await _ensure_rwanda_postgis_connection(
+                ctx.conn, ctx.project_id, ctx.user_id,
+            )
+            if pgc_id:
+                result["postgis_connection_id"] = pgc_id
+                result["kue_instructions"] = (
+                    "To visualise these stats on the map, call "
+                    f"new_layer_from_postgis with postgis_connection_id='{pgc_id}'. "
+                    "IMPORTANT: the query MUST return columns named 'id' and 'geom'. "
+                    "Available tables: rwanda_sector_boundaries (sector_id, "
+                    "sector_name, district_name, geom), rwanda_cell_boundaries "
+                    "(cell_id, cell_name, sector_name, district_name, geom). "
+                    "DO NOT reuse an existing layer — always create a NEW layer "
+                    "from PostGIS."
+                )
+        return result
+    except Exception as e:
+        logger.exception("get_cell_ndvi_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -1870,8 +2061,7 @@ _NOT_YET_EXTRACTED: list[str] = [
     "create_soil_sampling_plan",
     "identify_parcel_crop",
     "confirm_crop_prediction",
-    # get_ndvi_stats extracted (3-tier fallback).
-    "get_cell_ndvi_stats",       # similar pattern, ~168 lines
+    # get_ndvi_stats + get_cell_ndvi_stats extracted.
     "get_soil_properties",
     "get_agri_indices",
     "query_worldcover_stats",
@@ -1957,6 +2147,7 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_field_health": _handle_get_field_health,
     "get_parcel_ndvi_stats": _handle_get_parcel_ndvi_stats,
     "get_ndvi_stats": _handle_get_ndvi_stats,
+    "get_cell_ndvi_stats": _handle_get_cell_ndvi_stats,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
