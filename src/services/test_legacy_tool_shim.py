@@ -110,15 +110,21 @@ async def test_result_is_json_serializable():
 
 
 @pytest.mark.asyncio
-async def test_new_layer_from_postgis_stub_response_shape():
-    """The real new_layer_from_postgis handler is stubbed pending extraction.
-    Pin the stub's response shape so a future migration (the real
-    extraction) can replace it without surprising callers."""
-    result = await execute_legacy_tool("new_layer_from_postgis", _make_ctx({
+async def test_new_layer_from_postgis_rejects_missing_args():
+    """The real handler (extracted from message_routes.py:1977-2462) must
+    validate its 3 required args before touching the DB. Pins the
+    fail-fast behavior: missing postgis_connection_id, query, or
+    layer_name should return a tool_result with status=error WITHOUT
+    raising — same contract as the Pydantic-handler path."""
+    # No args at all → missing postgis_connection_id should fire first.
+    result = await execute_legacy_tool("new_layer_from_postgis", _make_ctx({}))
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert "Missing required parameters" in result["error"]
+
+    # Only postgis_connection_id, missing query → same error path.
+    result2 = await execute_legacy_tool("new_layer_from_postgis", _make_ctx({
         "postgis_connection_id": "C00000000001",
-        "query": "SELECT id, name, geom FROM rwanda_district_boundaries LIMIT 5",
-        "layer_name": "Rwanda Districts",
     }))
-    assert result["status"] == "not_yet_extracted"
-    assert result["tool_name"] == "new_layer_from_postgis"
-    assert "message_routes.py:1977" in result["message"]
+    assert result2["status"] == "error"
+    assert "Missing required parameters" in result2["error"]
