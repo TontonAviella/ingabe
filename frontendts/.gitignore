@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# Environment files — Vite bakes VITE_* vars into the build at compile time,
+# so a committed .env.production with a dev (pk_test_) Clerk key ships the
+# dev key in the production JS bundle. Block all .env* from being tracked
+# except documented templates ending in .example.
+# Caught 2026-05-17: prod was running pk_test_ in compiled JS because
+# frontendts/.env.production was untracked and never reviewed. The file
+# stays on disk for local builds — only git tracking is blocked.
+.env
+.env.*
+!.env.*.example
+
 # Editor directories and files
 !.vscode/extensions.json
 .idea

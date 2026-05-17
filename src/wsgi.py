@@ -269,9 +269,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[override]
         response: Response = await call_next(request)
-        # HSTS — enforce HTTPS for 1 year (ignored on plain HTTP / localhost)
+        # HSTS — 2 years, includeSubDomains. Preload-eligible (longer max-age
+        # also lets us submit to hstspreload.org later without re-bumping).
+        # Single source of truth: nginx must NOT also add this header — the
+        # browser would honor the first value and silently discard the second,
+        # so we centralize header management here.
         response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
+            "max-age=63072000; includeSubDomains"
         )
         # Prevent MIME-type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -282,12 +286,24 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Skip if endpoint already set a custom CSP (e.g. embed route)
         if "Content-Security-Policy" in response.headers:
             return response
+        # Clerk satellite-domain support: when prod runs on a pk_live_ key,
+        # the frontend talks to a partner-owned satellite host (e.g.
+        # clerk.nozalabs.rw) instead of *.clerk.accounts.dev. We allowlist
+        # both during the cutover so the swap is config-only, not a code
+        # change. Set CLERK_FRONTEND_API_HOST=<host> in the prod .env to
+        # add the satellite domain to script-src + connect-src.
+        clerk_host = os.environ.get("CLERK_FRONTEND_API_HOST", "").strip()
+        clerk_csp = f" https://{clerk_host}" if clerk_host else ""
+        # CloudFlare Web Insights beacon — Cloudflare's free analytics
+        # script. Loads from static.cloudflareinsights.com, beacons to
+        # cloudflareinsights.com. Both must be in the CSP or the beacon
+        # silently fails with a CSP violation in the browser console.
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev; "
+            f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
-            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {os.environ.get('S3_ENDPOINT_URL', '')} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev ws: wss:; "
+            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {os.environ.get('S3_ENDPOINT_URL', '')} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'none'"
