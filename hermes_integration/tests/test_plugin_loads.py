@@ -55,7 +55,7 @@ def _load_plugin_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules["ingabe_sage"] = module
     # Load submodules too so __init__.py's `from .tools import ...` works
-    for sub in ("context", "tools", "generated_tools", "async_bridge", "proxy"):
+    for sub in ("context", "tools", "generated_tools", "hidden_tools", "async_bridge", "proxy"):
         sub_spec = importlib.util.spec_from_file_location(
             f"ingabe_sage.{sub}", _PLUGIN_ROOT / f"{sub}.py"
         )
@@ -329,3 +329,186 @@ def test_whoami_handler_reads_env_context_when_set(monkeypatch: pytest.MonkeyPat
     assert parsed.get("partner_id") == "bk-insurance"
     assert parsed.get("map_id") == "test-map-xyz"
     assert parsed.get("context_source") == "contextvar-or-env"
+
+
+# ---------------------------------------------------------------------------
+# Hidden-tools tests
+#
+# The 7 schemas in hidden_tools.py are the most-used Sage tools in production
+# (per chat_completion_messages.tool_calls history). They were silently
+# missing from the plugin's tool catalogue until this file landed because the
+# auto-generator that produces generated_tools.py only reads tools.json and
+# Pydantic schemas — these 7 live as inline elif handlers in message_routes.py
+# and were never registered in either source.
+#
+# Mismatch = the Hermes path hangs on tool-triggering prompts because the LLM
+# can't see the tools that would actually do the job. These tests guard the
+# specific names + arg shapes that the legacy_tool_shim handlers expect.
+# ---------------------------------------------------------------------------
+
+
+_EXPECTED_HIDDEN_TOOLS: set[str] = {
+    "new_layer_from_postgis",
+    "add_layer_to_map",
+    "set_layer_style",
+    "query_postgis_database",
+    "query_duckdb_sql",
+    "zonal_statistics",
+    "reverse_geocode_coordinates",
+}
+
+
+# Property names MUST match what `ctx.arguments.get(...)` reads in each
+# corresponding handler in src/services/legacy_tool_shim.py. If a handler
+# is later refactored, update both the schema AND this table together.
+# Source-of-truth references (file:line in legacy_tool_shim.py):
+#   - new_layer_from_postgis     → :155-157
+#   - add_layer_to_map           → :498-499
+#   - set_layer_style            → :593-594
+#   - query_postgis_database     → :761-762
+#   - query_duckdb_sql           → :680-683
+#   - zonal_statistics           → :889-891
+#   - reverse_geocode_coordinates → handler reads `lat`, `lon`
+_EXPECTED_REQUIRED_PROPS: dict[str, set[str]] = {
+    "new_layer_from_postgis": {"postgis_connection_id", "query", "layer_name"},
+    "add_layer_to_map": {"layer_id", "new_name"},
+    "set_layer_style": {"layer_id", "maplibre_json_layers_str"},
+    "query_postgis_database": {"postgis_connection_id", "sql_query"},
+    "query_duckdb_sql": {"layer_ids", "sql_query"},
+    "zonal_statistics": {"raster_layer_id", "zones_layer_id"},
+    "reverse_geocode_coordinates": {"lat", "lon"},
+}
+
+
+def test_hidden_tools_module_imports_with_all_seven_schemas() -> None:
+    """hidden_tools.py must export HIDDEN_SCHEMAS containing exactly the 7
+    names the legacy_tool_shim handlers exist for. If any are added later,
+    update this list AND legacy_tool_shim's LEGACY_HANDLERS together."""
+    _load_plugin_module()
+    from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
+    assert isinstance(HIDDEN_SCHEMAS, dict)
+    actual = set(HIDDEN_SCHEMAS.keys())
+    assert actual == _EXPECTED_HIDDEN_TOOLS, (
+        f"HIDDEN_SCHEMAS keys drifted from the expected 7. "
+        f"Missing: {_EXPECTED_HIDDEN_TOOLS - actual}. "
+        f"Unexpected: {actual - _EXPECTED_HIDDEN_TOOLS}"
+    )
+
+
+def test_hidden_tools_disjoint_from_generated() -> None:
+    """A hidden tool name MUST NOT also appear in GENERATED_SCHEMAS.
+    Overlap means we have two schemas for the same name and the merge in
+    __init__.py silently drops one — confusing the LLM and breaking
+    debugging. By design these registries are disjoint."""
+    _load_plugin_module()
+    from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
+    from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
+    overlap = set(HIDDEN_SCHEMAS.keys()) & set(GENERATED_SCHEMAS.keys())
+    assert overlap == set(), (
+        f"hidden_tools.py and generated_tools.py share these names: "
+        f"{overlap}. Either remove from hidden_tools.py (the name has been "
+        f"properly registered upstream) or remove the generated entry."
+    )
+
+
+def test_hidden_tools_register_to_proxied_toolset_after_register() -> None:
+    """After register(), each hidden tool must appear in toolset
+    'ingabe-sage-proxied' with a callable handler. This is what makes them
+    visible to the LLM when Hermes advertises tools at chat-completion time."""
+    register = _load_plugin_module().register
+    ctx = _FakeCtx()
+    register(ctx)
+    proxied_names = {
+        t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+    }
+    missing = _EXPECTED_HIDDEN_TOOLS - proxied_names
+    assert missing == set(), (
+        f"After register(), these hidden tools are MISSING from "
+        f"toolset='ingabe-sage-proxied': {missing}. "
+        f"The Hermes path won't advertise them to the LLM, which means "
+        f"Sage can't render layers via Hermes."
+    )
+
+
+def test_hidden_tools_total_count_is_82() -> None:
+    """The total proxied tool surface should be exactly:
+        len(GENERATED_SCHEMAS) - 0 overlap + len(HIDDEN_SCHEMAS) = 75 + 7 = 82
+    Native handlers (search_location, ingabe_whoami) live in toolset
+    'ingabe-sage' and are NOT counted here. If this number changes, somebody
+    added or removed a hidden tool and forgot to update this assertion."""
+    register = _load_plugin_module().register
+    from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
+    from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
+    ctx = _FakeCtx()
+    register(ctx)
+    proxied_count = sum(
+        1 for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+    )
+    # Generated may include native names; subtract them since those land in
+    # the 'ingabe-sage' toolset, not 'ingabe-sage-proxied'.
+    natives_in_generated = sum(
+        1 for n in ("search_location", "ingabe_whoami") if n in GENERATED_SCHEMAS
+    )
+    expected = (len(GENERATED_SCHEMAS) - natives_in_generated) + len(HIDDEN_SCHEMAS)
+    assert proxied_count == expected, (
+        f"Proxied tool count is {proxied_count}, expected {expected} "
+        f"(generated={len(GENERATED_SCHEMAS)} - native_overlap="
+        f"{natives_in_generated} + hidden={len(HIDDEN_SCHEMAS)})"
+    )
+
+
+def test_hidden_tools_required_props_match_shim_handlers() -> None:
+    """The 'required' list in each hidden schema MUST match the args that
+    the corresponding legacy_tool_shim handler reads from ctx.arguments.
+    Mismatch = the LLM sends args under the wrong key, the handler returns
+    'Missing required parameters', and the user gets a confusing failure."""
+    _load_plugin_module()
+    from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
+    for name, expected_required in _EXPECTED_REQUIRED_PROPS.items():
+        schema = HIDDEN_SCHEMAS[name]
+        actual_required = set(schema["parameters"].get("required", []))
+        assert actual_required == expected_required, (
+            f"{name}: required prop set mismatch. "
+            f"Schema says: {actual_required}. "
+            f"Shim handler reads: {expected_required}. "
+            f"These MUST match — see legacy_tool_shim.py:_handle_{name}."
+        )
+        # Every required prop must also appear under 'properties'.
+        props = schema["parameters"]["properties"]
+        for prop in expected_required:
+            assert prop in props, (
+                f"{name}: required prop '{prop}' is missing from "
+                f"parameters.properties (would crash strict schema validation)"
+            )
+
+
+def test_hidden_tools_descriptions_discourage_tool_invention() -> None:
+    """Descriptions for the 3 layer-creation tools (new_layer_from_postgis,
+    add_layer_to_map, set_layer_style) should explicitly mention the others,
+    so the LLM understands the ordering and doesn't invent a single mega-tool
+    or fall back to 'web search'.
+
+    This is a soft check against a real prod failure: Nemotron-3-Super-120B
+    on the OpenRouter free tier confabulated 'web search tool' / 'browser
+    tool' / 'image_gen' in 13 prod failures over 33 minutes. The fix is
+    sharper descriptions, and this test makes sure we don't regress them."""
+    _load_plugin_module()
+    from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
+
+    nlfp = HIDDEN_SCHEMAS["new_layer_from_postgis"]["description"]
+    assert "add_layer_to_map" in nlfp, (
+        "new_layer_from_postgis description should mention add_layer_to_map "
+        "as the required follow-up tool"
+    )
+
+    altm = HIDDEN_SCHEMAS["add_layer_to_map"]["description"]
+    assert "new_layer_from_postgis" in altm, (
+        "add_layer_to_map description should mention new_layer_from_postgis "
+        "as the precursor tool"
+    )
+
+    sls = HIDDEN_SCHEMAS["set_layer_style"]["description"]
+    assert "add_layer_to_map" in sls, (
+        "set_layer_style description should mention add_layer_to_map so "
+        "the LLM knows the layer must be on the map first"
+    )
