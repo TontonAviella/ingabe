@@ -79,18 +79,34 @@ async def test_registry_includes_all_53_legacy_names():
 
 
 @pytest.mark.asyncio
-async def test_not_yet_extracted_returns_structured_message():
-    """A stub handler must return a parseable dict with status=not_yet_extracted,
-    NOT raise. The LLM downstream pattern-matches on `status` to decide
-    whether to apologize, retry, or give up. We pick a tool we know is
-    still on the not-yet-extracted list (a QGIS-processing tool — they're
-    all still stubs since the qgis-processing sidecar dispatch hasn't
-    been ported yet)."""
-    result = await execute_legacy_tool("native_buffer", _make_ctx({}))
-    assert isinstance(result, dict)
-    assert result["status"] == "not_yet_extracted"
-    assert result["tool_name"] == "native_buffer"
-    assert "message" in result and "MUNDI_USE_HERMES=0" in result["message"]
+async def test_all_legacy_handlers_extracted():
+    """Migration completeness gate: every legacy tool now has a REAL
+    handler in the shim, not a not_yet_extracted stub. The Hermes path
+    achieves full parity with the hand-rolled chat loop.
+
+    If this test fails because `_NOT_YET_EXTRACTED` grew again, it means
+    someone added a new inline elif in message_routes.py without writing
+    the corresponding shim handler. Fix it before merging — Hermes turns
+    will silently break otherwise.
+    """
+    from src.services.legacy_tool_shim import _NOT_YET_EXTRACTED, LEGACY_HANDLERS
+
+    assert _NOT_YET_EXTRACTED == [], (
+        f"_NOT_YET_EXTRACTED should be empty post-migration but contains "
+        f"{len(_NOT_YET_EXTRACTED)} entries: {_NOT_YET_EXTRACTED}. "
+        f"Each one needs a real `_handle_<name>` function in legacy_tool_shim.py."
+    )
+
+    # Belt-and-braces: every registered handler must be a real `_handle_*`
+    # function, not the stub closure from `_make_not_yet_extracted_handler`.
+    stub_names = [
+        name for name, fn in LEGACY_HANDLERS.items()
+        if not getattr(fn, "__name__", "").startswith("_handle_")
+    ]
+    assert stub_names == [], (
+        f"These tools are still stubs (closure-wrapped not_yet_extracted): "
+        f"{stub_names}. Real handlers required for cutover."
+    )
 
 
 @pytest.mark.asyncio

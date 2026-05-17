@@ -4446,6 +4446,72 @@ async def _handle_query_rwanda_zonal_stats(ctx: LegacyToolContext) -> Dict[str, 
         }
 
 
+class _SyntheticFunction:
+    """Lightweight stand-in for OpenAI's tool_call.function object.
+
+    run_geoprocessing_tool reads .name (str) and .arguments (JSON str)
+    off this attribute. We don't need any of the real SDK behaviour, just
+    the duck-typed shape.
+    """
+    __slots__ = ("name", "arguments")
+
+    def __init__(self, name: str, arguments: str) -> None:
+        self.name = name
+        self.arguments = arguments
+
+
+class _SyntheticToolCall:
+    """Lightweight stand-in for an OpenAI ChatCompletionMessageToolCall.
+
+    run_geoprocessing_tool needs .id (str) for error wrapping (via
+    RecoverableToolCallError) and .function (the synthetic above). Built
+    fresh per-call so concurrent dispatches don't share state.
+    """
+    __slots__ = ("id", "function")
+
+    def __init__(self, tool_id: str, name: str, arguments: str) -> None:
+        self.id = tool_id
+        self.function = _SyntheticFunction(name=name, arguments=arguments)
+
+
+def _make_qgis_handler(tool_name: str) -> LegacyHandlerFn:
+    """Closure that delegates to run_geoprocessing_tool with a synthetic tool_call.
+
+    All 16 QGIS-processing tools (native_*, qgis_*, gdal_warpreproject) share
+    the same dispatch path: build the QGIS request from tool args + map state,
+    POST to the qgis-processing sidecar, download outputs from S3, register
+    new map_layers rows. Rather than re-implement each one, we delegate to
+    the existing run_geoprocessing_tool which already handles all of them
+    generically by reading the tool name from the call.
+
+    The synthetic tool_call gives run_geoprocessing_tool the SDK-shaped
+    object it expects (.function.name, .function.arguments, .id) without
+    requiring the Hermes path to construct a real OpenAI tool call.
+    """
+    async def _handler(ctx: LegacyToolContext) -> Dict[str, Any]:
+        try:
+            from src.routes.message_routes import run_geoprocessing_tool
+
+            synthetic_call = _SyntheticToolCall(
+                tool_id=f"shim-{tool_name}-{ctx.conversation_id}",
+                name=tool_name,
+                arguments=json.dumps(ctx.arguments),
+            )
+            return await run_geoprocessing_tool(
+                synthetic_call,
+                ctx.conn,
+                ctx.user_id,
+                ctx.map_id,
+                ctx.conversation_id,
+            )
+        except Exception as e:
+            logger.exception("%s (QGIS shim) failed", tool_name)
+            return {"status": "error", "error": str(e), "algorithm_id": tool_name.replace("_", ":")}
+
+    _handler.__name__ = f"_handle_{tool_name}"
+    return _handler
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -4479,7 +4545,15 @@ _NOT_YET_EXTRACTED: list[str] = [
     # get_insurance_accuracy extracted (weather/accuracy/emissions batch).
     # search_brain + get_entity + add_observation extracted (brain trio).
     # add_land_cover_layer extracted (LULC raster overlay).
-    # QGIS-processing (all dispatch via the qgis-processing sidecar)
+    # QGIS-processing tools (all 16) extracted via _make_qgis_handler —
+    # they share run_geoprocessing_tool as their common dispatch path.
+]
+
+
+# All 16 QGIS-processing tools share one generic handler that delegates
+# to run_geoprocessing_tool. Names mirror the inline elif chain in
+# message_routes.py and tools.json exactly.
+_QGIS_TOOL_NAMES = [
     "gdal_warpreproject",
     "native_aggregate",
     "native_buffer",
@@ -4571,9 +4645,20 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "create_soil_sampling_plan": _handle_create_soil_sampling_plan,
     "query_rwanda_zonal_stats": _handle_query_rwanda_zonal_stats,
 }
-for _name in _NOT_YET_EXTRACTED:
-    LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
-del _name  # don't pollute module namespace
+# Register the 16 QGIS-processing tools through the generic delegator
+for _qname in _QGIS_TOOL_NAMES:
+    LEGACY_HANDLERS[_qname] = _make_qgis_handler(_qname)
+del _qname
+if _NOT_YET_EXTRACTED:
+    # Stub-handler safety net for any tool that wasn't extracted yet.
+    # As of the QGIS-processing batch landing, this list is empty —
+    # every legacy tool has a real handler — but the machinery stays
+    # so that if message_routes.py grows a new inline elif before its
+    # shim handler exists, it still returns a parseable result instead
+    # of a 404 to Hermes.
+    for _name in _NOT_YET_EXTRACTED:
+        LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
+    del _name
 
 
 async def execute_legacy_tool(
