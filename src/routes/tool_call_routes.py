@@ -91,25 +91,29 @@ def tool_call_is_enabled() -> bool:
 
 async def _resolve_map_and_project(
     conversation_id: int,
+    user_id: str,
 ) -> tuple[str, str]:
-    """Look up (map_id, project_id) for a conversation.
+    """Look up (map_id, project_id) for a conversation, RLS-scoped to user_id.
 
     Conversation rows have project_id directly. map_id lives on
     chat_completion_messages — a conversation can have messages across
     multiple maps in the DAG. We pick the most-recent message's map_id,
     matching what the active chat UI is most likely showing.
 
-    Runs WITHOUT RLS GUCs set — this is a system-level lookup that
-    happens BEFORE we've scoped the connection to a partner. The data
-    we read here (conversation.project_id, message.map_id) is then used
-    to construct IngabeToolCallMetaArgs; if the (partner_id, user_id)
-    from the Hermes payload doesn't actually own that conversation, the
-    DOWNSTREAM tool dispatch will fail when its own queries hit RLS.
+    RLS scoping: opens the lookup connection with app.user_id set from the
+    HMAC-verified payload. The conversations RLS policy
+    (tenant_isolation_conversations) returns TRUE on an empty GUC as a
+    system-query escape hatch — without scoping we'd read ANY conversation
+    by ID, which would let a holder of the gateway secret guess IDs and
+    trigger frontend WebSocket notifications on other partners' chats.
+    Scoping makes the policy enforce ownership: if user_id doesn't own
+    the conversation, the lookup returns nothing and we 404 cleanly.
 
-    Raises HTTPException(404) if the conversation doesn't exist or has
-    no messages — in either case there's nothing to dispatch against.
+    Raises HTTPException(404) if the conversation doesn't exist, isn't
+    accessible to user_id under RLS, or has no messages — in any case
+    there's nothing safe to dispatch against.
     """
-    async with async_conn("tool-call.lookup_conv") as conn:
+    async with async_conn("tool-call.lookup_conv", user_id=user_id) as conn:
         row = await conn.fetchrow(
             """
             SELECT c.project_id, m.map_id
@@ -210,10 +214,12 @@ async def tool_call(
             detail=f"conversation_id is not an integer: {payload.conversation_id!r}",
         )
 
-    # Resolve map + project from the conversation. Runs without GUCs —
-    # see _resolve_map_and_project's docstring for the security note on
-    # why that's acceptable.
-    map_id, project_id = await _resolve_map_and_project(conversation_id_int)
+    # Resolve map + project from the conversation, RLS-scoped to the caller's
+    # user_id so we can't trigger notifications on other partners' chats by
+    # guessing conversation IDs.
+    map_id, project_id = await _resolve_map_and_project(
+        conversation_id_int, user_id=payload.user_id,
+    )
 
     # Parse tool-specific arguments. Validation failure is a CALLER error
     # (200 with status=error in the result body), not a 4xx — Hermes still
@@ -228,43 +234,44 @@ async def tool_call(
             },
         }
 
-    # Now open a partner-scoped connection. From here until __aexit__ all
-    # DB work runs with RLS bound to (partner_id, user_id) from the
-    # signed payload.
+    # IMPORTANT — RLS scoping is each TOOL's responsibility, not ours.
+    #
+    # Tools open their own `async_conn(user_id=..., partner_id=...)` per
+    # query (matching the in-process chat loop pattern). GUCs set on a
+    # connection in this dispatch frame would NOT propagate into those
+    # nested acquisitions — every pooled connection sets GUCs at the
+    # `__aenter__` boundary, not inherited from the caller's frame.
+    #
+    # The (user_id, partner_id) pair is threaded into IngabeToolCallMetaArgs
+    # via the `session=ServiceUserContext(...)` field. Tools that need
+    # partner-scoped data MUST call `meta.session.get_org_id()` to read
+    # partner_id and pass it to their own `async_conn(partner_id=...)`.
     ephemeral_label = f"Sage is running {payload.tool_name}…"
-    async with async_conn(
-        "tool-call.dispatch",
-        user_id=payload.user_id,
-        partner_id=payload.partner_id,
-    ):
-        async with kue_ephemeral_action(
-            conversation_id_int,
-            ephemeral_label,
-        ):
-            try:
-                meta_args = MetaModel(
+    async with kue_ephemeral_action(conversation_id_int, ephemeral_label):
+        try:
+            meta_args = MetaModel(
+                user_uuid=payload.user_id,
+                conversation_id=conversation_id_int,
+                map_id=map_id,
+                project_id=project_id,
+                session=ServiceUserContext(
                     user_uuid=payload.user_id,
-                    conversation_id=conversation_id_int,
-                    map_id=map_id,
-                    project_id=project_id,
-                    session=ServiceUserContext(
-                        user_uuid=payload.user_id,
-                        partner_id=payload.partner_id,
-                    ),
-                )
-                tool_result = await fn(parsed_args, meta_args)
-            except Exception as e:
-                # Bubbled tool failures: do NOT 500. Hermes turn loop must
-                # see a parseable result so it can apologize. Same shape as
-                # the in-process chat-loop uses (src/routes/message_routes.py).
-                logger.exception(
-                    "tool-call dispatch failed (tool=%s conv=%s partner=%s)",
-                    payload.tool_name, conversation_id_int, payload.partner_id,
-                )
-                tool_result = {
-                    "status": "error",
-                    "error": f"{payload.tool_name} failed: {e}",
-                }
+                    partner_id=payload.partner_id,
+                ),
+            )
+            tool_result = await fn(parsed_args, meta_args)
+        except Exception as e:
+            # Bubbled tool failures: do NOT 500. Hermes turn loop must
+            # see a parseable result so it can apologize. Same shape as
+            # the in-process chat-loop uses (src/routes/message_routes.py).
+            logger.exception(
+                "tool-call dispatch failed (tool=%s conv=%s partner=%s)",
+                payload.tool_name, conversation_id_int, payload.partner_id,
+            )
+            tool_result = {
+                "status": "error",
+                "error": f"{payload.tool_name} failed: {e}",
+            }
 
     # Confirm the result is JSON-serializable before returning — FastAPI
     # will otherwise emit a confusing 500. Round-tripping catches any

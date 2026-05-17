@@ -90,23 +90,16 @@ def stub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MUNDI_TOOL_CALL_ENABLED", "1")
     monkeypatch.setenv("HERMES_GATEWAY_SECRET", SECRET)
 
-    # No real DB: bypass conversation lookup
-    async def _fake_lookup(conversation_id: int) -> tuple[str, str]:
+    # No real DB: bypass conversation lookup. Signature mirrors the real
+    # _resolve_map_and_project — accepts user_id so the RLS-scoped lookup
+    # path is exercised at the call site.
+    async def _fake_lookup(conversation_id: int, user_id: str) -> tuple[str, str]:
         return ("M00000000001", "P00000000001")
     monkeypatch.setattr(
         tool_call_routes,
         "_resolve_map_and_project",
         _fake_lookup,
     )
-
-    # No real DB: stub async_conn as a no-op async context manager so the
-    # GUC-setting path is exercised at the call site but doesn't open
-    # a real connection. We're NOT testing RLS here — that's an
-    # integration-test concern (see tests/test_rls_*).
-    @asynccontextmanager
-    async def _fake_conn(*args, **kwargs):
-        yield None
-    monkeypatch.setattr(tool_call_routes, "async_conn", _fake_conn)
 
     # No real WebSocket: stub kue_ephemeral_action
     @asynccontextmanager
