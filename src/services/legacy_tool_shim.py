@@ -3577,6 +3577,741 @@ async def _handle_get_emissions_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_search_brain(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Hybrid (BM25 + embedding) search over Brain pages, with query expansion.
+
+    Generates query variants, embeds in batch, runs N parallel hybrid
+    searches (each on its own RLS-scoped connection), dedupes by
+    (slug, chunk-text-prefix), and returns top-K by score.
+
+    Lifted byte-for-byte from message_routes.py:6175-6228.
+    """
+    args = ctx.arguments
+    try:
+        from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
+        from src.services.brain_embeddings import _get_embeddings, expand_query
+        import asyncio as _aio
+
+        _brain_svc = get_brain_service()
+        _query = args.get("query", "")
+        _type = args.get("type")
+        _limit = args.get("limit", 10)
+
+        # Multi-query expansion
+        try:
+            _variants = await expand_query(_query)
+            _all_embeddings, _ = await _get_embeddings(_variants)
+        except Exception:
+            logger.debug("Query expansion/embedding failed, falling back to keyword-only")
+            _variants = [_query]
+            _all_embeddings = []
+
+        async def _search_variant(vq: str, vemb):
+            async with get_async_db_connection(user_id=ctx.user_id, partner_id=ctx.partner_id) as vc:
+                return await _brain_svc.search_hybrid(
+                    vc, vq, embedding=vemb, limit=_limit, type=_type
+                )
+
+        _variant_args = [
+            (_vq, _all_embeddings[_vi] if _vi < len(_all_embeddings) else None)
+            for _vi, _vq in enumerate(_variants)
+        ]
+        _all_results = await _aio.gather(
+            *(_search_variant(vq, vemb) for vq, vemb in _variant_args)
+        )
+
+        _seen_keys: set[str] = set()
+        _results: list = []
+        for _vresults in _all_results:
+            for _r in _vresults:
+                _key = f"{_r.slug}:{_r.chunk_text[:80] if _r.chunk_text else ''}"
+                if _key not in _seen_keys:
+                    _seen_keys.add(_key)
+                    _results.append(_r)
+        _results.sort(key=lambda r: r.score, reverse=True)
+        _results = _results[:_limit]
+
+        return {
+            "status": "success",
+            "results": [
+                {
+                    "slug": r.slug,
+                    "title": r.title,
+                    "type": r.type,
+                    "chunk_text": r.chunk_text,
+                    "score": r.score,
+                }
+                for r in _results
+            ],
+            "count": len(_results),
+        }
+    except Exception as e:
+        logger.exception("search_brain tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_get_entity(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Fetch a Brain page by slug with timeline (20 most recent), tags, links.
+
+    Returns `not_found` status (no error) when slug doesn't exist so the LLM
+    can tell the user the page hasn't been created yet vs. surface an error.
+
+    Lifted byte-for-byte from message_routes.py:6241-6267.
+    """
+    args = ctx.arguments
+    try:
+        from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
+
+        _brain_svc = get_brain_service()
+        _slug = args.get("slug", "")
+        async with get_async_db_connection(user_id=ctx.user_id, partner_id=ctx.partner_id) as _brain_conn:
+            _page = await _brain_svc.get_page(_brain_conn, _slug)
+            if _page:
+                _timeline = await _brain_svc.get_timeline(_brain_conn, _slug, limit=20)
+                _tags = await _brain_svc.get_tags(_brain_conn, _slug)
+                _links = await _brain_svc.get_links(_brain_conn, _slug)
+                return {
+                    "status": "success",
+                    "slug": _page.slug,
+                    "title": _page.title,
+                    "type": _page.type,
+                    "compiled_truth": _page.compiled_truth,
+                    "timeline": [
+                        {"date": str(t.get("date", "")), "source": t.get("source", ""), "summary": t.get("summary", "")}
+                        for t in _timeline
+                    ],
+                    "tags": _tags,
+                    "links": [{"to_slug": _l.get("to_slug", ""), "link_type": _l.get("link_type", "")} for _l in _links],
+                }
+            return {"status": "not_found", "slug": _slug}
+    except Exception as e:
+        logger.exception("get_entity tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Append a timeline observation to a Brain page.
+
+    Date defaults to today when not supplied. Source defaults to 'user_report'.
+
+    Lifted byte-for-byte from message_routes.py:6280-6307.
+    """
+    args = ctx.arguments
+    try:
+        from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
+        from datetime import date as _date_type
+        from src.services.brain_service import TimelineInput
+
+        _brain_svc = get_brain_service()
+        _slug = args.get("slug", "")
+        _summary = args.get("summary", "")
+        _detail = args.get("detail", "")
+        _date_str = args.get("date")
+        _source = args.get("source", "user_report")
+        _entry = TimelineInput(
+            date=_date_type.fromisoformat(_date_str) if _date_str else _date_type.today(),
+            summary=_summary,
+            detail=_detail,
+            source=_source,
+        )
+        async with get_async_db_connection(user_id=ctx.user_id, partner_id=ctx.partner_id) as _brain_conn:
+            _entry_id = await _brain_svc.add_timeline_entry(
+                _brain_conn, _slug, _entry, owner_uuid=ctx.user_id
+            )
+        return {
+            "status": "success",
+            "entry_id": _entry_id,
+            "slug": _slug,
+            "summary": _summary,
+        }
+    except Exception as e:
+        logger.exception("add_observation tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """STAC search + opportunistic NDVI compute for the first item with B04+B08.
+
+    NDVI sample fails silently to None so the search results are still useful
+    when the first scene happens to be missing bands.
+
+    Lifted byte-for-byte from message_routes.py:3002-3049.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.stac_service import get_stac_service
+
+        bbox_str = args.get("bbox")
+        parsed_bbox = None
+        if bbox_str:
+            parsed_bbox = [float(x) for x in bbox_str.split(",")]
+
+        service = get_stac_service()
+        result_data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: service.search_imagery(
+                bbox=parsed_bbox,
+                datetime_range=args.get("datetime_range"),
+                max_cloud_cover=args.get("max_cloud_cover", 20.0),
+                limit=args.get("limit", 10),
+            )
+        )
+
+        if "error" in result_data:
+            return {"status": "error", "error": result_data["error"]}
+
+        ndvi_computed = None
+        items = result_data.get("items", [])
+        if items:
+            first_item = items[0]
+            assets = first_item.get("assets", {})
+            if "B04" in assets and "B08" in assets:
+                try:
+                    ndvi_computed = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: service.compute_ndvi_from_item(first_item)
+                    )
+                    if "error" in ndvi_computed:
+                        logger.warning(
+                            "NDVI computation failed for first item: %s",
+                            ndvi_computed.get("error")
+                        )
+                        ndvi_computed = None
+                except Exception as e:
+                    logger.warning("NDVI computation failed: %s", e)
+                    ndvi_computed = None
+
+        return {
+            "status": "success",
+            "search_results": result_data,
+            "ndvi_sample": ndvi_computed,
+        }
+    except Exception as e:
+        logger.exception("STAC search tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """ESRI 10m LULC stats — admin precomputed, on-the-fly bbox, or largest_cropland CC analysis.
+
+    Three branches:
+    1. query_type=largest_cropland → connected-component analysis on cropland
+       pixels within the resolved boundary (cell > sector > district > bbox).
+    2. land_cover + bbox → on-the-fly zonal stats from COGs via WarpedVRT.
+    3. land_cover + admin (or no filter) → read worldcover_admin_stats cache.
+
+    Auto-reverse-geocodes lat/lon to the most-specific admin (cell > sector >
+    district) when no admin/bbox was passed.
+
+    Lifted byte-for-byte from message_routes.py:4307-4655. The original
+    `continue` statements at validation points become early `return`s here.
+    """
+    args = ctx.arguments
+    try:
+        _wc_query_type = args.get("query_type", "land_cover")
+        _wc_district = args.get("district")
+        _wc_sector = args.get("sector")
+        _wc_cell = args.get("cell")
+        _wc_bbox = args.get("bbox")
+        _wc_lat = args.get("lat")
+        _wc_lon = args.get("lon")
+        _wc_limit = args.get("limit", 10)
+
+        # Reverse-geocode lat/lon → most-specific admin when nothing else given
+        if _wc_lat is not None and _wc_lon is not None and not (_wc_district or _wc_sector or _wc_cell or _wc_bbox):
+            try:
+                import asyncpg as _asyncpg_rg
+                _pg_host_rg = os.environ.get("POSTGRES_HOST", "postgresdb")
+                _pg_port_rg = int(os.environ.get("POSTGRES_PORT", "5432"))
+                _pg_db_rg = os.environ.get("POSTGRES_DB", "mundidb")
+                _pg_user_rg = os.environ.get("POSTGRES_USER", "mundiuser")
+                _pg_pass_rg = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                _pg_conn_rg = await _asyncpg_rg.connect(
+                    host=_pg_host_rg, port=_pg_port_rg,
+                    database=_pg_db_rg, user=_pg_user_rg, password=_pg_pass_rg,
+                )
+                try:
+                    _rg_row = await _pg_conn_rg.fetchrow(
+                        "SELECT cell_name, sector_name, district_name "
+                        "FROM rwanda_cell_boundaries "
+                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                        "LIMIT 1",
+                        float(_wc_lon), float(_wc_lat),
+                    )
+                    if _rg_row:
+                        _wc_cell = _rg_row["cell_name"]
+                        _wc_sector = _rg_row["sector_name"]
+                        _wc_district = _rg_row["district_name"]
+                        logger.info(
+                            "Reverse-geocoded %.4f,%.4f → cell=%s sector=%s district=%s",
+                            _wc_lat, _wc_lon, _wc_cell, _wc_sector, _wc_district,
+                        )
+                    else:
+                        _rg_row = await _pg_conn_rg.fetchrow(
+                            "SELECT district FROM rwanda_district_boundaries "
+                            "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                            "LIMIT 1",
+                            float(_wc_lon), float(_wc_lat),
+                        )
+                        if _rg_row:
+                            _wc_district = _rg_row["district"]
+                            logger.info(
+                                "Reverse-geocoded %.4f,%.4f → district=%s",
+                                _wc_lat, _wc_lon, _wc_district,
+                            )
+                finally:
+                    await _pg_conn_rg.close()
+            except Exception as _rg_err:
+                logger.warning("Reverse-geocode failed for %.4f,%.4f: %s", _wc_lat, _wc_lon, _rg_err)
+
+        if _wc_query_type == "largest_cropland":
+            import asyncpg as _asyncpg
+            import numpy as _np
+            from rasterio.merge import merge as _rio_merge
+            from rasterio.features import geometry_mask as _geo_mask
+            from scipy.ndimage import label as _scipy_label
+
+            _PIXEL_HA = 0.01  # 10m x 10m = 0.01 ha
+
+            if _wc_cell:
+                _boundary_sql = (
+                    "SELECT cell_name, sector_name, district_name, "
+                    "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_cell_boundaries "
+                    "WHERE LOWER(cell_name) = LOWER($1) LIMIT 1"
+                )
+                _boundary_params = [_wc_cell]
+                _admin_level = "cell"
+            elif _wc_sector:
+                _boundary_sql = (
+                    "SELECT sector_name, sector_name, district_name, "
+                    "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_sector_boundaries "
+                    "WHERE LOWER(sector_name) = LOWER($1) LIMIT 1"
+                )
+                _boundary_params = [_wc_sector]
+                _admin_level = "sector"
+            elif _wc_district:
+                _boundary_sql = (
+                    "SELECT district, district, district, "
+                    "ST_AsGeoJSON(geom)::text, bbox_west, bbox_south, bbox_east, bbox_north "
+                    "FROM rwanda_district_boundaries "
+                    "WHERE LOWER(district) = LOWER($1) LIMIT 1"
+                )
+                _boundary_params = [_wc_district]
+                _admin_level = "district"
+            elif _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+                _boundary_sql = None
+                _boundary_params = None
+                _admin_level = "bbox"
+            else:
+                return {
+                    "status": "error",
+                    "error": "Please specify a district, sector, cell, or bbox for cropland analysis.",
+                }
+
+            if _admin_level == "bbox":
+                _w, _s, _e, _n = _wc_bbox
+                _boundary_name = f"bbox({_w:.4f},{_s:.4f},{_e:.4f},{_n:.4f})"
+                _geom = {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [_w, _s], [_e, _s], [_e, _n], [_w, _n], [_w, _s],
+                    ]],
+                }
+                _bbox = (_w, _s, _e, _n)
+            else:
+                _pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
+                _pg_port = int(os.environ.get("POSTGRES_PORT", "5432"))
+                _pg_db = os.environ.get("POSTGRES_DB", "mundidb")
+                _pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
+                _pg_pass = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                _pg_conn = await _asyncpg.connect(
+                    host=_pg_host, port=_pg_port,
+                    database=_pg_db, user=_pg_user, password=_pg_pass,
+                )
+                try:
+                    _brow = await _pg_conn.fetchrow(_boundary_sql, *_boundary_params)
+                finally:
+                    await _pg_conn.close()
+
+                if not _brow:
+                    return {
+                        "status": "error",
+                        "error": f"Boundary not found: {_wc_cell or _wc_sector or _wc_district}",
+                    }
+
+                _boundary_name = _brow[0]
+                _geom = json.loads(_brow[3])
+                _bbox = (_brow[4], _brow[5], _brow[6], _brow[7])
+
+            from src.worldcover import open_rwanda_datasets_warped as _open_warped
+            from src.worldcover import CROPLAND_CLASS as _CROP_CLS
+
+            _wc_pairs = []
+            try:
+                _wc_pairs = _open_warped()
+                _wc_datasets = [vrt for vrt, _ds in _wc_pairs]
+
+                _buf = 0.001
+                _bounds = (
+                    _bbox[0] - _buf, _bbox[1] - _buf,
+                    _bbox[2] + _buf, _bbox[3] + _buf,
+                )
+                _arr, _tfm = _rio_merge(_wc_datasets, bounds=_bounds)
+                _data = _arr[0]
+                _h, _w_dim = _data.shape
+
+                _mask = _geo_mask(
+                    [_geom], out_shape=(_h, _w_dim),
+                    transform=_tfm, invert=True,
+                )
+
+                _cropland = ((_data == _CROP_CLS) & _mask).astype(_np.uint8)
+                _labeled, _num = _scipy_label(_cropland)
+
+                _regions = []
+                if _num > 0:
+                    _rids, _rcounts = _np.unique(_labeled, return_counts=True)
+                    _pairs = sorted(
+                        [
+                            (int(_r), int(_c))
+                            for _r, _c in zip(_rids, _rcounts)
+                            if _r > 0
+                        ],
+                        key=lambda x: x[1],
+                        reverse=True,
+                    )[: _wc_limit]
+
+                    for _rank, (_rid, _pc) in enumerate(_pairs, 1):
+                        _ha = round(_pc * _PIXEL_HA, 2)
+                        _ys, _xs = _np.where(_labeled == _rid)
+                        _cy = int(_np.mean(_ys))
+                        _cx = int(_np.mean(_xs))
+                        _lon, _lat = _tfm * (_cx, _cy)
+                        _regions.append({
+                            "rank": _rank,
+                            "area_hectares": _ha,
+                            "centroid_lon": round(_lon, 6),
+                            "centroid_lat": round(_lat, 6),
+                        })
+
+                return {
+                    "status": "success",
+                    "query_type": "largest_cropland",
+                    "admin_level": _admin_level,
+                    "boundary_name": _boundary_name,
+                    "total_cropland_pixels": int(_np.sum(_cropland)),
+                    "total_cropland_hectares": round(
+                        float(_np.sum(_cropland)) * _PIXEL_HA, 2
+                    ),
+                    "num_regions": _num,
+                    "count": len(_regions),
+                    "data": _regions,
+                }
+            finally:
+                for _vrt, _raw in _wc_pairs:
+                    _vrt.close()
+                    _raw.close()
+        # land_cover branch
+        if _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+            import numpy as _np
+            from rasterio.merge import merge as _rio_merge
+            from rasterio.features import geometry_mask as _geo_mask
+            from src.worldcover import open_rwanda_datasets_warped as _open_warped
+            from src.worldcover import CLASS_NAMES as _CLASS_NAMES
+
+            _PIXEL_HA = 0.01
+            _w, _s, _e, _n = _wc_bbox
+            _geom = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [_w, _s], [_e, _s], [_e, _n], [_w, _n], [_w, _s],
+                ]],
+            }
+
+            _wc_pairs = []
+            try:
+                _wc_pairs = _open_warped()
+                _wc_datasets = [vrt for vrt, _ds in _wc_pairs]
+
+                _buf = 0.001
+                _bounds = (_w - _buf, _s - _buf, _e + _buf, _n + _buf)
+                _arr, _tfm = _rio_merge(_wc_datasets, bounds=_bounds)
+                _data = _arr[0]
+                _h, _ww = _data.shape
+
+                _mask = _geo_mask(
+                    [_geom], out_shape=(_h, _ww),
+                    transform=_tfm, invert=True,
+                )
+                _masked = _data[_mask]
+
+                _classes, _counts = _np.unique(_masked, return_counts=True)
+                _lc_data = []
+                for _cls, _cnt in sorted(zip(_classes, _counts), key=lambda x: x[1], reverse=True):
+                    _cls_int = int(_cls)
+                    if _cls_int == 0:
+                        continue  # nodata
+                    _lc_data.append({
+                        "class_id": _cls_int,
+                        "class_name": _CLASS_NAMES.get(_cls_int, f"class_{_cls_int}"),
+                        "area_hectares": round(float(_cnt) * _PIXEL_HA, 2),
+                        "pixel_count": int(_cnt),
+                    })
+
+                return {
+                    "status": "success",
+                    "query_type": "land_cover",
+                    "area": "custom_bbox",
+                    "bbox": _wc_bbox,
+                    "count": len(_lc_data),
+                    "data": _lc_data,
+                }
+            finally:
+                for _vrt, _raw in _wc_pairs:
+                    _vrt.close()
+                    _raw.close()
+        else:
+            _sql = "SELECT admin_level, admin_name, district_name, class_name, area_hectares FROM worldcover_admin_stats"
+            _where: list[str] = []
+            _params: list[Any] = []
+            _pidx = 1
+
+            if _wc_cell:
+                _where.append(f"admin_level = 'cell' AND LOWER(admin_name) = LOWER(${_pidx})")
+                _params.append(_wc_cell)
+                _pidx += 1
+            elif _wc_sector:
+                _where.append(f"admin_level = 'sector' AND LOWER(admin_name) = LOWER(${_pidx})")
+                _params.append(_wc_sector)
+                _pidx += 1
+            elif _wc_district:
+                _where.append(f"admin_level = 'district' AND LOWER(admin_name) = LOWER(${_pidx})")
+                _params.append(_wc_district)
+                _pidx += 1
+            else:
+                _where.append("admin_level = 'district'")
+
+            if _where:
+                _sql += " WHERE " + " AND ".join(_where)
+            _sql += " ORDER BY area_hectares DESC"
+            _rows = await ctx.conn.fetch(_sql, *_params)
+
+            if _rows:
+                return {
+                    "status": "success",
+                    "query_type": "land_cover",
+                    "count": len(_rows),
+                    "data": [
+                        {
+                            "admin_level": r["admin_level"], "admin_name": r["admin_name"],
+                            "district": r["district_name"], "class_name": r["class_name"],
+                            "area_hectares": r["area_hectares"],
+                        }
+                        for r in _rows
+                    ],
+                }
+            return {
+                "status": "success",
+                "query_type": "land_cover",
+                "count": 0,
+                "data": [],
+                "note": "No data yet. Run the worldcover_zonal_stats Dagster asset first.",
+            }
+    except Exception as e:
+        logger.exception("query_worldcover_stats tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_add_land_cover_layer(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Insert an ESRI 10m LULC 2024 raster overlay layer with admin clipping.
+
+    Reverse-geocodes lat/lon → admin (cell > sector > district), then:
+    1. Resolves bounds (admin bbox via _lookup_admin_bbox > explicit bbox >
+       Rwanda national bounds).
+    2. Inserts map_layers + layer_styles + map_layer_styles rows.
+    3. Emits a kue_ephemeral_action so the frontend shows "Adding ..." +
+       updates the style JSON and recenters to bounds.
+
+    Lifted byte-for-byte from message_routes.py:5863-6038.
+    """
+    args = ctx.arguments
+    try:
+        from src.services.map_service import generate_id
+        from src.routes.websocket import kue_ephemeral_action
+
+        _wc_mode = args.get("mode", "all")
+        if _wc_mode not in ("all", "cropland"):
+            _wc_mode = "all"
+
+        _layer_id = generate_id(prefix="L")
+        _style_id = generate_id(prefix="S")
+
+        _wc_district = args.get("district")
+        _wc_sector = args.get("sector")
+        _wc_cell = args.get("cell")
+        _wc_bbox = args.get("bbox")
+        _wc_lat = args.get("lat")
+        _wc_lon = args.get("lon")
+
+        if _wc_lat is not None and _wc_lon is not None and not (_wc_district or _wc_sector or _wc_cell or _wc_bbox):
+            try:
+                import asyncpg as _asyncpg_lc
+                _pg_host_lc = os.environ.get("POSTGRES_HOST", "postgresdb")
+                _pg_port_lc = int(os.environ.get("POSTGRES_PORT", "5432"))
+                _pg_db_lc = os.environ.get("POSTGRES_DB", "mundidb")
+                _pg_user_lc = os.environ.get("POSTGRES_USER", "mundiuser")
+                _pg_pass_lc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
+                _pg_conn_lc = await _asyncpg_lc.connect(
+                    host=_pg_host_lc, port=_pg_port_lc,
+                    database=_pg_db_lc, user=_pg_user_lc, password=_pg_pass_lc,
+                )
+                try:
+                    _rg_row = await _pg_conn_lc.fetchrow(
+                        "SELECT cell_name, sector_name, district_name "
+                        "FROM rwanda_cell_boundaries "
+                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                        "LIMIT 1",
+                        float(_wc_lon), float(_wc_lat),
+                    )
+                    if _rg_row:
+                        _wc_cell = _rg_row["cell_name"]
+                        _wc_sector = _rg_row["sector_name"]
+                        _wc_district = _rg_row["district_name"]
+                    else:
+                        _rg_row = await _pg_conn_lc.fetchrow(
+                            "SELECT district FROM rwanda_district_boundaries "
+                            "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
+                            "LIMIT 1",
+                            float(_wc_lon), float(_wc_lat),
+                        )
+                        if _rg_row:
+                            _wc_district = _rg_row["district"]
+                finally:
+                    await _pg_conn_lc.close()
+            except Exception as _rg_err:
+                logger.warning("Reverse-geocode failed for land cover: %s", _rg_err)
+
+        _admin_name = _wc_cell or _wc_sector or _wc_district
+
+        _area_label = _admin_name or ("Clipped" if _wc_bbox else None)
+        _layer_name = (
+            f"ESRI Land Cover — Cropland ({_area_label})"
+            if _wc_mode == "cropland" and _area_label
+            else f"ESRI Land Cover ({_area_label})"
+            if _area_label
+            else "ESRI Land Cover — Cropland"
+            if _wc_mode == "cropland"
+            else "ESRI Land Cover 2024"
+        )
+
+        _wc_meta: Dict[str, Any] = {
+            "worldcover": True,
+            "worldcover_mode": _wc_mode,
+        }
+        if _wc_district:
+            _wc_meta["clip_district"] = _wc_district
+        if _wc_sector:
+            _wc_meta["clip_sector"] = _wc_sector
+        if _wc_cell:
+            _wc_meta["clip_cell"] = _wc_cell
+        if _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+            _wc_meta["clip_bbox"] = _wc_bbox
+        _meta = json.dumps(_wc_meta)
+
+        _bounds = [28.86, -2.84, 30.90, -1.05]
+        if _wc_district or _wc_sector or _wc_cell:
+            try:
+                from src.routes.rwanda_routes import _lookup_admin_bbox
+                _admin_bbox = await _lookup_admin_bbox(
+                    district=_wc_district,
+                    sector=_wc_sector,
+                    cell=_wc_cell,
+                )
+                if _admin_bbox:
+                    _bounds = _admin_bbox
+            except Exception:
+                pass
+        elif _wc_bbox and isinstance(_wc_bbox, list) and len(_wc_bbox) == 4:
+            _bounds = _wc_bbox
+
+        async with kue_ephemeral_action(
+            ctx.conversation_id,
+            f"Adding {_layer_name} layer...",
+            update_style_json=True,
+            bounds=_bounds,
+        ):
+            await ctx.conn.execute(
+                """
+                INSERT INTO map_layers
+                (layer_id, owner_uuid, name, type,
+                 metadata, bounds, source_map_id,
+                 created_on, last_edited)
+                VALUES ($1, $2, $3, 'raster',
+                        $4, $5, $6,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                _layer_id, ctx.user_id, _layer_name,
+                _meta, _bounds, ctx.map_id,
+            )
+
+            await ctx.conn.execute(
+                """
+                INSERT INTO layer_styles
+                (style_id, layer_id, style_json, created_by, created_on)
+                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                """,
+                _style_id, _layer_id, "[]", ctx.user_id,
+            )
+
+            await ctx.conn.execute(
+                """
+                INSERT INTO map_layer_styles (map_id, layer_id, style_id)
+                VALUES ($1, $2, $3)
+                """,
+                ctx.map_id, _layer_id, _style_id,
+            )
+
+            await ctx.conn.execute(
+                """
+                UPDATE user_mundiai_maps
+                SET layers = CASE
+                    WHEN layers IS NULL THEN ARRAY[$1]
+                    ELSE array_append(layers, $1)
+                END
+                WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
+                """,
+                _layer_id, ctx.map_id,
+            )
+
+        _class_desc = (
+            "Cropland highlighted in green, other land cover muted"
+            if _wc_mode == "cropland"
+            else "All 9 ESRI land cover classes: water, trees, flooded vegetation, crops, built area, bare ground, snow/ice, clouds, rangeland"
+        )
+
+        return {
+            "status": "success",
+            "layer_id": _layer_id,
+            "layer_name": _layer_name,
+            "mode": _wc_mode,
+            "source": "ESRI / Impact Observatory 10m Annual LULC 2024",
+            "classes": _class_desc,
+            "kue_instructions": (
+                f"The layer '{_layer_name}' (ID: {_layer_id}) has been created and "
+                f"added to the map as a raster tile overlay. Mode: {_wc_mode}. "
+                f"{_class_desc}. "
+                "Do NOT call add_layer_to_map or set_layer_style — it is already done. "
+                "Describe the layer to the user and explain what the colours mean."
+            ),
+        }
+    except Exception as e:
+        logger.exception("add_land_cover_layer failed")
+        return {"status": "error", "error": str(e)}
+
+
 # Names of tools that have inline elif handlers in message_routes.py but
 # haven't been extracted into this shim yet. Each gets a stub handler at
 # module load (see below) so the whitelist in tool_call_routes.py accepts
@@ -3593,7 +4328,7 @@ _NOT_YET_EXTRACTED: list[str] = [
     # reverse_geocode_coordinates. None remain in this section.
     # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
     "query_rwanda_zonal_stats",
-    "search_satellite_imagery",
+    # search_satellite_imagery extracted (STAC + NDVI sample).
     # NOTE: get_field_health + get_parcel_ndvi_stats extracted.
     "create_management_zones",
     "create_prescription_map",
@@ -3602,17 +4337,15 @@ _NOT_YET_EXTRACTED: list[str] = [
     # get_ndvi_stats + get_cell_ndvi_stats extracted.
     # get_soil_properties extracted (iSDAsoil + display_layer hints).
     # get_agri_indices extracted (cache + DE Africa + inline layer creation).
-    "query_worldcover_stats",
+    # query_worldcover_stats + add_land_cover_layer extracted (ESRI LULC).
     # get_crop_classifications + get_anomaly_alerts + get_yield_risk +
     # get_drought_status + get_crop_growth_stage extracted (5 cache-read tools).
     # NOTE: get_forecast + detect_dry_spells + get_insurance_intelligence
     # have been extracted (the insurance flow).
     # get_weather_stats + get_forecast_accuracy + get_emissions_stats +
     # get_insurance_accuracy extracted (weather/accuracy/emissions batch).
-    "search_brain",
-    "get_entity",
-    "add_observation",
-    "add_land_cover_layer",
+    # search_brain + get_entity + add_observation extracted (brain trio).
+    # add_land_cover_layer extracted (LULC raster overlay).
     # QGIS-processing (all dispatch via the qgis-processing sidecar)
     "gdal_warpreproject",
     "native_aggregate",
@@ -3694,6 +4427,12 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_forecast_accuracy": _handle_get_forecast_accuracy,
     "get_insurance_accuracy": _handle_get_insurance_accuracy,
     "get_emissions_stats": _handle_get_emissions_stats,
+    "search_brain": _handle_search_brain,
+    "get_entity": _handle_get_entity,
+    "add_observation": _handle_add_observation,
+    "search_satellite_imagery": _handle_search_satellite_imagery,
+    "query_worldcover_stats": _handle_query_worldcover_stats,
+    "add_land_cover_layer": _handle_add_land_cover_layer,
 }
 for _name in _NOT_YET_EXTRACTED:
     LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
