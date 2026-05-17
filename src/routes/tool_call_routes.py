@@ -196,13 +196,37 @@ async def tool_call(
     # Whitelist check — payload.tool_name must be a known Sage tool. Without
     # this guard, a forged signature could dispatch arbitrary code in the
     # process. Even with auth, only the curated registry is dispatchable.
+    #
+    # Two-tier whitelist:
+    #   1. Modern path: get_pydantic_tool_calls() — 28 cleanly-architected tools.
+    #   2. Legacy shim: src/services/legacy_tool_shim.py:LEGACY_HANDLERS — 53
+    #      tools whose handlers still live as inline elif blocks in
+    #      message_routes.py and are being migrated incrementally. Both lists
+    #      together form Sage's full callable surface (~82 tools); the
+    #      Hermes plugin shows both kinds to the LLM via generated_tools.py.
+    #
+    # The /internal/tool-call route can dispatch either kind. Whitelist
+    # check covers BOTH — anything not in either set is rejected as 404
+    # (preserves the curated-only safety property).
+    from src.services.legacy_tool_shim import (
+        LEGACY_HANDLERS,
+        LegacyToolContext,
+        execute_legacy_tool,
+    )
+
     registry = get_pydantic_tool_calls()
-    if payload.tool_name not in registry:
+    is_modern = payload.tool_name in registry
+    is_legacy = payload.tool_name in LEGACY_HANDLERS
+    if not is_modern and not is_legacy:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"unknown tool: {payload.tool_name!r}",
         )
-    fn, ArgModel, MetaModel = registry[payload.tool_name]
+    # Modern path resolves the handler now; legacy path resolves inside the shim.
+    if is_modern:
+        fn, ArgModel, MetaModel = registry[payload.tool_name]
+    else:
+        fn, ArgModel, MetaModel = None, None, None
 
     # conversation_id arrives as str (Hermes plugin stringifies); the DB
     # column is int. Coerce explicitly so we get a clean 422 on garbage.
@@ -221,18 +245,21 @@ async def tool_call(
         conversation_id_int, user_id=payload.user_id,
     )
 
-    # Parse tool-specific arguments. Validation failure is a CALLER error
-    # (200 with status=error in the result body), not a 4xx — Hermes still
-    # wants to feed an error string back to the LLM so it can retry.
-    try:
-        parsed_args = ArgModel(**(payload.arguments or {}))
-    except (ValidationError, TypeError, ValueError) as e:
-        return {
-            "result": {
-                "status": "error",
-                "error": f"Invalid arguments for {payload.tool_name}: {e}",
-            },
-        }
+    # Parse tool-specific arguments (modern path only). Validation failure is
+    # a CALLER error (200 with status=error in the result body), not a 4xx —
+    # Hermes still wants to feed an error string back to the LLM so it can
+    # retry. Legacy shim handlers validate their own args from ctx.arguments.
+    parsed_args = None
+    if is_modern:
+        try:
+            parsed_args = ArgModel(**(payload.arguments or {}))
+        except (ValidationError, TypeError, ValueError) as e:
+            return {
+                "result": {
+                    "status": "error",
+                    "error": f"Invalid arguments for {payload.tool_name}: {e}",
+                },
+            }
 
     # IMPORTANT — RLS scoping is each TOOL's responsibility, not ours.
     #
@@ -249,17 +276,37 @@ async def tool_call(
     ephemeral_label = f"Sage is running {payload.tool_name}…"
     async with kue_ephemeral_action(conversation_id_int, ephemeral_label):
         try:
-            meta_args = MetaModel(
-                user_uuid=payload.user_id,
-                conversation_id=conversation_id_int,
-                map_id=map_id,
-                project_id=project_id,
-                session=ServiceUserContext(
+            if is_modern:
+                meta_args = MetaModel(
                     user_uuid=payload.user_id,
+                    conversation_id=conversation_id_int,
+                    map_id=map_id,
+                    project_id=project_id,
+                    session=ServiceUserContext(
+                        user_uuid=payload.user_id,
+                        partner_id=payload.partner_id,
+                    ),
+                )
+                tool_result = await fn(parsed_args, meta_args)
+            else:
+                # Legacy shim path: open an RLS-scoped connection, build the
+                # LegacyToolContext, dispatch via the shim. The shim owns the
+                # handler lookup + the not-yet-extracted fallback message.
+                async with async_conn(
+                    "tool-call.legacy_shim",
+                    user_id=payload.user_id,
                     partner_id=payload.partner_id,
-                ),
-            )
-            tool_result = await fn(parsed_args, meta_args)
+                ) as shim_conn:
+                    ctx = LegacyToolContext(
+                        user_id=payload.user_id,
+                        partner_id=payload.partner_id,
+                        conversation_id=conversation_id_int,
+                        map_id=map_id,
+                        project_id=project_id,
+                        conn=shim_conn,
+                        arguments=payload.arguments or {},
+                    )
+                    tool_result = await execute_legacy_tool(payload.tool_name, ctx)
         except Exception as e:
             # Bubbled tool failures: do NOT 500. Hermes turn loop must
             # see a parseable result so it can apologize. Same shape as

@@ -57,7 +57,20 @@ jobs:
         timeout-minutes: 45
 
       - name: Run tests
-        run: docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
+        # -n 6 instead of -n auto: the Depot runner reports 16+ cores so
+        # `auto` spawns 16+ xdist workers. Each worker independently imports
+        # the full FastAPI app (~200 MB resident), so 16 × 200 MB ≈ 3.2 GB
+        # just for the app object graph. Tests that use a per-test
+        # `TestClient(app)` re-run the lifespan (brain scheduler, PG
+        # listeners, WS subscriber) on top of that, and the runner's free
+        # RAM gets tight enough that the OOM killer SIGKILLs random workers
+        # — surfacing as `[gwN] node down: Not properly terminated` and
+        # whichever test the worker happened to be running gets reported
+        # as FAILED. The cascade hit 16+ workers and aborted the run on
+        # PR #57 twice in a row even though the tests pass in isolation.
+        # Capping at -n 6 keeps wall-clock under the 25 min timeout and
+        # eliminates the memory contention.
+        run: docker compose run app pytest -vs -n 6 --ignore=src/test_worldcover.py
         timeout-minutes: 25
 
       - name: Start services for E2E
