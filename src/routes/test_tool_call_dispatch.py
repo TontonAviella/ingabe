@@ -37,6 +37,21 @@ def _sign(body: bytes) -> str:
     return hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
 
 
+# Module-scoped TestClient: one lifespan startup per test FILE, not per test.
+# Per-test `with TestClient(app) as c:` was running the full FastAPI lifespan
+# (brain scheduler, websocket subscriber, PG listeners) 10 times on one xdist
+# worker, which OOM-killed gw2 mid-test and surfaced as "[gw2] node down: Not
+# properly terminated" → an arbitrary one of these 10 tests would FAIL on
+# every CI run. With this fixture all 10 share one app instance: tests still
+# isolate via per-test `monkeypatch` (env vars + route-module attrs are read
+# at request time, so each test's patches apply to the next request just
+# fine).
+@pytest.fixture(scope="module")
+def tc():
+    with TestClient(app) as c:
+        yield c
+
+
 # ---------------------------------------------------------------------------
 # Fake tool registry — keeps each test independent of the real Sage surface
 # ---------------------------------------------------------------------------
@@ -128,41 +143,37 @@ def stub_registry(monkeypatch: pytest.MonkeyPatch) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_returns_503_when_route_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_returns_503_when_route_disabled(tc, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MUNDI_TOOL_CALL_ENABLED", raising=False)
-    with TestClient(app) as c:
-        r = c.post("/internal/tool-call", content=b"{}")
+    r = tc.post("/internal/tool-call", content=b"{}")
     assert r.status_code == 503
     assert "disabled" in r.json()["detail"].lower()
 
 
-def test_returns_503_when_secret_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_returns_503_when_secret_unset(tc, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MUNDI_TOOL_CALL_ENABLED", "1")
     monkeypatch.delenv("HERMES_GATEWAY_SECRET", raising=False)
-    with TestClient(app) as c:
-        r = c.post("/internal/tool-call", content=b"{}")
+    r = tc.post("/internal/tool-call", content=b"{}")
     assert r.status_code == 503
     assert "HERMES_GATEWAY_SECRET" in r.json()["detail"]
 
 
-def test_returns_401_when_signature_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_returns_401_when_signature_missing(tc, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MUNDI_TOOL_CALL_ENABLED", "1")
     monkeypatch.setenv("HERMES_GATEWAY_SECRET", SECRET)
-    with TestClient(app) as c:
-        r = c.post("/internal/tool-call", content=b"{}")
+    r = tc.post("/internal/tool-call", content=b"{}")
     assert r.status_code == 401
 
 
-def test_returns_401_when_signature_wrong(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_returns_401_when_signature_wrong(tc, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MUNDI_TOOL_CALL_ENABLED", "1")
     monkeypatch.setenv("HERMES_GATEWAY_SECRET", SECRET)
     body = b'{"x":1}'
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": "deadbeef" * 8},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": "deadbeef" * 8},
+    )
     assert r.status_code == 401
 
 
@@ -171,20 +182,19 @@ def test_returns_401_when_signature_wrong(monkeypatch: pytest.MonkeyPatch) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_returns_422_on_malformed_payload(stub_env: None) -> None:
+def test_returns_422_on_malformed_payload(tc, stub_env: None) -> None:
     """Missing required fields trips Pydantic — surface as 422."""
     body = json.dumps({"partner_id": "p"}).encode()  # missing the rest
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
     assert r.status_code == 422
 
 
 def test_returns_404_on_unknown_tool_name(
-    stub_env: None, stub_registry: dict,
+    tc, stub_env: None, stub_registry: dict,
 ) -> None:
     """Whitelist enforcement — anything not in the registry is dispatchable.
     Critical: even a forged signature can only run curated tools."""
@@ -193,30 +203,28 @@ def test_returns_404_on_unknown_tool_name(
         "conversation_id": "1", "tool_name": "rm_rf_slash",
         "arguments": {},
     }).encode()
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
     assert r.status_code == 404
     assert "rm_rf_slash" in r.json()["detail"]
 
 
 def test_returns_422_on_non_integer_conversation_id(
-    stub_env: None, stub_registry: dict,
+    tc, stub_env: None, stub_registry: dict,
 ) -> None:
     body = json.dumps({
         "partner_id": "p", "user_id": "u",
         "conversation_id": "not-an-int", "tool_name": "stub_tool",
         "arguments": {"layer_id": "L", "band": 1},
     }).encode()
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
     assert r.status_code == 422
 
 
@@ -226,7 +234,7 @@ def test_returns_422_on_non_integer_conversation_id(
 
 
 def test_bad_tool_arguments_return_200_with_status_error(
-    stub_env: None, stub_registry: dict,
+    tc, stub_env: None, stub_registry: dict,
 ) -> None:
     """Pydantic arg-model failures must NOT 4xx — the LLM needs a parseable
     string result so it can retry with corrected arguments."""
@@ -235,12 +243,11 @@ def test_bad_tool_arguments_return_200_with_status_error(
         "conversation_id": "1", "tool_name": "stub_tool",
         "arguments": {"layer_id": "L"},  # missing `band`
     }).encode()
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
     assert r.status_code == 200
     payload = r.json()["result"]
     assert payload["status"] == "error"
@@ -248,7 +255,7 @@ def test_bad_tool_arguments_return_200_with_status_error(
 
 
 def test_tool_raising_returns_200_with_status_error(
-    stub_env: None, stub_registry: dict,
+    tc, stub_env: None, stub_registry: dict,
 ) -> None:
     """A raised exception inside the tool fn must become a result-shape
     error, not a 500. The Hermes turn loop apologizes from the result;
@@ -258,12 +265,11 @@ def test_tool_raising_returns_200_with_status_error(
         "conversation_id": "1", "tool_name": "stub_raising_tool",
         "arguments": {"layer_id": "L", "band": 1},
     }).encode()
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
     assert r.status_code == 200
     payload = r.json()["result"]
     assert payload["status"] == "error"
@@ -272,7 +278,7 @@ def test_tool_raising_returns_200_with_status_error(
 
 
 def test_happy_path_returns_result_and_threads_meta_args_through(
-    stub_env: None, stub_registry: dict,
+    tc, stub_env: None, stub_registry: dict,
 ) -> None:
     """The dispatch must (a) return the tool's return value verbatim in
     `result`, and (b) construct IngabeToolCallMetaArgs with the correct
@@ -285,12 +291,11 @@ def test_happy_path_returns_result_and_threads_meta_args_through(
         "tool_name": "stub_tool",
         "arguments": {"layer_id": "L1", "band": 2},
     }).encode()
-    with TestClient(app) as c:
-        r = c.post(
-            "/internal/tool-call",
-            content=body,
-            headers={"X-Hermes-Signature": _sign(body)},
-        )
+    r = tc.post(
+        "/internal/tool-call",
+        content=body,
+        headers={"X-Hermes-Signature": _sign(body)},
+    )
 
     assert r.status_code == 200, r.text
     assert r.json() == {"result": {"status": "ok", "value": 0.62}}
