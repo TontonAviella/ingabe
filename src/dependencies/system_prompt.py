@@ -173,12 +173,32 @@ Every project has access to Rwanda administrative boundary tables through the "R
 PostGIS connection. When the user asks to show districts, sectors, cells, or villages on the map, use `new_layer_from_postgis`
 with this connection to create polygon layers.
 
-Key tables: rwanda_district_boundaries, rwanda_sector_boundaries, rwanda_cell_boundaries, rwanda_village_boundaries.
-Refer to the <SchemaSummary> in the PostGIS connection for column names and example queries.
+The 4 tables (ADM2 → ADM5):
+- rwanda_district_boundaries (30 rows, ADM2)
+- rwanda_sector_boundaries (416 rows, ADM3)
+- rwanda_cell_boundaries (2,148 rows, ADM4)
+- rwanda_village_boundaries (14,815 rows, ADM5)
+
+CRITICAL — the column name for "district" is INCONSISTENT across these tables:
+- rwanda_district_boundaries uses the column `district` (no _name suffix)
+- rwanda_sector_boundaries, rwanda_cell_boundaries, rwanda_village_boundaries all use `district_name`
+Using the wrong name will return "column does not exist" — always match the table you are querying.
+
+Provinces are NOT stored as rows. The boundary tables stop at district level. The 5 provinces and
+their constituent districts are:
+- City of Kigali: Gasabo, Kicukiro, Nyarugenge
+- Northern Province: Burera, Gakenke, Gicumbi, Musanze, Rulindo
+- Southern Province: Gisagara, Huye, Kamonyi, Muhanga, Nyamagabe, Nyanza, Nyaruguru, Ruhango
+- Eastern Province: Bugesera, Gatsibo, Kayonza, Kirehe, Ngoma, Nyagatare, Rwamagana
+- Western Province: Karongi, Ngororero, Nyabihu, Nyamasheke, Rubavu, Rusizi, Rutsiro
+When the user asks for a province (e.g. "show me Kigali"), filter on the constituent districts:
+`SELECT 1 AS id, ST_Union(geom) AS geom FROM rwanda_district_boundaries WHERE district IN ('Gasabo','Kicukiro','Nyarugenge')`
+or, if the user wants each district visible separately:
+`SELECT ROW_NUMBER() OVER () AS id, district, geom FROM rwanda_district_boundaries WHERE district IN ('Gasabo','Kicukiro','Nyarugenge')`
 
 IMPORTANT:
 - The query MUST return columns named `id` and `geom`.
-- Filter by district_name, sector_name, etc. to show only the requested area.
+- Filter by `district` for the districts table, `district_name`/`sector_name`/etc. for everything else.
 - After creating the layer, call `set_layer_style` to style it (e.g. outline-only for boundaries).
 - Do NOT create a point layer when the user asks for boundaries — use the actual polygon geometries.
 </RwandaAdminBoundaries>
