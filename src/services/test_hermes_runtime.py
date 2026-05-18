@@ -14,11 +14,22 @@ import pytest
 
 from src.services.hermes_runtime import (
     CANCEL_POLL_INTERVAL_SECONDS,
-    SESSION_REDIS_KEY,
-    SESSION_TTL_SECONDS,
-    _cancel_watchdog,
-    _resume_or_create_session,
     hermes_is_enabled,
+)
+
+# NOTE: This file was originally built for the ACP-bridge runtime. After
+# the in-process AIAgent pivot (feat/hermes-gateway-api-server-pivot),
+# the helpers it covered (_cancel_watchdog, _resume_or_create_session,
+# SESSION_REDIS_KEY, SESSION_TTL_SECONDS) no longer exist — Hermes owns
+# session lifecycle now via `session_id=conv-<id>` passed to AIAgent.
+# The ACP-specific tests below are marked with pytest.skip; the
+# hermes_is_enabled tests still pass and are kept.
+
+import pytest
+
+pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
+_skip_acp = pytest.mark.skip(
+    reason="ACP-bridge runtime replaced by in-process AIAgent path"
 )
 
 
@@ -53,6 +64,7 @@ def test_hermes_is_enabled_falsy_values(monkeypatch):
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_resume_uses_cached_session_id():
     """Cached id in Redis → load_session called with that id, no new_session."""
     cached_id = "sess_abc123"
@@ -82,6 +94,7 @@ async def test_resume_uses_cached_session_id():
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_no_cache_falls_through_to_new_session():
     """Empty Redis → new_session called, id written to cache."""
     new_id = "sess_fresh999"
@@ -110,6 +123,7 @@ async def test_no_cache_falls_through_to_new_session():
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_failed_load_session_falls_back_to_new():
     """Hermes restarted → load_session raises → graceful fallback to new_session.
 
@@ -137,6 +151,7 @@ async def test_failed_load_session_falls_back_to_new():
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_redis_unavailable_still_creates_session():
     """If Redis is down entirely, we still serve the turn (just without resume).
 
@@ -166,6 +181,7 @@ async def test_redis_unavailable_still_creates_session():
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_cancel_watchdog_fires_on_redis_key(monkeypatch):
     """When the cancel key is set, watchdog calls conn.cancel and consumes the key."""
     # Speed up the test by making the poll interval tiny
@@ -194,6 +210,7 @@ async def test_cancel_watchdog_fires_on_redis_key(monkeypatch):
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_cancel_watchdog_handles_cancellation(monkeypatch):
     """When the watchdog itself is cancelled (turn ended cleanly), exit silently."""
     monkeypatch.setattr(
@@ -225,6 +242,7 @@ async def test_cancel_watchdog_handles_cancellation(monkeypatch):
 
 
 @pytest.mark.asyncio
+@_skip_acp
 async def test_cancel_watchdog_survives_redis_errors(monkeypatch):
     """Transient Redis failures shouldn't kill the watchdog — keep polling."""
     monkeypatch.setattr(
@@ -256,11 +274,13 @@ async def test_cancel_watchdog_survives_redis_errors(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@_skip_acp
 def test_redis_key_format_uses_conversation_id():
     """Lock in the key template so an accidental change shows up in code review."""
     assert SESSION_REDIS_KEY == "hermes:session:{conversation_id}"
 
 
+@_skip_acp
 def test_session_ttl_is_24h():
     """TTL changes have product implications (lost context); flag any tweak."""
     assert SESSION_TTL_SECONDS == 86400
@@ -277,6 +297,7 @@ def test_cancel_poll_interval_under_2s():
 # ---------------------------------------------------------------------------
 
 
+@_skip_acp
 def test_acp_connect_to_agent_arg_order_in_source():
     """The runtime MUST call connect_to_agent(client, writer, reader).
 
@@ -330,6 +351,7 @@ def test_acp_connect_to_agent_arg_order_in_source():
 # ---------------------------------------------------------------------------
 
 
+@_skip_acp
 def test_bridge_stderr_not_devnull():
     """acp_tcp_bridge.py must NOT use DEVNULL for the hermes-acp subprocess.
 
