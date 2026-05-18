@@ -18,6 +18,31 @@ echo "[start-services] Dependencies ready"
 echo "[start-services] Running alembic migrations..."
 alembic upgrade head
 
+# --- Hermes plugin install (no-op if hermes_integration/ isn't baked in) ----
+# When MUNDI_USE_HERMES=1 the in-process AIAgent path needs the ingabe-sage
+# plugin discoverable + enabled. Symlink the baked-in plugin path into
+# Hermes's user-plugin search dir and seed a minimal config.yaml. Idempotent
+# on restart. Safe to run when MUNDI_USE_HERMES=0 — the symlink just sits
+# there unused.
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+if [ -d /app/hermes_integration/plugins/ingabe-sage ]; then
+  mkdir -p "$HERMES_HOME/plugins"
+  ln -sfn /app/hermes_integration/plugins/ingabe-sage "$HERMES_HOME/plugins/ingabe-sage"
+  if [ ! -f "$HERMES_HOME/config.yaml" ]; then
+    cat > "$HERMES_HOME/config.yaml" <<EOF
+plugins:
+  enabled:
+    - ingabe-sage
+model:
+  provider: openrouter
+  default: ${OPENAI_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+  base_url: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+EOF
+    echo "[start-services] Seeded $HERMES_HOME/config.yaml (ingabe-sage enabled)"
+  fi
+  echo "[start-services] Hermes plugin ingabe-sage wired ($(readlink $HERMES_HOME/plugins/ingabe-sage))"
+fi
+
 echo "[start-services] Starting field monitor API on :8001..."
 (
   while true; do

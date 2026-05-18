@@ -49,6 +49,13 @@ services:
       - OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434/v1}
       - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-}
+      # Hermes Phase 2 — in-process AIAgent runtime (default OFF)
+      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
+      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
+      - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
+      - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
+      - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
+      - HERMES_ACCEPT_HOOKS=1
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
