@@ -29,13 +29,17 @@ if [ -d /app/hermes_integration/plugins/ingabe-sage ]; then
   mkdir -p "$HERMES_HOME/plugins"
   ln -sfn /app/hermes_integration/plugins/ingabe-sage "$HERMES_HOME/plugins/ingabe-sage"
   if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    # `platform_toolsets.api_server` restricts the tool surface for the
-    # in-process AIAgent path (platform="api_server") to just our plugin.
-    # Without this restriction, Hermes ships 13 built-in toolsets we don't
-    # need (browser, terminal, code_execution, cronjob, image_gen, file,
-    # vision, todo, memory, session_search, skills, delegation, web).
-    # That bloats every LLM call by ~31 tool schemas / ~5K tokens.
-    # See memory: project_hermes_tool_surface_trim.
+    # Ships the full Hermes default toolset (browser, terminal,
+    # code_execution, cronjob, delegation, file, image_gen, memory,
+    # session_search, skills, todo, vision, web) alongside our plugin.
+    # Roger explicitly chose to keep these on (2026-05-18) even though
+    # the chat-only Sage UX doesn't currently use them — they're cheap
+    # to keep around for future features (cron-fired reports, delegation,
+    # memory-backed long conversations). If profile work later shows the
+    # full surface is hurting Nemotron latency, add an explicit
+    # `platform_toolsets.api_server: [ingabe-sage, ingabe-sage-proxied]`
+    # block here. See memory: project_hermes_tool_surface_trim for the
+    # opt-in trim.
     cat > "$HERMES_HOME/config.yaml" <<EOF
 plugins:
   enabled:
@@ -44,12 +48,8 @@ model:
   provider: openrouter
   default: ${OPENAI_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
   base_url: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-platform_toolsets:
-  api_server:
-    - ingabe-sage
-    - ingabe-sage-proxied
 EOF
-    echo "[start-services] Seeded $HERMES_HOME/config.yaml (ingabe-sage enabled, api_server tool surface trimmed to plugin-only)"
+    echo "[start-services] Seeded $HERMES_HOME/config.yaml (ingabe-sage enabled, default tool surface kept)"
   fi
   echo "[start-services] Hermes plugin ingabe-sage wired ($(readlink $HERMES_HOME/plugins/ingabe-sage))"
 fi
