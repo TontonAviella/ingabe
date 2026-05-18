@@ -286,9 +286,29 @@ async def run_sage_turn_via_hermes(
     if partner_id is None:
         from src.dependencies.session import LegacyUserContext
         if isinstance(session, LegacyUserContext):
-            # Reuse the same dev UUID LegacyUserContext gives back for
-            # user_id (single source of truth — change it there, both
-            # sides stay in lockstep).
+            # Prod safety: refuse to synthesize the dev partner_id when
+            # Clerk is the authoritative session source. If LegacyUserContext
+            # ever leaks into a prod request (middleware bug, accidental
+            # CLERK_ALLOW_LEGACY_FALLBACK=true), every legacy turn would
+            # collapse onto the same synthetic partner UUID, breaking
+            # partner isolation. Fail closed instead — the upstream
+            # caller will surface the error to the user.
+            _clerk_on = bool(os.environ.get("CLERK_SECRET_KEY", "").strip())
+            _legacy_allowed = os.environ.get(
+                "CLERK_ALLOW_LEGACY_FALLBACK", ""
+            ).strip().lower() in {"1", "true", "yes"}
+            if _clerk_on and not _legacy_allowed:
+                raise RuntimeError(
+                    "Hermes runtime refused to synthesize dev partner_id: "
+                    "Clerk is configured (CLERK_SECRET_KEY set) but the "
+                    "request arrived with a LegacyUserContext. This indicates "
+                    "a session-middleware misconfiguration. Set "
+                    "CLERK_ALLOW_LEGACY_FALLBACK=true to permit dev-mode "
+                    "fallback in mixed-auth deployments."
+                )
+            # Dev mode (Clerk off): reuse the same UUID LegacyUserContext
+            # gives back for user_id — single source of truth, both sides
+            # stay in lockstep if the dev UUID is ever rotated.
             partner_id = LegacyUserContext._LEGACY_UUID
             logger.info(
                 "Dev-mode LegacyUserContext detected; using dev partner_id "
