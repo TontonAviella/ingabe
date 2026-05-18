@@ -73,4 +73,4 @@ echo "[start-services] Starting insurance API on :8002..."
 ) &
 
 echo "[start-services] Starting main app on :8000..."
-exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*'
+exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*' --workers ${UVICORN_WORKERS:-4}
