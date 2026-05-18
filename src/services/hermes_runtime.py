@@ -451,11 +451,20 @@ async def run_sage_turn_via_hermes(
     # --- 6. Build the AIAgent ---------------------------------------------
     agent_ref: list[Any] = [None]
 
+    # Cap max_tokens to keep OpenRouter credit reservation manageable.
+    # Without this, the SDK requests 16384 tokens upfront; OpenRouter
+    # reserves that against your balance and returns HTTP 402 if you
+    # can't cover it ("requires more credits, or fewer max_tokens").
+    # 4096 is plenty for tool-calling agents — actual outputs are
+    # typically 100-500 tokens for tool args + 200-800 for final text.
+    _max_tokens = int(os.environ.get("HERMES_MAX_TOKENS", "4096"))
+
     def _build_agent():
         return AIAgent(
             model=model,
             **runtime_kwargs,
             max_iterations=int(os.environ.get("HERMES_MAX_ITERATIONS", "30")),
+            max_tokens=_max_tokens,
             quiet_mode=True,
             verbose_logging=False,
             enabled_toolsets=enabled_toolsets,
@@ -538,14 +547,44 @@ async def run_sage_turn_via_hermes(
         if not assistant_text:
             # Some result shapes carry the final text in result["content"]
             # or result["message"]; try to recover.
+            #
+            # `final_response` is the field Hermes uses for API-level failures
+            # ("API call failed after 3 retries: HTTP 402..."). Before adding it
+            # to this list, those errors got silently swallowed: indicator chip
+            # disappeared, no chat bubble, no toast, no signal to the user that
+            # the request failed. (2026-05-18 — surfaced by an OpenRouter 402.)
             if isinstance(result, dict):
-                for key in ("content", "message", "text", "output"):
+                for key in ("content", "message", "text", "output", "final_response"):
                     val = result.get(key)
                     if isinstance(val, str) and val.strip():
                         assistant_text = val.strip()
                         break
 
         if assistant_text:
+            # Heuristic: if the text looks like a Hermes-side API error, push
+            # it to the error toast channel (red bar) so the user can react —
+            # don't pretend it's a normal assistant reply. Persist it as an
+            # assistant message anyway so the chat reload still shows the trail.
+            _looks_like_error = any(
+                marker in assistant_text
+                for marker in (
+                    "API call failed",
+                    "HTTP 402",
+                    "HTTP 429",
+                    "HTTP 5",
+                    "Operation interrupted",
+                    "credits, or fewer max_tokens",
+                )
+            )
+            if _looks_like_error:
+                try:
+                    await kue_notify_error(
+                        conversation.id,
+                        # First line — keep it short; the toast UI truncates.
+                        assistant_text.split("\n", 1)[0][:240],
+                    )
+                except Exception:
+                    logger.debug("kue_notify_error push failed", exc_info=True)
             try:
                 await _persist_assistant_message(
                     map_id, user_id, conversation.id, assistant_text,
@@ -560,6 +599,15 @@ async def run_sage_turn_via_hermes(
                 "Hermes returned empty response for conv=%s — nothing to persist; result=%r",
                 conversation.id, (str(result)[:200] if result else None),
             )
+            # Even with no recoverable text, give the user *some* signal so
+            # the disappearing-chip-with-no-response UX never happens again.
+            try:
+                await kue_notify_error(
+                    conversation.id,
+                    "Sage finished with no response. Check server logs or retry the request.",
+                )
+            except Exception:
+                logger.debug("kue_notify_error fallback push failed", exc_info=True)
 
         try:
             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
