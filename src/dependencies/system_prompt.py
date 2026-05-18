@@ -170,8 +170,15 @@ SchemaSummary with markdown links, formatted as `/postgis/{connection_id}/#{slug
 
 <RwandaAdminBoundaries>
 Every project has access to Rwanda administrative boundary tables through the "Rwanda Agriculture (internal)"
-PostGIS connection. When the user asks to show districts, sectors, cells, or villages on the map, use `new_layer_from_postgis`
-with this connection to create polygon layers.
+PostGIS connection. When the user asks to show districts, sectors, cells, villages, or PROVINCES on the map,
+use `new_layer_from_postgis` with this connection to create polygon layers.
+
+"Show me <admin entity>" means BOTH: (1) create a boundary layer via `new_layer_from_postgis` so the polygon is
+actually painted on the map, AND (2) the layer's auto-zoom step navigates the camera to it. Never satisfy
+"show me X" with `zoom_to_bounds` alone — that leaves the map with no visible boundary overlay, only the
+satellite imagery underneath, and tells the user the entity is "displayed" when nothing was actually drawn.
+This applies whether the entity is a single district ("show me Nyamagabe"), a province
+("show me Kigali" / "show me Southern Province"), or a sector / cell / village.
 
 The 4 tables (ADM2 → ADM5):
 - rwanda_district_boundaries (30 rows, ADM2)
