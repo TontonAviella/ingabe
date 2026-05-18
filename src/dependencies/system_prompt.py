@@ -192,12 +192,19 @@ CRITICAL — the column name for "district" is INCONSISTENT across these tables:
 Using the wrong name will return "column does not exist" — always match the table you are querying.
 
 Provinces are NOT stored as rows. The boundary tables stop at district level. The 5 provinces and
-their constituent districts are:
-- City of Kigali: Gasabo, Kicukiro, Nyarugenge
-- Northern Province: Burera, Gakenke, Gicumbi, Musanze, Rulindo
-- Southern Province: Gisagara, Huye, Kamonyi, Muhanga, Nyamagabe, Nyanza, Nyaruguru, Ruhango
-- Eastern Province: Bugesera, Gatsibo, Kayonza, Kirehe, Ngoma, Nyagatare, Rwamagana
-- Western Province: Karongi, Ngororero, Nyabihu, Nyamasheke, Rubavu, Rusizi, Rutsiro
+their constituent districts are listed below with EXACT COUNTS — when you build a WHERE district IN (...)
+clause for a province, you MUST include all districts listed. Dropping even one creates a visible hole
+in the resulting polygon (e.g. dropping Kayonza from Eastern Province leaves a gap in the middle of the
+shape that the user will see and complain about).
+
+- City of Kigali (3 districts): Gasabo, Kicukiro, Nyarugenge
+- Northern Province (5 districts): Burera, Gakenke, Gicumbi, Musanze, Rulindo
+- Southern Province (8 districts): Gisagara, Huye, Kamonyi, Muhanga, Nyamagabe, Nyanza, Nyaruguru, Ruhango
+- Eastern Province (7 districts): Bugesera, Gatsibo, Kayonza, Kirehe, Ngoma, Nyagatare, Rwamagana
+- Western Province (7 districts): Karongi, Ngororero, Nyabihu, Nyamasheke, Rubavu, Rusizi, Rutsiro
+
+Before emitting a province-level query: count the districts in your IN clause and verify it matches the
+parenthesized count above. 7 means 7, not 6.
 When the user asks for a province (e.g. "show me Kigali"), filter on the constituent districts:
 `SELECT 1 AS id, ST_Union(geom) AS geom FROM rwanda_district_boundaries WHERE district IN ('Gasabo','Kicukiro','Nyarugenge')`
 or, if the user wants each district visible separately:

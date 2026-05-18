@@ -246,7 +246,7 @@ async def run_sage_turn_via_hermes(
     second. On cancel it calls `agent.interrupt(...)`, which the api_server
     pattern uses to stop in-flight LLM calls cleanly.
     """
-    from src.routes.websocket import kue_stream_token, kue_notify_error
+    from src.routes.websocket import kue_stream_token, kue_notify_error, kue_ephemeral_action
 
     _ensure_plugins_loaded()
 
@@ -514,7 +514,17 @@ async def run_sage_turn_via_hermes(
         # have the executor run inside it, so the plugin's proxy_tool_call
         # sees the (partner_id, user_uuid, conversation_id) we just set.
         ctx_snapshot = contextvars.copy_context()
-        result = await loop.run_in_executor(None, ctx_snapshot.run, _run_sync)
+
+        # "Sage is thinking..." chip while the LLM is reasoning. The
+        # hand-rolled path wraps each LLM call in this ephemeral action
+        # (message_routes.py:1661); without it, the user has no feedback
+        # that Sage is working between tool chips. The legacy tool handlers
+        # set their own more-specific chips ("Adding layer from PostGIS...",
+        # "Zooming to bounds...") which override this one during tool
+        # execution, so the UX alternates correctly: thinking → tool work →
+        # thinking → final text.
+        async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
+            result = await loop.run_in_executor(None, ctx_snapshot.run, _run_sync)
         # Final flush: signal the drainers to stop after pulling any
         # remaining deltas / tool rounds. We can't push None directly because
         # it's also the sentinel _on_delta drops; use a private object.
