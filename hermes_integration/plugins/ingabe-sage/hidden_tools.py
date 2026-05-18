@@ -211,11 +211,21 @@ HIDDEN_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "description": (
                         "JSON-stringified array of MapLibre layer specifications. "
                         "Must be a valid JSON STRING (not an object). Each element "
-                        "is a MapLibre layer object with id, type, paint, and "
-                        "optionally filter / source-layer. "
-                        "Example: '[{\"id\":\"fill\",\"type\":\"fill\","
+                        "is a MapLibre layer object with id, type, paint, AND a "
+                        "REQUIRED `source` field that MUST equal the layer_id "
+                        "passed in the layer_id argument above. Optional fields: "
+                        "filter, source-layer. The handler rejects with "
+                        "\"Layer source must be '<layer_id>'\" if source is "
+                        "missing or wrong, so it is NOT optional — every layer "
+                        "object in the array must carry it. "
+                        "Example for layer_id='L5uovU1RdgC8': "
+                        "'[{\"id\":\"fill\",\"type\":\"fill\","
+                        "\"source\":\"L5uovU1RdgC8\","
                         "\"paint\":{\"fill-color\":\"#1e90ff\","
-                        "\"fill-opacity\":0.5,\"fill-outline-color\":\"#000\"}}]'."
+                        "\"fill-opacity\":0.5,\"fill-outline-color\":\"#000\"}},"
+                        "{\"id\":\"outline\",\"type\":\"line\","
+                        "\"source\":\"L5uovU1RdgC8\","
+                        "\"paint\":{\"line-color\":\"#000\",\"line-width\":1}}]'."
                     ),
                 },
             },

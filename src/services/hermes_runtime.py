@@ -1,536 +1,225 @@
-"""Hermes Agent runtime entry point for Sage's turn loop.
+"""Hermes Agent runtime — in-process AIAgent path.
 
-This module is the cutover seam for Phase 2 of the Sage → Hermes migration.
-When `MUNDI_USE_HERMES=1`, the dispatch in
-`src/routes/message_routes.py:process_chat_interaction_task` calls
-`run_sage_turn_via_hermes(...)` instead of running the hand-rolled chat loop.
+When `MUNDI_USE_HERMES=1`, `process_chat_interaction_task` hands the turn
+to `run_sage_turn_via_hermes(...)` which constructs a `hermes_cli` AIAgent
+and runs it in-process inside the FastAPI worker.
 
-## STATE AS OF 2026-05-14 (after introspecting the installed package)
+## Why in-process (and not ACP sidecar / gateway HTTP)
 
-The flag fork is in prod. `hermes-agent` is installed (~30 transitive deps
-including anthropic, firecrawl-py, fal-client, parallel-web, exa-py,
-edge-tts, prompt_toolkit, fire, croniter, etc.). The plugin scaffolding
-(`hermes_integration/plugins/ingabe-sage/`) is on the branch.
+The earlier sidecar attempts (ACP TCP bridge, gateway HTTP) hit two
+ergonomic problems:
 
-But the architecture is NOT what we initially assumed.
+  1. `acp_adapter` hardcodes `enabled_toolsets=["hermes-acp"]` and
+     filters every plugin toolset out before the LLM call. Verified
+     2026-05-17 from `acp_adapter/session.py:596-605`.
+  2. The gateway api_server path works but introduces an HTTP boundary
+     that complicates `IngabeContext` propagation (the
+     `(partner_id, user_uuid, conversation_id, map_id)` tuple that
+     proxied tool handlers need to issue HMAC-signed `/internal/tool-call`
+     POSTs).
 
-## ARCHITECTURAL TRUTH (do not skip this section)
+In-process avoids both: we construct `AIAgent(platform="api_server", ...)`
+directly, and `IngabeContext` is a `ContextVar` set in the same asyncio
+task that runs the conversation — so the plugin's `proxy_tool_call`
+reads the same context value through normal async-aware propagation.
 
-Hermes Agent v2026.5.7 is **a CLI app + a long-running gateway service**,
-NOT a Python library you import and instantiate.
+## Streaming model
 
-What's actually installed:
-- `/app/.venv/bin/hermes`          — main CLI binary
-- `/app/.venv/bin/hermes-agent`    — alias of the above
-- `/app/.venv/bin/hermes-acp`      — Agent Client Protocol adapter
-                                     (requires `acp` extra; NOT installed)
-- `hermes_cli/` package            — 68 .py files, internal CLI commands
-- `hermes_constants.py`, `hermes_logging.py`,
-  `hermes_state.py`, `hermes_time.py`  — loose top-level modules
-                                          (no namespace package)
-- `plugins/` directory             — for `hermes plugins add ...` style
+`AIAgent.run_conversation()` is a **synchronous** call (it owns its own
+LLM-roundtrip blocking loop). We run it in `loop.run_in_executor(None,
+...)` and bridge `stream_delta_callback` (which fires from the executor
+thread) to `kue_stream_token` (an async coroutine on the event loop) via
+a thread-safe `queue.Queue` plus a drainer task.
 
-There is NO `import hermes_agent` top-level package. No `Runtime` class.
-No `Session` class you can construct. The agent loop lives inside the
-gateway process, not exposed as a public Python API.
+## Rollback
 
-`hermes gateway` is the long-running service that handles:
-- Messaging integrations (Telegram, Discord, WhatsApp, Slack, Matrix,
-  DingTalk, Feishu) — yes WhatsApp IS supported, via QR-pair config,
-  not a separate library dep
-- Plugin loading (`hermes_integration/plugins/ingabe-sage/` would be
-  loaded by the gateway, not by mundi-app)
-- Agent turn execution
-
-## INTEGRATION OPTIONS (revised, ranked by realism)
-
-### Option A: Hermes Gateway as a sidecar service + ACP protocol
-
-Add `hermes gateway run` (foreground mode) as a second service in
-docker-compose-prod.yml. Mount the ingabe-sage plugin into it. Configure
-its model via `hermes model select` (OpenRouter+Nemotron). Then
-`run_sage_turn_via_hermes(...)` opens an ACP session to the gateway and
-forwards the conversation. The gateway streams back; mundi-app proxies
-those deltas to its websocket.
-
-Required additions:
-- New compose service: `hermes-gateway`
-- `acp` Python package (the `[acp]` extra) in requirements.txt
-- Volume mount: plugin code into gateway container
-- Inter-container networking for mundi-app ↔ hermes-gateway
-
-Effort: ~3-5 days human-team / ~1.5 days CC+gstack.
-
-### Option B: Subprocess `hermes chat -z "..." -m nemotron ...` per turn
-
-Spawn `hermes` CLI per request. Returns full response on stdout. Slow
-(no streaming), no concurrent turn support, lose websocket UX.
-Realistic only for batch/cron jobs, not interactive Sage.
-
-### Option C: Reuse `hermes_cli` internals directly
-
-Import functions from `hermes_cli.commands`, `hermes_cli.gateway`, etc.
-Build our own turn loop on top of Hermes primitives. Fragile — none of
-that is public API; would break on every Hermes upgrade.
-
-### Recommended: Option A.
-
-Hermes was DESIGNED to be the orchestration brain across channels. The
-gateway model is right for "many people, many companies" (Hermes has
-a profile/multi-tenancy model — `hermes gateway list` shows multiple
-profiles). The sidecar architecture also means partner-specific config
-(WhatsApp accounts, model preferences, etc.) lives in Hermes profiles,
-not in mundi-app code.
-
-## CORRECTED WIRING PUNCH LIST (for the next PR)
-
-Status checked off marks what's done by PR #44.
-
-[x] 1. docker-compose-prod.yml: hermes-gateway sidecar service. Same
-       image as mundi-app (Hermes is installed there). `hermes gateway
-       run` daemon. Named volume `hermes-state`. `profiles: ["hermes"]`
-       gate so default `up` doesn't include it.
-
-[x] 2. acp dep: `agent-client-protocol==0.10.0` added to requirements.txt.
-       Rebuild triggered 2026-05-15 ~22:40 UTC.
-
-[ ] 3. Plugin config: still TODO. `hermes_integration/plugins/ingabe-sage/`
-       lives on `feat/hermes-migration` branch (PR #42, draft). Need to
-       either merge that or copy plugin code onto this branch, then add
-       the volume mount back to compose service (was deferred because
-       empty host dir caused a PermissionError interaction).
-
-[ ] 4. **run_sage_turn_via_hermes** — THE BIG ONE.
-       ACP architecture finding (2026-05-15 verified):
-       - acp Python SDK's default transport is STDIO (subprocess pipes).
-         `connect_to_agent(client_impl, stdin, stdout)` spawns the
-         agent as a child process and talks over its stdin/stdout.
-       - For our sidecar arch (hermes-gateway is a separate CONTAINER,
-         not a child process), we have two paths:
-         (a) STDIO-over-docker-exec: mundi-app runs
-             `docker exec mundi-hermes-gateway hermes-acp` as a
-             subprocess per session, talks ACP over its pipes.
-             Requires mundi-app container to have docker socket access.
-             Adds privilege scope.
-         (b) Network transport: check if acp SDK supports TCP/socket
-             transports (the SDK docs hint at "asyncio transports"
-             plural — there may be a network option, OR we wire our
-             own JSON-RPC-over-WebSocket variant).
-             Cleanest if available.
-         (c) Embed an ACP server inside mundi-app and have hermes-gateway
-             be the client — inverted but reuses the same protocol.
-             Probably not what Hermes expects.
-       - Decision: investigate acp.transports module in the next session,
-         then pick (a) or (b).
-
-       Per-turn flow once transport is chosen:
-       - Implement an `IngabeAcpClient(acp.Client)` subclass with
-         `session_update()` mapping to `kue_stream_token(...)` deltas.
-       - `await conn.new_session(mcp_servers=[], cwd=...)` per chat turn.
-       - `await conn.prompt(session_id, [text_block(user_msg)],
-         message_id=conversation.id)` sends the user message.
-       - Streamed deltas arrive via `session_update()` callback.
-       - On `AgentMessageChunk`/`TextContentBlock` chunks, call
-         `kue_stream_token(conversation.id, text)`.
-       - On final state, persist via `add_chat_completion_message`.
-
-[ ] 5. Tool dispatch back to mundi: when Hermes gateway runs a Sage tool
-       (via the ingabe-sage plugin), the handler hits mundi-app's
-       /internal/tool-call HTTP endpoint with HMAC. Currently NOT BUILT.
-       Scope for PR #46 alongside the inbox endpoint dispatch.
-
-[x] 6. Per-partner profiles: `default` + `bk-insurance` profiles created
-       on the live gateway. Both configured with Nemotron 120B free tier
-       via OpenRouter. `bk-insurance` profile is dormant (stopped) until
-       MUNDI_USE_HERMES_PARTNERS allowlist points at it.
-
-[ ] 7. Cancellation, error path, output capture: comes for free with
-       proper ACP wiring — the protocol has cancel + error messages.
-       Map them to the existing Redis cancellation key + kue_notify_error.
-
-## ACP transport choice — research needed
-
-The acp SDK's stdio-default is a real friction point for sidecar
-architecture. Possible resolutions ranked by preference:
-
-1. **acp.transports has network option** — best case. Single docker
-   network call, no subprocess management. Investigate first thing in
-   the next session.
-
-2. **hermes-acp accepts --port flag for TCP server mode** — also clean.
-   Check `hermes acp --help` after the rebuild (which installs the acp
-   module that hermes-acp needs to import).
-
-3. **Subprocess pattern with docker exec** — workable but requires
-   mundi-app to have docker socket access (`/var/run/docker.sock`
-   volume mount, security implications). Adds startup latency per turn.
-
-4. **Custom JSON-RPC over WebSocket bridge** — implement our own thin
-   transport that wraps the ACP message types in WebSocket frames.
-   Last resort.
-
-## ROLLBACK (always-available)
-
-`MUNDI_USE_HERMES=0` in `/home/deploy/mundi.ai/.env` and
-`docker compose -f docker-compose.yml -f docker-compose.prod.yml restart app`.
-Existing chat loop runs. No data or schema changes were made.
-
-## WHAT THIS MODULE STILL DOES (TODAY)
-
-For now, the seam is functional but the runtime invocation is not wired.
-`run_sage_turn_via_hermes` raises NotImplementedError with the rollback
-recipe. The flag stays at 0 in prod. Nobody is on Hermes after PR #44
-merges. The wiring PR (#45) is the sidecar service work above.
+Same as before: `MUNDI_USE_HERMES=0` in env + restart `mundi-app`. The
+hand-rolled loop in `process_chat_interaction_task` takes over.
 """
 from __future__ import annotations
 
+import asyncio
+import contextvars
+import json
 import logging
 import os
+import queue as _q
+import re
+import threading
+import time
+from typing import Any
+
+# Module-level constants used by run_sage_turn_via_hermes and its
+# inner closures. Defined here so they appear before the function that
+# consumes them (a reader scanning top-to-bottom doesn't need to skip
+# ~600 lines to find the sentinel/interval definitions).
+_SENTINEL_DONE = object()
+CANCEL_POLL_INTERVAL_SECONDS = 1.0
+
+# Hermes upstream emits these substrings inside `result["final_response"]`
+# when an LLM call fails. Used to route the response to kue_notify_error
+# (red toast) instead of the normal chat bubble. Brittle by design —
+# pinned against hermes-agent v2026.5.7 emission strings. If a future
+# Hermes bump changes the wording, this list MUST be updated or errors
+# will silently show as normal Sage replies.
+_HERMES_ERROR_MARKERS = (
+    "API call failed",
+    "HTTP 402",
+    "HTTP 429",
+    "Operation interrupted",
+    "credits, or fewer max_tokens",
+)
+# 5xx range is matched as a regex to avoid false positives like
+# "HTTP 5ms" or "HTTP 5xx series" appearing in a normal Sage reply.
+_HERMES_5XX_RE = re.compile(r"HTTP 5\d\d")
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Flag + cache
+# ---------------------------------------------------------------------------
 
 def hermes_is_enabled() -> bool:
     """True iff MUNDI_USE_HERMES env var is set to a truthy value.
 
     Used by `process_chat_interaction_task` to fork dispatch. Default
     behavior (env unset or '0') is the existing hand-rolled chat loop.
-
-    Recognized truthy values: '1', 'true', 'yes' (case-insensitive). Any
-    other value is treated as off, including unset.
     """
     val = os.environ.get("MUNDI_USE_HERMES", "0").strip().lower()
     return val in {"1", "true", "yes"}
 
 
-SESSION_REDIS_KEY = "hermes:session:{conversation_id}"
-SESSION_TTL_SECONDS = 24 * 60 * 60  # 24 hours — session is per-conversation, not per-day
-CANCEL_POLL_INTERVAL_SECONDS = 1.0
+# Plugins must be discovered ONCE per process. discover_and_load() walks
+# ~/.hermes/plugins/ and the bundled dir, then registers their tool
+# schemas + handlers into the global Hermes tool registry. After the
+# first call, `hermes_plugins.ingabe_sage.context` is importable.
+_PLUGIN_MANAGER = None
+_PLUGIN_LOCK = threading.Lock()
 
 
-async def run_sage_turn_via_hermes(
-    request,
-    map_id: str,
-    session,
-    user_id: str,
-    chat_args,
-    map_state,
-    conversation,
-    system_prompt_provider,
-    connection_manager,
-    pydantic_tool_calls,
+def _ensure_plugins_loaded():
+    """Load Hermes plugins lazily and cache the manager.
+
+    Hermes's PluginManager scans the user-plugin directory once and
+    populates `sys.modules['hermes_plugins.ingabe_sage']` plus the global
+    tools registry. We must call this before constructing AIAgent or
+    importing the plugin's context module.
+    """
+    global _PLUGIN_MANAGER
+    if _PLUGIN_MANAGER is not None:
+        return _PLUGIN_MANAGER
+    with _PLUGIN_LOCK:
+        if _PLUGIN_MANAGER is not None:
+            return _PLUGIN_MANAGER
+        from hermes_cli.plugins import PluginManager
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        loaded = [p["name"] for p in mgr.list_plugins()]
+        logger.info("Hermes plugins loaded once: %s", loaded)
+        _PLUGIN_MANAGER = mgr
+    return _PLUGIN_MANAGER
+
+
+# ---------------------------------------------------------------------------
+# IngabeContext propagation
+# ---------------------------------------------------------------------------
+
+def _set_ingabe_context(
+    *,
+    user_uuid: str,
+    partner_id: str | None,
+    conversation_id: int | str,
+    map_id: str | None,
+    project_id: str | None,
 ) -> None:
-    """Run one Sage turn through Hermes Agent's runtime via ACP.
+    """Set the plugin's IngabeContext ContextVar for this request.
 
-    Architecture:
-      mundi-app  ─TCP→  hermes-acp-bridge  ─stdio→  hermes-acp subprocess
-                                                     └─ Hermes gateway state
+    The plugin's `proxy_tool_call` reads from the same ContextVar when it
+    runs (in this same asyncio task), so the (partner_id, user_uuid,
+    conversation_id) tuple flows into the HMAC-signed POST to mundi-app's
+    /internal/tool-call.
 
-    Per chat turn:
-      1. Open async TCP connection to the bridge.
-      2. Build an `IngabeAcpClient` that streams chunks to the WebSocket
-         AND accumulates them for post-turn persistence.
-      3. `acp.connect_to_agent(client, reader, writer)` → ClientSideConnection.
-      4. `await conn.initialize(...)` (protocol handshake).
-      5. Session resume: if Redis has `hermes:session:{conversation_id}`,
-         call `load_session(...)` to restore Hermes-side context. Else
-         `new_session(...)` and cache the new id under the same key.
-         Hermes preserves chat history internally per session (verified
-         via `agentCapabilities.loadSession=true` on prod 2026-05-15).
-      6. Spawn a cancellation watchdog task polling Redis
-         `messages:{map_id}:cancelled` every 1s. If the key fires, call
-         `conn.cancel(session_id, message_id)` to interrupt the turn.
-      7. `await conn.prompt(...)` (sends the user message, streams response).
-      8. After prompt returns, cancel the watchdog, then persist the
-         accumulated assistant text to chat_completion_messages so the
-         next page reload sees the full turn.
-      9. Close the connection cleanly.
-
-    The first invocation may be slower than steady-state (~300ms subprocess
-    spawn). LLM round-trip dominates at 8-60s, so the subprocess cost is
-    in the noise.
-
-    SAFETY: this function is only invoked when MUNDI_USE_HERMES=1. Rollback
-    is "flip to 0 + restart app" — the existing chat loop takes over
-    immediately. No data or schema changes.
-
-    NOT YET ROUTED to users in prod even when the wiring lands — needs
-    MUNDI_USE_HERMES_PARTNERS allowlist (still TODO).
+    We import the plugin's context module via the
+    `hermes_plugins.ingabe_sage.context` path that Hermes's plugin loader
+    establishes in sys.modules — that's the SAME module object the plugin
+    handlers read from, so the ContextVar is shared.
     """
-    import asyncio
-    import os
-    import uuid
-
-    bridge_host = os.environ.get("HERMES_ACP_BRIDGE_HOST", "hermes-acp-bridge")
-    bridge_port = int(os.environ.get("HERMES_ACP_BRIDGE_PORT", "9999"))
-
-    logger.info(
-        "Sage→Hermes turn: map=%s user=%s conv=%s bridge=%s:%d",
-        map_id, user_id, conversation.id, bridge_host, bridge_port,
+    _ensure_plugins_loaded()
+    from hermes_plugins.ingabe_sage.context import (
+        IngabeContext, set_ingabe_context,
     )
-
-    # Lazy imports — keep top-level src.services.* import lightweight
-    # for environments without acp installed (CI without Hermes deps).
-    try:
-        import acp
-    except ImportError as e:
-        raise RuntimeError(
-            "MUNDI_USE_HERMES=1 but agent-client-protocol is not installed. "
-            "Either set the flag back to 0 or rebuild the image with main's "
-            "requirements.txt."
-        ) from e
-
-    from src.routes.websocket import kue_stream_token, kue_notify_error
-    from src.services.hermes_acp_client import build_ingabe_acp_client
-
-    # ── 1. Open TCP connection to the bridge ─────────────────────────────
-    try:
-        reader, writer = await asyncio.open_connection(bridge_host, bridge_port)
-    except OSError as e:
-        await kue_notify_error(
-            conversation.id,
-            f"Hermes gateway unreachable ({bridge_host}:{bridge_port}). "
-            f"Sage is temporarily unavailable on this profile. Operator: "
-            f"check `docker ps | grep hermes-acp-bridge` on the host."
-        )
-        raise RuntimeError(f"ACP bridge connection failed: {e}") from e
-
-    client = build_ingabe_acp_client(
-        stream_token=kue_stream_token,
-        notify_error=kue_notify_error,
-        conversation_id=conversation.id,
-    )
-
-    # acp.connect_to_agent(client, input_stream, output_stream) where:
-    #   - input_stream is the stream we WRITE TO the agent  → StreamWriter
-    #   - output_stream is the stream we READ FROM the agent → StreamReader
-    # Verified against acp v0.10.0 ClientSideConnection.__init__ which
-    # asserts isinstance(input_stream, StreamWriter) AND
-    # isinstance(output_stream, StreamReader). Previous code had these
-    # reversed (`acp.connect_to_agent(client, reader, writer)`) and crashed
-    # immediately with `TypeError: ClientSideConnection requires asyncio
-    # StreamWriter/StreamReader` on every MUNDI_USE_HERMES=1 invocation.
-    conn = acp.connect_to_agent(client, writer, reader)
-
-    cancel_watchdog: asyncio.Task | None = None
-    message_id = str(uuid.uuid4())
-
-    try:
-        # ── 2. Protocol handshake ────────────────────────────────────────
-        # The SDK methods take direct kwargs, NOT Request objects (verified
-        # against acp v0.10.0 via inspect.signature on 2026-05-15 — the
-        # *Request types exist but are JSON wire models, not call args).
-        from acp.schema import ClientCapabilities, FileSystemCapabilities
-        await conn.initialize(
-            protocol_version=acp.PROTOCOL_VERSION,
-            client_capabilities=ClientCapabilities(
-                fs=FileSystemCapabilities(
-                    readTextFile=False,
-                    writeTextFile=False,
-                ),
-                terminal=False,
-            ),
-        )
-
-        # ── 3. Resume or create session ──────────────────────────────────
-        session_id = await _resume_or_create_session(conn, acp, conversation.id)
-
-        # ── 4. Extract the user message ──────────────────────────────────
-        # Only need the latest user message — Hermes has the rest of the
-        # conversation history server-side (resumed in step 3).
-        last_user_msg = await _extract_last_user_message(conversation, request, session)
-        if not last_user_msg:
-            logger.warning("No user message to send to Hermes for conv=%s", conversation.id)
-            return
-
-        # ── 5. Spawn cancellation watchdog ───────────────────────────────
-        cancel_watchdog = asyncio.create_task(
-            _cancel_watchdog(conn, session_id, message_id, map_id, conversation.id)
-        )
-
-        # ── 6. Send the prompt, stream response back via client ──────────
-        await conn.prompt(
-            prompt=[acp.text_block(last_user_msg)],
-            session_id=session_id,
-            message_id=message_id,
-        )
-        # `prompt` returns once the agent's turn is complete. Streaming
-        # chunks reached the user along the way via the client's
-        # session_update() callback, and were accumulated in
-        # `client.accumulated_text`.
-
-        # ── 7. Persist the assistant response ────────────────────────────
-        # Wrap in its own try/except: the streamed response already
-        # reached the user via WebSocket, so a persistence failure
-        # shouldn't trigger the "Sage is having trouble" notification.
-        # Worst case here: next page reload doesn't show this turn
-        # (we'd see a gap in chat_completion_messages, surfaced in logs).
-        assistant_text = "".join(client.accumulated_text)
-        if assistant_text.strip():
-            try:
-                await _persist_assistant_message(
-                    map_id, user_id, conversation.id, assistant_text,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist Hermes response for conv=%s "
-                    "(user saw streamed response, but it'll be missing on reload)",
-                    conversation.id,
-                )
-        else:
-            logger.warning(
-                "Hermes returned empty response for conv=%s — nothing to persist",
-                conversation.id,
-            )
-
-    except Exception:
-        logger.exception("Hermes ACP turn failed for conv=%s", conversation.id)
-        await kue_notify_error(
-            conversation.id,
-            "Sage is having trouble responding right now. Please retry. "
-            "If this persists, contact your operator."
-        )
-        raise
-    finally:
-        # ── 8. Cancel watchdog + close connection ────────────────────────
-        if cancel_watchdog is not None and not cancel_watchdog.done():
-            cancel_watchdog.cancel()
-            try:
-                await cancel_watchdog
-            except (asyncio.CancelledError, Exception):
-                pass  # watchdog cleanup errors don't affect the turn
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-    # TODO (still deferred):
-    #   - Per-partner profile selection: pass `profile_id=partner_id` so
-    #     the gateway routes through the right hermes profile (model, tools).
-    #   - /internal/tool-call reverse callback for Sage tools that live in
-    #     mundi-app (Phase 1 raster, Phase 2 similarity, insurance engine).
-    #   - MUNDI_USE_HERMES_PARTNERS allowlist gate.
+    set_ingabe_context(IngabeContext(
+        user_uuid=user_uuid,
+        partner_id=partner_id,
+        conversation_id=conversation_id if isinstance(conversation_id, int)
+                          else int(conversation_id),
+        map_id=map_id,
+        project_id=project_id,
+    ))
 
 
-async def _resume_or_create_session(conn, acp, conversation_id: str) -> str:
-    """Resume the Hermes session for this conversation, else create one.
+# ---------------------------------------------------------------------------
+# Conversation history → AIAgent format
+# ---------------------------------------------------------------------------
 
-    Returns the session_id to use for `prompt(...)`. Session lifecycle:
-    - First turn: `new_session` → cache id in Redis with 24h TTL
-    - Subsequent turn: read cached id → `load_session` → bump TTL
-    - If `load_session` fails (Hermes restarted, id expired): fall back
-      to `new_session` so the user still gets a response (loses context,
-      acceptable trade-off — better than 500).
+async def _build_conversation_history(conversation, request, session) -> list[dict]:
+    """Convert chat_completion_messages rows into OpenAI chat format.
 
-    Per agent capabilities verified on prod 2026-05-15:
-      agentCapabilities.loadSession = true
-      agentCapabilities.sessionCapabilities = {fork, list, resume}
+    Returns a list of `{"role": ..., "content": ...}` dicts in send order.
+    AIAgent.run_conversation accepts this directly as `conversation_history`.
+
+    Excludes the most recent user message (caller passes that as
+    `user_message=`).
     """
-    from src.dependencies.redis_client import get_redis_client
-
-    redis_key = SESSION_REDIS_KEY.format(conversation_id=conversation_id)
-
     try:
-        redis = get_redis_client()
-        cached_id = redis.get(redis_key)
+        from src.routes.message_routes import get_all_conversation_messages
+        rows = await get_all_conversation_messages(conversation.id, session)
     except Exception:
-        logger.exception("Redis read failed for %s; falling back to new_session", redis_key)
-        cached_id = None
+        logger.exception("Failed to load conversation history for conv=%s", conversation.id)
+        return []
 
-    if cached_id:
-        try:
-            # SDK takes direct kwargs (cwd, session_id), not a Request object
-            await conn.load_session(
-                cwd="/tmp",
-                session_id=cached_id,
-                mcp_servers=[],
-            )
-            logger.info("Hermes session resumed: conv=%s session=%s", conversation_id, cached_id)
-            # Refresh TTL — active conversations stay loaded
-            try:
-                redis.expire(redis_key, SESSION_TTL_SECONDS)
-            except Exception:
-                pass
-            return cached_id
-        except Exception:
-            logger.warning(
-                "load_session failed for cached id=%s (Hermes restart? expiry?); "
-                "creating fresh session for conv=%s",
-                cached_id, conversation_id,
-            )
-            # Fall through to new_session
-
-    # First turn (or recovery from failed resume)
-    session_resp = await conn.new_session(
-        cwd="/tmp",
-        mcp_servers=[],
-    )
-    new_id = session_resp.session_id
-    logger.info("Hermes session created: conv=%s session=%s", conversation_id, new_id)
-
-    try:
-        redis = get_redis_client()
-        redis.set(redis_key, new_id, ex=SESSION_TTL_SECONDS)
-    except Exception:
-        logger.exception("Redis write failed for %s; session not cached", redis_key)
-
-    return new_id
+    out: list[dict] = []
+    for row in rows:
+        m = row.message_json if hasattr(row, "message_json") else row
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        if role not in ("user", "assistant", "tool", "system"):
+            continue
+        out.append(m)
+    return out
 
 
-async def _cancel_watchdog(
-    conn, session_id: str, message_id: str, map_id: str, conversation_id: str,
-) -> None:
-    """Poll Redis cancellation key; call conn.cancel(...) if set.
+def _extract_last_user_text(history: list[dict]) -> str | None:
+    """Walk history backwards and return the most recent user-text message."""
+    for m in reversed(history):
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    t = part.get("text")
+                    if isinstance(t, str) and t.strip():
+                        return t
+    return None
 
-    Mirrors the hand-rolled chat loop's cancellation pattern
-    (`if redis.get(f"messages:{map_id}:cancelled"): break`) but for
-    Hermes's session/message_id model. Cancelled key consumed on detect
-    so the next turn doesn't see stale state.
-    """
-    import asyncio
-    from src.dependencies.redis_client import get_redis_client
 
-    cancel_key = f"messages:{map_id}:cancelled"
-    try:
-        while True:
-            await asyncio.sleep(CANCEL_POLL_INTERVAL_SECONDS)
-            try:
-                redis = get_redis_client()
-                if redis.get(cancel_key):
-                    redis.delete(cancel_key)
-                    logger.info(
-                        "Cancellation triggered for conv=%s session=%s msg=%s",
-                        conversation_id, session_id, message_id,
-                    )
-                    try:
-                        # conn.cancel sends CancelNotification(session_id=...)
-                        # which the agent maps to its currently-running prompt.
-                        # message_id isn't part of the wire payload (verified
-                        # against acp v0.10.0 source), but we log it for trace.
-                        await conn.cancel(session_id=session_id)
-                    except Exception:
-                        logger.exception("conn.cancel failed")
-                    return
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug("Redis cancellation poll failed", exc_info=True)
-    except asyncio.CancelledError:
-        return
-
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
 
 async def _persist_assistant_message(
     map_id: str, user_id: str, conversation_id: str, text: str,
 ) -> None:
-    """Insert the accumulated Hermes response into chat_completion_messages.
+    """Insert the accumulated assistant response into chat_completion_messages.
 
     Without this, Hermes-served turns vanish from the UI on page reload
-    because the frontend reconstructs history from this table. Schema
-    matches the hand-rolled loop's `add_chat_completion_message` closure
-    in `process_chat_interaction_task` — same columns, same JSON shape.
+    because the frontend reconstructs history from this table.
     """
-    import json
     from src.structures import async_conn
 
     message_dict = {"role": "assistant", "content": text}
@@ -548,36 +237,443 @@ async def _persist_assistant_message(
         )
 
 
-async def _extract_last_user_message(conversation, request, session) -> str | None:
-    """Pull the most recent user message out of the conversation.
+# ---------------------------------------------------------------------------
+# The turn
+# ---------------------------------------------------------------------------
 
-    The hand-rolled chat loop reconstructs history via
-    `get_all_conversation_messages(conversation.id, session)`. We reuse
-    that same query to find the last user-role message and forward it
-    to Hermes. Full-history support is the follow-up.
+async def run_sage_turn_via_hermes(
+    request,  # FastAPI Request — only needed to satisfy the seam signature
+    map_id: str,
+    session,
+    user_id: str,
+    chat_args,
+    map_state,
+    conversation,
+    system_prompt_provider,
+    connection_manager,
+    pydantic_tool_calls,
+) -> None:
+    """Run one Sage turn through an in-process Hermes AIAgent.
+
+    Flow:
+      1. Lazy-load Hermes plugins (once per process).
+      2. Set IngabeContext ContextVar for this request.
+      3. Pull conversation history from DB; extract the last user message.
+      4. Construct AIAgent(platform="api_server", ...) with our plugin
+         toolsets activated (`ingabe-sage`, `ingabe-sage-proxied`).
+      5. Stream tokens out via stream_delta_callback → kue_stream_token.
+      6. Run agent.run_conversation in an executor (it's sync).
+      7. Persist the final assistant text. Emit WS done=True.
+
+    Cancellation: a watchdog coroutine polls the Redis cancel key every
+    second. On cancel it calls `agent.interrupt(...)`, which the api_server
+    pattern uses to stop in-flight LLM calls cleanly.
     """
+    from src.routes.websocket import kue_stream_token, kue_notify_error, kue_ephemeral_action
+
+    _ensure_plugins_loaded()
+
+    # --- 1. Build IngabeContext from the request ---------------------------
+    partner_id = session.get_org_id() if hasattr(session, "get_org_id") else None
+
+    # Dev-mode fallback: LegacyUserContext (Clerk off / MUNDI_AUTH_MODE=edit)
+    # has no org and returns partner_id=None. The hand-rolled path tolerates
+    # this because its tool handlers don't actually read app.partner_id; our
+    # HMAC proxy + receiver both require a non-None partner_id by design.
+    # Synthesize the same dev UUID LegacyUserContext uses for user_id so the
+    # local dev experience matches the hand-rolled path. In prod with Clerk,
+    # session.get_org_id() returns a real org UUID and this branch never fires.
+    if partner_id is None:
+        from src.dependencies.session import LegacyUserContext
+        if isinstance(session, LegacyUserContext):
+            # Prod safety: refuse to synthesize the dev partner_id when
+            # Clerk is the authoritative session source. If LegacyUserContext
+            # ever leaks into a prod request (middleware bug, accidental
+            # CLERK_ALLOW_LEGACY_FALLBACK=true), every legacy turn would
+            # collapse onto the same synthetic partner UUID, breaking
+            # partner isolation. Fail closed instead — the upstream
+            # caller will surface the error to the user.
+            _clerk_on = bool(os.environ.get("CLERK_SECRET_KEY", "").strip())
+            _legacy_allowed = os.environ.get(
+                "CLERK_ALLOW_LEGACY_FALLBACK", ""
+            ).strip().lower() in {"1", "true", "yes"}
+            if _clerk_on and not _legacy_allowed:
+                raise RuntimeError(
+                    "Hermes runtime refused to synthesize dev partner_id: "
+                    "Clerk is configured (CLERK_SECRET_KEY set) but the "
+                    "request arrived with a LegacyUserContext. This indicates "
+                    "a session-middleware misconfiguration. Set "
+                    "CLERK_ALLOW_LEGACY_FALLBACK=true to permit dev-mode "
+                    "fallback in mixed-auth deployments."
+                )
+            # Dev mode (Clerk off): reuse the same UUID LegacyUserContext
+            # gives back for user_id — single source of truth, both sides
+            # stay in lockstep if the dev UUID is ever rotated.
+            partner_id = LegacyUserContext._LEGACY_UUID
+            logger.info(
+                "Dev-mode LegacyUserContext detected; using dev partner_id "
+                "for IngabeContext (conv=%s)", conversation.id,
+            )
+
+    project_id = getattr(conversation, "project_id", None) or getattr(map_state, "project_id", None)
+
+    _set_ingabe_context(
+        user_uuid=str(user_id),
+        partner_id=partner_id,
+        conversation_id=conversation.id,
+        map_id=map_id,
+        project_id=project_id,
+    )
+
+    # --- 2. Pull history + last user message -------------------------------
+    history = await _build_conversation_history(conversation, request, session)
+    last_user_text = _extract_last_user_text(history)
+    if not last_user_text:
+        logger.warning("No user message to send to Hermes (conv=%s)", conversation.id)
+        return
+
+    # AIAgent expects the latest user message via `user_message=`; pass the
+    # rest as `conversation_history` (excluding the trailing user turn).
+    prior_history: list[dict] = []
+    saw_target = False
+    for m in reversed(history):
+        if not saw_target and m.get("role") == "user" and m.get("content") == last_user_text:
+            saw_target = True
+            continue
+        if saw_target:
+            prior_history.append(m)
+    prior_history.reverse()
+
+    # --- 3. System prompt --------------------------------------------------
     try:
-        # `get_all_conversation_messages` lives in src.routes.message_routes,
-        # NOT postgres_routes — the import path used to be wrong, the bare
-        # except below swallowed the ImportError, and every Hermes turn
-        # returned None here, early-returning before `conn.prompt(...)`
-        # could fire. Caught 2026-05-15 from the bridge log signature
-        # (init OK + session/new OK + peer-closed by mundi-app before prompt).
-        from src.routes.message_routes import get_all_conversation_messages
-        messages = await get_all_conversation_messages(conversation.id, session)
-        for msg in reversed(messages):
-            m = msg.message_json if hasattr(msg, "message_json") else {}
-            if isinstance(m, dict) and m.get("role") == "user":
-                content = m.get("content")
-                if isinstance(content, str) and content.strip():
-                    return content
-                if isinstance(content, list):
-                    # OpenAI content blocks: pick the first text part
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            t = part.get("text")
-                            if t:
-                                return t
+        system_message = system_prompt_provider.get_system_prompt()
     except Exception:
-        logger.exception("Failed to extract last user message")
-    return None
+        logger.exception("system_prompt_provider failed; falling back to None")
+        system_message = None
+
+    # --- 4. Resolve Hermes runtime + toolsets -----------------------------
+    try:
+        from run_agent import AIAgent
+        from gateway.run import (
+            _resolve_runtime_agent_kwargs,
+            _resolve_gateway_model,
+            _load_gateway_config,
+            GatewayRunner,
+        )
+        from hermes_cli.tools_config import _get_platform_tools
+    except ImportError as e:
+        await kue_notify_error(
+            conversation.id,
+            "Hermes runtime is not installed. Set MUNDI_USE_HERMES=0 and restart, "
+            "or rebuild the image with hermes-agent in requirements.txt.",
+        )
+        raise RuntimeError(f"Hermes import failed: {e}") from e
+
+    runtime_kwargs = _resolve_runtime_agent_kwargs()
+    model = _resolve_gateway_model()
+    cfg = _load_gateway_config()
+    enabled_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
+    try:
+        fallback_model = GatewayRunner._load_fallback_model()
+    except Exception:
+        fallback_model = None
+
+    logger.info(
+        "Sage→Hermes in-process turn: conv=%s map=%s user=%s partner=%s "
+        "model=%s toolsets=%d",
+        conversation.id, map_id, user_id, partner_id, model, len(enabled_toolsets),
+    )
+
+    # --- 5. Streaming bridge: sync delta cb → asyncio queue → kue WS ------
+    turn_id = f"hermes-{conversation.id}-{int(time.time() * 1000)}"
+    delta_queue: _q.Queue = _q.Queue()
+    persist_queue: _q.Queue = _q.Queue()  # per-tool {assistant+tool} message pairs
+    accumulated: list[str] = []
+
+    def _on_delta(delta):
+        # AIAgent fires `stream_delta_callback(None)` as a CLI-display
+        # sentinel before tool execution — drop it (matches api_server
+        # behavior at line 1080).
+        if delta is None or not isinstance(delta, str):
+            return
+        if not delta:
+            return
+        delta_queue.put(delta)
+
+    def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+        """Capture a completed tool round for DB persistence.
+
+        Hand-rolled `process_chat_interaction_task` persists every tool round
+        as two rows in chat_completion_messages: (a) an assistant message
+        carrying the tool_calls array, (b) a tool message carrying the
+        result string keyed by tool_call_id. Without this, the in-process
+        Hermes path only persists the final assistant text and history is
+        lost across reloads. We mirror the hand-rolled shape one tool at a
+        time (OpenAI's chat format permits an assistant message with a
+        single tool_call).
+
+        Fires from the AIAgent executor thread — defer the DB write to the
+        main loop via persist_queue.
+        """
+        try:
+            args_str = (
+                json.dumps(function_args) if not isinstance(function_args, str)
+                else function_args
+            )
+            result_str = (
+                function_result if isinstance(function_result, str)
+                else json.dumps(function_result)
+            )
+        except Exception:
+            return  # never raise back into the agent loop
+        persist_queue.put({
+            "tool_call_id": tool_call_id,
+            "function_name": function_name,
+            "args_str": args_str,
+            "result_str": result_str,
+        })
+
+    async def _drain_to_websocket():
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                delta = await loop.run_in_executor(None, delta_queue.get)
+            except asyncio.CancelledError:
+                return
+            if delta is _SENTINEL_DONE:
+                return
+            accumulated.append(delta)
+            try:
+                await kue_stream_token(conversation.id, delta, turn_id=turn_id)
+            except Exception:
+                logger.debug("kue_stream_token push failed", exc_info=True)
+
+    async def _drain_to_db():
+        """Persist tool rounds queued by _on_tool_complete to chat_completion_messages."""
+        from src.structures import async_conn
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                item = await loop.run_in_executor(None, persist_queue.get)
+            except asyncio.CancelledError:
+                return
+            if item is _SENTINEL_DONE:
+                return
+            try:
+                assistant_msg = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": item["tool_call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": item["function_name"],
+                            "arguments": item["args_str"],
+                        },
+                    }],
+                }
+                tool_msg = {
+                    "role": "tool",
+                    "tool_call_id": item["tool_call_id"],
+                    "content": item["result_str"],
+                }
+                async with async_conn("hermes_persist_tool_round") as c:
+                    for m in (assistant_msg, tool_msg):
+                        await c.execute(
+                            """
+                            INSERT INTO chat_completion_messages
+                            (map_id, sender_id, message_json, conversation_id)
+                            VALUES ($1, $2, $3, $4)
+                            """,
+                            map_id, user_id, json.dumps(m), conversation.id,
+                        )
+            except Exception:
+                logger.exception(
+                    "Failed to persist tool round (conv=%s tool=%s)",
+                    conversation.id, item.get("function_name"),
+                )
+
+    # --- 6. Build the AIAgent ---------------------------------------------
+    agent_ref: list[Any] = [None]
+
+    # Cap max_tokens to keep OpenRouter credit reservation manageable.
+    # Without this, the SDK requests 16384 tokens upfront; OpenRouter
+    # reserves that against your balance and returns HTTP 402 if you
+    # can't cover it ("requires more credits, or fewer max_tokens").
+    # 4096 is plenty for tool-calling agents — actual outputs are
+    # typically 100-500 tokens for tool args + 200-800 for final text.
+    _max_tokens = int(os.environ.get("HERMES_MAX_TOKENS", "4096"))
+
+    def _build_agent():
+        return AIAgent(
+            model=model,
+            **runtime_kwargs,
+            max_iterations=int(os.environ.get("HERMES_MAX_ITERATIONS", "30")),
+            max_tokens=_max_tokens,
+            quiet_mode=True,
+            verbose_logging=False,
+            enabled_toolsets=enabled_toolsets,
+            session_id=f"conv-{conversation.id}",
+            platform="api_server",
+            stream_delta_callback=_on_delta,
+            tool_complete_callback=_on_tool_complete,
+            fallback_model=fallback_model,
+            ephemeral_system_prompt=system_message,
+        )
+
+    # --- 7. Cancellation watchdog -----------------------------------------
+    async def _cancel_watchdog():
+        from src.dependencies.redis_client import get_redis_client
+        cancel_key = f"messages:{map_id}:cancelled"
+        while True:
+            await asyncio.sleep(CANCEL_POLL_INTERVAL_SECONDS)
+            try:
+                redis = get_redis_client()
+                if redis.get(cancel_key):
+                    redis.delete(cancel_key)
+                    agent = agent_ref[0]
+                    if agent is not None:
+                        try:
+                            agent.interrupt("user cancellation")
+                            logger.info("Hermes turn interrupted by user (conv=%s)", conversation.id)
+                        except Exception:
+                            logger.exception("agent.interrupt failed")
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("cancel watchdog poll failed", exc_info=True)
+
+    # --- 8. Run --------------------------------------------------------
+    drainer_task: asyncio.Task | None = None
+    persist_task: asyncio.Task | None = None
+    cancel_task: asyncio.Task | None = None
+    try:
+        loop = asyncio.get_running_loop()
+        drainer_task = asyncio.create_task(_drain_to_websocket())
+        persist_task = asyncio.create_task(_drain_to_db())
+        cancel_task = asyncio.create_task(_cancel_watchdog())
+
+        def _run_sync() -> dict:
+            agent = _build_agent()
+            agent_ref[0] = agent
+            return agent.run_conversation(
+                user_message=last_user_text,
+                conversation_history=prior_history or None,
+                task_id=str(conversation.id),
+            )
+
+        # Critical: ContextVars (including IngabeContext) do NOT propagate
+        # into executor threads by default. Snapshot the current context and
+        # have the executor run inside it, so the plugin's proxy_tool_call
+        # sees the (partner_id, user_uuid, conversation_id) we just set.
+        ctx_snapshot = contextvars.copy_context()
+
+        # "Sage is thinking..." chip while the LLM is reasoning. The
+        # hand-rolled path wraps each LLM call in this ephemeral action
+        # (message_routes.py:1661); without it, the user has no feedback
+        # that Sage is working between tool chips. The legacy tool handlers
+        # set their own more-specific chips ("Adding layer from PostGIS...",
+        # "Zooming to bounds...") which override this one during tool
+        # execution, so the UX alternates correctly: thinking → tool work →
+        # thinking → final text.
+        async with kue_ephemeral_action(conversation.id, "Sage is thinking..."):
+            result = await loop.run_in_executor(None, ctx_snapshot.run, _run_sync)
+        # Final flush: signal the drainers to stop after pulling any
+        # remaining deltas / tool rounds. We can't push None directly because
+        # it's also the sentinel _on_delta drops; use a private object.
+        delta_queue.put(_SENTINEL_DONE)
+        persist_queue.put(_SENTINEL_DONE)
+        await asyncio.wait_for(drainer_task, timeout=2.0)
+        await asyncio.wait_for(persist_task, timeout=5.0)  # DB writes are slower
+
+        # Persist the assistant text + WS done signal
+        assistant_text = "".join(accumulated).strip()
+        if not assistant_text:
+            # Some result shapes carry the final text in result["content"]
+            # or result["message"]; try to recover.
+            #
+            # `final_response` is the field Hermes uses for API-level failures
+            # ("API call failed after 3 retries: HTTP 402..."). Before adding it
+            # to this list, those errors got silently swallowed: indicator chip
+            # disappeared, no chat bubble, no toast, no signal to the user that
+            # the request failed. (2026-05-18 — surfaced by an OpenRouter 402.)
+            if isinstance(result, dict):
+                for key in ("content", "message", "text", "output", "final_response"):
+                    val = result.get(key)
+                    if isinstance(val, str) and val.strip():
+                        assistant_text = val.strip()
+                        break
+
+        if assistant_text:
+            # Heuristic: if the text looks like a Hermes-side API error, push
+            # it to the error toast channel (red bar) so the user can react —
+            # don't pretend it's a normal assistant reply. Persist it as an
+            # assistant message anyway so the chat reload still shows the trail.
+            # Marker list lives at module top (_HERMES_ERROR_MARKERS) — change
+            # it there to avoid drift. 5xx uses a regex so "HTTP 5ms" or
+            # "HTTP 5xx series" in a normal reply doesn't false-positive.
+            _looks_like_error = (
+                any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
+                or bool(_HERMES_5XX_RE.search(assistant_text))
+            )
+            if _looks_like_error:
+                try:
+                    await kue_notify_error(
+                        conversation.id,
+                        # First line — keep it short; the toast UI truncates.
+                        assistant_text.split("\n", 1)[0][:240],
+                    )
+                except Exception:
+                    logger.debug("kue_notify_error push failed", exc_info=True)
+            try:
+                await _persist_assistant_message(
+                    map_id, user_id, conversation.id, assistant_text,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist Hermes response (conv=%s, user got streamed text)",
+                    conversation.id,
+                )
+        else:
+            logger.warning(
+                "Hermes returned empty response for conv=%s — nothing to persist; result=%r",
+                conversation.id, (str(result)[:200] if result else None),
+            )
+            # Even with no recoverable text, give the user *some* signal so
+            # the disappearing-chip-with-no-response UX never happens again.
+            try:
+                await kue_notify_error(
+                    conversation.id,
+                    "Sage finished with no response. Check server logs or retry the request.",
+                )
+            except Exception:
+                logger.debug("kue_notify_error fallback push failed", exc_info=True)
+
+        try:
+            await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+        except Exception:
+            logger.debug("kue_stream_token done=True failed", exc_info=True)
+
+    except Exception:
+        logger.exception("Hermes in-process turn failed for conv=%s", conversation.id)
+        try:
+            await kue_notify_error(
+                conversation.id,
+                "Sage is having trouble responding right now. Please retry."
+            )
+        except Exception:
+            pass
+        try:
+            await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+        except Exception:
+            pass
+        raise
+    finally:
+        for t in (drainer_task, persist_task, cancel_task):
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass

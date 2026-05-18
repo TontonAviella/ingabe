@@ -270,6 +270,29 @@ async def _handle_new_layer_from_postgis(
                 )
                 feature_count = int(count_result) if count_result is not None else None
 
+                # Refuse to create an empty layer. Without this guard the
+                # handler builds a status=success row in map_layers with 0
+                # features and no bounds — junk that pollutes the layer
+                # panel and triggers a "Layer bounds not available for zoom"
+                # toast. The LLM also reads status=success and only
+                # belatedly notices feature_count=0, costing a second tool
+                # round. Return a clear error so the LLM corrects on the
+                # FIRST attempt without leaving an orphan layer behind.
+                if feature_count is not None and feature_count == 0:
+                    return {
+                        "status": "error",
+                        "error": (
+                            "Query returned 0 features — no rows matched "
+                            "the filter. Check the entity name (typos, "
+                            "wrong admin level) and the column name "
+                            "(districts table uses `district`; sectors/"
+                            "cells/villages use `district_name`). No "
+                            "layer was created."
+                        ),
+                        "feature_count": 0,
+                        "query": query,
+                    }
+
                 geom_row = await pg.fetchrow(
                     f"""
                     SELECT ST_GeometryType(geom) as geom_type, COUNT(*) as count

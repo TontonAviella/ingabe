@@ -170,15 +170,49 @@ SchemaSummary with markdown links, formatted as `/postgis/{connection_id}/#{slug
 
 <RwandaAdminBoundaries>
 Every project has access to Rwanda administrative boundary tables through the "Rwanda Agriculture (internal)"
-PostGIS connection. When the user asks to show districts, sectors, cells, or villages on the map, use `new_layer_from_postgis`
-with this connection to create polygon layers.
+PostGIS connection. When the user asks to show districts, sectors, cells, villages, or PROVINCES on the map,
+use `new_layer_from_postgis` with this connection to create polygon layers.
 
-Key tables: rwanda_district_boundaries, rwanda_sector_boundaries, rwanda_cell_boundaries, rwanda_village_boundaries.
-Refer to the <SchemaSummary> in the PostGIS connection for column names and example queries.
+"Show me <admin entity>" means BOTH: (1) create a boundary layer via `new_layer_from_postgis` so the polygon is
+actually painted on the map, AND (2) the layer's auto-zoom step navigates the camera to it. Never satisfy
+"show me X" with `zoom_to_bounds` alone — that leaves the map with no visible boundary overlay, only the
+satellite imagery underneath, and tells the user the entity is "displayed" when nothing was actually drawn.
+This applies whether the entity is a single district ("show me Nyamagabe"), a province
+("show me Kigali" / "show me Southern Province"), or a sector / cell / village.
+
+The 4 tables (ADM2 → ADM5):
+- rwanda_district_boundaries (30 rows, ADM2)
+- rwanda_sector_boundaries (416 rows, ADM3)
+- rwanda_cell_boundaries (2,148 rows, ADM4)
+- rwanda_village_boundaries (14,815 rows, ADM5)
+
+CRITICAL — the column name for "district" is INCONSISTENT across these tables:
+- rwanda_district_boundaries uses the column `district` (no _name suffix)
+- rwanda_sector_boundaries, rwanda_cell_boundaries, rwanda_village_boundaries all use `district_name`
+Using the wrong name will return "column does not exist" — always match the table you are querying.
+
+Provinces are NOT stored as rows. The boundary tables stop at district level. The 5 provinces and
+their constituent districts are listed below with EXACT COUNTS — when you build a WHERE district IN (...)
+clause for a province, you MUST include all districts listed. Dropping even one creates a visible hole
+in the resulting polygon (e.g. dropping Kayonza from Eastern Province leaves a gap in the middle of the
+shape that the user will see and complain about).
+
+- City of Kigali (3 districts): Gasabo, Kicukiro, Nyarugenge
+- Northern Province (5 districts): Burera, Gakenke, Gicumbi, Musanze, Rulindo
+- Southern Province (8 districts): Gisagara, Huye, Kamonyi, Muhanga, Nyamagabe, Nyanza, Nyaruguru, Ruhango
+- Eastern Province (7 districts): Bugesera, Gatsibo, Kayonza, Kirehe, Ngoma, Nyagatare, Rwamagana
+- Western Province (7 districts): Karongi, Ngororero, Nyabihu, Nyamasheke, Rubavu, Rusizi, Rutsiro
+
+Before emitting a province-level query: count the districts in your IN clause and verify it matches the
+parenthesized count above. 7 means 7, not 6.
+When the user asks for a province (e.g. "show me Kigali"), filter on the constituent districts:
+`SELECT 1 AS id, ST_Union(geom) AS geom FROM rwanda_district_boundaries WHERE district IN ('Gasabo','Kicukiro','Nyarugenge')`
+or, if the user wants each district visible separately:
+`SELECT ROW_NUMBER() OVER () AS id, district, geom FROM rwanda_district_boundaries WHERE district IN ('Gasabo','Kicukiro','Nyarugenge')`
 
 IMPORTANT:
 - The query MUST return columns named `id` and `geom`.
-- Filter by district_name, sector_name, etc. to show only the requested area.
+- Filter by `district` for the districts table, `district_name`/`sector_name`/etc. for everything else.
 - After creating the layer, call `set_layer_style` to style it (e.g. outline-only for boundaries).
 - Do NOT create a point layer when the user asks for boundaries — use the actual polygon geometries.
 </RwandaAdminBoundaries>
