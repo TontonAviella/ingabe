@@ -31,9 +31,12 @@ services:
   # --- App: production overrides ---
   app:
     restart: unless-stopped
-    # 8 vCPU → 6 workers (leave headroom for GDAL subprocesses + PostGIS)
+    # 8 vCPU → 6 workers (leave headroom for GDAL subprocesses + PostGIS).
+    # install-hermes-plugin.sh wires ~/.hermes/plugins/ingabe-sage + seeds
+    # config.yaml. Idempotent on every boot; no-op when MUNDI_USE_HERMES=0.
     command: >
-      bash -c "alembic upgrade head &&
+      bash -c "([ -f /app/scripts/install-hermes-plugin.sh ] && bash /app/scripts/install-hermes-plugin.sh || echo '[boot] install-hermes-plugin.sh missing, continuing without it') &&
+      alembic upgrade head &&
       uvicorn src.wsgi:app --host 0.0.0.0 --port 8000
       --workers ${WEB_CONCURRENCY:-6} --log-level info
       --proxy-headers --forwarded-allow-ips='*'"
