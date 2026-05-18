@@ -44,10 +44,34 @@ import json
 import logging
 import os
 import queue as _q
+import re
 import threading
 import time
-import uuid
 from typing import Any
+
+# Module-level constants used by run_sage_turn_via_hermes and its
+# inner closures. Defined here so they appear before the function that
+# consumes them (a reader scanning top-to-bottom doesn't need to skip
+# ~600 lines to find the sentinel/interval definitions).
+_SENTINEL_DONE = object()
+CANCEL_POLL_INTERVAL_SECONDS = 1.0
+
+# Hermes upstream emits these substrings inside `result["final_response"]`
+# when an LLM call fails. Used to route the response to kue_notify_error
+# (red toast) instead of the normal chat bubble. Brittle by design —
+# pinned against hermes-agent v2026.5.7 emission strings. If a future
+# Hermes bump changes the wording, this list MUST be updated or errors
+# will silently show as normal Sage replies.
+_HERMES_ERROR_MARKERS = (
+    "API call failed",
+    "HTTP 402",
+    "HTTP 429",
+    "Operation interrupted",
+    "credits, or fewer max_tokens",
+)
+# 5xx range is matched as a regex to avoid false positives like
+# "HTTP 5ms" or "HTTP 5xx series" appearing in a normal Sage reply.
+_HERMES_5XX_RE = re.compile(r"HTTP 5\d\d")
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +220,6 @@ async def _persist_assistant_message(
     Without this, Hermes-served turns vanish from the UI on page reload
     because the frontend reconstructs history from this table.
     """
-    import json
     from src.structures import async_conn
 
     message_dict = {"role": "assistant", "content": text}
@@ -263,7 +286,10 @@ async def run_sage_turn_via_hermes(
     if partner_id is None:
         from src.dependencies.session import LegacyUserContext
         if isinstance(session, LegacyUserContext):
-            partner_id = "00000000-0000-0000-0000-000000000000"
+            # Reuse the same dev UUID LegacyUserContext gives back for
+            # user_id (single source of truth — change it there, both
+            # sides stay in lockstep).
+            partner_id = LegacyUserContext._LEGACY_UUID
             logger.info(
                 "Dev-mode LegacyUserContext detected; using dev partner_id "
                 "for IngabeContext (conv=%s)", conversation.id,
@@ -404,7 +430,6 @@ async def run_sage_turn_via_hermes(
 
     async def _drain_to_db():
         """Persist tool rounds queued by _on_tool_complete to chat_completion_messages."""
-        import json as _json
         from src.structures import async_conn
         loop = asyncio.get_running_loop()
         while True:
@@ -440,7 +465,7 @@ async def run_sage_turn_via_hermes(
                             (map_id, sender_id, message_json, conversation_id)
                             VALUES ($1, $2, $3, $4)
                             """,
-                            map_id, user_id, _json.dumps(m), conversation.id,
+                            map_id, user_id, json.dumps(m), conversation.id,
                         )
             except Exception:
                 logger.exception(
@@ -565,16 +590,12 @@ async def run_sage_turn_via_hermes(
             # it to the error toast channel (red bar) so the user can react —
             # don't pretend it's a normal assistant reply. Persist it as an
             # assistant message anyway so the chat reload still shows the trail.
-            _looks_like_error = any(
-                marker in assistant_text
-                for marker in (
-                    "API call failed",
-                    "HTTP 402",
-                    "HTTP 429",
-                    "HTTP 5",
-                    "Operation interrupted",
-                    "credits, or fewer max_tokens",
-                )
+            # Marker list lives at module top (_HERMES_ERROR_MARKERS) — change
+            # it there to avoid drift. 5xx uses a regex so "HTTP 5ms" or
+            # "HTTP 5xx series" in a normal reply doesn't false-positive.
+            _looks_like_error = (
+                any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
+                or bool(_HERMES_5XX_RE.search(assistant_text))
             )
             if _looks_like_error:
                 try:
@@ -636,9 +657,3 @@ async def run_sage_turn_via_hermes(
                     await t
                 except (asyncio.CancelledError, Exception):
                     pass
-
-
-# Module-private sentinel used to signal the drainer to exit cleanly.
-_SENTINEL_DONE = object()
-
-CANCEL_POLL_INTERVAL_SECONDS = 1.0

@@ -2,7 +2,11 @@
 # Start all mundi.ai services: main app (8000), field monitor (8001), insurance (8002)
 # Main app runs in foreground; satellite APIs run as background processes with auto-restart.
 
-set -e
+# -e exit on error, -o pipefail propagate failures through pipes (so a failure
+# in `cmd | sed` actually fails the script). NOT using -u (unset vars) because
+# the existing entrypoint references several env vars without defaults and
+# adding -u risks breaking boot in unexpected configurations.
+set -eo pipefail
 
 echo "[start-services] Installing dependencies..."
 # Bootstrap pip if missing (common in slim containers)
@@ -40,6 +44,13 @@ if [ -d /app/hermes_integration/plugins/ingabe-sage ]; then
     # `platform_toolsets.api_server: [ingabe-sage, ingabe-sage-proxied]`
     # block here. See memory: project_hermes_tool_surface_trim for the
     # opt-in trim.
+    #
+    # SECURITY: this heredoc uses unquoted EOF so bash expands the two
+    # env vars below. Do NOT add lines referencing secret env vars
+    # (OPENAI_API_KEY, HERMES_GATEWAY_SECRET, CLERK_SECRET_KEY, etc.) —
+    # they would get baked into config.yaml on disk and persist across
+    # restarts. If you need to inject a secret, do it via an env var the
+    # Hermes runtime reads directly, not via this seed file.
     cat > "$HERMES_HOME/config.yaml" <<EOF
 plugins:
   enabled:
@@ -51,7 +62,7 @@ model:
 EOF
     echo "[start-services] Seeded $HERMES_HOME/config.yaml (ingabe-sage enabled, default tool surface kept)"
   fi
-  echo "[start-services] Hermes plugin ingabe-sage wired ($(readlink $HERMES_HOME/plugins/ingabe-sage))"
+  echo "[start-services] Hermes plugin ingabe-sage wired ($(readlink "$HERMES_HOME/plugins/ingabe-sage"))"
 fi
 
 echo "[start-services] Starting field monitor API on :8001..."

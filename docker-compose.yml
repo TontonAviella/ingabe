@@ -56,6 +56,7 @@ services:
       - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
       - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
       - HERMES_ACCEPT_HOOKS=1
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}

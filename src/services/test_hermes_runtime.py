@@ -25,8 +25,6 @@ from src.services.hermes_runtime import (
 # The ACP-specific tests below are marked with pytest.skip; the
 # hermes_is_enabled tests still pass and are kept.
 
-import pytest
-
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 _skip_acp = pytest.mark.skip(
     reason="ACP-bridge runtime replaced by in-process AIAgent path"
