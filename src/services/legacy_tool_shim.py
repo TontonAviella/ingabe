@@ -3603,6 +3603,136 @@ async def _handle_get_emissions_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+async def _handle_brain_graph_query(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Typed-edge graph walk from a brain page slug.
+
+    Wraps BrainService.traverse_graph, the recursive CTE over brain_links
+    that returns the network of related entities up to N hops out. With
+    the typed-edge inference in place (PR #64), every edge has a
+    semantic link_type (field_in_district, claim_under_policy, etc.),
+    so this returns a real relational query — not a slug bag.
+
+    Use when the question is RELATIONAL: "which fields under this
+    policy", "claims in this district last season", "who owns the
+    fields in Huye". For flat keyword/semantic lookup, use search_brain.
+    For temporal trajectory of typed claims on one entity, use
+    brain_trajectory.
+    """
+    args = ctx.arguments
+    try:
+        from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
+
+        _brain_svc = get_brain_service()
+        _slug = args.get("slug", "").strip()
+        if not _slug:
+            return {
+                "status": "error",
+                "error": "slug is required (e.g. 'fields/cyampirita', 'districts/huye')",
+            }
+        _depth = int(args.get("depth", 2))
+        # Clamp depth — 5 hops is enough for any real-world relational
+        # question, and recursive CTEs explode geometrically.
+        if _depth < 1:
+            _depth = 1
+        if _depth > 5:
+            _depth = 5
+
+        async with get_async_db_connection(
+            user_id=ctx.user_id, partner_id=ctx.partner_id
+        ) as conn:
+            _nodes = await _brain_svc.traverse_graph(conn, _slug, depth=_depth)
+
+        if not _nodes:
+            return {
+                "status": "success",
+                "results": [],
+                "count": 0,
+                "note": (
+                    f"No entities found from slug '{_slug}' (depth={_depth}). "
+                    "The page may not exist yet or may have no outbound links. "
+                    "Try search_brain to find the right slug first."
+                ),
+            }
+
+        # Optional edge_type filter — narrow to specific relationships.
+        _edge_filter = args.get("edge_types")
+        if _edge_filter and isinstance(_edge_filter, list):
+            allowed = set(_edge_filter)
+            for n in _nodes:
+                n.links = [link for link in n.links if link.get("link_type") in allowed]
+
+        return {
+            "status": "success",
+            "results": [
+                {
+                    "slug": n.slug,
+                    "title": n.title,
+                    "type": n.type,
+                    "depth": n.depth,
+                    "links": n.links,
+                }
+                for n in _nodes
+            ],
+            "count": len(_nodes),
+            "start_slug": _slug,
+            "depth": _depth,
+        }
+    except Exception as e:
+        logger.exception("brain_graph_query tool failed")
+        return {"status": "error", "error": str(e)}
+
+
+async def _handle_brain_trajectory(ctx: LegacyToolContext) -> Dict[str, Any]:
+    """Temporal trajectory of a typed claim on a single brain entity.
+
+    Reads the brain_facts table (created by the Facts-fence parser) for
+    a given (slug, key) and returns the chronological history with
+    regressions auto-flagged. Regression definition is per-key: NDVI
+    drop > 0.1 in 14 days, soil_moisture drop > 0.05, anomaly_score
+    increase > 1 standard deviation, etc.
+
+    Use this for "how has X changed for entity Y" questions where the
+    key is one of the typed-claim names the brain knows about.
+    """
+    args = ctx.arguments
+    try:
+        from src.dependencies.brain_dep import get_brain_service
+        from src.database.pool import get_async_db_connection
+
+        _slug = args.get("slug", "").strip()
+        _key = args.get("key", "").strip()
+        if not _slug or not _key:
+            return {
+                "status": "error",
+                "error": "slug and key are both required (e.g. slug='fields/cyampirita', key='ndvi')",
+            }
+        _limit = int(args.get("limit", 50))
+        if _limit < 1:
+            _limit = 1
+        if _limit > 500:
+            _limit = 500
+
+        _brain_svc = get_brain_service()
+        async with get_async_db_connection(
+            user_id=ctx.user_id, partner_id=ctx.partner_id
+        ) as conn:
+            _facts = await _brain_svc.get_facts_trajectory(
+                conn, slug=_slug, key=_key, limit=_limit
+            )
+
+        return {
+            "status": "success",
+            "slug": _slug,
+            "key": _key,
+            "count": len(_facts),
+            "trajectory": _facts,
+        }
+    except Exception as e:
+        logger.exception("brain_trajectory tool failed")
+        return {"status": "error", "error": str(e)}
+
+
 async def _handle_search_brain(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Hybrid (BM25 + embedding) search over Brain pages, with query expansion.
 
@@ -4661,6 +4791,8 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_insurance_accuracy": _handle_get_insurance_accuracy,
     "get_emissions_stats": _handle_get_emissions_stats,
     "search_brain": _handle_search_brain,
+    "brain_graph_query": _handle_brain_graph_query,
+    "brain_trajectory": _handle_brain_trajectory,
     "get_entity": _handle_get_entity,
     "add_observation": _handle_add_observation,
     "search_satellite_imagery": _handle_search_satellite_imagery,
