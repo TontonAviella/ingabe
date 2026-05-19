@@ -186,15 +186,34 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
 _FRONTMATTER_REF_KEYS = {"related", "see_also", "links", "references", "parent", "children"}
 
 
-def _extract_link_targets(page: PageInput) -> set[str]:
-    """Extract outbound link targets from wikilinks in compiled_truth + frontmatter refs."""
-    targets: set[str] = set()
+def _extract_link_targets(page: PageInput) -> list[tuple[str, str]]:
+    """Extract outbound link targets + per-link context from a page.
+
+    Returns a list of (target_slug, context_window) tuples. The context
+    window is up to ~100 chars on each side of the wikilink match in
+    compiled_truth, used downstream by `infer_link_type` to choose the
+    edge type. Frontmatter references carry empty context (they are
+    structural references, not narrative).
+
+    Was previously `set[str]` (just slugs). Upgraded to tuples so
+    `BrainService.put_page` can pass real context to the inference
+    layer instead of writing `link_type='auto'`. See
+    `src/services/brain_edge_inference.py` for the inference rules.
+    """
+    from src.services.brain_edge_inference import context_window
+
+    targets: dict[str, str] = {}
     if page.compiled_truth:
         for m in _WIKILINK_RE.finditer(page.compiled_truth):
             try:
                 slug = _validate_slug(m.group(1))
                 if slug:
-                    targets.add(slug)
+                    ctx = context_window(
+                        page.compiled_truth, m.start(), m.end(), window=100
+                    )
+                    # First occurrence wins; ignore duplicates so the
+                    # caller still writes each (from, to) edge once.
+                    targets.setdefault(slug, ctx)
             except ValueError:
                 pass
     if page.frontmatter:
@@ -216,15 +235,17 @@ def _extract_link_targets(page: PageInput) -> set[str]:
                 for item in val:
                     if isinstance(item, str):
                         try:
-                            targets.add(_validate_slug(item))
+                            slug = _validate_slug(item)
+                            targets.setdefault(slug, "")
                         except ValueError:
                             pass
             elif isinstance(val, str):
                 try:
-                    targets.add(_validate_slug(val))
+                    slug = _validate_slug(val)
+                    targets.setdefault(slug, "")
                 except ValueError:
                     pass
-    return targets
+    return list(targets.items())
 
 
 def _content_hash(page: PageInput) -> str:
@@ -361,23 +382,57 @@ class BrainService:
 
         result_page = _row_to_page(row)
 
-        # Auto-link: extract [[wikilinks]] and frontmatter refs, sync brain_links
+        # Auto-link: extract [[wikilinks]] + frontmatter refs, infer
+        # link_type per edge, sync brain_links. Two-pass:
+        #   (1) For each extracted (slug, context) tuple, look up the
+        #       target's page.type and call `infer_link_type` for a
+        #       deterministic edge label. No more `link_type='auto'`.
+        #   (2) Post-write, run `geometric_refinement_sql()` once over
+        #       this page's outbound edges. Promotes any structural
+        #       edge whose geometry actually checks out via PostGIS
+        #       ST_Contains (field-in-district, etc.). Idempotent.
+        from src.services.brain_edge_inference import (
+            geometric_refinement_sql,
+            infer_link_type,
+        )
+
         link_targets = _extract_link_targets(page)
         if link_targets:
             await conn.execute(
                 "DELETE FROM brain_links WHERE from_page_id = $1",
                 result_page.id,
             )
-            for target_slug in link_targets:
+            # Bulk-resolve target types in one round-trip rather than per-edge.
+            target_slugs = [slug for slug, _ in link_targets]
+            target_rows = await conn.fetch(
+                "SELECT slug, type FROM brain_pages WHERE slug = ANY($1::text[])",
+                target_slugs,
+            )
+            slug_to_type: dict[str, str] = {
+                r["slug"]: r["type"] for r in target_rows
+            }
+            for target_slug, link_ctx in link_targets:
+                target_type = slug_to_type.get(target_slug, "")
+                edge_type = infer_link_type(
+                    page.type,
+                    target_type,
+                    link_context=link_ctx,
+                    page_content=page.compiled_truth or "",
+                )
                 await conn.execute(
                     """
                     INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
-                    SELECT $1, p.id, 'auto', ''
+                    SELECT $1, p.id, $3, $4
                     FROM brain_pages p WHERE p.slug = $2
-                    ON CONFLICT (from_page_id, to_page_id) DO NOTHING
+                    ON CONFLICT (from_page_id, to_page_id) DO UPDATE SET
+                        link_type = EXCLUDED.link_type,
+                        context = EXCLUDED.context
                     """,
-                    result_page.id, target_slug,
+                    result_page.id, target_slug, edge_type, link_ctx,
                 )
+            # Pass 2: PostGIS geometric refinement. No-op when neither
+            # endpoint has geom; safe to run unconditionally.
+            await conn.execute(geometric_refinement_sql(), result_page.id)
 
         return result_page
 
