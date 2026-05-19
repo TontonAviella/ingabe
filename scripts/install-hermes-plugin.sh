@@ -79,16 +79,41 @@ fi
 # cronjob, delegation, file, image_gen, memory, session_search, skills,
 # todo, vision, web) alongside our plugin. See memory:
 # project_hermes_tool_surface_trim for the opt-in trim.
-CONFIG_TMP="$HERMES_HOME/config.yaml.tmp"
-cat > "$CONFIG_TMP" <<EOF
-plugins:
+# Auxiliary model: Hermes uses this cheaper model for context
+# compression, summarization, and tool-routing decisions. Without it,
+# the primary Nemotron Super 3 handles those operations too — costing
+# attention budget on tasks it is over-spec for. Default is
+# Nemotron-Nano-9B-v2 (free tier on OpenRouter); override via
+# AUXILIARY_MODEL env var. Skipped when the env value is malformed
+# (Hermes falls back to the primary in that case).
+AUX_MODEL_VAL="${AUXILIARY_MODEL:-nvidia/nemotron-nano-9b-v2:free}"
+if [[ ! "$AUX_MODEL_VAL" =~ $MODEL_RE ]]; then
+  echo "[install-hermes-plugin] WARN: AUXILIARY_MODEL=$AUX_MODEL_VAL fails regex — skipping aux block" >&2
+  AUX_BLOCK=""
+else
+  # Trailing newline is intentional: when the block is non-empty the
+  # full string ends in \n so it concatenates cleanly into the YAML
+  # content below.
+  AUX_BLOCK="auxiliary:
+  provider: openrouter
+  model: \"${AUX_MODEL_VAL}\"
+  base_url: \"${BASE_URL_VAL}\"
+"
+fi
+
+# Build the full config as a single string, then write atomically.
+# Avoids the heredoc-terminator pitfall when the AUX_BLOCK expansion
+# would have put EOF on a non-empty source line.
+CONFIG_CONTENT="plugins:
   enabled:
     - ${PLUGIN_NAME}
 model:
   provider: openrouter
-  default: "${MODEL_VAL}"
-  base_url: "${BASE_URL_VAL}"
-EOF
+  default: \"${MODEL_VAL}\"
+  base_url: \"${BASE_URL_VAL}\"
+${AUX_BLOCK}"
+CONFIG_TMP="$HERMES_HOME/config.yaml.tmp"
+printf "%s" "$CONFIG_CONTENT" > "$CONFIG_TMP"
 mv -f "$CONFIG_TMP" "$HERMES_HOME/config.yaml"
 
 echo "[install-hermes-plugin] Wired $HERMES_HOME/plugins/${PLUGIN_NAME} -> $(readlink "$HERMES_HOME/plugins/${PLUGIN_NAME}")"
