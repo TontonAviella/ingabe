@@ -434,7 +434,112 @@ class BrainService:
             # endpoint has geom; safe to run unconditionally.
             await conn.execute(geometric_refinement_sql(), result_page.id)
 
+        # Pass 3: parse `## Facts` fence from compiled_truth and upsert
+        # rows into brain_facts. Same atomic-write semantics as link
+        # extraction — if the parser finds no fence, this is a no-op.
+        # See src/services/brain_facts_fence.py for the convention.
+        await self._upsert_facts_from_page(conn, result_page.id, page)
+
         return result_page
+
+    async def _upsert_facts_from_page(
+        self,
+        conn: asyncpg.Connection,
+        page_id: int,
+        page: PageInput,
+    ) -> int:
+        """Parse the `## Facts` fence from page.compiled_truth and
+        replace the page's brain_facts rows. Returns the number of
+        facts written (0 when the fence is absent or empty).
+
+        Replace-on-write semantics: deletes existing facts for this
+        page before re-inserting. Avoids ghost rows from edits that
+        remove a fact line. Trajectory continuity across edits is
+        preserved via the valid_from timestamps inside each fact.
+        """
+        from src.services.brain_facts_fence import parse_facts_fence
+
+        text = page.compiled_truth or ""
+        if "## Facts" not in text and "## facts" not in text.lower():
+            return 0
+
+        facts, _skipped = parse_facts_fence(text)
+        # Always clear the page's existing facts. The fence is the
+        # source of truth for the page's typed claims; a deletion is
+        # the user's intent.
+        await conn.execute(
+            "DELETE FROM brain_facts WHERE page_id = $1", page_id
+        )
+        if not facts:
+            return 0
+        # Bulk insert via unnest arrays — one round-trip regardless of
+        # how many facts the fence holds.
+        await conn.executemany(
+            """
+            INSERT INTO brain_facts
+                (page_id, key, value, value_numeric, unit,
+                 valid_from, valid_until, status, source, context)
+            VALUES ($1, $2, $3, $4, $5,
+                    COALESCE($6, now()), $7, $8, $9, $10)
+            """,
+            [
+                (
+                    page_id, f.key, f.value, f.value_numeric, f.unit,
+                    f.valid_from, f.valid_until, f.status, f.source, f.context,
+                )
+                for f in facts
+            ],
+        )
+        return len(facts)
+
+    async def get_facts_trajectory(
+        self,
+        conn: asyncpg.Connection,
+        slug: str,
+        key: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return the chronological history of a typed claim on one
+        entity, with regressions auto-flagged per the per-key threshold
+        table in brain_facts_fence.REGRESSION_THRESHOLDS.
+
+        Returns a list of dicts (oldest → newest) ready for tool
+        consumption. Each entry has:
+          valid_from, value, value_numeric, unit, status,
+          regression_flag, context, source.
+
+        Empty list when (slug, key) has no facts or the page doesn't
+        exist.
+        """
+        from src.services.brain_facts_fence import flag_regressions
+
+        pf = _PARTNER_FILTER.format(a="bp.")
+        rows = await conn.fetch(
+            f"""
+            SELECT bf.valid_from, bf.value, bf.value_numeric, bf.unit,
+                   bf.status, bf.context, bf.source
+            FROM brain_facts bf
+            JOIN brain_pages bp ON bp.id = bf.page_id
+            WHERE bp.slug = $1 AND bf.key = $2
+            {pf}
+            ORDER BY bf.valid_from ASC
+            LIMIT $3
+            """,
+            slug, key, limit,
+        )
+        trajectory = [
+            {
+                "valid_from": r["valid_from"].isoformat() if r["valid_from"] else None,
+                "value": r["value"],
+                "value_numeric": r["value_numeric"],
+                "unit": r["unit"],
+                "status": r["status"],
+                "context": r["context"],
+                "source": r["source"],
+            }
+            for r in rows
+        ]
+        return flag_regressions(trajectory, key=key)
 
     async def delete_page(self, conn: asyncpg.Connection, slug: str) -> None:
         await conn.execute("DELETE FROM brain_pages WHERE slug = $1", slug)
