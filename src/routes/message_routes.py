@@ -195,36 +195,42 @@ async def _ensure_rwanda_postgis_connection(
     """
     try:
         existing = await conn.fetchrow(
-            "SELECT id, project_id, soft_deleted_at FROM project_postgres_connections WHERE id = $1",
+            "SELECT id, project_id, soft_deleted_at, connection_uri FROM project_postgres_connections WHERE id = $1",
             _RWANDA_INTERNAL_CONN_ID,
         )
+        pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
+        pg_port = os.environ.get("POSTGRES_PORT", "5432")
+        pg_db = os.environ.get("POSTGRES_DB", "mundidb")
+        pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
+        pg_pass = os.environ.get("POSTGRES_PASSWORD", "changeme")
+        uri = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}?sslmode=disable"
+
         if existing:
             # Un-delete if soft-deleted, and ensure correct project + user
             needs_update = (
                 existing["soft_deleted_at"] is not None
                 or existing["project_id"] != project_id
+                or existing["connection_uri"] != uri
             )
             if needs_update:
                 await conn.execute(
                     """
                     UPDATE project_postgres_connections
-                    SET project_id = $1, user_id = $2, soft_deleted_at = NULL
-                    WHERE id = $3
+                    SET project_id = $1,
+                        user_id = $2,
+                        connection_uri = $3,
+                        soft_deleted_at = NULL
+                    WHERE id = $4
                     """,
-                    project_id, user_id, _RWANDA_INTERNAL_CONN_ID,
+                    project_id, user_id, uri, _RWANDA_INTERNAL_CONN_ID,
                 )
                 logger.info(
-                    "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s",
-                    project_id, existing["soft_deleted_at"] is not None,
+                    "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s uri_changed=%s",
+                    project_id,
+                    existing["soft_deleted_at"] is not None,
+                    existing["connection_uri"] != uri,
                 )
         else:
-            pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
-            pg_port = os.environ.get("POSTGRES_PORT", "5432")
-            pg_db = os.environ.get("POSTGRES_DB", "mundidb")
-            pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
-            pg_pass = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
-            uri = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}?sslmode=disable"
-
             await conn.execute(
                 """
                 INSERT INTO project_postgres_connections
