@@ -1,0 +1,28 @@
+[package]
+name = "mundi-rasterd"
+version = "0.1.0"
+edition = "2021"
+description = "Rust raster tile sidecar for Mundi uploaded drone orthophotos"
+license = "AGPL-3.0-or-later"
+
+[features]
+default = []
+# Keep forge3d explicit: it is the upstream COG-streaming/GPU-rendering line we
+# want to grow into. The first RGB tile server path uses GDAL because forge3d's
+# public COG reader is currently DEM/height oriented.
+forge3d-cog = ["dep:forge3d"]
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+gdal = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+lru = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+forge3d = { git = "https://github.com/milos-agathon/forge3d.git", rev = "0cec80d765672f8f6f58a51fcd779c9638df574e", default-features = false, features = ["cog_streaming"], optional = true }

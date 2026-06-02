@@ -1136,6 +1136,47 @@ def _is_already_cog(path: str) -> bool:
         return False
 
 
+def _raster_epsg(path: str) -> int | None:
+    """Return the raster CRS EPSG code when rasterio can identify it."""
+    try:
+        import rasterio
+        with rasterio.open(path) as ds:
+            if not ds.crs:
+                return None
+            return ds.crs.to_epsg()
+    except Exception:
+        return None
+
+
+def _epsg_from_srs(srs: str) -> int | None:
+    if not srs:
+        return None
+    value = srs.strip().upper()
+    if value.startswith("EPSG:"):
+        value = value.split(":", 1)[1]
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+async def _maybe_embed_layer_after_cog(layer_id: str) -> None:
+    """Optionally run Clay embeddings after COG readiness.
+
+    Local and Hetzner CPU paths prioritize map availability; embeddings are useful
+    for visual search, but they should not slow or destabilize upload rendering.
+    """
+    if os.environ.get("CLAY_EMBED_ON_UPLOAD", "0") != "1":
+        logger.info("Clay embedding skipped for %s (set CLAY_EMBED_ON_UPLOAD=1 to enable)", layer_id)
+        return
+    try:
+        from src.services.clay_embedding import embed_layer
+        emb_res = await embed_layer(layer_id)
+        logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
+    except Exception:
+        logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
+
+
 async def _background_generate_cog(layer_id: str, s3_key: str):
     """Generate COG in the background after upload-complete returns.
 
@@ -1153,6 +1194,8 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
     bucket_name = get_bucket_name()
     tmp_dir = tempfile.mkdtemp()
     try:
+        target_srs = os.environ.get("RASTER_COG_TARGET_SRS", "EPSG:3857").strip()
+        target_epsg = _epsg_from_srs(target_srs)
         file_ext = os.path.splitext(s3_key)[1] or ".tif"
         local_input = os.path.join(tmp_dir, f"{layer_id}{file_ext}")
         local_cog = os.path.join(tmp_dir, f"{layer_id}.cog.tif")
@@ -1161,9 +1204,10 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         logger.info("Background COG: downloading %s/%s for %s", bucket_name, s3_key, layer_id)
         await s3.download_file(bucket_name, s3_key, local_input)
         logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
+        source_epsg = _raster_epsg(local_input)
 
         # Fast path: already a COG. Server-side copy to canonical key, skip gdalwarp.
-        if _is_already_cog(local_input):
+        if _is_already_cog(local_input) and (not target_epsg or source_epsg == target_epsg):
             cog_key = f"cog/layer/{layer_id}.cog.tif"
             logger.info("Background COG: input %s already COG-shaped, copying to %s without re-encode", layer_id, cog_key)
             await s3.copy_object(
@@ -1179,20 +1223,14 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                     metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
                 metadata["cog_key"] = cog_key
                 metadata["cog_source"] = "client_provided"
+                if source_epsg:
+                    metadata["cog_srs"] = f"EPSG:{source_epsg}"
                 await conn.execute(
-                    "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                    "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
                     json.dumps(metadata), layer_id,
                 )
             logger.info("Background COG fast-path complete for %s", layer_id)
-            # Phase 2: kick off Clay embedding now that COG is ready. Errors
-            # are logged but don't block the COG path — find_similar_tiles
-            # will skip layers without embeddings.
-            try:
-                from src.services.clay_embedding import embed_layer
-                emb_res = await embed_layer(layer_id)
-                logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
-            except Exception:
-                logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
+            await _maybe_embed_layer_after_cog(layer_id)
             return
 
         # Always use gdalwarp subprocess for COG generation.
@@ -1200,8 +1238,12 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         # killing the uvicorn worker.  A subprocess crash is isolated.
         # BIGTIFF=YES is required for outputs > 4 GB (drone orthos with overview
         # pyramids routinely exceed Classic TIFF's 32-bit offset limit).
-        proc = await asyncio.create_subprocess_exec(
+        gdalwarp_cmd = [
             "gdalwarp",
+        ]
+        if target_srs:
+            gdalwarp_cmd.extend(["-t_srs", target_srs])
+        gdalwarp_cmd.extend([
             "-of", "COG",
             "-co", "BIGTIFF=YES",
             "-co", "BLOCKSIZE=512",
@@ -1210,6 +1252,9 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
             "-co", "OVERVIEW_RESAMPLING=NEAREST",
             "-multi", "-wo", "NUM_THREADS=ALL_CPUS",
             local_input, local_cog,
+        ])
+        proc = await asyncio.create_subprocess_exec(
+            *gdalwarp_cmd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
@@ -1228,19 +1273,14 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                 import json as _json
                 metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
             metadata["cog_key"] = cog_key
+            if target_srs:
+                metadata["cog_srs"] = target_srs.upper()
             await conn.execute(
-                "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
                 json.dumps(metadata), layer_id,
             )
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
-        # Phase 2: kick off Clay embedding now that COG is ready. Errors
-        # are logged but don't block the COG path.
-        try:
-            from src.services.clay_embedding import embed_layer
-            emb_res = await embed_layer(layer_id)
-            logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
-        except Exception:
-            logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
+        await _maybe_embed_layer_after_cog(layer_id)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
     finally:
@@ -1254,10 +1294,14 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
 async def generate_cog_for_layer(
     layer_id: str,
     background_tasks: BackgroundTasks,
+    force: bool = False,
     mundi_map: MundiMap = Depends(edit_map),
     session: UserContext = Depends(verify_session_required),
 ):
-    """Trigger COG generation for an existing raster layer that lacks a COG."""
+    """Trigger COG generation for an existing raster layer.
+
+    Use force=true to rebuild older COGs into the current target projection.
+    """
     from src.structures import async_read_conn
 
     async with async_read_conn("generate_cog") as conn:
@@ -1273,27 +1317,28 @@ async def generate_cog_for_layer(
     metadata = {}
     if row["metadata"]:
         metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
-    if metadata.get("cog_key"):
+    if metadata.get("cog_key") and not force:
         return {"status": "already_exists", "cog_key": metadata["cog_key"]}
 
-    # Check if COG already exists in S3 (e.g. uploaded manually) but DB not updated
-    expected_cog_key = f"cog/layer/{layer_id}.cog.tif"
-    try:
-        s3 = await get_async_s3_client(signature_version="s3v4")
-        await s3.head_object(Bucket=get_bucket_name(), Key=expected_cog_key)
-        # COG exists in S3 — just update DB metadata
-        metadata["cog_key"] = expected_cog_key
-        async with async_conn("generate_cog_update") as conn:
-            await conn.execute(
-                "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
-                json.dumps(metadata), layer_id,
-            )
-        return {"status": "linked_existing", "cog_key": expected_cog_key}
-    except Exception:
-        pass  # COG not in S3 yet, generate it
+    if not force:
+        # Check if COG already exists in S3 (e.g. uploaded manually) but DB not updated.
+        expected_cog_key = f"cog/layer/{layer_id}.cog.tif"
+        try:
+            s3 = await get_async_s3_client(signature_version="s3v4")
+            await s3.head_object(Bucket=get_bucket_name(), Key=expected_cog_key)
+            # COG exists in S3 — just update DB metadata
+            metadata["cog_key"] = expected_cog_key
+            async with async_conn("generate_cog_update") as conn:
+                await conn.execute(
+                    "UPDATE map_layers SET metadata = $1 WHERE layer_id = $2",
+                    json.dumps(metadata), layer_id,
+                )
+            return {"status": "linked_existing", "cog_key": expected_cog_key}
+        except Exception:
+            pass  # COG not in S3 yet, generate it
 
     background_tasks.add_task(_background_generate_cog, layer_id, row["s3_key"])
-    return {"status": "generating", "layer_id": layer_id}
+    return {"status": "regenerating" if force else "generating", "layer_id": layer_id}
 
 
 @router.post(

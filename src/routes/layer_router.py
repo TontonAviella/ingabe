@@ -102,6 +102,73 @@ async def _get_presigned_url(cog_key: str) -> str:
     return url
 
 
+def _get_raster_engine_url() -> str:
+    return os.environ.get("RASTER_TILE_ENGINE_URL", "").strip().rstrip("/")
+
+
+def _get_raster_engine_client():
+    """Return a pooled HTTP client for the optional Rust raster sidecar."""
+    global _raster_engine_client
+    if _raster_engine_client is None:
+        import httpx
+        timeout_s = float(os.environ.get("RASTER_TILE_ENGINE_TIMEOUT", "2.5"))
+        _raster_engine_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s, connect=min(timeout_s, 1.0))
+        )
+    return _raster_engine_client
+
+
+async def _try_raster_engine_tile(
+    *,
+    layer_id: str,
+    asset_url: str,
+    metadata: dict,
+    z: int,
+    x: int,
+    y: int,
+) -> bytes | None:
+    """Delegate RGB WebMercator COG tiles to the optional Rust sidecar."""
+    engine_url = _get_raster_engine_url()
+    if not engine_url:
+        return None
+    if "raster_value_stats_b1" in metadata:
+        return None
+    if str(metadata.get("cog_srs", "")).upper() not in {"EPSG:3857", "3857"}:
+        return None
+
+    band_count = metadata.get("band_count")
+    if isinstance(band_count, int):
+        if band_count <= 1:
+            bands = "1"
+        elif band_count == 2:
+            bands = "1,2"
+        else:
+            bands = "1,2,3"
+    else:
+        bands = "1,2,3"
+
+    try:
+        client = _get_raster_engine_client()
+        resp = await client.get(
+            f"{engine_url}/tiles/{z}/{x}/{y}.png",
+            params={"url": asset_url, "layer_id": layer_id, "bands": bands},
+        )
+    except Exception as exc:
+        logger.warning("Rust raster engine unavailable for layer=%s: %s", layer_id, exc)
+        return None
+
+    if resp.status_code == 200 and resp.content:
+        return resp.content
+    if resp.status_code in {204, 400, 404, 422, 501}:
+        return None
+
+    logger.warning(
+        "Rust raster engine failed for layer=%s z=%s x=%s y=%s status=%s",
+        layer_id, z, x, y, resp.status_code,
+    )
+    return None
+
+
 def _get_dask():
     """Lazy-load dask raster pipeline on first COG generation."""
     global _DASK_AVAILABLE, _RasterPipeline
@@ -138,6 +205,7 @@ RASTER_TILE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("RASTER_TILE_CONCUR
 # Presigned URLs are valid for 180s; we cache for 120s to avoid edge-case expiry.
 _presigned_url_cache: dict[str, tuple[float, str]] = {}
 _PRESIGNED_URL_TTL = 120  # seconds
+_raster_engine_client = None
 
 # Pre-generated transparent 256x256 PNG tile (avoids PIL per empty tile)
 _EMPTY_TILE_PNG: bytes | None = None
@@ -810,6 +878,22 @@ async def get_raster_xyz_tile(
 
     # Reuse presigned URL across concurrent tile requests for the same COG
     asset_url = await _get_presigned_url(cog_key)
+
+    engine_tile = await _try_raster_engine_tile(
+        layer_id=layer.layer_id,
+        asset_url=asset_url,
+        metadata=metadata,
+        z=z,
+        x=x,
+        y=y,
+    )
+    if engine_tile is not None:
+        await tile_cache.put(layer.layer_id, z, x, y, engine_tile)
+        return Response(
+            content=engine_tile,
+            media_type="image/png",
+            headers=_tile_headers,
+        )
 
     _ensure_rio_tiler()
 

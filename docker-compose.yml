@@ -43,6 +43,11 @@ services:
       - QGIS_PROCESSING_URL=http://qgis-processing:8817
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - RASTER_TILE_ENGINE_URL=${RASTER_TILE_ENGINE_URL:-}
+      - RASTER_TILE_ENGINE_TIMEOUT=${RASTER_TILE_ENGINE_TIMEOUT:-2.5}
+      - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
+      - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
+      - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
@@ -182,6 +187,20 @@ services:
       interval: 1s
       timeout: 2s
       retries: 5
+
+  rasterd:
+    profiles: ["rasterd"]
+    build:
+      context: ./services/rasterd
+      dockerfile: Dockerfile
+    image: mundi-rasterd:local
+    container_name: mundi-rasterd
+    ports:
+      - "${RASTERD_PORT:-8877}:8877"
+    environment:
+      - RUST_LOG=${RASTERD_RUST_LOG:-info}
+      - RASTERD_TILE_CACHE_ENTRIES=${RASTERD_TILE_CACHE_ENTRIES:-4096}
+    restart: unless-stopped
 
   qgis-processing:
     platform: linux/amd64

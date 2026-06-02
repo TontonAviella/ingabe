@@ -479,17 +479,21 @@ async def get_map_style_internal(
             if cache_param:
                 tile_url += f"?{cache_param}"
 
-            # maxzoom 22 + per-source bounds: MapLibre will only request tiles
-            # inside the COG's geographic footprint (no edge-vanish, no flicker)
-            # AND will fetch fresh tiles all the way to z22, so rio-tiler reads
-            # native pixels from a 2-3 cm/px drone ortho instead of MapLibre
-            # upscaling a z19 tile.
+            try:
+                raster_source_maxzoom = int(os.environ.get("RASTER_SOURCE_MAXZOOM", "20"))
+            except ValueError:
+                raster_source_maxzoom = 20
+            raster_source_maxzoom = max(0, min(22, raster_source_maxzoom))
+
+            # Keep per-source bounds so MapLibre only requests tiles inside the
+            # COG footprint. Default maxzoom favors interactive speed; raise
+            # RASTER_SOURCE_MAXZOOM for inspection-grade native drone pixels.
             raster_source: dict = {
                 "type": "raster",
                 "tiles": [tile_url],
                 "tileSize": 256,
                 "minzoom": 0,
-                "maxzoom": 22,
+                "maxzoom": raster_source_maxzoom,
             }
             _b = layer.get("bounds")
             if _b and len(_b) == 4:
