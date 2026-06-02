@@ -35,6 +35,7 @@ import asyncio
 from src.utils import (
     get_bucket_name,
     get_async_s3_client,
+    get_s3_public_endpoint_url,
     get_async_r2_client,
     get_r2_bucket_name,
     is_r2_enabled,
@@ -823,7 +824,7 @@ async def presign_layer_upload(
     layer_id = generate_id(prefix="L")
     s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
 
-    s3_client, bucket_name = await _get_upload_client_and_bucket()
+    s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
     upload_url = await s3_client.generate_presigned_url(
         "put_object",
         Params={"Bucket": bucket_name, "Key": s3_key},
@@ -872,6 +873,11 @@ class MultipartCompleteRequest(BaseModel):
     add_layer_to_map: bool = True
 
 
+class MultipartPartUploadResponse(BaseModel):
+    etag: str
+    part_number: int
+
+
 class MultipartStatusResponse(BaseModel):
     exists: bool
     parts: List[MultipartCompletePartInfo]
@@ -892,6 +898,16 @@ async def _get_upload_client_and_bucket():
     if _use_r2_transit():
         return await get_async_r2_client(), get_r2_bucket_name()
     return await get_async_s3_client(), get_bucket_name()
+
+
+async def _get_browser_upload_presign_client_and_bucket():
+    """Client used only for browser-facing presigned upload URLs."""
+    if _use_r2_transit():
+        return await get_async_r2_client(), get_r2_bucket_name()
+    return (
+        await get_async_s3_client(endpoint_url=get_s3_public_endpoint_url()),
+        get_bucket_name(),
+    )
 
 
 async def _r2_delete_object(s3_key: str):
@@ -958,7 +974,7 @@ async def presign_multipart_parts(
     body: MultipartPresignRequest,
     session: UserContext = Depends(verify_session_required),
 ):
-    s3_client, bucket_name = await _get_upload_client_and_bucket()
+    s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
 
     urls = {}
     for part_num in body.part_numbers:
@@ -975,6 +991,47 @@ async def presign_multipart_parts(
         urls[part_num] = url
 
     return MultipartPresignResponse(urls=urls)
+
+
+@router.put(
+    "/{map_id}/upload-multipart-part",
+    response_model=MultipartPartUploadResponse,
+    operation_id="upload_multipart_part",
+    summary="Upload one multipart chunk through the backend",
+)
+async def upload_multipart_part(
+    map_id: str,
+    upload_id: str,
+    s3_key: str,
+    part_number: int,
+    request: Request,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Upload a single multipart chunk without exposing MinIO to the browser.
+
+    Local MinIO images do not reliably support browser CORS for direct PUTs.
+    Keeping chunks small lets the backend proxy this path while preserving
+    progress, retry, and resume semantics for large drone rasters.
+    """
+    if part_number < 1:
+        raise HTTPException(status_code=400, detail="part_number must be >= 1")
+
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty upload part")
+
+    s3_client, bucket_name = await _get_upload_client_and_bucket()
+    resp = await s3_client.upload_part(
+        Bucket=bucket_name,
+        Key=s3_key,
+        UploadId=upload_id,
+        PartNumber=part_number,
+        Body=body,
+    )
+    return MultipartPartUploadResponse(
+        etag=resp["ETag"].replace('"', ""),
+        part_number=part_number,
+    )
 
 
 @router.get(

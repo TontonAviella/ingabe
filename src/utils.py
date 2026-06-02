@@ -26,14 +26,25 @@ def generate_id(length=12, prefix=""):
     return prefix + result
 
 
+def get_s3_public_endpoint_url() -> str:
+    """Endpoint that browser-facing presigned S3 URLs should use.
+
+    In local Docker, the app reaches MinIO at http://minio:9000 but Chrome
+    cannot resolve that container hostname. S3_PUBLIC_ENDPOINT_URL lets us sign
+    URLs for a public/browser address while keeping internal storage traffic on
+    S3_ENDPOINT_URL.
+    """
+    return os.environ.get("S3_PUBLIC_ENDPOINT_URL") or os.environ["S3_ENDPOINT_URL"]
+
+
 @lru_cache
-def get_s3_client():
+def get_s3_client(endpoint_url: str | None = None):
     config = boto3.session.Config(
         signature_version="s3v4",
     )
     return boto3.Session().client(
         "s3",
-        endpoint_url=os.environ["S3_ENDPOINT_URL"],
+        endpoint_url=endpoint_url or os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
         region_name=os.environ["S3_DEFAULT_REGION"],
@@ -46,16 +57,17 @@ _session = aioboto3.Session()
 _clients = {}
 
 
-async def get_async_s3_client(signature_version: str = "s3v4"):
+async def get_async_s3_client(signature_version: str = "s3v4", endpoint_url: str | None = None):
     loop = asyncio.get_running_loop()
-    key = (loop, signature_version)
+    resolved_endpoint_url = endpoint_url or os.environ["S3_ENDPOINT_URL"]
+    key = (loop, signature_version, resolved_endpoint_url)
     if key not in _clients:
         config = boto3.session.Config(
             signature_version=signature_version,
         )
         _clients[key] = await _session.client(
             "s3",
-            endpoint_url=os.environ["S3_ENDPOINT_URL"],
+            endpoint_url=resolved_endpoint_url,
             aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
             region_name=os.environ["S3_DEFAULT_REGION"],

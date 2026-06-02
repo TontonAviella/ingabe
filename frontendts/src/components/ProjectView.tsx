@@ -610,9 +610,8 @@ export default function ProjectView() {
     }
   }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient]);
 
-  const MULTIPART_THRESHOLD = 50 * 1024 * 1024; // 50 MB
   // Browsers cap parallel HTTP requests to one origin at 6. Going higher just
-  // queues the extras. 6 is the right ceiling for s3.gis.nozalabs.rw.
+  // queues the extras. 6 is the right ceiling for chunked backend uploads.
   const MULTIPART_CONCURRENCY = 6;
   const RESUME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -684,7 +683,9 @@ export default function ProjectView() {
     mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
       if (!versionId) throw new Error('No version ID available');
 
-      const useMultipart = file.size >= MULTIPART_THRESHOLD;
+      // Use one reliable path for all files. The backend proxies 10 MB chunks
+      // to storage, so Chrome never has to reach MinIO directly.
+      const useMultipart = true;
 
       if (useMultipart) {
         // --- Multipart upload: parallel chunks for large files ---
@@ -805,11 +806,12 @@ export default function ProjectView() {
           setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: highWaterPercent } : f)));
         };
 
-        const putPartOnce = (partUrl: string, blob: Blob, partNum: number): Promise<XMLHttpRequest> =>
-          new Promise<XMLHttpRequest>((resolve, reject) => {
+        const putPartOnce = async (partUrl: string, blob: Blob, partNum: number, attempt: number): Promise<XMLHttpRequest> => {
+          const token = isAuthConfigured() ? await getJwt({ skipCache: attempt > 0 }) : undefined;
+          return new Promise<XMLHttpRequest>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            // 15 min per 50MB chunk → tolerates ~55 KB/s sustained on a single
-            // stream. With 6 parallel streams, overall throughput floor ~330 KB/s.
+            // 15 min per 10 MB chunk tolerates slow rural connections while
+            // still failing dead network requests eventually.
             xhr.timeout = 15 * 60 * 1000;
             xhr.upload.addEventListener('progress', (ev) => {
               if (ev.lengthComputable) {
@@ -825,8 +827,11 @@ export default function ProjectView() {
             xhr.addEventListener('timeout', () => reject(new Error('timeout')));
             xhr.addEventListener('abort', () => reject(new Error('aborted')));
             xhr.open('PUT', partUrl);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
             xhr.send(blob);
           });
+        };
 
         const uploadPart = async (partNum: number): Promise<void> => {
           const start = (partNum - 1) * partSize;
@@ -837,18 +842,16 @@ export default function ProjectView() {
           let lastErr: unknown = null;
           for (let attempt = 0; attempt < 4; attempt++) {
             try {
-              // Re-presign on each attempt (URL expires in 1h, attempt may be late).
-              const presignRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-multipart-presign`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ s3_key: init.s3_key, upload_id: init.upload_id, part_numbers: [partNum] }),
-              });
-              if (!presignRes.ok) throw new Error(`presign HTTP ${presignRes.status}`);
-              const { urls } = (await presignRes.json()) as { urls: Record<number, string> };
-
               inFlightBytes.set(partNum, 0);
-              const resp = await putPartOnce(urls[partNum], blob, partNum);
-              const etag = (resp.getResponseHeader('ETag') || '').replace(/"/g, '');
+              const partUrl =
+                `/api/maps/${init.dag_child_map_id}/upload-multipart-part` +
+                `?upload_id=${encodeURIComponent(init.upload_id)}` +
+                `&s3_key=${encodeURIComponent(init.s3_key)}` +
+                `&part_number=${partNum}`;
+              const resp = await putPartOnce(partUrl, blob, partNum, attempt);
+              const parsed = JSON.parse(resp.responseText || '{}') as { etag?: string };
+              const etag = parsed.etag || '';
+              if (!etag) throw new Error('missing ETag from upload part');
               completedParts.push({ part_number: partNum, etag });
               inFlightBytes.delete(partNum);
               completedBytes += end - start;

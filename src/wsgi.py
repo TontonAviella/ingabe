@@ -291,12 +291,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # production satellite domains (e.g. clerk.nozalabs.rw) are added via env.
         clerk_host = os.environ.get("CLERK_FRONTEND_API_HOST", "").strip()
         clerk_csp = f" https://{clerk_host}" if clerk_host else ""
+        s3_connect_src = " ".join(
+            endpoint
+            for endpoint in (
+                os.environ.get("S3_ENDPOINT_URL", ""),
+                os.environ.get("S3_PUBLIC_ENDPOINT_URL", ""),
+            )
+            if endpoint
+        )
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
-            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {os.environ.get('S3_ENDPOINT_URL', '')} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
+            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {s3_connect_src} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'none'"
