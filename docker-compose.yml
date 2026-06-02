@@ -27,6 +27,8 @@ services:
         condition: service_healthy
       qgis-processing:
         condition: service_healthy
+      rasterd:
+        condition: service_started
     environment:
       - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
       # Clerk authentication (set these to enable real multi-user auth)
@@ -43,8 +45,9 @@ services:
       - QGIS_PROCESSING_URL=http://qgis-processing:8817
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
-      - RASTER_TILE_ENGINE_URL=${RASTER_TILE_ENGINE_URL:-}
-      - RASTER_TILE_ENGINE_TIMEOUT=${RASTER_TILE_ENGINE_TIMEOUT:-2.5}
+      - RASTER_TILE_ENGINE_URL=${RASTER_TILE_ENGINE_URL:-http://rasterd:8877}
+      - RASTER_TILE_ENGINE_TIMEOUT=${RASTER_TILE_ENGINE_TIMEOUT:-30.0}
+      - RASTER_TILE_ENGINE_CONCURRENCY=${RASTER_TILE_ENGINE_CONCURRENCY:-1}
       - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
       - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
       - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
@@ -189,7 +192,6 @@ services:
       retries: 5
 
   rasterd:
-    profiles: ["rasterd"]
     build:
       context: ./services/rasterd
       dockerfile: Dockerfile
@@ -200,6 +202,17 @@ services:
     environment:
       - RUST_LOG=${RASTERD_RUST_LOG:-info}
       - RASTERD_TILE_CACHE_ENTRIES=${RASTERD_TILE_CACHE_ENTRIES:-4096}
+      - RASTERD_RENDER_CONCURRENCY=${RASTERD_RENDER_CONCURRENCY:-1}
+      - GDAL_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.tiff
+      - GDAL_HTTP_MULTIRANGE=YES
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+      - CPL_VSIL_CURL_CACHE_SIZE=134217728
+      - VSI_CACHE=TRUE
+      - VSI_CACHE_SIZE=134217728
+      - GDAL_CACHEMAX=256
     restart: unless-stopped
 
   qgis-processing:

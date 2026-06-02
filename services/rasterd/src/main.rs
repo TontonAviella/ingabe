@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use axum::extract::{Path as AxumPath, Query, State};
@@ -17,6 +18,7 @@ use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 
@@ -26,6 +28,7 @@ const WEB_MERCATOR_HALF_WORLD: f64 = 20037508.342789244;
 #[derive(Clone)]
 struct AppState {
     cache: Arc<Mutex<LruCache<String, Arc<Vec<u8>>>>>,
+    render_permits: Arc<Semaphore>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,10 +67,16 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(4096);
+    let render_concurrency = std::env::var("RASTERD_RENDER_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1);
     let state = AppState {
         cache: Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(cache_cap).expect("cache cap is non-zero"),
         ))),
+        render_permits: Arc::new(Semaphore::new(render_concurrency)),
     };
 
     let app = Router::new()
@@ -82,7 +91,7 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(8877);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    info!("mundi-rasterd listening on {addr}");
+    info!("mundi-rasterd listening on {addr} render_concurrency={render_concurrency}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -121,13 +130,25 @@ async fn tile_png(
         return png_response(bytes.as_ref().clone());
     }
 
+    let render_permit = match state.render_permits.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(e) => return error_response(StatusCode::SERVICE_UNAVAILABLE, format!("render limiter closed: {e}")),
+    };
+    let started = Instant::now();
     let url = query.url.clone();
     let render = tokio::task::spawn_blocking(move || render_webmercator_tile(&url, z, x, y, &bands))
         .await
         .unwrap_or_else(|e| Err(TileError::Render(anyhow!("tile worker join failed: {e}"))));
+    drop(render_permit);
+    let elapsed_ms = started.elapsed().as_millis();
 
     match render {
         Ok(bytes) => {
+            if elapsed_ms > 500 {
+                info!("tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}", bytes.len());
+            } else {
+                debug!("tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}", bytes.len());
+            }
             let bytes = Arc::new(bytes);
             state
                 .cache
@@ -136,10 +157,13 @@ async fn tile_png(
                 .put(cache_key, bytes.clone());
             png_response(bytes.as_ref().clone())
         }
-        Err(TileError::Outside) => StatusCode::NO_CONTENT.into_response(),
+        Err(TileError::Outside) => {
+            debug!("tile outside z={z} x={x} y={y} elapsed_ms={elapsed_ms}");
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(TileError::Unsupported(msg)) => error_response(StatusCode::NOT_IMPLEMENTED, msg),
         Err(TileError::Render(err)) => {
-            warn!("tile render failed z={z} x={x} y={y}: {err:#}");
+            warn!("tile render failed z={z} x={x} y={y} elapsed_ms={elapsed_ms}: {err:#}");
             error_response(StatusCode::BAD_GATEWAY, "raster tile render failed".to_string())
         }
     }

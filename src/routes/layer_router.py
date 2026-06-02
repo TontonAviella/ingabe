@@ -106,14 +106,33 @@ def _get_raster_engine_url() -> str:
     return os.environ.get("RASTER_TILE_ENGINE_URL", "").strip().rstrip("/")
 
 
+def _get_raster_engine_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("RASTER_TILE_ENGINE_TIMEOUT", "30.0")))
+    except ValueError:
+        return 30.0
+
+
+def _get_raster_engine_concurrency() -> int:
+    try:
+        return max(1, int(os.environ.get("RASTER_TILE_ENGINE_CONCURRENCY", "1")))
+    except ValueError:
+        return 1
+
+
 def _get_raster_engine_client():
     """Return a pooled HTTP client for the optional Rust raster sidecar."""
     global _raster_engine_client
     if _raster_engine_client is None:
         import httpx
-        timeout_s = float(os.environ.get("RASTER_TILE_ENGINE_TIMEOUT", "2.5"))
+        timeout_s = _get_raster_engine_timeout()
+        concurrency = _get_raster_engine_concurrency()
         _raster_engine_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_s, connect=min(timeout_s, 1.0))
+            timeout=httpx.Timeout(timeout_s, connect=min(timeout_s, 2.0)),
+            limits=httpx.Limits(
+                max_connections=concurrency,
+                max_keepalive_connections=concurrency,
+            ),
         )
     return _raster_engine_client
 
@@ -149,12 +168,16 @@ async def _try_raster_engine_tile(
 
     try:
         client = _get_raster_engine_client()
-        resp = await client.get(
-            f"{engine_url}/tiles/{z}/{x}/{y}.png",
-            params={"url": asset_url, "layer_id": layer_id, "bands": bands},
-        )
+        async with RASTER_ENGINE_SEMAPHORE:
+            resp = await client.get(
+                f"{engine_url}/tiles/{z}/{x}/{y}.png",
+                params={"url": asset_url, "layer_id": layer_id, "bands": bands},
+            )
     except Exception as exc:
-        logger.warning("Rust raster engine unavailable for layer=%s: %s", layer_id, exc)
+        logger.warning(
+            "Rust raster engine unavailable for layer=%s z=%s x=%s y=%s: %s %r",
+            layer_id, z, x, y, type(exc).__name__, exc,
+        )
         return None
 
     if resp.status_code == 200 and resp.content:
@@ -185,6 +208,7 @@ from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
 from src.services.enrichment_service import AVAILABLE_METRICS, compute_metric, compute_all_lulc_metrics, _LULC_CLASS_MAP
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
+from src.services.raster_zoom import raster_source_minzoom
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
 from src.utils import generate_id
@@ -200,6 +224,26 @@ SOCIAL_RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
 # when MapLibre fires 20-50 concurrent tile requests on zoom/pan.
 # 8 vCPU Hetzner → allow more concurrent reads (default was 6, too conservative).
 RASTER_TILE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("RASTER_TILE_CONCURRENCY", "12")))
+RASTER_ENGINE_SEMAPHORE = asyncio.Semaphore(_get_raster_engine_concurrency())
+_RASTER_TILE_INFLIGHT_LOCKS: dict[str, asyncio.Lock] = {}
+_RASTER_TILE_INFLIGHT_GUARD = asyncio.Lock()
+
+
+async def _get_raster_tile_inflight_lock(layer_id: str, z: int, x: int, y: int) -> tuple[str, asyncio.Lock]:
+    """Return a per-tile lock so duplicate browser requests share one render."""
+    key = f"{layer_id}:{z}:{x}:{y}"
+    async with _RASTER_TILE_INFLIGHT_GUARD:
+        lock = _RASTER_TILE_INFLIGHT_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _RASTER_TILE_INFLIGHT_LOCKS[key] = lock
+        return key, lock
+
+
+async def _release_raster_tile_inflight_lock(key: str, lock: asyncio.Lock) -> None:
+    async with _RASTER_TILE_INFLIGHT_GUARD:
+        if _RASTER_TILE_INFLIGHT_LOCKS.get(key) is lock:
+            _RASTER_TILE_INFLIGHT_LOCKS.pop(key, None)
 
 # Cache presigned URLs per COG key to avoid regenerating on every tile request.
 # Presigned URLs are valid for 180s; we cache for 120s to avoid edge-case expiry.
@@ -876,84 +920,107 @@ async def get_raster_xyz_tile(
             headers={**_tile_headers, "X-COG-Status": "pending", "Cache-Control": "no-cache"},
         )
 
-    # Reuse presigned URL across concurrent tile requests for the same COG
-    asset_url = await _get_presigned_url(cog_key)
-
-    engine_tile = await _try_raster_engine_tile(
-        layer_id=layer.layer_id,
-        asset_url=asset_url,
-        metadata=metadata,
-        z=z,
-        x=x,
-        y=y,
-    )
-    if engine_tile is not None:
-        await tile_cache.put(layer.layer_id, z, x, y, engine_tile)
-        return Response(
-            content=engine_tile,
-            media_type="image/png",
-            headers=_tile_headers,
-        )
-
-    _ensure_rio_tiler()
-
-    def _render_tile() -> bytes:
-        with _Reader(asset_url) as src:
-            # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
-            # mask, so a 4-band drone ortho becomes 5 bands at encode and
-            # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
-            # raster with >3 bands; the mask becomes the alpha channel.
-            band_count = (metadata or {}).get("band_count")
-            if isinstance(band_count, int) and band_count > 3:
-                img = src.tile(x, y, z, indexes=(1, 2, 3))
-            else:
-                img = src.tile(x, y, z)
-
-            if "raster_value_stats_b1" in metadata:
-                min_val = metadata["raster_value_stats_b1"]["min"]
-                max_val = metadata["raster_value_stats_b1"]["max"]
-
-                img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
-
-                cm = _cmap.get("spectral_r")
-                return img.render(img_format="PNG", colormap=cm)
-            else:
-                return img.render(img_format="PNG")
-
-    try:
-        async with RASTER_TILE_SEMAPHORE:
-            loop = asyncio.get_running_loop()
-            content = await loop.run_in_executor(None, _render_tile)
-
-        # Store in Redis for subsequent requests
-        await tile_cache.put(layer.layer_id, z, x, y, content)
-
-        return Response(
-            content=content,
-            media_type="image/png",
-            headers=_tile_headers,
-        )
-    except _TileOutsideBounds:
-        # Expected: tile coords outside raster extent — transparent tile, cached
+    raster_minzoom = raster_source_minzoom(metadata, layer.bounds)
+    if z < raster_minzoom:
         empty_png = _get_empty_tile()
         await tile_cache.put(layer.layer_id, z, x, y, empty_png)
         return Response(
             content=empty_png,
             media_type="image/png",
-            headers=_tile_headers,
+            headers={**_tile_headers, "X-Raster-MinZoom": str(raster_minzoom)},
         )
-    except Exception as e:
-        error_class = type(e).__name__
-        logger.error(
-            "Raster tile render failed for layer=%s z=%d x=%d y=%d: %s: %s",
-            layer.layer_id, z, x, y, error_class, str(e),
-            exc_info=True
-        )
-        return Response(
-            content=_get_empty_tile(),
-            media_type="image/png",
-            headers=_tile_headers,
-        )
+
+    lock_key, render_lock = await _get_raster_tile_inflight_lock(layer.layer_id, z, x, y)
+    try:
+        async with render_lock:
+            cached = await tile_cache.get(layer.layer_id, z, x, y)
+            if cached is not None:
+                return Response(
+                    content=cached,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+
+            # Reuse presigned URL across concurrent tile requests for the same COG.
+            asset_url = await _get_presigned_url(cog_key)
+
+            engine_tile = await _try_raster_engine_tile(
+                layer_id=layer.layer_id,
+                asset_url=asset_url,
+                metadata=metadata,
+                z=z,
+                x=x,
+                y=y,
+            )
+            if engine_tile is not None:
+                await tile_cache.put(layer.layer_id, z, x, y, engine_tile)
+                return Response(
+                    content=engine_tile,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+
+            _ensure_rio_tiler()
+
+            def _render_tile() -> bytes:
+                with _Reader(asset_url) as src:
+                    # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
+                    # mask, so a 4-band drone ortho becomes 5 bands at encode and
+                    # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
+                    # raster with >3 bands; the mask becomes the alpha channel.
+                    band_count = (metadata or {}).get("band_count")
+                    if isinstance(band_count, int) and band_count > 3:
+                        img = src.tile(x, y, z, indexes=(1, 2, 3))
+                    else:
+                        img = src.tile(x, y, z)
+
+                    if "raster_value_stats_b1" in metadata:
+                        min_val = metadata["raster_value_stats_b1"]["min"]
+                        max_val = metadata["raster_value_stats_b1"]["max"]
+
+                        img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
+
+                        cm = _cmap.get("spectral_r")
+                        return img.render(img_format="PNG", colormap=cm)
+                    else:
+                        return img.render(img_format="PNG")
+
+            try:
+                async with RASTER_TILE_SEMAPHORE:
+                    loop = asyncio.get_running_loop()
+                    content = await loop.run_in_executor(None, _render_tile)
+
+                # Store in Redis for subsequent requests.
+                await tile_cache.put(layer.layer_id, z, x, y, content)
+
+                return Response(
+                    content=content,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+            except _TileOutsideBounds:
+                # Expected: tile coords outside raster extent — transparent tile, cached
+                empty_png = _get_empty_tile()
+                await tile_cache.put(layer.layer_id, z, x, y, empty_png)
+                return Response(
+                    content=empty_png,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+            except Exception as e:
+                error_class = type(e).__name__
+                logger.error(
+                    "Raster tile render failed for layer=%s z=%d x=%d y=%d: %s: %s",
+                    layer.layer_id, z, x, y, error_class, str(e),
+                    exc_info=True
+                )
+                return Response(
+                    content=_get_empty_tile(),
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+    finally:
+        await _release_raster_tile_inflight_lock(lock_key, render_lock)
 
 
 @layer_router.get(

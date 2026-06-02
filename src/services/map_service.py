@@ -24,6 +24,7 @@ from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
+from src.services.raster_zoom import raster_source_minzoom
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -488,14 +489,15 @@ async def get_map_style_internal(
             # Keep per-source bounds so MapLibre only requests tiles inside the
             # COG footprint. Default maxzoom favors interactive speed; raise
             # RASTER_SOURCE_MAXZOOM for inspection-grade native drone pixels.
+            _b = layer.get("bounds")
+            raster_minzoom = raster_source_minzoom(metadata, _b)
             raster_source: dict = {
                 "type": "raster",
                 "tiles": [tile_url],
                 "tileSize": 256,
-                "minzoom": 0,
+                "minzoom": raster_minzoom,
                 "maxzoom": raster_source_maxzoom,
             }
-            _b = layer.get("bounds")
             if _b and len(_b) == 4:
                 # DB column is [west, south, east, north] in WGS84.
                 raster_source["bounds"] = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
