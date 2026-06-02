@@ -11,7 +11,7 @@ import secrets
 logger = logging.getLogger(__name__)
 from functools import lru_cache
 from openai import AsyncOpenAI
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 
 
 def generate_id(length=12, prefix=""):
@@ -232,10 +232,38 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
         raise RuntimeError(f"Storage service temporarily unavailable: {exc}") from exc
 
 
+def _uses_only_local_ollama_models() -> bool:
+    model_chain = [
+        os.environ.get("OPENAI_MODEL", "gpt-4.1-nano"),
+        *(
+            os.environ.get("OPENROUTER_FALLBACK_MODELS", "").strip()
+            or os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+        ).split(","),
+    ]
+    model_chain = [model.strip() for model in model_chain if model.strip()]
+    return bool(model_chain) and all(model.startswith("ollama:") for model in model_chain)
+
+
 def get_openai_client(request: Request) -> AsyncOpenAI:
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    api_key = os.environ.get("OPENAI_API_KEY") or None
+    local_openai_compatible = any(
+        host in base_url for host in ("ollama", "localhost", "127.0.0.1", "host.docker.internal")
+    )
+
+    if not api_key and local_openai_compatible:
+        api_key = "ollama"
+    elif not api_key and not _uses_only_local_ollama_models():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Sage is missing LLM credentials. Set OPENAI_API_KEY for OpenAI/OpenRouter "
+                "or configure OPENAI_MODEL=ollama:<model> with a local chat model."
+            ),
+        )
+
     extra_headers = {}
     if "openrouter.ai" in base_url:
         extra_headers["HTTP-Referer"] = "https://mundi.ai"
         extra_headers["X-Title"] = "Mundi.ai"
-    return AsyncOpenAI(base_url=base_url, default_headers=extra_headers)
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)

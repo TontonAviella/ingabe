@@ -60,10 +60,6 @@ from src.geoprocessing.dispatch import (
     InvalidInputFormatError,
     get_tools,
 )
-from src.services.partner_skills import (
-    fetch_allowed_skills,
-    filter_tools_payload,
-)
 from src.dependencies.conversation import get_or_create_conversation
 from src.duckdb import execute_duckdb_query
 from src.utils import get_async_s3_client, get_bucket_name
@@ -81,6 +77,7 @@ from src.dependencies.system_prompt import (
 )
 from src.dependencies.sage_routing import (
     SMALL_TALK_SYSTEM_PROMPT,
+    build_fast_tool_call,
     extract_last_user_text,
     filter_tools_by_categories,
     route_chat,
@@ -111,6 +108,78 @@ tracer = trace.get_tracer(__name__)
 
 # Fixed connection ID for the internal Rwanda PostGIS connection
 _RWANDA_INTERNAL_CONN_ID = "CRwandaIntDB"
+
+
+class _ToolCallTextScrubber:
+    """Drops `<tool_call>...</tool_call>` XML/markup that some thinking models
+    (Nemotron 3 Super 120B specifically) sometimes emit as visible text content
+    instead of routing through the OpenAI structured `tool_calls` field.
+
+    Stateful streaming scrubber: maintains a small lookbehind buffer to detect
+    open/close tags that arrive split across multiple delta chunks. Discards
+    any content between `<tool_call>` and `</tool_call>` (inclusive of the
+    tags). At end-of-stream call `.flush()` to drain anything not inside a tag.
+    Unclosed tags at stream end are dropped silently (user sees clean output;
+    the real tool_call already routed through delta.tool_calls).
+
+    Why this exists: see prod incident 2026-05-13 where BK testing screenshot
+    showed raw `<tool_call><function=display_satellite_layer><parameter=bbox>
+    ...` text leaking into Sage's chat reply.
+    """
+    _OPEN = "<tool_call>"
+    _CLOSE = "</tool_call>"
+
+    def __init__(self) -> None:
+        self._buffer: str = ""
+        self._inside: bool = False
+        self._lookback: int = max(len(self._OPEN), len(self._CLOSE))
+
+    def feed(self, delta: str) -> str:
+        """Append `delta`, return whatever's safe to stream to the user now."""
+        self._buffer += delta
+        out: list[str] = []
+        while self._buffer:
+            if self._inside:
+                idx = self._buffer.find(self._CLOSE)
+                if idx == -1:
+                    # No close yet. Keep buffering, retain lookback for split tag.
+                    keep = min(len(self._buffer), self._lookback)
+                    self._buffer = self._buffer[-keep:] if keep else ""
+                    break
+                # Close found — discard everything up to and including close.
+                self._buffer = self._buffer[idx + len(self._CLOSE):]
+                self._inside = False
+            else:
+                idx = self._buffer.find(self._OPEN)
+                if idx == -1:
+                    # No open in buffer. Emit all but the lookback tail in case
+                    # the open is split across the next delta.
+                    safe_len = max(0, len(self._buffer) - self._lookback)
+                    out.append(self._buffer[:safe_len])
+                    self._buffer = self._buffer[safe_len:]
+                    break
+                # Open found — emit content BEFORE it, then drop the open tag.
+                out.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx + len(self._OPEN):]
+                self._inside = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        """End-of-stream flush. Returns any safe-to-emit remainder.
+
+        Also resets state so the scrubber is safe to reuse if a caller chooses
+        to (prod creates a fresh scrubber per attempt; this is defence-in-depth
+        against future reuse footguns).
+        """
+        if self._inside:
+            # Unclosed tag — discard buffer AND reset state, otherwise a
+            # reused scrubber would keep silently dropping all input.
+            self._buffer = ""
+            self._inside = False
+            return ""
+        out = self._buffer
+        self._buffer = ""
+        return out
 
 
 async def _ensure_rwanda_postgis_connection(
@@ -172,8 +241,67 @@ async def _ensure_rwanda_postgis_connection(
             logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
                          _RWANDA_INTERNAL_CONN_ID, project_id)
 
+        # Province boundaries are derived from district polygons. Keeping this
+        # as a view avoids a separate seed step while giving Sage a real
+        # province polygon surface for map display.
+        if await conn.fetchval(
+            "SELECT to_regclass('public.rwanda_district_boundaries') IS NOT NULL"
+        ):
+            await conn.execute(
+                """
+                CREATE OR REPLACE VIEW rwanda_province_boundaries AS
+                SELECT
+                    province,
+                    ST_Multi(ST_UnaryUnion(ST_Collect(geom)))::geometry(MultiPolygon, 4326) AS geom,
+                    ST_XMin(ST_Extent(geom))::double precision AS bbox_west,
+                    ST_YMin(ST_Extent(geom))::double precision AS bbox_south,
+                    ST_XMax(ST_Extent(geom))::double precision AS bbox_east,
+                    ST_YMax(ST_Extent(geom))::double precision AS bbox_north
+                FROM (
+                    SELECT
+                        CASE district
+                            WHEN 'Gasabo' THEN 'Kigali City'
+                            WHEN 'Kicukiro' THEN 'Kigali City'
+                            WHEN 'Nyarugenge' THEN 'Kigali City'
+                            WHEN 'Burera' THEN 'Northern Province'
+                            WHEN 'Gakenke' THEN 'Northern Province'
+                            WHEN 'Gicumbi' THEN 'Northern Province'
+                            WHEN 'Musanze' THEN 'Northern Province'
+                            WHEN 'Rulindo' THEN 'Northern Province'
+                            WHEN 'Gisagara' THEN 'Southern Province'
+                            WHEN 'Huye' THEN 'Southern Province'
+                            WHEN 'Kamonyi' THEN 'Southern Province'
+                            WHEN 'Muhanga' THEN 'Southern Province'
+                            WHEN 'Nyamagabe' THEN 'Southern Province'
+                            WHEN 'Nyanza' THEN 'Southern Province'
+                            WHEN 'Nyaruguru' THEN 'Southern Province'
+                            WHEN 'Ruhango' THEN 'Southern Province'
+                            WHEN 'Bugesera' THEN 'Eastern Province'
+                            WHEN 'Gatsibo' THEN 'Eastern Province'
+                            WHEN 'Kayonza' THEN 'Eastern Province'
+                            WHEN 'Kirehe' THEN 'Eastern Province'
+                            WHEN 'Ngoma' THEN 'Eastern Province'
+                            WHEN 'Nyagatare' THEN 'Eastern Province'
+                            WHEN 'Rwamagana' THEN 'Eastern Province'
+                            WHEN 'Karongi' THEN 'Western Province'
+                            WHEN 'Ngororero' THEN 'Western Province'
+                            WHEN 'Nyabihu' THEN 'Western Province'
+                            WHEN 'Nyamasheke' THEN 'Western Province'
+                            WHEN 'Rubavu' THEN 'Western Province'
+                            WHEN 'Rusizi' THEN 'Western Province'
+                            WHEN 'Rutsiro' THEN 'Western Province'
+                        END AS province,
+                        geom
+                    FROM rwanda_district_boundaries
+                ) districts
+                WHERE province IS NOT NULL
+                GROUP BY province
+                """
+            )
+
         # Dynamically count which Rwanda admin tables actually exist
         _RWANDA_TABLES = [
+            "rwanda_province_boundaries",
             "rwanda_district_boundaries",
             "rwanda_sector_boundaries",
             "rwanda_cell_boundaries",
@@ -193,6 +321,15 @@ async def _ensure_rwanda_postgis_connection(
         _existing_set = {r["table_name"] for r in existing_tables}
         _summary_parts = ["## Rwanda Administrative Boundaries\n"]
 
+        if "rwanda_province_boundaries" in _existing_set:
+            _summary_parts.append(
+                "### rwanda_province_boundaries\n"
+                "All 5 Rwanda provinces/city areas derived from district polygons.\n"
+                "| Column | Type | Description |\n"
+                "|--------|------|-------------|\n"
+                "| province | text | Province name (Kigali City, Eastern Province, Northern Province, Southern Province, Western Province) |\n"
+                "| geom | geometry(MultiPolygon, 4326) | Province boundary |\n"
+            )
         if "rwanda_district_boundaries" in _existing_set:
             _summary_parts.append(
                 "### rwanda_district_boundaries\n"
@@ -241,9 +378,11 @@ async def _ensure_rwanda_postgis_connection(
 
         _summary_parts.append(
             "\n### Admin hierarchy\n"
-            "District (30) → Sector (~416) → Cell (~2,148) → Village (~14,815)\n\n"
+            "Province (5) → District (30) → Sector (~416) → Cell (~2,148) → Village (~14,815)\n\n"
             "### Usage with new_layer_from_postgis\n"
             "Queries MUST return columns named `id` and `geom`.\n"
+            "Example (provinces): `SELECT province AS id, province, geom "
+            "FROM rwanda_province_boundaries`\n"
             "Example (districts): `SELECT district AS id, geom "
             "FROM rwanda_district_boundaries`\n"
             "Example (sectors): `SELECT sector_id AS id, sector_name, "
@@ -1038,71 +1177,349 @@ async def _generate_postgis_pmtiles_background(
         )
 
 
-async def _build_brain_context_block(
+def _admin_sql_literal(value: object) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _admin_boundary_style(layer_id: str) -> list[dict]:
+    source_layer = "reprojectedfgb"
+    return [
+        {
+            "id": f"{layer_id}-fill",
+            "type": "fill",
+            "source": layer_id,
+            "source-layer": source_layer,
+            "paint": {
+                "fill-color": "#ff6b6b",
+                "fill-opacity": 0.18,
+            },
+        },
+        {
+            "id": f"{layer_id}-outline",
+            "type": "line",
+            "source": layer_id,
+            "source-layer": source_layer,
+            "paint": {
+                "line-color": "#111111",
+                "line-width": 2.5,
+            },
+        },
+    ]
+
+
+async def _resolve_admin_boundary_query(
+    conn,
+    args: dict[str, object],
+) -> dict[str, object]:
+    requested_level = str(args.get("admin_level") or "auto").strip().lower()
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"status": "error", "error": "Missing boundary name."}
+
+    levels = {
+        "province": {
+            "table": "rwanda_province_boundaries",
+            "name_col": "province",
+            "attrs": ["province"],
+            "label": "province",
+        },
+        "district": {
+            "table": "rwanda_district_boundaries",
+            "name_col": "district",
+            "attrs": ["district"],
+            "label": "district",
+        },
+        "sector": {
+            "table": "rwanda_sector_boundaries",
+            "name_col": "sector_name",
+            "attrs": ["sector_name", "district_name"],
+            "label": "sector",
+        },
+        "cell": {
+            "table": "rwanda_cell_boundaries",
+            "name_col": "cell_name",
+            "attrs": ["cell_name", "sector_name", "district_name"],
+            "label": "cell",
+        },
+        "village": {
+            "table": "rwanda_village_boundaries",
+            "name_col": "village_name",
+            "attrs": ["village_name", "cell_name", "sector_name", "district_name"],
+            "label": "village",
+        },
+    }
+
+    def _filters_for(level: str, *, sql: bool) -> tuple[list[str], list[object]]:
+        spec = levels[level]
+        filters: list[str] = []
+        params: list[object] = []
+        if name not in {"*", "all"}:
+            if sql:
+                filters.append(f"LOWER({spec['name_col']}) = LOWER({_admin_sql_literal(name)})")
+            else:
+                params.append(name)
+                filters.append(f"LOWER({spec['name_col']}) = LOWER(${len(params)})")
+        for arg_key, col in (
+            ("district", "district_name"),
+            ("sector", "sector_name"),
+            ("cell", "cell_name"),
+        ):
+            value = args.get(arg_key)
+            if not value:
+                continue
+            if sql:
+                filters.append(f"LOWER({col}) = LOWER({_admin_sql_literal(value)})")
+            else:
+                params.append(value)
+                filters.append(f"LOWER({col}) = LOWER(${len(params)})")
+        return filters, params
+
+    async def _match(level: str) -> dict[str, object]:
+        spec = levels[level]
+        filters, params = _filters_for(level, sql=False)
+        where = " AND ".join(filters) if filters else "TRUE"
+        rows = await conn.fetch(
+            f"""
+            SELECT {', '.join(spec['attrs'])},
+                   ST_XMin(ST_Extent(geom)) AS xmin,
+                   ST_YMin(ST_Extent(geom)) AS ymin,
+                   ST_XMax(ST_Extent(geom)) AS xmax,
+                   ST_YMax(ST_Extent(geom)) AS ymax,
+                   COUNT(*) OVER() AS match_count
+            FROM {spec['table']}
+            WHERE {where}
+            GROUP BY {', '.join(spec['attrs'])}
+            ORDER BY {', '.join(spec['attrs'])}
+            LIMIT 12
+            """,
+            *params,
+        )
+        if not rows:
+            return {"status": "not_found", "admin_level": level}
+        total = int(rows[0]["match_count"])
+        candidates = [dict(row) for row in rows]
+        if total > 1 and name not in {"*", "all"}:
+            return {
+                "status": "ambiguous",
+                "admin_level": level,
+                "admin_name": name,
+                "candidates": candidates,
+                "match_count": total,
+            }
+
+        sql_filters, _ = _filters_for(level, sql=True)
+        sql_where = " AND ".join(sql_filters) if sql_filters else "TRUE"
+        attr_select = ", ".join(spec["attrs"])
+        query = (
+            f"SELECT ROW_NUMBER() OVER()::bigint AS id, {attr_select}, geom "
+            f"FROM {spec['table']} WHERE {sql_where}"
+        )
+        bounds = [
+            float(rows[0]["xmin"]),
+            float(rows[0]["ymin"]),
+            float(rows[0]["xmax"]),
+            float(rows[0]["ymax"]),
+        ]
+        first = dict(rows[0])
+        display_name = (
+            str(first.get(spec["name_col"]) or name)
+            if name not in {"*", "all"}
+            else f"{level.title()} Boundaries"
+        )
+        return {
+            "status": "success",
+            "admin_level": level,
+            "admin_name": display_name,
+            "query": query,
+            "bounds": bounds,
+            "feature_count": total if name in {"*", "all"} else 1,
+            "attribute_columns": spec["attrs"],
+            "layer_name": (
+                f"{display_name} {level.title()} Boundary"
+                if name not in {"*", "all"}
+                else f"{display_name}"
+            ),
+        }
+
+    search_levels = (
+        list(levels)
+        if requested_level == "auto"
+        else [requested_level]
+    )
+    for level in search_levels:
+        if level not in levels:
+            continue
+        result = await _match(level)
+        if result["status"] != "not_found":
+            return result
+    return {
+        "status": "not_found",
+        "admin_level": requested_level,
+        "admin_name": name,
+        "error": f"No Rwanda administrative boundary found for {name!r}.",
+    }
+
+
+def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
+    name = str(result.get("admin_name") or "that area")
+    level = str(result.get("admin_level") or "admin")
+    if result.get("status") == "success":
+        count = result.get("feature_count")
+        if isinstance(count, int) and count > 1:
+            return f"I added {count} {level} boundaries to the map."
+        return f"I added {name} {level} boundary to the map."
+    if result.get("status") == "ambiguous":
+        examples: list[str] = []
+        candidates = result.get("candidates")
+        if isinstance(candidates, list):
+            for candidate in candidates[:5]:
+                if not isinstance(candidate, dict):
+                    continue
+                parts = [
+                    str(candidate[key])
+                    for key in ("village_name", "cell_name", "sector_name", "district_name", "province")
+                    if candidate.get(key)
+                ]
+                if parts:
+                    examples.append(" / ".join(parts))
+        suffix = f" Examples: {'; '.join(examples)}." if examples else ""
+        return f"I found multiple matches for {name}. Please specify the parent district, sector, or cell.{suffix}"
+    return str(result.get("error") or f"I couldn't find {name}.")
+
+
+async def _maybe_run_fast_admin_boundary_turn(
+    *,
+    map_id: str,
+    session: UserContext,
     user_id: str,
-    partner_id: str | None,
-    user_message: str,
-    limit: int = 5,
-) -> str | None:
-    # Pre-inject brain hits into the system prompt so most turns answer
-    # from the <BrainContext> block instead of forcing the LLM to call
-    # search_brain. The system prompt at src/dependencies/system_prompt.py
-    # already references <BrainContext>; this fills that template.
-    if not user_message or not user_message.strip():
-        return None
-    with tracer.start_as_current_span("pattern_a.active_memory") as _span:
-        _span.set_attribute("query_len", len(user_message))
-        try:
-            from src.dependencies.brain_dep import get_brain_service
-            from src.database.pool import get_async_db_connection
-            from src.services.brain_embeddings import _get_embeddings
-            _brain = get_brain_service()
-            try:
-                _embs, _ = await _get_embeddings([user_message])
-                _emb = _embs[0] if _embs else None
-            except Exception:
-                logger.debug("Pattern A: embedding failed, keyword-only", exc_info=True)
-                _emb = None
-            async with get_async_db_connection(
-                user_id=user_id, partner_id=partner_id
-            ) as _conn:
-                _results = await _brain.search_hybrid(
-                    _conn, user_message, embedding=_emb, limit=limit
-                )
-            _span.set_attribute("hits", len(_results))
-            if not _results:
-                return None
-            _lines = ["<BrainContext>"]
-            for _r in _results:
-                _txt = (_r.chunk_text or "").strip().replace("\n", " ")
-                if len(_txt) > 400:
-                    _txt = _txt[:400] + "..."
-                _lines.append(
-                    f"- [{_r.type}] {_r.title} (slug={_r.slug}): {_txt}"
-                )
-            _lines.append("</BrainContext>")
-            return "\n".join(_lines)
-        except Exception:
-            logger.exception("Pattern A active-memory injection failed")
-            _span.set_attribute("error", True)
-            return None
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> bool:
+    if os.environ.get("SAGE_FAST_ADMIN_BOUNDARIES", "1").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return False
 
+    fast_call = build_fast_tool_call(extract_last_user_text(openai_messages))
+    if not fast_call or fast_call.tool_name != "show_admin_boundary":
+        return False
 
-def _latest_user_text(messages: list) -> str | None:
-    for m in reversed(messages):
-        if not isinstance(m, dict):
-            continue
-        if m.get("role") != "user":
-            continue
-        c = m.get("content")
-        if isinstance(c, str):
-            return c
-        if isinstance(c, list):
-            parts = [p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"]
-            joined = " ".join(p for p in parts if p)
-            if joined:
-                return joined
-    return None
+    started = asyncio.get_running_loop().time()
+    turn_id = f"fast-admin-{conversation.id}-{_uuid.uuid4().hex[:8]}"
+    partner_id = session.get_org_id()
+
+    async with async_conn(
+        "sage.fast_admin_boundary",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        project_row = await conn.fetchrow(
+            "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+            map_id,
+        )
+        if not project_row:
+            return False
+        project_id = project_row["project_id"]
+        pgc_id = await _ensure_rwanda_postgis_connection(conn, project_id, user_id)
+        if not pgc_id:
+            return False
+
+        result = await _resolve_admin_boundary_query(conn, fast_call.arguments)
+        if result.get("status") == "success":
+            layer_id = generate_id(prefix="L")
+            style_id = generate_id(prefix="S")
+            layer_name = str(result["layer_name"])
+            query = str(result["query"])
+            bounds = result.get("bounds")
+            attr_cols = result.get("attribute_columns") or []
+            feature_count = int(result.get("feature_count") or 0)
+
+            async with kue_ephemeral_action(
+                conversation.id,
+                "Showing admin boundary...",
+                update_style_json=True,
+                bounds=bounds if isinstance(bounds, list) and len(bounds) == 4 else None,
+            ):
+                await conn.execute(
+                    """
+                    INSERT INTO map_layers
+                    (layer_id, owner_uuid, name, type,
+                     postgis_connection_id, postgis_query,
+                     metadata, feature_count, bounds, geometry_type, source_map_id,
+                     created_on, last_edited, postgis_attribute_column_list)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                            CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,$12)
+                    """,
+                    layer_id,
+                    user_id,
+                    layer_name,
+                    "postgis",
+                    pgc_id,
+                    query,
+                    json.dumps({"fast_admin_boundary": True}),
+                    feature_count,
+                    bounds,
+                    "multipolygon",
+                    map_id,
+                    attr_cols,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO layer_styles
+                    (style_id, layer_id, style_json, created_by, created_on)
+                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                    """,
+                    style_id,
+                    layer_id,
+                    json.dumps(_admin_boundary_style(layer_id)),
+                    user_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO map_layer_styles (map_id, layer_id, style_id)
+                    VALUES ($1, $2, $3)
+                    """,
+                    map_id,
+                    layer_id,
+                    style_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE user_mundiai_maps
+                    SET layers = CASE
+                        WHEN layers IS NULL THEN ARRAY[$1]
+                        ELSE array_append(layers, $1)
+                    END
+                    WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
+                    """,
+                    layer_id,
+                    map_id,
+                )
+            result["layer_id"] = layer_id
+
+        assistant_text = _admin_boundary_fast_reply(result)
+        await conn.execute(
+            """
+            INSERT INTO chat_completion_messages
+            (map_id, sender_id, message_json, conversation_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": assistant_text}),
+            conversation.id,
+        )
+
+    await kue_stream_token(conversation.id, assistant_text, turn_id=turn_id)
+    await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+    logger.info(
+        "Sage fast admin boundary route: conv=%s args=%s status=%s elapsed=%.3fs",
+        conversation.id,
+        json.dumps(fast_call.arguments, default=str),
+        result.get("status"),
+        asyncio.get_running_loop().time() - started,
+    )
+    return True
 
 
 async def process_chat_interaction_task(
@@ -1146,23 +1563,6 @@ async def process_chat_interaction_task(
     with tracer.start_as_current_span("app.process_chat_interaction") as span:
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
-
-        _pattern_a_enabled = os.environ.get(
-            "INGABE_PATTERN_A_ACTIVE_MEMORY", "1"
-        ) == "1"
-        _brain_ctx_cache: dict[str, str] = {}
-
-        _pattern_d_enabled = os.environ.get(
-            "INGABE_PATTERN_D_COMPOSITION", "1"
-        ) == "1"
-        _pattern_d_tool_timeout = float(
-            os.environ.get("INGABE_PATTERN_D_TOOL_TIMEOUT_SEC", "60")
-        )
-        _pd_steps = 0
-        _pd_tool_calls_total = 0
-        _pd_max_per_step = 0
-        _pd_timeouts = 0
-        _pd_exit_reason = "max_iter"
 
         for i in range(25):
             # Check if the message processing has been cancelled
@@ -1266,6 +1666,15 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
+
+            if await _maybe_run_fast_admin_boundary_turn(
+                map_id=map_id,
+                session=session,
+                user_id=user_id,
+                conversation=conversation,
+                openai_messages=openai_messages,
+            ):
+                return
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
@@ -1513,22 +1922,6 @@ async def process_chat_interaction_task(
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)
 
-            # Phase 4: partner skill allowlist. Filter tools_payload so the LLM
-            # only sees what this partner is registered for. Unrestricted (None)
-            # for legacy/unscoped sessions.
-            try:
-                async with async_conn("partner_skills_filter") as _ps_conn:
-                    _allowed = await fetch_allowed_skills(_ps_conn, partner_id)
-                if _allowed is not None:
-                    _before = len(tools_payload)
-                    tools_payload = filter_tools_payload(tools_payload, _allowed)
-                    logger.info(
-                        "partner_skills filter: partner=%s allowed=%d kept=%d/%d",
-                        partner_id, len(_allowed), len(tools_payload), _before,
-                    )
-            except Exception as _ps_err:
-                logger.warning("partner_skills filter skipped: %s", _ps_err)
-
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
             )
@@ -1548,7 +1941,7 @@ async def process_chat_interaction_task(
             _routing = route_chat(_last_user_text, history=openai_messages)
 
             if _routing.is_small_talk:
-                _system_content = SMALL_TALK_SYSTEM_PROMPT
+                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
                 tools_payload = []
                 if _routing.primary_model_override:
                     chat_completions_args = {
@@ -1562,7 +1955,7 @@ async def process_chat_interaction_task(
                     len(_last_user_text),
                 )
             else:
-                _system_content = system_prompt_provider.get_system_prompt()
+                _system_prompt_content = system_prompt_provider.get_system_prompt()
                 if _routing.selected_categories:
                     _before = len(tools_payload)
                     tools_payload = filter_tools_by_categories(
@@ -1573,25 +1966,10 @@ async def process_chat_interaction_task(
                         _routing.reason, _before, len(tools_payload),
                     )
 
-                # Pattern A active-memory injection (skipped on small-talk path).
-                if _pattern_a_enabled:
-                    _latest_user = _latest_user_text(openai_messages)
-                    if _latest_user:
-                        import hashlib as _h
-                        _ck = _h.sha1(_latest_user.encode("utf-8")).hexdigest()
-                        _brain_block = _brain_ctx_cache.get(_ck)
-                        if _brain_block is None and _ck not in _brain_ctx_cache:
-                            _brain_block = await _build_brain_context_block(
-                                user_id, partner_id, _latest_user, limit=5
-                            )
-                            _brain_ctx_cache[_ck] = _brain_block or ""
-                        if _brain_block:
-                            _system_content = _system_content + "\n\n" + _brain_block
-
             _llm_messages = [
                 {
                     "role": "system",
-                    "content": _system_content,
+                    "content": _system_prompt_content,
                 }
             ] + openai_messages
 
@@ -1715,6 +2093,10 @@ async def process_chat_interaction_task(
                         else:
                             _attempt_client = client
                         try:
+                            # Per-attempt scrubber so Nemotron's
+                            # `<tool_call>...</tool_call>` text emissions don't
+                            # leak into the user-visible chat. See class docstring.
+                            _xml_scrub = _ToolCallTextScrubber()
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
@@ -1723,8 +2105,10 @@ async def process_chat_interaction_task(
                                     continue
                                 delta = chunk.choices[0].delta
                                 if delta.content:
-                                    content_parts.append(delta.content)
-                                    await kue_stream_token(conversation.id, delta.content, turn_id=turn_id)
+                                    _safe = _xml_scrub.feed(delta.content)
+                                    if _safe:
+                                        content_parts.append(_safe)
+                                        await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
                                         idx = tc.index
@@ -1740,6 +2124,14 @@ async def process_chat_interaction_task(
                                                 tool_calls_acc[idx]["function"]["name"] += tc.function.name
                                             if tc.function.arguments:
                                                 tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                            # End of stream — flush the XML scrubber's lookback
+                            # tail. Anything still inside an unclosed `<tool_call>`
+                            # is silently dropped (real tool_call already routed
+                            # via delta.tool_calls accumulation above).
+                            _tail = _xml_scrub.flush()
+                            if _tail:
+                                content_parts.append(_tail)
+                                await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
                             # Success
                             _last_err = None
                             break
@@ -1904,22 +2296,7 @@ async def process_chat_interaction_task(
             await add_chat_completion_message(assistant_message)
 
             if not assistant_message.tool_calls:
-                _pd_exit_reason = "final_assistant"
                 break
-
-            if _pattern_d_enabled:
-                _pd_steps += 1
-                _calls_this_step = len(assistant_message.tool_calls)
-                _pd_tool_calls_total += _calls_this_step
-                if _calls_this_step > _pd_max_per_step:
-                    _pd_max_per_step = _calls_this_step
-                span.add_event(
-                    "pattern_d.composition_step",
-                    {
-                        "step": _pd_steps,
-                        "tool_calls_in_step": _calls_this_step,
-                    },
-                )
 
             # Fetch project_id for this map once for all tool calls
             async with async_conn("tool.project_id_for_map") as proj_conn:
@@ -1971,25 +2348,8 @@ async def process_chat_interaction_task(
                                     project_id=current_project_id,
                                     session=session,
                                 )
-                                if _pattern_d_enabled:
-                                    tool_result = await asyncio.wait_for(
-                                        fn(parsed_args, mundi_args),
-                                        timeout=_pattern_d_tool_timeout,
-                                    )
-                                else:
-                                    tool_result = await fn(parsed_args, mundi_args)
+                                tool_result = await fn(parsed_args, mundi_args)
 
-                            except asyncio.TimeoutError:
-                                _pd_timeouts += 1
-                                logger.warning(
-                                    "Pattern D: tool %s exceeded %.1fs timeout",
-                                    function_name,
-                                    _pattern_d_tool_timeout,
-                                )
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"{function_name} timed out after {_pattern_d_tool_timeout:.0f}s",
-                                }
                             except Exception as e:
                                 logger.exception("Tool execution failed for %s", tool_call.function.name)
                                 tool_result = {
@@ -6392,29 +6752,7 @@ async def process_chat_interaction_task(
                         "The tool keeps failing. Please try rephrasing your request "
                         "or start a new chat.",
                     )
-                    _pd_exit_reason = "consecutive_errors"
                     break
-
-        if _pattern_d_enabled:
-            span.set_attribute("pattern_d.enabled", True)
-            span.set_attribute("pattern_d.steps", _pd_steps)
-            span.set_attribute("pattern_d.tool_calls_total", _pd_tool_calls_total)
-            span.set_attribute("pattern_d.max_calls_per_step", _pd_max_per_step)
-            span.set_attribute("pattern_d.timeouts", _pd_timeouts)
-            span.set_attribute("pattern_d.exit_reason", _pd_exit_reason)
-            span.set_attribute(
-                "pattern_d.tool_timeout_sec", _pattern_d_tool_timeout
-            )
-            logger.info(
-                "pattern_d summary: conv=%s steps=%d calls=%d max_per_step=%d "
-                "timeouts=%d exit=%s",
-                conversation.id,
-                _pd_steps,
-                _pd_tool_calls_total,
-                _pd_max_per_step,
-                _pd_timeouts,
-                _pd_exit_reason,
-            )
 
         # Label the conversation if it still has the default "title pending"
         # if conversation.title == "title pending":
@@ -6425,6 +6763,53 @@ async def process_chat_interaction_task(
         redis.delete(_lock_key)
     except Exception:
         logger.debug("Redis unavailable for chat lock cleanup")
+
+
+async def process_chat_interaction_task_safely(
+    request: Request,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    chat_args: ChatArgsProvider,
+    map_state: MapStateProvider,
+    conversation: Conversation,
+    system_prompt_provider: SystemPromptProvider,
+    connection_manager: PostgresConnectionManager,
+    pydantic_tool_calls: PydanticToolRegistry,
+):
+    lock_key = f"chat_lock:{conversation.id}"
+    try:
+        await process_chat_interaction_task(
+            request,
+            map_id,
+            session,
+            user_id,
+            chat_args,
+            map_state,
+            conversation,
+            system_prompt_provider,
+            connection_manager,
+            pydantic_tool_calls,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Sage could not process this request."
+        logger.warning(
+            "Sage chat processing failed for conversation %s: %s",
+            conversation.id,
+            detail,
+        )
+        await kue_notify_error(conversation.id, detail)
+    except Exception:
+        logger.exception("Sage chat processing crashed for conversation %s", conversation.id)
+        await kue_notify_error(
+            conversation.id,
+            "Sage hit an internal error while processing this request. Please try again.",
+        )
+    finally:
+        try:
+            redis.delete(lock_key)
+        except Exception:
+            logger.debug("Redis unavailable for chat lock cleanup")
 
 
 class MessageSendRequest(BaseModel):
@@ -6603,7 +6988,7 @@ async def send_map_message(
         )
     else:
         background_tasks.add_task(
-            process_chat_interaction_task,
+            process_chat_interaction_task_safely,
             request,
             map_id,
             session,

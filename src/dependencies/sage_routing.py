@@ -46,6 +46,15 @@ AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
 
+
+@dataclass(frozen=True)
+class FastToolCall:
+    """Deterministic tool route that can bypass the LLM safely."""
+
+    tool_name: str
+    arguments: dict[str, object]
+    reason: str
+
 # Map tool name -> category. Tools not in this dict are treated as
 # "uncategorized" and included whenever we cannot rule them out (i.e.
 # whenever we fall back to the full list). Category labels reflect what
@@ -59,17 +68,14 @@ BRAIN = "brain"
 # dropping uncategorized tools) is the failure mode we never want.
 _TOOL_CATEGORIES: dict[str, str] = {
     # --- Always available: trivial display + geocoding ---
-    # `add_layer_to_map`, `display_satellite_layer`, `search_satellite_imagery`
-    # live here because any domain turn can end with "show me the result on
-    # the map". Excluding them from a filtered turn would mean the LLM has
-    # the data but no way to surface it.
+    # Keep this set intentionally small. Satellite tools are not always-on:
+    # plain "show me Nyamagabe" should prefer admin boundaries/locations, not
+    # drift into imagery unless the user asks for imagery or an index.
     "zoom_to_bounds": ALWAYS_ON,
     "create_point_layer": ALWAYS_ON,
     "search_location": ALWAYS_ON,
     "reverse_geocode_coordinates": ALWAYS_ON,
     "add_layer_to_map": ALWAYS_ON,
-    "search_satellite_imagery": ALWAYS_ON,
-    "display_satellite_layer": ALWAYS_ON,
     # --- Map editing / postgis / generic geoprocessing ---
     "new_layer_from_postgis": MAP_EDIT,
     "set_layer_style": MAP_EDIT,
@@ -94,7 +100,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "qgis_intersection": MAP_EDIT,
     "qgis_joinbylocationsummary": MAP_EDIT,
     "qgis_statisticsbycategories": MAP_EDIT,
-    # --- Satellite imagery (compute side; display is ALWAYS_ON) ---
+    # --- Satellite imagery ---
+    "search_satellite_imagery": SATELLITE,
+    "display_satellite_layer": SATELLITE,
     "compute_spectral_index": SATELLITE,
     # --- Agricultural data products ---
     "get_field_health": AGRICULTURE,
@@ -177,11 +185,13 @@ _SMALL_TALK_PATTERNS = [
 # small-talk turns.
 _DOMAIN_BLOCKERS = re.compile(
     r"\b("
-    r"map|layer|field|farm|district|sector|cell|parcel|"
+    r"map|layer|field|farm|province|district|sector|cell|village|parcel|"
+    r"admin|administrative|boundary|boundaries|location|"
     r"ndvi|ndwi|nbr|sar|ndre|raster|drone|satellite|cog|"
     r"insurance|harvest|yield|crop|soil|weather|forecast|drought|flood|"
     r"rainfall|temperature|moisture|"
     r"rwanda|kigali|musanze|huye|kayonza|gicumbi|nyagatare|nyabihu|"
+    r"nyamagabe|rulindo|ruhanga|gasabo|rusizi|"
     r"show|display|plot|render|zoom|find|search|analyze|analyse|compute|"
     r"upload|download|export|"
     r"yesterday|today|tomorrow|week|month|season|year|january|february|"
@@ -214,6 +224,19 @@ def detect_small_talk(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
+    # Rwanda administrative boundaries / plain place display.
+    (
+        re.compile(
+            r"\b("
+            r"admin(?:istrative)?|boundar(?:y|ies)|"
+            r"province|district|sector|cell|village|"
+            r"intara|akarere|umurenge|akagari|umudugudu|"
+            r"show\s+me|show|display|locate|where\s+is|find|zoom\s+to"
+            r")\b",
+            re.IGNORECASE,
+        ),
+        frozenset({MAP_EDIT}),
+    ),
     # Map / layer editing
     (
         re.compile(
@@ -287,6 +310,124 @@ def classify_intent(text: str) -> frozenset[str]:
         if pattern.search(text):
             cats.update(categories)
     return frozenset(cats)
+
+
+_ADMIN_ANALYSIS_BLOCKERS = re.compile(
+    r"\b("
+    r"ndvi|ndwi|nbr|evi|savi|ndre|ndbi|index|indices|satellite|sentinel|"
+    r"weather|forecast|rain|rainfall|temperature|drought|flood|soil|crop|"
+    r"yield|harvest|insurance|risk|analy[sz]e|analysis|statistics?|stats|"
+    r"zonal|land\s*cover|worldcover|emissions?|food\s+security"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def detect_admin_boundary_display(text: str) -> bool:
+    """True for pure Rwanda admin boundary/location display requests."""
+    stripped = " ".join(str(text or "").strip().split())
+    if not stripped or _ADMIN_ANALYSIS_BLOCKERS.search(stripped):
+        return False
+
+    if re.search(
+        r"\b(province|district|sector|cell|village|admin(?:istrative)?|"
+        r"boundar(?:y|ies)|intara|akarere|umurenge|akagari|umudugudu)\b",
+        stripped,
+        re.IGNORECASE,
+    ):
+        return bool(
+            re.search(
+                r"\b(show|display|locate|find|draw|outline|map|put|zoom|go\s+to|where\s+is)\b",
+                stripped,
+                re.IGNORECASE,
+            )
+        )
+
+    return bool(
+        re.match(
+            r"(?i)^(?:please\s+)?(?:again\s+)?"
+            r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to)"
+            r"\s+(?:me|us\s+)?(?:the\s+)?[a-z][a-z\s.'-]{1,60}"
+            r"(?:\s+on\s+the\s+map)?[?.!]*$",
+            stripped,
+        )
+    )
+
+
+def _clean_admin_boundary_candidate(value: str) -> str:
+    cleaned = " ".join(str(value or "").strip().split())
+    cleaned = re.sub(r"(?i)\b(on|onto)\s+the\s+map\b.*$", "", cleaned)
+    cleaned = re.sub(r"(?i)\b(boundary|boundaries|outline)\b", "", cleaned)
+    cleaned = re.sub(
+        r"(?i)^\s*(?:please\s+)?(?:again\s+)?"
+        r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to|where\s+is)\s+",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)^\s*(?:me|us)\s+", "", cleaned)
+    cleaned = re.sub(r"(?i)^\s*(?:the|a|an|all|every)\s+", "", cleaned)
+    cleaned = re.sub(r"(?i)^\s*(?:around|for|of|in|at)\s+", "", cleaned)
+    return cleaned.strip(" \t\r\n,.;:!?\"'`")
+
+
+def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
+    """Build deterministic args for a pure admin-boundary display prompt."""
+    if not detect_admin_boundary_display(text):
+        return None
+    prompt = " ".join(str(text or "").strip().split())
+
+    child_match = re.search(
+        r"(?i)\b(?:show|display|map|draw|outline|locate|find|zoom(?:\s+to)?|go\s+to)?"
+        r"\s*(?:me|us)?\s*(?:all|the|every)?\s*"
+        r"(villages|cells|sectors)\s+"
+        r"(?:in|of|within|under|inside)\s+(.+?)\s+"
+        r"(district|sector|cell)\b",
+        prompt,
+    )
+    if child_match:
+        child_level = child_match.group(1).lower().rstrip("s")
+        parent_name = _clean_admin_boundary_candidate(child_match.group(2))
+        parent_level = child_match.group(3).lower()
+        if parent_name:
+            args: dict[str, object] = {"admin_level": child_level, "name": "*"}
+            args[parent_level] = parent_name
+            return args
+
+    for level in ("village", "cell", "sector", "district", "province"):
+        explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
+        if explicit:
+            name = _clean_admin_boundary_candidate(explicit.group(1))
+            if name:
+                if level == "province" and name.lower() not in {"kigali", "kigali city"}:
+                    if not name.lower().endswith("province"):
+                        name = f"{name} Province"
+                return {"admin_level": level, "name": name}
+
+    simple = re.match(
+        r"(?i)^(?:please\s+)?(?:again\s+)?"
+        r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to)"
+        r"\s+(?:me|us\s+)?(?:the\s+)?(.+?)(?:\s+on\s+the\s+map)?[?.!]*$",
+        prompt,
+    )
+    if simple:
+        name = _clean_admin_boundary_candidate(simple.group(1))
+        if name:
+            return {"admin_level": "auto", "name": name}
+
+    where = re.match(r"(?i)^where\s+is\s+(.+?)[?.!]*$", prompt)
+    if where:
+        name = _clean_admin_boundary_candidate(where.group(1))
+        if name:
+            return {"admin_level": "auto", "name": name}
+
+    return None
+
+
+def build_fast_tool_call(text: str) -> FastToolCall | None:
+    args = build_admin_boundary_tool_args(text)
+    if args:
+        return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    return None
 
 
 def filter_tools_by_categories(

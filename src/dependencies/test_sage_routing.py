@@ -19,7 +19,10 @@ from src.dependencies.sage_routing import (
     MAP_EDIT,
     SATELLITE,
     USER_RASTER,
+    build_admin_boundary_tool_args,
+    build_fast_tool_call,
     classify_intent,
+    detect_admin_boundary_display,
     detect_small_talk,
     extract_last_user_text,
     filter_tools_by_categories,
@@ -136,6 +139,7 @@ def test_filter_keeps_always_on() -> None:
         _tool("zoom_to_bounds"),
         _tool("add_layer_to_map"),
         _tool("search_location"),
+        _tool("display_satellite_layer"),
         _tool("get_field_health"),  # AGRICULTURE
     ]
     out = filter_tools_by_categories(tools, {MAP_EDIT})
@@ -144,6 +148,8 @@ def test_filter_keeps_always_on() -> None:
     assert "zoom_to_bounds" in names
     assert "add_layer_to_map" in names
     assert "search_location" in names
+    # Satellite display is only available when satellite intent is selected.
+    assert "display_satellite_layer" not in names
     # AGRICULTURE-only tool must be dropped under MAP_EDIT filter
     assert "get_field_health" not in names
 
@@ -190,6 +196,81 @@ def test_route_chat_real_ask_filters_intent() -> None:
     assert decision.is_small_talk is False
     assert SATELLITE in decision.selected_categories
     assert decision.reason.startswith("intent:")
+
+
+def test_route_chat_plain_admin_place_prefers_boundary_tools() -> None:
+    decision = route_chat("show me nyamagabe ?", history=[])
+    assert decision.is_small_talk is False
+    assert MAP_EDIT in decision.selected_categories
+    assert SATELLITE not in decision.selected_categories
+
+
+def test_admin_boundary_filter_excludes_satellite_tools() -> None:
+    tools = [
+        _tool("search_location"),
+        _tool("new_layer_from_postgis"),
+        _tool("set_layer_style"),
+        _tool("search_satellite_imagery"),
+        _tool("display_satellite_layer"),
+    ]
+    out = filter_tools_by_categories(tools, {MAP_EDIT})
+    names = {t["function"]["name"] for t in out}
+    assert "search_location" in names
+    assert "new_layer_from_postgis" in names
+    assert "set_layer_style" in names
+    assert "search_satellite_imagery" not in names
+    assert "display_satellite_layer" not in names
+
+
+def test_explicit_satellite_place_keeps_satellite_tools() -> None:
+    decision = route_chat("show Sentinel satellite imagery for Nyamagabe", history=[])
+    assert MAP_EDIT in decision.selected_categories
+    assert SATELLITE in decision.selected_categories
+
+    tools = [
+        _tool("new_layer_from_postgis"),
+        _tool("display_satellite_layer"),
+    ]
+    out = filter_tools_by_categories(tools, decision.selected_categories)
+    names = {t["function"]["name"] for t in out}
+    assert "new_layer_from_postgis" in names
+    assert "display_satellite_layer" in names
+
+
+@pytest.mark.parametrize(
+    "msg, expected",
+    [
+        ("show me Nyamagabe", {"admin_level": "auto", "name": "Nyamagabe"}),
+        ("show me Musanze district", {"admin_level": "district", "name": "Musanze"}),
+        ("locate Gasharu village", {"admin_level": "village", "name": "Gasharu"}),
+        ("show me Southern Province", {"admin_level": "province", "name": "Southern Province"}),
+        ("show all villages in Gasabo district", {"admin_level": "village", "name": "*", "district": "Gasabo"}),
+    ],
+)
+def test_build_admin_boundary_tool_args(msg: str, expected: dict[str, object]) -> None:
+    assert build_admin_boundary_tool_args(msg) == expected
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "show me NDVI in Nyamagabe",
+        "weather forecast for Kigali tomorrow",
+        "predict floods in Western Province",
+        "show satellite imagery for Musanze",
+        "analyze crop risk in Ruhango",
+    ],
+)
+def test_admin_boundary_fast_path_blocks_analysis(msg: str) -> None:
+    assert detect_admin_boundary_display(msg) is False
+    assert build_fast_tool_call(msg) is None
+
+
+def test_build_fast_tool_call_admin_boundary() -> None:
+    fast = build_fast_tool_call("show me Rulindo district")
+    assert fast is not None
+    assert fast.tool_name == "show_admin_boundary"
+    assert fast.arguments == {"admin_level": "district", "name": "Rulindo"}
 
 
 def test_route_chat_uncertain_falls_through() -> None:
