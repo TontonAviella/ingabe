@@ -6,11 +6,14 @@ It is intentionally small:
 - HTTP endpoint for raster XYZ tiles
 - GDAL-backed RGB/RGBA reads from WebMercator COGs
 - In-memory LRU tile cache
-- Optional `forge3d` dependency path for the upstream COG-streaming direction
+- Optional `forge3d-cog` compile marker for the upstream Forge3D raster
+  direction; current raster tiles are still GDAL-backed
 
 The goal is to move Ingabe's heaviest drone orthophoto path away from per-tile
 Python `rio-tiler` rendering. The sidecar currently handles COGs already warped
 to `EPSG:3857`; unsupported inputs fall back to the existing Python path.
+Active Forge3D use currently lives in the Python impact-map adapter, where it
+constructs Forge3D scene/layer objects for Sphere flood results.
 
 ## API
 

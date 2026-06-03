@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         .init();
 
     #[cfg(feature = "forge3d-cog")]
-    info!("forge3d COG feature enabled");
+    info!("experimental forge3d-cog feature marker enabled; raster renderer remains GDAL-backed");
 
     let cache_cap = std::env::var("RASTERD_TILE_CACHE_ENTRIES")
         .ok()
@@ -99,7 +99,13 @@ async fn main() -> Result<()> {
 }
 
 async fn healthz() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok", "engine": "mundi-rasterd"}))
+    Json(serde_json::json!({
+        "status": "ok",
+        "engine": "mundi-rasterd",
+        "renderer": "gdal-webmercator-cog",
+        "forge3d_cog_feature": cfg!(feature = "forge3d-cog"),
+        "forge3d_runtime": "python-impact-adapter",
+    }))
 }
 
 async fn debug_cache(State(state): State<AppState>) -> Json<CacheStats> {

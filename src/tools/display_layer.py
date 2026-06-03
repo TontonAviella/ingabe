@@ -60,10 +60,11 @@ class DisplayLayerArgs(BaseModel):
     asset_url: str = Field(
         ...,
         description=(
-            "Public HTTPS URL of a Cloud-Optimized GeoTIFF (COG). Examples: "
+            "Public HTTPS URL of a Cloud-Optimized GeoTIFF (COG), or an Ingabe "
+            "local layer reference like 'mundi-layer:Labc123'. Examples: "
             "'https://isdasoil.s3.amazonaws.com/soil_data/nitrogen_total/nitrogen_total.tif', "
             "'https://earth-search.aws.element84.com/...../B04.tif'. "
-            "GeoJSON URLs and S3 protocol URLs are not yet supported in this version."
+            "GeoJSON URLs and raw S3/MinIO URLs are not supported in this version."
         ),
     )
     layer_name: str = Field(
@@ -93,7 +94,7 @@ class DisplayLayerArgs(BaseModel):
 async def display_layer(
     args: DisplayLayerArgs, meta: IngabeToolCallMetaArgs
 ) -> Dict[str, Any]:
-    """Display any public Cloud-Optimized GeoTIFF on the map with a styled colormap.
+    """Display any public or Ingabe-local Cloud-Optimized GeoTIFF on the map with a styled colormap.
 
     This is the GENERIC display tool. Use it after computing or identifying a spatial
     raster you want the user to SEE. Pair it with analytical tools that return a URL:
@@ -217,6 +218,35 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#1a1a1a",
         "stroke_width": 2,
     },
+    # Forecast-driven rain impact: 0 low risk → 100 severe expected impact.
+    # Tools may also set extrude_3d=true and extrusion_property=risk_score for
+    # a 3D overview where height communicates expected severity.
+    "rain_impact_risk": {
+        "color_property": "risk_score",
+        "stops": [
+            {"max": 35, "color": "#2ecc71"},
+            {"max": 55, "color": "#f1c40f"},
+            {"max": 75, "color": "#e67e22"},
+            {"max": 101, "color": "#c0392b"},
+        ],
+        "fill_opacity": 0.62,
+        "stroke_color": "#1f2937",
+        "stroke_width": 1.5,
+    },
+    # Sphere/HAZUS building flood damage percent. Usually rendered with
+    # 3D extrusion keyed to risk_score/building_damage_percent.
+    "sphere_flood_damage": {
+        "color_property": "risk_score",
+        "stops": [
+            {"max": 20, "color": "#2ecc71"},
+            {"max": 45, "color": "#f1c40f"},
+            {"max": 70, "color": "#e67e22"},
+            {"max": 101, "color": "#c0392b"},
+        ],
+        "fill_opacity": 0.64,
+        "stroke_color": "#111827",
+        "stroke_width": 1.5,
+    },
     # Plain neutral outline — for AOI polygons or non-data overlays
     "outline": {
         "color_property": None,
@@ -292,8 +322,8 @@ class DisplayGeojsonLayerArgs(BaseModel):
         ...,
         description=(
             "Vector style preset. One of: insurance_composite_score, field_health, "
-            "rgb_field_health, stress_zones, outline, water, flood_extent, "
-            "similarity_score, food_security_ipc."
+            "rgb_field_health, stress_zones, rain_impact_risk, sphere_flood_damage, "
+            "outline, water, flood_extent, similarity_score, food_security_ipc."
         ),
     )
     bbox: str = Field(

@@ -1,0 +1,68 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+
+from src.services.forge3d_adapter import forge3d_available
+from src.services.sphere_flood import sphere_available
+
+
+async def get_spatial_engine_capabilities(include_rasterd: bool = True) -> dict[str, Any]:
+    sphere_ok, sphere_error = sphere_available()
+    forge_ok, forge_version, forge_error = forge3d_available()
+    capabilities: dict[str, Any] = {
+        "sphere": {
+            "installed": sphere_ok,
+            "active_for": ["flood asset damage/loss"] if sphere_ok else [],
+            "error": sphere_error,
+        },
+        "forge3d_python": {
+            "installed": forge_ok,
+            "version": forge_version,
+            "active_for": ["impact extrusion scene model"] if forge_ok else [],
+            "error": forge_error,
+        },
+        "map_runtime": {
+            "browser_map": "MapLibre/deck.gl",
+            "geojson_3d_extrusion": True,
+            "note": "Browser map extrusion remains MapLibre/deck.gl unless a Forge3D viewer/export path is selected.",
+        },
+    }
+    if include_rasterd:
+        capabilities["rasterd"] = await _rasterd_status()
+    return capabilities
+
+
+async def _rasterd_status() -> dict[str, Any]:
+    base_url = os.environ.get("RASTER_TILE_ENGINE_URL")
+    if not base_url:
+        return {
+            "configured": False,
+            "reachable": False,
+            "engine": None,
+            "forge3d_cog_feature": None,
+        }
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/healthz")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        return {
+            "configured": True,
+            "reachable": False,
+            "engine": None,
+            "forge3d_cog_feature": None,
+            "error": str(exc),
+        }
+    return {
+        "configured": True,
+        "reachable": True,
+        "engine": data.get("engine"),
+        "renderer": data.get("renderer"),
+        "forge3d_cog_feature": data.get("forge3d_cog_feature", data.get("forge3d_compiled")),
+        "forge3d_runtime": data.get("forge3d_runtime"),
+        "raw": data,
+    }

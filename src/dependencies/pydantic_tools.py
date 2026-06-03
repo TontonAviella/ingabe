@@ -109,6 +109,18 @@ from src.tools.render_snapshot import (
     render_map_snapshot,
     RenderMapSnapshotArgs,
 )
+from src.tools.rain_impact import (
+    analyze_expected_rain_impact,
+    AnalyzeExpectedRainImpactArgs,
+)
+from src.tools.sphere_flood import (
+    analyze_sphere_flood_impact,
+    AnalyzeSphereFloodImpactArgs,
+)
+from src.tools.spatial_engines import (
+    get_spatial_engine_capabilities,
+    GetSpatialEngineCapabilitiesArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -267,6 +279,21 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "render_map_snapshot": (
             render_map_snapshot,
             RenderMapSnapshotArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_expected_rain_impact": (
+            analyze_expected_rain_impact,
+            AnalyzeExpectedRainImpactArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_sphere_flood_impact": (
+            analyze_sphere_flood_impact,
+            AnalyzeSphereFloodImpactArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_spatial_engine_capabilities": (
+            get_spatial_engine_capabilities,
+            GetSpatialEngineCapabilitiesArgs,
             IngabeToolCallMetaArgs,
         ),
     }

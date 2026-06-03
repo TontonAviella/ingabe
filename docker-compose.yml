@@ -196,6 +196,8 @@ services:
     build:
       context: ./services/rasterd
       dockerfile: Dockerfile
+      args:
+        - RASTERD_CARGO_FEATURES=${RASTERD_CARGO_FEATURES:-}
     image: mundi-rasterd:local
     container_name: mundi-rasterd
     ports:

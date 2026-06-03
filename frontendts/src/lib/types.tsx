@@ -94,6 +94,9 @@ export interface GeoJsonLayerStyle {
   fill_opacity?: number;
   stroke_color?: string;
   stroke_width?: number;
+  extrude_3d?: boolean;
+  extrusion_property?: string;
+  extrusion_scale?: number;
 }
 
 export interface GeoJsonLayerUpdate {
