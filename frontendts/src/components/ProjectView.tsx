@@ -290,6 +290,7 @@ export default function ProjectView() {
     const startedAt = Date.now();
     const timeoutMs = 15 * 60 * 1000;
     let lastPhase = '';
+    let lastProgress = 98;
 
     while (Date.now() - startedAt < timeoutMs) {
       const res = await fetchMaybeAuth(`/api/layer/${layerId}/render-status`);
@@ -298,13 +299,27 @@ export default function ProjectView() {
           ready?: boolean;
           status?: string;
           detail?: string;
+          progress?: number;
         };
         if (status.ready) return;
 
-        const phase = status.detail || (status.status === 'pending_cog' ? 'Optimizing raster tiles' : 'Preparing raster');
-        if (phase !== lastPhase) {
+        if (status.status === 'cog_failed') {
+          throw new Error(status.detail || 'Raster tile optimization failed');
+        }
+
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        const elapsedLabel = elapsedSeconds >= 60 ? ` (${Math.floor(elapsedSeconds / 60)} min)` : '';
+        const basePhase = status.detail || (status.status === 'pending_cog' ? 'Optimizing raster tiles' : 'Preparing raster');
+        const phase = `${basePhase}${elapsedLabel}`;
+        const progress = typeof status.progress === 'number'
+          ? Math.max(98, Math.min(99, Math.round(status.progress)))
+          : elapsedSeconds >= 120
+            ? 99
+            : 98;
+        if (phase !== lastPhase || progress !== lastProgress) {
           lastPhase = phase;
-          updateUploadFile(fileId, { progress: 98, phase });
+          lastProgress = progress;
+          updateUploadFile(fileId, { progress, phase });
         }
       }
 

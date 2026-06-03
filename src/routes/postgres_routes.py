@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1161,6 +1162,54 @@ def _epsg_from_srs(srs: str) -> int | None:
         return None
 
 
+async def _set_layer_cog_status(
+    layer_id: str,
+    status: str,
+    *,
+    detail: str | None = None,
+    error: str | None = None,
+    cog_key: str | None = None,
+    cog_source: str | None = None,
+    cog_srs: str | None = None,
+) -> dict:
+    """Persist background COG worker state so upload UIs don't wait blindly."""
+    async with get_async_db_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT metadata FROM map_layers WHERE layer_id = $1",
+            layer_id,
+        )
+        metadata = {}
+        if row and row["metadata"]:
+            metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
+
+        metadata["cog_status"] = status
+        metadata["cog_status_detail"] = detail or {
+            "generating": "Optimizing raster tiles",
+            "ready": "Optimized raster tiles ready",
+            "failed": "Raster tile optimization failed",
+        }.get(status, status)
+        metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        if cog_key:
+            metadata["cog_key"] = cog_key
+        if cog_source:
+            metadata["cog_source"] = cog_source
+        if cog_srs:
+            metadata["cog_srs"] = cog_srs
+
+        if error:
+            metadata["cog_error"] = error[-2000:]
+        elif status != "failed":
+            metadata.pop("cog_error", None)
+
+        await conn.execute(
+            "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
+            json.dumps(metadata),
+            layer_id,
+        )
+        return metadata
+
+
 async def _maybe_embed_layer_after_cog(layer_id: str) -> None:
     """Optionally run Clay embeddings after COG readiness.
 
@@ -1330,6 +1379,10 @@ async def _try_reuse_existing_cog(layer_id: str) -> bool:
             current_meta["cog_srs"] = metadata.get("cog_srs") or "EPSG:3857"
             current_meta["cog_source"] = "reused_existing"
             current_meta["reused_cog_from_layer_id"] = candidate["layer_id"]
+            current_meta["cog_status"] = "ready"
+            current_meta["cog_status_detail"] = "Reused existing optimized raster tiles"
+            current_meta["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+            current_meta.pop("cog_error", None)
             await conn.execute(
                 "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
                 json.dumps(current_meta),
@@ -1373,6 +1426,11 @@ async def _background_generate_cog(
 
     tmp_dir = cleanup_dir or tempfile.mkdtemp()
     try:
+        await _set_layer_cog_status(
+            layer_id,
+            "generating",
+            detail="Preparing optimized raster tiles",
+        )
         target_srs = os.environ.get("RASTER_COG_TARGET_SRS", "EPSG:3857").strip()
         target_epsg = _epsg_from_srs(target_srs)
         file_ext = os.path.splitext(s3_key)[1] or ".tif"
@@ -1384,6 +1442,11 @@ async def _background_generate_cog(
             logger.info("Background COG: reusing upload-complete local file for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
         else:
             logger.info("Background COG: downloading %s/%s for %s", bucket_name, s3_key, layer_id)
+            await _set_layer_cog_status(
+                layer_id,
+                "generating",
+                detail="Downloading uploaded raster for optimization",
+            )
             await s3.download_file(bucket_name, s3_key, local_input)
             logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
         source_epsg = _raster_epsg(local_input)
@@ -1405,6 +1468,10 @@ async def _background_generate_cog(
                     metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
                 metadata["cog_key"] = cog_key
                 metadata["cog_source"] = "client_provided"
+                metadata["cog_status"] = "ready"
+                metadata["cog_status_detail"] = "Optimized raster tiles ready"
+                metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+                metadata.pop("cog_error", None)
                 if source_epsg:
                     metadata["cog_srs"] = f"EPSG:{source_epsg}"
                 await conn.execute(
@@ -1436,17 +1503,34 @@ async def _background_generate_cog(
             "-multi", "-wo", "NUM_THREADS=ALL_CPUS",
             local_input, local_cog,
         ])
+        await _set_layer_cog_status(
+            layer_id,
+            "generating",
+            detail="Building optimized raster tiles",
+        )
         proc = await asyncio.create_subprocess_exec(
             *gdalwarp_cmd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            logger.error("gdalwarp COG failed for %s: %s", layer_id, stderr.decode())
+            error = stderr.decode(errors="replace")
+            logger.error("gdalwarp COG failed for %s: %s", layer_id, error)
+            await _set_layer_cog_status(
+                layer_id,
+                "failed",
+                detail="Raster tile optimization failed",
+                error=error or f"gdalwarp exited with code {proc.returncode}",
+            )
             return
         logger.info("Background COG generated via gdalwarp for %s", layer_id)
 
         cog_key = f"cog/layer/{layer_id}.cog.tif"
+        await _set_layer_cog_status(
+            layer_id,
+            "generating",
+            detail="Uploading optimized raster tiles",
+        )
         await s3.upload_file(local_cog, bucket_name, cog_key)
 
         async with get_async_db_connection() as conn:
@@ -1456,6 +1540,10 @@ async def _background_generate_cog(
                 import json as _json
                 metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
             metadata["cog_key"] = cog_key
+            metadata["cog_status"] = "ready"
+            metadata["cog_status_detail"] = "Optimized raster tiles ready"
+            metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+            metadata.pop("cog_error", None)
             if target_srs:
                 metadata["cog_srs"] = target_srs.upper()
             await conn.execute(
@@ -1467,6 +1555,15 @@ async def _background_generate_cog(
         await _maybe_embed_layer_after_cog(layer_id)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
+        try:
+            await _set_layer_cog_status(
+                layer_id,
+                "failed",
+                detail="Raster tile optimization failed",
+                error=str(e),
+            )
+        except Exception:
+            logger.warning("Failed to persist COG failure state for %s", layer_id, exc_info=True)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

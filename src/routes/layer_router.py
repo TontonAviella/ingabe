@@ -295,7 +295,24 @@ async def get_layer_render_status(
     if isinstance(metadata, str):
         metadata = json.loads(metadata)
     cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
+    cog_status = metadata.get("cog_status") if isinstance(metadata, dict) else None
     if not cog_key:
+        if cog_status == "failed":
+            return {
+                "ready": False,
+                "status": "cog_failed",
+                "type": layer_type,
+                "detail": metadata.get("cog_error") or metadata.get("cog_status_detail") or "Raster tile optimization failed",
+                "updated_at": metadata.get("cog_status_updated_at"),
+            }
+        if cog_status == "generating":
+            return {
+                "ready": False,
+                "status": "generating_cog",
+                "type": layer_type,
+                "detail": metadata.get("cog_status_detail") or "Optimizing raster tiles",
+                "updated_at": metadata.get("cog_status_updated_at"),
+            }
         return {
             "ready": False,
             "status": "pending_cog",
@@ -316,6 +333,7 @@ async def get_layer_render_status(
             "status": "missing_cog_object",
             "type": layer_type,
             "detail": "Waiting for optimized raster file",
+            "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
         }
 
     return {
