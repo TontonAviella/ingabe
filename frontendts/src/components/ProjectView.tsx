@@ -576,6 +576,9 @@ export default function ProjectView() {
               const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
               const strokeColor = style.stroke_color || '#1a1a1a';
               const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
+              const extrude3d = style.extrude_3d === true;
+              const extrusionProperty = typeof style.extrusion_property === 'string' ? style.extrusion_property : colorProperty;
+              const extrusionScale = typeof style.extrusion_scale === 'number' ? style.extrusion_scale : 40;
               // Build a MapLibre 'step' expression from the categorical stops so each
               // feature gets the color matching its property bucket.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -590,15 +593,29 @@ export default function ProjectView() {
                 }
                 fillColorExpr = expr;
               }
-              map.addLayer({
-                id: `${gl.source_id}-fill`,
-                type: 'fill',
-                source: gl.source_id,
-                paint: {
-                  'fill-color': fillColorExpr,
-                  'fill-opacity': fillOpacity,
-                },
-              });
+              if (extrude3d && extrusionProperty) {
+                map.addLayer({
+                  id: `${gl.source_id}-extrusion`,
+                  type: 'fill-extrusion',
+                  source: gl.source_id,
+                  paint: {
+                    'fill-extrusion-color': fillColorExpr,
+                    'fill-extrusion-opacity': Math.min(fillOpacity + 0.08, 0.9),
+                    'fill-extrusion-base': 0,
+                    'fill-extrusion-height': ['*', ['coalesce', ['to-number', ['get', extrusionProperty]], 0], extrusionScale],
+                  },
+                });
+              } else {
+                map.addLayer({
+                  id: `${gl.source_id}-fill`,
+                  type: 'fill',
+                  source: gl.source_id,
+                  paint: {
+                    'fill-color': fillColorExpr,
+                    'fill-opacity': fillOpacity,
+                  },
+                });
+              }
               map.addLayer({
                 id: `${gl.source_id}-stroke`,
                 type: 'line',
