@@ -1261,6 +1261,92 @@ async def _prewarm_raster_tiles_after_cog(
         logger.warning("Raster tile prewarm failed for %s (non-fatal)", layer_id, exc_info=True)
 
 
+async def _try_reuse_existing_cog(layer_id: str) -> bool:
+    """Link duplicate raster uploads to an existing optimized COG when possible."""
+    from src.structures import get_async_db_connection
+    from src.utils import s3_op
+
+    bucket_name = get_bucket_name()
+    s3 = await get_async_s3_client(signature_version="s3v4")
+
+    async with get_async_db_connection() as conn:
+        current = await conn.fetchrow(
+            """
+            SELECT layer_id, name, size_bytes, metadata, bounds
+            FROM map_layers
+            WHERE layer_id = $1 AND type = $2
+            """,
+            layer_id,
+            LAYER_TYPE_RASTER,
+        )
+        if not current:
+            return False
+
+        current_meta = current["metadata"] or {}
+        if isinstance(current_meta, str):
+            current_meta = json.loads(current_meta)
+        current_etag = current_meta.get("upload_etag")
+
+        candidates = await conn.fetch(
+            """
+            SELECT layer_id, metadata, bounds
+            FROM map_layers
+            WHERE layer_id <> $1
+              AND type = $2
+              AND name = $3
+              AND size_bytes = $4
+              AND metadata ? 'cog_key'
+            ORDER BY last_edited DESC
+            LIMIT 10
+            """,
+            layer_id,
+            LAYER_TYPE_RASTER,
+            current["name"],
+            current["size_bytes"],
+        )
+
+        for candidate in candidates:
+            metadata = candidate["metadata"] or {}
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            candidate_etag = metadata.get("upload_etag")
+            if current_etag and candidate_etag and current_etag != candidate_etag:
+                continue
+
+            cog_key = metadata.get("cog_key")
+            if not cog_key:
+                continue
+
+            try:
+                await s3_op(
+                    s3.head_object(Bucket=bucket_name, Key=cog_key),
+                    "head_object",
+                    f"reusable COG {cog_key}",
+                )
+            except Exception:
+                continue
+
+            current_meta["cog_key"] = cog_key
+            current_meta["cog_srs"] = metadata.get("cog_srs") or "EPSG:3857"
+            current_meta["cog_source"] = "reused_existing"
+            current_meta["reused_cog_from_layer_id"] = candidate["layer_id"]
+            await conn.execute(
+                "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
+                json.dumps(current_meta),
+                layer_id,
+            )
+            logger.info(
+                "Background COG: reused existing COG %s for %s from %s",
+                cog_key,
+                layer_id,
+                candidate["layer_id"],
+            )
+            await _prewarm_raster_tiles_after_cog(layer_id, cog_key, current_meta, current["bounds"])
+            return True
+
+    return False
+
+
 async def _background_generate_cog(
     layer_id: str,
     s3_key: str,
@@ -1281,6 +1367,10 @@ async def _background_generate_cog(
     import shutil
 
     bucket_name = get_bucket_name()
+    if await _try_reuse_existing_cog(layer_id):
+        await _maybe_embed_layer_after_cog(layer_id)
+        return
+
     tmp_dir = cleanup_dir or tempfile.mkdtemp()
     try:
         target_srs = os.environ.get("RASTER_COG_TARGET_SRS", "EPSG:3857").strip()
@@ -1510,6 +1600,7 @@ async def complete_layer_upload(
             "head_object", f"layer {body.layer_id}",
         )
         file_size = int(head.get("ContentLength") or 0)
+        upload_etag = str(head.get("ETag") or "").strip('"')
 
         if remote_raster_metadata and not landed_in_r2:
             tmp_path = f"/vsis3/{bucket_name}/{body.s3_key}"
@@ -1564,7 +1655,10 @@ async def complete_layer_upload(
                 file_ext=file_ext,
                 file_size_bytes=file_size,
                 s3_key=body.s3_key,
-                metadata_dict={"original_filename": filename},
+                metadata_dict={
+                    "original_filename": filename,
+                    "upload_etag": upload_etag,
+                },
                 conn=conn,
                 bucket_name=bucket_name,
             )
