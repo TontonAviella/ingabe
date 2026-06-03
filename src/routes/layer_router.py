@@ -120,6 +120,14 @@ def _get_raster_engine_concurrency() -> int:
         return 1
 
 
+def _get_raster_engine_asset_url(cog_key: str) -> str | None:
+    """Return a GDAL-readable asset path for the Rust raster engine."""
+    direct_s3 = os.environ.get("RASTER_TILE_ENGINE_DIRECT_S3", "").strip().lower()
+    if direct_s3 in {"1", "true", "yes", "on"}:
+        return f"/vsis3/{get_bucket_name()}/{cog_key}"
+    return None
+
+
 def _get_raster_engine_client():
     """Return a pooled HTTP client for the optional Rust raster sidecar."""
     global _raster_engine_client
@@ -261,6 +269,52 @@ redis = get_redis_client()
 
 
 layer_router = APIRouter()
+
+
+@layer_router.get(
+    "/layer/{layer_id}/render-status",
+    operation_id="get_layer_render_status",
+)
+async def get_layer_render_status(
+    layer: MapLayer = Depends(get_layer),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Return whether a layer has enough optimized assets to render quickly."""
+    if layer.type != LAYER_TYPE_RASTER:
+        return {"ready": True, "status": "ready", "type": layer.type}
+
+    metadata = layer.metadata_dict or {}
+    cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
+    if not cog_key:
+        return {
+            "ready": False,
+            "status": "pending_cog",
+            "type": layer.type,
+            "detail": "Optimizing raster tiles",
+        }
+
+    try:
+        s3 = await get_async_s3_client(signature_version="s3v4")
+        await s3_op(
+            s3.head_object(Bucket=get_bucket_name(), Key=cog_key),
+            "head_object",
+            f"COG status {cog_key}",
+        )
+    except Exception:
+        return {
+            "ready": False,
+            "status": "missing_cog_object",
+            "type": layer.type,
+            "detail": "Waiting for optimized raster file",
+        }
+
+    return {
+        "ready": True,
+        "status": "ready",
+        "type": layer.type,
+        "cog_key": cog_key,
+        "minzoom": raster_source_minzoom(metadata, layer.bounds),
+    }
 
 
 @layer_router.get(
@@ -941,17 +995,18 @@ async def get_raster_xyz_tile(
                     headers=_tile_headers,
                 )
 
-            # Reuse presigned URL across concurrent tile requests for the same COG.
-            asset_url = await _get_presigned_url(cog_key)
+            engine_asset_url = _get_raster_engine_asset_url(cog_key)
 
-            engine_tile = await _try_raster_engine_tile(
-                layer_id=layer.layer_id,
-                asset_url=asset_url,
-                metadata=metadata,
-                z=z,
-                x=x,
-                y=y,
-            )
+            engine_tile = None
+            if engine_asset_url:
+                engine_tile = await _try_raster_engine_tile(
+                    layer_id=layer.layer_id,
+                    asset_url=engine_asset_url,
+                    metadata=metadata,
+                    z=z,
+                    x=x,
+                    y=y,
+                )
             if engine_tile is not None:
                 await tile_cache.put(layer.layer_id, z, x, y, engine_tile)
                 return Response(
@@ -959,6 +1014,9 @@ async def get_raster_xyz_tile(
                     media_type="image/png",
                     headers=_tile_headers,
                 )
+
+            # Reuse presigned URL across concurrent tile requests for the Python fallback.
+            asset_url = await _get_presigned_url(cog_key)
 
             _ensure_rio_tiler()
 

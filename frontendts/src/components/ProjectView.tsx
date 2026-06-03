@@ -282,6 +282,41 @@ export default function ProjectView() {
   // Add state for tracking uploading files
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
 
+  const updateUploadFile = useCallback((fileId: string, patch: Partial<UploadingFile>) => {
+    setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, ...patch } : f)));
+  }, []);
+
+  const waitForRasterRenderReady = useCallback(async (layerId: string, fileId: string) => {
+    const startedAt = Date.now();
+    const timeoutMs = 15 * 60 * 1000;
+    let lastPhase = '';
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const res = await fetchMaybeAuth(`/api/layer/${layerId}/render-status`);
+      if (res.ok) {
+        const status = (await res.json()) as {
+          ready?: boolean;
+          status?: string;
+          detail?: string;
+        };
+        if (status.ready) return;
+
+        const phase = status.detail || (status.status === 'pending_cog' ? 'Optimizing raster tiles' : 'Preparing raster');
+        if (phase !== lastPhase) {
+          lastPhase = phase;
+          updateUploadFile(fileId, { progress: 98, phase });
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    updateUploadFile(fileId, {
+      progress: 99,
+      phase: 'Layer added; raster tiles are still optimizing',
+    });
+  }, [updateUploadFile]);
+
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
@@ -803,7 +838,7 @@ export default function ProjectView() {
           if (raw > highWaterPercent) highWaterPercent = raw;
           if (highWaterPercent === lastDisplayedPercent) return;
           lastDisplayedPercent = highWaterPercent;
-          setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: highWaterPercent } : f)));
+          updateUploadFile(fileId, { progress: highWaterPercent, phase: 'Uploading bytes' });
         };
 
         const putPartOnce = async (partUrl: string, blob: Blob, partNum: number, attempt: number): Promise<XMLHttpRequest> => {
@@ -888,7 +923,7 @@ export default function ProjectView() {
         const workerCount = Math.min(MULTIPART_CONCURRENCY, queue.length || 1);
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 92 } : f)));
+        updateUploadFile(fileId, { progress: 92, phase: 'Assembling uploaded parts' });
 
         // Complete multipart upload (assembles parts in S3). Send the upload
         // filename — backend strips .gz and decompresses if needed.
@@ -912,7 +947,7 @@ export default function ProjectView() {
           throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to assemble multipart upload');
         }
 
-        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 95 } : f)));
+        updateUploadFile(fileId, { progress: 95, phase: 'Preparing map layer' });
 
         // Process the uploaded file (same as single-PUT flow). Backend
         // strips .gz from filename and decompresses before processing.
@@ -934,10 +969,16 @@ export default function ProjectView() {
           const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
           throw new Error(typeof err.detail === 'string' ? err.detail : 'Processing failed after upload');
         }
+        const completePayload = await completeRes.json();
+        updateUploadFile(fileId, { progress: 98, phase: 'Optimizing raster tiles' });
+
+        if (completePayload?.type === 'raster' && completePayload?.id) {
+          await waitForRasterRenderReady(completePayload.id, fileId);
+        }
 
         // Successful round trip: resume state is no longer needed.
         clearResumeState(projectId, fingerprint);
-        return await completeRes.json();
+        return completePayload;
       }
 
       // --- Single PUT for small files (< 50 MB) ---
@@ -963,7 +1004,7 @@ export default function ProjectView() {
         xhr.upload.addEventListener('progress', (event) => {
           if (event.lengthComputable) {
             const progress = Math.round((event.loaded / event.total) * 95);
-            setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress } : f)));
+            updateUploadFile(fileId, { progress, phase: 'Uploading bytes' });
           }
         });
         xhr.addEventListener('load', () => {
@@ -975,7 +1016,7 @@ export default function ProjectView() {
         xhr.send(file);
       });
 
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
+      updateUploadFile(fileId, { progress: 97, phase: 'Preparing map layer' });
 
       const completeRes = await fetchMaybeAuth(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
         method: 'POST',
@@ -993,13 +1034,18 @@ export default function ProjectView() {
         throw new Error(typeof d2 === 'string' ? d2 : d2 ? JSON.stringify(d2) : 'Processing failed after upload');
       }
 
-      return await completeRes.json();
+      const completePayload = await completeRes.json();
+      updateUploadFile(fileId, { progress: 98, phase: 'Optimizing raster tiles' });
+      if (completePayload?.type === 'raster' && completePayload?.id) {
+        await waitForRasterRenderReady(completePayload.id, fileId);
+      }
+      return completePayload;
     },
     onSuccess: (response, { fileId }) => {
       toast.success(`Layer "${response.name}" uploaded successfully! Navigating to new map...`);
 
       // Mark as completed
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, status: 'completed', progress: 100 } : f)));
+      updateUploadFile(fileId, { status: 'completed', progress: 100, phase: 'Ready to render' });
 
       // Remove from uploading list after delay
       setTimeout(() => {
@@ -1023,7 +1069,7 @@ export default function ProjectView() {
     },
     onError: (error, { file, fileId }) => {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, status: 'error', error: errorMessage } : f)));
+      updateUploadFile(fileId, { status: 'error', error: errorMessage });
       toast.error(`Error uploading ${file.name}: ${errorMessage}`);
 
       // Remove from uploading list after delay to show error state
@@ -1057,6 +1103,7 @@ export default function ProjectView() {
         file,
         progress: 0,
         status: 'uploading',
+        phase: 'Queued',
       }));
 
       // Add to uploading files state

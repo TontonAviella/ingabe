@@ -49,6 +49,7 @@ interface UploadingFile {
   file: File;
   progress: number;
   status: 'uploading' | 'completed' | 'error';
+  phase?: string;
   error?: string;
 }
 
@@ -547,12 +548,19 @@ const LayerList: React.FC<LayerListProps> = ({
                   </div>
 
                   {uploadingFile.status === 'uploading' && (
-                    <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                      <div
-                        className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
-                        style={{ width: `${uploadingFile.progress}%` }}
-                      />
-                    </div>
+                    <>
+                      <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                        <div
+                          className="bg-blue-600 h-1.5 rounded-full transition-all duration-300"
+                          style={{ width: `${uploadingFile.progress}%` }}
+                        />
+                      </div>
+                      {uploadingFile.phase && (
+                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
+                          {uploadingFile.phase}
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {uploadingFile.status === 'completed' && (

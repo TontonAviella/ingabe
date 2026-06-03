@@ -8,7 +8,9 @@ by a background task in ``postgres_routes.py`` using ``gdalwarp`` subprocess.
 import asyncio
 import json
 import logging
+import os
 import re
+import time
 
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 
@@ -78,12 +80,18 @@ class RasterUploadHandler(BaseUploadHandler):
         (e.g. multi-band NDVI/NDRE), killing the uvicorn worker.
         Using ``gdalinfo -json`` as a subprocess is 100% isolated.
         """
+        cmd = ["gdalinfo", "-json"]
+        if os.environ.get("RASTER_UPLOAD_COMPUTE_STATS", "0") == "1":
+            cmd.append("-stats")
+
+        started = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
-            "gdalinfo", "-json", "-stats", ctx.temp_file_path,
+            *cmd, ctx.temp_file_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
+        elapsed = time.monotonic() - started
         if proc.returncode != 0:
             logger.warning("gdalinfo failed for %s: %s", ctx.layer_id, stderr.decode())
             return None
@@ -137,5 +145,9 @@ class RasterUploadHandler(BaseUploadHandler):
         ctx.metadata_dict["width"] = size[0] if size else 0
         ctx.metadata_dict["height"] = size[1] if len(size) > 1 else 0
 
-        logger.info("Raster metadata extracted via gdalinfo subprocess for %s", ctx.layer_id)
+        logger.info(
+            "Raster metadata extracted via gdalinfo subprocess for %s in %.2fs",
+            ctx.layer_id,
+            elapsed,
+        )
         return bounds
