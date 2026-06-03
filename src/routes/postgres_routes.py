@@ -62,6 +62,7 @@ from src.services.map_service import (
     get_map_style_internal,
     render_map_internal,
 )
+from src.services.raster_zoom import raster_source_minzoom
 
 fiona.drvsupport.supported_drivers["WFS"] = "r"  # type: ignore[attr-defined]
 fiona.drvsupport.supported_drivers["PMTiles"] = "r"  # type: ignore[attr-defined]
@@ -1177,7 +1178,95 @@ async def _maybe_embed_layer_after_cog(layer_id: str) -> None:
         logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
 
 
-async def _background_generate_cog(layer_id: str, s3_key: str):
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tile_xy_from_lonlat(lon: float, lat: float, z: int) -> tuple[int, int]:
+    import math
+
+    lat = max(-85.05112878, min(85.05112878, lat))
+    n = 1 << z
+    x = int((lon + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+    return max(0, min(n - 1, x)), max(0, min(n - 1, y))
+
+
+async def _prewarm_raster_tiles_after_cog(
+    layer_id: str,
+    cog_key: str,
+    metadata: dict,
+    bounds: list | tuple | None,
+) -> None:
+    """Render a tiny center grid once so the first map view is not cold."""
+    if not _truthy_env("RASTER_COG_PREWARM_TILES", "1"):
+        return
+    if str(metadata.get("cog_srs", "")).upper() not in {"EPSG:3857", "3857"}:
+        return
+    if not bounds or len(bounds) != 4:
+        return
+
+    engine_url = os.environ.get("RASTER_TILE_ENGINE_URL", "").strip().rstrip("/")
+    if not engine_url:
+        return
+
+    try:
+        west, south, east, north = [float(v) for v in bounds]
+    except (TypeError, ValueError):
+        return
+
+    try:
+        maxzoom = int(os.environ.get("RASTER_SOURCE_MAXZOOM", "20"))
+    except ValueError:
+        maxzoom = 20
+    prewarm_zoom = max(raster_source_minzoom(metadata, bounds), min(maxzoom, 18))
+    if "raster_prewarm_zoom" in metadata:
+        try:
+            prewarm_zoom = int(metadata["raster_prewarm_zoom"])
+        except (TypeError, ValueError):
+            pass
+    prewarm_zoom = max(0, min(22, prewarm_zoom))
+
+    center_lon = (west + east) / 2.0
+    center_lat = (south + north) / 2.0
+    cx, cy = _tile_xy_from_lonlat(center_lon, center_lat, prewarm_zoom)
+    band_count = metadata.get("band_count")
+    bands = "1" if band_count == 1 else "1,2" if band_count == 2 else "1,2,3"
+    asset_url = f"/vsis3/{get_bucket_name()}/{cog_key}"
+
+    try:
+        import httpx
+
+        started = asyncio.get_running_loop().time()
+        warmed = 0
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=2.0)) as client:
+            for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+                x, y = cx + dx, cy + dy
+                if x < 0 or y < 0 or x >= (1 << prewarm_zoom) or y >= (1 << prewarm_zoom):
+                    continue
+                resp = await client.get(
+                    f"{engine_url}/tiles/{prewarm_zoom}/{x}/{y}.png",
+                    params={"url": asset_url, "layer_id": layer_id, "bands": bands},
+                )
+                if resp.status_code == 200 and resp.content:
+                    await tile_cache.put(layer_id, prewarm_zoom, x, y, resp.content)
+                    warmed += 1
+        elapsed = asyncio.get_running_loop().time() - started
+        logger.info(
+            "Raster tile prewarm complete for %s zoom=%s warmed=%s elapsed=%.2fs",
+            layer_id, prewarm_zoom, warmed, elapsed,
+        )
+    except Exception:
+        logger.warning("Raster tile prewarm failed for %s (non-fatal)", layer_id, exc_info=True)
+
+
+async def _background_generate_cog(
+    layer_id: str,
+    s3_key: str,
+    local_seed_path: str | None = None,
+    cleanup_dir: str | None = None,
+):
     """Generate COG in the background after upload-complete returns.
 
     Downloads the raw raster from S3, converts to COG via gdalwarp subprocess,
@@ -1192,18 +1281,21 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
     import shutil
 
     bucket_name = get_bucket_name()
-    tmp_dir = tempfile.mkdtemp()
+    tmp_dir = cleanup_dir or tempfile.mkdtemp()
     try:
         target_srs = os.environ.get("RASTER_COG_TARGET_SRS", "EPSG:3857").strip()
         target_epsg = _epsg_from_srs(target_srs)
         file_ext = os.path.splitext(s3_key)[1] or ".tif"
-        local_input = os.path.join(tmp_dir, f"{layer_id}{file_ext}")
+        local_input = local_seed_path if local_seed_path and os.path.exists(local_seed_path) else os.path.join(tmp_dir, f"{layer_id}{file_ext}")
         local_cog = os.path.join(tmp_dir, f"{layer_id}.cog.tif")
 
         s3 = await get_async_s3_client(signature_version="s3v4")
-        logger.info("Background COG: downloading %s/%s for %s", bucket_name, s3_key, layer_id)
-        await s3.download_file(bucket_name, s3_key, local_input)
-        logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
+        if local_seed_path and os.path.exists(local_seed_path):
+            logger.info("Background COG: reusing upload-complete local file for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
+        else:
+            logger.info("Background COG: downloading %s/%s for %s", bucket_name, s3_key, layer_id)
+            await s3.download_file(bucket_name, s3_key, local_input)
+            logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
         source_epsg = _raster_epsg(local_input)
 
         # Fast path: already a COG. Server-side copy to canonical key, skip gdalwarp.
@@ -1216,7 +1308,7 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                 Key=cog_key,
             )
             async with get_async_db_connection() as conn:
-                row = await conn.fetchrow("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+                row = await conn.fetchrow("SELECT metadata, bounds FROM map_layers WHERE layer_id = $1", layer_id)
                 metadata = {}
                 if row and row["metadata"]:
                     import json as _json
@@ -1230,6 +1322,7 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                     json.dumps(metadata), layer_id,
                 )
             logger.info("Background COG fast-path complete for %s", layer_id)
+            await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
             await _maybe_embed_layer_after_cog(layer_id)
             return
 
@@ -1267,7 +1360,7 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
         await s3.upload_file(local_cog, bucket_name, cog_key)
 
         async with get_async_db_connection() as conn:
-            row = await conn.fetchrow("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+            row = await conn.fetchrow("SELECT metadata, bounds FROM map_layers WHERE layer_id = $1", layer_id)
             metadata = {}
             if row and row["metadata"]:
                 import json as _json
@@ -1280,6 +1373,7 @@ async def _background_generate_cog(layer_id: str, s3_key: str):
                 json.dumps(metadata), layer_id,
             )
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
+        await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
         await _maybe_embed_layer_after_cog(layer_id)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
@@ -1363,7 +1457,9 @@ async def complete_layer_upload(
     from src.upload.base import UploadContext
     from src.upload.registry import get_handler, get_layer_type
     from boto3.s3.transfer import TransferConfig
+    import time
 
+    started_at = time.monotonic()
     user_id = session.get_user_id()
     bucket_name = get_bucket_name()
     s3_client = await get_async_s3_client()
@@ -1421,6 +1517,7 @@ async def complete_layer_upload(
                 s3_client.download_file(bucket_name, body.s3_key, download_path, Config=one_shot),
                 "download", f"layer {body.layer_id}",
             )
+        logger.info("upload-complete downloaded %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
         # Decompress gzipped uploads in-place to a sibling temp file. Streaming
         # gunzip — never loads the whole file in memory. Crucial for 1 GB+ tifs.
@@ -1453,6 +1550,7 @@ async def complete_layer_upload(
 
             handler = get_handler(file_ext)
             result = await handler.preprocess(ctx)
+            logger.info("upload-complete preprocessed %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
             # If preprocessing changed the file, re-upload the new version
             upload_path = result.updated_temp_file_path or tmp_path
@@ -1466,6 +1564,7 @@ async def complete_layer_upload(
 
             async with conn.transaction():
                 result = await handler.create_layers(ctx, result)
+                logger.info("upload-complete created DB layers for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
                 if body.add_layer_to_map and result.created_layer_ids:
                     map_data = await conn.fetchrow(
@@ -1482,14 +1581,23 @@ async def complete_layer_upload(
                         map_id,
                     )
 
-        if result.temp_dir_to_cleanup:
-            shutil.rmtree(result.temp_dir_to_cleanup, ignore_errors=True)
-
         if not result.created_layer_ids:
             raise HTTPException(status_code=400, detail="No features found in uploaded file.")
 
         primary_id = result.created_layer_ids[0]
         layer_type = get_layer_type(file_ext)
+        background_seed_dir = None
+        background_seed_path = None
+        if layer_type == LAYER_TYPE_RASTER and upload_path and os.path.exists(upload_path):
+            background_seed_dir = tempfile.mkdtemp(prefix=f"cog-{primary_id}-")
+            seed_ext = os.path.splitext(upload_path)[1] or file_ext or ".tif"
+            background_seed_path = os.path.join(background_seed_dir, f"{primary_id}{seed_ext}")
+            shutil.move(upload_path, background_seed_path)
+            logger.info("upload-complete handed local raster file to COG worker for %s", primary_id)
+
+        if result.temp_dir_to_cleanup:
+            shutil.rmtree(result.temp_dir_to_cleanup, ignore_errors=True)
+
         url_map = {
             "vector": f"/api/layer/{primary_id}.pmtiles",
             "point_cloud": f"/api/layer/{primary_id}.laz",
@@ -1498,8 +1606,15 @@ async def complete_layer_upload(
 
         # Kick off background COG generation for raster uploads
         if layer_type == LAYER_TYPE_RASTER:
-            background_tasks.add_task(_background_generate_cog, primary_id, body.s3_key)
+            background_tasks.add_task(
+                _background_generate_cog,
+                primary_id,
+                upload_key,
+                background_seed_path,
+                background_seed_dir,
+            )
 
+        logger.info("upload-complete response ready for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
         return LayerUploadResponse(
             dag_child_map_id=map_id,
             dag_parent_map_id=map_id,  # already on the forked map
