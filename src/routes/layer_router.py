@@ -276,20 +276,30 @@ layer_router = APIRouter()
     operation_id="get_layer_render_status",
 )
 async def get_layer_render_status(
-    layer: MapLayer = Depends(get_layer),
-    session: UserContext = Depends(verify_session_required),
+    layer_id: str,
 ):
     """Return whether a layer has enough optimized assets to render quickly."""
-    if layer.type != LAYER_TYPE_RASTER:
-        return {"ready": True, "status": "ready", "type": layer.type}
+    async with async_conn("render_status") as conn:
+        row = await conn.fetchrow(
+            "SELECT layer_id, type, metadata, bounds FROM map_layers WHERE layer_id = $1",
+            layer_id,
+        )
+    if not row:
+        raise HTTPException(404, f"Layer {layer_id} not found")
 
-    metadata = layer.metadata_dict or {}
+    layer_type = row["type"]
+    if layer_type != LAYER_TYPE_RASTER:
+        return {"ready": True, "status": "ready", "type": layer_type}
+
+    metadata = row["metadata"] or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
     cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
     if not cog_key:
         return {
             "ready": False,
             "status": "pending_cog",
-            "type": layer.type,
+            "type": layer_type,
             "detail": "Optimizing raster tiles",
         }
 
@@ -304,16 +314,16 @@ async def get_layer_render_status(
         return {
             "ready": False,
             "status": "missing_cog_object",
-            "type": layer.type,
+            "type": layer_type,
             "detail": "Waiting for optimized raster file",
         }
 
     return {
         "ready": True,
         "status": "ready",
-        "type": layer.type,
+        "type": layer_type,
         "cog_key": cog_key,
-        "minzoom": raster_source_minzoom(metadata, layer.bounds),
+        "minzoom": raster_source_minzoom(metadata, row["bounds"]),
     }
 
 
