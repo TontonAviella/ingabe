@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlparse
 
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 
@@ -85,10 +86,23 @@ class RasterUploadHandler(BaseUploadHandler):
             cmd.append("-stats")
 
         started = time.monotonic()
+        env = os.environ.copy()
+        if ctx.temp_file_path.startswith("/vsis3/"):
+            endpoint = urlparse(os.environ.get("S3_ENDPOINT_URL", "http://minio:9000"))
+            env.setdefault("AWS_ACCESS_KEY_ID", os.environ.get("S3_ACCESS_KEY_ID", ""))
+            env.setdefault("AWS_SECRET_ACCESS_KEY", os.environ.get("S3_SECRET_ACCESS_KEY", ""))
+            env.setdefault("AWS_REGION", os.environ.get("S3_DEFAULT_REGION", "us-east-1"))
+            env.setdefault("AWS_S3_ENDPOINT", endpoint.netloc)
+            env.setdefault("AWS_HTTPS", "YES" if endpoint.scheme == "https" else "NO")
+            env.setdefault("AWS_VIRTUAL_HOSTING", "FALSE")
+            env.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+            env.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff")
+
         proc = await asyncio.create_subprocess_exec(
             *cmd, ctx.temp_file_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await proc.communicate()
         elapsed = time.monotonic() - started

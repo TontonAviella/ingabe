@@ -1473,6 +1473,13 @@ async def complete_layer_upload(
         filename = filename[:-3]
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_name = body.layer_name or os.path.splitext(filename)[0]
+    layer_type_for_file = get_layer_type(file_ext)
+    remote_raster_metadata = (
+        layer_type_for_file == LAYER_TYPE_RASTER
+        and file_ext in {".tif", ".tiff"}
+        and not is_gzipped
+        and _truthy_env("RASTER_UPLOAD_REMOTE_METADATA", "1")
+    )
 
     import shutil
     from src.utils import s3_op
@@ -1498,7 +1505,20 @@ async def complete_layer_upload(
             except Exception:
                 landed_in_r2 = False
 
-        if landed_in_r2:
+        head = await s3_op(
+            s3_client.head_object(Bucket=bucket_name, Key=body.s3_key),
+            "head_object", f"layer {body.layer_id}",
+        )
+        file_size = int(head.get("ContentLength") or 0)
+
+        if remote_raster_metadata and not landed_in_r2:
+            tmp_path = f"/vsis3/{bucket_name}/{body.s3_key}"
+            logger.info(
+                "upload-complete using remote GDAL metadata path for %s instead of downloading %.2f GiB",
+                body.layer_id,
+                file_size / (1024 ** 3),
+            )
+        elif landed_in_r2:
             # Pull bytes server-side from R2, mirror to MinIO at the canonical
             # s3_key so downstream pipelines (COG, raw-data fetches) work
             # unchanged, then schedule R2 cleanup. R2's 1-day lifecycle is the
@@ -1517,7 +1537,8 @@ async def complete_layer_upload(
                 s3_client.download_file(bucket_name, body.s3_key, download_path, Config=one_shot),
                 "download", f"layer {body.layer_id}",
             )
-        logger.info("upload-complete downloaded %s in %.2fs", body.layer_id, time.monotonic() - started_at)
+        if not (remote_raster_metadata and not landed_in_r2):
+            logger.info("upload-complete downloaded %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
         # Decompress gzipped uploads in-place to a sibling temp file. Streaming
         # gunzip — never loads the whole file in memory. Crucial for 1 GB+ tifs.
@@ -1526,10 +1547,10 @@ async def complete_layer_upload(
             with gzip.open(download_path, "rb") as src, open(tmp_path, "wb") as dst:
                 shutil.copyfileobj(src, dst, length=8 * 1024 * 1024)
             os.remove(download_path)
-        else:
+            file_size = os.path.getsize(tmp_path)
+        elif not (remote_raster_metadata and not landed_in_r2):
             tmp_path = download_path
-
-        file_size = os.path.getsize(tmp_path)
+            file_size = os.path.getsize(tmp_path)
 
         async with get_async_db_connection() as conn:
             ctx = UploadContext(
@@ -1585,7 +1606,7 @@ async def complete_layer_upload(
             raise HTTPException(status_code=400, detail="No features found in uploaded file.")
 
         primary_id = result.created_layer_ids[0]
-        layer_type = get_layer_type(file_ext)
+        layer_type = layer_type_for_file
         background_seed_dir = None
         background_seed_path = None
         if layer_type == LAYER_TYPE_RASTER and upload_path and os.path.exists(upload_path):
