@@ -1,0 +1,9 @@
+[package]
+name = "admin_h3_rust_bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+geo = "0.33.1"
+h3o = { version = "0.10.0", features = ["geo"] }
