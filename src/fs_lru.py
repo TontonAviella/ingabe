@@ -158,7 +158,8 @@ class FileCache:
 class LayerCache:
     def __init__(self):
         self.file_cache = FileCache(
-            cache_dir="/cache", max_size=1024 * 1024 * 96
+            cache_dir=os.environ.get("LAYER_CACHE_DIR", "/cache"),
+            max_size=1024 * 1024 * 96,
         )  # 96 MiB — balanced for standard plan (2GB RAM)
 
     @asynccontextmanager
