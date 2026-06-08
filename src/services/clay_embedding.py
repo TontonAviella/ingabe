@@ -5,7 +5,7 @@ For each layer:
   1. Load Clay v1.5 (~6 GB RAM, ~10 s)
   2. Tile the COG into 256x256 RGB patches
   3. Run the encoder over batched tiles to get 1024-dim embeddings
-  4. Insert into Milvus tagged with (layer_id, partner_id, tile_x, tile_y)
+  4. Insert into Qdrant tagged with (layer_id, partner_id, tile_x, tile_y)
   5. Free the model (RAM returns to baseline)
 
 V1 scope: rgb_visual orthophotos only. Drone 4-band-with-packed-indices
@@ -212,7 +212,7 @@ async def embed_layer(
     cog_url: Optional[str] = None,
     skip_if_already_embedded: bool = True,
 ) -> dict:
-    """Tile a layer's COG, run Clay encoder, write embeddings to Milvus.
+    """Tile a layer's COG, run Clay encoder, write embeddings to Qdrant.
 
     Returns {layer_id, status, tiles_embedded, ...}.
 
@@ -220,7 +220,7 @@ async def embed_layer(
 
     The function is async because it's called from FastAPI BackgroundTasks
     that already run on the event loop. Internally, all the work is done
-    SYNCHRONOUSLY (DB, S3, Clay, Milvus) — torch + rasterio CPU-bound work
+    SYNCHRONOUSLY (DB, S3, Clay, Qdrant) — torch + rasterio CPU-bound work
     interacts badly with asyncio executors on this image, hanging silently.
     Doing one big synchronous block in a fire-and-forget context is safe and
     far more reliable.
@@ -413,7 +413,7 @@ def _embed_layer_sync(
 
     # Stamp the raster brain page so a future search_brain query can see
     # "this layer has 16 Clay tile embeddings in clay_tiles_v1" without
-    # round-tripping to Milvus, and the embedding event lands on the
+    # round-tripping to Qdrant, and the embedding event lands on the
     # layer's timeline.
     if inserted > 0:
         try:

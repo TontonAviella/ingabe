@@ -235,10 +235,10 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
 Results from these tools can be displayed as map layers or summarised in chat.
 
 IMPORTANT — brain context awareness:
-When <BrainContext> is present in the conversation, it contains compiled knowledge about entities
-near the user's current map view. Use this context to give informed answers without needing to
-call search_brain. Only call search_brain when the user asks about entities NOT in the brain context
-or when they need to search across all entities.
+When <BrainContext> is present in the conversation, it is a compact memory packet from Ingabe Brain.
+It can contain query-matched pages, map-viewport pages, and Clay/Qdrant visual-index availability.
+Use this context to give informed answers without needing to call search_brain. Only call search_brain
+when the user asks about entities NOT in the brain context or when they need a broader search.
 
 IMPORTANT — how to present forecast results:
 Read the `briefing` field from the risk_summary — it contains a natural-language weather risk
@@ -309,7 +309,7 @@ Routing rules (after describe_user_raster):
   payout_recommendation. Source='drone'. For satellite-based triggers use get_insurance_intelligence.)
 - "Find other fields that look like this" / "have we seen this stress pattern in any other flight?" /
   "show me similar areas across my orthophotos" / "any matches in my other flights for this damage" →
-  find_similar_tiles (Clay v1.5 visual embedding similarity in Milvus, cross-flight match.
+  find_similar_tiles (Clay v1.5 visual embedding similarity in Qdrant, cross-flight match.
   Returns top-K tiles ranked by cosine similarity. Only works on rgb_visual orthophotos that
   have been embedded — the embedding pipeline runs automatically after COG conversion completes,
   so layers uploaded >1 minute ago are queryable. NOT for 4-band drone NDVI exports — those
