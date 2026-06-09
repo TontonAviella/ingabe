@@ -105,6 +105,13 @@ services:
         limits:
           memory: 2G
 
+  geokernel:
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
   qgis-processing:
     restart: unless-stopped
     deploy:

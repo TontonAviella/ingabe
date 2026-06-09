@@ -10,8 +10,12 @@ from src.tools.pyd import IngabeToolCallMetaArgs
 
 class GetSpatialEngineCapabilitiesArgs(BaseModel):
     include_rasterd: bool = Field(
-        ...,
+        default=True,
         description="Whether to check the configured Rust rasterd sidecar health endpoint.",
+    )
+    include_geokernel: bool = Field(
+        default=True,
+        description="Whether to check the configured Rust geokernel sidecar health endpoint.",
     )
 
 
@@ -21,9 +25,12 @@ async def get_spatial_engine_capabilities(
 ) -> dict[str, Any]:
     """Report which spatial engines are installed and active.
 
-    Use when the user asks whether Sphere, Forge3D, rasterd, or browser 3D map
-    rendering is actually installed/active. This prevents Sage/Hermes from
+    Use when the user asks whether Sphere, Forge3D, rasterd, geokernel, or
+    browser 3D map rendering is actually installed/active. This prevents Sage/Hermes from
     claiming a renderer or model is powering a result when it is only available
     experimentally or not installed in the current runtime.
     """
-    return await get_spatial_engine_capabilities_service(include_rasterd=args.include_rasterd)
+    return await get_spatial_engine_capabilities_service(
+        include_rasterd=args.include_rasterd,
+        include_geokernel=args.include_geokernel,
+    )

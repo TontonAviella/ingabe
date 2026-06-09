@@ -574,24 +574,29 @@ async def generate_admin_h3_polyfill(
     of visually overstated.
     """
     from src.services.admin_h3 import AdminH3Error, AdminH3Options, admin_geojson_to_h3
+    from src.services.geokernel_client import admin_geojson_to_h3_via_geokernel
+
+    options = AdminH3Options(
+        resolution=request.resolution,
+        admin_level=request.admin_level,
+        id_property=request.id_property,
+        name_property=request.name_property,
+        max_hexes=request.max_hexes,
+        min_overlap_ratio=request.min_overlap_ratio,
+        include_geometry=request.include_geometry,
+    )
 
     def _generate():
         return admin_geojson_to_h3(
             request.geojson,
-            options=AdminH3Options(
-                resolution=request.resolution,
-                admin_level=request.admin_level,
-                id_property=request.id_property,
-                name_property=request.name_property,
-                max_hexes=request.max_hexes,
-                min_overlap_ratio=request.min_overlap_ratio,
-                include_geometry=request.include_geometry,
-            ),
+            options=options,
         )
 
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, _generate)
+        result = await admin_geojson_to_h3_via_geokernel(request.geojson, options=options)
+        if result is None:
+            result = await loop.run_in_executor(None, _generate)
         logger.info(
             "Generated admin H3 polyfill: resolution=%d cells=%d admin_level=%s",
             request.resolution,

@@ -212,7 +212,7 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
     - Sector-level spatial precision (~1km cache grid)
 - Estimate expected agricultural impacts from forecast rain using analyze_expected_rain_impact — use AFTER get_forecast when the user asks what heavy rain will do, wants farmer alerts, or wants a map. Pass forecast rainfall totals, soil wetness, crop stage, bbox, and any available farms/assets GeoJSON. Set render_map=true and render_3d=true for impact overviews; taller polygons mean higher expected impact.
 - Estimate asset/building flood damage using analyze_sphere_flood_impact — use only when you have an expected flood depth or flood-depth raster-derived value plus exposed assets/buildings/farm infrastructure. This uses Sphere/HAZUS-style vulnerability curves and returns damage percent, loss USD, debris, restoration days, and a damage map. For Rwanda, use flood_type='R' and default_occupancy='AGR1' for agricultural storage/buildings unless a better HAZUS occupancy is known.
-- Check actual engine availability using get_spatial_engine_capabilities when the user asks whether Sphere, Forge3D, rasterd, or 3D rendering is really installed/active.
+- Check actual engine availability using get_spatial_engine_capabilities when the user asks whether Sphere, Forge3D, rasterd, geokernel, or 3D rendering is really installed/active.
 - Detect historical dry spells using detect_dry_spells — scans observed weather for consecutive days below a precipitation threshold
     - Configurable threshold (default 2mm/day) and minimum duration (default 10 days)
     - Returns list of dry spell events with start/end dates, duration, and per-district counts

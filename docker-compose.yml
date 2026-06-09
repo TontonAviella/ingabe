@@ -29,6 +29,8 @@ services:
         condition: service_healthy
       rasterd:
         condition: service_started
+      geokernel:
+        condition: service_started
     environment:
       - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
       # Clerk authentication (set these to enable real multi-user auth)
@@ -51,6 +53,9 @@ services:
       - RASTER_TILE_ENGINE_DIRECT_S3=${RASTER_TILE_ENGINE_DIRECT_S3:-1}
       - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
       - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
+      - GEOKERNEL_URL=${GEOKERNEL_URL:-http://geokernel:8878}
+      - GEOKERNEL_TIMEOUT=${GEOKERNEL_TIMEOUT:-5.0}
+      - GEOKERNEL_H3_CONTAINMENT_MODE=${GEOKERNEL_H3_CONTAINMENT_MODE:-centroid}
       - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
@@ -222,6 +227,19 @@ services:
       - VSI_CACHE=TRUE
       - VSI_CACHE_SIZE=134217728
       - GDAL_CACHEMAX=256
+    restart: unless-stopped
+
+  geokernel:
+    build:
+      context: ./services/geokernel
+      dockerfile: Dockerfile
+    image: mundi-geokernel:local
+    container_name: mundi-geokernel
+    ports:
+      - "${GEOKERNEL_PORT:-8878}:8878"
+    environment:
+      - RUST_LOG=${GEOKERNEL_RUST_LOG:-info}
+      - GEOKERNEL_PORT=8878
     restart: unless-stopped
 
   qgis-processing:

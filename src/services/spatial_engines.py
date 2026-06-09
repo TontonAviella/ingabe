@@ -9,7 +9,10 @@ from src.services.forge3d_adapter import forge3d_available
 from src.services.sphere_flood import sphere_available
 
 
-async def get_spatial_engine_capabilities(include_rasterd: bool = True) -> dict[str, Any]:
+async def get_spatial_engine_capabilities(
+    include_rasterd: bool = True,
+    include_geokernel: bool = True,
+) -> dict[str, Any]:
     sphere_ok, sphere_error = sphere_available()
     forge_ok, forge_version, forge_error = forge3d_available()
     capabilities: dict[str, Any] = {
@@ -32,6 +35,8 @@ async def get_spatial_engine_capabilities(include_rasterd: bool = True) -> dict[
     }
     if include_rasterd:
         capabilities["rasterd"] = await _rasterd_status()
+    if include_geokernel:
+        capabilities["geokernel"] = await _geokernel_status()
     return capabilities
 
 
@@ -64,5 +69,39 @@ async def _rasterd_status() -> dict[str, Any]:
         "renderer": data.get("renderer"),
         "forge3d_cog_feature": data.get("forge3d_cog_feature", data.get("forge3d_compiled")),
         "forge3d_runtime": data.get("forge3d_runtime"),
+        "raw": data,
+    }
+
+
+async def _geokernel_status() -> dict[str, Any]:
+    base_url = os.environ.get("GEOKERNEL_URL")
+    if not base_url:
+        return {
+            "configured": False,
+            "reachable": False,
+            "engine": None,
+            "active_for": [],
+        }
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/healthz")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        return {
+            "configured": True,
+            "reachable": False,
+            "engine": None,
+            "active_for": [],
+            "error": str(exc),
+        }
+    return {
+        "configured": True,
+        "reachable": True,
+        "engine": data.get("engine"),
+        "active_for": ["admin H3 overlap acceleration"],
+        "capabilities": data.get("capabilities", []),
+        "geometry_engine": data.get("geometry_engine"),
+        "robust_kernel_available": data.get("robust_kernel_available"),
         "raw": data,
     }
