@@ -1,8 +1,13 @@
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::CString;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::os::raw::c_char;
 use std::path::Path;
+use std::ptr;
+use std::slice;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -14,6 +19,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use gdal::raster::ResampleAlg;
 use gdal::Dataset;
+use gdal_sys::{
+    GDALClose, GDALDatasetH, GDALWarp, GDALWarpAppOptionsFree, GDALWarpAppOptionsNew, VSIFree,
+    VSIGetMemFileBuffer, VSIUnlink,
+};
 use image::codecs::png::PngEncoder;
 use image::{ColorType, ImageEncoder, Rgba, RgbaImage};
 use lru::LruCache;
@@ -24,10 +33,38 @@ use tracing::{debug, info, warn};
 
 const TILE_SIZE: usize = 256;
 const WEB_MERCATOR_HALF_WORLD: f64 = 20037508.342789244;
+static VSIMEM_TILE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+struct GdalArgv {
+    _strings: Vec<CString>,
+    ptrs: Vec<*mut c_char>,
+}
+
+impl GdalArgv {
+    fn new(args: &[String]) -> Result<Self> {
+        let mut strings = Vec::with_capacity(args.len());
+        let mut ptrs = Vec::with_capacity(args.len() + 1);
+        for arg in args {
+            let c = CString::new(arg.as_str())?;
+            ptrs.push(c.as_ptr() as *mut c_char);
+            strings.push(c);
+        }
+        ptrs.push(ptr::null_mut());
+        Ok(Self {
+            _strings: strings,
+            ptrs,
+        })
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut *mut c_char {
+        self.ptrs.as_mut_ptr()
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
     cache: Arc<Mutex<LruCache<String, Arc<Vec<u8>>>>>,
+    dataset_cache: Arc<Mutex<LruCache<String, Arc<Mutex<Dataset>>>>>,
     render_permits: Arc<Semaphore>,
 }
 
@@ -42,6 +79,8 @@ struct TileQuery {
 struct CacheStats {
     len: usize,
     cap: usize,
+    dataset_len: usize,
+    dataset_cap: usize,
 }
 
 #[derive(Debug)]
@@ -55,7 +94,8 @@ enum TileError {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "mundi_rasterd=info,tower_http=warn".to_string()),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "mundi_rasterd=info,tower_http=warn".to_string()),
         )
         .init();
 
@@ -72,9 +112,17 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(1);
+    let dataset_cache_cap = std::env::var("RASTERD_DATASET_CACHE_ENTRIES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(16);
     let state = AppState {
         cache: Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(cache_cap).expect("cache cap is non-zero"),
+        ))),
+        dataset_cache: Arc::new(Mutex::new(LruCache::new(
+            NonZeroUsize::new(dataset_cache_cap).expect("dataset cache cap is non-zero"),
         ))),
         render_permits: Arc::new(Semaphore::new(render_concurrency)),
     };
@@ -102,7 +150,7 @@ async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "engine": "mundi-rasterd",
-        "renderer": "gdal-webmercator-cog",
+        "renderer": "gdal-webmercator-cog-or-raw-warp",
         "forge3d_cog_feature": cfg!(feature = "forge3d-cog"),
         "forge3d_runtime": "python-impact-adapter",
     }))
@@ -110,9 +158,12 @@ async fn healthz() -> Json<serde_json::Value> {
 
 async fn debug_cache(State(state): State<AppState>) -> Json<CacheStats> {
     let cache = state.cache.lock().expect("cache lock");
+    let dataset_cache = state.dataset_cache.lock().expect("dataset cache lock");
     Json(CacheStats {
         len: cache.len(),
         cap: cache.cap().get(),
+        dataset_len: dataset_cache.len(),
+        dataset_cap: dataset_cache.cap().get(),
     })
 }
 
@@ -131,29 +182,49 @@ async fn tile_png(
     };
 
     let cache_key = cache_key(query.layer_id.as_deref(), &query.url, z, x, y, &bands);
-    if let Some(bytes) = state.cache.lock().expect("cache lock").get(&cache_key).cloned() {
+    if let Some(bytes) = state
+        .cache
+        .lock()
+        .expect("cache lock")
+        .get(&cache_key)
+        .cloned()
+    {
         debug!("tile cache hit z={z} x={x} y={y}");
         return png_response(bytes.as_ref().clone());
     }
 
     let render_permit = match state.render_permits.clone().acquire_owned().await {
         Ok(permit) => permit,
-        Err(e) => return error_response(StatusCode::SERVICE_UNAVAILABLE, format!("render limiter closed: {e}")),
+        Err(e) => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("render limiter closed: {e}"),
+            )
+        }
     };
     let started = Instant::now();
     let url = query.url.clone();
-    let render = tokio::task::spawn_blocking(move || render_webmercator_tile(&url, z, x, y, &bands))
-        .await
-        .unwrap_or_else(|e| Err(TileError::Render(anyhow!("tile worker join failed: {e}"))));
+    let dataset_cache = state.dataset_cache.clone();
+    let render = tokio::task::spawn_blocking(move || {
+        render_webmercator_tile(&dataset_cache, &url, z, x, y, &bands)
+    })
+    .await
+    .unwrap_or_else(|e| Err(TileError::Render(anyhow!("tile worker join failed: {e}"))));
     drop(render_permit);
     let elapsed_ms = started.elapsed().as_millis();
 
     match render {
         Ok(bytes) => {
             if elapsed_ms > 500 {
-                info!("tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}", bytes.len());
+                info!(
+                    "tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}",
+                    bytes.len()
+                );
             } else {
-                debug!("tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}", bytes.len());
+                debug!(
+                    "tile render z={z} x={x} y={y} bytes={} elapsed_ms={elapsed_ms}",
+                    bytes.len()
+                );
             }
             let bytes = Arc::new(bytes);
             state
@@ -170,7 +241,10 @@ async fn tile_png(
         Err(TileError::Unsupported(msg)) => error_response(StatusCode::NOT_IMPLEMENTED, msg),
         Err(TileError::Render(err)) => {
             warn!("tile render failed z={z} x={x} y={y} elapsed_ms={elapsed_ms}: {err:#}");
-            error_response(StatusCode::BAD_GATEWAY, "raster tile render failed".to_string())
+            error_response(
+                StatusCode::BAD_GATEWAY,
+                "raster tile render failed".to_string(),
+            )
         }
     }
 }
@@ -178,7 +252,10 @@ async fn tile_png(
 fn png_response(bytes: Vec<u8>) -> Response {
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=3600"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600"),
+    );
     (headers, bytes).into_response()
 }
 
@@ -222,27 +299,29 @@ fn cache_key(layer_id: Option<&str>, url: &str, z: u32, x: u32, y: u32, bands: &
 }
 
 fn render_webmercator_tile(
+    dataset_cache: &Arc<Mutex<LruCache<String, Arc<Mutex<Dataset>>>>>,
     url: &str,
     z: u32,
     x: u32,
     y: u32,
     bands: &[usize],
 ) -> std::result::Result<Vec<u8>, TileError> {
-    let open_path = gdal_open_path(url);
-    let dataset = Dataset::open(Path::new(&open_path)).map_err(|e| TileError::Render(e.into()))?;
+    let dataset_handle = open_dataset(dataset_cache, url)?;
+    let dataset = dataset_handle
+        .lock()
+        .map_err(|_| TileError::Render(anyhow!("dataset cache lock poisoned")))?;
 
     let auth_code = dataset
         .spatial_ref()
         .ok()
         .and_then(|srs| srs.auth_code().ok());
     if auth_code != Some(3857) {
-        return Err(TileError::Unsupported(format!(
-            "rasterd V1 requires EPSG:3857 COGs, got {:?}",
-            auth_code
-        )));
+        return render_raw_webmercator_tile(&dataset, z, x, y, bands).map_err(TileError::Render);
     }
 
-    let gt = dataset.geo_transform().map_err(|e| TileError::Render(e.into()))?;
+    let gt = dataset
+        .geo_transform()
+        .map_err(|e| TileError::Render(e.into()))?;
     if gt[2].abs() > 1e-9 || gt[4].abs() > 1e-9 {
         return Err(TileError::Unsupported(
             "rotated/skewed rasters are not supported by rasterd V1".to_string(),
@@ -312,6 +391,113 @@ fn render_webmercator_tile(
     encode_rgba_png(&band_data, out_w, out_h, out_x0, out_y0).map_err(TileError::Render)
 }
 
+fn open_dataset(
+    dataset_cache: &Arc<Mutex<LruCache<String, Arc<Mutex<Dataset>>>>>,
+    url: &str,
+) -> std::result::Result<Arc<Mutex<Dataset>>, TileError> {
+    let open_path = gdal_open_path(url);
+    {
+        let mut cache = dataset_cache
+            .lock()
+            .map_err(|_| TileError::Render(anyhow!("dataset cache lock poisoned")))?;
+        if let Some(dataset) = cache.get(&open_path).cloned() {
+            return Ok(dataset);
+        }
+    }
+
+    let dataset = Dataset::open(Path::new(&open_path)).map_err(|e| TileError::Render(e.into()))?;
+    let dataset = Arc::new(Mutex::new(dataset));
+    let mut cache = dataset_cache
+        .lock()
+        .map_err(|_| TileError::Render(anyhow!("dataset cache lock poisoned")))?;
+    if let Some(existing) = cache.get(&open_path).cloned() {
+        return Ok(existing);
+    }
+    cache.put(open_path, dataset.clone());
+    Ok(dataset)
+}
+
+fn render_raw_webmercator_tile(
+    dataset: &Dataset,
+    z: u32,
+    x: u32,
+    y: u32,
+    bands: &[usize],
+) -> Result<Vec<u8>> {
+    let (minx, miny, maxx, maxy) = webmercator_bounds(z, x, y)
+        .map_err(|e| anyhow!("invalid WebMercator tile bounds: {e:?}"))?;
+    let seq = VSIMEM_TILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tile_path = format!(
+        "/vsimem/mundi-rasterd-{}-{seq}-{z}-{x}-{y}.png",
+        std::process::id()
+    );
+    let c_tile_path = CString::new(tile_path.as_str())?;
+
+    let mut args = vec![
+        "-q".to_string(),
+        "-overwrite".to_string(),
+        "-t_srs".to_string(),
+        "EPSG:3857".to_string(),
+        "-te_srs".to_string(),
+        "EPSG:3857".to_string(),
+        "-te".to_string(),
+        minx.to_string(),
+        miny.to_string(),
+        maxx.to_string(),
+        maxy.to_string(),
+        "-ts".to_string(),
+        TILE_SIZE.to_string(),
+        TILE_SIZE.to_string(),
+        "-r".to_string(),
+        "bilinear".to_string(),
+        "-nosrcalpha".to_string(),
+    ];
+    for band in bands {
+        args.push("-srcband".to_string());
+        args.push(band.to_string());
+    }
+    args.push("-of".to_string());
+    args.push("PNG".to_string());
+
+    let mut argv = GdalArgv::new(&args)?;
+    unsafe {
+        let _ = VSIUnlink(c_tile_path.as_ptr());
+        let options = GDALWarpAppOptionsNew(argv.as_mut_ptr(), ptr::null_mut());
+        if options.is_null() {
+            return Err(anyhow!("GDALWarpAppOptionsNew failed"));
+        }
+
+        let mut src_datasets: [GDALDatasetH; 1] = [dataset.c_dataset()];
+        let mut usage_error = 0;
+        let output = GDALWarp(
+            c_tile_path.as_ptr(),
+            ptr::null_mut(),
+            1,
+            src_datasets.as_mut_ptr(),
+            options,
+            &mut usage_error,
+        );
+        GDALWarpAppOptionsFree(options);
+        if output.is_null() || usage_error != 0 {
+            let _ = VSIUnlink(c_tile_path.as_ptr());
+            return Err(anyhow!(
+                "raw GDAL tile warp failed usage_error={usage_error}"
+            ));
+        }
+        GDALClose(output);
+
+        let mut len = 0;
+        let data = VSIGetMemFileBuffer(c_tile_path.as_ptr(), &mut len, 1);
+        if data.is_null() || len == 0 {
+            let _ = VSIUnlink(c_tile_path.as_ptr());
+            return Err(anyhow!("raw GDAL tile warp produced no PNG bytes"));
+        }
+        let bytes = slice::from_raw_parts(data, len as usize).to_vec();
+        VSIFree(data.cast());
+        Ok(bytes)
+    }
+}
+
 fn gdal_open_path(url: &str) -> String {
     if url.starts_with("http://") || url.starts_with("https://") {
         format!("/vsicurl/{url}")
@@ -320,7 +506,11 @@ fn gdal_open_path(url: &str) -> String {
     }
 }
 
-fn webmercator_bounds(z: u32, x: u32, y: u32) -> std::result::Result<(f64, f64, f64, f64), TileError> {
+fn webmercator_bounds(
+    z: u32,
+    x: u32,
+    y: u32,
+) -> std::result::Result<(f64, f64, f64, f64), TileError> {
     if z > 30 || x >= (1u32 << z) || y >= (1u32 << z) {
         return Err(TileError::Render(anyhow!("invalid z/x/y")));
     }

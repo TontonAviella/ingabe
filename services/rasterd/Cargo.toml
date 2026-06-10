@@ -16,6 +16,7 @@ forge3d-cog = []
 anyhow = "1"
 axum = "0.7"
 gdal = { version = "0.17", features = ["bindgen"] }
+gdal-sys = { version = "0.10", features = ["bindgen"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 lru = "0.12"
 serde = { version = "1", features = ["derive"] }
