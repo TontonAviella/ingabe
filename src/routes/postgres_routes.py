@@ -1207,6 +1207,8 @@ async def _set_layer_cog_status(
             json.dumps(metadata),
             layer_id,
         )
+        if status == "ready":
+            await tile_cache.invalidate_layer(layer_id)
         return metadata
 
 
@@ -1388,6 +1390,7 @@ async def _try_reuse_existing_cog(layer_id: str) -> bool:
                 json.dumps(current_meta),
                 layer_id,
             )
+            await tile_cache.invalidate_layer(layer_id)
             logger.info(
                 "Background COG: reused existing COG %s for %s from %s",
                 cog_key,
@@ -1478,6 +1481,7 @@ async def _background_generate_cog(
                     "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
                     json.dumps(metadata), layer_id,
                 )
+            await tile_cache.invalidate_layer(layer_id)
             logger.info("Background COG fast-path complete for %s", layer_id)
             await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
             await _maybe_embed_layer_after_cog(layer_id)
@@ -1550,6 +1554,7 @@ async def _background_generate_cog(
                 "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
                 json.dumps(metadata), layer_id,
             )
+        await tile_cache.invalidate_layer(layer_id)
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
         await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
         await _maybe_embed_layer_after_cog(layer_id)

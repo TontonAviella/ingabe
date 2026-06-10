@@ -85,20 +85,20 @@ def _get_empty_tile() -> bytes:
 import time as _time
 
 
-async def _get_presigned_url(cog_key: str) -> str:
-    """Return a presigned URL for the COG, reusing cached URLs when possible."""
+async def _get_presigned_url(s3_key: str) -> str:
+    """Return a presigned URL for a raster object, reusing cached URLs when possible."""
     now = _time.monotonic()
-    cached = _presigned_url_cache.get(cog_key)
+    cached = _presigned_url_cache.get(s3_key)
     if cached and (now - cached[0]) < _PRESIGNED_URL_TTL:
         return cached[1]
 
     bucket = get_bucket_name()
     s3 = await get_async_s3_client(signature_version="s3v4")
     url = await s3_op(
-        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": cog_key}, ExpiresIn=180),
-        "presigned URL", f"raster tile {cog_key}",
+        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": s3_key}, ExpiresIn=180),
+        "presigned URL", f"raster tile {s3_key}",
     )
-    _presigned_url_cache[cog_key] = (now, url)
+    _presigned_url_cache[s3_key] = (now, url)
     return url
 
 
@@ -120,12 +120,48 @@ def _get_raster_engine_concurrency() -> int:
         return 1
 
 
-def _get_raster_engine_asset_url(cog_key: str) -> str | None:
+def _get_raster_engine_asset_url(s3_key: str | None) -> str | None:
     """Return a GDAL-readable asset path for the Rust raster engine."""
+    if not s3_key:
+        return None
     direct_s3 = os.environ.get("RASTER_TILE_ENGINE_DIRECT_S3", "").strip().lower()
     if direct_s3 in {"1", "true", "yes", "on"}:
-        return f"/vsis3/{get_bucket_name()}/{cog_key}"
+        return f"/vsis3/{get_bucket_name()}/{s3_key}"
     return None
+
+
+def _raster_engine_can_render_plain_png(metadata: dict) -> bool:
+    """Return True when rasterd can render this layer without Python styling.
+
+    Single-band rasters with stored value statistics use the Python color-ramp
+    path so NDVI/DEM-style layers keep their semantic colors.
+    """
+    return "raster_value_stats_b1" not in (metadata or {})
+
+
+def _raw_raster_tiles_available(s3_key: str | None, metadata: dict, bounds) -> bool:
+    """Raw upload tiles are live when rasterd can place and render the source."""
+    return bool(
+        s3_key
+        and _get_raster_engine_url()
+        and _raster_engine_can_render_plain_png(metadata)
+        and bounds
+        and len(bounds) == 4
+    )
+
+
+def _raster_engine_bands(metadata: dict) -> str:
+    band_count = (metadata or {}).get("band_count")
+    try:
+        band_count = int(band_count) if band_count is not None else None
+    except (TypeError, ValueError):
+        band_count = None
+    if isinstance(band_count, int):
+        if band_count <= 1:
+            return "1"
+        if band_count == 2:
+            return "1,2"
+    return "1,2,3"
 
 
 def _get_raster_engine_client():
@@ -154,25 +190,13 @@ async def _try_raster_engine_tile(
     x: int,
     y: int,
 ) -> bytes | None:
-    """Delegate RGB WebMercator COG tiles to the optional Rust sidecar."""
+    """Delegate plain RGB/grayscale raster tiles to the optional Rust sidecar."""
     engine_url = _get_raster_engine_url()
     if not engine_url:
         return None
-    if "raster_value_stats_b1" in metadata:
+    if not _raster_engine_can_render_plain_png(metadata):
         return None
-    if str(metadata.get("cog_srs", "")).upper() not in {"EPSG:3857", "3857"}:
-        return None
-
-    band_count = metadata.get("band_count")
-    if isinstance(band_count, int):
-        if band_count <= 1:
-            bands = "1"
-        elif band_count == 2:
-            bands = "1,2"
-        else:
-            bands = "1,2,3"
-    else:
-        bands = "1,2,3"
+    bands = _raster_engine_bands(metadata)
 
     try:
         client = _get_raster_engine_client()
@@ -253,7 +277,7 @@ async def _release_raster_tile_inflight_lock(key: str, lock: asyncio.Lock) -> No
         if _RASTER_TILE_INFLIGHT_LOCKS.get(key) is lock:
             _RASTER_TILE_INFLIGHT_LOCKS.pop(key, None)
 
-# Cache presigned URLs per COG key to avoid regenerating on every tile request.
+# Cache presigned URLs per raster object key to avoid regenerating on every tile request.
 # Presigned URLs are valid for 180s; we cache for 120s to avoid edge-case expiry.
 _presigned_url_cache: dict[str, tuple[float, str]] = {}
 _PRESIGNED_URL_TTL = 120  # seconds
@@ -278,10 +302,10 @@ layer_router = APIRouter()
 async def get_layer_render_status(
     layer_id: str,
 ):
-    """Return whether a layer has enough optimized assets to render quickly."""
+    """Return whether a layer has enough assets to render quickly."""
     async with async_conn("render_status") as conn:
         row = await conn.fetchrow(
-            "SELECT layer_id, type, metadata, bounds FROM map_layers WHERE layer_id = $1",
+            "SELECT layer_id, type, metadata, bounds, s3_key FROM map_layers WHERE layer_id = $1",
             layer_id,
         )
     if not row:
@@ -295,8 +319,23 @@ async def get_layer_render_status(
     if isinstance(metadata, str):
         metadata = json.loads(metadata)
     cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
+    raw_tiles_ready = _raw_raster_tiles_available(row["s3_key"], metadata, row["bounds"])
     cog_status = metadata.get("cog_status") if isinstance(metadata, dict) else None
     if not cog_key:
+        if raw_tiles_ready:
+            detail = metadata.get("cog_status_detail") or "Raw raster tiles ready; optimized tiles continue in background"
+            if cog_status == "failed":
+                detail = "Raw raster tiles ready; optimized COG generation failed"
+            return {
+                "ready": True,
+                "status": "ready_raw",
+                "type": layer_type,
+                "optimized_ready": False,
+                "detail": detail,
+                "updated_at": metadata.get("cog_status_updated_at"),
+                "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+                "minzoom": raster_source_minzoom(metadata, row["bounds"]),
+            }
         if cog_status == "failed":
             return {
                 "ready": False,
@@ -328,6 +367,17 @@ async def get_layer_render_status(
             f"COG status {cog_key}",
         )
     except Exception:
+        if raw_tiles_ready:
+            return {
+                "ready": True,
+                "status": "ready_raw",
+                "type": layer_type,
+                "optimized_ready": False,
+                "detail": "Raw raster tiles ready; waiting for optimized raster file",
+                "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
+                "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+                "minzoom": raster_source_minzoom(metadata, row["bounds"]),
+            }
         return {
             "ready": False,
             "status": "missing_cog_object",
@@ -340,7 +390,9 @@ async def get_layer_render_status(
         "ready": True,
         "status": "ready",
         "type": layer_type,
+        "optimized_ready": True,
         "cog_key": cog_key,
+        "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
         "minzoom": raster_source_minzoom(metadata, row["bounds"]),
     }
 
@@ -990,16 +1042,17 @@ async def get_raster_xyz_tile(
             headers=_tile_headers,
         )
 
-    # --- Cache miss: render from COG -------------------------------------
+    # --- Cache miss: render from optimized COG or raw uploaded raster -----
     metadata = layer.metadata_dict or {}
     cog_key = metadata.get("cog_key")
+    source_key = cog_key or layer.s3_key
+    source_kind = "optimized_cog" if cog_key else "raw_upload"
 
-    if not cog_key:
-        # No COG yet — return transparent tile immediately.
+    if not source_key:
         return Response(
             content=_get_empty_tile(),
             media_type="image/png",
-            headers={**_tile_headers, "X-COG-Status": "pending", "Cache-Control": "no-cache"},
+            headers={**_tile_headers, "X-Raster-Status": "missing_source", "Cache-Control": "no-cache"},
         )
 
     raster_minzoom = raster_source_minzoom(metadata, layer.bounds)
@@ -1023,9 +1076,11 @@ async def get_raster_xyz_tile(
                     headers=_tile_headers,
                 )
 
-            engine_asset_url = _get_raster_engine_asset_url(cog_key)
-
             engine_tile = None
+            engine_asset_url = _get_raster_engine_asset_url(source_key)
+            if not engine_asset_url and _get_raster_engine_url():
+                engine_asset_url = await _get_presigned_url(source_key)
+
             if engine_asset_url:
                 engine_tile = await _try_raster_engine_tile(
                     layer_id=layer.layer_id,
@@ -1040,7 +1095,19 @@ async def get_raster_xyz_tile(
                 return Response(
                     content=engine_tile,
                     media_type="image/png",
-                    headers=_tile_headers,
+                    headers={**_tile_headers, "X-Raster-Source": source_kind},
+                )
+
+            if not cog_key:
+                return Response(
+                    content=_get_empty_tile(),
+                    media_type="image/png",
+                    headers={
+                        **_tile_headers,
+                        "X-COG-Status": "pending",
+                        "X-Raster-Status": "raw_engine_unavailable",
+                        "Cache-Control": "no-cache",
+                    },
                 )
 
             # Reuse presigned URL across concurrent tile requests for the Python fallback.

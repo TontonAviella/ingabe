@@ -300,8 +300,17 @@ export default function ProjectView() {
           status?: string;
           detail?: string;
           progress?: number;
+          optimized_ready?: boolean;
         };
-        if (status.ready) return;
+        if (status.ready) {
+          if (status.status === 'ready_raw') {
+            updateUploadFile(fileId, {
+              progress: 99,
+              phase: status.detail || 'Raw raster tiles ready; optimizing in background',
+            });
+          }
+          return;
+        }
 
         if (status.status === 'cog_failed') {
           throw new Error(status.detail || 'Raster tile optimization failed');
@@ -328,7 +337,7 @@ export default function ProjectView() {
 
     updateUploadFile(fileId, {
       progress: 99,
-      phase: 'Layer added; raster tiles are still optimizing',
+      phase: 'Layer added; optimized tiles continue in background',
     });
   }, [updateUploadFile]);
 
@@ -1002,7 +1011,7 @@ export default function ProjectView() {
           throw new Error(typeof err.detail === 'string' ? err.detail : 'Processing failed after upload');
         }
         const completePayload = await completeRes.json();
-        updateUploadFile(fileId, { progress: 98, phase: 'Optimizing raster tiles' });
+        updateUploadFile(fileId, { progress: 98, phase: 'Opening raster tiles' });
 
         if (completePayload?.type === 'raster' && completePayload?.id) {
           await waitForRasterRenderReady(completePayload.id, fileId);
@@ -1067,7 +1076,7 @@ export default function ProjectView() {
       }
 
       const completePayload = await completeRes.json();
-      updateUploadFile(fileId, { progress: 98, phase: 'Optimizing raster tiles' });
+      updateUploadFile(fileId, { progress: 98, phase: 'Opening raster tiles' });
       if (completePayload?.type === 'raster' && completePayload?.id) {
         await waitForRasterRenderReady(completePayload.id, fileId);
       }
