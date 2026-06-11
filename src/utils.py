@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from functools import lru_cache
 from openai import AsyncOpenAI
 from fastapi import HTTPException, Request, status
+from src.llm_defaults import DEFAULT_CHAT_MODEL, resolve_chat_endpoint
 
 
 def generate_id(length=12, prefix=""):
@@ -246,7 +247,7 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
 
 def _uses_only_local_ollama_models() -> bool:
     model_chain = [
-        os.environ.get("OPENAI_MODEL", "gpt-4.1-nano"),
+        os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL),
         *(
             os.environ.get("OPENROUTER_FALLBACK_MODELS", "").strip()
             or os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
@@ -279,3 +280,20 @@ def get_openai_client(request: Request) -> AsyncOpenAI:
         extra_headers["HTTP-Referer"] = "https://mundi.ai"
         extra_headers["X-Title"] = "Mundi.ai"
     return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)
+
+
+def get_chat_client_for_model(request: Request, model: str | None = None) -> tuple[AsyncOpenAI, str]:
+    """Return an OpenAI-compatible client and provider-native model name."""
+
+    endpoint = resolve_chat_endpoint(
+        model or os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL),
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_BASE_URL"),
+        ollama_base_url=os.environ.get("OLLAMA_BASE_URL"),
+    )
+    if endpoint.is_local_ollama:
+        return (
+            AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key),
+            endpoint.model,
+        )
+    return get_openai_client(request), endpoint.model

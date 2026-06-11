@@ -13,8 +13,8 @@ Two levers here:
 1. **Small-talk fast-path** — if the user said something trivial (greeting,
    thanks, ack), there is no possible tool call. We bypass the tool list
    entirely, replace the system prompt with a one-liner, and route the
-   request to the local Ollama qwen2.5:7b-64k container instead of the
-   transatlantic 31B. This is the bulk of the win.
+   request to the local Gemma 4 brain model instead of the transatlantic
+   31B. This is the bulk of the win.
 
 2. **Tool subsetting** — if the user is clearly in one domain (map edit,
    agriculture, user-raster analysis, brain), trim the tool list to that
@@ -33,6 +33,8 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Iterable
+
+from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
 
 # ---------------------------------------------------------------------------
 # Tool category map
@@ -468,9 +470,9 @@ SMALL_TALK_SYSTEM_PROMPT = (
 )
 
 # Default fast model for small-talk turns. Local container, no transatlantic
-# RTT, ~7B params. Override via env if the deployment has something better.
+# RTT. Override via env if the deployment has something better.
 def _small_talk_model() -> str:
-    return os.environ.get("SAGE_SMALL_TALK_MODEL", "ollama:qwen2.5:7b-64k")
+    return os.environ.get("SAGE_SMALL_TALK_MODEL", DEFAULT_SMALL_TALK_MODEL)
 
 
 @dataclass(frozen=True)

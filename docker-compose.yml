@@ -59,11 +59,11 @@ services:
       - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
+      - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b}
       - LLM_CONTEXT_LIMIT=${LLM_CONTEXT_LIMIT:-131072}
       - OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS:-}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434/v1}
-      - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}
+      - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
@@ -102,7 +102,7 @@ services:
       # - TILE_CACHE_TTL=3600  # seconds
       # - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
       # - OPENAI_API_KEY=ollama
-      # - OPENAI_MODEL=orieg/gemma3-tools:1b
+      # - OPENAI_MODEL=ollama:gemma4:12b
       #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
     command: >
       bash -c "bash /app/scripts/start-services.sh"

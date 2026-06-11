@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 import os
 
+from src.llm_defaults import DEFAULT_CHAT_MODEL
+
 
 class ChatArgsProvider(ABC):
     @abstractmethod
@@ -13,7 +15,7 @@ class DefaultChatArgsProvider(ChatArgsProvider):
         # feel free to customize below depending on which ollama model you're using
         # or whichever provider you want to use. you can also change depending on
         # user or route.
-        model = os.environ.get("OPENAI_MODEL", "gpt-4.1-nano")
+        model = os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL)
         return {"model": model}
 
 

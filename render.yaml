@@ -40,7 +40,11 @@ envVarGroups:
       - key: S3_DEFAULT_REGION
         value: auto
       - key: OPENAI_MODEL
-        value: deepseek/deepseek-v3.2
+        value: gemma4:31b
+      - key: SAGE_SMALL_TALK_MODEL
+        value: gemma4:31b
+      - key: BRAIN_QUERY_EXPANSION_MODEL
+        value: gemma4:31b
       - key: CDSAPI_URL
         value: https://cds.climate.copernicus.eu/api
       - key: OTEL_SERVICE_NAME
@@ -69,7 +73,7 @@ envVarGroups:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL
-        sync: false
+        value: https://ollama.com/v1
       - key: SH_CLIENT_ID
         sync: false
       - key: SH_CLIENT_SECRET

@@ -47,7 +47,8 @@ from src.structures import (
     SanitizedMessage,
     convert_mundi_message_to_sanitized,
 )
-from src.utils import get_openai_client
+from src.utils import get_chat_client_for_model, get_openai_client
+from src.llm_defaults import DEFAULT_CHAT_MODEL
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
@@ -461,10 +462,10 @@ async def label_conversation_inline(conversation_id: int):
             content_summary = "\n".join(conversation_content)
 
             request = Request({"type": "http", "method": "POST", "headers": []})
-            openai_client = get_openai_client(request)
+            openai_client, title_model = get_chat_client_for_model(request)
 
             response = await openai_client.chat.completions.create(
-                model=os.environ.get("OPENAI_MODEL", "gpt-4.1-nano"),
+                model=title_model,
                 messages=[
                     {
                         "role": "system",
@@ -1923,7 +1924,7 @@ async def process_chat_interaction_task(
                 ].pop("enum", None)
 
             # Strip "strict" from tool defs when using non-OpenAI providers
-            _model = os.environ.get("OPENAI_MODEL", "gpt-4.1-nano")
+            _model = os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL)
             if not _model.startswith("gpt-") and not _model.startswith("o1") and not _model.startswith("o3"):
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)

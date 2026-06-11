@@ -2,6 +2,12 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## Unreleased
+
+### Changed
+- Gemma 4 is now the default Sage/Hermes brain model family. Local Docker defaults to `ollama:gemma4:12b`; hosted deployments default to `gemma4:31b` via `OPENAI_BASE_URL=https://ollama.com/v1`; small-talk routing and Brain query expansion now follow the same Gemma profile instead of falling back to Qwen/Nemotron-style side paths.
+- Local QAT benchmark note: `gemma4:12b-it-qat` installs and responds through Ollama, but on the 2026-06-11 M1/16GB smoke test it returned incomplete Hermes tool arguments (`{"action":"scout"}`) while `gemma4:12b` returned the full required payload. Keep local default on `ollama:gemma4:12b` until QAT tool-call fidelity improves.
+
 ## [0.5.0.0] - 2026-05-04
 
 ### Added
