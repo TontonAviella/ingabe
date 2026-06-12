@@ -68,7 +68,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **Redis**: Caching layer
 - **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
 - **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through OpenRouter; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
-- **Life-Harness runtime guard** (`src/services/life_harness.py`): production adaptation of the Life-Harness idea, not a vendored benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 concise agriculture procedure guidance around the frozen brain model.
+- **Life-Harness runtime guard** (`src/services/life_harness.py` + `external/life-harness` submodule): production adaptation of the pinned upstream Life-Harness benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 task-relevant agriculture procedure retrieval around the frozen brain model.
 - **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)

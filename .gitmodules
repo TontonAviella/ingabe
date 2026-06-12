@@ -1,0 +1,3 @@
+[submodule "external/life-harness"]
+	path = external/life-harness
+	url = https://github.com/Tianshi-Xu/Life-Harness.git

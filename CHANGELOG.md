@@ -6,7 +6,7 @@ All notable changes to mundi.ai will be documented in this file.
 
 ### Changed
 - Hosted Sage/Hermes returns to Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through `OPENAI_BASE_URL=https://openrouter.ai/api/v1`; local Docker keeps `ollama:gemma4:12b-it-qat` for offline/no-API operation.
-- Added a Life-Harness-inspired runtime harness around Hermes/Sage: H2 pre-execution tool argument validation, H3 explicit tool-contract descriptions, H4 repeated-tool-call blocking, and H5 concise agriculture procedure guidance in the system prompt.
+- Added the upstream Life-Harness repo as a pinned submodule at `external/life-harness` and adapted its runtime harness pattern around Hermes/Sage: H2 pre-execution tool argument validation, H3 explicit tool-contract descriptions, H4 repeated-tool-call blocking, and H5 task-relevant agriculture procedure retrieval in the system prompt.
 - Local QAT tool-call hardening: Hermes now keeps strict tool schemas for Gemma/Ollama, and the Gemma smoke test uses explicit required-field descriptions for `field_name`, `risk`, and `action`. This fixes the earlier `{"action":"scout"}` incomplete-argument failure observed on 2026-06-11.
 
 ## [0.5.0.0] - 2026-05-04

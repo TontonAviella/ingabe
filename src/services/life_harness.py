@@ -1,14 +1,16 @@
-"""Runtime harness helpers inspired by Life-Harness.
+"""Runtime harness helpers adapted from Life-Harness.
 
-Life-Harness is an evaluation framework, not a production dependency for us.
-The useful production idea is the harness shape: add deterministic runtime
-guards around a frozen model so Hermes/Sage fails less often without retraining.
+The upstream benchmark source is pinned as a submodule at
+`external/life-harness`. We do not import benchmark runtime code in production;
+we adapt its H2/H3/H4/H5 harness shape into deterministic guards around the
+frozen Sage/Hermes brain model.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 
@@ -17,6 +19,45 @@ NEMOTRON_SUPER3_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 _DISABLED_VALUES = {"0", "false", "no", "off"}
 _CONTRACT_MARKER = "Runtime harness contract:"
 
+_H5_SKILLS: list[dict[str, str]] = [
+    {
+        "title": "Rain impact workflow",
+        "pattern": "rain rainfall storm flood flooding damage risk alert drainage weather forecast farmer",
+        "tip": (
+            "For rain/flood questions, first ground the area, then use forecast "
+            "or rainfall totals, then call the impact tool with render_map=true "
+            "when the user asks where damage/risk will happen."
+        ),
+    },
+    {
+        "title": "Drone raster workflow",
+        "pattern": "drone raster tiff tif orthophoto ndvi ndre imagery upload field crop stress",
+        "tip": (
+            "For uploaded drone imagery, inspect metadata/available bands before "
+            "interpreting. Prefer existing raster/query tools; do not invent crop "
+            "stress claims without a layer id or polygon/AOI."
+        ),
+    },
+    {
+        "title": "Admin plus H3 workflow",
+        "pattern": "district sector cell village admin boundary h3 hex hexagon aggregation coverage",
+        "tip": (
+            "For Rwanda admin questions, use official village/cell/sector/district "
+            "boundaries for reporting and H3/hex cells for fast aggregation or "
+            "visual comparison."
+        ),
+    },
+    {
+        "title": "Brain memory workflow",
+        "pattern": "remember brain gbrain entity observation partner cooperative history note memory",
+        "tip": (
+            "For memory questions, search Brain first, inspect the entity if a "
+            "slug is returned, then add observations only when the user provides "
+            "new factual evidence."
+        ),
+    },
+]
+
 
 def life_harness_enabled() -> bool:
     """Return whether the runtime harness should adapt Hermes/Sage calls."""
@@ -24,11 +65,35 @@ def life_harness_enabled() -> bool:
     return os.environ.get("MUNDI_AGENT_HARNESS", "1").strip().lower() not in _DISABLED_VALUES
 
 
-def apply_life_harness_system_prompt(system_prompt: str) -> str:
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def retrieve_life_harness_skills(user_text: str, *, top_k: int = 2) -> list[dict[str, str]]:
+    """H5: retrieve compact procedural skills for the current task."""
+
+    query = _tokens(user_text)
+    if not query:
+        return []
+    scored: list[tuple[int, dict[str, str]]] = []
+    for skill in _H5_SKILLS:
+        score = len(query & _tokens(skill["pattern"]))
+        if score:
+            scored.append((score, skill))
+    scored.sort(key=lambda item: (-item[0], item[1]["title"]))
+    return [skill for _, skill in scored[:top_k]]
+
+
+def apply_life_harness_system_prompt(system_prompt: str, user_text: str = "") -> str:
     """Append concise H2/H3/H4/H5 operating rules to the system prompt."""
 
     if not life_harness_enabled() or "<RuntimeHarness>" in system_prompt:
         return system_prompt
+    skills = retrieve_life_harness_skills(user_text)
+    skill_block = ""
+    if skills:
+        tips = "\n".join(f"- {skill['title']}: {skill['tip']}" for skill in skills)
+        skill_block = "\nH5 retrieved procedural skills:\n" + tips
     return (
         system_prompt.rstrip()
         + "\n\n<RuntimeHarness>\n"
@@ -37,6 +102,7 @@ def apply_life_harness_system_prompt(system_prompt: str) -> str:
         + "H3: Treat each tool description as the exact environment contract.\n"
         + "H4: Do not repeat the same failing or non-progressing tool call; use the result, choose the next tool, or ask one concise question.\n"
         + "H5: For agriculture work, plan in this order: locate the field, inspect available map/data layers, run the smallest relevant tool, then give risk and next action.\n"
+        + skill_block
         + "</RuntimeHarness>"
     )
 

@@ -4,6 +4,7 @@ from src.services.life_harness import (
     apply_life_harness_tool_contracts,
     life_harness_tool_signature,
     repeated_life_harness_tool_error,
+    retrieve_life_harness_skills,
     validate_life_harness_tool_args,
 )
 
@@ -103,9 +104,24 @@ def test_h4_blocks_third_identical_tool_call():
 
 
 def test_system_prompt_gets_harness_rules_once():
-    prompt = apply_life_harness_system_prompt("Base prompt")
+    prompt = apply_life_harness_system_prompt(
+        "Base prompt",
+        "What damage should heavy rain cause near this field?",
+    )
     prompt_again = apply_life_harness_system_prompt(prompt)
 
     assert "<RuntimeHarness>" in prompt
     assert "H2:" in prompt
+    assert "Rain impact workflow" in prompt
     assert prompt_again == prompt
+
+
+def test_h5_retrieves_task_relevant_skills():
+    skills = retrieve_life_harness_skills(
+        "Use the drone TIFF and admin cells to show crop stress by village",
+        top_k=2,
+    )
+
+    titles = {skill["title"] for skill in skills}
+    assert "Drone raster workflow" in titles
+    assert "Admin plus H3 workflow" in titles
