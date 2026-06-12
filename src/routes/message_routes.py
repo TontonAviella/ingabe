@@ -89,6 +89,7 @@ from src.dependencies.sage_routing import (
     build_fast_tool_call,
     extract_last_user_text,
     filter_tools_by_categories,
+    raster_layer_match_score,
     route_chat,
 )
 from src.dependencies.session import (
@@ -1465,6 +1466,168 @@ async def _maybe_run_fast_admin_boundary_turn(
     return True
 
 
+def _format_fast_ha(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number >= 100:
+        return f"{number:,.0f}"
+    return f"{number:,.1f}".rstrip("0").rstrip(".")
+
+
+def _raster_area_fast_reply(result: dict) -> str:
+    name = str(result.get("name") or "That raster")
+    if result.get("error"):
+        return f"I found the raster layer, but I could not measure it: {result['error']}"
+
+    area_valid = result.get("area_valid_ha")
+    area_bbox = result.get("area_bbox_ha") or result.get("area_ha")
+    area_label = result.get("area_label")
+    valid_fraction = result.get("valid_pixel_fraction")
+
+    if area_valid is not None:
+        reply = f"{name} covers {_format_fast_ha(area_valid)} ha of valid imagery/field footprint."
+        if area_bbox is not None:
+            reply += f" The full rectangular raster extent is {_format_fast_ha(area_bbox)} ha."
+        if valid_fraction is not None:
+            try:
+                reply += f" Valid pixels are {float(valid_fraction) * 100:.1f}% of that extent."
+            except (TypeError, ValueError):
+                pass
+    elif area_label:
+        reply = f"{name} covers {area_label}."
+    elif area_bbox is not None:
+        reply = f"{name} covers about {_format_fast_ha(area_bbox)} ha by its raster bounding box."
+    else:
+        reply = f"I found {name}, but it does not have enough geospatial metadata to calculate hectares yet."
+
+    cog_status = result.get("cog_status")
+    if cog_status and cog_status != "ready":
+        reply += f" The optimized COG is still {cog_status}, so this uses the best metadata available now."
+    return reply
+
+
+def _select_fast_raster_layer(question: str, rows: list) -> dict | None:
+    if not rows:
+        return None
+
+    scored: list[tuple[float, object]] = []
+    for row in rows:
+        scored.append((raster_layer_match_score(question, str(row["name"] or "")), row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score, top_row = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    if top_score >= 0.75 or (top_score >= 0.5 and top_score > second_score):
+        return dict(top_row)
+
+    # "this raster/orthophoto" is safe only when the map has exactly one raster.
+    if len(rows) == 1:
+        return dict(rows[0])
+    return None
+
+
+async def _maybe_run_fast_raster_fact_turn(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> bool:
+    if os.environ.get("SAGE_FAST_RASTER_FACTS", "1").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return False
+
+    user_text = extract_last_user_text(openai_messages)
+    fast_call = build_fast_tool_call(user_text)
+    if not fast_call or fast_call.tool_name != "describe_user_raster":
+        return False
+
+    started = asyncio.get_running_loop().time()
+    turn_id = f"fast-raster-{conversation.id}-{_uuid.uuid4().hex[:8]}"
+    partner_id = session.get_org_id()
+
+    async with async_conn(
+        "sage.fast_raster_fact",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        project_row = await conn.fetchrow(
+            "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+            map_id,
+        )
+        if not project_row:
+            return False
+
+        rows = await conn.fetch(
+            """
+            SELECT ml.layer_id, ml.name
+            FROM user_mundiai_maps m
+            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
+              ON TRUE
+            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
+            WHERE m.id = $1
+              AND ml.type = 'raster'
+            ORDER BY map_layer.ord
+            """,
+            map_id,
+        )
+
+    layer = _select_fast_raster_layer(user_text, rows)
+    if not layer:
+        return False
+
+    from src.tools.pyd import IngabeToolCallMetaArgs
+    from src.tools.raster_query import DescribeUserRasterArgs, describe_user_raster
+
+    async with kue_ephemeral_action(
+        conversation.id,
+        "Measuring raster area...",
+        layer_id=str(layer["layer_id"]),
+    ):
+        result = await describe_user_raster(
+            DescribeUserRasterArgs(layer_id=str(layer["layer_id"])),
+            IngabeToolCallMetaArgs(
+                user_uuid=user_id,
+                conversation_id=conversation.id,
+                map_id=map_id,
+                project_id=str(project_row["project_id"]),
+                session=session,
+            ),
+        )
+
+    assistant_text = _raster_area_fast_reply(result)
+    async with async_conn(
+        "sage.fast_raster_fact.persist",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_completion_messages
+            (map_id, sender_id, message_json, conversation_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": assistant_text}),
+            conversation.id,
+        )
+
+    await kue_stream_token(conversation.id, assistant_text, turn_id=turn_id)
+    await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+    logger.info(
+        "Sage fast raster fact route: conv=%s layer_id=%s elapsed=%.3fs",
+        conversation.id,
+        layer["layer_id"],
+        asyncio.get_running_loop().time() - started,
+    )
+    return True
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -1612,6 +1775,15 @@ async def process_chat_interaction_task(
                 openai_messages.append(m)
 
             if await _maybe_run_fast_admin_boundary_turn(
+                map_id=map_id,
+                session=session,
+                user_id=user_id,
+                conversation=conversation,
+                openai_messages=openai_messages,
+            ):
+                return
+
+            if await _maybe_run_fast_raster_fact_turn(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,

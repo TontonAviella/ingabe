@@ -23,9 +23,11 @@ from src.dependencies.sage_routing import (
     build_fast_tool_call,
     classify_intent,
     detect_admin_boundary_display,
+    detect_raster_area_question,
     detect_small_talk,
     extract_last_user_text,
     filter_tools_by_categories,
+    raster_layer_match_score,
     route_chat,
 )
 
@@ -271,6 +273,55 @@ def test_build_fast_tool_call_admin_boundary() -> None:
     assert fast is not None
     assert fast.tool_name == "show_admin_boundary"
     assert fast.arguments == {"admin_level": "district", "name": "Rulindo"}
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "tell me the hectares of Cyampirita_Orthophoto?",
+        "how big is this drone orthophoto?",
+        "what area does my uploaded raster cover?",
+    ],
+)
+def test_detect_raster_area_question(msg: str) -> None:
+    assert detect_raster_area_question(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "tell me the hectares of Nyagatare Cells",
+        "show me Rulindo district",
+        "what happened in this conversation?",
+    ],
+)
+def test_detect_raster_area_question_blocks_non_rasters(msg: str) -> None:
+    assert detect_raster_area_question(msg) is False
+
+
+def test_build_fast_tool_call_raster_area() -> None:
+    fast = build_fast_tool_call("tell me the hectares of Cyampirita_Orthophoto?")
+    assert fast is not None
+    assert fast.tool_name == "describe_user_raster"
+    assert fast.arguments == {"fact": "area"}
+    assert fast.reason == "fast:raster_area"
+
+
+def test_raster_layer_match_score_uses_distinctive_name_tokens() -> None:
+    assert (
+        raster_layer_match_score(
+            "tell me the hectares of Cyampirita_Orthophoto?",
+            "Cyampirita_Orthophoto",
+        )
+        == 1.0
+    )
+    assert (
+        raster_layer_match_score(
+            "tell me the hectares of this orthophoto?",
+            "Cyampirita_Orthophoto",
+        )
+        == 0.0
+    )
 
 
 def test_route_chat_uncertain_falls_through() -> None:

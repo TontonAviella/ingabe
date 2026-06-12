@@ -425,10 +425,104 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     return None
 
 
+_RASTER_AREA_KEYWORDS = re.compile(
+    r"\b(hectares?|ha|area|acreage|size|coverage|covers?|covering|"
+    r"footprint|extent|how\s+(?:big|large|many\s+hectares))\b",
+    re.IGNORECASE,
+)
+
+_RASTER_OBJECT_KEYWORDS = re.compile(
+    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|image|cog|"
+    r"tiff|geotiff|layer|file|upload(?:ed)?|field)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_NAME_STOPWORDS = {
+    "a",
+    "an",
+    "area",
+    "cog",
+    "current",
+    "drone",
+    "field",
+    "file",
+    "geotiff",
+    "ha",
+    "hectare",
+    "hectares",
+    "image",
+    "layer",
+    "map",
+    "my",
+    "of",
+    "ortho",
+    "orthomosaic",
+    "orthophoto",
+    "raster",
+    "size",
+    "the",
+    "this",
+    "tiff",
+    "uploaded",
+}
+
+
+def _normalize_raster_name(value: str) -> str:
+    text = re.sub(r"[_/.-]+", " ", str(value or "").lower())
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def detect_raster_area_question(text: str) -> bool:
+    """True for simple area/hectare questions about a user raster layer."""
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    normalized_prompt = _normalize_raster_name(prompt)
+    if not _RASTER_AREA_KEYWORDS.search(normalized_prompt):
+        return False
+    return bool(_RASTER_OBJECT_KEYWORDS.search(normalized_prompt))
+
+
+def raster_layer_match_score(question: str, layer_name: str) -> float:
+    """Score how clearly `question` refers to `layer_name`.
+
+    The caller still owns ambiguity handling. This helper deliberately gives
+    no credit for generic words like "orthophoto" or "raster" unless the full
+    normalized layer name appears in the question.
+    """
+    q_norm = _normalize_raster_name(question)
+    layer_norm = _normalize_raster_name(layer_name)
+    if not q_norm or not layer_norm:
+        return 0.0
+    if layer_norm in q_norm:
+        return 1.0
+
+    q_tokens = set(q_norm.split())
+    name_tokens = [
+        token
+        for token in layer_norm.split()
+        if len(token) > 2 and token not in _RASTER_NAME_STOPWORDS
+    ]
+    if not name_tokens:
+        return 0.0
+
+    hits = sum(1 for token in name_tokens if token in q_tokens)
+    if hits == 0:
+        return 0.0
+    return hits / len(name_tokens)
+
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     args = build_admin_boundary_tool_args(text)
     if args:
         return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    if detect_raster_area_question(text):
+        return FastToolCall(
+            "describe_user_raster",
+            {"fact": "area"},
+            "fast:raster_area",
+        )
     return None
 
 
