@@ -10,12 +10,12 @@ from src.tools.pyd import IngabeToolCallMetaArgs
 
 class GetSpatialEngineCapabilitiesArgs(BaseModel):
     include_rasterd: bool = Field(
-        default=True,
-        description="Whether to check the configured Rust rasterd sidecar health endpoint.",
+        ...,
+        description="Whether to check the configured Rust rasterd sidecar health endpoint. Pass true unless the user only asks about non-raster engines.",
     )
     include_geokernel: bool = Field(
-        default=True,
-        description="Whether to check the configured Rust geokernel sidecar health endpoint.",
+        ...,
+        description="Whether to check the configured Rust geokernel sidecar health endpoint. Pass true unless the user only asks about raster rendering.",
     )
 
 

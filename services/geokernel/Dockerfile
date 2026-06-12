@@ -6,9 +6,6 @@ ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
     CARGO_NET_RETRY=10
 
 RUN set -eux; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
-    fi; \
     for attempt in 1 2 3; do \
         apt-get clean; \
         rm -rf /var/lib/apt/lists/*; \
@@ -36,9 +33,6 @@ RUN cargo build --release
 FROM debian:bookworm-slim
 
 RUN set -eux; \
-    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
-    fi; \
     for attempt in 1 2 3; do \
         apt-get clean; \
         rm -rf /var/lib/apt/lists/*; \
