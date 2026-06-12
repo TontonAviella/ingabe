@@ -76,7 +76,7 @@ async def _plain_chat(client, model: str) -> bool:
     return ok
 
 
-async def _tool_call(client, model: str) -> bool:
+async def _tool_call(client, model: str, *, index: int = 1) -> bool:
     started = time.perf_counter()
     try:
         resp = await client.chat.completions.create(
@@ -84,7 +84,11 @@ async def _tool_call(client, model: str) -> bool:
             messages=[
                 {
                     "role": "system",
-                    "content": "You must call the provided tool, not answer in normal text.",
+                    "content": (
+                        "You must call report_field_status exactly once, not answer in normal text. "
+                        "The tool has three required arguments: field_name, risk, and action. "
+                        "Extract all three from the user text and do not omit any required argument."
+                    ),
                 },
                 {
                     "role": "user",
@@ -99,13 +103,34 @@ async def _tool_call(client, model: str) -> bool:
                     "type": "function",
                     "function": {
                         "name": "report_field_status",
-                        "description": "Report field risk status for Hermes.",
+                        "description": (
+                            "Report field risk status for Hermes. Always include field_name, "
+                            "risk, and action."
+                        ),
+                        "strict": True,
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "field_name": {"type": "string"},
-                                "risk": {"type": "string"},
-                                "action": {"type": "string"},
+                                "field_name": {
+                                    "type": "string",
+                                    "description": (
+                                        "Required. Exact field or farm name from the user, "
+                                        "e.g. Kabarama."
+                                    ),
+                                },
+                                "risk": {
+                                    "type": "string",
+                                    "description": (
+                                        "Required. Risk phrase from the user, e.g. rain risk high."
+                                    ),
+                                },
+                                "action": {
+                                    "type": "string",
+                                    "description": (
+                                        "Required. Recommended action phrase from the user, "
+                                        "e.g. scout drainage today."
+                                    ),
+                                },
                             },
                             "required": ["field_name", "risk", "action"],
                             "additionalProperties": False,
@@ -147,6 +172,7 @@ async def _tool_call(client, model: str) -> bool:
     )
     _print(
         {
+            "tool_call_index": index,
             "tool_call_ok": bool(calls) and args_ok,
             "tool_args_ok": args_ok,
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
@@ -164,6 +190,7 @@ async def main() -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--model", default=None)
     parser.add_argument("--skip-tool-call", action="store_true")
+    parser.add_argument("--tool-call-repeats", type=int, default=1)
     args = parser.parse_args()
 
     _load_env(Path(args.env_file))
@@ -179,7 +206,10 @@ async def main() -> int:
 
     ok = await _plain_chat(client, model)
     if ok and not args.skip_tool_call:
-        ok = await _tool_call(client, model)
+        for idx in range(1, max(1, args.tool_call_repeats) + 1):
+            ok = await _tool_call(client, model, index=idx)
+            if not ok:
+                break
     return 0 if ok else 1
 
 

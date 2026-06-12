@@ -17,7 +17,7 @@ def test_query_expansion_defaults_to_local_gemma4(monkeypatch):
 
     endpoint = _resolve_query_expansion_endpoint()
 
-    assert endpoint.model == "gemma4:12b"
+    assert endpoint.model == "gemma4:12b-it-qat"
     assert endpoint.api_key == "ollama"
     assert endpoint.is_local_ollama is True
 

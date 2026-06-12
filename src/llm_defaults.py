@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b"
+DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b-it-qat"
 DEFAULT_CLOUD_BRAIN_MODEL = "gemma4:31b"
 DEFAULT_CHAT_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
 DEFAULT_SMALL_TALK_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
@@ -35,7 +35,7 @@ def resolve_chat_endpoint(
 
     Non-prefixed model names keep the caller's configured OpenAI-compatible
     endpoint. This lets hosted deployments use Ollama Cloud `gemma4:31b` while
-    local Hermes/Sage defaults to `ollama:gemma4:12b`.
+    local Hermes/Sage defaults to `ollama:gemma4:12b-it-qat`.
     """
 
     resolved_model = (model or DEFAULT_CHAT_MODEL).strip() or DEFAULT_CHAT_MODEL
@@ -55,3 +55,19 @@ def resolve_chat_endpoint(
         api_key=(api_key or "").strip(),
         is_local_ollama=False,
     )
+
+
+def supports_strict_tool_schema(model: str | None) -> bool:
+    """Return whether we should preserve OpenAI strict tool schemas.
+
+    Local Ollama Gemma accepts the `strict` function key and behaves better with
+    an explicit all-fields-required contract. Keep stripping it for unknown
+    provider families that may reject OpenAI-specific schema extensions.
+    """
+
+    model_name = (model or DEFAULT_CHAT_MODEL).strip().lower()
+    if model_name.startswith(("gpt-", "o1", "o3", "o4")):
+        return True
+    if model_name.startswith("ollama:"):
+        return True
+    return "gemma" in model_name

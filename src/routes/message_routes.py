@@ -48,7 +48,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_chat_client_for_model, get_openai_client
-from src.llm_defaults import DEFAULT_CHAT_MODEL
+from src.llm_defaults import DEFAULT_CHAT_MODEL, supports_strict_tool_schema
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
@@ -1923,9 +1923,11 @@ async def process_chat_interaction_task(
                     "layer_id"
                 ].pop("enum", None)
 
-            # Strip "strict" from tool defs when using non-OpenAI providers
+            # Strip "strict" only for provider families that may reject OpenAI's
+            # strict schema extension. Local Ollama/Gemma accepts it and uses the
+            # stronger required-field contract for safer Hermes tool calls.
             _model = os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL)
-            if not _model.startswith("gpt-") and not _model.startswith("o1") and not _model.startswith("o3"):
+            if not supports_strict_tool_schema(_model):
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)
 
