@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b-it-qat"
-DEFAULT_CLOUD_BRAIN_MODEL = "gemma4:31b"
+DEFAULT_CLOUD_BRAIN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 DEFAULT_CHAT_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
 DEFAULT_SMALL_TALK_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
 DEFAULT_BRAIN_QUERY_EXPANSION_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
@@ -34,8 +34,9 @@ def resolve_chat_endpoint(
     """Resolve `ollama:<tag>` models to the local Ollama endpoint.
 
     Non-prefixed model names keep the caller's configured OpenAI-compatible
-    endpoint. This lets hosted deployments use Ollama Cloud `gemma4:31b` while
-    local Hermes/Sage defaults to `ollama:gemma4:12b-it-qat`.
+    endpoint. This lets hosted deployments use Nemotron Super 3 through an
+    OpenAI-compatible gateway while local Hermes/Sage defaults to
+    `ollama:gemma4:12b-it-qat`.
     """
 
     resolved_model = (model or DEFAULT_CHAT_MODEL).strip() or DEFAULT_CHAT_MODEL
@@ -60,8 +61,8 @@ def resolve_chat_endpoint(
 def supports_strict_tool_schema(model: str | None) -> bool:
     """Return whether we should preserve OpenAI strict tool schemas.
 
-    Local Ollama Gemma accepts the `strict` function key and behaves better with
-    an explicit all-fields-required contract. Keep stripping it for unknown
+    Gemma/Ollama and Nemotron accept the `strict` function key and behave better
+    with an explicit all-fields-required contract. Keep stripping it for unknown
     provider families that may reject OpenAI-specific schema extensions.
     """
 
@@ -70,4 +71,4 @@ def supports_strict_tool_schema(model: str | None) -> bool:
         return True
     if model_name.startswith("ollama:"):
         return True
-    return "gemma" in model_name
+    return "gemma" in model_name or "nemotron" in model_name

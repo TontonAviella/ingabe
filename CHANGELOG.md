@@ -5,7 +5,8 @@ All notable changes to mundi.ai will be documented in this file.
 ## Unreleased
 
 ### Changed
-- Gemma 4 is now the default Sage/Hermes brain model family. Local Docker defaults to `ollama:gemma4:12b-it-qat`; hosted deployments default to `gemma4:31b` via `OPENAI_BASE_URL=https://ollama.com/v1`; small-talk routing and Brain query expansion now follow the same Gemma profile instead of falling back to Qwen/Nemotron-style side paths.
+- Hosted Sage/Hermes returns to Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through `OPENAI_BASE_URL=https://openrouter.ai/api/v1`; local Docker keeps `ollama:gemma4:12b-it-qat` for offline/no-API operation.
+- Added a Life-Harness-inspired runtime harness around Hermes/Sage: H2 pre-execution tool argument validation, H3 explicit tool-contract descriptions, H4 repeated-tool-call blocking, and H5 concise agriculture procedure guidance in the system prompt.
 - Local QAT tool-call hardening: Hermes now keeps strict tool schemas for Gemma/Ollama, and the Gemma smoke test uses explicit required-field descriptions for `field_name`, `risk`, and `action`. This fixes the earlier `{"action":"scout"}` incomplete-argument failure observed on 2026-06-11.
 
 ## [0.5.0.0] - 2026-05-04

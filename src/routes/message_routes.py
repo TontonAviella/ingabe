@@ -56,6 +56,13 @@ from src.services.map_service import (
     internal_upload_layer,
     InternalLayerUploadResponse,
 )
+from src.services.life_harness import (
+    apply_life_harness_system_prompt,
+    apply_life_harness_tool_contracts,
+    life_harness_tool_signature,
+    repeated_life_harness_tool_error,
+    validate_life_harness_tool_args,
+)
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -1570,6 +1577,7 @@ async def process_chat_interaction_task(
     with tracer.start_as_current_span("app.process_chat_interaction") as span:
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
+        _recent_tool_signatures: list[str] = []
 
         for i in range(25):
             # Check if the message processing has been cancelled
@@ -1930,6 +1938,7 @@ async def process_chat_interaction_task(
             if not supports_strict_tool_schema(_model):
                 for tool in tools_payload:
                     tool.get("function", {}).pop("strict", None)
+            tools_payload = apply_life_harness_tool_contracts(tools_payload)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -1964,7 +1973,9 @@ async def process_chat_interaction_task(
                     len(_last_user_text),
                 )
             else:
-                _system_prompt_content = system_prompt_provider.get_system_prompt()
+                _system_prompt_content = apply_life_harness_system_prompt(
+                    system_prompt_provider.get_system_prompt()
+                )
                 if _routing.selected_categories:
                     _before = len(tools_payload)
                     tools_payload = filter_tools_by_categories(
@@ -2322,8 +2333,28 @@ async def process_chat_interaction_task(
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
-                    tool_args = json.loads(tool_call.function.arguments)
+                    tool_args = _clean_tool_args(tool_call.function.arguments or "{}")
                     tool_result = {}
+
+                    _recent_tool_signatures.append(
+                        life_harness_tool_signature(function_name, tool_args)
+                    )
+                    tool_result = repeated_life_harness_tool_error(
+                        _recent_tool_signatures
+                    ) or validate_life_harness_tool_args(
+                        function_name,
+                        tool_args,
+                        tools_payload,
+                    ) or {}
+                    if tool_result:
+                        await add_chat_completion_message(
+                            ChatCompletionToolMessageParam(
+                                role="tool",
+                                tool_call_id=tool_call.id,
+                                content=json.dumps(tool_result),
+                            ),
+                        )
+                        continue
 
                     if function_name in pydantic_tool_calls:
                         fn, ArgModel, MundiModel = pydantic_tool_calls[function_name]

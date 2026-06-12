@@ -67,7 +67,8 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **Cloudflare R2** (optional, when 4 R2_* env vars set): transit upload layer for fast uploads from Africa edges; background worker pulls R2 → MinIO. 1-day lifecycle delete on R2 bucket.
 - **Redis**: Caching layer
 - **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
-- **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses gemma4:31b via Ollama Cloud direct API; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama so Hermes-required fields are not silently dropped.
+- **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through OpenRouter; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
+- **Life-Harness runtime guard** (`src/services/life_harness.py`): production adaptation of the Life-Harness idea, not a vendored benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 concise agriculture procedure guidance around the frozen brain model.
 - **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)
@@ -96,9 +97,10 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `POSTGRES_*` | Database connection (HOST, PORT, DB, USER, PASSWORD) |
 | `REDIS_HOST/PORT` | Redis cache |
 | `OPENAI_API_KEY` | LLM provider key (used as bearer for `OPENAI_BASE_URL`) |
-| `OPENAI_BASE_URL` | LLM endpoint. Prod: `https://ollama.com/v1` for Gemma 4 31B Cloud. |
-| `OPENAI_MODEL` | Primary chat model. Hosted prod: `gemma4:31b`; local Docker default: `ollama:gemma4:12b-it-qat` |
-| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to the configured local Ollama endpoint. Nemotron/Qwen are optional manual fallbacks, not defaults. |
+| `OPENAI_BASE_URL` | LLM endpoint. Prod: `https://openrouter.ai/api/v1` for Nemotron Super 3. |
+| `OPENAI_MODEL` | Primary chat model. Hosted prod: `nvidia/nemotron-3-super-120b-a12b:free`; local Docker default: `ollama:gemma4:12b-it-qat` |
+| `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to the configured local Ollama endpoint. QAT/Qwen are optional manual fallbacks. |
+| `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
 | `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
 | `BRAIN_EMBEDDINGS_API_KEY` | Required when `BRAIN_EMBEDDINGS_PROVIDER=openai`. Distinct from `OPENAI_API_KEY` so Brain auth is isolated from Sage chat auth. |

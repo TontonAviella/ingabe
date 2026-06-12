@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test the configured Sage/Hermes Gemma brain model.
+"""Smoke-test the configured Sage/Hermes brain model.
 
 The script prints JSON lines and never prints API keys. It validates both a
 plain chat response and, unless disabled, OpenAI-compatible tool calling.
@@ -47,7 +47,7 @@ async def _plain_chat(client, model: str) -> bool:
                     "role": "system",
                     "content": "You are a concise agriculture operations assistant.",
                 },
-                {"role": "user", "content": "Reply with exactly: GEMMA_BRAIN_OK"},
+                {"role": "user", "content": "Reply with exactly: BRAIN_MODEL_OK"},
             ],
             temperature=0,
             max_tokens=200,
@@ -64,7 +64,7 @@ async def _plain_chat(client, model: str) -> bool:
         return False
 
     content = (resp.choices[0].message.content or "").strip()
-    ok = content == "GEMMA_BRAIN_OK"
+    ok = content == "BRAIN_MODEL_OK"
     _print(
         {
             "plain_chat_ok": ok,

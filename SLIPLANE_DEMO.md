@@ -34,10 +34,10 @@ export SLIPLANE_BRANCH='main'
 export POSTGRES_PASSWORD='replace-with-demo-password'
 export S3_SECRET_ACCESS_KEY='replace-with-demo-s3-secret'
 
-# Optional, only if Sage needs to call the Gemma 4 brain model in the demo:
+# Optional, only if Sage needs to call the hosted brain model in the demo:
 export OPENAI_API_KEY='...'
-export OPENAI_BASE_URL='https://ollama.com/v1'
-export OPENAI_MODEL='gemma4:31b'
+export OPENAI_BASE_URL='https://openrouter.ai/api/v1'
+export OPENAI_MODEL='nvidia/nemotron-3-super-120b-a12b:free'
 
 ./scripts/sliplane_demo_deploy.py
 ```
