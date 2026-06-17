@@ -4,6 +4,8 @@ from typing import List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel
 import asyncpg
+import base64
+import copy
 import hashlib
 import logging
 import os
@@ -121,14 +123,82 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
+_RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
+_INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
+    {
+        "rwanda_province_boundaries",
+        "rwanda_district_boundaries",
+        "rwanda_sector_boundaries",
+        "rwanda_cell_boundaries",
+        "rwanda_village_boundaries",
+        "ndvi_cell_cache",
+        "ndvi_field_cache",
+        "ndvi_parcel_cache",
+        "agri_indices_cache",
+        "anomaly_alerts_cache",
+        "crop_classification_cache",
+        "drought_cache",
+        "emissions_annual_cache",
+        "phenology_cache",
+        "weather_daily_cache",
+        "yield_risk_cache",
+    }
+)
+_SQL_TABLE_REF_RE = re.compile(
+    r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
+    re.IGNORECASE,
+)
+
+
+def _compact_project_hash(prefix: str, project_id: str) -> str:
+    digest = hashlib.blake2s(project_id.encode("utf-8"), digest_size=8).digest()
+    token = base64.b32encode(digest).decode("ascii").lower().rstrip("=")
+    return f"{prefix}{token[:11]}"
+
+
 def _rwanda_internal_conn_id(project_id: str) -> str:
-    digest = hashlib.blake2s(project_id.encode("utf-8"), digest_size=8).hexdigest()
-    return f"CRw{digest[:9]}"
+    return _compact_project_hash("C", project_id)
 
 
 def _rwanda_internal_summary_id(project_id: str) -> str:
-    digest = hashlib.blake2s(project_id.encode("utf-8"), digest_size=8).hexdigest()
-    return f"SRw{digest[:9]}"
+    return _compact_project_hash("S", project_id)
+
+
+def _referenced_sql_tables(query: str) -> set[str]:
+    tables: set[str] = set()
+    for match in _SQL_TABLE_REF_RE.finditer(query):
+        ref = match.group(1).replace('"', "")
+        tables.add(ref.split(".")[-1].lower())
+    return tables
+
+
+def _validate_internal_rwanda_query(query: str) -> None:
+    referenced = _referenced_sql_tables(query)
+    if not referenced:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Internal Rwanda queries must reference an allowed Rwanda table",
+        )
+    disallowed = sorted(referenced - _INTERNAL_RWANDA_ALLOWED_TABLES)
+    if disallowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Internal Rwanda connection can only query approved Rwanda "
+                f"tables; blocked: {', '.join(disallowed)}"
+            ),
+        )
+
+
+def _is_internal_rwanda_connection(
+    connection_id: str,
+    project_id: str,
+    connection_name: str | None,
+) -> bool:
+    return (
+        connection_id == _rwanda_internal_conn_id(project_id)
+        and connection_name == _RWANDA_INTERNAL_CONNECTION_NAME
+    )
 
 
 async def _ensure_rwanda_postgis_connection(
@@ -146,7 +216,11 @@ async def _ensure_rwanda_postgis_connection(
         connection_id = _rwanda_internal_conn_id(project_id)
         summary_id = _rwanda_internal_summary_id(project_id)
         existing = await conn.fetchrow(
-            "SELECT id, project_id, soft_deleted_at, connection_uri FROM project_postgres_connections WHERE id = $1",
+            """
+            SELECT id, project_id, user_id, soft_deleted_at, connection_uri
+            FROM project_postgres_connections
+            WHERE id = $1
+            """,
             connection_id,
         )
         pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
@@ -160,10 +234,18 @@ async def _ensure_rwanda_postgis_connection(
         )
 
         if existing:
+            if existing["project_id"] != project_id:
+                logger.error(
+                    "Rwanda internal connection ID collision: id=%s existing_project=%s new_project=%s",
+                    connection_id,
+                    existing["project_id"],
+                    project_id,
+                )
+                return None
             # Un-delete if soft-deleted, and ensure correct project + user
             needs_update = (
                 existing["soft_deleted_at"] is not None
-                or existing["project_id"] != project_id
+                or str(existing["user_id"]) != str(user_id)
                 or existing["connection_uri"] != uri
             )
             if needs_update:
@@ -196,7 +278,7 @@ async def _ensure_rwanda_postgis_connection(
                 project_id,
                 user_id,
                 uri,
-                "Rwanda Agriculture (internal)",
+                _RWANDA_INTERNAL_CONNECTION_NAME,
             )
             logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
                          connection_id, project_id)
@@ -1227,6 +1309,9 @@ async def _resolve_admin_boundary_query(
             value = args.get(arg_key)
             if not value:
                 continue
+            available_cols = set(spec["attrs"]) | {spec["name_col"]}
+            if col not in available_cols:
+                continue
             if sql:
                 filters.append(f"LOWER({col}) = LOWER({_admin_sql_literal(value)})")
             else:
@@ -1419,61 +1504,62 @@ async def _maybe_run_fast_admin_boundary_turn(
                 update_style_json=True,
                 bounds=bounds if isinstance(bounds, list) and len(bounds) == 4 else None,
             ):
-                await conn.execute(
-                    """
-                    INSERT INTO map_layers
-                    (layer_id, owner_uuid, name, type,
-                     postgis_connection_id, postgis_query,
-                     metadata, feature_count, bounds, geometry_type, source_map_id,
-                     created_on, last_edited, postgis_attribute_column_list)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
-                            CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,$12)
-                    """,
-                    layer_id,
-                    user_id,
-                    layer_name,
-                    "postgis",
-                    pgc_id,
-                    query,
-                    json.dumps({"fast_admin_boundary": True}),
-                    feature_count,
-                    bounds,
-                    "multipolygon",
-                    map_id,
-                    attr_cols,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO layer_styles
-                    (style_id, layer_id, style_json, created_by, created_on)
-                    VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-                    """,
-                    style_id,
-                    layer_id,
-                    json.dumps(_admin_boundary_style(layer_id)),
-                    user_id,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO map_layer_styles (map_id, layer_id, style_id)
-                    VALUES ($1, $2, $3)
-                    """,
-                    map_id,
-                    layer_id,
-                    style_id,
-                )
-                await conn.execute(
-                    """
-                    UPDATE user_mundiai_maps
-                    SET layers = CASE
-                        WHEN layers IS NULL THEN ARRAY[$1]
-                        ELSE array_append(layers, $1)
-                    END
-                    WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
-                    """,
-                    layer_id,
-                    map_id,
-                )
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        INSERT INTO map_layers
+                        (layer_id, owner_uuid, name, type,
+                         postgis_connection_id, postgis_query,
+                         metadata, feature_count, bounds, geometry_type, source_map_id,
+                         created_on, last_edited, postgis_attribute_column_list)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                                CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,$12)
+                        """,
+                        layer_id,
+                        user_id,
+                        layer_name,
+                        "postgis",
+                        pgc_id,
+                        query,
+                        json.dumps({"fast_admin_boundary": True}),
+                        feature_count,
+                        bounds,
+                        "multipolygon",
+                        map_id,
+                        attr_cols,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO layer_styles
+                        (style_id, layer_id, style_json, created_by, created_on)
+                        VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                        """,
+                        style_id,
+                        layer_id,
+                        json.dumps(_admin_boundary_style(layer_id)),
+                        user_id,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO map_layer_styles (map_id, layer_id, style_id)
+                        VALUES ($1, $2, $3)
+                        """,
+                        map_id,
+                        layer_id,
+                        style_id,
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE user_mundiai_maps
+                        SET layers = CASE
+                            WHEN layers IS NULL THEN ARRAY[$1]
+                            ELSE array_append(layers, $1)
+                        END
+                        WHERE id = $2 AND (layers IS NULL OR NOT ($1 = ANY(layers)))
+                        """,
+                        layer_id,
+                        map_id,
+                    )
             result["layer_id"] = layer_id
 
         assistant_text = _admin_boundary_fast_reply(result)
@@ -2116,14 +2202,6 @@ async def process_chat_interaction_task(
                         _routing.reason, _before, len(tools_payload),
                     )
 
-            # Strip "strict" only for the actual model selected for this turn.
-            # Local Ollama/Gemma accepts strict schemas, while some hosted
-            # provider families reject OpenAI's strict schema extension.
-            _actual_model = str(chat_completions_args.get("model") or DEFAULT_CHAT_MODEL)
-            if tools_payload and not supports_strict_tool_schema(_actual_model):
-                for tool in tools_payload:
-                    tool.get("function", {}).pop("strict", None)
-
             _llm_messages = [
                 {
                     "role": "system",
@@ -2234,7 +2312,16 @@ async def process_chat_interaction_task(
                         content_parts = []
                         tool_calls_acc = {}
                         _attempted_models.append(_model_name)
-                        _attempt_kwargs = {**_llm_kwargs, "model": _model_name}
+                        _attempt_tools = copy.deepcopy(tools_payload) if tools_payload else None
+                        if _attempt_tools and not supports_strict_tool_schema(_model_name):
+                            for tool in _attempt_tools:
+                                tool.get("function", {}).pop("strict", None)
+                        _attempt_kwargs = {
+                            **_llm_kwargs,
+                            "model": _model_name,
+                            "tools": _attempt_tools,
+                            "tool_choice": "auto" if _attempt_tools else None,
+                        }
                         # Provider routing: an `ollama:<tag>` chain entry is
                         # served by the local Ollama container (OpenAI-compat
                         # endpoint). Everything else uses the configured cloud
@@ -2570,7 +2657,8 @@ async def process_chat_interaction_task(
                                 # when multiple users share a project.
                                 connection_result = await conn.fetchrow(
                                     """
-                                    SELECT connection_uri FROM project_postgres_connections
+                                    SELECT connection_uri, connection_name
+                                    FROM project_postgres_connections
                                     WHERE id = $1 AND (user_id = $2 OR project_id = $3)
                                     AND soft_deleted_at IS NULL
                                     """,
@@ -2585,6 +2673,12 @@ async def process_chat_interaction_task(
                                         "error": f"PostGIS connection '{postgis_connection_id}' not found or you do not have access to it.",
                                     }
                                 else:
+                                    if _is_internal_rwanda_connection(
+                                        str(postgis_connection_id),
+                                        current_project_id,
+                                        connection_result["connection_name"],
+                                    ):
+                                        _validate_internal_rwanda_query(query)
                                     async with kue_ephemeral_action(
                                         conversation.id,
                                         "Adding layer from PostGIS...",
@@ -3283,7 +3377,8 @@ async def process_chat_interaction_task(
                                 # Fall back to project-level access for internal connections.
                                 connection_result = await conn.fetchrow(
                                     """
-                                    SELECT connection_uri FROM project_postgres_connections
+                                    SELECT connection_uri, connection_name
+                                    FROM project_postgres_connections
                                     WHERE id = $1 AND (user_id = $2 OR project_id = $3)
                                     AND soft_deleted_at IS NULL
                                     """,
@@ -3298,6 +3393,12 @@ async def process_chat_interaction_task(
                                         "error": f"PostGIS connection '{postgis_connection_id}' not found or you do not have access to it.",
                                     }
                                 else:
+                                    if _is_internal_rwanda_connection(
+                                        str(postgis_connection_id),
+                                        current_project_id,
+                                        connection_result["connection_name"],
+                                    ):
+                                        _validate_internal_rwanda_query(sql_query)
                                     try:
                                         # Check if LIMIT is already present and validate it
                                         limited_query = sql_query.strip()
