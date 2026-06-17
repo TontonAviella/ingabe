@@ -63,14 +63,25 @@ async def _plain_chat(client, model: str) -> bool:
         )
         return False
 
-    content = (resp.choices[0].message.content or "").strip()
+    if not resp.choices:
+        _print(
+            {
+                "plain_chat_ok": False,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+                "error": "chat response contained no choices",
+            }
+        )
+        return False
+
+    choice = resp.choices[0]
+    content = (choice.message.content or "").strip()
     ok = content == "BRAIN_MODEL_OK"
     _print(
         {
             "plain_chat_ok": ok,
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
             "content": content,
-            "finish_reason": resp.choices[0].finish_reason,
+            "finish_reason": choice.finish_reason,
         }
     )
     return ok

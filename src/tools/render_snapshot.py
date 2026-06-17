@@ -197,6 +197,8 @@ async def _publish_snapshot(payload: Dict[str, Any]) -> bool:
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", 6379)),
             decode_responses=True,
+            socket_connect_timeout=5.0,
+            socket_timeout=5.0,
         )
         try:
             await redis.publish(RENDER_SNAPSHOT_CHANNEL, json.dumps(payload))

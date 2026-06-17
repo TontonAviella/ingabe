@@ -33,6 +33,7 @@ owner_uuid. Without this, migrations / seed scripts / cron break.
 """
 
 import json
+import re
 import uuid
 
 import asyncpg
@@ -50,23 +51,26 @@ USER_B = str(uuid.uuid4())
 RUN_TAG = uuid.uuid4().hex[:6]
 
 _RLS_ROLE = "rls_test_role"
+_SAFE_ROLE_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def _safe_rls_role() -> str:
+    if not _SAFE_ROLE_RE.fullmatch(_RLS_ROLE):
+        raise ValueError(f"Unsafe RLS role name: {_RLS_ROLE!r}")
+    return _RLS_ROLE
 
 
 async def _ensure_rls_role() -> None:
     url = _build_postgres_url()
     c = await asyncpg.connect(url)
     try:
-        await c.execute(f"""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_RLS_ROLE}') THEN
-                    CREATE ROLE {_RLS_ROLE} NOLOGIN;
-                END IF;
-            END $$
-        """)
-        await c.execute(f"GRANT USAGE ON SCHEMA public TO {_RLS_ROLE}")
-        await c.execute(f"GRANT ALL ON ALL TABLES IN SCHEMA public TO {_RLS_ROLE}")
-        await c.execute(f"GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO {_RLS_ROLE}")
+        role = _safe_rls_role()
+        exists = await c.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
+        if not exists:
+            await c.execute(f"CREATE ROLE {role} NOLOGIN")
+        await c.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
+        await c.execute(f"GRANT ALL ON ALL TABLES IN SCHEMA public TO {role}")
+        await c.execute(f"GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO {role}")
     finally:
         await c.close()
 
@@ -78,7 +82,7 @@ async def _open(user_id: str | None):
         "SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user"
     )
     if bypasses:
-        await c.execute(f"SET ROLE {_RLS_ROLE}")
+        await c.execute(f"SET ROLE {_safe_rls_role()}")
     await c.execute("SELECT set_config('app.user_id', $1, false)", user_id or "")
     return c
 

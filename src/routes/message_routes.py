@@ -3,10 +3,13 @@ from fastapi.responses import JSONResponse
 from typing import List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel
+import asyncpg
+import hashlib
 import logging
 import os
 import json
 import re
+from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
 import io
@@ -116,8 +119,16 @@ from src.dependencies.pydantic_tools import (
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
-# Fixed connection ID for the internal Rwanda PostGIS connection
-_RWANDA_INTERNAL_CONN_ID = "CRwandaIntDB"
+# Compact deterministic IDs for each project's internal Rwanda PostGIS
+# connection. The database column is varchar(12), so keep these short.
+def _rwanda_internal_conn_id(project_id: str) -> str:
+    digest = hashlib.blake2s(project_id.encode("utf-8"), digest_size=8).hexdigest()
+    return f"CRw{digest[:9]}"
+
+
+def _rwanda_internal_summary_id(project_id: str) -> str:
+    digest = hashlib.blake2s(project_id.encode("utf-8"), digest_size=8).hexdigest()
+    return f"SRw{digest[:9]}"
 
 
 async def _ensure_rwanda_postgis_connection(
@@ -132,16 +143,21 @@ async def _ensure_rwanda_postgis_connection(
     Returns the connection ID, or None on failure.
     """
     try:
+        connection_id = _rwanda_internal_conn_id(project_id)
+        summary_id = _rwanda_internal_summary_id(project_id)
         existing = await conn.fetchrow(
             "SELECT id, project_id, soft_deleted_at, connection_uri FROM project_postgres_connections WHERE id = $1",
-            _RWANDA_INTERNAL_CONN_ID,
+            connection_id,
         )
         pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
         pg_port = os.environ.get("POSTGRES_PORT", "5432")
         pg_db = os.environ.get("POSTGRES_DB", "mundidb")
         pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
         pg_pass = os.environ.get("POSTGRES_PASSWORD", "changeme")
-        uri = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}?sslmode=disable"
+        uri = (
+            f"postgresql://{quote(pg_user, safe='')}:{quote(pg_pass, safe='')}"
+            f"@{pg_host}:{pg_port}/{quote(pg_db, safe='')}?sslmode=disable"
+        )
 
         if existing:
             # Un-delete if soft-deleted, and ensure correct project + user
@@ -160,7 +176,7 @@ async def _ensure_rwanda_postgis_connection(
                         soft_deleted_at = NULL
                     WHERE id = $4
                     """,
-                    project_id, user_id, uri, _RWANDA_INTERNAL_CONN_ID,
+                    project_id, user_id, uri, connection_id,
                 )
                 logger.info(
                     "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s uri_changed=%s",
@@ -176,14 +192,14 @@ async def _ensure_rwanda_postgis_connection(
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (id) DO NOTHING
                 """,
-                _RWANDA_INTERNAL_CONN_ID,
+                connection_id,
                 project_id,
                 user_id,
                 uri,
                 "Rwanda Agriculture (internal)",
             )
             logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
-                         _RWANDA_INTERNAL_CONN_ID, project_id)
+                         connection_id, project_id)
 
         # Province boundaries are derived from district polygons. Keeping this
         # as a view avoids a separate seed step while giving Sage a real
@@ -351,14 +367,14 @@ async def _ensure_rwanda_postgis_connection(
             SET summary_md = EXCLUDED.summary_md,
                 table_count = EXCLUDED.table_count
             """,
-            "SRwandaAdmin",
-            _RWANDA_INTERNAL_CONN_ID,
+            summary_id,
+            connection_id,
             "Rwanda Administrative Boundaries",
             _summary_md,
             _table_count,
         )
 
-        return _RWANDA_INTERNAL_CONN_ID
+        return connection_id
     except Exception:
         logger.exception("Failed to auto-provision Rwanda PostGIS connection")
         return None
@@ -1222,22 +1238,26 @@ async def _resolve_admin_boundary_query(
         spec = levels[level]
         filters, params = _filters_for(level, sql=False)
         where = " AND ".join(filters) if filters else "TRUE"
-        rows = await conn.fetch(
-            f"""
-            SELECT {', '.join(spec['attrs'])},
-                   ST_XMin(ST_Extent(geom)) AS xmin,
-                   ST_YMin(ST_Extent(geom)) AS ymin,
-                   ST_XMax(ST_Extent(geom)) AS xmax,
-                   ST_YMax(ST_Extent(geom)) AS ymax,
-                   COUNT(*) OVER() AS match_count
-            FROM {spec['table']}
-            WHERE {where}
-            GROUP BY {', '.join(spec['attrs'])}
-            ORDER BY {', '.join(spec['attrs'])}
-            LIMIT 12
-            """,
-            *params,
-        )
+        try:
+            rows = await conn.fetch(
+                f"""
+                SELECT {', '.join(spec['attrs'])},
+                       ST_XMin(ST_Extent(geom)) AS xmin,
+                       ST_YMin(ST_Extent(geom)) AS ymin,
+                       ST_XMax(ST_Extent(geom)) AS xmax,
+                       ST_YMax(ST_Extent(geom)) AS ymax,
+                       COUNT(*) OVER() AS match_count
+                FROM {spec['table']}
+                WHERE {where}
+                GROUP BY {', '.join(spec['attrs'])}
+                ORDER BY {', '.join(spec['attrs'])}
+                LIMIT 12
+                """,
+                *params,
+            )
+        except asyncpg.exceptions.UndefinedTableError:
+            logger.warning("Admin boundary table missing: %s", spec["table"])
+            return {"status": "not_found", "admin_level": level}
         if not rows:
             return {"status": "not_found", "admin_level": level}
         total = int(rows[0]["match_count"])
@@ -1258,11 +1278,26 @@ async def _resolve_admin_boundary_query(
             f"SELECT ROW_NUMBER() OVER()::bigint AS id, {attr_select}, geom "
             f"FROM {spec['table']} WHERE {sql_where}"
         )
+        if name in {"*", "all"}:
+            extent_row = await conn.fetchrow(
+                f"""
+                SELECT ST_XMin(ST_Extent(geom)) AS xmin,
+                       ST_YMin(ST_Extent(geom)) AS ymin,
+                       ST_XMax(ST_Extent(geom)) AS xmax,
+                       ST_YMax(ST_Extent(geom)) AS ymax
+                FROM {spec['table']}
+                WHERE {where}
+                """,
+                *params,
+            )
+            bounds_source = extent_row or rows[0]
+        else:
+            bounds_source = rows[0]
         bounds = [
-            float(rows[0]["xmin"]),
-            float(rows[0]["ymin"]),
-            float(rows[0]["xmax"]),
-            float(rows[0]["ymax"]),
+            float(bounds_source["xmin"]),
+            float(bounds_source["ymin"]),
+            float(bounds_source["xmax"]),
+            float(bounds_source["ymax"]),
         ]
         first = dict(rows[0])
         display_name = (
@@ -2032,13 +2067,6 @@ async def process_chat_interaction_task(
                     "layer_id"
                 ].pop("enum", None)
 
-            # Strip "strict" only for provider families that may reject OpenAI's
-            # strict schema extension. Local Ollama/Gemma accepts it and uses the
-            # stronger required-field contract for safer Hermes tool calls.
-            _model = os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL)
-            if not supports_strict_tool_schema(_model):
-                for tool in tools_payload:
-                    tool.get("function", {}).pop("strict", None)
             tools_payload = apply_life_harness_tool_contracts(tools_payload)
 
             chat_completions_args = await chat_args.get_args(
@@ -2087,6 +2115,14 @@ async def process_chat_interaction_task(
                         "sage_routing: filtered tools by %s (%d -> %d)",
                         _routing.reason, _before, len(tools_payload),
                     )
+
+            # Strip "strict" only for the actual model selected for this turn.
+            # Local Ollama/Gemma accepts strict schemas, while some hosted
+            # provider families reject OpenAI's strict schema extension.
+            _actual_model = str(chat_completions_args.get("model") or DEFAULT_CHAT_MODEL)
+            if tools_payload and not supports_strict_tool_schema(_actual_model):
+                for tool in tools_payload:
+                    tool.get("function", {}).pop("strict", None)
 
             _llm_messages = [
                 {
@@ -2530,7 +2566,7 @@ async def process_chat_interaction_task(
                             else:
                                 # Verify the PostGIS connection exists and user has access.
                                 # Fall back to project-level access for internal connections
-                                # (e.g. CRwandaIntDB) which may have a different user_id
+                                # (e.g. CRw<hash>) which may have a different user_id
                                 # when multiple users share a project.
                                 connection_result = await conn.fetchrow(
                                     """

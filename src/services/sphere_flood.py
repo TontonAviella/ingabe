@@ -80,7 +80,10 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
         geometry = feature.get("geometry")
         if not isinstance(geometry, dict):
             continue
-        geom = shape(geometry)
+        try:
+            geom = shape(geometry)
+        except (KeyError, TypeError, ValueError):
+            continue
         point = geom if geom.geom_type == "Point" else geom.representative_point()
         props = dict(feature.get("properties") or {})
         rows.append(

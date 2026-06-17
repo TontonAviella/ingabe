@@ -79,7 +79,7 @@ def test_admin_geojson_to_h3_can_return_membership_without_geometry():
     )
 
     assert result["features"]
-    assert "geometry" not in result["features"][0]
+    assert result["features"][0]["geometry"] is None
     assert result["metadata"]["geometry_included"] is False
 
 

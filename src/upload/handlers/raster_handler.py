@@ -188,8 +188,14 @@ def _should_compute_inline_stats(ctx: UploadContext) -> bool:
 
     size = ctx.file_size_bytes
     if size is None:
+        if _is_gdal_virtual_path(ctx.temp_file_path):
+            return False
         try:
             size = os.path.getsize(ctx.temp_file_path)
         except OSError:
             return False
     return size <= max_bytes
+
+
+def _is_gdal_virtual_path(path: str) -> bool:
+    return path.startswith(("/vsi",))

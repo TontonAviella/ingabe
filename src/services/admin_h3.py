@@ -100,8 +100,11 @@ def admin_geojson_to_h3(
                     "admin_area_m2": round(admin_area_m2, 3),
                 },
             }
-            if options.include_geometry:
-                feature_out["geometry"] = h3_cell_geojson_geometry(h3_index)
+            feature_out["geometry"] = (
+                h3_cell_geojson_geometry(h3_index)
+                if options.include_geometry
+                else None
+            )
             output_features.append(feature_out)
 
     return {
