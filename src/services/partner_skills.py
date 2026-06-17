@@ -54,16 +54,16 @@ def filter_tools_payload(
 ) -> List[dict]:
     """Drop any tool whose function.name is not in `allowed`.
 
-    If `allowed` is None, returns the payload unchanged. If a tool has no
-    function.name (malformed entry), it's kept — we don't want to silently
-    strip oddly-shaped entries the caller added intentionally.
+    If `allowed` is None, returns the payload unchanged. If an allowlist is
+    active, malformed entries with no function.name are dropped because they
+    cannot be matched to an explicit partner grant.
     """
     if allowed is None:
         return list(payload)
     out: List[dict] = []
     for tool in payload:
         name = (tool.get("function") or {}).get("name")
-        if name is None or name in allowed:
+        if name in allowed:
             out.append(tool)
     return out
 

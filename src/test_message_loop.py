@@ -132,8 +132,9 @@ async def test_message_simple_response(
 
 
 @pytest.mark.skipif(
-    os.environ.get("OPENAI_API_KEY") is None or os.environ.get("OPENAI_API_KEY") == "",
-    reason="OPENAI_API_KEY is required for these tests",
+    os.environ.get("MUNDI_RUN_LIVE_LLM_TESTS") != "1"
+    or os.environ.get("OPENAI_API_KEY") in (None, ""),
+    reason="Set MUNDI_RUN_LIVE_LLM_TESTS=1 and OPENAI_API_KEY to run live LLM tests",
 )
 def test_error_recovery(test_map_fixture, sync_auth_client):
     map_id = test_map_fixture["map_id"]

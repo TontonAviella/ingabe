@@ -17,6 +17,14 @@ class GetSpatialEngineCapabilitiesArgs(BaseModel):
         ...,
         description="Whether to check the configured Rust geokernel sidecar health endpoint. Pass true unless the user only asks about raster rendering.",
     )
+    include_whitebox: bool = Field(
+        ...,
+        description="Whether to report WhiteboxTools availability for terrain, hydrology, drone DEM/LiDAR, housing, infrastructure, and environmental analysis.",
+    )
+    include_tessera: bool = Field(
+        ...,
+        description="Whether to report TESSERA/GeoTessera availability for satellite embedding memory and H3/admin feature enrichment.",
+    )
 
 
 async def get_spatial_engine_capabilities(
@@ -25,12 +33,15 @@ async def get_spatial_engine_capabilities(
 ) -> dict[str, Any]:
     """Report which spatial engines are installed and active.
 
-    Use when the user asks whether Sphere, Forge3D, rasterd, geokernel, or
-    browser 3D map rendering is actually installed/active. This prevents Sage/Hermes from
-    claiming a renderer or model is powering a result when it is only available
-    experimentally or not installed in the current runtime.
+    Use for diagnostic or technical trust-check turns: for example when a
+    developer/operator asks which backend is really installed, or when Sage must
+    verify an engine before promising that a specific backend powered a result.
+    Do not expose engine names to ordinary field users unless they ask; most
+    users care about the result, map, evidence, and recommended action.
     """
     return await get_spatial_engine_capabilities_service(
         include_rasterd=args.include_rasterd,
         include_geokernel=args.include_geokernel,
+        include_whitebox=args.include_whitebox,
+        include_tessera=args.include_tessera,
     )

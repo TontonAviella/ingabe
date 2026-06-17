@@ -47,6 +47,7 @@ SATELLITE = "satellite"
 AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
+SPATIAL_INSIGHT = "spatial_insight"
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
     "find_similar_tiles": USER_RASTER,
+    # --- H3/city/environment insight layers ---
+    "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
+    "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
     "get_entity": BRAIN,
@@ -244,10 +248,14 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(
             r"\b(layer|style|symbology|postgis|sql|geojson|flatgeobuf|"
             r"reproject|buffer|dissolve|merge|clip|intersect|join|grid|"
-            r"zonal|aggregate)\b",
+            r"zonal|aggregate|h3|hex|hexagon|whitebox|terrain|runoff|"
+            r"housing|house|houses|building|buildings|open\s+buildings|"
+            r"settlement|city|urban|"
+            r"infrastructure|road|roads|bridge|drainage|culvert|environment|"
+            r"pollution|erosion)\b",
             re.IGNORECASE,
         ),
-        frozenset({MAP_EDIT}),
+        frozenset({MAP_EDIT, SPATIAL_INSIGHT}),
     ),
     # Satellite imagery (Earth Search, Sentinel-2)
     (
@@ -283,7 +291,21 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"compare\s+(raster|image)|similar\s+tile|find\s+similar)\b",
             re.IGNORECASE,
         ),
-        frozenset({USER_RASTER}),
+        frozenset({USER_RASTER, SPATIAL_INSIGHT}),
+    ),
+    # H3-first spatial intelligence for housing, infrastructure, environment,
+    # city, and drone/basemap analysis.
+    (
+        re.compile(
+            r"\b(h3|hex|hexagon|spatial\s+insight|insight\s+layer|"
+            r"housing|house|houses|building|buildings|open\s+buildings|"
+            r"settlement|city|urban|"
+            r"infrastructure|road|roads|bridge|bridges|drainage|culvert|"
+            r"environment|pollution|erosion|runoff|whitebox|terrain|"
+            r"drone\s+analysis|basemap|satellite\s+basemap)\b",
+            re.IGNORECASE,
+        ),
+        frozenset({SPATIAL_INSIGHT, MAP_EDIT, USER_RASTER}),
     ),
     # Knowledge graph / Brain
     (

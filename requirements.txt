@@ -219,6 +219,7 @@ watchfiles==1.0.5
 webcolors==1.11.1
 webencodings==0.5.1
 websockets==15.0.1
+whitebox==2.3.6
 wrapt==1.17.2
 wsproto==1.2.0
 xarray==2024.11.0

@@ -117,6 +117,14 @@ from src.tools.sphere_flood import (
     analyze_sphere_flood_impact,
     AnalyzeSphereFloodImpactArgs,
 )
+from src.tools.h3_spatial_insight import (
+    create_h3_spatial_insight_layer,
+    CreateH3SpatialInsightLayerArgs,
+)
+from src.tools.open_buildings import (
+    analyze_open_buildings_exposure,
+    AnalyzeOpenBuildingsExposureArgs,
+)
 from src.tools.spatial_engines import (
     get_spatial_engine_capabilities,
     GetSpatialEngineCapabilitiesArgs,
@@ -289,6 +297,16 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "analyze_sphere_flood_impact": (
             analyze_sphere_flood_impact,
             AnalyzeSphereFloodImpactArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "create_h3_spatial_insight_layer": (
+            create_h3_spatial_insight_layer,
+            CreateH3SpatialInsightLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_open_buildings_exposure": (
+            analyze_open_buildings_exposure,
+            AnalyzeOpenBuildingsExposureArgs,
             IngabeToolCallMetaArgs,
         ),
         "get_spatial_engine_capabilities": (

@@ -18,6 +18,7 @@ from src.dependencies.sage_routing import (
     BRAIN,
     MAP_EDIT,
     SATELLITE,
+    SPATIAL_INSIGHT,
     USER_RASTER,
     build_admin_boundary_tool_args,
     build_fast_tool_call,
@@ -104,6 +105,8 @@ def test_detect_small_talk_negative(msg: str) -> None:
         ("what is the cooperative in Gabiro", {BRAIN}),
         ("buffer the layer by 100m", {MAP_EDIT}),
         ("reproject the layer to EPSG:32735", {MAP_EDIT}),
+        ("show Open Buildings exposure for this village", {SPATIAL_INSIGHT}),
+        ("how many houses are exposed to flood risk here", {SPATIAL_INSIGHT}),
     ],
 )
 def test_classify_intent_known_domains(

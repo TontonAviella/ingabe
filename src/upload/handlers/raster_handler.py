@@ -17,6 +17,8 @@ from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_INLINE_STATS_MAX_BYTES = 16 * 1024 * 1024
+
 
 class RasterUploadHandler(BaseUploadHandler):
     """Handles raster file uploads (GeoTIFF, JPEG, PNG, DEM).
@@ -82,7 +84,10 @@ class RasterUploadHandler(BaseUploadHandler):
         Using ``gdalinfo -json`` as a subprocess is 100% isolated.
         """
         cmd = ["gdalinfo", "-json"]
-        if os.environ.get("RASTER_UPLOAD_COMPUTE_STATS", "0") == "1":
+        if (
+            os.environ.get("RASTER_UPLOAD_COMPUTE_STATS", "0") == "1"
+            or _should_compute_inline_stats(ctx)
+        ):
             cmd.append("-stats")
 
         started = time.monotonic()
@@ -165,3 +170,26 @@ class RasterUploadHandler(BaseUploadHandler):
             elapsed,
         )
         return bounds
+
+
+def _should_compute_inline_stats(ctx: UploadContext) -> bool:
+    """Compute tiny-raster stats inline without blocking large drone uploads."""
+    try:
+        max_bytes = int(
+            os.environ.get(
+                "RASTER_UPLOAD_INLINE_STATS_MAX_BYTES",
+                str(DEFAULT_INLINE_STATS_MAX_BYTES),
+            )
+        )
+    except ValueError:
+        max_bytes = DEFAULT_INLINE_STATS_MAX_BYTES
+    if max_bytes <= 0:
+        return False
+
+    size = ctx.file_size_bytes
+    if size is None:
+        try:
+            size = os.path.getsize(ctx.temp_file_path)
+        except OSError:
+            return False
+    return size <= max_bytes

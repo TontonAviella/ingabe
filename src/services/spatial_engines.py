@@ -7,11 +7,15 @@ import httpx
 
 from src.services.forge3d_adapter import forge3d_available
 from src.services.sphere_flood import sphere_available
+from src.services.tessera_embeddings import tessera_embedding_status
+from src.services.whitebox_engine import whitebox_engine_status
 
 
 async def get_spatial_engine_capabilities(
     include_rasterd: bool = True,
     include_geokernel: bool = True,
+    include_whitebox: bool = True,
+    include_tessera: bool = True,
 ) -> dict[str, Any]:
     sphere_ok, sphere_error = sphere_available()
     forge_ok, forge_version, forge_error = forge3d_available()
@@ -33,6 +37,10 @@ async def get_spatial_engine_capabilities(
             "note": "Browser map extrusion remains MapLibre/deck.gl unless a Forge3D viewer/export path is selected.",
         },
     }
+    if include_whitebox:
+        capabilities["whitebox_tools"] = whitebox_engine_status()
+    if include_tessera:
+        capabilities["tessera_embeddings"] = tessera_embedding_status()
     if include_rasterd:
         capabilities["rasterd"] = await _rasterd_status()
     if include_geokernel:

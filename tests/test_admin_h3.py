@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -105,18 +105,28 @@ async def test_admin_h3_polyfill_endpoint(auth_client):
             (-1.995, 29.995),
         ]
 
-    with patch("src.services.admin_h3.h3.geo_to_cells", return_value=mock_hex_ids):
-        with patch("src.services.admin_h3.h3.cell_to_boundary", side_effect=mock_cell_to_boundary):
-            response = await auth_client.post(
-                "/api/rwanda/grid/h3/admin-polyfill",
-                json={
-                    "geojson": _sample_admin_feature_collection(),
-                    "resolution": 9,
-                    "admin_level": "district",
-                    "id_property": "district_id",
-                    "name_property": "district_name",
-                },
-            )
+    with patch(
+        "src.services.geokernel_client.admin_geojson_to_h3_via_geokernel",
+        new=AsyncMock(return_value=None),
+    ):
+        with patch(
+            "src.services.admin_h3.h3.geo_to_cells",
+            return_value=mock_hex_ids,
+        ):
+            with patch(
+                "src.services.admin_h3.h3.cell_to_boundary",
+                side_effect=mock_cell_to_boundary,
+            ):
+                response = await auth_client.post(
+                    "/api/rwanda/grid/h3/admin-polyfill",
+                    json={
+                        "geojson": _sample_admin_feature_collection(),
+                        "resolution": 9,
+                        "admin_level": "district",
+                        "id_property": "district_id",
+                        "name_property": "district_name",
+                    },
+                )
 
     assert response.status_code == 200
     data = response.json()
