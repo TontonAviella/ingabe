@@ -145,6 +145,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
+import { track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import type {
   Conversation,
@@ -427,6 +428,7 @@ export default function MapLibreMap({
   // current style and applies it with a single setStyle() call.
   // This is more robust than imperatively adding/removing layers because
   // setStyle() handles all the internal bookkeeping atomically.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paint overrides are read from a mutable ref at action time.
   const handleBasemapChange = useCallback(
     async (newBasemap: string) => {
       const map = localMapRef.current;
@@ -837,8 +839,10 @@ export default function MapLibreMap({
   );
 
   // effect runs when map initializes AND when new point clouds are added
+  // biome-ignore lint/correctness/useExhaustiveDependencies: container recreation is driven by map and point-cloud lifecycle; style updates run elsewhere.
   useEffect(() => {
     if (!mapContainerRef.current) return;
+    const mapInitStartedAt = Date.now();
 
     // need to nuke in order to re-draw, TODO this can be improved
     if (localMapRef.current) {
@@ -904,6 +908,13 @@ export default function MapLibreMap({
 
       newMap.on('load', () => {
         setIsMapReady(true);
+        trackDuration('map_renderer_initialized', mapInitStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          layer_count: mapData?.layers?.length ?? 0,
+          point_cloud_layer_count: pointCloudLayers.length,
+          deckgl_3d_layer_count: deckgl3dLayers.length,
+        });
         // deck.gl overlay — dynamically imported and isolated so it can't prevent other setup
         (async () => {
           try {
@@ -931,6 +942,12 @@ export default function MapLibreMap({
             newMap.addControl(deckOverlay);
           } catch (deckErr) {
             console.error('Error initializing deck.gl overlay:', deckErr);
+            trackError('map_deck_overlay_failed', deckErr, {
+              project_id: project.id,
+              map_id: mapId,
+              point_cloud_layer_count: pointCloudLayers.length,
+              deckgl_3d_layer_count: deckgl3dLayers.length,
+            });
           }
         })();
 
@@ -994,6 +1011,11 @@ export default function MapLibreMap({
           // 401 on tile requests = expired Clerk token. Refresh and reload tiles
           // instead of showing a confusing "Token expired" error to the user.
           if (e.error.status === 401) {
+            track('map_tile_auth_refresh_started', {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : null,
+            });
             (async () => {
               // No skipCache: TokenManager deduplicates concurrent 401 refresh calls.
               // 20 tiles failing at once → 1 Clerk token request, not 20.
@@ -1017,6 +1039,11 @@ export default function MapLibreMap({
                 }
               } else {
                 // Clerk session is fully dead, user needs to re-login
+                trackError('map_tile_auth_refresh_failed', e.error, {
+                  project_id: project.id,
+                  map_id: mapId,
+                  http_status: e.error.status,
+                });
                 addError('Session expired. Please refresh the page to sign in again.', true);
               }
             })();
@@ -1024,6 +1051,12 @@ export default function MapLibreMap({
           }
           // Non-auth 4xx errors: show the user the message
           if (e.error.status >= 400 && e.error.status < 500 && e.error.body instanceof Blob) {
+            trackError('map_renderer_http_error', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : null,
+              http_status: e.error.status,
+            });
             // Read the body of the error
             (async () => {
               const bodyStr = await e.error.body.text();
@@ -1045,18 +1078,41 @@ export default function MapLibreMap({
           } else if (e.error.status == 502 && e.error.message.indexOf('.mvt') !== -1) {
             // This just means database is slow
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_timeout', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError('PostGIS query took 60+ seconds, database might be overloaded', true, sourceId);
           } else if (e.error.status == 422 && e.error.message.indexOf('.mvt') !== -1) {
             // Layer query is structurally incompatible with vector tile rendering
             // (e.g. non-integer id column, invalid geometry). Actionable by the user.
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_invalid_query', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError("This layer's query is incompatible with the map renderer. Ask Sage to recreate it.", true, sourceId);
           } else if (e.error.status == 500 && e.error.message.indexOf('.mvt') !== -1) {
             // Potentially an error with the query
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_query_failed', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError('PostGIS query errored while executing, either re-create a new query or contact support', true, sourceId);
           } else {
             // Unknown type of error?
+            trackError('map_renderer_error', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              http_status: e.error.status,
+            });
             addError('Error loading map data: ' + e.error.message, true);
           }
         } else {
@@ -1070,6 +1126,12 @@ export default function MapLibreMap({
             const match = msg.match(/Bad response code:\s*(\d+)/);
             const code = match ? parseInt(match[1], 10) : null;
             if (code === 423) {
+              track('map_tile_generation_pending', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               addError('Vector tiles are still generating. Please refresh in a moment. This will take 2-3 minutes.', true, sourceId);
               return;
             }
@@ -1078,6 +1140,12 @@ export default function MapLibreMap({
               // external provider rate limiting. Trigger a style refresh to get
               // fresh presigned URLs, debounced to once per 30 seconds.
               console.warn('Tile source returned 403 (presigned URL may have expired)', sourceId);
+              track('map_tile_presigned_url_expired', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               if (styleUpdateCounterRef.current !== undefined) {
                 const now = Date.now();
                 if (!lastPresignedRefreshRef.current || now - lastPresignedRefreshRef.current > 30_000) {
@@ -1094,9 +1162,20 @@ export default function MapLibreMap({
               // 502 for tile/pmtiles requests means the file isn't in storage yet —
               // not actionable by the user, so log quietly instead of toasting.
               console.warn('Tile source returned 502 (file may be missing from storage)', sourceId);
+              track('map_tile_storage_pending', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               return;
             }
           }
+          trackError('map_renderer_error', e.error, {
+            project_id: project.id,
+            map_id: mapId,
+            source_id: sourceId,
+          });
           addError('Error loading map data: ' + (msg ?? 'Unknown error'), true, sourceId);
         }
       });
@@ -1116,6 +1195,10 @@ export default function MapLibreMap({
       };
     } catch (err) {
       console.error('Error initializing map:', err);
+      trackError('map_renderer_init_failed', err, {
+        project_id: project.id,
+        map_id: mapId,
+      });
       addError('Failed to initialize map: ' + (err instanceof Error ? err.message : String(err)), true);
     }
   }, [addError, pointCloudLayers, createPointCloudLayer, mapRef]); // listen to point cloud layers
@@ -1380,7 +1463,6 @@ export default function MapLibreMap({
 
   // Load legend symbols separately — depends on mapData but should NOT
   // trigger a full setStyle() call (which wipes paint overrides).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: styleData guard ensures map has a style
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !styleData) return;
@@ -1486,12 +1568,24 @@ export default function MapLibreMap({
   // Function to send a message
   const sendMessage = async (text: string) => {
     if (!text.trim()) return;
+    const messageStartedAt = Date.now();
+    const trimmedText = text.trim();
+    track('sage_message_submitted', {
+      project_id: project.id,
+      map_id: mapId,
+      conversation_id: conversationId ?? null,
+      had_existing_conversation: conversationId !== null,
+      message_length: trimmedText.length,
+      selected_feature_present: Boolean(selectedFeature),
+      viewport_bounds_present: Boolean(mapRef.current),
+      websocket_ready: readyStateRef.current === ReadyState.OPEN,
+    });
 
     setInputValue(''); // Clear input after preparing to send
 
     const userMessage: ChatCompletionUserMessageParam = {
       role: 'user',
-      content: text,
+      content: trimmedText,
     };
 
     // Create and add ephemeral action
@@ -1515,6 +1609,7 @@ export default function MapLibreMap({
 
       // If no conversation, create one first
       if (conversationIdToUse === null) {
+        const conversationStartedAt = Date.now();
         // Creating conversation also an ephemeral action
         const createConversationAction: EphemeralAction = {
           map_id: mapId,
@@ -1544,6 +1639,11 @@ export default function MapLibreMap({
         const newConv = (await createResp.json()) as Conversation;
         conversationIdToUse = newConv.id;
         setConversationId(conversationIdToUse);
+        trackDuration('sage_conversation_created', conversationStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+        });
 
         // Wait briefly for websocket to connect to the new conversation
         const maxWaitMs = 10000;
@@ -1581,18 +1681,40 @@ export default function MapLibreMap({
 
       if (response.ok) {
         await response.json();
+        trackDuration('sage_message_send_succeeded', messageStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+          selected_feature_present: Boolean(selectedFeature),
+          viewport_bounds_present: Boolean(sendBody.viewport_bounds),
+        });
         invalidateProjectData();
       } else if (response.status === 401) {
         // Session expired during chat send. Give a clear, actionable message.
+        trackError('sage_message_send_failed', new Error(`HTTP ${response.status}`), {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+          http_status: response.status,
+        });
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
         return;
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        const error = new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        (error as Error & { status?: number }).status = response.status;
+        throw error;
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Network error';
+      trackError('sage_message_send_failed', error, {
+        project_id: project.id,
+        map_id: mapId,
+        conversation_id: conversationId ?? null,
+        duration_ms: Math.max(0, Math.round(Date.now() - messageStartedAt)),
+        selected_feature_present: Boolean(selectedFeature),
+      });
       // Translate cryptic "Token expired" into actionable message
       if (msg.toLowerCase().includes('token expired') || msg.toLowerCase().includes('unauthorized')) {
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
@@ -1663,6 +1785,7 @@ export default function MapLibreMap({
   }, [currentBasemap]);
 
   // Fetch scene info when Sentinel-2 Live basemap is active
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mapInstanceId is an intentional trigger-only dependency.
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !isSentinel2Active) return;
