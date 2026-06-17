@@ -56,6 +56,9 @@ services:
       # when accessed via Docker-internal DNS, so we sign presigned URLs with the
       # internal hostname instead. QGIS container can reach minio:9000 on Docker network.
       - S3_INTERNAL_ENDPOINT_URL=http://minio:9000
+      - POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
+      - POSTHOG_HOST=${POSTHOG_HOST:-https://us.i.posthog.com}
+      - POSTHOG_BACKEND_DISABLED=${POSTHOG_BACKEND_DISABLED:-0}
       # Phase 2 Clay embedding paths (checkpoint bind-mounted from host).
       - CLAY_CHECKPOINT_PATH=/app/data/clay-checkpoints/clay-v1.5.ckpt
       - CLAY_METADATA_PATH=/app/clay-source/configs/metadata.yaml

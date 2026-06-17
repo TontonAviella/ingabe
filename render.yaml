@@ -53,6 +53,8 @@ envVarGroups:
         value: phc_W7tOZXWc5oPtpiYyyINii49GodL1NgyS6z30pNW8aTP
       - key: VITE_POSTHOG_HOST
         value: https://us.i.posthog.com
+      - key: POSTHOG_HOST
+        value: https://us.i.posthog.com
 
   - name: mundi-secrets
     envVars:
@@ -87,6 +89,8 @@ envVarGroups:
       - key: OTEL_EXPORTER_OTLP_ENDPOINT
         sync: false
       - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: POSTHOG_API_KEY
         sync: false
 
 # ---------------------------------------------------------------------------

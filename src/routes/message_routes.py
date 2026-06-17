@@ -11,6 +11,7 @@ import logging
 import os
 import json
 import re
+import time
 from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
@@ -69,6 +70,7 @@ from src.services.life_harness import (
     validate_life_harness_tool_args,
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
+from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -7056,6 +7058,7 @@ async def process_chat_interaction_task_safely(
     connection_manager: PostgresConnectionManager,
     pydantic_tool_calls: PydanticToolRegistry,
 ):
+    started_at = time.monotonic()
     lock_key = f"chat_lock:{conversation.id}"
     try:
         await process_chat_interaction_task(
@@ -7070,6 +7073,15 @@ async def process_chat_interaction_task_safely(
             connection_manager,
             pydantic_tool_calls,
         )
+        capture_for_session(
+            "backend_sage_message_completed",
+            session,
+            {
+                "map_id": map_id,
+                "conversation_id": conversation.id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Sage could not process this request."
         logger.warning(
@@ -7077,9 +7089,30 @@ async def process_chat_interaction_task_safely(
             conversation.id,
             detail,
         )
+        capture_for_session(
+            "backend_sage_message_failed",
+            session,
+            {
+                "map_id": map_id,
+                "conversation_id": conversation.id,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": type(exc).__name__,
+                "status_code": exc.status_code,
+            },
+        )
         await kue_notify_error(conversation.id, detail)
-    except Exception:
+    except Exception as exc:
         logger.exception("Sage chat processing crashed for conversation %s", conversation.id)
+        capture_for_session(
+            "backend_sage_message_failed",
+            session,
+            {
+                "map_id": map_id,
+                "conversation_id": conversation.id,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": type(exc).__name__,
+            },
+        )
         await kue_notify_error(
             conversation.id,
             "Sage hit an internal error while processing this request. Please try again.",
@@ -7129,9 +7162,21 @@ async def send_map_message(
     pydantic_tool_calls: PydanticToolRegistry = Depends(get_pydantic_tool_calls),
 ):
     # get_conversation authenticates
+    started_at = time.monotonic()
     logger.info("send_map_message called: conversation=%s map=%s", conversation.id, map_id)
     user_id = session.get_user_id()
     partner_id = session.get_org_id()
+    capture_for_session(
+        "backend_sage_message_received",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "await_end": await_end,
+            "has_selected_feature": body.selected_feature is not None,
+            "has_viewport_bounds": body.viewport_bounds is not None,
+        },
+    )
 
     # Check if map is already being processed
     lock_key = f"chat_lock:{conversation.id}"
@@ -7261,6 +7306,19 @@ async def send_map_message(
             pydantic_tool_calls,
         )
 
+    capture_for_session(
+        "backend_sage_message_queued",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "message_id": str(user_msg_db["id"]),
+            "await_end": await_end,
+            "chat_history_count": len(current_messages),
+            "system_context_count": len(system_messages),
+            "duration_ms": elapsed_ms(started_at),
+        },
+    )
     return MessageSendResponse(
         conversation_id=conversation.id,
         sent_message=sanitized_user_msg,

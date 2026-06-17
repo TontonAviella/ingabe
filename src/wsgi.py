@@ -32,6 +32,11 @@ from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
+from src.services.posthog_analytics import (
+    capture_backend_event,
+    elapsed_ms,
+    route_template,
+)
 from slowapi.errors import RateLimitExceeded
 # from fastapi_mcp import FastApiMCP
 
@@ -340,20 +345,57 @@ class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
         _active_requests += 1
         _request_count += 1
         start = time.monotonic()
+        status_code: int | None = None
         try:
             response: Response = await call_next(request)
+            status_code = response.status_code
             if response.status_code >= 500:
                 _request_errors += 1
             response.headers["X-Request-ID"] = request_id
             return response
-        except Exception:
+        except Exception as exc:
             _request_errors += 1
+            capture_backend_event(
+                "backend_http_exception",
+                properties={
+                    "method": request.method,
+                    "path_template": route_template(request),
+                    "duration_ms": elapsed_ms(start),
+                    "error_type": type(exc).__name__,
+                    "request_id": request_id,
+                },
+            )
             raise
         finally:
             elapsed = time.monotonic() - start
             _request_latency_sum += elapsed
             _request_latency_count += 1
             _active_requests -= 1
+            duration_ms = int(elapsed * 1000)
+            slow_threshold_ms = int(os.environ.get("POSTHOG_SLOW_REQUEST_MS", "3000"))
+            if status_code is not None and request.url.path.startswith("/api/"):
+                if status_code >= 500:
+                    capture_backend_event(
+                        "backend_http_error",
+                        properties={
+                            "method": request.method,
+                            "path_template": route_template(request),
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_id": request_id,
+                        },
+                    )
+                elif duration_ms >= slow_threshold_ms:
+                    capture_backend_event(
+                        "backend_http_slow_request",
+                        properties={
+                            "method": request.method,
+                            "path_template": route_template(request),
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_id": request_id,
+                        },
+                    )
 
 
 app.add_middleware(RequestIdMetricsMiddleware)

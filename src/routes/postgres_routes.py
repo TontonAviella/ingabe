@@ -63,6 +63,11 @@ from src.services.map_service import (
     get_map_style_internal,
     render_map_internal,
 )
+from src.services.posthog_analytics import (
+    capture_backend_event,
+    capture_for_session,
+    elapsed_ms,
+)
 from src.services.raster_zoom import raster_source_minzoom
 
 fiona.drvsupport.supported_drivers["WFS"] = "r"  # type: ignore[attr-defined]
@@ -243,6 +248,9 @@ async def create_map(
     }
     ```
     """
+    import time
+
+    started_at = time.monotonic()
     owner_id = session.get_user_id()
 
     # Generate unique IDs for project and map
@@ -288,13 +296,23 @@ async def create_map(
 
         # Return the created map data
         website_domain = os.environ.get("WEBSITE_DOMAIN", "https://app.mundi.ai")
-        return MapResponse(
+        response = MapResponse(
             id=map_id,
             project_id=project_id,
             title=result["title"],
             created_on=result["created_on"].isoformat(),
             map_link=f"{website_domain}/project/{project_id}",
         )
+        capture_for_session(
+            "backend_map_created",
+            session,
+            {
+                "map_id": map_id,
+                "project_id": project_id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
 
 
 @router.get(
@@ -943,6 +961,9 @@ async def init_multipart_upload(
     forked_map: MundiMap = Depends(forked_map_by_user),
     session: UserContext = Depends(verify_session_required),
 ):
+    import time
+
+    started_at = time.monotonic()
     user_id = session.get_user_id()
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
@@ -954,7 +975,7 @@ async def init_multipart_upload(
     resp = await s3_client.create_multipart_upload(Bucket=bucket_name, Key=s3_key)
     upload_id = resp["UploadId"]
 
-    return MultipartInitResponse(
+    response = MultipartInitResponse(
         dag_child_map_id=forked_map.id,
         dag_parent_map_id=original_map_id,
         upload_id=upload_id,
@@ -963,6 +984,22 @@ async def init_multipart_upload(
         part_size=MULTIPART_CHUNK_SIZE,
         total_parts=total_parts,
     )
+    capture_for_session(
+        "backend_upload_multipart_initialized",
+        session,
+        {
+            "map_id": forked_map.id,
+            "project_id": forked_map.project_id,
+            "layer_id": layer_id,
+            "file_ext": file_ext,
+            "file_size_bytes": file_size,
+            "part_size_bytes": MULTIPART_CHUNK_SIZE,
+            "total_parts": total_parts,
+            "duration_ms": elapsed_ms(started_at),
+            "storage_tier": os.environ.get("STORAGE_TIER", "minio"),
+        },
+    )
+    return response
 
 
 @router.post(
@@ -1093,6 +1130,9 @@ async def complete_multipart_upload(
     body: MultipartCompleteRequest,
     session: UserContext = Depends(verify_session_required),
 ):
+    import time
+
+    started_at = time.monotonic()
     s3_client, bucket_name = await _get_upload_client_and_bucket()
 
     parts = [
@@ -1107,6 +1147,18 @@ async def complete_multipart_upload(
         MultipartUpload={"Parts": parts},
     )
 
+    capture_for_session(
+        "backend_upload_multipart_completed",
+        session,
+        {
+            "map_id": map_id,
+            "layer_id": body.layer_id,
+            "part_count": len(parts),
+            "file_ext": os.path.splitext(body.filename)[1].lower() or ".bin",
+            "duration_ms": elapsed_ms(started_at),
+            "storage_tier": os.environ.get("STORAGE_TIER", "minio"),
+        },
+    )
     return {
         "status": "assembled",
         "s3_key": body.s3_key,
@@ -1421,9 +1473,19 @@ async def _background_generate_cog(
     """
     from src.structures import get_async_db_connection
     import shutil
+    import time
 
+    started_at = time.monotonic()
     bucket_name = get_bucket_name()
     if await _try_reuse_existing_cog(layer_id):
+        capture_backend_event(
+            "backend_cog_generation_completed",
+            properties={
+                "layer_id": layer_id,
+                "duration_ms": elapsed_ms(started_at),
+                "cog_source": "reused_existing",
+            },
+        )
         await _maybe_embed_layer_after_cog(layer_id)
         return
 
@@ -1484,6 +1546,15 @@ async def _background_generate_cog(
             await tile_cache.invalidate_layer(layer_id)
             logger.info("Background COG fast-path complete for %s", layer_id)
             await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
+            capture_backend_event(
+                "backend_cog_generation_completed",
+                properties={
+                    "layer_id": layer_id,
+                    "duration_ms": elapsed_ms(started_at),
+                    "cog_source": "client_provided",
+                    "source_epsg": source_epsg,
+                },
+            )
             await _maybe_embed_layer_after_cog(layer_id)
             return
 
@@ -1526,6 +1597,15 @@ async def _background_generate_cog(
                 detail="Raster tile optimization failed",
                 error=error or f"gdalwarp exited with code {proc.returncode}",
             )
+            capture_backend_event(
+                "backend_cog_generation_failed",
+                properties={
+                    "layer_id": layer_id,
+                    "duration_ms": elapsed_ms(started_at),
+                    "failure_stage": "gdalwarp",
+                    "return_code": proc.returncode,
+                },
+            )
             return
         logger.info("Background COG generated via gdalwarp for %s", layer_id)
 
@@ -1557,9 +1637,28 @@ async def _background_generate_cog(
         await tile_cache.invalidate_layer(layer_id)
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
         await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
+        capture_backend_event(
+            "backend_cog_generation_completed",
+            properties={
+                "layer_id": layer_id,
+                "duration_ms": elapsed_ms(started_at),
+                "cog_source": "gdalwarp",
+                "target_srs": target_srs,
+                "source_epsg": source_epsg,
+            },
+        )
         await _maybe_embed_layer_after_cog(layer_id)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
+        capture_backend_event(
+            "backend_cog_generation_failed",
+            properties={
+                "layer_id": layer_id,
+                "duration_ms": elapsed_ms(started_at),
+                "failure_stage": "exception",
+                "error_type": type(e).__name__,
+            },
+        )
         try:
             await _set_layer_cog_status(
                 layer_id,
@@ -1703,6 +1802,21 @@ async def complete_layer_upload(
         )
         file_size = int(head.get("ContentLength") or 0)
         upload_etag = str(head.get("ETag") or "").strip('"')
+        capture_for_session(
+            "backend_upload_processing_started",
+            session,
+            {
+                "map_id": map_id,
+                "project_id": mundi_map.project_id,
+                "layer_id": body.layer_id,
+                "file_ext": file_ext,
+                "file_size_bytes": file_size,
+                "layer_type": layer_type_for_file,
+                "is_gzipped": is_gzipped,
+                "remote_raster_metadata": remote_raster_metadata,
+                "storage_tier": os.environ.get("STORAGE_TIER", "minio"),
+            },
+        )
 
         if remote_raster_metadata and not landed_in_r2:
             tmp_path = f"/vsis3/{bucket_name}/{body.s3_key}"
@@ -1832,7 +1946,7 @@ async def complete_layer_upload(
             )
 
         logger.info("upload-complete response ready for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
-        return LayerUploadResponse(
+        response = LayerUploadResponse(
             dag_child_map_id=map_id,
             dag_parent_map_id=map_id,  # already on the forked map
             id=primary_id,
@@ -1841,11 +1955,41 @@ async def complete_layer_upload(
             url=result.first_layer_url or url_map.get(layer_type, f"/api/layer/{primary_id}.pmtiles"),
             message="Layer added successfully",
         )
+        capture_for_session(
+            "backend_upload_processing_completed",
+            session,
+            {
+                "map_id": map_id,
+                "project_id": mundi_map.project_id,
+                "layer_id": primary_id,
+                "file_ext": file_ext,
+                "file_size_bytes": file_size,
+                "layer_type": result.layer_type,
+                "created_layer_count": len(result.created_layer_ids),
+                "add_layer_to_map": body.add_layer_to_map,
+                "remote_raster_metadata": remote_raster_metadata,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         logger.error("upload-complete failed for %s: %s\n%s", body.layer_id, e, traceback.format_exc())
+        capture_for_session(
+            "backend_upload_processing_failed",
+            session,
+            {
+                "map_id": map_id,
+                "project_id": mundi_map.project_id,
+                "layer_id": body.layer_id,
+                "file_ext": file_ext,
+                "layer_type": layer_type_for_file,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": type(e).__name__,
+            },
+        )
         raise HTTPException(status_code=500, detail="Processing failed after upload")
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

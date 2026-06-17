@@ -2,6 +2,7 @@ import os
 import math
 import json
 import hashlib
+import time
 from fastapi import (
     Request,
     APIRouter,
@@ -55,6 +56,11 @@ from src.services.map_service import (
     generate_id,
     get_map_style_internal,
     render_map_internal,
+)
+from src.services.posthog_analytics import (
+    capture_backend_event,
+    capture_for_session,
+    elapsed_ms,
 )
 
 # Global semaphore to limit concurrent social image renderings
@@ -113,6 +119,7 @@ async def list_user_projects(
     List all projects associated with the authenticated user.
     A project is associated if the user is the owner, an editor, or a viewer.
     """
+    started_at = time.monotonic()
     user_id = session.get_user_id()
 
     # Calculate offset for pagination
@@ -212,11 +219,25 @@ async def list_user_projects(
                 )
             )
 
-    return UserProjectsResponse(
+    response = UserProjectsResponse(
         projects=projects_response,
         total_pages=total_pages,
         total_items=total_items,
     )
+    capture_for_session(
+        "backend_projects_listed",
+        session,
+        {
+            "page": page,
+            "limit": limit,
+            "include_deleted": include_deleted,
+            "project_count": len(projects_response),
+            "total_items": total_items,
+            "total_pages": total_pages,
+            "duration_ms": elapsed_ms(started_at),
+        },
+    )
+    return response
 
 
 @project_router.get(
@@ -416,6 +437,7 @@ async def add_postgis_connection(
     Add a PostgreSQL connection URI to a project.
     Only the project owner or editors can add connections.
     """
+    started_at = time.monotonic()
     user_id = session.get_user_id()
 
     async with get_async_db_connection() as conn:
@@ -489,10 +511,22 @@ async def add_postgis_connection(
             user_id,
         )
 
-        return PostgresCreateConnectionResponse(
+        response = PostgresCreateConnectionResponse(
             message="PostgreSQL connection added successfully",
             connection_id=connection_id,
         )
+        capture_for_session(
+            "backend_postgis_connection_added",
+            session,
+            {
+                "project_id": project.id,
+                "connection_id": connection_id,
+                "was_demo_connection": connection_data.connection_uri.strip() == "DEMO",
+                "connection_rewritten": was_rewritten,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
 
 
 @project_router.delete(
@@ -509,6 +543,7 @@ async def soft_delete_postgis_connection(
     Soft delete a PostgreSQL connection from a project.
     Only the project owner or editors can delete connections.
     """
+    started_at = time.monotonic()
     async with get_async_db_connection() as conn:
         # Check if the connection exists and belongs to this project
         connection = await conn.fetchrow(
@@ -544,9 +579,19 @@ async def soft_delete_postgis_connection(
             project.id,
         )
 
-        return PostgresConnectionResponse(
+        response = PostgresConnectionResponse(
             success=True, message="PostgreSQL connection deleted successfully"
         )
+        capture_for_session(
+            "backend_postgis_connection_deleted",
+            session,
+            {
+                "project_id": project.id,
+                "connection_id": connection_id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
 
 
 @project_router.get(
@@ -763,6 +808,7 @@ async def delete_project(
     Soft deletes a map project. This project will no longer be listed in the user's
     list of projects, but will appear in recently deleted projects.
     """
+    started_at = time.monotonic()
     async with get_async_db_connection() as conn:
         # Soft delete the project
         updated_project = await conn.fetchrow(
@@ -781,6 +827,14 @@ async def delete_project(
                 detail="Failed to delete project",
             )
 
+        capture_backend_event(
+            "backend_project_deleted",
+            distinct_id=str(project.owner_uuid),
+            properties={
+                "project_id": project.id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return {
             "message": "Project successfully deleted",
             "project_id": project.id,
