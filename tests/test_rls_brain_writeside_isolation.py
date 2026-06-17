@@ -250,21 +250,21 @@ async def seeded():
     await admin.close()
 
 
-@pytest_asyncio.fixture(loop_scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def conn_a(seeded):
     c = await _open(USER_A)
     yield c
     await c.close()
 
 
-@pytest_asyncio.fixture(loop_scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def conn_b(seeded):
     c = await _open(USER_B)
     yield c
     await c.close()
 
 
-@pytest_asyncio.fixture(loop_scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def conn_admin(seeded):
     c = await _open(None)
     yield c

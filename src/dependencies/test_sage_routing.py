@@ -302,12 +302,8 @@ def test_detect_raster_area_question_blocks_non_rasters(msg: str) -> None:
     assert detect_raster_area_question(msg) is False
 
 
-def test_build_fast_tool_call_raster_area() -> None:
-    fast = build_fast_tool_call("tell me the hectares of Cyampirita_Orthophoto?")
-    assert fast is not None
-    assert fast.tool_name == "describe_user_raster"
-    assert fast.arguments == {"fact": "area"}
-    assert fast.reason == "fast:raster_area"
+def test_build_fast_tool_call_raster_area_defers_until_layer_id_is_known() -> None:
+    assert build_fast_tool_call("tell me the hectares of Cyampirita_Orthophoto?") is None
 
 
 def test_raster_layer_match_score_uses_distinctive_name_tokens() -> None:

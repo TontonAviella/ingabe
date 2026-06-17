@@ -539,12 +539,6 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
     args = build_admin_boundary_tool_args(text)
     if args:
         return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
-    if detect_raster_area_question(text):
-        return FastToolCall(
-            "describe_user_raster",
-            {"fact": "area"},
-            "fast:raster_area",
-        )
     return None
 
 

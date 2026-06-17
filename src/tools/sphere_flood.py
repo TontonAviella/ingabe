@@ -91,15 +91,20 @@ async def analyze_sphere_flood_impact(
             default_first_floor_height_m=args.default_first_floor_height_m,
         )
     )
+    success = result.get("status") == "success"
+    map_meta = result.setdefault("map", {}) if success else {}
+    height_property = map_meta.get("height_property", "risk_score")
+    height_scale = map_meta.get("height_scale", 40)
+    style_hint = map_meta.get("style_hint", "sphere_flood_damage")
 
-    if result.get("status") == "success" and args.use_forge3d:
+    if success and args.use_forge3d:
         result["forge3d"] = build_forge3d_impact_layer(
             result["geojson"],
-            height_property=result["map"]["height_property"],
-            height_scale=result["map"]["height_scale"],
+            height_property=height_property,
+            height_scale=height_scale,
         )
 
-    if args.render_map and result.get("status") == "success":
+    if args.render_map and success:
         source_id = f"sage-sphere-flood-{uuid.uuid4().hex[:8]}"
         style = {
             "color_property": "risk_score",
@@ -113,8 +118,8 @@ async def analyze_sphere_flood_impact(
             "stroke_color": "#111827",
             "stroke_width": 1.5,
             "extrude_3d": args.render_3d,
-            "extrusion_property": result["map"]["height_property"],
-            "extrusion_scale": result["map"]["height_scale"],
+            "extrusion_property": height_property,
+            "extrusion_scale": height_scale,
         }
         async with kue_ephemeral_action(
             meta.conversation_id,
@@ -126,12 +131,12 @@ async def analyze_sphere_flood_impact(
                 "geojson": result["geojson"],
                 "name": "Sphere Flood Damage",
                 "bounds": bbox,
-                "style_hint": result["map"]["style_hint"],
+                "style_hint": style_hint,
                 "style": style,
             }
             await asyncio.sleep(0.2)
-        result["map"]["source_id"] = source_id
-        result["map"]["rendered"] = True
+        map_meta["source_id"] = source_id
+        map_meta["rendered"] = True
     elif "map" in result:
         result["map"]["rendered"] = False
 
