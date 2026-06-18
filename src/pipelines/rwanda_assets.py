@@ -37,6 +37,7 @@ import requests
 from dagster import AssetExecutionContext, asset
 
 from src.pipelines.resources import DuckDBResource, PostgresResource, S3Resource
+from src.pipelines.posthog_observability import observed_dagster_asset
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
 logger = logging.getLogger(__name__)
@@ -477,6 +478,13 @@ def rwanda_parcel_ingestion(
     description="Compute H3-aggregated weekly NDVI from parcel observations",
     metadata={"dagster/group": "rwanda_ndvi"},
 )
+@observed_dagster_asset(
+    asset_name="rwanda_h3_ndvi_aggregation",
+    pipeline_family="satellite_h3_ndvi",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="h3_ndvi_weekly",
+)
 def rwanda_h3_ndvi_aggregation(
     context: AssetExecutionContext,
     duckdb: DuckDBResource,
@@ -552,6 +560,13 @@ RWANDA_DISTRICTS = [
 @asset(
     group_name="rwanda_precompute",
     description="Nightly: pre-warm district agri indices cache (30 districts = 30 PU)",
+)
+@observed_dagster_asset(
+    asset_name="nightly_field_ndvi",
+    pipeline_family="satellite_agri_indices",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="district_ndvi_cache",
 )
 def nightly_field_ndvi(
     context: AssetExecutionContext,
@@ -768,6 +783,13 @@ def nightly_cache_cleanup(
 @asset(
     group_name="rwanda_precompute",
     description="Nightly: generate H3 NDVI vector tiles (PMTiles) from cache → S3",
+)
+@observed_dagster_asset(
+    asset_name="nightly_ndvi_vector_tiles",
+    pipeline_family="satellite_h3_tiles",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="h3_pmtiles_layer",
 )
 def nightly_ndvi_vector_tiles(
     context: AssetExecutionContext,
@@ -1008,6 +1030,13 @@ def nightly_ndvi_vector_tiles(
     group_name="rwanda_precompute",
     description="Nightly: compute parcel-level NDVI for user-uploaded fields → PostgreSQL cache",
 )
+@observed_dagster_asset(
+    asset_name="nightly_parcel_ndvi",
+    pipeline_family="satellite_parcel_ndvi",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="parcel_ndvi_cache",
+)
 def nightly_parcel_ndvi(
     context: AssetExecutionContext,
     postgres: PostgresResource,
@@ -1207,6 +1236,13 @@ def nightly_parcel_ndvi(
 @asset(
     group_name="rwanda_precompute",
     description="Weekly: run openEO crop classification → PostgreSQL + S3 cache",
+)
+@observed_dagster_asset(
+    asset_name="weekly_crop_classification",
+    pipeline_family="satellite_crop_classification",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="crop_classification_cache",
 )
 def weekly_crop_classification(
     context: AssetExecutionContext,
@@ -1458,6 +1494,13 @@ def weekly_crop_classification(
     group_name="rwanda_precompute",
     description="Weekly: scan NDVI cache for anomalies → PostgreSQL alerts cache",
 )
+@observed_dagster_asset(
+    asset_name="weekly_anomaly_scan",
+    pipeline_family="satellite_ndvi_anomaly",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="ndvi_anomaly_cache",
+)
 def weekly_anomaly_scan(
     context: AssetExecutionContext,
     postgres: PostgresResource,
@@ -1579,6 +1622,13 @@ def weekly_anomaly_scan(
     group_name="rwanda_precompute",
     description="Weekly: run yield risk prediction per district → PostgreSQL cache",
 )
+@observed_dagster_asset(
+    asset_name="weekly_yield_risk",
+    pipeline_family="satellite_yield_risk",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="yield_risk_cache",
+)
 def weekly_yield_risk(
     context: AssetExecutionContext,
     postgres: PostgresResource,
@@ -1669,6 +1719,13 @@ def weekly_yield_risk(
 @asset(
     group_name="rwanda_precompute",
     description="Weekly: drought detection per district → PostgreSQL cache",
+)
+@observed_dagster_asset(
+    asset_name="weekly_drought_scan",
+    pipeline_family="satellite_drought_scan",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="drought_cache",
 )
 def weekly_drought_scan(
     context: AssetExecutionContext,
@@ -1762,6 +1819,13 @@ def weekly_drought_scan(
     group_name="rwanda_precompute",
     description="Weekly: crop phenology analysis per district → PostgreSQL cache",
 )
+@observed_dagster_asset(
+    asset_name="weekly_phenology",
+    pipeline_family="satellite_phenology",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="phenology_cache",
+)
 def weekly_phenology(
     context: AssetExecutionContext,
     postgres: PostgresResource,
@@ -1847,6 +1911,13 @@ def weekly_phenology(
 @asset(
     group_name="rwanda_precompute",
     description="Daily: ingest AgERA5 weather data per district -> PostgreSQL cache",
+)
+@observed_dagster_asset(
+    asset_name="daily_weather_ingest",
+    pipeline_family="weather_ingest",
+    source_category="weather",
+    analysis_domain="agriculture",
+    evidence_kind="agera5_weather_cache",
 )
 def daily_weather_ingest(
     context: AssetExecutionContext,

@@ -133,6 +133,10 @@ from src.tools.spatial_engines import (
     get_spatial_engine_capabilities,
     GetSpatialEngineCapabilitiesArgs,
 )
+from src.tools.pipeline_evidence import (
+    get_pipeline_evidence_status,
+    GetPipelineEvidenceStatusArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -321,6 +325,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "get_spatial_engine_capabilities": (
             get_spatial_engine_capabilities,
             GetSpatialEngineCapabilitiesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_pipeline_evidence_status": (
+            get_pipeline_evidence_status,
+            GetPipelineEvidenceStatusArgs,
             IngabeToolCallMetaArgs,
         ),
     }

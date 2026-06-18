@@ -11,12 +11,17 @@ import json
 import logging
 import math
 import threading
+import time
 import urllib.request
 
 import requests
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
 
 from src.pipelines.resources import PostgresResource, RedisResource, S3Resource
+from src.pipelines.posthog_observability import (
+    capture_satellite_scene_sensor_success,
+    observed_dagster_sensor,
+)
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,11 @@ def build_s3_upload_sensor(raster_job, vector_job):
         description="Detects new files uploaded to S3 and triggers processing pipelines",
         minimum_interval_seconds=60,  # Check every minute
         jobs=[raster_job, vector_job],
+    )
+    @observed_dagster_sensor(
+        sensor_name="s3_upload_sensor",
+        pipeline_family="upload_ingest",
+        source_category="upload",
     )
     def s3_upload_sensor(
         context: SensorEvaluationContext,
@@ -145,6 +155,11 @@ def build_failed_cog_retry_sensor(raster_job):
         minimum_interval_seconds=3600,  # Check every hour
         job=raster_job,
     )
+    @observed_dagster_sensor(
+        sensor_name="failed_cog_retry_sensor",
+        pipeline_family="raster_cog_retry",
+        source_category="raster",
+    )
     def failed_cog_retry_sensor(
         context: SensorEvaluationContext,
         postgres: PostgresResource,
@@ -249,6 +264,11 @@ def build_satellite_scene_sensor():
         description="Detects new Sentinel-2 L2A scenes over Rwanda and invalidates tile cache",
         minimum_interval_seconds=4 * 3600,  # Every 4 hours
     )
+    @observed_dagster_sensor(
+        sensor_name="satellite_scene_sensor",
+        pipeline_family="satellite_scene_catalog",
+        source_category="satellite",
+    )
     def satellite_scene_sensor(
         context: SensorEvaluationContext,
         redis: RedisResource,
@@ -257,6 +277,7 @@ def build_satellite_scene_sensor():
         import os
         from datetime import datetime, timezone
 
+        started_at = time.monotonic()
         sh_client_id = os.environ.get("SH_CLIENT_ID", "")
         sh_client_secret = os.environ.get("SH_CLIENT_SECRET", "")
 
@@ -330,10 +351,11 @@ def build_satellite_scene_sensor():
         )
 
         # Invalidate satellite tile cache + publish WebSocket notification
+        deleted = 0
+        cache_warming_started = False
         try:
             with redis.get_client() as redis_client:
                 # Invalidate sat:* keys
-                deleted = 0
                 cursor_val = 0
                 while True:
                     cursor_val, keys = redis_client.scan(cursor=cursor_val, match="sat:*", count=200)
@@ -359,11 +381,20 @@ def build_satellite_scene_sensor():
         try:
             t = threading.Thread(target=_warm_satellite_cache, daemon=True)
             t.start()
+            cache_warming_started = True
             context.log.info("Started background cache warming thread")
         except Exception as e:
             context.log.warning(f"Failed to start cache warming: {e}")
 
         # Update cursor to latest scene datetime
         context.update_cursor(latest_dt)
+        capture_satellite_scene_sensor_success(
+            context,
+            scene_count=len(features),
+            latest_datetime=latest_dt,
+            tiles_invalidated=deleted,
+            cache_warming_started=cache_warming_started,
+            elapsed_ms_value=int((time.monotonic() - started_at) * 1000),
+        )
 
     return satellite_scene_sensor
