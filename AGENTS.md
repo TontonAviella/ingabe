@@ -41,3 +41,9 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+## Harness Discipline
+
+- Keep agent instructions as pointers, not long prompt dumps.
+- When a repeated Sage/Hermes/Codex workflow appears, read `.claude/skills/sage-harness-upgrade/SKILL.md`.
+- Push judgment into skills, execution into deterministic tools/tests/telemetry, and user-facing Sage language into outcomes plus evidence.

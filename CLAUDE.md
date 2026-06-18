@@ -150,6 +150,7 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Repeated Sage/Hermes workflow, harness, resolver, skill, or cron design | `.claude/skills/sage-harness-upgrade/SKILL.md` |
 
 <!-- gitnexus:end -->
 
@@ -191,5 +192,6 @@ Key routing rules:
 - Import cookies for authenticated testing → invoke /setup-browser-cookies
 - Performance regression, page speed, benchmarks → invoke /benchmark
 - Review what gstack has learned → invoke /learn
+- Repeated Sage/Hermes workflow, "make this permanent", "we asked twice", "thin harness/fat skills", resolver, skill, or cron design → read `.claude/skills/sage-harness-upgrade/SKILL.md`
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health

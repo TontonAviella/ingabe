@@ -56,6 +56,32 @@ _H5_SKILLS: list[dict[str, str]] = [
             "new factual evidence."
         ),
     },
+    {
+        "title": "Evidence-first spatial insight workflow",
+        "pattern": (
+            "housing infrastructure environment city settlement building buildings "
+            "road roads drainage runoff erosion h3 hex spatial risk impact damage "
+            "priority zone basemap satellite"
+        ),
+        "tip": (
+            "For housing, infrastructure, or environment insight, treat H3/hex as "
+            "an internal analysis unit. Gather evidence from buildings, roads, "
+            "drainage, terrain, rain/flood, or uploaded raster context before "
+            "making claims, and explain the evidence behind the map."
+        ),
+    },
+    {
+        "title": "Pipeline proof workflow",
+        "pattern": (
+            "dagster pipeline flowing flow fresh freshness proof evidence posthog "
+            "telemetry satellite weather h3 raster cache cron"
+        ),
+        "tip": (
+            "Before saying scheduled satellite, weather, H3, or raster data is "
+            "fresh/flowing, inspect pipeline evidence or telemetry. If no fresh "
+            "evidence exists, say that plainly and run the smallest live check."
+        ),
+    },
 ]
 
 

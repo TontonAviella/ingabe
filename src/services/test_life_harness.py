@@ -125,3 +125,23 @@ def test_h5_retrieves_task_relevant_skills():
     titles = {skill["title"] for skill in skills}
     assert "Drone raster workflow" in titles
     assert "Admin plus H3 workflow" in titles
+
+
+def test_h5_retrieves_spatial_evidence_workflow():
+    skills = retrieve_life_harness_skills(
+        "Show housing infrastructure risk from roads, drainage, satellite, and H3 zones",
+        top_k=2,
+    )
+
+    titles = {skill["title"] for skill in skills}
+    assert "Evidence-first spatial insight workflow" in titles
+
+
+def test_h5_retrieves_pipeline_proof_workflow():
+    skills = retrieve_life_harness_skills(
+        "Check Dagster pipeline freshness with PostHog telemetry for satellite raster H3 cache",
+        top_k=2,
+    )
+
+    titles = {skill["title"] for skill in skills}
+    assert "Pipeline proof workflow" in titles
