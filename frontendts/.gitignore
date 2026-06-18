@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Env files — never commit. Use .env.*.example for documented placeholders.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
 # Editor directories and files
 !.vscode/extensions.json
 .idea

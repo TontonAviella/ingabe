@@ -15,3 +15,10 @@ yolo*.pt
 
 # Phase 2: Clay v1.5 checkpoint lives here (4.9 GB), bind-mounted via compose
 data/clay-checkpoints/
+
+# Local agent/session artifacts and generated build outputs
+.claude/launch.json
+.claude/sessions/
+.claude/worktrees/
+services/*/target/
+test-results/

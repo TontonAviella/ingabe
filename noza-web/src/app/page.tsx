@@ -17,7 +17,20 @@ import {
   UserButton,
 } from "@clerk/nextjs";
 
-const INGABE_URL = process.env.NEXT_PUBLIC_INGABE_URL || "https://gis.nozalabs.rw";
+// Dev-only: render the page as if signed in (skip Clerk's modal sign-in flow)
+// so the Claude Code preview panel doesn't trip on the accounts.google.com block.
+// Mirrors middleware.ts + sign-in/sign-up page bypass.
+const IS_DEV_BYPASS =
+  process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === "1" &&
+  process.env.NODE_ENV !== "production";
+
+// In dev bypass mode, route "Open Ingabe" to localhost:5173 (the local Ingabe
+// SPA) so the click stays on localhost and the Claude Code preview panel
+// doesn't block it as a non-localhost navigation. In prod, points at the
+// real Ingabe domain.
+const INGABE_URL = IS_DEV_BYPASS
+  ? "http://localhost:5173"
+  : (process.env.NEXT_PUBLIC_INGABE_URL || "https://gis.nozalabs.rw");
 
 export default function Home() {
   return (
@@ -33,22 +46,33 @@ export default function Home() {
 
             {/* Auth */}
             <div className="flex items-center gap-4">
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-colors cursor-pointer">
-                    Sign In
-                  </button>
-                </SignInButton>
-              </SignedOut>
-              <SignedIn>
+              {IS_DEV_BYPASS ? (
                 <a
                   href={INGABE_URL}
                   className="inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-[#1a1816] border border-[#1a1816] rounded-full hover:bg-[#1a1816] hover:text-[#f7f5f2] transition-colors"
                 >
                   Open Ingabe
                 </a>
-                <UserButton afterSignOutUrl="/" />
-              </SignedIn>
+              ) : (
+                <>
+                  <SignedOut>
+                    <SignInButton mode="modal">
+                      <button className="inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-colors cursor-pointer">
+                        Sign In
+                      </button>
+                    </SignInButton>
+                  </SignedOut>
+                  <SignedIn>
+                    <a
+                      href={INGABE_URL}
+                      className="inline-flex items-center justify-center px-5 py-2.5 text-sm font-medium text-[#1a1816] border border-[#1a1816] rounded-full hover:bg-[#1a1816] hover:text-[#f7f5f2] transition-colors"
+                    >
+                      Open Ingabe
+                    </a>
+                    <UserButton afterSignOutUrl="/" />
+                  </SignedIn>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -147,21 +171,32 @@ export default function Home() {
           <h2 className="text-4xl lg:text-5xl font-normal text-[#1a1816] mb-8">
             Ready to transform your farming operations?
           </h2>
-          <SignedOut>
-            <SignInButton mode="modal">
-              <button className="inline-flex items-center justify-center px-8 py-4 text-base font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-all hover:scale-105 cursor-pointer">
-                Get Started with Noza
-              </button>
-            </SignInButton>
-          </SignedOut>
-          <SignedIn>
+          {IS_DEV_BYPASS ? (
             <a
               href={INGABE_URL}
               className="inline-flex items-center justify-center px-8 py-4 text-base font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-all hover:scale-105"
             >
               Open Ingabe
             </a>
-          </SignedIn>
+          ) : (
+            <>
+              <SignedOut>
+                <SignInButton mode="modal">
+                  <button className="inline-flex items-center justify-center px-8 py-4 text-base font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-all hover:scale-105 cursor-pointer">
+                    Get Started with Noza
+                  </button>
+                </SignInButton>
+              </SignedOut>
+              <SignedIn>
+                <a
+                  href={INGABE_URL}
+                  className="inline-flex items-center justify-center px-8 py-4 text-base font-medium text-[#f7f5f2] bg-[#1a1816] rounded-full hover:bg-[#2d2b28] transition-all hover:scale-105"
+                >
+                  Open Ingabe
+                </a>
+              </SignedIn>
+            </>
+          )}
         </div>
       </section>
 

@@ -9,7 +9,16 @@ const isPublicRoute = createRouteMatcher([
   "/oauth(.*)",
 ]);
 
+// Dev-only bypass for Claude Code preview panel.
+// The preview panel hard-blocks non-localhost URLs (Google OAuth, Clerk
+// hosted UI, etc.), so set DEV_BYPASS_AUTH=1 in noza-web/.env.local to
+// skip auth.protect() entirely. Production unaffected — guard checks
+// both the env flag AND NODE_ENV !== "production".
+const DEV_BYPASS_AUTH =
+  process.env.DEV_BYPASS_AUTH === "1" && process.env.NODE_ENV !== "production";
+
 export default clerkMiddleware(async (auth, request) => {
+  if (DEV_BYPASS_AUTH) return;
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
