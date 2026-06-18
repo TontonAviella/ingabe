@@ -71,6 +71,11 @@ from src.services.life_harness import (
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
+from src.services.sage_tool_observability import (
+    build_sage_tool_context,
+    capture_sage_routing_decision,
+    capture_sage_tool_result_message,
+)
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -1768,6 +1773,7 @@ async def process_chat_interaction_task(
     partner_id = session.get_org_id()
 
     _lock_key = f"chat_lock:{conversation.id}"
+    _tool_observability_contexts: dict[str, dict] = {}
 
     async def add_chat_completion_message(
         message: Union[ChatCompletionMessage, ChatCompletionMessageParam],
@@ -1788,6 +1794,15 @@ async def process_chat_interaction_task(
                 json.dumps(message_dict),
                 conversation.id,
             )
+        if isinstance(message_dict, dict) and message_dict.get("role") == "tool":
+            try:
+                capture_sage_tool_result_message(
+                    message=message_dict,
+                    context_by_tool_call_id=_tool_observability_contexts,
+                    session=session,
+                )
+            except Exception:
+                logger.debug("Sage tool observability capture failed", exc_info=True)
 
     with tracer.start_as_current_span("app.process_chat_interaction") as span:
         _consecutive_tool_errors = 0
@@ -2224,6 +2239,19 @@ async def process_chat_interaction_task(
                 len(json.dumps(tools_payload)) // 3
                 if tools_payload else 0
             )
+            capture_sage_routing_decision(
+                session=session,
+                map_id=map_id,
+                project_id=None,
+                conversation_id=conversation.id,
+                routing_reason=_routing.reason,
+                selected_categories=_routing.selected_categories,
+                is_small_talk=_routing.is_small_talk,
+                model=str(chat_completions_args.get("model") or ""),
+                tool_count=len(tools_payload),
+                user_message_length=len(_last_user_text),
+                tool_payload_bytes=len(json.dumps(tools_payload)) if tools_payload else 0,
+            )
 
             def _estimate_tokens_for_messages(msgs: list) -> int:
                 return sum(len(json.dumps(m)) // 3 for m in msgs)
@@ -2561,6 +2589,25 @@ async def process_chat_interaction_task(
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
                     tool_args = _clean_tool_args(tool_call.function.arguments or "{}")
+                    tool_registry = (
+                        "pydantic"
+                        if function_name in pydantic_tool_calls
+                        else (
+                            "geoprocessing"
+                            if function_name in geoprocessing_function_names
+                            else "hardcoded"
+                        )
+                    )
+                    _tool_observability_contexts[tool_call.id] = build_sage_tool_context(
+                        tool_name=function_name,
+                        tool_args=tool_args,
+                        routing_reason=_routing.reason,
+                        selected_categories=_routing.selected_categories,
+                        tool_registry=tool_registry,
+                        map_id=map_id,
+                        project_id=current_project_id,
+                        conversation_id=conversation.id,
+                    )
                     tool_result = {}
 
                     _recent_tool_signatures.append(

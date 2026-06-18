@@ -569,6 +569,33 @@ def filter_tools_by_categories(
     return out
 
 
+def tool_category_for_name(tool_name: str) -> str:
+    """Return the router category for a tool name.
+
+    This is intentionally exported for observability: PostHog can then compare
+    the route Sage selected for a turn with the tool the model actually called.
+    """
+    return _TOOL_CATEGORIES.get(tool_name, "uncategorized")
+
+
+def routing_alignment_for_tool(
+    tool_name: str,
+    selected_categories: Iterable[str],
+) -> str:
+    """Describe whether a called tool matched the router-selected categories."""
+    category = tool_category_for_name(tool_name)
+    selected = set(selected_categories)
+    if not selected:
+        return "full_toolset"
+    if category == ALWAYS_ON:
+        return "always_on"
+    if category == "uncategorized":
+        return "uncategorized_kept"
+    if category in selected:
+        return "matched"
+    return "mismatch"
+
+
 # ---------------------------------------------------------------------------
 # RoutingDecision
 # ---------------------------------------------------------------------------

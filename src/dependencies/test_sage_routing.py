@@ -30,6 +30,8 @@ from src.dependencies.sage_routing import (
     filter_tools_by_categories,
     raster_layer_match_score,
     route_chat,
+    routing_alignment_for_tool,
+    tool_category_for_name,
 )
 
 
@@ -185,6 +187,22 @@ def test_filter_keeps_uncategorized_tools() -> None:
     names = {t["function"]["name"] for t in out}
     assert "brand_new_tool_we_havent_categorized_yet" in names
     assert "get_field_health" not in names
+
+
+def test_tool_category_helpers_support_observability() -> None:
+    assert tool_category_for_name("create_raster_h3_context_layer") == SPATIAL_INSIGHT
+    assert tool_category_for_name("unknown_new_tool") == "uncategorized"
+    assert (
+        routing_alignment_for_tool(
+            "create_raster_h3_context_layer",
+            {SPATIAL_INSIGHT, USER_RASTER},
+        )
+        == "matched"
+    )
+    assert routing_alignment_for_tool("zoom_to_bounds", {USER_RASTER}) == "always_on"
+    assert routing_alignment_for_tool("get_soil_moisture", {USER_RASTER}) == "mismatch"
+    assert routing_alignment_for_tool("unknown_new_tool", {USER_RASTER}) == "uncategorized_kept"
+    assert routing_alignment_for_tool("get_soil_moisture", set()) == "full_toolset"
 
 
 # ---------------------------------------------------------------------------
