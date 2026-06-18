@@ -106,7 +106,7 @@ async def create_h3_spatial_insight_layer(
                 user_uuid=meta.user_uuid,
                 map_id=meta.map_id,
                 project_id=meta.project_id,
-                layer_name=f"H3 Insight - {args.location_label}",
+                layer_name=f"Spatial Risk - {args.location_label}",
                 render_3d=args.render_3d,
             )
         except Exception as exc:
@@ -115,14 +115,14 @@ async def create_h3_spatial_insight_layer(
         if persisted_layer:
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Saving H3 insight layer: {args.location_label}",
+                f"Saving spatial risk layer: {args.location_label}",
                 layer_id=persisted_layer.layer_id,
                 update_style_json=True,
                 bounds=persisted_layer.bounds or bbox,
             ) as payload:
                 payload.updates["h3_layer_persisted"] = {
                     "layer_id": persisted_layer.layer_id,
-                    "name": f"H3 Insight - {args.location_label}",
+                    "name": f"Spatial Risk - {args.location_label}",
                     "pmtiles": True,
                     "geoparquet": bool(persisted_layer.geoparquet_key),
                     "feature_count": persisted_layer.feature_count,
@@ -157,13 +157,13 @@ async def create_h3_spatial_insight_layer(
             }
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Rendering H3 insight preview: {args.location_label}",
+                f"Rendering spatial risk preview: {args.location_label}",
                 bounds=bbox,
             ) as payload:
                 payload.updates["add_geojson_layer"] = {
                     "source_id": source_id,
                     "geojson": result["geojson"],
-                    "name": f"H3 Insight - {args.location_label}",
+                    "name": f"Spatial Risk - {args.location_label}",
                     "bounds": bbox,
                     "style_hint": render_engine.get("style_hint", "h3_spatial_insight_risk"),
                     "style": style,

@@ -19,7 +19,13 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from src.structures import get_async_db_connection, async_conn
-from src.utils import get_bucket_name, get_async_s3_client, generate_id, s3_op
+from src.utils import (
+    get_async_s3_client,
+    get_bucket_name,
+    get_s3_public_endpoint_url,
+    generate_id,
+    s3_op,
+)
 from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
@@ -611,7 +617,9 @@ async def get_map_style_internal(
 
         if layers_needing_presigned:
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client()
+            s3_client = await get_async_s3_client(
+                endpoint_url=get_s3_public_endpoint_url()
+            )
 
             async def _gen_url(key: str) -> str:
                 return await s3_op(
@@ -639,7 +647,9 @@ async def get_map_style_internal(
             assert pmtiles_key is not None, f"Missing pmtiles_key for layer {layer_id}"
 
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client()
+            s3_client = await get_async_s3_client(
+                endpoint_url=get_s3_public_endpoint_url()
+            )
             presigned_url = await s3_op(
                 s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=28800),
                 "presigned URL", f"PMTiles {pmtiles_key}",
@@ -683,7 +693,9 @@ async def get_map_style_internal(
                     postgis_needing_presigned.append((layer["layer_id"], pk))
         if postgis_needing_presigned:
             _bucket = get_bucket_name()
-            _s3 = await get_async_s3_client()
+            _s3 = await get_async_s3_client(
+                endpoint_url=get_s3_public_endpoint_url()
+            )
 
             async def _gen_postgis_url(key: str) -> str:
                 return await s3_op(
