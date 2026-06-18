@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -10,8 +11,11 @@ from src.services.h3_spatial_insight import (
     H3SpatialInsightInput,
     create_h3_spatial_insight as create_h3_spatial_insight_service,
 )
+from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.rain_impact import parse_bbox
 from src.tools.pyd import IngabeToolCallMetaArgs
+
+logger = logging.getLogger(__name__)
 
 
 class CreateH3SpatialInsightLayerArgs(BaseModel):
@@ -72,9 +76,9 @@ async def create_h3_spatial_insight_layer(
     roads, farms, drainage, or environmental exposure. This V1 creates the H3
     cell layer and scores cells from provided factors/exposure geometry. When
     Whitebox terrain/hydrology outputs exist, pass their per-area metrics through
-    risk_factors_json so the same H3 layer becomes Whitebox-backed. Keep
-    max_hexes bounded because V1 renders a live inline GeoJSON layer; large or
-    reusable outputs should be tiled/cached as MVT/PMTiles in the next path.
+    risk_factors_json so the same H3 layer becomes Whitebox-backed. The normal
+    render path persists PMTiles for the browser and GeoParquet metadata for
+    analytics; inline GeoJSON is only a small fallback preview path.
     """
 
     bbox = parse_bbox(args.bbox)
@@ -91,41 +95,83 @@ async def create_h3_spatial_insight_layer(
         )
     )
 
+    persisted_layer = None
     if args.render_map and result.get("status") == "success":
         engines = result.setdefault("engines", {})
         render_engine = engines.setdefault("render", {})
-        source_id = f"sage-h3-insight-{uuid.uuid4().hex[:8]}"
-        style = {
-            "color_property": "risk_score",
-            "stops": [
-                {"max": 40, "color": "#22c55e"},
-                {"max": 60, "color": "#facc15"},
-                {"max": 80, "color": "#f97316"},
-                {"max": 101, "color": "#dc2626"},
-            ],
-            "fill_opacity": 0.58,
-            "stroke_color": "#111827",
-            "stroke_width": 1.2,
-            "extrude_3d": args.render_3d,
-            "extrusion_property": "risk_score",
-            "extrusion_scale": render_engine.get("height_scale", 50),
-        }
-        async with kue_ephemeral_action(
-            meta.conversation_id,
-            f"Rendering H3 insight layer: {args.location_label}",
-            bounds=bbox,
-        ) as payload:
-            payload.updates["add_geojson_layer"] = {
-                "source_id": source_id,
-                "geojson": result["geojson"],
-                "name": f"H3 Insight - {args.location_label}",
-                "bounds": bbox,
-                "style_hint": render_engine.get("style_hint", "h3_spatial_insight_risk"),
-                "style": style,
+        transport = engines.setdefault("transport", {})
+        try:
+            persisted_layer = await persist_h3_spatial_insight_layer(
+                result=result,
+                user_uuid=meta.user_uuid,
+                map_id=meta.map_id,
+                project_id=meta.project_id,
+                layer_name=f"H3 Insight - {args.location_label}",
+                render_3d=args.render_3d,
+            )
+        except Exception as exc:
+            logger.warning("H3 layer persistence failed; falling back to inline preview: %s", exc, exc_info=True)
+
+        if persisted_layer:
+            async with kue_ephemeral_action(
+                meta.conversation_id,
+                f"Saving H3 insight layer: {args.location_label}",
+                layer_id=persisted_layer.layer_id,
+                update_style_json=True,
+                bounds=persisted_layer.bounds or bbox,
+            ) as payload:
+                payload.updates["h3_layer_persisted"] = {
+                    "layer_id": persisted_layer.layer_id,
+                    "name": f"H3 Insight - {args.location_label}",
+                    "pmtiles": True,
+                    "geoparquet": bool(persisted_layer.geoparquet_key),
+                    "feature_count": persisted_layer.feature_count,
+                }
+                await asyncio.sleep(0.2)
+            render_engine["layer_id"] = persisted_layer.layer_id
+            render_engine["rendered"] = True
+            transport["current"] = "pmtiles_vector_layer"
+            transport["browser"] = "PMTiles/MVT"
+            transport["analytics_cache"] = (
+                "GeoParquet" if persisted_layer.geoparquet_key else "pending"
+            )
+            result["layer_id"] = persisted_layer.layer_id
+            result["pmtiles_key"] = persisted_layer.pmtiles_key
+            result["geoparquet_key"] = persisted_layer.geoparquet_key
+        else:
+            source_id = f"sage-h3-insight-{uuid.uuid4().hex[:8]}"
+            style = {
+                "color_property": "risk_score",
+                "stops": [
+                    {"max": 40, "color": "#22c55e"},
+                    {"max": 60, "color": "#facc15"},
+                    {"max": 80, "color": "#f97316"},
+                    {"max": 101, "color": "#dc2626"},
+                ],
+                "fill_opacity": 0.58,
+                "stroke_color": "#111827",
+                "stroke_width": 1.2,
+                "extrude_3d": args.render_3d,
+                "extrusion_property": "risk_score",
+                "extrusion_scale": render_engine.get("height_scale", 50),
             }
-            await asyncio.sleep(0.2)
-        render_engine["source_id"] = source_id
-        render_engine["rendered"] = True
+            async with kue_ephemeral_action(
+                meta.conversation_id,
+                f"Rendering H3 insight preview: {args.location_label}",
+                bounds=bbox,
+            ) as payload:
+                payload.updates["add_geojson_layer"] = {
+                    "source_id": source_id,
+                    "geojson": result["geojson"],
+                    "name": f"H3 Insight - {args.location_label}",
+                    "bounds": bbox,
+                    "style_hint": render_engine.get("style_hint", "h3_spatial_insight_risk"),
+                    "style": style,
+                }
+                await asyncio.sleep(0.2)
+            render_engine["source_id"] = source_id
+            render_engine["rendered"] = True
+            transport["current"] = "inline_geojson_preview_fallback"
     elif result.get("status") == "success":
         engines = result.setdefault("engines", {})
         render_engine = engines.setdefault("render", {})
@@ -133,7 +179,13 @@ async def create_h3_spatial_insight_layer(
 
     if result.get("status") == "success":
         geojson = result["geojson"]
-        result["geojson"] = json.dumps(geojson)
         result["geojson_feature_count"] = len(geojson.get("features", []))
+        if persisted_layer:
+            result["geojson"] = (
+                "omitted from tool response; persisted as PMTiles/MVT layer "
+                f"{persisted_layer.layer_id}"
+            )
+        else:
+            result["geojson"] = json.dumps(geojson)
 
     return result

@@ -144,8 +144,10 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                 "height_scale": 45,
             },
             "transport": {
-                "current": "inline_geojson_v1",
-                "best_for": "small live H3 layers and immediate Sage responses",
+                "internal": "geojson_feature_collection",
+                "best_for": "in-process scoring and temporary conversion only",
+                "browser_target": "MVT/PMTiles",
+                "analytics_target": "GeoParquet",
                 "large_layer_target": "MVT/PMTiles from Rust geokernel/h3o or a cached tiler",
             },
         },

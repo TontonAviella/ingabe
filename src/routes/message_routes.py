@@ -7226,11 +7226,21 @@ async def send_map_message(
 
         brain_svc = get_brain_service()
         async with get_async_db_connection(user_id=user_id, partner_id=partner_id) as brain_conn:
+            map_layer_ids_row = await brain_conn.fetchrow(
+                "SELECT layers FROM user_mundiai_maps WHERE id = $1 AND soft_deleted_at IS NULL",
+                map_id,
+            )
+            visible_layer_ids = (
+                list(map_layer_ids_row["layers"] or [])
+                if map_layer_ids_row
+                else []
+            )
             brain_text = await build_brain_context_packet(
                 brain_conn,
                 brain_svc,
                 query_text=extract_user_message_text(body.message),
                 viewport_bounds=body.viewport_bounds,
+                visible_layer_ids=visible_layer_ids,
             )
             if brain_text:
                 system_messages.append({"role": "system", "content": brain_text})

@@ -27,6 +27,33 @@ def _page(slug: str, title: str, truth: str) -> Page:
     )
 
 
+class LayerOnlyBrain:
+    async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
+        return [
+            SearchResult(
+                slug="layer-lold123",
+                page_id=11,
+                title="Old demo layer",
+                type="field",
+                chunk_text="This old layer should not appear on a blank current map.",
+                chunk_source="compiled_truth",
+                score=0.91,
+            )
+        ]
+
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+        return [
+            _page(
+                "layer-lold123-f0",
+                "Old demo feature",
+                "This old feature intersects the viewport but is not visible on the map.",
+            )
+        ]
+
+    async def list_pages(self, conn, limit=100, offset=0, type=None, tag=None):
+        return [_page("layer-lold123", "Old demo layer", "Recent old layer fallback.")]
+
+
 class FakeBrain:
     async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
         return [
@@ -92,3 +119,31 @@ async def test_build_brain_context_packet_includes_query_spatial_and_clay():
     assert "Clay/Qdrant visual index:" in packet
     assert "layer_id=layer-rgb-1" in packet
     assert "tiles=42" in packet
+
+
+@pytest.mark.asyncio
+async def test_brain_context_filters_layer_memories_when_current_map_has_no_layers():
+    packet = await build_brain_context_packet(
+        FakeConn(),
+        LayerOnlyBrain(),
+        query_text="What visible layers are on this map?",
+        viewport_bounds=[-75.0, -75.0, 75.0, 75.0],
+        visible_layer_ids=[],
+    )
+
+    assert packet is None
+
+
+@pytest.mark.asyncio
+async def test_brain_context_keeps_only_visible_layer_memories():
+    packet = await build_brain_context_packet(
+        FakeConn(),
+        LayerOnlyBrain(),
+        query_text="What visible layers are on this map?",
+        viewport_bounds=[-75.0, -75.0, 75.0, 75.0],
+        visible_layer_ids=["Lold123"],
+    )
+
+    assert packet is not None
+    assert "Old demo layer" in packet
+    assert "Old demo feature" in packet
