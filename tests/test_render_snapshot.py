@@ -33,6 +33,11 @@ from src.tools import render_snapshot as rs
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
 # ---------- RenderMapSnapshotArgs validation ----------
 
 
@@ -61,6 +66,22 @@ def test_args_valid_telegram_with_recipient() -> None:
     )
     assert args.delivery_channel == "telegram"
     assert args.recipient == "12345"
+
+
+def test_args_valid_email_with_recipient() -> None:
+    args = rs.RenderMapSnapshotArgs(
+        **_valid_args(delivery_channel="email", recipient="ops@example.com")
+    )
+    assert args.delivery_channel == "email"
+    assert args.recipient == "ops@example.com"
+
+
+def test_args_valid_whatsapp_with_recipient() -> None:
+    args = rs.RenderMapSnapshotArgs(
+        **_valid_args(delivery_channel="whatsapp", recipient="+250788123456")
+    )
+    assert args.delivery_channel == "whatsapp"
+    assert args.recipient == "+250788123456"
 
 
 def test_args_bbox_wrong_field_count() -> None:
@@ -111,6 +132,21 @@ def test_args_non_browser_requires_recipient(ch: str) -> None:
 def test_args_invalid_delivery_channel() -> None:
     with pytest.raises(ValueError):
         rs.RenderMapSnapshotArgs(**_valid_args(delivery_channel="sms"))
+
+
+@pytest.mark.parametrize(
+    ("ch", "recipient", "message"),
+    [
+        ("email", "not-an-email", "valid email"),
+        ("telegram", "bad", "Telegram chat id"),
+        ("whatsapp", "local-phone", "E.164 phone number"),
+    ],
+)
+def test_args_non_browser_validates_recipient_format(ch: str, recipient: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        rs.RenderMapSnapshotArgs(
+            **_valid_args(delivery_channel=ch, recipient=recipient)
+        )
 
 
 # ---------- render_map_snapshot orchestration ----------
@@ -220,6 +256,7 @@ def _patch_s3_and_redis(
     return s3, redis
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_renderer(monkeypatch, png_bytes=b"PNGDATA")
     s3, redis = _patch_s3_and_redis(monkeypatch)
@@ -260,6 +297,7 @@ async def test_render_map_snapshot_happy_path(monkeypatch: pytest.MonkeyPatch) -
     assert payload["ttl_sec"] == rs.SNAPSHOT_TTL_SEC
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_render_failure_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -288,6 +326,7 @@ async def test_render_map_snapshot_render_failure_returns_error(
     assert redis.published == []
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_empty_png_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,6 +343,7 @@ async def test_render_map_snapshot_empty_png_returns_error(
     assert redis.published == []
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_s3_failure_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -320,6 +360,7 @@ async def test_render_map_snapshot_s3_failure_returns_error(
     assert redis.published == []
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_publish_failure_returns_partial(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -338,6 +379,7 @@ async def test_render_map_snapshot_publish_failure_returns_partial(
     assert len(s3.puts) == 1  # S3 put still happened
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_partner_id_none_when_no_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -354,6 +396,7 @@ async def test_render_map_snapshot_partner_id_none_when_no_session(
     assert payload["partner_id"] is None
 
 
+@pytest.mark.anyio
 async def test_render_map_snapshot_partner_id_none_when_get_org_id_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -71,6 +71,7 @@ async def test_social_preview_falls_back_when_renderer_returns_non_image(
     async def fake_render(*_args, **_kwargs):
         return Response(content=b"not an image", media_type="application/json"), {}
 
+    monkeypatch.setenv("S3_BUCKET", "test-bucket")
     monkeypatch.setattr(pool, "get_async_read_connection", fake_connection)
     monkeypatch.setattr(project_routes, "get_async_db_connection", fake_connection)
     monkeypatch.setattr(project_routes, "get_async_s3_client", fake_get_s3_client)

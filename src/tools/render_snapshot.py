@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional
@@ -15,6 +16,9 @@ logger = logging.getLogger(__name__)
 RENDER_SNAPSHOT_CHANNEL = "mundi:render_snapshot"
 SNAPSHOT_S3_PREFIX = "snapshots"
 SNAPSHOT_TTL_SEC = 86400
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_TELEGRAM_RE = re.compile(r"^(?:-?\d{5,20}|@[A-Za-z0-9_]{5,32})$")
+_WHATSAPP_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
 
 
 class RenderMapSnapshotArgs(BaseModel):
@@ -72,6 +76,17 @@ class RenderMapSnapshotArgs(BaseModel):
         if self.delivery_channel != "browser" and not self.recipient.strip():
             raise ValueError(
                 f"recipient required for delivery_channel={self.delivery_channel}"
+            )
+        recipient = self.recipient.strip()
+        if self.delivery_channel == "email" and not _EMAIL_RE.fullmatch(recipient):
+            raise ValueError("recipient must be a valid email address for delivery_channel=email")
+        if self.delivery_channel == "telegram" and not _TELEGRAM_RE.fullmatch(recipient):
+            raise ValueError(
+                "recipient must be a Telegram chat id or @username for delivery_channel=telegram"
+            )
+        if self.delivery_channel == "whatsapp" and not _WHATSAPP_RE.fullmatch(recipient):
+            raise ValueError(
+                "recipient must be an E.164 phone number for delivery_channel=whatsapp"
             )
         return self
 

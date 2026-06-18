@@ -10,9 +10,15 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback for local dev only.
+    fcntl = None  # type: ignore[assignment]
 
 _DEFAULT_PATH = "/tmp/ingabe_cache/pipeline_evidence.json"
 _MAX_EVENTS = 80
@@ -60,18 +66,19 @@ def record_pipeline_evidence(event: str, properties: Mapping[str, Any]) -> bool:
 
     path = _evidence_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _read_payload(path)
-    events = [record, *payload.get("events", [])][:_MAX_EVENTS]
+    with _evidence_lock(path):
+        payload = _read_payload(path)
+        events = [record, *payload.get("events", [])][:_MAX_EVENTS]
 
-    latest = payload.get("latest", {})
-    latest[_record_key(record)] = record
+        latest = payload.get("latest", {})
+        latest[_record_key(record)] = record
 
-    next_payload = {
-        "updated_at": _now_iso(),
-        "latest": latest,
-        "events": events,
-    }
-    _atomic_write(path, next_payload)
+        next_payload = {
+            "updated_at": _now_iso(),
+            "latest": latest,
+            "events": events,
+        }
+        _atomic_write(path, next_payload)
     return True
 
 
@@ -173,6 +180,20 @@ def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
             os.unlink(temp_path)
         except FileNotFoundError:
             pass
+
+
+@contextmanager
+def _evidence_lock(path: Path):
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _evidence_path() -> Path:

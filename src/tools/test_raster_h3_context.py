@@ -41,6 +41,29 @@ def test_housing_context_is_visual_proxy_not_building_detection() -> None:
     assert "verify with buildings" in props["likely_issue"]
 
 
+def test_drone_is_source_modality_not_agriculture_domain() -> None:
+    features, _scores = _cell_features(
+        {
+            "8a6ad81a6877fff": RasterCellStats(
+                count=25,
+                grvi_sum=1.0,
+                grvi_sq_sum=0.08,
+                brightness_sum=8.0,
+            )
+        },
+        domain="drone",
+        analysis_goal="screen uploaded orthophoto",
+        h3_resolution=10,
+        zoom_min=0,
+        zoom_max=15,
+    )
+
+    props = features[0]["properties"]
+    assert props["domain"] == "mixed"
+    assert props["score_kind"] == "mixed_visual_attention_proxy"
+    assert "crop condition" not in props["recommended_action"]
+
+
 def test_zoom_resolution_map_refines_at_higher_zoom() -> None:
     zoom_map = _zoom_resolution_map([10, 11, 12])
 

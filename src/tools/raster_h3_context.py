@@ -619,8 +619,10 @@ def _cell_features(
 
 def _normalize_domain(domain: str) -> str:
     value = (domain or "").strip().lower()
-    if value in {"farm", "field", "crop", "drone"}:
+    if value in {"farm", "field", "crop"}:
         return "agriculture"
+    if value in {"drone", "drone_data", "orthophoto", "orthomosaic", "tiff", "raster"}:
+        return "mixed"
     if value in {"house", "houses", "building", "buildings", "settlement", "urban", "city"}:
         return "housing"
     if value in {"road", "roads", "drainage", "culvert", "bridge"}:

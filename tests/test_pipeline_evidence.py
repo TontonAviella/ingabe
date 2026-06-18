@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from src.services.pipeline_evidence import (
     read_pipeline_evidence,
     record_pipeline_evidence,
@@ -57,3 +59,31 @@ def test_pipeline_evidence_reports_no_evidence_for_missing_filter(tmp_path, monk
     assert result["status"] == "no_evidence"
     assert result["evidence_count"] == 0
     assert result["latest"] == []
+
+
+def test_pipeline_evidence_concurrent_writes_keep_latest_records(tmp_path, monkeypatch):
+    evidence_path = tmp_path / "pipeline_evidence.json"
+    monkeypatch.setenv("PIPELINE_EVIDENCE_PATH", str(evidence_path))
+
+    def write_one(idx: int) -> bool:
+        return record_pipeline_evidence(
+            "pipeline_completed",
+            {
+                "asset_name": f"asset_{idx}",
+                "pipeline_family": "satellite_h3_tiles",
+                "source_category": "satellite",
+                "status": "ok",
+                "features": idx,
+            },
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(pool.map(write_one, range(16)))
+
+    result = read_pipeline_evidence(source_category="satellite", max_items=50)
+
+    assert result["status"] == "ok"
+    assert result["evidence_count"] == 16
+    assert {record["asset_name"] for record in result["latest"]} == {
+        f"asset_{idx}" for idx in range(16)
+    }
