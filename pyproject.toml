@@ -30,6 +30,7 @@ dependencies = [
     "pyogrio==0.12.1",
     "pyproj==3.7.2",
     "pytest==8.3.5",
+    "python-multipart==0.0.20",
     "redis==6.1.0",
     "slowapi==0.1.9",
     "rasterio==1.4.4",

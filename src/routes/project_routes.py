@@ -695,6 +695,33 @@ class SocialImageCacheBustedError(Exception):
     pass
 
 
+def _default_social_preview_response(
+    base_map_provider: BaseMapProvider,
+    *,
+    cache_seconds: int = 900,
+) -> Response:
+    try:
+        with open(base_map_provider.get_default_preview_path(), "rb") as f:
+            image_data = f.read()
+    except OSError as e:
+        logger.error("Default social preview is unavailable: %s", e)
+        return Response(
+            content=b"",
+            media_type="image/webp",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return Response(
+        content=image_data,
+        media_type="image/webp",
+        headers={
+            "Content-Type": "image/webp",
+            "Cache-Control": f"max-age={cache_seconds}, public",
+        },
+    )
+
+
 @project_router.get("/{project_id}/social.webp", response_class=Response)
 async def get_project_social_preview(
     project_id: str,
@@ -714,6 +741,9 @@ async def get_project_social_preview(
             raise HTTPException(status_code=404, detail="Project not found")
         project = MundiProject(**dict(row))
 
+    if not project.maps:
+        return _default_social_preview_response(base_map_provider)
+
     latest_map_id = project.maps[-1]
 
     # If map has no layers, stream the provider's default basemap preview directly
@@ -729,15 +759,7 @@ async def get_project_social_preview(
 
         layer_ids = (map_row["layers"] or []) if map_row else []
     if not layer_ids:
-        with open(base_map_provider.get_default_preview_path(), "rb") as f:
-            return Response(
-                content=f.read(),
-                media_type="image/webp",
-                headers={
-                    "Content-Type": "image/webp",
-                    "Cache-Control": "max-age=900, public",
-                },
-            )
+        return _default_social_preview_response(base_map_provider)
 
     # S3 configuration - key by map_id instead of project_id
     bucket_name = get_bucket_name()
@@ -754,36 +776,57 @@ async def get_project_social_preview(
         async with SOCIAL_RENDER_SEMAPHORE:
             logger.info("Rendering social image for map %s (semaphore acquired)", latest_map_id)
 
-            style_json = await get_map_style_internal(
-                latest_map_id,
-                base_map_provider,
-                only_show_inline_sources=True,
-            )
+            try:
+                style_json = await get_map_style_internal(
+                    latest_map_id,
+                    base_map_provider,
+                    only_show_inline_sources=True,
+                )
 
-            render_response, _ = await render_map_internal(
-                map_id=latest_map_id,
-                bbox=None,
-                width=1200,
-                height=630,
-                renderer="mbgl",
-                bgcolor="#ffffff",
-                style_json=style_json,
-            )
+                render_response, _ = await render_map_internal(
+                    map_id=latest_map_id,
+                    bbox=None,
+                    width=1200,
+                    height=630,
+                    renderer="mbgl",
+                    bgcolor="#ffffff",
+                    style_json=style_json,
+                )
 
-            from PIL import Image
-            img = Image.open(io.BytesIO(render_response.body))
-            webp_buffer = io.BytesIO()
-            img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
+                from PIL import Image, UnidentifiedImageError
 
-            s3 = await get_async_s3_client()
-            await s3.put_object(
-                Bucket=bucket_name,
-                Key=s3_key,
-                Body=webp_buffer.getvalue(),
-                ContentType="image/webp",
-            )
+                render_body = getattr(render_response, "body", b"") or b""
+                if not render_body:
+                    raise ValueError("renderer produced empty social preview")
 
-            image_data = webp_buffer.getvalue()
+                try:
+                    img = Image.open(io.BytesIO(render_body))
+                    img.load()
+                except UnidentifiedImageError as e:
+                    raise ValueError("renderer produced non-image social preview") from e
+
+                webp_buffer = io.BytesIO()
+                img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
+                image_data = webp_buffer.getvalue()
+
+                s3 = await get_async_s3_client()
+                try:
+                    await s3.put_object(
+                        Bucket=bucket_name,
+                        Key=s3_key,
+                        Body=image_data,
+                        ContentType="image/webp",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to cache social image for map %s: %s", latest_map_id, e)
+
+            except Exception as e:
+                logger.warning(
+                    "Social image render failed for map %s; using default preview: %s",
+                    latest_map_id,
+                    e,
+                )
+                return _default_social_preview_response(base_map_provider)
 
     return Response(
         content=image_data,
