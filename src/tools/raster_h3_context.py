@@ -248,7 +248,8 @@ def build_raster_h3_context_from_url(
     """Build a raster-backed H3 FeatureCollection from a local path or URL."""
 
     _validate_inputs(h3_resolution, max_hexes, max_sample_pixels)
-    os.environ.setdefault("GDAL_HTTP_UNSAFESSL", "YES")
+    if os.environ.get("MUNDI_DEV_ALLOW_UNSAFE_SSL") == "1":
+        os.environ.setdefault("GDAL_HTTP_UNSAFESSL", "YES")
     start = time.perf_counter()
 
     import numpy as np
