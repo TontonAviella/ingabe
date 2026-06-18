@@ -156,6 +156,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_similar_tiles": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
+    "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
@@ -288,6 +289,8 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"this\s+(raster|drone|ortho|image|cog)|"
             r"uploaded|drone|ortho(photo|mosaic)?|tiff|geotiff|"
             r"stress\s+zone|pixel|histogram|distribution|"
+            r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
+            r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"compare\s+(raster|image)|similar\s+tile|find\s+similar)\b",
             re.IGNORECASE,
         ),

@@ -121,6 +121,10 @@ from src.tools.h3_spatial_insight import (
     create_h3_spatial_insight_layer,
     CreateH3SpatialInsightLayerArgs,
 )
+from src.tools.raster_h3_context import (
+    create_raster_h3_context_layer,
+    CreateRasterH3ContextLayerArgs,
+)
 from src.tools.open_buildings import (
     analyze_open_buildings_exposure,
     AnalyzeOpenBuildingsExposureArgs,
@@ -302,6 +306,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "create_h3_spatial_insight_layer": (
             create_h3_spatial_insight_layer,
             CreateH3SpatialInsightLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "create_raster_h3_context_layer": (
+            create_raster_h3_context_layer,
+            CreateRasterH3ContextLayerArgs,
             IngabeToolCallMetaArgs,
         ),
         "analyze_open_buildings_exposure": (

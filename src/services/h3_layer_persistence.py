@@ -87,7 +87,8 @@ async def persist_h3_spatial_insight_layer(
         {
             "source": "sage_h3_spatial_insight",
             "analysis_kind": "h3_spatial_insight",
-            "screening_model": "h3_spatial_insight_v1",
+            "screening_model": result.get("screening_model", "h3_spatial_insight_v1"),
+            "source_layer_id": result.get("summary", {}).get("source_layer_id"),
             "browser_transport": "pmtiles",
             "analytics_format": "geoparquet" if geoparquet_key else "pending",
             "geoparquet_key": geoparquet_key,
