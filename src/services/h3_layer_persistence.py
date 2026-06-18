@@ -82,24 +82,35 @@ async def persist_h3_spatial_insight_layer(
     if not processed.pmtiles_key:
         raise RuntimeError("H3 PMTiles generation failed")
 
+    summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
+    zoom_resolution_map = summary.get("zoom_resolution_map")
     metadata = processed.metadata.model_dump(exclude_none=True)
     metadata.update(
         {
             "source": "sage_h3_spatial_insight",
             "analysis_kind": "h3_spatial_insight",
             "screening_model": result.get("screening_model", "h3_spatial_insight_v1"),
-            "source_layer_id": result.get("summary", {}).get("source_layer_id"),
+            "source_layer_id": summary.get("source_layer_id"),
             "browser_transport": "pmtiles",
             "analytics_format": "geoparquet" if geoparquet_key else "pending",
             "geoparquet_key": geoparquet_key,
             "source_storage_format": "geoparquet" if geoparquet_key else None,
             "geojson_role": "temporary_backend_conversion_only",
             "pmtiles_key": processed.pmtiles_key,
-            "h3_resolution": result.get("summary", {}).get("h3_resolution"),
+            "h3_resolution": summary.get("h3_resolution"),
+            "h3_resolutions": summary.get("h3_resolutions"),
+            "adaptive_resolution": summary.get("adaptive_resolution"),
+            "resolution_count": summary.get("resolution_count"),
+            "resolution_cell_counts": summary.get("resolution_cell_counts"),
+            "zoom_resolution_map": zoom_resolution_map,
             "risk_score_property": "risk_score",
         }
     )
-    style_json = build_h3_risk_maplibre_layers(layer_id, render_3d=render_3d)
+    style_json = build_h3_risk_maplibre_layers(
+        layer_id,
+        render_3d=render_3d,
+        zoom_resolution_map=zoom_resolution_map if isinstance(zoom_resolution_map, list) else None,
+    )
 
     async with get_async_db_connection() as conn:
         async with conn.transaction():
@@ -200,7 +211,12 @@ async def _try_upload_geoparquet_cache(
         return None
 
 
-def build_h3_risk_maplibre_layers(layer_id: str, *, render_3d: bool) -> list[dict[str, Any]]:
+def build_h3_risk_maplibre_layers(
+    layer_id: str,
+    *,
+    render_3d: bool,
+    zoom_resolution_map: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     risk_color = [
         "step",
         ["coalesce", ["get", "risk_score"], 0],
@@ -216,28 +232,48 @@ def build_h3_risk_maplibre_layers(layer_id: str, *, render_3d: bool) -> list[dic
         "source": layer_id,
         "source-layer": MVT_LAYER_NAME,
     }
-    if render_3d:
-        main_layer = {
-            **base,
-            "id": f"h3-risk-extrusion-{layer_id}",
-            "type": "fill-extrusion",
-            "paint": {
-                "fill-extrusion-color": risk_color,
-                "fill-extrusion-opacity": 0.62,
-                "fill-extrusion-height": ["*", ["coalesce", ["get", "risk_score"], 0], 45],
-                "fill-extrusion-base": 0,
-            },
-        }
-    else:
-        main_layer = {
-            **base,
-            "id": f"h3-risk-fill-{layer_id}",
-            "type": "fill",
-            "paint": {
-                "fill-color": risk_color,
-                "fill-opacity": 0.58,
-            },
-        }
+    zoom_bands = _normalized_zoom_bands(zoom_resolution_map)
+    if zoom_bands:
+        layers: list[dict[str, Any]] = []
+        for band in zoom_bands:
+            band_base = {
+                **base,
+                "filter": ["==", ["get", "h3_resolution"], band["h3_resolution"]],
+            }
+            if band["minzoom"] > 0:
+                band_base["minzoom"] = band["minzoom"]
+            if band["maxzoom"] < 24:
+                band_base["maxzoom"] = band["maxzoom"]
+            resolution_suffix = f"r{band['h3_resolution']}"
+            layers.append(
+                _h3_risk_fill_layer(
+                    band_base,
+                    layer_id=layer_id,
+                    risk_color=risk_color,
+                    render_3d=render_3d,
+                    suffix=resolution_suffix,
+                )
+            )
+            layers.append(
+                {
+                    **band_base,
+                    "id": f"h3-risk-outline-{layer_id}-{resolution_suffix}",
+                    "type": "line",
+                    "paint": {
+                        "line-color": "#111827",
+                        "line-width": 1.1,
+                        "line-opacity": 0.78,
+                    },
+                }
+            )
+        return layers
+
+    main_layer = _h3_risk_fill_layer(
+        base,
+        layer_id=layer_id,
+        risk_color=risk_color,
+        render_3d=render_3d,
+    )
 
     return [
         main_layer,
@@ -252,3 +288,64 @@ def build_h3_risk_maplibre_layers(layer_id: str, *, render_3d: bool) -> list[dic
             },
         },
     ]
+
+
+def _h3_risk_fill_layer(
+    base: dict[str, Any],
+    *,
+    layer_id: str,
+    risk_color: list[Any],
+    render_3d: bool,
+    suffix: str | None = None,
+) -> dict[str, Any]:
+    layer_suffix = f"-{suffix}" if suffix else ""
+    if render_3d:
+        return {
+            **base,
+            "id": f"h3-risk-extrusion-{layer_id}{layer_suffix}",
+            "type": "fill-extrusion",
+            "paint": {
+                "fill-extrusion-color": risk_color,
+                "fill-extrusion-opacity": 0.62,
+                "fill-extrusion-height": ["*", ["coalesce", ["get", "risk_score"], 0], 45],
+                "fill-extrusion-base": 0,
+            },
+        }
+
+    return {
+        **base,
+        "id": f"h3-risk-fill-{layer_id}{layer_suffix}",
+        "type": "fill",
+        "paint": {
+            "fill-color": risk_color,
+            "fill-opacity": 0.58,
+        },
+    }
+
+
+def _normalized_zoom_bands(
+    zoom_resolution_map: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not zoom_resolution_map:
+        return []
+
+    bands: list[dict[str, Any]] = []
+    for entry in zoom_resolution_map:
+        try:
+            resolution = int(entry["h3_resolution"])
+            minzoom = float(entry.get("minzoom", 0))
+            maxzoom = float(entry.get("maxzoom", 24))
+        except (TypeError, ValueError, KeyError):
+            continue
+        minzoom = max(0.0, min(24.0, minzoom))
+        maxzoom = max(0.0, min(24.0, maxzoom))
+        if maxzoom <= minzoom:
+            continue
+        bands.append(
+            {
+                "h3_resolution": resolution,
+                "minzoom": minzoom,
+                "maxzoom": maxzoom,
+            }
+        )
+    return bands

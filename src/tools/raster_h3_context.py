@@ -49,7 +49,10 @@ class CreateRasterH3ContextLayerArgs(BaseModel):
     )
     max_hexes: int = Field(
         ...,
-        description="Safety cap for generated cells. Use 1000-3000 for live work.",
+        description=(
+            "Safety cap for generated cells. Use 1000-3000 for quick previews, "
+            "or 8000-12000 for zoom-adaptive drone map layers that should refine as users zoom in."
+        ),
     )
     max_sample_pixels: int = Field(
         ...,
@@ -313,42 +316,64 @@ def build_raster_h3_context_from_url(
     scale = _brightness_scale(r[valid_mask], g[valid_mask], b[valid_mask])
     brightness = np.clip((r + g + b) / (3.0 * scale), 0.0, 1.0)
 
-    cells = _aggregate_pixels_to_cells(
-        lat=lat_arr[valid_mask],
-        lon=lon_arr[valid_mask],
-        grvi=grvi[valid_mask],
-        brightness=brightness[valid_mask],
-        h3_resolution=h3_resolution,
-    )
     min_cell_pixels = max(3, int(valid_pixel_count * 0.00015))
-    cells = {
-        h3_index: stats
-        for h3_index, stats in cells.items()
-        if stats.count >= min_cell_pixels
-    }
-    if not cells:
+    selected_levels: list[tuple[int, dict[str, RasterCellStats]]] = []
+    selected_feature_count = 0
+    for candidate_resolution in _candidate_h3_resolutions(h3_resolution):
+        candidate_cells = _aggregate_pixels_to_cells(
+            lat=lat_arr[valid_mask],
+            lon=lon_arr[valid_mask],
+            grvi=grvi[valid_mask],
+            brightness=brightness[valid_mask],
+            h3_resolution=candidate_resolution,
+        )
+        candidate_cells = {
+            h3_index: stats
+            for h3_index, stats in candidate_cells.items()
+            if stats.count >= min_cell_pixels
+        }
+        if not candidate_cells:
+            continue
+        if selected_feature_count + len(candidate_cells) > max_hexes:
+            if selected_levels:
+                break
+            return {
+                "status": "error",
+                "error": (
+                    f"H3 resolution {candidate_resolution} produced {len(candidate_cells)} "
+                    f"raster-backed cells after filtering, above max_hexes={max_hexes}. "
+                    "Use a coarser resolution or smaller area."
+                ),
+                "suggested_action": "Lower h3_resolution by 1-2 levels for live map analysis.",
+            }
+        selected_levels.append((candidate_resolution, candidate_cells))
+        selected_feature_count += len(candidate_cells)
+
+    if not selected_levels:
         return {
             "error": (
                 "Raster pixels did not produce any analysis cells with enough pixel "
                 "support. Use a coarser H3 resolution or increase max_sample_pixels."
             )
         }
-    if len(cells) > max_hexes:
-        return {
-            "status": "error",
-            "error": (
-                f"H3 resolution {h3_resolution} produced {len(cells)} raster-backed cells, "
-                f"above max_hexes={max_hexes}. Use a coarser resolution or smaller area."
-            ),
-            "suggested_action": "Lower h3_resolution by 1-2 levels for live map analysis.",
-        }
 
-    features, scores = _cell_features(
-        cells,
-        domain=domain,
-        analysis_goal=analysis_goal,
-        h3_resolution=h3_resolution,
-    )
+    zoom_resolution_map = _zoom_resolution_map([level[0] for level in selected_levels])
+    features: list[dict[str, Any]] = []
+    scores: list[float] = []
+    resolution_cell_counts: dict[str, int] = {}
+    for (candidate_resolution, candidate_cells), zoom_band in zip(selected_levels, zoom_resolution_map):
+        level_features, level_scores = _cell_features(
+            candidate_cells,
+            domain=domain,
+            analysis_goal=analysis_goal,
+            h3_resolution=candidate_resolution,
+            zoom_min=zoom_band["minzoom"],
+            zoom_max=zoom_band["maxzoom"],
+        )
+        resolution_cell_counts[str(candidate_resolution)] = len(level_features)
+        features.extend(level_features)
+        scores.extend(level_scores)
+
     elapsed_ms = round((time.perf_counter() - start) * 1000.0, 1)
     scores = scores or [0.0]
     top_cells = sorted(
@@ -376,7 +401,12 @@ def build_raster_h3_context_from_url(
             "source_layer_name": layer_name,
             "domain": normalized_domain,
             "analysis_goal": analysis_goal,
-            "h3_resolution": h3_resolution,
+            "h3_resolution": selected_levels[0][0],
+            "h3_resolutions": [level[0] for level in selected_levels],
+            "adaptive_resolution": len(selected_levels) > 1,
+            "resolution_count": len(selected_levels),
+            "resolution_cell_counts": resolution_cell_counts,
+            "zoom_resolution_map": zoom_resolution_map,
             "cell_count": len(features),
             "sampled_raster_pixels": valid_pixel_count,
             "sample_shape": f"{out_w}x{out_h}",
@@ -446,6 +476,40 @@ def _target_shape(width: int, height: int, max_sample_pixels: int) -> tuple[int,
     return max(1, int(height * scale)), max(1, int(width * scale))
 
 
+def _candidate_h3_resolutions(base_resolution: int) -> list[int]:
+    if base_resolution >= 14:
+        return [base_resolution, min(15, base_resolution + 1)]
+    return list(range(base_resolution, min(15, base_resolution + 2) + 1))
+
+
+def _zoom_resolution_map(resolutions: list[int]) -> list[dict[str, float | int]]:
+    if not resolutions:
+        return []
+    if len(resolutions) == 1:
+        return [{"h3_resolution": resolutions[0], "minzoom": 0, "maxzoom": 24}]
+
+    first_switch_zoom = max(8, min(18, resolutions[0] + 5))
+    zoom_map: list[dict[str, float | int]] = []
+    for idx, resolution in enumerate(resolutions):
+        if idx == 0:
+            minzoom = 0
+            maxzoom = first_switch_zoom
+        elif idx == len(resolutions) - 1:
+            minzoom = first_switch_zoom + (idx - 1) * 2
+            maxzoom = 24
+        else:
+            minzoom = first_switch_zoom + (idx - 1) * 2
+            maxzoom = first_switch_zoom + idx * 2
+        zoom_map.append(
+            {
+                "h3_resolution": resolution,
+                "minzoom": minzoom,
+                "maxzoom": maxzoom,
+            }
+        )
+    return zoom_map
+
+
 def _pixel_centers(transform: Any, height: int, width: int) -> tuple[Any, Any]:
     import numpy as np
 
@@ -510,6 +574,8 @@ def _cell_features(
     domain: str,
     analysis_goal: str,
     h3_resolution: int,
+    zoom_min: float | int,
+    zoom_max: float | int,
 ) -> tuple[list[dict[str, Any]], list[float]]:
     features: list[dict[str, Any]] = []
     scores: list[float] = []
@@ -529,6 +595,8 @@ def _cell_features(
                 "properties": {
                     "h3_index": h3_index,
                     "h3_resolution": h3_resolution,
+                    "zoom_min": zoom_min,
+                    "zoom_max": zoom_max,
                     "domain": normalized_domain,
                     "analysis_goal": analysis_goal,
                     "risk_score": round(score, 1),
@@ -709,6 +777,14 @@ def _capture_raster_h3_telemetry(
                 "layer_id": args.layer_id,
                 "domain": args.domain,
                 "h3_resolution": args.h3_resolution,
+                "h3_resolutions_csv": ",".join(
+                    str(resolution)
+                    for resolution in (summary.get("h3_resolutions") or [args.h3_resolution])
+                )
+                if isinstance(summary, dict)
+                else str(args.h3_resolution),
+                "adaptive_resolution": summary.get("adaptive_resolution") if isinstance(summary, dict) else False,
+                "resolution_count": summary.get("resolution_count") if isinstance(summary, dict) else 1,
                 "max_sample_pixels": args.max_sample_pixels,
                 "cell_count": summary.get("cell_count") if isinstance(summary, dict) else None,
                 "elapsed_ms": summary.get("elapsed_ms") if isinstance(summary, dict) else None,
