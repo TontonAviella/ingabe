@@ -5,6 +5,8 @@ import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLa
 import { StyleBridge } from '../lib/StyleBridge';
 import { BasemapControl } from './BasemapControl';
 
+const HIDDEN_SELECTED_FEATURE_FIELDS = new Set(['h3_index', 'h3_resolution', 'screening_model', 'analysis_goal', 'domain']);
+
 function renderTree(tree: RenderElement | null): JSX.Element | null {
   if (!tree) return null;
   return React.createElement(tree.element, tree.attributes, tree.children?.map(renderTree));
@@ -2015,6 +2017,7 @@ export default function MapLibreMap({
                           // Hide auto-enriched metric columns added by the
                           // (now removed) enrichment API. These are computed
                           // values, not original layer attributes.
+                          if (HIDDEN_SELECTED_FEATURE_FIELDS.has(key)) return false;
                           const enrichedPrefixes = [
                             'soil_',
                             'ndvi_',

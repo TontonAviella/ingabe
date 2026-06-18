@@ -53,7 +53,7 @@ def test_create_h3_spatial_insight_respects_max_hexes():
             h3_resolution=11,
             domain="mixed",
             analysis_goal="test safety cap",
-            risk_factors_json="",
+            risk_factors_json=json.dumps({"rainfall_mm_24h": 10}),
             exposure_geojson="",
             max_hexes=1,
         )
@@ -61,3 +61,26 @@ def test_create_h3_spatial_insight_respects_max_hexes():
 
     assert result["status"] == "error"
     assert "above max_hexes" in result["error"]
+
+
+def test_create_h3_spatial_insight_does_not_invent_spatial_variation_from_area_factor():
+    result = create_h3_spatial_insight(
+        H3SpatialInsightInput(
+            location_label="Area factor only",
+            bbox=[30.0, -2.0, 30.02, -1.98],
+            h3_resolution=9,
+            domain="housing",
+            analysis_goal="screen rain risk without local exposure",
+            risk_factors_json=json.dumps({"rainfall_mm_24h": 70}),
+            exposure_geojson="",
+            max_hexes=5000,
+        )
+    )
+
+    assert result["status"] == "success"
+    scores = {
+        feature["properties"]["risk_score"]
+        for feature in result["geojson"]["features"]
+    }
+    assert len(scores) == 1
+    assert result["summary"]["confidence"] == "low"

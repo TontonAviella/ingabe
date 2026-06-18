@@ -11,6 +11,32 @@ from shapely.geometry.base import BaseGeometry
 
 from src.services.whitebox_engine import whitebox_engine_status
 
+_EVIDENCE_FACTOR_KEYS = {
+    "rainfall_mm_24h",
+    "rain_24h_mm",
+    "rainfall_mm_72h",
+    "rain_72h_mm",
+    "soil_saturation",
+    "flood_depth_m",
+    "water_depth_m",
+    "flood_index",
+    "flood_risk",
+    "slope_degrees",
+    "slope_mean",
+    "slope",
+    "imperviousness",
+    "built_up_fraction",
+    "sealed_surface_fraction",
+    "pollution_index",
+    "environmental_stress",
+    "heat_index_c",
+    "temperature_c",
+    "ndvi_stress",
+    "drainage_deficit",
+    "runoff_index",
+    "wetness_index",
+}
+
 
 @dataclass(frozen=True)
 class H3SpatialInsightInput:
@@ -36,6 +62,22 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
     _validate_payload(payload)
     factors = _load_risk_factors(payload.risk_factors_json)
     exposure_geoms = _load_exposure_geometries(payload.exposure_geojson)
+    evidence = _evidence_summary(factors, exposure_geoms)
+    if not evidence["has_evidence"]:
+        return {
+            "status": "error",
+            "error": (
+                "A spatial risk map needs at least one real evidence source: "
+                "detected buildings/roads/farms/assets, rain/flood/drainage/slope/terrain "
+                "metrics, drone-derived measurements, or other observed factors. "
+                "No layer was created from basemap imagery alone."
+            ),
+            "required_evidence_examples": [
+                "Open Buildings or local building footprints for housing exposure",
+                "roads, culverts, drains, farms, or assets as exposure geometry",
+                "forecast rain, flood depth, wetness, slope, runoff, or drone-derived measurements",
+            ],
+        }
     cells = sorted(h3.geo_to_cells(_bbox_polygon(payload.bbox), res=payload.h3_resolution))
     if len(cells) > payload.max_hexes:
         return {
@@ -50,7 +92,7 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
     scores: list[float] = []
     exposed_cells = 0
 
-    for index, h3_index in enumerate(cells):
+    for h3_index in cells:
         geometry = h3_cell_geojson_geometry(h3_index)
         hex_geom = shape(geometry)
         exposure_count = _count_exposures(hex_geom, exposure_geoms)
@@ -58,8 +100,6 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
             exposed_cells += 1
 
         risk_score = _score_cell(
-            index=index,
-            total=max(len(cells), 1),
             exposure_count=exposure_count,
             domain=payload.domain,
             factors=factors,
@@ -81,6 +121,9 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                     "recommended_action": _recommended_action(payload.domain, risk_score, issue),
                     "exposure_count": exposure_count,
                     "has_exposure": exposure_count > 0,
+                    "evidence_level": _cell_evidence_level(exposure_count, evidence),
+                    "evidence_basis": evidence["label"],
+                    "confidence": _cell_confidence(exposure_count, evidence),
                     "screening_model": "h3_spatial_insight_v1",
                 },
             }
@@ -115,6 +158,10 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
             "max_risk_score": round(max(scores), 1),
             "mean_risk_score": round(sum(scores) / len(scores), 1),
             "high_or_severe_cell_count": sum(1 for score in scores if score >= 60),
+            "evidence_basis": evidence["label"],
+            "evidence_factor_count": len(evidence["factor_keys"]),
+            "ignored_factor_keys": evidence["ignored_factor_keys"],
+            "confidence": evidence["overall_confidence"],
             "top_cells": top_cells,
         },
         "bbox": payload.bbox,
@@ -132,9 +179,9 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                 "whitebox_tools_ready": bool(whitebox.get("executable_ready")),
                 "whitebox_tools_used": False,
                 "note": (
-                    "This V1 creates the H3 insight layer and consumes provided "
-                    "risk factors/exposure geometry. Whitebox terrain/hydrology "
-                    "outputs should feed these same H3 cells next."
+                    "This layer is based only on supplied exposure geometry and "
+                    "risk factors. It does not infer buildings, crops, roads, or "
+                    "land use from the basemap image by itself."
                 ),
             },
             "render": {
@@ -225,14 +272,74 @@ def _load_exposure_geometries(raw: str) -> list[BaseGeometry]:
     return geoms
 
 
+def _evidence_summary(factors: dict[str, Any], exposure_geoms: list[BaseGeometry]) -> dict[str, Any]:
+    factor_keys = sorted(
+        key
+        for key, value in factors.items()
+        if key in _EVIDENCE_FACTOR_KEYS and _is_evidence_value(value)
+    )
+    ignored_factor_keys = sorted(key for key in factors if key not in _EVIDENCE_FACTOR_KEYS)
+    has_exposure = bool(exposure_geoms)
+    has_factors = bool(factor_keys)
+    if has_exposure and has_factors:
+        label = f"exposure geometry plus {len(factor_keys)} observed/modelled factor(s)"
+        confidence = "medium"
+    elif has_exposure:
+        label = "exposure geometry only"
+        confidence = "low"
+    elif has_factors:
+        label = f"{len(factor_keys)} observed/modelled factor(s), no local exposure geometry"
+        confidence = "low"
+    else:
+        label = "no usable evidence"
+        confidence = "none"
+    return {
+        "has_evidence": has_exposure or has_factors,
+        "has_exposure": has_exposure,
+        "factor_keys": factor_keys,
+        "ignored_factor_keys": ignored_factor_keys,
+        "label": label,
+        "overall_confidence": confidence,
+    }
+
+
+def _is_evidence_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        return bool(normalized) and normalized not in {"unknown", "n/a", "na", "none", "null"}
+    if isinstance(value, (list, tuple, dict)):
+        return bool(value)
+    return value is not None
+
+
+def _cell_evidence_level(exposure_count: int, evidence: dict[str, Any]) -> str:
+    if exposure_count > 0 and evidence["factor_keys"]:
+        return "cell exposure + area factors"
+    if exposure_count > 0:
+        return "cell exposure"
+    if evidence["factor_keys"]:
+        return "area factors only"
+    return "none"
+
+
+def _cell_confidence(exposure_count: int, evidence: dict[str, Any]) -> str:
+    if exposure_count > 0 and len(evidence["factor_keys"]) >= 2:
+        return "medium"
+    if exposure_count > 0 or evidence["factor_keys"]:
+        return "low"
+    return "none"
+
+
 def _count_exposures(hex_geom: BaseGeometry, exposure_geoms: list[BaseGeometry]) -> int:
     return sum(1 for geom in exposure_geoms if geom.intersects(hex_geom))
 
 
 def _score_cell(
     *,
-    index: int,
-    total: int,
     exposure_count: int,
     domain: str,
     factors: dict[str, Any],
@@ -256,8 +363,7 @@ def _score_cell(
         + _drainage_score(factors) * 0.16
     )
     exposure_bonus = min(exposure_count, 6) * _exposure_weight(domain_name)
-    local_variation = _local_variation(index, total)
-    return max(0.0, min(100.0, base + factor_score + exposure_bonus + local_variation))
+    return max(0.0, min(100.0, base + factor_score + exposure_bonus))
 
 
 def _numeric(factors: dict[str, Any], *names: str) -> float | None:
@@ -345,13 +451,6 @@ def _environment_weight(domain: str) -> float:
 
 def _exposure_weight(domain: str) -> float:
     return {"housing": 5.5, "infrastructure": 6.5, "environment": 3.5, "drone": 3.0}.get(domain, 4.0)
-
-
-def _local_variation(index: int, total: int) -> float:
-    if total <= 1:
-        return 0.0
-    phase = index / max(total - 1, 1)
-    return 4.0 + 8.0 * abs(math.sin(phase * math.pi * 2.0))
 
 
 def _normalize_domain(value: str) -> str:

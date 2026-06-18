@@ -42,7 +42,8 @@ class CreateH3SpatialInsightLayerArgs(BaseModel):
     risk_factors_json: str = Field(
         ...,
         description=(
-            "JSON object with known risk factors, or empty string if unknown. Useful keys: "
+            "JSON object with observed/modelled risk factors, or empty string if unknown. Do not put guesses, "
+            "domain labels, map names, or basemap descriptions here. Useful keys: "
             "rainfall_mm_24h, rainfall_mm_72h, flood_depth_m, slope_degrees, imperviousness, "
             "drainage_deficit, runoff_index, wetness_index, pollution_index, heat_index_c, ndvi_stress, soil_saturation."
         ),
@@ -71,14 +72,16 @@ async def create_h3_spatial_insight_layer(
 ) -> dict[str, Any]:
     """Create an interactive H3 spatial insight layer for city, housing, infrastructure, environment, drone, or farm analysis.
 
-    Use when the user wants an H3/hex map, interactive spatial risk cells, or a
-    map-first analysis that mixes drone/satellite/basemap context with buildings,
-    roads, farms, drainage, or environmental exposure. This V1 creates the H3
-    cell layer and scores cells from provided factors/exposure geometry. When
-    Whitebox terrain/hydrology outputs exist, pass their per-area metrics through
-    risk_factors_json so the same H3 layer becomes Whitebox-backed. The normal
-    render path persists PMTiles for the browser and GeoParquet metadata for
-    analytics; inline GeoJSON is only a small fallback preview path.
+    Use when the user wants interactive spatial risk cells, priority zones, or a
+    map-first analysis that mixes drone/satellite/basemap context with real
+    evidence: buildings, roads, farms, drainage, assets, terrain, rain, flood,
+    or environmental metrics. Do not use this from basemap imagery alone. This
+    tool creates an internal H3 cell layer and scores cells only from provided
+    factors/exposure geometry. When Whitebox terrain/hydrology outputs exist,
+    pass their per-area metrics through risk_factors_json so the same layer
+    becomes Whitebox-backed. The normal render path persists PMTiles for the
+    browser and GeoParquet metadata for analytics; inline GeoJSON is only a
+    small fallback preview path.
     """
 
     bbox = parse_bbox(args.bbox)

@@ -10,7 +10,7 @@ def test_h3_transport_contract_targets_pmtiles_and_geoparquet():
             h3_resolution=9,
             domain="agriculture",
             analysis_goal="screen crop stress",
-            risk_factors_json="",
+            risk_factors_json='{"rainfall_mm_24h": 25}',
             exposure_geojson="",
             max_hexes=5000,
         )
@@ -21,6 +21,42 @@ def test_h3_transport_contract_targets_pmtiles_and_geoparquet():
     assert transport["internal"] == "geojson_feature_collection"
     assert transport["browser_target"] == "MVT/PMTiles"
     assert transport["analytics_target"] == "GeoParquet"
+
+
+def test_h3_spatial_insight_blocks_maps_without_real_evidence():
+    result = create_h3_spatial_insight(
+        H3SpatialInsightInput(
+            location_label="Basemap only",
+            bbox=[30.0, -2.0, 30.01, -1.99],
+            h3_resolution=9,
+            domain="housing",
+            analysis_goal="guess from satellite basemap only",
+            risk_factors_json="",
+            exposure_geojson="",
+            max_hexes=5000,
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "needs at least one real evidence source" in result["error"]
+
+
+def test_h3_spatial_insight_ignores_metadata_as_evidence():
+    result = create_h3_spatial_insight(
+        H3SpatialInsightInput(
+            location_label="Metadata only",
+            bbox=[30.0, -2.0, 30.01, -1.99],
+            h3_resolution=9,
+            domain="agriculture",
+            analysis_goal="verify persisted H3 risk render path",
+            risk_factors_json='{"domain":"agriculture","source":"satellite basemap","soil_saturation":"unknown"}',
+            exposure_geojson="",
+            max_hexes=5000,
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "No layer was created from basemap imagery alone" in result["error"]
 
 
 def test_h3_pmtiles_style_uses_mvt_source_layer_and_risk_score():
