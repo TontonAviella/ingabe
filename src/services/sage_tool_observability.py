@@ -44,6 +44,8 @@ def build_sage_tool_context(
     map_id: str,
     project_id: str,
     conversation_id: int,
+    client_turn_id: str | None = None,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     selected = set(selected_categories)
     return {
@@ -59,6 +61,8 @@ def build_sage_tool_context(
         "map_id": map_id,
         "project_id": project_id,
         "conversation_id": conversation_id,
+        "client_turn_id": client_turn_id,
+        "message_id": message_id,
     }
 
 
@@ -126,6 +130,8 @@ def capture_sage_routing_decision(
     tool_count: int,
     user_message_length: int,
     tool_payload_bytes: int,
+    client_turn_id: str | None = None,
+    message_id: str | None = None,
 ) -> bool:
     selected = list(selected_categories)
     return capture_for_session(
@@ -135,6 +141,8 @@ def capture_sage_routing_decision(
             "map_id": map_id,
             "project_id": project_id,
             "conversation_id": conversation_id,
+            "client_turn_id": client_turn_id,
+            "message_id": message_id,
             "routing_reason": routing_reason,
             "selected_categories_csv": csv_for_values(selected, empty="all_tools"),
             "is_small_talk": is_small_talk,

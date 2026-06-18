@@ -140,6 +140,7 @@ export interface MessageSendRequest {
   message: ChatCompletionUserMessageParam;
   selected_feature: SelectedFeature | null;
   viewport_bounds?: [number, number, number, number];
+  client_turn_id?: string;
 }
 
 export interface MessageSendResponse {

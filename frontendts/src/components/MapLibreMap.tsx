@@ -147,7 +147,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
-import { track, trackDuration, trackError } from '../lib/analytics';
+import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import type {
   Conversation,
@@ -1572,10 +1572,12 @@ export default function MapLibreMap({
     if (!text.trim()) return;
     const messageStartedAt = Date.now();
     const trimmedText = text.trim();
+    const clientTurnId = createAnalyticsTurnId();
     track('sage_message_submitted', {
       project_id: project.id,
       map_id: mapId,
       conversation_id: conversationId ?? null,
+      client_turn_id: clientTurnId,
       had_existing_conversation: conversationId !== null,
       message_length: trimmedText.length,
       selected_feature_present: Boolean(selectedFeature),
@@ -1645,6 +1647,7 @@ export default function MapLibreMap({
           project_id: project.id,
           map_id: mapId,
           conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
         });
 
         // Wait briefly for websocket to connect to the new conversation
@@ -1661,6 +1664,7 @@ export default function MapLibreMap({
       const sendBody: MessageSendRequest = {
         message: userMessage,
         selected_feature: null,
+        client_turn_id: clientTurnId,
       };
       if (selectedFeature) {
         sendBody.selected_feature = {
@@ -1687,6 +1691,7 @@ export default function MapLibreMap({
           project_id: project.id,
           map_id: mapId,
           conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
           selected_feature_present: Boolean(selectedFeature),
           viewport_bounds_present: Boolean(sendBody.viewport_bounds),
         });
@@ -1697,6 +1702,7 @@ export default function MapLibreMap({
           project_id: project.id,
           map_id: mapId,
           conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
           http_status: response.status,
         });
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
@@ -1714,6 +1720,7 @@ export default function MapLibreMap({
         project_id: project.id,
         map_id: mapId,
         conversation_id: conversationId ?? null,
+        client_turn_id: clientTurnId,
         duration_ms: Math.max(0, Math.round(Date.now() - messageStartedAt)),
         selected_feature_present: Boolean(selectedFeature),
       });

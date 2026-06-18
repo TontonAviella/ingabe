@@ -22,6 +22,8 @@ def test_build_sage_tool_context_records_route_alignment_without_arg_values():
         map_id="M1",
         project_id="P1",
         conversation_id=7,
+        client_turn_id="turn_abc",
+        message_id="42",
     )
 
     assert context["tool_name"] == "create_raster_h3_context_layer"
@@ -29,6 +31,8 @@ def test_build_sage_tool_context_records_route_alignment_without_arg_values():
     assert context["routing_alignment"] == "matched"
     assert context["tool_arg_key_count"] == 2
     assert context["tool_arg_keys_csv"] == "analysis_goal,layer_id"
+    assert context["client_turn_id"] == "turn_abc"
+    assert context["message_id"] == "42"
     assert "Lsecret" not in str(context)
     assert "private prompt" not in str(context)
 
@@ -48,6 +52,39 @@ def test_summarize_tool_result_uses_status_and_result_keys_without_payload_value
     assert summary["result_key_count"] == 3
     assert summary["result_keys_csv"] == "layer_id,pmtiles_key,status"
     assert "Lsecret" not in str(summary)
+
+
+def test_capture_sage_routing_decision_includes_turn_correlation(monkeypatch):
+    calls = []
+
+    def fake_capture(event, session, properties):
+        calls.append((event, session, properties))
+        return True
+
+    monkeypatch.setattr(obs, "capture_for_session", fake_capture)
+
+    captured = obs.capture_sage_routing_decision(
+        session=FakeSession(),
+        map_id="M1",
+        project_id="P1",
+        conversation_id=7,
+        routing_reason="intent:user_raster",
+        selected_categories={USER_RASTER},
+        is_small_talk=False,
+        model="model-a",
+        tool_count=12,
+        user_message_length=31,
+        tool_payload_bytes=2048,
+        client_turn_id="turn_abc",
+        message_id="42",
+    )
+
+    assert captured is True
+    assert calls[0][0] == obs.SAGE_ROUTING_DECISION_EVENT
+    props = calls[0][2]
+    assert props["client_turn_id"] == "turn_abc"
+    assert props["message_id"] == "42"
+    assert props["selected_categories_csv"] == USER_RASTER
 
 
 def test_capture_sage_tool_result_message_pops_context_and_captures(monkeypatch):

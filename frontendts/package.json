@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:observed": "python3 ../scripts/posthog_check_event.py --stage frontend --check frontend_build -- npm run build",
     "lint": "biome ci --error-on-warnings src/",
+    "lint:observed": "python3 ../scripts/posthog_check_event.py --stage frontend --check frontend_lint -- npm run lint",
     "preview": "vite preview",
     "watch": "tsc -b --watch & vite build --watch --mode development",
     "test": "vitest run",
+    "test:observed": "python3 ../scripts/posthog_check_event.py --stage frontend --check frontend_vitest -- npm run test",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"

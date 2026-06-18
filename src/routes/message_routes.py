@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import JSONResponse
 from typing import List, Optional, Union
 from collections import defaultdict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import asyncpg
 import base64
 import copy
@@ -1767,6 +1767,8 @@ async def process_chat_interaction_task(
     system_prompt_provider: SystemPromptProvider,
     connection_manager: PostgresConnectionManager,
     pydantic_tool_calls: PydanticToolRegistry,
+    client_turn_id: str | None = None,
+    user_message_id: str | None = None,
 ):
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
@@ -2251,6 +2253,8 @@ async def process_chat_interaction_task(
                 tool_count=len(tools_payload),
                 user_message_length=len(_last_user_text),
                 tool_payload_bytes=len(json.dumps(tools_payload)) if tools_payload else 0,
+                client_turn_id=client_turn_id,
+                message_id=user_message_id,
             )
 
             def _estimate_tokens_for_messages(msgs: list) -> int:
@@ -2607,6 +2611,8 @@ async def process_chat_interaction_task(
                         map_id=map_id,
                         project_id=current_project_id,
                         conversation_id=conversation.id,
+                        client_turn_id=client_turn_id,
+                        message_id=user_message_id,
                     )
                     tool_result = {}
 
@@ -7104,6 +7110,8 @@ async def process_chat_interaction_task_safely(
     system_prompt_provider: SystemPromptProvider,
     connection_manager: PostgresConnectionManager,
     pydantic_tool_calls: PydanticToolRegistry,
+    client_turn_id: str | None = None,
+    user_message_id: str | None = None,
 ):
     started_at = time.monotonic()
     lock_key = f"chat_lock:{conversation.id}"
@@ -7119,6 +7127,8 @@ async def process_chat_interaction_task_safely(
             system_prompt_provider,
             connection_manager,
             pydantic_tool_calls,
+            client_turn_id=client_turn_id,
+            user_message_id=user_message_id,
         )
         capture_for_session(
             "backend_sage_message_completed",
@@ -7126,6 +7136,8 @@ async def process_chat_interaction_task_safely(
             {
                 "map_id": map_id,
                 "conversation_id": conversation.id,
+                "client_turn_id": client_turn_id,
+                "message_id": user_message_id,
                 "duration_ms": elapsed_ms(started_at),
             },
         )
@@ -7142,6 +7154,8 @@ async def process_chat_interaction_task_safely(
             {
                 "map_id": map_id,
                 "conversation_id": conversation.id,
+                "client_turn_id": client_turn_id,
+                "message_id": user_message_id,
                 "duration_ms": elapsed_ms(started_at),
                 "error_type": type(exc).__name__,
                 "status_code": exc.status_code,
@@ -7156,6 +7170,8 @@ async def process_chat_interaction_task_safely(
             {
                 "map_id": map_id,
                 "conversation_id": conversation.id,
+                "client_turn_id": client_turn_id,
+                "message_id": user_message_id,
                 "duration_ms": elapsed_ms(started_at),
                 "error_type": type(exc).__name__,
             },
@@ -7175,6 +7191,7 @@ class MessageSendRequest(BaseModel):
     message: ChatCompletionUserMessageParam
     selected_feature: SelectedFeature | None
     viewport_bounds: list[float] | None = None  # [lon_min, lat_min, lon_max, lat_max]
+    client_turn_id: str | None = Field(default=None, max_length=80)
 
 
 class MessageSendResponse(BaseModel):
@@ -7219,6 +7236,7 @@ async def send_map_message(
         {
             "map_id": map_id,
             "conversation_id": conversation.id,
+            "client_turn_id": body.client_turn_id,
             "await_end": await_end,
             "has_selected_feature": body.selected_feature is not None,
             "has_viewport_bounds": body.viewport_bounds is not None,
@@ -7333,6 +7351,7 @@ async def send_map_message(
 
         user_msg = MundiChatCompletionMessage(**user_msg_dict)
         sanitized_user_msg = convert_mundi_message_to_sanitized(user_msg)
+        user_message_id = str(user_msg_db["id"])
 
     # Start processing either synchronously (await_end=True) or in background
     if await_end:
@@ -7347,6 +7366,8 @@ async def send_map_message(
             system_prompt_provider,
             connection_manager,
             pydantic_tool_calls,
+            client_turn_id=body.client_turn_id,
+            user_message_id=user_message_id,
         )
     else:
         background_tasks.add_task(
@@ -7361,6 +7382,8 @@ async def send_map_message(
             system_prompt_provider,
             connection_manager,
             pydantic_tool_calls,
+            client_turn_id=body.client_turn_id,
+            user_message_id=user_message_id,
         )
 
     capture_for_session(
@@ -7369,7 +7392,8 @@ async def send_map_message(
         {
             "map_id": map_id,
             "conversation_id": conversation.id,
-            "message_id": str(user_msg_db["id"]),
+            "client_turn_id": body.client_turn_id,
+            "message_id": user_message_id,
             "await_end": await_end,
             "chat_history_count": len(current_messages),
             "system_context_count": len(system_messages),
