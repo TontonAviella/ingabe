@@ -289,6 +289,18 @@ fn parse_bands(raw: Option<&str>) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+fn default_raw_bands(band_count: usize) -> Option<Vec<usize>> {
+    if band_count == 0 {
+        None
+    } else if band_count == 1 {
+        Some(vec![1])
+    } else if band_count == 2 {
+        Some(vec![1, 2])
+    } else {
+        Some(vec![1, 2, 3])
+    }
+}
+
 fn cache_key(layer_id: Option<&str>, url: &str, z: u32, x: u32, y: u32, bands: &[usize]) -> String {
     let stable_id = layer_id.map(str::to_string).unwrap_or_else(|| {
         let mut h = DefaultHasher::new();
@@ -424,6 +436,20 @@ fn render_raw_webmercator_tile(
     y: u32,
     bands: &[usize],
 ) -> Result<Vec<u8>> {
+    let (raster_w, raster_h) = dataset.raster_size();
+    let band_count = dataset.raster_count();
+    if raster_w == 0 || raster_h == 0 {
+        return Err(anyhow!("raw raster has no readable bands or pixels"));
+    }
+    let Some(default_bands) = default_raw_bands(band_count) else {
+        return Err(anyhow!("raw raster has no readable bands or pixels"));
+    };
+    if bands != default_bands.as_slice() {
+        return Err(anyhow!(
+            "raw raster band selection requires GDAL 3.7+; requested {bands:?}, default for this raster is {default_bands:?}"
+        ));
+    }
+
     let (minx, miny, maxx, maxy) = webmercator_bounds(z, x, y)
         .map_err(|e| anyhow!("invalid WebMercator tile bounds: {e:?}"))?;
     let seq = VSIMEM_TILE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -452,10 +478,6 @@ fn render_raw_webmercator_tile(
         "bilinear".to_string(),
         "-nosrcalpha".to_string(),
     ];
-    for band in bands {
-        args.push("-srcband".to_string());
-        args.push(band.to_string());
-    }
     args.push("-of".to_string());
     args.push("PNG".to_string());
 
@@ -568,4 +590,18 @@ fn encode_rgba_png(
         ColorType::Rgba8.into(),
     )?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_raw_bands_match_png_safe_upload_defaults() {
+        assert_eq!(default_raw_bands(0), None);
+        assert_eq!(default_raw_bands(1), Some(vec![1]));
+        assert_eq!(default_raw_bands(2), Some(vec![1, 2]));
+        assert_eq!(default_raw_bands(3), Some(vec![1, 2, 3]));
+        assert_eq!(default_raw_bands(4), Some(vec![1, 2, 3]));
+    }
 }
