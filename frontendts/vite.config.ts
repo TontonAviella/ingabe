@@ -10,7 +10,7 @@ import type { Plugin } from 'vite'
  * This prevents Vite's import-analysis from erroring on these dynamic imports
  * even when the source uses `/* @vite-ignore *\/`.
  */
-const OPTIONAL_DEP_STUBS = ['shpjs', '@duckdb/duckdb-wasm', 'geotiff', 'geotiff.js', 'jspdf']
+const OPTIONAL_DEP_STUBS = ['shpjs', 'geotiff', 'geotiff.js', 'jspdf']
 
 function stubOptionalDeps(): Plugin {
   const STUB_PREFIX = '\0stub:'
@@ -60,7 +60,7 @@ export default defineConfig(({ mode }) => ({
     rollupOptions: {
       // Optional deps of maplibre-gl-components that we don't use.
       // Externalized so Vite doesn't fail when bundling unused dynamic chunks.
-      external: ['shpjs', '@duckdb/duckdb-wasm', 'geotiff', 'geotiff.js', 'jspdf'],
+      external: ['shpjs', 'geotiff', 'geotiff.js', 'jspdf'],
       output: {
         manualChunks: {
           vendor: ['react', 'react-dom'],
@@ -70,6 +70,6 @@ export default defineConfig(({ mode }) => ({
     },
   },
   optimizeDeps: {
-    include: ['react-router-dom'],
+    include: ['react-router-dom', '@duckdb/duckdb-wasm'],
   },
 }))

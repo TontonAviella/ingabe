@@ -7,15 +7,12 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
-from boto3.s3.transfer import TransferConfig
-
 from src.database.models import LAYER_TYPE_VECTOR
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.structures import get_async_db_connection
-from src.utils import generate_id, get_async_s3_client, get_bucket_name
+from src.utils import generate_id
 
 logger = logging.getLogger(__name__)
-one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)
 
 
 @dataclass(frozen=True)
@@ -61,14 +58,6 @@ async def persist_h3_spatial_insight_layer(
         with open(geojson_path, "w", encoding="utf-8") as f:
             json.dump(feature_collection, f, separators=(",", ":"))
 
-        geoparquet_key = await _try_upload_geoparquet_cache(
-            feature_collection,
-            temp_dir=temp_dir,
-            layer_id=layer_id,
-            user_uuid=user_uuid,
-            project_id=project_id,
-        )
-
         from src.upload.pmtiles import process_vector_layer_common
 
         processed = await process_vector_layer_common(
@@ -82,6 +71,7 @@ async def persist_h3_spatial_insight_layer(
     if not processed.pmtiles_key:
         raise RuntimeError("H3 PMTiles generation failed")
 
+    geoparquet_key = processed.metadata.geoparquet_key
     summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
     zoom_resolution_map = summary.get("zoom_resolution_map")
     metadata = processed.metadata.model_dump(exclude_none=True)
@@ -177,38 +167,6 @@ async def persist_h3_spatial_insight_layer(
         feature_count=feature_count,
         geometry_type=processed.geometry_type,
     )
-
-
-async def _try_upload_geoparquet_cache(
-    feature_collection: dict[str, Any],
-    *,
-    temp_dir: str,
-    layer_id: str,
-    user_uuid: str,
-    project_id: str,
-) -> str | None:
-    try:
-        import geopandas as gpd
-
-        parquet_path = os.path.join(temp_dir, f"{layer_id}.parquet")
-        gdf = gpd.GeoDataFrame.from_features(
-            feature_collection.get("features", []),
-            crs="EPSG:4326",
-        )
-        gdf.to_parquet(parquet_path, index=False)
-
-        geoparquet_key = f"geoparquet/{user_uuid}/{project_id}/{layer_id}.parquet"
-        s3 = await get_async_s3_client()
-        await s3.upload_file(
-            parquet_path,
-            get_bucket_name(),
-            geoparquet_key,
-            Config=one_shot_config,
-        )
-        return geoparquet_key
-    except Exception:
-        logger.debug("GeoParquet cache write skipped for H3 layer %s", layer_id, exc_info=True)
-        return None
 
 
 def build_h3_risk_maplibre_layers(

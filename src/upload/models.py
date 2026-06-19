@@ -9,6 +9,13 @@ class MetadataUpdates(BaseModel):
     feature_count: Optional[int] = None
     raster_value_stats_b1: Optional[dict] = None
     pmtiles_key: Optional[str] = None
+    geoparquet_key: Optional[str] = None
+    geoparquet_size_bytes: Optional[int] = None
+    geoparquet_compression: Optional[str] = None
+    geoparquet_crs: Optional[str] = None
+    analytics_format: Optional[str] = None
+    source_storage_format: Optional[str] = None
+    geoanalytics_primary: Optional[bool] = None
     source: Optional[str] = None
     layer_name: Optional[str] = None
     geometry_type: Optional[str] = None

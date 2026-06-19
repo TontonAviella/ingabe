@@ -72,7 +72,8 @@ class VectorUploadHandler(BaseUploadHandler):
                 ctx.metadata_dict.update(
                     {
                         "original_format": "shapefile_zip",
-                        "converted_to": "gpkg",
+                        "temporary_interop_format": "gpkg",
+                        "converted_to": "geoparquet",
                     }
                 )
             except ValueError as e:

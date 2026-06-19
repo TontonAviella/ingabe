@@ -11,6 +11,7 @@ from boto3.s3.transfer import TransferConfig
 
 from src.structures import get_async_db_connection
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
+from src.upload.geoparquet import generate_geoparquet_from_ogr_source
 from src.upload.models import VectorProcessingResult
 from src.upload.preprocessing import get_layer_bounds_and_metadata
 from src.utils import get_async_s3_client, get_bucket_name
@@ -316,6 +317,27 @@ async def process_vector_layer_common(
     # Add base metadata
     metadata_updates.source = "remote" if not ogr_source.startswith("/") else "upload"
     metadata_updates.layer_name = layer_name
+
+    if feature_count and feature_count > 0:
+        try:
+            geoparquet = await generate_geoparquet_from_ogr_source(
+                layer_id=layer_id,
+                ogr_source=ogr_source,
+                user_id=user_id,
+                project_id=project_id,
+                dataset_layer=dataset_layer,
+            )
+            metadata_updates.geoparquet_key = geoparquet.key
+            metadata_updates.geoparquet_size_bytes = geoparquet.size_bytes
+            metadata_updates.geoparquet_compression = geoparquet.compression
+            metadata_updates.geoparquet_crs = geoparquet.crs
+            metadata_updates.analytics_format = "geoparquet"
+            metadata_updates.source_storage_format = "geoparquet"
+            metadata_updates.geoanalytics_primary = True
+        except Exception as e:
+            logger.warning("GeoParquet analytics generation failed for %s: %s", ogr_source, e)
+            metadata_updates.analytics_format = "pending"
+            metadata_updates.geoanalytics_primary = False
 
     # Generate PMTiles for vector layers with features
     pmtiles_key: Optional[str] = None

@@ -1,5 +1,6 @@
 import fcntl
 import os
+import shutil
 import tempfile
 import threading
 from collections import OrderedDict
@@ -92,6 +93,32 @@ class FileCache:
                     os.close(tmp_fd)
                 except OSError:
                     pass
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            size = os.path.getsize(path)
+            with self._mu:
+                if key in self.cache:
+                    self.total -= self.cache.pop(key)
+                self.cache[key] = size
+                self.total += size
+                self._evict()
+        finally:
+            self._file_unlock(lock_fd)
+
+    def set_from_file(self, key, source_path: str):
+        """Cache a file without loading the full payload into Python memory."""
+        lock_fd = self._file_lock(key)
+        try:
+            path = os.path.join(self.cache_dir, key)
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=self.cache_dir, prefix=f".{key}.")
+            os.close(tmp_fd)
+            try:
+                shutil.copyfile(source_path, tmp_path)
+                os.rename(tmp_path, path)
+            except Exception:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
