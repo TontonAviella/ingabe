@@ -2485,7 +2485,10 @@ async def render_map(
     Width and height are in pixels.
     """
     style_json = await get_map_style_internal(
-        str(map.id), base_map, only_show_inline_sources=True
+        str(map.id),
+        base_map,
+        only_show_inline_sources=True,
+        inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
     )
 
     return (

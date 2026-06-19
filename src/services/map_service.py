@@ -295,6 +295,7 @@ async def get_map_style_internal(
     only_show_inline_sources: bool = False,
     override_layers: Optional[str] = None,
     basemap: Optional[str] = None,
+    inline_s3_endpoint_url: Optional[str] = None,
 ):
     # Get vector layers for this map from the database
     async with async_conn("get_map_style_internal.fetch_layers") as conn:
@@ -607,6 +608,7 @@ async def get_map_style_internal(
     # Pre-generate all presigned URLs in parallel (avoids sequential S3 calls)
     presigned_urls: dict[str, str] = {}
     if only_show_inline_sources:
+        presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
         layers_needing_presigned: list[tuple[str, str]] = []
         for layer in vector_layers:
             if not layer["remote_url"]:
@@ -617,9 +619,7 @@ async def get_map_style_internal(
 
         if layers_needing_presigned:
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client(
-                endpoint_url=get_s3_public_endpoint_url()
-            )
+            s3_client = await get_async_s3_client(endpoint_url=presign_endpoint_url)
 
             async def _gen_url(key: str) -> str:
                 return await s3_op(
@@ -647,9 +647,8 @@ async def get_map_style_internal(
             assert pmtiles_key is not None, f"Missing pmtiles_key for layer {layer_id}"
 
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client(
-                endpoint_url=get_s3_public_endpoint_url()
-            )
+            presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
+            s3_client = await get_async_s3_client(endpoint_url=presign_endpoint_url)
             presigned_url = await s3_op(
                 s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=28800),
                 "presigned URL", f"PMTiles {pmtiles_key}",
@@ -682,6 +681,7 @@ async def get_map_style_internal(
     # Pre-generate presigned URLs for PostGIS layers with PMTiles (inline mode)
     postgis_presigned: dict[str, str] = {}
     if only_show_inline_sources:
+        presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
         postgis_needing_presigned: list[tuple[str, str]] = []
         for layer in postgis_layers:
             if layer["type"] == LAYER_TYPE_POSTGIS:
@@ -693,9 +693,7 @@ async def get_map_style_internal(
                     postgis_needing_presigned.append((layer["layer_id"], pk))
         if postgis_needing_presigned:
             _bucket = get_bucket_name()
-            _s3 = await get_async_s3_client(
-                endpoint_url=get_s3_public_endpoint_url()
-            )
+            _s3 = await get_async_s3_client(endpoint_url=presign_endpoint_url)
 
             async def _gen_postgis_url(key: str) -> str:
                 return await s3_op(
@@ -997,6 +995,18 @@ async def render_map_internal(
 
             temp_output.seek(0)
             screenshot_data = temp_output.read()
+            if not screenshot_data:
+                renderer_stderr = stderr.decode(errors="replace").strip()
+                renderer_stdout = stdout.decode(errors="replace").strip()
+                message = "renderer produced empty PNG output"
+                if renderer_stderr:
+                    message = f"{message}: {renderer_stderr}"
+                elif renderer_stdout:
+                    message = f"{message}: {renderer_stdout}"
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message,
+                )
 
             return (
                 Response(

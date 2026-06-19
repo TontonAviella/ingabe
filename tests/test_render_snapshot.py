@@ -216,7 +216,12 @@ def _patch_renderer(monkeypatch: pytest.MonkeyPatch, png_bytes: bytes = b"PNG") 
     import src.services.map_service as ms
     import src.dependencies.base_map as bm
 
-    async def fake_get_style(map_id, base_map, only_show_inline_sources=True):
+    async def fake_get_style(
+        map_id,
+        base_map,
+        only_show_inline_sources=True,
+        inline_s3_endpoint_url=None,
+    ):
         return {"version": 8, "sources": {}, "layers": []}
 
     async def fake_render(**kwargs):

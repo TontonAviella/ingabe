@@ -781,6 +781,7 @@ async def get_project_social_preview(
                     latest_map_id,
                     base_map_provider,
                     only_show_inline_sources=True,
+                    inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
                 )
 
                 render_response, _ = await render_map_internal(
@@ -996,7 +997,10 @@ async def get_project_embed(
     from src.services.map_service import get_map_style_internal
 
     style_json = await get_map_style_internal(
-        latest_map_id, base_map_provider, only_show_inline_sources=True
+        latest_map_id,
+        base_map_provider,
+        only_show_inline_sources=True,
+        inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
     )
 
     # Override the calculated center and zoom in the style JSON

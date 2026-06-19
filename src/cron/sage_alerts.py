@@ -87,7 +87,10 @@ async def _render_snapshot_png(
 
     base_map = get_base_map_provider()
     style_json = await get_map_style_internal(
-        map_id, base_map, only_show_inline_sources=True
+        map_id,
+        base_map,
+        only_show_inline_sources=True,
+        inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
     )
     style_json_str = style_json if isinstance(style_json, str) else json.dumps(style_json)
     render_response, _ = await render_map_internal(

@@ -123,7 +123,10 @@ async def render_map_snapshot(
 
     try:
         style_json = await get_map_style_internal(
-            meta.map_id, base_map, only_show_inline_sources=True
+            meta.map_id,
+            base_map,
+            only_show_inline_sources=True,
+            inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         )
     except Exception as e:
         logger.exception("render_map_snapshot: style fetch failed map=%s", meta.map_id)
