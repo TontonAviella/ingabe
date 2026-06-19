@@ -1648,6 +1648,65 @@ def _raster_area_fast_reply(result: dict) -> str:
     return reply
 
 
+def _raster_context_fast_reply(result: dict, layer_name: str) -> str:
+    if result.get("error"):
+        return (
+            f"I found {layer_name}, but the raster analysis failed: {result['error']}"
+        )
+
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    domain = str(summary.get("domain") or "mixed")
+    cell_count = summary.get("cell_count") or result.get("geojson_feature_count")
+    high_count = summary.get("high_or_severe_cell_count")
+    max_score = summary.get("max_score")
+    evidence_basis = str(summary.get("evidence_basis") or "")
+
+    if domain == "housing":
+        reply = (
+            f"I analyzed {layer_name} itself and added likely house/settlement "
+            "attention cells on top of the orthophoto."
+        )
+    elif domain == "agriculture":
+        reply = (
+            f"I analyzed {layer_name} itself and added vegetation/field attention "
+            "cells on top of the orthophoto."
+        )
+    elif domain == "infrastructure":
+        reply = (
+            f"I analyzed {layer_name} itself and added infrastructure attention "
+            "cells on top of the orthophoto."
+        )
+    elif domain == "environment":
+        reply = (
+            f"I analyzed {layer_name} itself and added environmental attention "
+            "cells on top of the orthophoto."
+        )
+    else:
+        reply = (
+            f"I analyzed {layer_name} itself and added visual attention cells on "
+            "top of the orthophoto."
+        )
+
+    if cell_count:
+        reply += f" The layer has {cell_count} map cells"
+        if high_count is not None:
+            reply += f", with {high_count} higher-priority cells"
+        if max_score is not None:
+            reply += f" and a top score of {max_score}"
+        reply += "."
+
+    if domain in {"housing", "infrastructure"}:
+        reply += (
+            " This is a fast visual screen from the uploaded image, not a confirmed "
+            "building count; exact house exposure still needs Open Buildings, OSM, "
+            "or local survey footprints."
+        )
+    elif evidence_basis:
+        reply += f" Evidence basis: {evidence_basis}."
+
+    return reply
+
+
 def _select_fast_raster_layer(question: str, rows: list) -> dict | None:
     if not rows:
         return None
@@ -1666,6 +1725,115 @@ def _select_fast_raster_layer(question: str, rows: list) -> dict | None:
     if len(rows) == 1:
         return dict(rows[0])
     return None
+
+
+async def _maybe_run_fast_raster_context_turn(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> bool:
+    if os.environ.get("SAGE_FAST_RASTER_CONTEXT", "1").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return False
+
+    user_text = extract_last_user_text(openai_messages)
+    fast_call = build_fast_tool_call(user_text)
+    if not fast_call or fast_call.tool_name != "create_raster_h3_context_layer":
+        return False
+
+    started = asyncio.get_running_loop().time()
+    turn_id = f"fast-raster-context-{conversation.id}-{_uuid.uuid4().hex[:8]}"
+    partner_id = session.get_org_id()
+
+    async with async_conn(
+        "sage.fast_raster_context",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        project_row = await conn.fetchrow(
+            "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+            map_id,
+        )
+        if not project_row:
+            return False
+
+        rows = await conn.fetch(
+            """
+            SELECT ml.layer_id, ml.name
+            FROM user_mundiai_maps m
+            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
+              ON TRUE
+            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
+            WHERE m.id = $1
+              AND ml.type = 'raster'
+            ORDER BY map_layer.ord
+            """,
+            map_id,
+        )
+
+    layer = _select_fast_raster_layer(user_text, rows)
+    if not layer:
+        return False
+
+    from src.tools.pyd import IngabeToolCallMetaArgs
+    from src.tools.raster_h3_context import (
+        CreateRasterH3ContextLayerArgs,
+        create_raster_h3_context_layer,
+    )
+
+    tool_args = dict(fast_call.arguments)
+    tool_args["layer_id"] = str(layer["layer_id"])
+    layer_name = str(layer.get("name") or "that raster")
+
+    async with kue_ephemeral_action(
+        conversation.id,
+        "Analyzing orthophoto pixels...",
+        layer_id=str(layer["layer_id"]),
+    ):
+        result = await create_raster_h3_context_layer(
+            CreateRasterH3ContextLayerArgs(**tool_args),
+            IngabeToolCallMetaArgs(
+                user_uuid=user_id,
+                conversation_id=conversation.id,
+                map_id=map_id,
+                project_id=str(project_row["project_id"]),
+                session=session,
+            ),
+        )
+
+    assistant_text = _raster_context_fast_reply(result, layer_name)
+    async with async_conn(
+        "sage.fast_raster_context.persist",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_completion_messages
+            (map_id, sender_id, message_json, conversation_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": assistant_text}),
+            conversation.id,
+        )
+
+    await kue_stream_token(conversation.id, assistant_text, turn_id=turn_id)
+    await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+    logger.info(
+        "Sage fast raster context route: conv=%s layer_id=%s domain=%s status=%s elapsed=%.3fs",
+        conversation.id,
+        layer["layer_id"],
+        tool_args.get("domain"),
+        result.get("status"),
+        asyncio.get_running_loop().time() - started,
+    )
+    return True
 
 
 async def _maybe_run_fast_raster_fact_turn(
@@ -1927,6 +2095,15 @@ async def process_chat_interaction_task(
                 openai_messages.append(m)
 
             if await _maybe_run_fast_admin_boundary_turn(
+                map_id=map_id,
+                session=session,
+                user_id=user_id,
+                conversation=conversation,
+                openai_messages=openai_messages,
+            ):
+                return
+
+            if await _maybe_run_fast_raster_context_turn(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,

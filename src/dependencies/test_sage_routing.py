@@ -25,9 +25,11 @@ from src.dependencies.sage_routing import (
     classify_intent,
     detect_admin_boundary_display,
     detect_raster_area_question,
+    detect_raster_context_question,
     detect_small_talk,
     extract_last_user_text,
     filter_tools_by_categories,
+    raster_context_domain,
     raster_layer_match_score,
     route_chat,
     routing_alignment_for_tool,
@@ -326,8 +328,47 @@ def test_detect_raster_area_question_blocks_non_rasters(msg: str) -> None:
     assert detect_raster_area_question(msg) is False
 
 
-def test_build_fast_tool_call_raster_area_defers_until_layer_id_is_known() -> None:
-    assert build_fast_tool_call("tell me the hectares of Cyampirita_Orthophoto?") is None
+def test_build_fast_tool_call_raster_area_routes_to_describer() -> None:
+    fast = build_fast_tool_call("tell me the hectares of Cyampirita_Orthophoto?")
+
+    assert fast is not None
+    assert fast.tool_name == "describe_user_raster"
+    assert fast.arguments == {}
+    assert fast.reason == "fast:raster_area"
+
+
+@pytest.mark.parametrize(
+    "msg, expected_domain",
+    [
+        (
+            "show me the analysis of where the most house is in this Cyampirita_Orthophoto file?",
+            "housing",
+        ),
+        ("what is happening on this orthophoto?", "mixed"),
+        ("where are the road and drainage issues in this drone image?", "infrastructure"),
+        ("analyze crop stress in this uploaded raster", "agriculture"),
+    ],
+)
+def test_detect_raster_context_question(msg: str, expected_domain: str) -> None:
+    assert detect_raster_context_question(msg) is True
+    assert raster_context_domain(msg) == expected_domain
+
+
+def test_build_fast_tool_call_raster_context_routes_to_h3_layer() -> None:
+    fast = build_fast_tool_call(
+        "show me the analysis of where the most house is in this Cyampirita_Orthophoto file?"
+    )
+
+    assert fast is not None
+    assert fast.tool_name == "create_raster_h3_context_layer"
+    assert fast.reason == "fast:raster_context"
+    assert fast.arguments["domain"] == "housing"
+    assert fast.arguments["render_map"] is True
+    assert "settlement" in str(fast.arguments["analysis_goal"])
+
+
+def test_raster_context_does_not_capture_plain_place_analysis() -> None:
+    assert detect_raster_context_question("show me NDVI in Nyamagabe") is False
 
 
 def test_raster_layer_match_score_uses_distinctive_name_tokens() -> None:

@@ -75,13 +75,16 @@ async def analyze_open_buildings_exposure(
 ) -> dict[str, Any]:
     """Analyze building/housing exposure using Google Open Buildings footprints and render it as an H3 map.
 
-    Use when the user asks about buildings, houses, settlement exposure,
-    flood/rain impact on housing, city/infrastructure exposure, or how Open
-    Buildings combines with TESSERA/H3. If cached building footprints are not
-    available, call with empty building inputs and include_ingest_plan=true so
-    Sage can explain exactly which Open Buildings tiles must be cached next.
-    This tool does not download massive Open Buildings CSV tiles in the live
-    response path; production should ingest/cache them first.
+    Use when the user asks for exact building footprints, counts, settlement
+    exposure, flood/rain impact on housing, city/infrastructure exposure, or
+    how Open Buildings combines with TESSERA/H3. For houses/buildings visible
+    inside an uploaded drone/orthophoto raster, use create_raster_h3_context_layer
+    first so the answer is based on the local pixels already on the map; use
+    Open Buildings afterward as confirmation or for exact exposure counts. If
+    cached building footprints are not available, call with empty building inputs
+    and include_ingest_plan=true only when that external footprint evidence is
+    actually needed. This tool does not download massive Open Buildings CSV
+    tiles in the live response path; production should ingest/cache them first.
     """
 
     bbox = parse_bbox(args.bbox)

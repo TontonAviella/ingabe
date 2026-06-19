@@ -473,6 +473,48 @@ _RASTER_OBJECT_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+_RASTER_CONTEXT_KEYWORDS = re.compile(
+    r"\b(analy[sz]e|analysis|where|most|many|cluster|concentrat(?:e|ed|ion)?|"
+    r"visible|happening|seeing|inspect|attention|priority|zone|zones|"
+    r"risk|damage|problem|issue|context)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "housing",
+        re.compile(
+            r"\b(house|houses|housing|building|buildings|settlement|"
+            r"roof|roofs|village|urban)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "infrastructure",
+        re.compile(
+            r"\b(infrastructure|road|roads|drainage|drain|culvert|"
+            r"bridge|bridges|canal|path|paths)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "environment",
+        re.compile(
+            r"\b(environment|environmental|erosion|runoff|water|wet|"
+            r"flood|pollution|bare\s+soil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "agriculture",
+        re.compile(
+            r"\b(agriculture|agricultural|farm|farms|field|fields|crop|"
+            r"crops|vegetation|stress|ndvi|plant|plants)\b",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
 _RASTER_NAME_STOPWORDS = {
     "a",
     "an",
@@ -520,6 +562,57 @@ def detect_raster_area_question(text: str) -> bool:
     return bool(_RASTER_OBJECT_KEYWORDS.search(normalized_prompt))
 
 
+def raster_context_domain(text: str) -> str:
+    """Return the user-intended domain for a raster context question."""
+    prompt = " ".join(str(text or "").strip().split())
+    for domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS:
+        if pattern.search(prompt):
+            return domain
+    return "mixed"
+
+
+def detect_raster_context_question(text: str) -> bool:
+    """True when a user asks for analysis of an uploaded raster/orthophoto.
+
+    This is the deterministic route for questions like "where are most houses
+    in this orthophoto?" The first pass must use the user's raster pixels. Exact
+    asset counts can use Open Buildings later, but should not block the first
+    map answer.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    normalized_prompt = _normalize_raster_name(prompt)
+    if not _RASTER_OBJECT_KEYWORDS.search(normalized_prompt):
+        return False
+    if _RASTER_CONTEXT_KEYWORDS.search(prompt):
+        return True
+    return any(pattern.search(prompt) for _domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS)
+
+
+def build_raster_context_tool_args(text: str) -> dict[str, object] | None:
+    if not detect_raster_context_question(text):
+        return None
+    domain = raster_context_domain(text)
+    goals = {
+        "housing": "screen likely house or settlement concentration from uploaded orthophoto pixels",
+        "infrastructure": "screen likely road, drainage, or infrastructure attention zones from uploaded raster pixels",
+        "environment": "screen environmental surface attention zones from uploaded raster pixels",
+        "agriculture": "screen vegetation condition and field attention zones from uploaded raster pixels",
+        "mixed": "screen visual context and priority inspection zones from uploaded raster pixels",
+    }
+    return {
+        "domain": domain,
+        "analysis_goal": goals.get(domain, goals["mixed"]),
+        # Base 10 creates an overview plus zoom-adaptive 11/12 cells inside the tool.
+        "h3_resolution": 10,
+        "max_hexes": 12000,
+        "max_sample_pixels": 60000,
+        "render_map": True,
+        "render_3d": False,
+    }
+
+
 def raster_layer_match_score(question: str, layer_name: str) -> float:
     """Score how clearly `question` refers to `layer_name`.
 
@@ -553,6 +646,15 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
     args = build_admin_boundary_tool_args(text)
     if args:
         return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    raster_context_args = build_raster_context_tool_args(text)
+    if raster_context_args:
+        return FastToolCall(
+            "create_raster_h3_context_layer",
+            raster_context_args,
+            "fast:raster_context",
+        )
+    if detect_raster_area_question(text):
+        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
     return None
 
 
