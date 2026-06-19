@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import copy
 import tempfile
 import asyncio
 import subprocess
@@ -36,6 +37,39 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
+LEGACY_MVT_SOURCE_LAYER_NAMES = ("reprojected",)
+
+
+def append_mvt_layers_with_legacy_source_fallbacks(
+    target_layers: list[dict],
+    maplibre_layers: list[dict],
+) -> None:
+    """Append stored MVT layers plus aliases for older PMTiles source-layer names."""
+
+    target_layers.extend(maplibre_layers)
+    existing_ids = {
+        layer.get("id")
+        for layer in target_layers
+        if isinstance(layer.get("id"), str)
+    }
+    for layer in maplibre_layers:
+        if layer.get("source-layer") != MVT_LAYER_NAME:
+            continue
+        layer_id = layer.get("id")
+        if not isinstance(layer_id, str) or not layer_id:
+            continue
+        for legacy_source_layer in LEGACY_MVT_SOURCE_LAYER_NAMES:
+            fallback_id = f"{layer_id}-legacy-{legacy_source_layer}"
+            if fallback_id in existing_ids:
+                continue
+            fallback_layer = copy.deepcopy(layer)
+            fallback_layer["id"] = fallback_id
+            fallback_layer["source-layer"] = legacy_source_layer
+            metadata = fallback_layer.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["legacy_source_layer_fallback"] = True
+            target_layers.append(fallback_layer)
+            existing_ids.add(fallback_id)
 
 
 def validate_remote_url(url: str, source_type: str) -> str:
@@ -666,17 +700,22 @@ async def get_map_style_internal(
 
         # Check if override_layers is not None
         if override_layers is not None and layer_id in override_layers:
-            for ml_layer in override_layers[layer_id]:
-                # source-layer is prohibited for geojson sources
-                if style_json["sources"][layer_id]["type"] == "geojson":
+            maplibre_layers = override_layers[layer_id]
+            if style_json["sources"][layer_id]["type"] == "geojson":
+                for ml_layer in maplibre_layers:
+                    # source-layer is prohibited for geojson sources
                     assert ml_layer["source-layer"] == MVT_LAYER_NAME
                     del ml_layer["source-layer"]
                     assert "source-layer" not in ml_layer
-                style_json["layers"].append(ml_layer)
+                    style_json["layers"].append(ml_layer)
+            else:
+                append_mvt_layers_with_legacy_source_fallbacks(style_json["layers"], maplibre_layers)
         # Use stored style_json from layer_styles if no override_layers
         elif layer["maplibre_layers"]:
-            for ml_layer in json.loads(layer["maplibre_layers"]):
-                style_json["layers"].append(ml_layer)
+            append_mvt_layers_with_legacy_source_fallbacks(
+                style_json["layers"],
+                json.loads(layer["maplibre_layers"]),
+            )
 
     # Pre-generate presigned URLs for PostGIS layers with PMTiles (inline mode)
     postgis_presigned: dict[str, str] = {}

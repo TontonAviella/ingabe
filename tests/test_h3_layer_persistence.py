@@ -76,3 +76,45 @@ def test_h3_pmtiles_style_uses_mvt_source_layer_and_risk_score():
         ["coalesce", ["get", "risk_score"], 0],
         45,
     ]
+
+
+def test_h3_attention_style_is_visible_over_orthophotos():
+    layers = build_h3_risk_maplibre_layers("Labc123", render_3d=False)
+
+    fill = layers[0]
+    outline = layers[1]
+
+    assert fill["paint"]["fill-color"] == [
+        "step",
+        ["coalesce", ["get", "risk_score"], 0],
+        "#06b6d4",
+        40,
+        "#facc15",
+        60,
+        "#f97316",
+        80,
+        "#dc2626",
+        90,
+        "#e879f9",
+    ]
+    assert fill["paint"]["fill-opacity"] == [
+        "interpolate",
+        ["linear"],
+        ["coalesce", ["get", "risk_score"], 0],
+        0,
+        0.18,
+        40,
+        0.38,
+        60,
+        0.58,
+        80,
+        0.76,
+        100,
+        0.84,
+    ]
+    assert outline["paint"]["line-color"] == [
+        "case",
+        [">=", ["coalesce", ["get", "risk_score"], 0], 60],
+        "#ffffff",
+        "#111827",
+    ]

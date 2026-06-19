@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from boto3.s3.transfer import TransferConfig
 
+from src.postgis_tiles import MVT_LAYER_NAME
 from src.structures import get_async_db_connection
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
 from src.upload.geoparquet import generate_geoparquet_from_ogr_source
@@ -19,6 +20,79 @@ from src.utils import get_async_s3_client, get_bucket_name
 logger = logging.getLogger(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
+
+
+def _build_flatgeobuf_reproject_command(
+    *,
+    output_path: str,
+    ogr_source: str,
+    dataset_layer: str | None = None,
+) -> list[str]:
+    command = [
+        "ogr2ogr",
+        "-f",
+        "FlatGeobuf",
+        "-t_srs",
+        "EPSG:4326",
+        "-nlt",
+        "PROMOTE_TO_MULTI",
+        "-nln",
+        MVT_LAYER_NAME,
+        "-skipfailures",
+        "-lco",
+        "SPATIAL_INDEX=YES",
+    ]
+
+    if ogr_source.startswith("CSV:"):
+        command.extend(
+            [
+                "-oo",
+                "X_POSSIBLE_NAMES=long,longitude,lng,x",
+                "-oo",
+                "Y_POSSIBLE_NAMES=lat,latitude,y",
+                "-oo",
+                "KEEP_GEOM_COLUMNS=NO",
+            ]
+        )
+
+    command.extend([output_path, ogr_source])
+    if dataset_layer is not None:
+        command.append(dataset_layer)
+    return command
+
+
+def _build_tippecanoe_pmtiles_command(
+    *,
+    output_path: str,
+    input_path: str,
+) -> list[str]:
+    return [
+        "tippecanoe",
+        "-o",
+        output_path,
+        "-q",
+        "-zg",
+        "--drop-densest-as-needed",
+        "-l",
+        MVT_LAYER_NAME,
+        input_path,
+    ]
+
+
+def _build_ogr_pmtiles_fallback_command(
+    *,
+    output_path: str,
+    input_path: str,
+) -> list[str]:
+    return [
+        "ogr2ogr",
+        "-f",
+        "PMTiles",
+        "-nln",
+        MVT_LAYER_NAME,
+        output_path,
+        input_path,
+    ]
 
 
 async def generate_pmtiles_from_ogr_source(
@@ -41,38 +115,11 @@ async def generate_pmtiles_from_ogr_source(
         # Reproject to EPSG:4326 and convert to FlatGeobuf
         reprojected_file = os.path.join(temp_dir, "reprojected.fgb")
 
-        # Build ogr2ogr command with source-specific options
-        ogr_cmd = [
-            "ogr2ogr",
-            "-f",
-            "FlatGeobuf",
-            "-t_srs",
-            "EPSG:4326",
-            "-nlt",
-            "PROMOTE_TO_MULTI",
-            "-skipfailures",
-            "-lco",
-            "SPATIAL_INDEX=YES",
-        ]
-
-        # Add CSV-specific options for lat/long column detection
-        if ogr_source.startswith("CSV:"):
-            ogr_cmd.extend(
-                [
-                    "-oo",
-                    "X_POSSIBLE_NAMES=long,longitude,lng,x",
-                    "-oo",
-                    "Y_POSSIBLE_NAMES=lat,latitude,y",
-                    "-oo",
-                    "KEEP_GEOM_COLUMNS=NO",
-                ]
-            )
-
-        ogr_cmd.extend([reprojected_file, ogr_source])
-        # If a specific dataset layer is requested (e.g., GeoPackage sublayer),
-        # pass it as an additional source argument to ogr2ogr to select that layer.
-        if dataset_layer is not None:
-            ogr_cmd.append(dataset_layer)
+        ogr_cmd = _build_flatgeobuf_reproject_command(
+            output_path=reprojected_file,
+            ogr_source=ogr_source,
+            dataset_layer=dataset_layer,
+        )
 
         process = await asyncio.create_subprocess_exec(
             *ogr_cmd,
@@ -87,15 +134,10 @@ async def generate_pmtiles_from_ogr_source(
             )
 
         # Run tippecanoe to generate pmtiles
-        tippecanoe_cmd = [
-            "tippecanoe",
-            "-o",
-            local_output_file,
-            "-q",  # Quiet mode - suppress progress indicators
-            "-zg",  # Always try to guess maxzoom
-            "--drop-densest-as-needed",
-            reprojected_file,
-        ]
+        tippecanoe_cmd = _build_tippecanoe_pmtiles_command(
+            output_path=local_output_file,
+            input_path=reprojected_file,
+        )
 
         process = await asyncio.create_subprocess_exec(
             *tippecanoe_cmd,
@@ -111,13 +153,10 @@ async def generate_pmtiles_from_ogr_source(
                 "Can't guess maxzoom (-zg) without at least two distinct feature locations"
                 in err_text
             ):
-                pmtiles_ogr_cmd = [
-                    "ogr2ogr",
-                    "-f",
-                    "PMTiles",
-                    local_output_file,
-                    reprojected_file,
-                ]
+                pmtiles_ogr_cmd = _build_ogr_pmtiles_fallback_command(
+                    output_path=local_output_file,
+                    input_path=reprojected_file,
+                )
                 process2 = await asyncio.create_subprocess_exec(
                     *pmtiles_ogr_cmd,
                     stdout=asyncio.subprocess.PIPE,

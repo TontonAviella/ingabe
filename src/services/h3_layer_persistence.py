@@ -178,13 +178,30 @@ def build_h3_risk_maplibre_layers(
     risk_color = [
         "step",
         ["coalesce", ["get", "risk_score"], 0],
-        "#22c55e",
+        "#06b6d4",
         40,
         "#facc15",
         60,
         "#f97316",
         80,
         "#dc2626",
+        90,
+        "#e879f9",
+    ]
+    risk_opacity = [
+        "interpolate",
+        ["linear"],
+        ["coalesce", ["get", "risk_score"], 0],
+        0,
+        0.18,
+        40,
+        0.38,
+        60,
+        0.58,
+        80,
+        0.76,
+        100,
+        0.84,
     ]
     base = {
         "source": layer_id,
@@ -208,6 +225,7 @@ def build_h3_risk_maplibre_layers(
                     band_base,
                     layer_id=layer_id,
                     risk_color=risk_color,
+                    risk_opacity=risk_opacity,
                     render_3d=render_3d,
                     suffix=resolution_suffix,
                 )
@@ -218,9 +236,24 @@ def build_h3_risk_maplibre_layers(
                     "id": f"h3-risk-outline-{layer_id}-{resolution_suffix}",
                     "type": "line",
                     "paint": {
-                        "line-color": "#111827",
-                        "line-width": 1.1,
-                        "line-opacity": 0.78,
+                        "line-color": [
+                            "case",
+                            [">=", ["coalesce", ["get", "risk_score"], 0], 60],
+                            "#ffffff",
+                            "#111827",
+                        ],
+                        "line-width": [
+                            "interpolate",
+                            ["linear"],
+                            ["coalesce", ["get", "risk_score"], 0],
+                            0,
+                            0.75,
+                            60,
+                            1.4,
+                            90,
+                            2.2,
+                        ],
+                        "line-opacity": 0.92,
                     },
                 }
             )
@@ -230,6 +263,7 @@ def build_h3_risk_maplibre_layers(
         base,
         layer_id=layer_id,
         risk_color=risk_color,
+        risk_opacity=risk_opacity,
         render_3d=render_3d,
     )
 
@@ -240,9 +274,24 @@ def build_h3_risk_maplibre_layers(
             "id": f"h3-risk-outline-{layer_id}",
             "type": "line",
             "paint": {
-                "line-color": "#111827",
-                "line-width": 1.1,
-                "line-opacity": 0.78,
+                "line-color": [
+                    "case",
+                    [">=", ["coalesce", ["get", "risk_score"], 0], 60],
+                    "#ffffff",
+                    "#111827",
+                ],
+                "line-width": [
+                    "interpolate",
+                    ["linear"],
+                    ["coalesce", ["get", "risk_score"], 0],
+                    0,
+                    0.75,
+                    60,
+                    1.4,
+                    90,
+                    2.2,
+                ],
+                "line-opacity": 0.92,
             },
         },
     ]
@@ -253,6 +302,7 @@ def _h3_risk_fill_layer(
     *,
     layer_id: str,
     risk_color: list[Any],
+    risk_opacity: list[Any],
     render_3d: bool,
     suffix: str | None = None,
 ) -> dict[str, Any]:
@@ -264,7 +314,7 @@ def _h3_risk_fill_layer(
             "type": "fill-extrusion",
             "paint": {
                 "fill-extrusion-color": risk_color,
-                "fill-extrusion-opacity": 0.62,
+                "fill-extrusion-opacity": risk_opacity,
                 "fill-extrusion-height": ["*", ["coalesce", ["get", "risk_score"], 0], 45],
                 "fill-extrusion-base": 0,
             },
@@ -276,7 +326,7 @@ def _h3_risk_fill_layer(
         "type": "fill",
         "paint": {
             "fill-color": risk_color,
-            "fill-opacity": 0.58,
+            "fill-opacity": risk_opacity,
         },
     }
 
