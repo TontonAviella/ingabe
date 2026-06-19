@@ -31,15 +31,31 @@ services:
   # --- App: production overrides ---
   app:
     restart: unless-stopped
-    # 8 vCPU → 6 workers (leave headroom for GDAL subprocesses + PostGIS)
+    # 8 vCPU → 6 workers (leave headroom for GDAL subprocesses + PostGIS).
+    # install-hermes-plugin.sh wires ~/.hermes/plugins/ingabe-sage + seeds
+    # config.yaml. Idempotent on every boot; no-op when MUNDI_USE_HERMES=0.
     command: >
-      bash -c "alembic upgrade head &&
+      bash -c "([ -f /app/scripts/install-hermes-plugin.sh ] && bash /app/scripts/install-hermes-plugin.sh || echo '[boot] install-hermes-plugin.sh missing, continuing without it') &&
+      alembic upgrade head &&
       uvicorn src.wsgi:app --host 0.0.0.0 --port 8000
       --workers ${WEB_CONCURRENCY:-6} --log-level info
       --proxy-headers --forwarded-allow-ips='*'"
     environment:
       - WEB_CONCURRENCY=${WEB_CONCURRENCY:-6}
       - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
+      # Hermes Phase 2 flags.
+      # MUNDI_USE_HERMES=0 (default) → existing hand-rolled chat loop.
+      # MUNDI_USE_HERMES=1 → src/services/hermes_runtime.py dispatches
+      # through the Hermes Agent gateway sidecar. Rollback = back to 0
+      # + restart. See CLAUDE.md "Hermes Phase 2".
+      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
+      # MUNDI_TOOL_CALL_ENABLED=0 (default) → /internal/tool-call returns
+      # 503. Flip to 1 to let the Hermes plugin call back into mundi for
+      # Sage tools (PR #55 dispatch + PR #57 shim — every legacy tool now
+      # has a real handler). Should be 1 in any deployment that also runs
+      # MUNDI_USE_HERMES=1, otherwise Hermes turns will dead-letter on
+      # the first tool call.
+      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       # GDAL env vars for rio-tiler COG reads via S3/HTTP
       - GDAL_CACHEMAX=256
       - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
@@ -72,6 +88,148 @@ services:
       resources:
         limits:
           memory: 10G
+
+  # --- Hermes Agent gateway (Phase 2 sidecar; default profile off until configured) ---
+  # Re-uses the mundi-public:local image (Hermes is installed there via PR #44).
+  # Runs `hermes gateway run` as a long-lived daemon. Holds messaging channel
+  # state (WhatsApp QR pairings, Telegram tokens, Slack manifests) and the
+  # ingabe-sage plugin in /app/hermes_integration/plugins.
+  #
+  # The gateway is only reachable from the docker-internal network; UFW on the
+  # host doesn't expose it externally. mundi-app talks to it over the docker
+  # bridge at hermes-gateway:<acp-port> (port wired in PR #47 once ACP dep is
+  # added).
+  #
+  # State directory: /home/appuser/.hermes is a named volume so QR pairings +
+  # session checkpoints + profiles survive container restarts.
+  #
+  # SAFETY: this service is in the compose file but the runtime cutover is
+  # gated by MUNDI_USE_HERMES=0 on the app service. The gateway can be
+  # running while users continue on the hand-rolled chat loop — no automatic
+  # routing happens until the flag flips.
+  hermes-gateway:
+    # Gated behind the `hermes` compose profile so `docker compose up -d`
+    # (default) does NOT bring this up. Operators opt in once first-run
+    # config is in place:
+    #   docker compose --profile hermes -f ...prod.yml up -d hermes-gateway
+    # Before first up: bootstrap config.yaml + at least one profile via
+    # `docker run --rm -v hermes-state:/home/appuser mundi-public:local
+    #  /app/.venv/bin/hermes setup` (interactive). See PR #44 deploy notes.
+    profiles: ["hermes"]
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-hermes-gateway
+    # `hermes gateway run` is the foreground daemon. -v for INFO logs (we want
+    # to see channel handshakes during early soak). --accept-hooks avoids TTY
+    # prompts for shell-script hook consent (we don't ship hooks today).
+    #
+    # The leading `mkdir -p ... && ln -sfn ...` symlinks our in-image plugin
+    # path into the directory Hermes scans for user plugins (~/.hermes/plugins).
+    # See `hermes_cli/plugins.py:get_bundled_plugins_dir()` — Hermes checks
+    # ${HERMES_HOME}/plugins/<name>/ alongside its own bundled plugins dir.
+    # We can't override HERMES_BUNDLED_PLUGINS because that would clobber the
+    # built-in channel adapters (Telegram/WhatsApp/Slack/etc). User-plugin
+    # scan is additive and the right hook.
+    command: >
+      sh -c "mkdir -p /home/appuser/.hermes/plugins
+      && ln -sfn /app/hermes_integration/plugins/ingabe-sage
+      /home/appuser/.hermes/plugins/ingabe-sage
+      && exec /app/.venv/bin/hermes gateway run -v --accept-hooks"
+    environment:
+      # Inherit LLM provider config from .env (same key as mundi-app uses).
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Force HOME so `hermes` finds its state directory inside the volume.
+      - HOME=/home/appuser
+      # Acknowledge first-run prompts non-interactively (we're in a daemon).
+      - HERMES_ACCEPT_HOOKS=1
+      # Tool-call proxy: ingabe-sage's proxied handlers POST to this URL
+      # with an HMAC-signed body. Service-DNS resolves inside the compose
+      # network; both fields are required for tool dispatch to work.
+      - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
+      - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
+    volumes:
+      # Hermes state — profiles, sessions, channel credentials, hooks allowlist.
+      # Named volume = survives restarts but stays isolated from host filesystem.
+      - hermes-state:/home/appuser
+      # NOTE: plugin code lives inside the image at /app/hermes_integration/
+      # (baked by `COPY . /app/` in the Dockerfile). The `ln -sfn` in the
+      # command above exposes it to Hermes via the user-plugins scan path.
+      # We do NOT bind-mount the plugin dir from the host because mounting
+      # under /home/appuser/.hermes/ interacts badly with the named volume
+      # (root-owned overlays + PermissionError on /home/appuser/.hermes/logs).
+    restart: unless-stopped
+    # No `ports:` block — the gateway is internal-only. mundi-app reaches it
+    # via docker DNS at `hermes-gateway:<port>` once ACP wiring lands.
+    depends_on:
+      # Gateway doesn't need the app, but waits for postgres in case future
+      # plugin handlers want to call back into mundi-app for tool execution
+      # (the reverse-callback pattern in project_unified_account_design.md).
+      - postgresdb
+    deploy:
+      resources:
+        limits:
+          # Modest cap — gateway is the orchestrator brain, not heavy compute.
+          # Real LLM cost lives on OpenRouter; gateway just shepherds requests.
+          memory: 1G
+
+  # --- Hermes ACP TCP bridge ---
+  # mundi-app talks ACP (Agent Client Protocol) to the hermes-gateway, but
+  # hermes-acp speaks JSON-RPC over stdin/stdout only. This bridge listens
+  # on a docker-internal TCP port and spawns hermes-acp per connection,
+  # piping the socket's bytes to/from the subprocess.
+  #
+  # See hermes_integration/bridge/acp_tcp_bridge.py for the implementation.
+  # Internal-only: no `ports:` exposure to the host network.
+  #
+  # Profile-gated: `--profile hermes` activation, same as the gateway.
+  # When mundi-app's MUNDI_USE_HERMES=0 (default), this service can be
+  # stopped without affecting users. When MUNDI_USE_HERMES=1, this service
+  # MUST be running for run_sage_turn_via_hermes() to function.
+  hermes-acp-bridge:
+    profiles: ["hermes"]
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-hermes-acp-bridge
+    command: >
+      /app/.venv/bin/python -m hermes_integration.bridge.acp_tcp_bridge
+    environment:
+      - HOME=/home/appuser
+      - ACP_BRIDGE_PORT=9999
+      - ACP_BRIDGE_HOST=0.0.0.0
+      # hermes-acp's `_resolve_custom_runtime` reads ALL THREE of these
+      # to build the LLM client. Missing OPENAI_BASE_URL was the cause of
+      # the "no endpoint credentials" warning + empty prompt response we
+      # caught 2026-05-15: config.yaml had the base_url, but hermes-acp's
+      # auxiliary-client resolver falls back to env when its internal
+      # `resolve_runtime_provider("custom")` doesn't return a complete dict.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    volumes:
+      # The bridge needs to spawn hermes-acp, which reads ~/.hermes/config.yaml
+      # for model + provider settings AND writes ~/.hermes/logs/agent.log
+      # during session/new. Must be `:rw` — the gateway is single-process,
+      # spawned hermes-acp subprocesses are short-lived per-turn, so write
+      # contention isn't a real concern. Earlier `:ro` blocked session/new
+      # with Errno 30 (read-only fs) caught 2026-05-15.
+      - hermes-state:/home/appuser:rw
+      # The bridge module itself lives in the application source tree.
+      # We mount the worktree's hermes_integration/ at the matching path
+      # inside the container so `python -m hermes_integration.bridge....`
+      # resolves. NOTE: this requires the bridge code to be deployed on
+      # the host before bringing this service up.
+      - ./hermes_integration:/app/hermes_integration:ro
+    restart: unless-stopped
+    depends_on:
+      - postgresdb
+    deploy:
+      resources:
+        limits:
+          # Bridge is just byte-pumping. Each connection spawns a
+          # hermes-acp subprocess which is the heavier process. Cap at
+          # 512M for the bridge itself; subprocesses are accounted to
+          # this cgroup but get their own implicit budget.
+          memory: 512M
 
   # --- PostgreSQL: tuned for PostGIS on 16 GB host ---
   postgresdb:
@@ -177,3 +335,7 @@ services:
 
 volumes:
   qdrant_data:
+  # Hermes Agent gateway state: profiles, sessions, channel credentials,
+  # checkpoints. Lives outside the host filesystem so it can't be clobbered
+  # by deploy.sh; `hermes backup` is the canonical export path.
+  hermes-state:

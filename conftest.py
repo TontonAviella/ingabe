@@ -50,6 +50,32 @@ def run_alembic_operation():
     return _run_alembic_operation
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_migrations_run():
+    """Run Alembic migrations once per pytest session/worker before any
+    test executes.
+
+    Why this needs to exist: many tests connect to PostgreSQL directly
+    via `asyncpg.connect(_build_postgres_url())` and expect cache tables
+    (weather_daily_cache, ndvi_district_cache, etc.) to exist. Previously
+    they got lucky — the `client` session fixture would call
+    `run_migrations()` and tests on the same worker would benefit. Under
+    pytest-xdist's `--dist=loadfile` (introduced after the OOM cascade
+    fix in PR #57 surfaced ordering bugs), a worker that runs only
+    direct-asyncpg test files never touches the `client` fixture, so
+    its tests race against migrations from other workers and fail with
+    `UndefinedTableError: relation "weather_daily_cache" does not exist`.
+
+    `run_migrations` already uses a Postgres advisory lock so multiple
+    workers calling it concurrently is safe — only one actually applies
+    the upgrade, the others wait then no-op. Making this autouse forces
+    every session to wait on that lock before tests start.
+    """
+    from src.database.migrate import run_migrations
+    asyncio.run(run_migrations())
+    yield
+
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"

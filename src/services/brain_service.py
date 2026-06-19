@@ -186,15 +186,34 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
 _FRONTMATTER_REF_KEYS = {"related", "see_also", "links", "references", "parent", "children"}
 
 
-def _extract_link_targets(page: PageInput) -> set[str]:
-    """Extract outbound link targets from wikilinks in compiled_truth + frontmatter refs."""
-    targets: set[str] = set()
+def _extract_link_targets(page: PageInput) -> list[tuple[str, str]]:
+    """Extract outbound link targets + per-link context from a page.
+
+    Returns a list of (target_slug, context_window) tuples. The context
+    window is up to ~100 chars on each side of the wikilink match in
+    compiled_truth, used downstream by `infer_link_type` to choose the
+    edge type. Frontmatter references carry empty context (they are
+    structural references, not narrative).
+
+    Was previously `set[str]` (just slugs). Upgraded to tuples so
+    `BrainService.put_page` can pass real context to the inference
+    layer instead of writing `link_type='auto'`. See
+    `src/services/brain_edge_inference.py` for the inference rules.
+    """
+    from src.services.brain_edge_inference import context_window
+
+    targets: dict[str, str] = {}
     if page.compiled_truth:
         for m in _WIKILINK_RE.finditer(page.compiled_truth):
             try:
                 slug = _validate_slug(m.group(1))
                 if slug:
-                    targets.add(slug)
+                    ctx = context_window(
+                        page.compiled_truth, m.start(), m.end(), window=100
+                    )
+                    # First occurrence wins; ignore duplicates so the
+                    # caller still writes each (from, to) edge once.
+                    targets.setdefault(slug, ctx)
             except ValueError:
                 pass
     if page.frontmatter:
@@ -216,15 +235,17 @@ def _extract_link_targets(page: PageInput) -> set[str]:
                 for item in val:
                     if isinstance(item, str):
                         try:
-                            targets.add(_validate_slug(item))
+                            slug = _validate_slug(item)
+                            targets.setdefault(slug, "")
                         except ValueError:
                             pass
             elif isinstance(val, str):
                 try:
-                    targets.add(_validate_slug(val))
+                    slug = _validate_slug(val)
+                    targets.setdefault(slug, "")
                 except ValueError:
                     pass
-    return targets
+    return list(targets.items())
 
 
 def _content_hash(page: PageInput) -> str:
@@ -361,25 +382,164 @@ class BrainService:
 
         result_page = _row_to_page(row)
 
-        # Auto-link: extract [[wikilinks]] and frontmatter refs, sync brain_links
+        # Auto-link: extract [[wikilinks]] + frontmatter refs, infer
+        # link_type per edge, sync brain_links. Two-pass:
+        #   (1) For each extracted (slug, context) tuple, look up the
+        #       target's page.type and call `infer_link_type` for a
+        #       deterministic edge label. No more `link_type='auto'`.
+        #   (2) Post-write, run `geometric_refinement_sql()` once over
+        #       this page's outbound edges. Promotes any structural
+        #       edge whose geometry actually checks out via PostGIS
+        #       ST_Contains (field-in-district, etc.). Idempotent.
+        from src.services.brain_edge_inference import (
+            geometric_refinement_sql,
+            infer_link_type,
+        )
+
         link_targets = _extract_link_targets(page)
         if link_targets:
             await conn.execute(
                 "DELETE FROM brain_links WHERE from_page_id = $1",
                 result_page.id,
             )
-            for target_slug in link_targets:
+            # Bulk-resolve target types in one round-trip rather than per-edge.
+            target_slugs = [slug for slug, _ in link_targets]
+            target_rows = await conn.fetch(
+                "SELECT slug, type FROM brain_pages WHERE slug = ANY($1::text[])",
+                target_slugs,
+            )
+            slug_to_type: dict[str, str] = {
+                r["slug"]: r["type"] for r in target_rows
+            }
+            for target_slug, link_ctx in link_targets:
+                target_type = slug_to_type.get(target_slug, "")
+                edge_type = infer_link_type(
+                    page.type,
+                    target_type,
+                    link_context=link_ctx,
+                    page_content=page.compiled_truth or "",
+                )
                 await conn.execute(
                     """
                     INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
-                    SELECT $1, p.id, 'auto', ''
+                    SELECT $1, p.id, $3, $4
                     FROM brain_pages p WHERE p.slug = $2
-                    ON CONFLICT (from_page_id, to_page_id) DO NOTHING
+                    ON CONFLICT (from_page_id, to_page_id) DO UPDATE SET
+                        link_type = EXCLUDED.link_type,
+                        context = EXCLUDED.context
                     """,
-                    result_page.id, target_slug,
+                    result_page.id, target_slug, edge_type, link_ctx,
                 )
+            # Pass 2: PostGIS geometric refinement. No-op when neither
+            # endpoint has geom; safe to run unconditionally.
+            await conn.execute(geometric_refinement_sql(), result_page.id)
+
+        # Pass 3: parse `## Facts` fence from compiled_truth and upsert
+        # rows into brain_facts. Same atomic-write semantics as link
+        # extraction — if the parser finds no fence, this is a no-op.
+        # See src/services/brain_facts_fence.py for the convention.
+        await self._upsert_facts_from_page(conn, result_page.id, page)
 
         return result_page
+
+    async def _upsert_facts_from_page(
+        self,
+        conn: asyncpg.Connection,
+        page_id: int,
+        page: PageInput,
+    ) -> int:
+        """Parse the `## Facts` fence from page.compiled_truth and
+        replace the page's brain_facts rows. Returns the number of
+        facts written (0 when the fence is absent or empty).
+
+        Replace-on-write semantics: deletes existing facts for this
+        page before re-inserting. Avoids ghost rows from edits that
+        remove a fact line. Trajectory continuity across edits is
+        preserved via the valid_from timestamps inside each fact.
+        """
+        from src.services.brain_facts_fence import parse_facts_fence
+
+        text = page.compiled_truth or ""
+        if "## Facts" not in text and "## facts" not in text.lower():
+            return 0
+
+        facts, _skipped = parse_facts_fence(text)
+        # Always clear the page's existing facts. The fence is the
+        # source of truth for the page's typed claims; a deletion is
+        # the user's intent.
+        await conn.execute(
+            "DELETE FROM brain_facts WHERE page_id = $1", page_id
+        )
+        if not facts:
+            return 0
+        # Bulk insert via unnest arrays — one round-trip regardless of
+        # how many facts the fence holds.
+        await conn.executemany(
+            """
+            INSERT INTO brain_facts
+                (page_id, key, value, value_numeric, unit,
+                 valid_from, valid_until, status, source, context)
+            VALUES ($1, $2, $3, $4, $5,
+                    COALESCE($6, now()), $7, $8, $9, $10)
+            """,
+            [
+                (
+                    page_id, f.key, f.value, f.value_numeric, f.unit,
+                    f.valid_from, f.valid_until, f.status, f.source, f.context,
+                )
+                for f in facts
+            ],
+        )
+        return len(facts)
+
+    async def get_facts_trajectory(
+        self,
+        conn: asyncpg.Connection,
+        slug: str,
+        key: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return the chronological history of a typed claim on one
+        entity, with regressions auto-flagged per the per-key threshold
+        table in brain_facts_fence.REGRESSION_THRESHOLDS.
+
+        Returns a list of dicts (oldest → newest) ready for tool
+        consumption. Each entry has:
+          valid_from, value, value_numeric, unit, status,
+          regression_flag, context, source.
+
+        Empty list when (slug, key) has no facts or the page doesn't
+        exist.
+        """
+        from src.services.brain_facts_fence import flag_regressions
+
+        pf = _PARTNER_FILTER.format(a="bp.")
+        rows = await conn.fetch(
+            f"""
+            SELECT bf.valid_from, bf.value, bf.value_numeric, bf.unit,
+                   bf.status, bf.context, bf.source
+            FROM brain_facts bf
+            JOIN brain_pages bp ON bp.id = bf.page_id
+            WHERE bp.slug = $1 AND bf.key = $2
+            {pf}
+            ORDER BY bf.valid_from ASC
+            LIMIT $3
+            """,
+            slug, key, limit,
+        )
+        trajectory = [
+            {
+                "valid_from": r["valid_from"].isoformat() if r["valid_from"] else None,
+                "value": r["value"],
+                "value_numeric": r["value_numeric"],
+                "unit": r["unit"],
+                "status": r["status"],
+                "context": r["context"],
+                "source": r["source"],
+            }
+            for r in rows
+        ]
+        return flag_regressions(trajectory, key=key)
 
     async def delete_page(self, conn: asyncpg.Connection, slug: str) -> None:
         await conn.execute("DELETE FROM brain_pages WHERE slug = $1", slug)

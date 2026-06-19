@@ -30,6 +30,8 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes.inbox_routes import router as inbox_router
+from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from src.services.posthog_analytics import (
@@ -279,7 +281,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response: Response = await call_next(request)
         # HSTS — 2 years, includeSubDomains. Preload-eligible (longer max-age
         # also lets us submit to hstspreload.org later without re-bumping).
-        # Single source of truth: nginx must NOT also add this header.
+        # Single source of truth: nginx must NOT also add this header — the
+        # browser would honor the first value and silently discard the second,
+        # so we centralize header management here.
         response.headers["Strict-Transport-Security"] = (
             "max-age=63072000; includeSubDomains"
         )
@@ -292,10 +296,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # Skip if endpoint already set a custom CSP (e.g. embed route)
         if "Content-Security-Policy" in response.headers:
             return response
-        # Clerk Frontend API host. Dev/test instances use *.clerk.accounts.dev;
-        # production satellite domains (e.g. clerk.nozalabs.rw) are added via env.
+        # Clerk satellite-domain support: when prod runs on a pk_live_ key,
+        # the frontend talks to a partner-owned satellite host (e.g.
+        # clerk.nozalabs.rw) instead of *.clerk.accounts.dev. We allowlist
+        # both during the cutover so the swap is config-only, not a code
+        # change. Set CLERK_FRONTEND_API_HOST=<host> in the prod .env to
+        # add the satellite domain to script-src + connect-src.
         clerk_host = os.environ.get("CLERK_FRONTEND_API_HOST", "").strip()
         clerk_csp = f" https://{clerk_host}" if clerk_host else ""
+        # CloudFlare Web Insights beacon — Cloudflare's free analytics
+        # script. Loads from static.cloudflareinsights.com, beacons to
+        # cloudflareinsights.com. Both must be in the CSP or the beacon
+        # silently fails with a CSP violation in the browser console.
         s3_connect_src = " ".join(
             endpoint
             for endpoint in (
@@ -612,6 +624,21 @@ app.include_router(
     prefix="/api",
     tags=["Conversations"],
 )
+# Internal inbox: Hermes gateway → mundi-app handoff for inbound channel messages
+# (WhatsApp, Telegram, Slack, ...). Route is HMAC-gated. Default off via
+# MUNDI_INBOX_ENABLED=0. See src/routes/inbox_routes.py for the seam.
+app.include_router(
+    inbox_router,
+    tags=["Internal/Inbox"],
+)
+# Internal tool-call: Hermes-side ingabe-sage plugin → mundi-app callback for
+# dispatching Sage tools against partner-scoped data. Same HMAC scheme as
+# /inbox. Default off via MUNDI_TOOL_CALL_ENABLED=0. See
+# src/routes/tool_call_routes.py for the security boundary docs.
+app.include_router(
+    tool_call_router,
+    tags=["Internal/ToolCall"],
+)
 app.include_router(
     lakehouse_router,
     prefix="/api",
@@ -691,14 +718,23 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(StarletteHTTPException)
 async def spa_server(request: Request, exc: StarletteHTTPException):
-    # Don't handle API 404s - let them bubble up as real 404s
+    # Don't handle API 404s - let them bubble up as real 404s.
+    #
+    # /internal/* is the Hermes plugin callback surface (inbox + tool-call). PR #50
+    # added /internal/inbox but only tested the auth helper, not the HTTP route — so
+    # the omission of `/internal/` here went unnoticed until PR #55 wrote the first
+    # HTTP-level tests for /internal/tool-call. Symptom: any raise HTTPException
+    # from /internal/* routes was rewritten as 200 + SPA index.html because this
+    # fallback served HTML instead of bubbling the status. Add `/internal/` to the
+    # bypass list so the dispatch tests can see 503 / 401 / 422 / 404 as documented.
     if (
         request.url.path.startswith("/api/")
+        or request.url.path.startswith("/internal/")
         or request.url.path.startswith("/supertokens/")
         or request.url.path.startswith("/mcp")
     ):
-        # Return standard 404 response for API routes and MCP routes
-        # Preserve structured detail (dict/list) instead of stringifying
+        # Return standard JSON status response for API/internal/MCP routes.
+        # Preserve structured detail (dict/list) instead of stringifying.
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     # For all other routes, return the SPA's index.html

@@ -274,6 +274,11 @@ def get_openai_client(request: Request) -> AsyncOpenAI:
                 "or configure OPENAI_MODEL=ollama:<model> with a local chat model."
             ),
         )
+    elif not api_key:
+        # openai>=2.0 requires some api_key value during AsyncOpenAI()
+        # construction. Local-only Ollama test configs should still construct
+        # the client even when no hosted credential exists.
+        api_key = "missing-OPENAI_API_KEY"
 
     extra_headers = {}
     if "openrouter.ai" in base_url:

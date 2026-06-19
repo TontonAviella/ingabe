@@ -62,9 +62,36 @@ jobs:
         timeout-minutes: 45
 
       - name: Run tests
+        # -n 6 instead of -n auto: the Depot runner reports 16+ cores so
+        # `auto` spawns 16+ xdist workers. Each worker independently imports
+        # the full FastAPI app (~200 MB resident), so 16 × 200 MB ≈ 3.2 GB
+        # just for the app object graph. Tests that use a per-test
+        # `TestClient(app)` re-run the lifespan (brain scheduler, PG
+        # listeners, WS subscriber) on top of that, and the runner's free
+        # RAM gets tight enough that the OOM killer SIGKILLs random workers
+        # — surfacing as `[gwN] node down: Not properly terminated` and
+        # whichever test the worker happened to be running gets reported
+        # as FAILED. The cascade hit 16+ workers and aborted the run on
+        # PR #57 twice in a row even though the tests pass in isolation.
+        # Capping at -n 6 keeps wall-clock under the 25 min timeout and
+        # eliminates the memory contention.
+        #
+        # --dist=loadfile: keep all tests in a single FILE on the same
+        # worker. Several test files (tests/brain/test_org_context.py,
+        # test_partner_isolation.py) share module-scoped fixtures that
+        # create rows the later tests look up. The default dist=load
+        # distributes individual tests across workers, so the create-row
+        # test runs on gw0 with one RUN_TAG but the lookup test runs on
+        # gw5 with a different RUN_TAG (each worker imports the module
+        # fresh, generating a new uuid.uuid4() RUN_TAG at module top).
+        # That made test_role_check_constraint /
+        # test_cascade_delete_org_removes_memberships fail with
+        # NotNullViolationError once the OOM cascade was fixed and the
+        # tests actually had a chance to run. loadfile preserves the
+        # author's intended same-worker test ordering inside each file.
         run: >
           python3 scripts/posthog_check_event.py --stage backend --check backend_pytest --
-          docker compose run app pytest -vs -n auto --ignore=src/test_worldcover.py
+          docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}

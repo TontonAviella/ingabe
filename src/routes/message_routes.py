@@ -208,6 +208,78 @@ def _is_internal_rwanda_connection(
     )
 
 
+class _ToolCallTextScrubber:
+    """Drops `<tool_call>...</tool_call>` XML/markup that some thinking models
+    (Nemotron 3 Super 120B specifically) sometimes emit as visible text content
+    instead of routing through the OpenAI structured `tool_calls` field.
+
+    Stateful streaming scrubber: maintains a small lookbehind buffer to detect
+    open/close tags that arrive split across multiple delta chunks. Discards
+    any content between `<tool_call>` and `</tool_call>` (inclusive of the
+    tags). At end-of-stream call `.flush()` to drain anything not inside a tag.
+    Unclosed tags at stream end are dropped silently (user sees clean output;
+    the real tool_call already routed through delta.tool_calls).
+
+    Why this exists: see prod incident 2026-05-13 where BK testing screenshot
+    showed raw `<tool_call><function=display_satellite_layer><parameter=bbox>
+    ...` text leaking into Sage's chat reply.
+    """
+    _OPEN = "<tool_call>"
+    _CLOSE = "</tool_call>"
+
+    def __init__(self) -> None:
+        self._buffer: str = ""
+        self._inside: bool = False
+        self._lookback: int = max(len(self._OPEN), len(self._CLOSE))
+
+    def feed(self, delta: str) -> str:
+        """Append `delta`, return whatever's safe to stream to the user now."""
+        self._buffer += delta
+        out: list[str] = []
+        while self._buffer:
+            if self._inside:
+                idx = self._buffer.find(self._CLOSE)
+                if idx == -1:
+                    # No close yet. Keep buffering, retain lookback for split tag.
+                    keep = min(len(self._buffer), self._lookback)
+                    self._buffer = self._buffer[-keep:] if keep else ""
+                    break
+                # Close found — discard everything up to and including close.
+                self._buffer = self._buffer[idx + len(self._CLOSE):]
+                self._inside = False
+            else:
+                idx = self._buffer.find(self._OPEN)
+                if idx == -1:
+                    # No open in buffer. Emit all but the lookback tail in case
+                    # the open is split across the next delta.
+                    safe_len = max(0, len(self._buffer) - self._lookback)
+                    out.append(self._buffer[:safe_len])
+                    self._buffer = self._buffer[safe_len:]
+                    break
+                # Open found — emit content BEFORE it, then drop the open tag.
+                out.append(self._buffer[:idx])
+                self._buffer = self._buffer[idx + len(self._OPEN):]
+                self._inside = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        """End-of-stream flush. Returns any safe-to-emit remainder.
+
+        Also resets state so the scrubber is safe to reuse if a caller chooses
+        to (prod creates a fresh scrubber per attempt; this is defence-in-depth
+        against future reuse footguns).
+        """
+        if self._inside:
+            # Unclosed tag — discard buffer AND reset state, otherwise a
+            # reused scrubber would keep silently dropping all input.
+            self._buffer = ""
+            self._inside = False
+            return ""
+        out = self._buffer
+        self._buffer = ""
+        return out
+
+
 async def _ensure_rwanda_postgis_connection(
     conn, project_id: str, user_id: str,
 ) -> str | None:
@@ -1950,6 +2022,25 @@ async def process_chat_interaction_task(
     client_turn_id: str | None = None,
     user_message_id: str | None = None,
 ):
+    # Phase 2 cutover fork: when MUNDI_USE_HERMES=1, hand the turn off to
+    # the Hermes Agent runtime. Default is OFF — the existing hand-rolled
+    # chat loop below runs as it did before. See src/services/hermes_runtime.py
+    # for the wiring contract and rollback procedure.
+    from src.services.hermes_runtime import hermes_is_enabled, run_sage_turn_via_hermes
+    if hermes_is_enabled():
+        logger.info(
+            "MUNDI_USE_HERMES=1 → routing chat turn through Hermes runtime "
+            "(map=%s user=%s conversation=%s)",
+            map_id, user_id, conversation.id,
+        )
+        return await run_sage_turn_via_hermes(
+            request=request, map_id=map_id, session=session, user_id=user_id,
+            chat_args=chat_args, map_state=map_state, conversation=conversation,
+            system_prompt_provider=system_prompt_provider,
+            connection_manager=connection_manager,
+            pydantic_tool_calls=pydantic_tool_calls,
+        )
+
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
     partner_id = session.get_org_id()
@@ -1991,11 +2082,25 @@ async def process_chat_interaction_task(
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
         _recent_tool_signatures: list[str] = []
 
+        # Initialised inside the loop per LLM call, but referenced by the
+        # pre-LLM cancellation break too (so the WS clear event below has
+        # a turn_id to attach when the very first iteration cancels).
+        turn_id: str | None = None
+
         for i in range(25):
             # Check if the message processing has been cancelled
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    # Emit a WS done=True so the frontend clears the loading
+                    # state and finalises whatever partial message it has.
+                    # Without this, the cancel button "succeeds" on the server
+                    # but the UI sits on a zombie spinner until the user
+                    # refreshes. See feedback memory on cancel WS-emit.
+                    try:
+                        await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+                    except Exception:
+                        logger.debug("kue_stream_token done=True (pre-LLM cancel) failed", exc_info=True)
                     break
             except Exception:
                 logger.debug("Redis unavailable for cancellation check")
@@ -2409,6 +2514,15 @@ async def process_chat_interaction_task(
                         "sage_routing: filtered tools by %s (%d -> %d)",
                         _routing.reason, _before, len(tools_payload),
                     )
+                else:
+                    # Always log the default-path decision so we can spot
+                    # small-talk that's slipping through the regex. Truncate
+                    # to 60 chars to avoid leaking long user input to logs.
+                    _preview = _last_user_text[:60].replace("\n", " ")
+                    logger.info(
+                        "sage_routing: default path (reason=%s, msg_len=%d, preview=%r)",
+                        _routing.reason, len(_last_user_text), _preview,
+                    )
 
             _llm_messages = [
                 {
@@ -2756,6 +2870,12 @@ async def process_chat_interaction_task(
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    # Same WS done=True signal as the pre-LLM cancel branch,
+                    # so the frontend clears its spinner.
+                    try:
+                        await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+                    except Exception:
+                        logger.debug("kue_stream_token done=True (post-LLM cancel) failed", exc_info=True)
                     break
             except Exception:
                 logger.debug("Redis unavailable for cancellation check")

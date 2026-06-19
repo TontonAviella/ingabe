@@ -16,17 +16,28 @@ dependencies = [
     "forge3d==1.26.0",
     "geopandas==1.1.3",
     "h3==4.1.0",
+    # Hermes Agent — Nous Research's MIT-licensed Python AI agent framework.
+    # Phase 2 of the Sage migration: replace _handle_chat_completion's hand-rolled
+    # turn loop with Hermes's runtime, plug ingabe-sage plugin from hermes_integration/.
+    # Pinned to v2026.5.7 (date-versioned tag) because earlier 0.13.0 used exact pins
+    # that conflicted with our openai==2.36.0; v2026.5.7 uses `openai>=2.21.0,<3` ranges.
+    # NOT yet imported in src/ — adding here so the dep is resolvable before Stream 2
+    # wires the runtime.
+    "hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7",
     "httpx==0.28.1",
     "httpx-ws==0.7.2",
     "laspy==2.6.1",
     "niyamit-sphere==0.2.0",
     "numpy==2.3.1",
-    "openai==1.78.1",
+    "openai==2.36.0",
     "opentelemetry-api==1.36.0",
     "opentelemetry-exporter-otlp-proto-http==1.36.0",
     "opentelemetry-sdk==1.36.0",
     "pillow==9.4.0",
-    "pydantic==2.11.4",
+    # Bumped 2.11.4 → 2.13.4 to satisfy hermes-agent's >=2.12.5 floor.
+    # Pydantic 2.11 → 2.13 stays in the 2.x line; the v2 stability contract
+    # means no breaking API changes for model definitions.
+    "pydantic==2.13.4",
     "pyogrio==0.12.1",
     "pyproj==3.7.2",
     "pytest==8.3.5",

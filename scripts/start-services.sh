@@ -2,7 +2,11 @@
 # Start all mundi.ai services: main app (8000), field monitor (8001), insurance (8002)
 # Main app runs in foreground; satellite APIs run as background processes with auto-restart.
 
-set -e
+# -e exit on error, -o pipefail propagate failures through pipes (so a failure
+# in `cmd | sed` actually fails the script). NOT using -u (unset vars) because
+# the existing entrypoint references several env vars without defaults and
+# adding -u risks breaking boot in unexpected configurations.
+set -eo pipefail
 
 echo "[start-services] Installing dependencies..."
 # Bootstrap pip if missing (common in slim containers)
@@ -17,6 +21,12 @@ echo "[start-services] Dependencies ready"
 
 echo "[start-services] Running alembic migrations..."
 alembic upgrade head
+
+# --- Hermes plugin install (idempotent, see scripts/install-hermes-plugin.sh) ----
+# This wiring is also called from docker-compose.prod.yml directly because
+# prod's `command:` override skips this start-services.sh entirely (prod
+# does not run the satellite APIs below). Single source of truth.
+bash /app/scripts/install-hermes-plugin.sh
 
 echo "[start-services] Starting field monitor API on :8001..."
 (
@@ -37,4 +47,4 @@ echo "[start-services] Starting insurance API on :8002..."
 ) &
 
 echo "[start-services] Starting main app on :8000..."
-exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*'
+exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*' --workers ${UVICORN_WORKERS:-4}
