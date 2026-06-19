@@ -6,6 +6,11 @@ from src.services.pipeline_evidence import (
     read_pipeline_evidence,
     record_pipeline_evidence,
 )
+from src.tools.pipeline_evidence import (
+    GetPipelineEvidenceStatusArgs,
+    get_pipeline_evidence_status,
+)
+from src.tools.pyd import tool_from
 
 
 def test_pipeline_evidence_records_and_filters_latest_safe_records(tmp_path, monkeypatch):
@@ -87,3 +92,11 @@ def test_pipeline_evidence_concurrent_writes_keep_latest_records(tmp_path, monke
     assert {record["asset_name"] for record in result["latest"]} == {
         f"asset_{idx}" for idx in range(16)
     }
+
+
+def test_pipeline_evidence_tool_schema_is_strict_compatible():
+    tool = tool_from(get_pipeline_evidence_status, GetPipelineEvidenceStatusArgs)
+    params = tool["function"]["parameters"]
+
+    assert params["additionalProperties"] is False
+    assert sorted(params["required"]) == sorted(params["properties"].keys())
