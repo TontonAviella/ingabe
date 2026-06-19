@@ -1,4 +1,7 @@
-from src.services.h3_layer_persistence import build_h3_risk_maplibre_layers
+from src.services.h3_layer_persistence import (
+    build_h3_risk_maplibre_layers,
+    h3_pmtiles_maxzoom_for_zoom_map,
+)
 from src.services.h3_spatial_insight import H3SpatialInsightInput, create_h3_spatial_insight
 
 
@@ -118,3 +121,15 @@ def test_h3_attention_style_is_visible_over_orthophotos():
         "#ffffff",
         "#111827",
     ]
+
+
+def test_h3_pmtiles_generation_targets_high_zoom_drone_views():
+    maxzoom = h3_pmtiles_maxzoom_for_zoom_map(
+        [
+            {"h3_resolution": 10, "minzoom": 0, "maxzoom": 15},
+            {"h3_resolution": 11, "minzoom": 15, "maxzoom": 17},
+            {"h3_resolution": 12, "minzoom": 17, "maxzoom": 24},
+        ]
+    )
+
+    assert maxzoom == 20

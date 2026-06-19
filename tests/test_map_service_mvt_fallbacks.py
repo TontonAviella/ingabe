@@ -3,6 +3,7 @@ from src.services.map_service import (
     VISIBLE_H3_RISK_COLOR,
     VISIBLE_H3_RISK_OPACITY,
     append_mvt_layers_with_legacy_source_fallbacks,
+    vector_source_maxzoom,
 )
 
 
@@ -52,3 +53,10 @@ def test_existing_h3_attention_layers_get_visible_runtime_style():
     assert target_layers[0]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY
     assert target_layers[1]["paint"]["fill-color"] == VISIBLE_H3_RISK_COLOR
     assert target_layers[1]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY
+
+
+def test_vector_source_maxzoom_accepts_pmtiles_metadata():
+    assert vector_source_maxzoom({"pmtiles_maxzoom": 20}) == 20
+    assert vector_source_maxzoom({"pmtiles_maxzoom": "20"}) == 20
+    assert vector_source_maxzoom({"pmtiles_maxzoom": 99}) is None
+    assert vector_source_maxzoom({}) is None

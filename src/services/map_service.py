@@ -146,6 +146,19 @@ def append_mvt_layers_with_legacy_source_fallbacks(
             existing_ids.add(fallback_id)
 
 
+def vector_source_maxzoom(metadata: dict) -> int | None:
+    raw_maxzoom = metadata.get("pmtiles_maxzoom")
+    if raw_maxzoom is None:
+        return None
+    try:
+        maxzoom = int(raw_maxzoom)
+    except (TypeError, ValueError):
+        return None
+    if maxzoom < 0 or maxzoom > 24:
+        return None
+    return maxzoom
+
+
 def validate_remote_url(url: str, source_type: str) -> str:
     """
     Validate remote URL to prevent SSRF attacks and ensure proper format.
@@ -742,15 +755,21 @@ async def get_map_style_internal(
     # Add vector layers as sources and layers to the style
     for idx, layer in enumerate(vector_layers, 1):
         layer_id = layer["layer_id"]
+        metadata = json.loads(layer.get("metadata", "{}"))
+        source_maxzoom = vector_source_maxzoom(metadata)
+
+        def _vector_pmtiles_source(url: str) -> dict:
+            source: dict[str, object] = {"type": "vector", "url": url}
+            if source_maxzoom is not None:
+                source["maxzoom"] = source_maxzoom
+            return source
 
         if layer_id in presigned_urls:
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles://{presigned_urls[layer_id]}",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles://{presigned_urls[layer_id]}"
+            )
         elif only_show_inline_sources and not layer["remote_url"]:
             # Fallback: pmtiles_key was missing — should not happen
-            metadata = json.loads(layer.get("metadata", "{}"))
             pmtiles_key = metadata.get("pmtiles_key")
             assert pmtiles_key is not None, f"Missing pmtiles_key for layer {layer_id}"
 
@@ -761,16 +780,14 @@ async def get_map_style_internal(
                 s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=28800),
                 "presigned URL", f"PMTiles {pmtiles_key}",
             )
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles://{presigned_url}",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles://{presigned_url}"
+            )
         else:
             # Default to PMTiles
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles:///api/layer/{layer_id}.pmtiles",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles:///api/layer/{layer_id}.pmtiles"
+            )
 
         # Check if override_layers is not None
         if override_layers is not None and layer_id in override_layers:

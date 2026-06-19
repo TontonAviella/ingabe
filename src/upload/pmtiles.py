@@ -20,6 +20,13 @@ from src.utils import get_async_s3_client, get_bucket_name
 logger = logging.getLogger(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
+MAX_TIPPECANOE_MAXZOOM = 22
+
+
+def _normalize_tippecanoe_maxzoom(maxzoom: int | None) -> int | None:
+    if maxzoom is None:
+        return None
+    return max(0, min(MAX_TIPPECANOE_MAXZOOM, int(maxzoom)))
 
 
 def _build_flatgeobuf_reproject_command(
@@ -65,18 +72,28 @@ def _build_tippecanoe_pmtiles_command(
     *,
     output_path: str,
     input_path: str,
+    maxzoom: int | None = None,
 ) -> list[str]:
-    return [
+    command = [
         "tippecanoe",
         "-o",
         output_path,
         "-q",
-        "-zg",
-        "--drop-densest-as-needed",
-        "-l",
-        MVT_LAYER_NAME,
-        input_path,
     ]
+    normalized_maxzoom = _normalize_tippecanoe_maxzoom(maxzoom)
+    if normalized_maxzoom is None:
+        command.append("-zg")
+    else:
+        command.extend(["-z", str(normalized_maxzoom)])
+    command.extend(
+        [
+            "--drop-densest-as-needed",
+            "-l",
+            MVT_LAYER_NAME,
+            input_path,
+        ]
+    )
+    return command
 
 
 def _build_ogr_pmtiles_fallback_command(
@@ -102,6 +119,7 @@ async def generate_pmtiles_from_ogr_source(
     user_id: str | None = None,
     project_id: str | None = None,
     dataset_layer: str | None = None,
+    tippecanoe_maxzoom: int | None = None,
 ) -> str:
     """Generate PMTiles from any OGR-compatible source and store in S3.
 
@@ -137,6 +155,7 @@ async def generate_pmtiles_from_ogr_source(
         tippecanoe_cmd = _build_tippecanoe_pmtiles_command(
             output_path=local_output_file,
             input_path=reprojected_file,
+            maxzoom=tippecanoe_maxzoom,
         )
 
         process = await asyncio.create_subprocess_exec(
@@ -184,6 +203,10 @@ async def generate_pmtiles_from_ogr_source(
         )
 
         # Update the database with the PMTiles key (atomic JSONB merge — no race)
+        metadata_update: dict[str, object] = {"pmtiles_key": pmtiles_key}
+        normalized_maxzoom = _normalize_tippecanoe_maxzoom(tippecanoe_maxzoom)
+        if normalized_maxzoom is not None:
+            metadata_update["pmtiles_maxzoom"] = normalized_maxzoom
         async with get_async_db_connection() as conn:
             await conn.execute(
                 """
@@ -191,7 +214,7 @@ async def generate_pmtiles_from_ogr_source(
                 SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
                 WHERE layer_id = $2
                 """,
-                json.dumps({"pmtiles_key": pmtiles_key}),
+                json.dumps(metadata_update),
                 layer_id,
             )
 
@@ -327,6 +350,7 @@ async def process_vector_layer_common(
     user_id: str,
     project_id: str,
     dataset_layer: str | None = None,
+    tippecanoe_maxzoom: int | None = None,
 ) -> VectorProcessingResult:
     """Unified processing pipeline for vector layers from any source.
 
@@ -389,8 +413,12 @@ async def process_vector_layer_common(
                 user_id,
                 project_id,
                 dataset_layer=dataset_layer,
+                tippecanoe_maxzoom=tippecanoe_maxzoom,
             )
             metadata_updates.pmtiles_key = pmtiles_key
+            metadata_updates.pmtiles_maxzoom = _normalize_tippecanoe_maxzoom(
+                tippecanoe_maxzoom
+            )
         except Exception as e:
             logger.warning("PMTiles generation failed for %s: %s", ogr_source, e)
             # Continue without PMTiles - not critical

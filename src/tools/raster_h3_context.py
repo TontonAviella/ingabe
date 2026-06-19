@@ -185,6 +185,7 @@ async def create_raster_h3_context_layer(
                     "name": f"Raster Context - {row['name']}",
                     "pmtiles": True,
                     "geoparquet": bool(persisted_layer.geoparquet_key),
+                    "pmtiles_maxzoom": persisted_layer.pmtiles_maxzoom,
                     "feature_count": persisted_layer.feature_count,
                 }
                 await asyncio.sleep(0.2)
@@ -198,6 +199,7 @@ async def create_raster_h3_context_layer(
             result["layer_id"] = persisted_layer.layer_id
             result["pmtiles_key"] = persisted_layer.pmtiles_key
             result["geoparquet_key"] = persisted_layer.geoparquet_key
+            result["pmtiles_maxzoom"] = persisted_layer.pmtiles_maxzoom
         else:
             source_id = f"sage-raster-h3-{uuid.uuid4().hex[:8]}"
             async with kue_ephemeral_action(
@@ -777,6 +779,10 @@ def _capture_raster_h3_telemetry(
             distinct_id=str(meta.user_uuid),
             properties={
                 "layer_id": args.layer_id,
+                "map_id": meta.map_id,
+                "project_id": meta.project_id,
+                "conversation_id": meta.conversation_id,
+                "rendered_layer_id": result.get("layer_id"),
                 "domain": args.domain,
                 "h3_resolution": args.h3_resolution,
                 "h3_resolutions_csv": ",".join(
@@ -785,13 +791,22 @@ def _capture_raster_h3_telemetry(
                 )
                 if isinstance(summary, dict)
                 else str(args.h3_resolution),
-                "adaptive_resolution": summary.get("adaptive_resolution") if isinstance(summary, dict) else False,
-                "resolution_count": summary.get("resolution_count") if isinstance(summary, dict) else 1,
+                "adaptive_resolution": (
+                    summary.get("adaptive_resolution") if isinstance(summary, dict) else False
+                ),
+                "resolution_count": (
+                    summary.get("resolution_count") if isinstance(summary, dict) else 1
+                ),
                 "max_sample_pixels": args.max_sample_pixels,
                 "cell_count": summary.get("cell_count") if isinstance(summary, dict) else None,
-                "elapsed_ms": summary.get("elapsed_ms") if isinstance(summary, dict) else None,
+                "elapsed_ms": (
+                    summary.get("elapsed_ms") if isinstance(summary, dict) else None
+                ),
                 "status": result.get("status"),
                 "persisted": persisted,
+                "pmtiles_maxzoom": result.get("pmtiles_maxzoom"),
+                "pmtiles_present": bool(result.get("pmtiles_key")),
+                "geoparquet_present": bool(result.get("geoparquet_key")),
             },
         )
     except Exception:

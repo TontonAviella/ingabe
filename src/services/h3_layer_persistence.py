@@ -14,6 +14,9 @@ from src.utils import generate_id
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_H3_PMTILES_MAXZOOM = 20
+MAX_H3_PMTILES_MAXZOOM = 22
+
 
 @dataclass(frozen=True)
 class PersistedH3Layer:
@@ -21,6 +24,7 @@ class PersistedH3Layer:
     style_id: str
     pmtiles_key: str
     geoparquet_key: str | None
+    pmtiles_maxzoom: int
     bounds: list[float] | None
     feature_count: int
     geometry_type: str
@@ -52,6 +56,13 @@ async def persist_h3_spatial_insight_layer(
     layer_id = generate_id(prefix="L")
     style_id = generate_id(prefix="S")
     feature_count = len(features)
+    summary = (
+        result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
+    )
+    zoom_resolution_map = summary.get("zoom_resolution_map")
+    pmtiles_maxzoom = h3_pmtiles_maxzoom_for_zoom_map(
+        zoom_resolution_map if isinstance(zoom_resolution_map, list) else None
+    )
 
     with tempfile.TemporaryDirectory() as temp_dir:
         geojson_path = os.path.join(temp_dir, f"{layer_id}.geojson")
@@ -66,14 +77,13 @@ async def persist_h3_spatial_insight_layer(
             layer_name,
             user_uuid,
             project_id,
+            tippecanoe_maxzoom=pmtiles_maxzoom,
         )
 
     if not processed.pmtiles_key:
         raise RuntimeError("H3 PMTiles generation failed")
 
     geoparquet_key = processed.metadata.geoparquet_key
-    summary = result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
-    zoom_resolution_map = summary.get("zoom_resolution_map")
     metadata = processed.metadata.model_dump(exclude_none=True)
     metadata.update(
         {
@@ -87,6 +97,7 @@ async def persist_h3_spatial_insight_layer(
             "source_storage_format": "geoparquet" if geoparquet_key else None,
             "geojson_role": "temporary_backend_conversion_only",
             "pmtiles_key": processed.pmtiles_key,
+            "pmtiles_maxzoom": pmtiles_maxzoom,
             "h3_resolution": summary.get("h3_resolution"),
             "h3_resolutions": summary.get("h3_resolutions"),
             "adaptive_resolution": summary.get("adaptive_resolution"),
@@ -163,10 +174,40 @@ async def persist_h3_spatial_insight_layer(
         style_id=style_id,
         pmtiles_key=processed.pmtiles_key,
         geoparquet_key=geoparquet_key,
+        pmtiles_maxzoom=pmtiles_maxzoom,
         bounds=processed.bounds,
         feature_count=feature_count,
         geometry_type=processed.geometry_type,
     )
+
+
+def h3_pmtiles_maxzoom_for_zoom_map(
+    zoom_resolution_map: list[dict[str, Any]] | None,
+) -> int:
+    """Choose the PMTiles maxzoom needed for zoom-adaptive H3 overlays."""
+
+    raw_config = os.environ.get("MUNDI_H3_PMTILES_MAXZOOM") or os.environ.get(
+        "H3_PMTILES_MAXZOOM"
+    )
+    try:
+        target = (
+            int(raw_config)
+            if raw_config is not None
+            else DEFAULT_H3_PMTILES_MAXZOOM
+        )
+    except (TypeError, ValueError):
+        target = DEFAULT_H3_PMTILES_MAXZOOM
+
+    if zoom_resolution_map:
+        for entry in zoom_resolution_map:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("minzoom", "maxzoom"):
+                value = entry.get(key)
+                if isinstance(value, (int, float)) and value < 24:
+                    target = max(target, int(value))
+
+    return max(13, min(MAX_H3_PMTILES_MAXZOOM, target))
 
 
 def build_h3_risk_maplibre_layers(
