@@ -268,8 +268,11 @@ def test_explicit_satellite_place_keeps_satellite_tools() -> None:
     [
         ("show me Nyamagabe", {"admin_level": "auto", "name": "Nyamagabe"}),
         ("show me Musanze district", {"admin_level": "district", "name": "Musanze"}),
+        ("i wanna see the Busasamana sector", {"admin_level": "sector", "name": "Busasamana"}),
+        ("view Busasamana sector", {"admin_level": "sector", "name": "Busasamana"}),
         ("locate Gasharu village", {"admin_level": "village", "name": "Gasharu"}),
         ("show me Southern Province", {"admin_level": "province", "name": "Southern Province"}),
+        ("I want to see all villages in Gasabo district", {"admin_level": "village", "name": "*", "district": "Gasabo"}),
         ("show all villages in Gasabo district", {"admin_level": "village", "name": "*", "district": "Gasabo"}),
     ],
 )

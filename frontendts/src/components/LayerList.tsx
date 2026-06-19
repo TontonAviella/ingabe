@@ -137,6 +137,25 @@ const LayerList: React.FC<LayerListProps> = ({
         </div>
       );
     }
+    if (layerDetails.type === 'postgis') {
+      const geometryType = (layerDetails.geometry_type ?? layerDetails.metadata?.geometry_type ?? '').toLowerCase();
+      if (geometryType.includes('polygon')) {
+        return (
+          <div
+            className="w-4 h-4 rounded-sm flex-shrink-0"
+            style={{ backgroundColor: 'rgba(255, 77, 77, 0.28)', border: '2px solid #ff2d2d' }}
+            title="PostGIS polygon layer"
+          />
+        );
+      }
+      if (geometryType.includes('line')) {
+        return (
+          <div className="w-4 h-4 flex items-center flex-shrink-0" title="PostGIS line layer">
+            <div className="h-0.5 w-full rounded-full bg-red-400" />
+          </div>
+        );
+      }
+    }
     // Vector layer — symbol not yet loaded, show neutral placeholder
     return <div className="w-4 h-4 rounded-sm bg-gray-600 opacity-60 flex-shrink-0" title="Vector layer" />;
   };
@@ -556,9 +575,7 @@ const LayerList: React.FC<LayerListProps> = ({
                         />
                       </div>
                       {uploadingFile.phase && (
-                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">
-                          {uploadingFile.phase}
-                        </div>
+                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400 truncate">{uploadingFile.phase}</div>
                       )}
                     </>
                   )}

@@ -15,8 +15,8 @@ from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from osgeo import gdal
 
+gdal = pytest.importorskip("osgeo.gdal", reason="GDAL Python bindings not installed")
 gdal.UseExceptions()
 
 from src.upload.preprocessing import preprocess_raster

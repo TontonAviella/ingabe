@@ -349,6 +349,17 @@ _ADMIN_ANALYSIS_BLOCKERS = re.compile(
     re.IGNORECASE,
 )
 
+_ADMIN_DISPLAY_ACTION_RE = (
+    r"show|display|locate|find|draw|outline|map|put|"
+    r"zoom(?:\s+to)?|go\s+to|where\s+is|see|view|look\s+at"
+)
+
+_ADMIN_DISPLAY_REQUEST_RE = (
+    rf"(?:(?:i|we)\s+)?"
+    rf"(?:(?:want|would\s+like|would\s+love)\s+to\s+|wanna\s+)?"
+    rf"(?:{_ADMIN_DISPLAY_ACTION_RE})"
+)
+
 
 def detect_admin_boundary_display(text: str) -> bool:
     """True for pure Rwanda admin boundary/location display requests."""
@@ -364,7 +375,7 @@ def detect_admin_boundary_display(text: str) -> bool:
     ):
         return bool(
             re.search(
-                r"\b(show|display|locate|find|draw|outline|map|put|zoom|go\s+to|where\s+is)\b",
+                rf"\b(?:{_ADMIN_DISPLAY_REQUEST_RE})\b",
                 stripped,
                 re.IGNORECASE,
             )
@@ -373,7 +384,7 @@ def detect_admin_boundary_display(text: str) -> bool:
     return bool(
         re.match(
             r"(?i)^(?:please\s+)?(?:again\s+)?"
-            r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to)"
+            rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})"
             r"\s+(?:me|us\s+)?(?:the\s+)?[a-z][a-z\s.'-]{1,60}"
             r"(?:\s+on\s+the\s+map)?[?.!]*$",
             stripped,
@@ -387,7 +398,7 @@ def _clean_admin_boundary_candidate(value: str) -> str:
     cleaned = re.sub(r"(?i)\b(boundary|boundaries|outline)\b", "", cleaned)
     cleaned = re.sub(
         r"(?i)^\s*(?:please\s+)?(?:again\s+)?"
-        r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to|where\s+is)\s+",
+        rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})\s+",
         "",
         cleaned,
     )
@@ -404,7 +415,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     prompt = " ".join(str(text or "").strip().split())
 
     child_match = re.search(
-        r"(?i)\b(?:show|display|map|draw|outline|locate|find|zoom(?:\s+to)?|go\s+to)?"
+        rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
         r"\s*(?:me|us)?\s*(?:all|the|every)?\s*"
         r"(villages|cells|sectors)\s+"
         r"(?:in|of|within|under|inside)\s+(.+?)\s+"
@@ -432,7 +443,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
 
     simple = re.match(
         r"(?i)^(?:please\s+)?(?:again\s+)?"
-        r"(?:show|display|locate|find|draw|outline|map|put|zoom(?:\s+to)?|go\s+to)"
+        rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})"
         r"\s+(?:me|us\s+)?(?:the\s+)?(.+?)(?:\s+on\s+the\s+map)?[?.!]*$",
         prompt,
     )

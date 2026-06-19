@@ -9,7 +9,6 @@ from typing import List, Optional
 import fiona
 import laspy
 from fastapi import HTTPException, status
-from osgeo import gdal, osr
 from opentelemetry import trace
 from pyproj import Transformer
 
@@ -22,6 +21,24 @@ from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+gdal = None
+osr = None
+
+
+def _require_osgeo():
+    """Import GDAL only for raster paths so route imports work without osgeo."""
+    global gdal, osr
+    if gdal is None or osr is None:
+        try:
+            from osgeo import gdal as _gdal, osr as _osr
+        except ModuleNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="GDAL Python bindings are required for raster preprocessing",
+            ) from exc
+        gdal = _gdal
+        osr = _osr
+    return gdal, osr
 
 
 def preprocess_raster(temp_file_path: str, metadata: dict):
@@ -30,6 +47,7 @@ def preprocess_raster(temp_file_path: str, metadata: dict):
     Mutates ``metadata`` in-place to add EPSG and band statistics.
     Returns bounds as ``[xmin, ymin, xmax, ymax]`` in EPSG:4326, or ``None``.
     """
+    gdal, osr = _require_osgeo()
     bounds = None
     ds = gdal.Open(temp_file_path)
     if ds:
@@ -188,6 +206,7 @@ async def get_layer_bounds_and_metadata(
 
     try:
         if layer_type == LAYER_TYPE_RASTER:
+            gdal, osr = _require_osgeo()
             # Use GDAL for raster bounds extraction
             ds = gdal.Open(ogr_source)
             if ds:

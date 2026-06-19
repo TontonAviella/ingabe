@@ -1239,8 +1239,8 @@ def _admin_boundary_style(layer_id: str) -> list[dict]:
             "source": layer_id,
             "source-layer": source_layer,
             "paint": {
-                "fill-color": "#ff6b6b",
-                "fill-opacity": 0.18,
+                "fill-color": "#ff4d4d",
+                "fill-opacity": 0.16,
             },
         },
         {
@@ -1249,8 +1249,8 @@ def _admin_boundary_style(layer_id: str) -> list[dict]:
             "source": layer_id,
             "source-layer": source_layer,
             "paint": {
-                "line-color": "#111111",
-                "line-width": 2.5,
+                "line-color": "#ff2d2d",
+                "line-width": 3,
             },
         },
     ]
@@ -1354,14 +1354,6 @@ async def _resolve_admin_boundary_query(
             return {"status": "not_found", "admin_level": level}
         total = int(rows[0]["match_count"])
         candidates = [dict(row) for row in rows]
-        if total > 1 and name not in {"*", "all"}:
-            return {
-                "status": "ambiguous",
-                "admin_level": level,
-                "admin_name": name,
-                "candidates": candidates,
-                "match_count": total,
-            }
 
         sql_filters, _ = _filters_for(level, sql=True)
         sql_where = " AND ".join(sql_filters) if sql_filters else "TRUE"
@@ -1370,7 +1362,7 @@ async def _resolve_admin_boundary_query(
             f"SELECT ROW_NUMBER() OVER()::bigint AS id, {attr_select}, geom "
             f"FROM {spec['table']} WHERE {sql_where}"
         )
-        if name in {"*", "all"}:
+        if name in {"*", "all"} or total > 1:
             extent_row = await conn.fetchrow(
                 f"""
                 SELECT ST_XMin(ST_Extent(geom)) AS xmin,
@@ -1397,6 +1389,19 @@ async def _resolve_admin_boundary_query(
             if name not in {"*", "all"}
             else f"{level.title()} Boundaries"
         )
+        if total > 1 and name not in {"*", "all"}:
+            return {
+                "status": "ambiguous",
+                "admin_level": level,
+                "admin_name": display_name,
+                "query": query,
+                "bounds": bounds,
+                "feature_count": total,
+                "attribute_columns": spec["attrs"],
+                "layer_name": f"{display_name} {level.title()} Matches",
+                "candidates": candidates,
+                "match_count": total,
+            }
         return {
             "status": "success",
             "admin_level": level,
@@ -1454,7 +1459,14 @@ def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
                 if parts:
                     examples.append(" / ".join(parts))
         suffix = f" Examples: {'; '.join(examples)}." if examples else ""
-        return f"I found multiple matches for {name}. Please specify the parent district, sector, or cell.{suffix}"
+        count = result.get("match_count") or result.get("feature_count")
+        count_text = f" {count}" if isinstance(count, int) and count > 1 else ""
+        if result.get("layer_id"):
+            return (
+                f"I found{count_text} matches for {name} and added them to the map in red. "
+                f"Specify the parent district, sector, or cell if you want only one.{suffix}"
+            )
+        return f"I found{count_text} matches for {name}. Please specify the parent district, sector, or cell.{suffix}"
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
@@ -1496,7 +1508,7 @@ async def _maybe_run_fast_admin_boundary_turn(
             return False
 
         result = await _resolve_admin_boundary_query(conn, fast_call.arguments)
-        if result.get("status") == "success":
+        if result.get("status") in {"success", "ambiguous"} and result.get("query"):
             layer_id = generate_id(prefix="L")
             style_id = generate_id(prefix="S")
             layer_name = str(result["layer_name"])
