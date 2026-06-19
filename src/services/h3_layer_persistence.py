@@ -210,6 +210,15 @@ def h3_pmtiles_maxzoom_for_zoom_map(
     return max(13, min(MAX_H3_PMTILES_MAXZOOM, target))
 
 
+def h3_resolution_filter(h3_resolution: int) -> list[Any]:
+    """Match H3 resolution whether MVT encodes it as a number or a string."""
+    return [
+        "any",
+        ["==", ["get", "h3_resolution"], h3_resolution],
+        ["==", ["get", "h3_resolution"], str(h3_resolution)],
+    ]
+
+
 def build_h3_risk_maplibre_layers(
     layer_id: str,
     *,
@@ -254,7 +263,7 @@ def build_h3_risk_maplibre_layers(
         for band in zoom_bands:
             band_base = {
                 **base,
-                "filter": ["==", ["get", "h3_resolution"], band["h3_resolution"]],
+                "filter": h3_resolution_filter(band["h3_resolution"]),
             }
             if band["minzoom"] > 0:
                 band_base["minzoom"] = band["minzoom"]

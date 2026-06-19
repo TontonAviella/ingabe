@@ -6,13 +6,52 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from functools import lru_cache
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
 from src.structures import get_async_db_connection, get_async_read_connection
 
 fiona.drvsupport.supported_drivers["WFS"] = "r"
+
+
+def _coerce_layer_metadata(layer_data: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = layer_data.get("metadata") or layer_data.get("metadata_json") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _is_geoparquet_backed_vector(
+    layer_data: Dict[str, Any], metadata: Dict[str, Any]
+) -> bool:
+    if str(metadata.get("analytics_format", "")).lower() == "geoparquet":
+        return True
+
+    storage_candidates = [
+        layer_data.get("s3_key"),
+        metadata.get("geoparquet_key"),
+        metadata.get("analytics_key"),
+        metadata.get("analytics_store_key"),
+    ]
+    return any(
+        "geoparquet/" in str(candidate).lower()
+        or str(candidate).lower().endswith((".parquet", ".geoparquet"))
+        for candidate in storage_candidates
+        if candidate
+    )
+
+
+def _format_bounds(bounds: Any) -> Optional[str]:
+    if not bounds or len(bounds) < 4:
+        return None
+    try:
+        return f"{bounds[0]:.6f},{bounds[1]:.6f},{bounds[2]:.6f},{bounds[3]:.6f}"
+    except (TypeError, ValueError):
+        return None
 
 
 class LayerDescriber(ABC):
@@ -221,10 +260,79 @@ class DefaultLayerDescriber(LayerDescriber):
 
         return markdown_content
 
+    def describe_vector_layer_from_metadata(
+        self,
+        layer_data: Dict[str, Any],
+        metadata: Dict[str, Any],
+        fallback_reason: Optional[str] = None,
+    ) -> List[str]:
+        markdown_content = []
+
+        markdown_content.append("\n## Geographic Extent\n")
+        formatted_bounds = _format_bounds(layer_data.get("bounds"))
+        if formatted_bounds:
+            markdown_content.append(f"Dataset Bounds: {formatted_bounds}")
+        else:
+            markdown_content.append("Dataset Bounds: Unknown")
+
+        markdown_content.append("\n## Schema Information\n")
+        if _is_geoparquet_backed_vector(layer_data, metadata):
+            markdown_content.append("Driver: GeoParquet metadata summary")
+            markdown_content.append("Analytics Store: GeoParquet")
+            if metadata.get("pmtiles_key"):
+                markdown_content.append("Browser Transport: PMTiles")
+            if metadata.get("pmtiles_maxzoom") is not None:
+                markdown_content.append(f"PMTiles Max Zoom: {metadata['pmtiles_maxzoom']}")
+            if metadata.get("geoparquet_key"):
+                markdown_content.append(f"GeoParquet Key: {metadata['geoparquet_key']}")
+        else:
+            markdown_content.append("Driver: Metadata summary")
+
+        if fallback_reason:
+            markdown_content.append(f"Reader Fallback: {fallback_reason}")
+
+        h3_resolutions = metadata.get("h3_resolutions")
+        if h3_resolutions:
+            markdown_content.append(f"H3 Resolutions: {', '.join(map(str, h3_resolutions))}")
+
+        resolution_cell_counts = metadata.get("resolution_cell_counts")
+        if isinstance(resolution_cell_counts, dict) and resolution_cell_counts:
+            counts = ", ".join(
+                f"r{resolution}: {count}"
+                for resolution, count in sorted(
+                    resolution_cell_counts.items(), key=lambda item: str(item[0])
+                )
+            )
+            markdown_content.append(f"Resolution Cell Counts: {counts}")
+
+        if metadata.get("source_layer_id"):
+            markdown_content.append(f"Source Raster Layer: {metadata['source_layer_id']}")
+        if metadata.get("analysis_kind"):
+            markdown_content.append(f"Analysis Kind: {metadata['analysis_kind']}")
+        if metadata.get("screening_model"):
+            markdown_content.append(f"Screening Model: {metadata['screening_model']}")
+        if metadata.get("domain"):
+            markdown_content.append(f"Domain: {metadata['domain']}")
+
+        markdown_content.append("\n### Attribute Fields\n")
+        inferred_fields = [
+            "h3_index",
+            "h3_resolution",
+            "domain",
+            "risk_score",
+            "risk_level",
+            "likely_issue",
+            "recommended_action",
+        ]
+        markdown_content.extend(inferred_fields)
+
+        return markdown_content
+
     async def describe_vector_layer(
         self, layer_id: str, layer_data: Dict[str, Any]
     ) -> List[str]:
         markdown_content = []
+        metadata = _coerce_layer_metadata(layer_data)
 
         markdown_content.append(
             f"Geometry Type: {layer_data['geometry_type'] if layer_data['geometry_type'] else 'Unknown'}"
@@ -255,96 +363,118 @@ class DefaultLayerDescriber(LayerDescriber):
                 return markdown_content
             layer = MapLayer(**dict(layer_row))
 
-        async with await layer.get_ogr_source() as ogr_source:
-            with fiona.open(ogr_source) as src:
-                if layer_data["feature_count"]:
-                    feature_count = layer_data["feature_count"]
-                else:
-                    try:
-                        feature_count = len(src)
-                    except TypeError:
-                        # Some layer types don't support counting
-                        feature_count = None
-                schema = src.schema
-                crs = src.crs
+        if _is_geoparquet_backed_vector(layer_data, metadata):
+            markdown_content.extend(
+                self.describe_vector_layer_from_metadata(layer_data, metadata)
+            )
+            return markdown_content
 
-                markdown_content.append("\n## Geographic Extent\n")
-                if layer_data["bounds"]:
-                    markdown_content.append(
-                        f"Dataset Bounds: {layer_data['bounds'][0]:.6f},{layer_data['bounds'][1]:.6f},{layer_data['bounds'][2]:.6f},{layer_data['bounds'][3]:.6f}"
-                    )
-
-                markdown_content.append("\n## Schema Information\n")
-
-                # Update database with feature count if it wasn't already set and we successfully got a count
-                if layer_data["feature_count"] is None and feature_count is not None:
-                    async with get_async_db_connection() as conn:
-                        await conn.execute(
-                            """
-                            UPDATE map_layers
-                            SET feature_count = $1
-                            WHERE layer_id = $2
-                            """,
-                            feature_count,
-                            layer_id,
-                        )
-
-                markdown_content.append(f"CRS: {crs.to_string() if crs else 'Unknown'}")
-                markdown_content.append(f"Driver: {src.driver}")
-                markdown_content.append("\n### Attribute Fields\n")
-
-                if "properties" in schema and schema["properties"]:
-                    fields_by_type = {}
-                    for field_name, field_type in schema["properties"].items():
-                        if field_type not in fields_by_type:
-                            fields_by_type[field_type] = []
-                        fields_by_type[field_type].append(field_name)
-
-                    for field_type in sorted(fields_by_type.keys()):
-                        markdown_content.append(f"\n#### {field_type}\n")
-                        for field_name in sorted(fields_by_type[field_type]):
-                            markdown_content.append(f"{field_name}")
-                else:
-                    markdown_content.append("No attribute fields found.")
-
-                features_with_attrs = []
-                for i, feature in enumerate(src):
-                    if i >= 10:
-                        break
-                    features_with_attrs.append(feature["properties"])
-
-                if features_with_attrs:
-                    all_fieldnames = set()
-                    for feature_props in features_with_attrs:
-                        all_fieldnames.update(feature_props.keys())
-
-                    fieldnames = sorted(list(all_fieldnames))
-
-                    markdown_content.append("\n## Sampled Features Attribute Table\n")
-
-                    if feature_count is not None:
-                        markdown_content.append(
-                            f"\nRandomly sampled {len(features_with_attrs)} of {feature_count} features for this table."
-                        )
+        try:
+            async with await layer.get_ogr_source() as ogr_source:
+                with fiona.open(ogr_source) as src:
+                    if layer_data["feature_count"]:
+                        feature_count = layer_data["feature_count"]
                     else:
+                        try:
+                            feature_count = len(src)
+                        except TypeError:
+                            # Some layer types don't support counting
+                            feature_count = None
+                    schema = src.schema
+                    crs = src.crs
+
+                    markdown_content.append("\n## Geographic Extent\n")
+                    if layer_data["bounds"]:
                         markdown_content.append(
-                            f"\nRandomly sampled {len(features_with_attrs)} features for this table."
+                            f"Dataset Bounds: {layer_data['bounds'][0]:.6f},{layer_data['bounds'][1]:.6f},{layer_data['bounds'][2]:.6f},{layer_data['bounds'][3]:.6f}"
                         )
 
-                    csv_output = io.StringIO()
-                    writer = csv.DictWriter(csv_output, fieldnames=fieldnames)
-                    writer.writeheader()
+                    markdown_content.append("\n## Schema Information\n")
 
-                    for feature_props in features_with_attrs:
-                        filtered_props = {}
-                        for k in fieldnames:
-                            value = feature_props.get(k, "")
-                            filtered_props[k] = value
-                        writer.writerow(filtered_props)
+                    # Update database with feature count if it wasn't already set and we successfully got a count
+                    if layer_data["feature_count"] is None and feature_count is not None:
+                        async with get_async_db_connection() as conn:
+                            await conn.execute(
+                                """
+                                UPDATE map_layers
+                                SET feature_count = $1
+                                WHERE layer_id = $2
+                                """,
+                                feature_count,
+                                layer_id,
+                            )
 
-                    markdown_content.append("```csv")
-                    markdown_content.append(csv_output.getvalue())
-                    markdown_content.append("```")
+                    markdown_content.append(f"CRS: {crs.to_string() if crs else 'Unknown'}")
+                    markdown_content.append(f"Driver: {src.driver}")
+                    markdown_content.append("\n### Attribute Fields\n")
+
+                    if "properties" in schema and schema["properties"]:
+                        fields_by_type = {}
+                        for field_name, field_type in schema["properties"].items():
+                            if field_type not in fields_by_type:
+                                fields_by_type[field_type] = []
+                            fields_by_type[field_type].append(field_name)
+
+                        for field_type in sorted(fields_by_type.keys()):
+                            markdown_content.append(f"\n#### {field_type}\n")
+                            for field_name in sorted(fields_by_type[field_type]):
+                                markdown_content.append(f"{field_name}")
+                    else:
+                        markdown_content.append("No attribute fields found.")
+
+                    features_with_attrs = []
+                    for i, feature in enumerate(src):
+                        if i >= 10:
+                            break
+                        features_with_attrs.append(feature["properties"])
+
+                    if features_with_attrs:
+                        all_fieldnames = set()
+                        for feature_props in features_with_attrs:
+                            all_fieldnames.update(feature_props.keys())
+
+                        fieldnames = sorted(list(all_fieldnames))
+
+                        markdown_content.append("\n## Sampled Features Attribute Table\n")
+
+                        if feature_count is not None:
+                            markdown_content.append(
+                                f"\nRandomly sampled {len(features_with_attrs)} of {feature_count} features for this table."
+                            )
+                        else:
+                            markdown_content.append(
+                                f"\nRandomly sampled {len(features_with_attrs)} features for this table."
+                            )
+
+                        csv_output = io.StringIO()
+                        writer = csv.DictWriter(csv_output, fieldnames=fieldnames)
+                        writer.writeheader()
+
+                        for feature_props in features_with_attrs:
+                            filtered_props = {}
+                            for k in fieldnames:
+                                value = feature_props.get(k, "")
+                                filtered_props[k] = value
+                            writer.writerow(filtered_props)
+
+                        markdown_content.append("```csv")
+                        markdown_content.append(csv_output.getvalue())
+                        markdown_content.append("```")
+        except Exception as exc:
+            logger.warning(
+                "Vector layer %s fell back to metadata description after OGR read failed: %s",
+                layer_id,
+                exc,
+                exc_info=True,
+            )
+            markdown_content.extend(
+                self.describe_vector_layer_from_metadata(
+                    layer_data,
+                    metadata,
+                    fallback_reason=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            return markdown_content
 
         return markdown_content
 

@@ -85,12 +85,37 @@ VISIBLE_H3_OUTLINE_WIDTH = [
 ]
 
 
+def _normalize_h3_resolution_filter(filter_expr: object) -> object:
+    if (
+        isinstance(filter_expr, list)
+        and len(filter_expr) == 3
+        and filter_expr[0] == "=="
+        and filter_expr[1] == ["get", "h3_resolution"]
+    ):
+        resolution = filter_expr[2]
+        try:
+            numeric_resolution = int(resolution)
+        except (TypeError, ValueError):
+            return filter_expr
+        return [
+            "any",
+            ["==", ["get", "h3_resolution"], numeric_resolution],
+            ["==", ["get", "h3_resolution"], str(numeric_resolution)],
+        ]
+    return filter_expr
+
+
 def _normalize_runtime_h3_attention_style(layer: dict) -> dict:
     normalized_layer = copy.deepcopy(layer)
     layer_id = normalized_layer.get("id")
     layer_type = normalized_layer.get("type")
     if not isinstance(layer_id, str):
         return normalized_layer
+
+    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")):
+        normalized_layer["filter"] = _normalize_h3_resolution_filter(
+            normalized_layer.get("filter")
+        )
 
     paint = normalized_layer.setdefault("paint", {})
     if not isinstance(paint, dict):

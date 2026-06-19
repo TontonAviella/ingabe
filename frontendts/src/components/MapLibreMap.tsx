@@ -227,6 +227,48 @@ const BASEMAP_SOURCE_IDS = new Set([
   'openmaptiles',
 ]);
 
+const H3_RENDER_LAYER_PREFIXES = ['h3-risk-fill-', 'h3-risk-extrusion-', 'h3-risk-outline-'];
+
+function getH3RenderLayerIds(map: MLMap): string[] {
+  const style = map.getStyle();
+  const layers = style.layers ?? [];
+  const h3LayerIds = layers
+    .map((layer) => layer.id)
+    .filter(
+      (layerId): layerId is string =>
+        H3_RENDER_LAYER_PREFIXES.some((prefix) => layerId.startsWith(prefix)) && Boolean(map.getLayer(layerId)),
+    );
+  return Array.from(new Set(h3LayerIds));
+}
+
+function trackH3RenderVerification(map: MLMap, projectId: string, mapId: string) {
+  const h3LayerIds = getH3RenderLayerIds(map);
+  if (h3LayerIds.length === 0) return;
+
+  const sourceIds = new Set(
+    h3LayerIds
+      .map((layerId) => map.getLayer(layerId))
+      .filter((layer): layer is NonNullable<ReturnType<MLMap['getLayer']>> => Boolean(layer))
+      .map((layer) => ('source' in layer ? layer.source : null))
+      .filter((sourceId): sourceId is string => typeof sourceId === 'string'),
+  );
+  const canvas = map.getCanvas();
+  const viewport: [[number, number], [number, number]] = [
+    [0, 0],
+    [canvas.clientWidth, canvas.clientHeight],
+  ];
+  const features = map.queryRenderedFeatures(viewport, { layers: h3LayerIds });
+  track('map_h3_render_verified', {
+    project_id: projectId,
+    map_id: mapId,
+    h3_style_layer_count: h3LayerIds.length,
+    h3_source_count: sourceIds.size,
+    h3_rendered_feature_count: features.length,
+    zoom: Number(map.getZoom().toFixed(2)),
+    status: features.length > 0 ? 'visible' : 'empty',
+  });
+}
+
 export default function MapLibreMap({
   mapId,
   width = '100%',
@@ -1437,6 +1479,16 @@ export default function MapLibreMap({
 
       // Update the style using setStyle
       map.setStyle(style);
+      map.once('idle', () => {
+        try {
+          trackH3RenderVerification(map, project.id, mapId);
+        } catch (err) {
+          trackError('map_h3_render_verification_failed', err, {
+            project_id: project.id,
+            map_id: mapId,
+          });
+        }
+      });
 
       // Re-apply non-mercator projection after the style finishes loading
       if (currentProjection?.type && currentProjection.type !== 'mercator') {
@@ -1461,7 +1513,7 @@ export default function MapLibreMap({
       console.error('Error updating style:', err);
       addError('Failed to update map style: ' + (err instanceof Error ? err.message : String(err)), true);
     }
-  }, [styleData, addError]); // Only re-run when actual style data changes
+  }, [styleData, addError, mapId, project.id]); // Only re-run when actual style data changes
 
   // Load legend symbols separately — depends on mapData but should NOT
   // trigger a full setStyle() call (which wipes paint overrides).

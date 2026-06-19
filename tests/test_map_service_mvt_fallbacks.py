@@ -41,6 +41,7 @@ def test_existing_h3_attention_layers_get_visible_runtime_style():
                 "type": "fill",
                 "source": "Labc",
                 "source-layer": MVT_LAYER_NAME,
+                "filter": ["==", ["get", "h3_resolution"], 12],
                 "paint": {
                     "fill-color": "#22c55e",
                     "fill-opacity": 0.58,
@@ -51,8 +52,18 @@ def test_existing_h3_attention_layers_get_visible_runtime_style():
 
     assert target_layers[0]["paint"]["fill-color"] == VISIBLE_H3_RISK_COLOR
     assert target_layers[0]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY
+    assert target_layers[0]["filter"] == [
+        "any",
+        ["==", ["get", "h3_resolution"], 12],
+        ["==", ["get", "h3_resolution"], "12"],
+    ]
     assert target_layers[1]["paint"]["fill-color"] == VISIBLE_H3_RISK_COLOR
     assert target_layers[1]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY
+    assert target_layers[1]["filter"] == [
+        "any",
+        ["==", ["get", "h3_resolution"], 12],
+        ["==", ["get", "h3_resolution"], "12"],
+    ]
 
 
 def test_vector_source_maxzoom_accepts_pmtiles_metadata():

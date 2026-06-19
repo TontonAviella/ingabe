@@ -16,17 +16,29 @@ def test_h3_risk_style_uses_zoom_bands_for_adaptive_resolution() -> None:
 
     assert len(layers) == 6
     assert layers[0]["id"] == "h3-risk-fill-Ltest-r10"
-    assert layers[0]["filter"] == ["==", ["get", "h3_resolution"], 10]
+    assert layers[0]["filter"] == [
+        "any",
+        ["==", ["get", "h3_resolution"], 10],
+        ["==", ["get", "h3_resolution"], "10"],
+    ]
     assert "minzoom" not in layers[0]
     assert layers[0]["maxzoom"] == 15.0
 
     assert layers[2]["id"] == "h3-risk-fill-Ltest-r11"
-    assert layers[2]["filter"] == ["==", ["get", "h3_resolution"], 11]
+    assert layers[2]["filter"] == [
+        "any",
+        ["==", ["get", "h3_resolution"], 11],
+        ["==", ["get", "h3_resolution"], "11"],
+    ]
     assert layers[2]["minzoom"] == 15.0
     assert layers[2]["maxzoom"] == 17.0
 
     assert layers[4]["id"] == "h3-risk-fill-Ltest-r12"
-    assert layers[4]["filter"] == ["==", ["get", "h3_resolution"], 12]
+    assert layers[4]["filter"] == [
+        "any",
+        ["==", ["get", "h3_resolution"], 12],
+        ["==", ["get", "h3_resolution"], "12"],
+    ]
     assert layers[4]["minzoom"] == 17.0
     assert "maxzoom" not in layers[4]
 
