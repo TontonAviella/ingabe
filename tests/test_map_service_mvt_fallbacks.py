@@ -1,5 +1,9 @@
 from src.postgis_tiles import MVT_LAYER_NAME
-from src.services.map_service import append_mvt_layers_with_legacy_source_fallbacks
+from src.services.map_service import (
+    VISIBLE_H3_RISK_COLOR,
+    VISIBLE_H3_RISK_OPACITY,
+    append_mvt_layers_with_legacy_source_fallbacks,
+)
 
 
 def test_mvt_style_layers_get_legacy_source_layer_fallbacks():
@@ -24,3 +28,27 @@ def test_mvt_style_layers_get_legacy_source_layer_fallbacks():
     assert target_layers[0]["source-layer"] == MVT_LAYER_NAME
     assert target_layers[1]["source-layer"] == "reprojected"
     assert target_layers[1]["metadata"]["legacy_source_layer_fallback"] is True
+
+
+def test_existing_h3_attention_layers_get_visible_runtime_style():
+    target_layers: list[dict] = []
+    append_mvt_layers_with_legacy_source_fallbacks(
+        target_layers,
+        [
+            {
+                "id": "h3-risk-fill-Labc-r10",
+                "type": "fill",
+                "source": "Labc",
+                "source-layer": MVT_LAYER_NAME,
+                "paint": {
+                    "fill-color": "#22c55e",
+                    "fill-opacity": 0.58,
+                },
+            }
+        ],
+    )
+
+    assert target_layers[0]["paint"]["fill-color"] == VISIBLE_H3_RISK_COLOR
+    assert target_layers[0]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY
+    assert target_layers[1]["paint"]["fill-color"] == VISIBLE_H3_RISK_COLOR
+    assert target_layers[1]["paint"]["fill-opacity"] == VISIBLE_H3_RISK_OPACITY

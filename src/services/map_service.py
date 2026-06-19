@@ -38,6 +38,76 @@ tracer = trace.get_tracer(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
 LEGACY_MVT_SOURCE_LAYER_NAMES = ("reprojected",)
+VISIBLE_H3_RISK_COLOR = [
+    "step",
+    ["coalesce", ["get", "risk_score"], 0],
+    "#06b6d4",
+    40,
+    "#facc15",
+    60,
+    "#f97316",
+    80,
+    "#dc2626",
+    90,
+    "#e879f9",
+]
+VISIBLE_H3_RISK_OPACITY = [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["get", "risk_score"], 0],
+    0,
+    0.18,
+    40,
+    0.38,
+    60,
+    0.58,
+    80,
+    0.76,
+    100,
+    0.84,
+]
+VISIBLE_H3_OUTLINE_COLOR = [
+    "case",
+    [">=", ["coalesce", ["get", "risk_score"], 0], 60],
+    "#ffffff",
+    "#111827",
+]
+VISIBLE_H3_OUTLINE_WIDTH = [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["get", "risk_score"], 0],
+    0,
+    0.75,
+    60,
+    1.4,
+    90,
+    2.2,
+]
+
+
+def _normalize_runtime_h3_attention_style(layer: dict) -> dict:
+    normalized_layer = copy.deepcopy(layer)
+    layer_id = normalized_layer.get("id")
+    layer_type = normalized_layer.get("type")
+    if not isinstance(layer_id, str):
+        return normalized_layer
+
+    paint = normalized_layer.setdefault("paint", {})
+    if not isinstance(paint, dict):
+        return normalized_layer
+
+    if layer_id.startswith("h3-risk-fill-") and layer_type == "fill":
+        paint["fill-color"] = VISIBLE_H3_RISK_COLOR
+        paint["fill-opacity"] = VISIBLE_H3_RISK_OPACITY
+    elif layer_id.startswith("h3-risk-extrusion-") and layer_type == "fill-extrusion":
+        paint["fill-extrusion-color"] = VISIBLE_H3_RISK_COLOR
+        paint["fill-extrusion-opacity"] = VISIBLE_H3_RISK_OPACITY
+    elif layer_id.startswith("h3-risk-outline-") and layer_type == "line":
+        paint["line-color"] = VISIBLE_H3_OUTLINE_COLOR
+        paint["line-width"] = VISIBLE_H3_OUTLINE_WIDTH
+        paint["line-opacity"] = 0.92
+
+    return normalized_layer
 
 
 def append_mvt_layers_with_legacy_source_fallbacks(
@@ -46,13 +116,17 @@ def append_mvt_layers_with_legacy_source_fallbacks(
 ) -> None:
     """Append stored MVT layers plus aliases for older PMTiles source-layer names."""
 
-    target_layers.extend(maplibre_layers)
+    normalized_layers = [
+        _normalize_runtime_h3_attention_style(layer)
+        for layer in maplibre_layers
+    ]
+    target_layers.extend(normalized_layers)
     existing_ids = {
         layer.get("id")
         for layer in target_layers
         if isinstance(layer.get("id"), str)
     }
-    for layer in maplibre_layers:
+    for layer in normalized_layers:
         if layer.get("source-layer") != MVT_LAYER_NAME:
             continue
         layer_id = layer.get("id")
