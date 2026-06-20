@@ -99,6 +99,7 @@ from src.dependencies.system_prompt import (
 from src.dependencies.sage_routing import (
     SMALL_TALK_SYSTEM_PROMPT,
     build_fast_tool_call,
+    detect_raster_building_count_question,
     extract_last_user_text,
     filter_tools_by_categories,
     raster_layer_match_score,
@@ -1720,7 +1721,12 @@ def _raster_area_fast_reply(result: dict) -> str:
     return reply
 
 
-def _raster_context_fast_reply(result: dict, layer_name: str) -> str:
+def _raster_context_fast_reply(
+    result: dict,
+    layer_name: str,
+    *,
+    requested_building_count: bool = False,
+) -> str:
     if result.get("error"):
         return (
             f"I found {layer_name}, but the raster analysis failed: {result['error']}"
@@ -1733,45 +1739,64 @@ def _raster_context_fast_reply(result: dict, layer_name: str) -> str:
     max_score = summary.get("max_score")
     evidence_basis = str(summary.get("evidence_basis") or "")
 
+    stats_sentence = ""
+    if cell_count:
+        stats_sentence = f" The layer has {cell_count} screening cells"
+        if high_count is not None:
+            stats_sentence += f", with {high_count} higher-priority cells"
+        if max_score is not None:
+            stats_sentence += f" and a top proxy score of {max_score}"
+        stats_sentence += "."
+
+    if requested_building_count:
+        reply = (
+            f"I cannot truthfully count houses in {layer_name} from this RGB "
+            "orthophoto alone. I did not detect or count buildings; I only "
+            "created a settlement-looking visual screening layer from the "
+            "uploaded pixels."
+        )
+        reply += stats_sentence
+        reply += (
+            " A real house count needs building-footprint evidence such as "
+            "Open Buildings, OSM/local survey footprints, or a building "
+            "detector result run on this image."
+        )
+        return reply
+
     if domain == "housing":
         reply = (
-            f"I analyzed {layer_name} itself and added likely house/settlement "
-            "attention cells on top of the orthophoto."
+            f"I screened {layer_name} itself for settlement-looking visual "
+            "patterns and added proxy cells on top of the orthophoto."
         )
     elif domain == "agriculture":
         reply = (
-            f"I analyzed {layer_name} itself and added vegetation/field attention "
-            "cells on top of the orthophoto."
+            f"I screened {layer_name} itself for vegetation and field-condition "
+            "patterns and added proxy cells on top of the orthophoto."
         )
     elif domain == "infrastructure":
         reply = (
-            f"I analyzed {layer_name} itself and added infrastructure attention "
-            "cells on top of the orthophoto."
+            f"I screened {layer_name} itself for road, drainage, and other "
+            "infrastructure-looking visual patterns and added proxy cells on "
+            "top of the orthophoto."
         )
     elif domain == "environment":
         reply = (
-            f"I analyzed {layer_name} itself and added environmental attention "
-            "cells on top of the orthophoto."
+            f"I screened {layer_name} itself for environmental surface patterns "
+            "and added proxy cells on top of the orthophoto."
         )
     else:
         reply = (
-            f"I analyzed {layer_name} itself and added visual attention cells on "
-            "top of the orthophoto."
+            f"I screened {layer_name} itself and added visual proxy cells on top "
+            "of the orthophoto."
         )
 
-    if cell_count:
-        reply += f" The layer has {cell_count} map cells"
-        if high_count is not None:
-            reply += f", with {high_count} higher-priority cells"
-        if max_score is not None:
-            reply += f" and a top score of {max_score}"
-        reply += "."
+    reply += stats_sentence
 
     if domain in {"housing", "infrastructure"}:
         reply += (
-            " This is a fast visual screen from the uploaded image, not a confirmed "
-            "building count; exact house exposure still needs Open Buildings, OSM, "
-            "or local survey footprints."
+            " This is a fast visual screen from the uploaded image, not confirmed "
+            "asset detection or an exact count. Use building footprints, roads, "
+            "drainage data, or a detector output before making exposure claims."
         )
     elif evidence_basis:
         reply += f" Evidence basis: {evidence_basis}."
@@ -1817,6 +1842,7 @@ async def _maybe_run_fast_raster_context_turn(
     if not fast_call or fast_call.tool_name != "create_raster_h3_context_layer":
         return False
 
+    requested_building_count = detect_raster_building_count_question(user_text)
     started = asyncio.get_running_loop().time()
     turn_id = f"fast-raster-context-{conversation.id}-{_uuid.uuid4().hex[:8]}"
     partner_id = session.get_org_id()
@@ -1877,7 +1903,31 @@ async def _maybe_run_fast_raster_context_turn(
             ),
         )
 
-    assistant_text = _raster_context_fast_reply(result, layer_name)
+    assistant_text = _raster_context_fast_reply(
+        result,
+        layer_name,
+        requested_building_count=requested_building_count,
+    )
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    capture_for_session(
+        "backend_sage_fast_raster_context_answered",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "layer_id": str(layer["layer_id"]),
+            "domain": tool_args.get("domain"),
+            "status": result.get("status"),
+            "requested_building_count": requested_building_count,
+            "answer_evidence_class": (
+                "proxy_not_counted" if requested_building_count else "raster_proxy"
+            ),
+            "cell_count": summary.get("cell_count") or result.get("geojson_feature_count"),
+            "high_or_severe_cell_count": summary.get("high_or_severe_cell_count"),
+            "max_score": summary.get("max_score"),
+            "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
+        },
+    )
     async with async_conn(
         "sage.fast_raster_context.persist",
         user_id=user_id,

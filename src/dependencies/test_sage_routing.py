@@ -25,6 +25,7 @@ from src.dependencies.sage_routing import (
     classify_intent,
     detect_admin_boundary_display,
     detect_raster_area_question,
+    detect_raster_building_count_question,
     detect_raster_context_question,
     detect_small_talk,
     extract_last_user_text,
@@ -384,6 +385,30 @@ def test_build_fast_tool_call_raster_context_routes_to_h3_layer() -> None:
     assert fast.arguments["domain"] == "housing"
     assert fast.arguments["render_map"] is True
     assert "settlement" in str(fast.arguments["analysis_goal"])
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+        "count the buildings in this drone orthophoto",
+        "what is the exact number of roofs in this raster?",
+    ],
+)
+def test_detect_raster_building_count_question(msg: str) -> None:
+    assert detect_raster_building_count_question(msg) is True
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "show me analysis of this Cyampirita_Orthophoto",
+        "where do houses look concentrated in this raster?",
+        "count crop stress cells in this orthophoto",
+    ],
+)
+def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> None:
+    assert detect_raster_building_count_question(msg) is False
 
 
 def test_raster_context_does_not_capture_plain_place_analysis() -> None:

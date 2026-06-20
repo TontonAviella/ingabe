@@ -546,6 +546,18 @@ _RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
+_RASTER_BUILDING_ASSET_KEYWORDS = re.compile(
+    r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
+    r"settlement|settlements)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_EXACT_COUNT_KEYWORDS = re.compile(
+    r"\b(how\s+many|count|counts|counted|number\s+of|total|exact|"
+    r"confirmed|enumerate|quantity)\b",
+    re.IGNORECASE,
+)
+
 _RASTER_NAME_STOPWORDS = {
     "a",
     "an",
@@ -619,6 +631,22 @@ def detect_raster_context_question(text: str) -> bool:
     if _RASTER_CONTEXT_KEYWORDS.search(prompt):
         return True
     return any(pattern.search(prompt) for _domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS)
+
+
+def detect_raster_building_count_question(text: str) -> bool:
+    """True when the user wants confirmed house/building counts from a raster.
+
+    RGB drone/orthophoto pixels can support fast visual screening, but they are
+    not a building-footprint source. This detector lets the fast path keep that
+    distinction visible instead of presenting H3 proxy cells as asset counts.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    return bool(
+        _RASTER_BUILDING_ASSET_KEYWORDS.search(prompt)
+        and _RASTER_EXACT_COUNT_KEYWORDS.search(prompt)
+    )
 
 
 def build_raster_context_tool_args(text: str) -> dict[str, object] | None:
