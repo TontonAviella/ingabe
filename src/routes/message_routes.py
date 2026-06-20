@@ -1958,6 +1958,156 @@ async def _maybe_run_fast_raster_context_turn(
     return True
 
 
+def _raster_object_fast_reply(result: dict, layer_name: str) -> str:
+    if result.get("status") != "success":
+        return (
+            f"I could not extract object candidates from {layer_name}: "
+            f"{result.get('error') or result.get('status') or 'unknown error'}"
+        )
+
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    candidate_count = int(summary.get("candidate_count") or result.get("geojson_feature_count") or 0)
+    class_counts = summary.get("class_counts") if isinstance(summary.get("class_counts"), dict) else {}
+    class_text = ", ".join(f"{klass}: {count}" for klass, count in sorted(class_counts.items())) or "building candidates"
+    honesty = summary.get("honesty_note") or (
+        "These are candidate polygons from the uploaded image, not confirmed assets."
+    )
+    performance_note = summary.get("performance_note")
+    suffix = f" {performance_note}" if performance_note else ""
+    return (
+        f"I extracted {candidate_count} object candidates from {layer_name} and added them on top of the orthophoto "
+        f"({class_text}). {honesty}{suffix}"
+    )
+
+
+async def _maybe_run_fast_raster_object_turn(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> bool:
+    if os.environ.get("SAGE_FAST_RASTER_OBJECTS", "1").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return False
+
+    user_text = extract_last_user_text(openai_messages)
+    fast_call = build_fast_tool_call(user_text)
+    if not fast_call or fast_call.tool_name != "analyze_raster_object_candidates":
+        return False
+
+    started = asyncio.get_running_loop().time()
+    turn_id = f"fast-raster-objects-{conversation.id}-{_uuid.uuid4().hex[:8]}"
+    partner_id = session.get_org_id()
+
+    async with async_conn(
+        "sage.fast_raster_objects",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        project_row = await conn.fetchrow(
+            "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+            map_id,
+        )
+        if not project_row:
+            return False
+
+        rows = await conn.fetch(
+            """
+            SELECT ml.layer_id, ml.name
+            FROM user_mundiai_maps m
+            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
+              ON TRUE
+            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
+            WHERE m.id = $1
+              AND ml.type = 'raster'
+            ORDER BY map_layer.ord
+            """,
+            map_id,
+        )
+
+    layer = _select_fast_raster_layer(user_text, rows)
+    if not layer:
+        return False
+
+    from src.tools.pyd import IngabeToolCallMetaArgs
+    from src.tools.raster_object_candidates import (
+        AnalyzeRasterObjectCandidatesArgs,
+        analyze_raster_object_candidates,
+    )
+
+    tool_args = dict(fast_call.arguments)
+    tool_args["layer_id"] = str(layer["layer_id"])
+    layer_name = str(layer.get("name") or "that raster")
+
+    async with kue_ephemeral_action(
+        conversation.id,
+        "Extracting object candidates from orthophoto...",
+        layer_id=str(layer["layer_id"]),
+    ):
+        result = await analyze_raster_object_candidates(
+            AnalyzeRasterObjectCandidatesArgs(**tool_args),
+            IngabeToolCallMetaArgs(
+                user_uuid=user_id,
+                conversation_id=conversation.id,
+                map_id=map_id,
+                project_id=str(project_row["project_id"]),
+                session=session,
+            ),
+        )
+
+    assistant_text = _raster_object_fast_reply(result, layer_name)
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    capture_for_session(
+        "backend_sage_fast_raster_objects_answered",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "layer_id": str(layer["layer_id"]),
+            "status": result.get("status"),
+            "candidate_count": summary.get("candidate_count") or result.get("geojson_feature_count"),
+            "class_counts": json.dumps(summary.get("class_counts") or {}),
+            "source_storage": summary.get("source_storage"),
+            "engine_used": (
+                ((result.get("engines") or {}).get("selection") or {}).get("used")
+                if isinstance(result.get("engines"), dict)
+                else None
+            ),
+            "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
+        },
+    )
+    async with async_conn(
+        "sage.fast_raster_objects.persist",
+        user_id=user_id,
+        partner_id=partner_id,
+    ) as conn:
+        await conn.execute(
+            """
+            INSERT INTO chat_completion_messages
+            (map_id, sender_id, message_json, conversation_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": assistant_text}),
+            conversation.id,
+        )
+
+    await kue_stream_token(conversation.id, assistant_text, turn_id=turn_id)
+    await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+    logger.info(
+        "Sage fast raster object route: conv=%s layer_id=%s status=%s elapsed=%.3fs",
+        conversation.id,
+        layer["layer_id"],
+        result.get("status"),
+        asyncio.get_running_loop().time() - started,
+    )
+    return True
+
+
 async def _maybe_run_fast_raster_fact_turn(
     *,
     map_id: str,
@@ -2250,6 +2400,15 @@ async def process_chat_interaction_task(
                 openai_messages.append(m)
 
             if await _maybe_run_fast_admin_boundary_turn(
+                map_id=map_id,
+                session=session,
+                user_id=user_id,
+                conversation=conversation,
+                openai_messages=openai_messages,
+            ):
+                return
+
+            if await _maybe_run_fast_raster_object_turn(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,
@@ -2558,11 +2717,30 @@ async def process_chat_interaction_task(
                 if _routing.selected_categories:
                     _before = len(tools_payload)
                     tools_payload = filter_tools_by_categories(
-                        tools_payload, _routing.selected_categories
+                        tools_payload,
+                        _routing.selected_categories,
+                        excluded_tool_names=_routing.excluded_tool_names,
                     )
                     logger.info(
-                        "sage_routing: filtered tools by %s (%d -> %d)",
-                        _routing.reason, _before, len(tools_payload),
+                        "sage_routing: filtered tools by %s (%d -> %d, excluded=%s)",
+                        _routing.reason,
+                        _before,
+                        len(tools_payload),
+                        ",".join(sorted(_routing.excluded_tool_names)) or "-",
+                    )
+                elif _routing.excluded_tool_names:
+                    _before = len(tools_payload)
+                    _excluded = set(_routing.excluded_tool_names)
+                    tools_payload = [
+                        tool
+                        for tool in tools_payload
+                        if tool.get("function", {}).get("name", "") not in _excluded
+                    ]
+                    logger.info(
+                        "sage_routing: excluded tools by evidence decision (%d -> %d, excluded=%s)",
+                        _before,
+                        len(tools_payload),
+                        ",".join(sorted(_routing.excluded_tool_names)),
                     )
                 else:
                     # Always log the default-path decision so we can spot

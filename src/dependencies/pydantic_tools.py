@@ -125,6 +125,10 @@ from src.tools.raster_h3_context import (
     create_raster_h3_context_layer,
     CreateRasterH3ContextLayerArgs,
 )
+from src.tools.raster_object_candidates import (
+    analyze_raster_object_candidates,
+    AnalyzeRasterObjectCandidatesArgs,
+)
 from src.tools.open_buildings import (
     analyze_open_buildings_exposure,
     AnalyzeOpenBuildingsExposureArgs,
@@ -315,6 +319,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "create_raster_h3_context_layer": (
             create_raster_h3_context_layer,
             CreateRasterH3ContextLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_raster_object_candidates": (
+            analyze_raster_object_candidates,
+            AnalyzeRasterObjectCandidatesArgs,
             IngabeToolCallMetaArgs,
         ),
         "analyze_open_buildings_exposure": (

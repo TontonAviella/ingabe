@@ -86,14 +86,13 @@ async def create_raster_h3_context_layer(
     """Create a raster-backed cell analysis layer over an uploaded drone TIFF/COG.
 
     Use when the user asks what is happening in an uploaded drone/orthophoto
-    map, where problems are, what areas need attention, or whether the context
-    is agriculture, housing, infrastructure, or environment. This tool samples
-    the actual raster pixels first, then groups them into internal H3 cells for
-    fast map rendering. It does not pretend RGB imagery is a building detector:
-    for housing or infrastructure it returns visual attention cells and tells
-    Sage to pair the result with Open Buildings/roads/drainage evidence when
-    asset exposure matters. For simple metadata or hectares questions, use
-    describe_user_raster instead.
+    map, where surface problems are, what areas need field inspection, or
+    whether the context is agriculture, infrastructure, environment, or mixed.
+    This tool samples the actual raster pixels first, then groups them into
+    internal H3 cells for fast map rendering. It is not a building detector and
+    must not be used as the answer for house/building counts or concentration:
+    those need object-candidate extraction or real footprint evidence. For
+    simple metadata or hectares questions, use describe_user_raster instead.
     """
 
     from src.structures import get_async_read_connection

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -36,6 +39,8 @@ async def get_spatial_engine_capabilities(
             "geojson_3d_extrusion": True,
             "note": "Browser map extrusion remains MapLibre/deck.gl unless a Forge3D viewer/export path is selected.",
         },
+        "samgeo_segmentation": _samgeo_status(),
+        "geolibre_wasm": _geolibre_wasm_status(),
     }
     if include_whitebox:
         capabilities["whitebox_tools"] = whitebox_engine_status()
@@ -46,6 +51,83 @@ async def get_spatial_engine_capabilities(
     if include_geokernel:
         capabilities["geokernel"] = await _geokernel_status()
     return capabilities
+
+
+def _python_package_status(
+    import_name: str,
+    package_name: str | None = None,
+) -> dict[str, Any]:
+    spec = importlib.util.find_spec(import_name)
+    installed = spec is not None
+    version = None
+    if installed:
+        try:
+            version = importlib.metadata.version(package_name or import_name)
+        except importlib.metadata.PackageNotFoundError:
+            version = None
+    return {
+        "installed": installed,
+        "version": version,
+    }
+
+
+def _samgeo_status() -> dict[str, Any]:
+    samgeo = _python_package_status("samgeo", "segment-geospatial")
+    torch = _python_package_status("torch")
+    ultralytics = _python_package_status("ultralytics")
+    opencv = _python_package_status("cv2", "opencv-python")
+    installed = bool(samgeo["installed"])
+    return {
+        "installed": installed,
+        "package": samgeo,
+        "optional_backends": {
+            "torch": torch,
+            "ultralytics": ultralytics,
+            "opencv": opencv,
+        },
+        "active_for": (
+            [
+                "promptable raster object segmentation",
+                "mask-to-vector object candidates",
+                "future SAM/YOLO-confirmed raster counts",
+            ]
+            if installed
+            else []
+        ),
+        "note": (
+            "SamGeo can extract masks from drone/satellite rasters, but semantic labels "
+            "and confirmed counts still require prompts, detector labels, validation data, "
+            "or footprint evidence."
+        ),
+    }
+
+
+def _geolibre_wasm_status() -> dict[str, Any]:
+    package = _python_package_status("geolibre_wasm", "geolibre-wasm")
+    cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "geolibre"
+    runtime_cached = bool(list(cache_dir.glob("geolibre-cli-*.wasm"))) if cache_dir.exists() else False
+    installed = bool(package["installed"])
+    return {
+        "installed": installed,
+        "package": package,
+        "runtime_cached": runtime_cached,
+        "active_for": (
+            [
+                "browser/Python WASM geoprocessing",
+                "GeoParquet read/write",
+                "COG/raster rendering",
+                "spectral indices",
+                "terrain/hydrology/LiDAR tools",
+                "PMTiles/XYZ raster tiles",
+            ]
+            if installed
+            else []
+        ),
+        "note": (
+            "GeoLibre-WASM is a geoprocessing/runtime tool suite, not a vision model. "
+            "It helps prepare, render, convert, tile, and post-process raster/vector data."
+        ),
+    }
 
 
 async def _rasterd_status() -> dict[str, Any]:

@@ -22,16 +22,19 @@ from src.dependencies.sage_routing import (
     USER_RASTER,
     build_admin_boundary_tool_args,
     build_fast_tool_call,
+    choose_geospatial_evidence_path,
     classify_intent,
     detect_admin_boundary_display,
     detect_raster_area_question,
     detect_raster_building_count_question,
     detect_raster_context_question,
+    detect_raster_object_candidate_question,
     detect_small_talk,
     extract_last_user_text,
     filter_tools_by_categories,
     raster_context_domain,
     raster_layer_match_score,
+    raster_object_target_classes,
     route_chat,
     routing_alignment_for_tool,
     tool_category_for_name,
@@ -211,8 +214,35 @@ def test_filter_keeps_uncategorized_tools() -> None:
     assert "get_field_health" not in names
 
 
+def test_filter_can_exclude_misleading_proxy_tools() -> None:
+    tools = [
+        _tool("create_raster_h3_context_layer"),
+        _tool("create_h3_spatial_insight_layer"),
+        _tool("analyze_raster_object_candidates"),
+        _tool("analyze_open_buildings_exposure"),
+        _tool("describe_user_raster"),
+    ]
+
+    out = filter_tools_by_categories(
+        tools,
+        {SPATIAL_INSIGHT, USER_RASTER},
+        excluded_tool_names={
+            "create_raster_h3_context_layer",
+            "create_h3_spatial_insight_layer",
+        },
+    )
+    names = {t["function"]["name"] for t in out}
+
+    assert "analyze_raster_object_candidates" in names
+    assert "analyze_open_buildings_exposure" in names
+    assert "describe_user_raster" in names
+    assert "create_raster_h3_context_layer" not in names
+    assert "create_h3_spatial_insight_layer" not in names
+
+
 def test_tool_category_helpers_support_observability() -> None:
     assert tool_category_for_name("create_raster_h3_context_layer") == SPATIAL_INSIGHT
+    assert tool_category_for_name("analyze_raster_object_candidates") == SPATIAL_INSIGHT
     assert tool_category_for_name("unknown_new_tool") == "uncategorized"
     assert (
         routing_alignment_for_tool(
@@ -374,17 +404,79 @@ def test_detect_raster_context_question(msg: str, expected_domain: str) -> None:
     assert raster_context_domain(msg) == expected_domain
 
 
-def test_build_fast_tool_call_raster_context_routes_to_h3_layer() -> None:
-    fast = build_fast_tool_call(
-        "show me the analysis of where the most house is in this Cyampirita_Orthophoto file?"
-    )
+def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer() -> None:
+    fast = build_fast_tool_call("analyze crop stress in this uploaded raster")
 
     assert fast is not None
     assert fast.tool_name == "create_raster_h3_context_layer"
     assert fast.reason == "fast:raster_context"
-    assert fast.arguments["domain"] == "housing"
+    assert fast.arguments["domain"] == "agriculture"
     assert fast.arguments["render_map"] is True
-    assert "settlement" in str(fast.arguments["analysis_goal"])
+    assert "vegetation" in str(fast.arguments["analysis_goal"])
+
+
+def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates() -> None:
+    fast = build_fast_tool_call(
+        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?"
+    )
+
+    assert fast is not None
+    assert fast.tool_name == "analyze_raster_object_candidates"
+    assert fast.reason == "fast:object_candidate_count"
+    assert fast.arguments["target_classes"] == ["building"]
+    assert fast.arguments["render_map"] is True
+
+
+def test_build_fast_tool_call_selects_multiple_raster_object_targets() -> None:
+    fast = build_fast_tool_call(
+        "detect houses, roads, trees, field boundaries, water, and playing areas in this drone file"
+    )
+
+    assert fast is not None
+    assert fast.tool_name == "analyze_raster_object_candidates"
+    assert fast.arguments["target_classes"] == [
+        "building",
+        "road",
+        "linear_boundary",
+        "vegetation_patch",
+        "bare_rectangle",
+        "water",
+    ]
+
+
+def test_build_fast_tool_call_selects_shown_raster_object_targets() -> None:
+    fast = build_fast_tool_call(
+        "show roads, trees, field boundaries, water, and playing areas in this orthophoto"
+    )
+
+    assert fast is not None
+    assert fast.tool_name == "analyze_raster_object_candidates"
+    assert fast.arguments["target_classes"] == [
+        "road",
+        "linear_boundary",
+        "vegetation_patch",
+        "bare_rectangle",
+        "water",
+    ]
+
+
+def test_detect_raster_object_candidate_question_for_non_house_targets() -> None:
+    msg = "find roads and playing fields in this orthophoto"
+
+    assert detect_raster_object_candidate_question(msg) is True
+    assert raster_object_target_classes(msg) == ["road", "bare_rectangle"]
+
+
+def test_route_chat_excludes_h3_proxy_for_raster_house_count() -> None:
+    decision = route_chat(
+        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+        history=[],
+    )
+
+    assert decision.is_small_talk is False
+    assert SPATIAL_INSIGHT in decision.selected_categories
+    assert "create_raster_h3_context_layer" in decision.excluded_tool_names
+    assert "create_h3_spatial_insight_layer" in decision.excluded_tool_names
 
 
 @pytest.mark.parametrize(
@@ -409,6 +501,85 @@ def test_detect_raster_building_count_question(msg: str) -> None:
 )
 def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> None:
     assert detect_raster_building_count_question(msg) is False
+
+
+@pytest.mark.parametrize(
+    "msg, expected",
+    [
+        (
+            "show me Busasamana sector",
+            ("admin_boundary", "display_boundary", "show_admin_boundary", True),
+        ),
+        (
+            "tell me the hectares of Cyampirita_Orthophoto",
+            ("uploaded_raster", "measure_area", "describe_user_raster", True),
+        ),
+        (
+            "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+            (
+                "uploaded_raster",
+                "object_candidate_count",
+                "analyze_raster_object_candidates",
+                True,
+            ),
+        ),
+        (
+            "show me where houses look concentrated in this orthophoto",
+            (
+                "uploaded_raster",
+                "object_candidate_screening",
+                "analyze_raster_object_candidates",
+                True,
+            ),
+        ),
+        (
+            "detect roads and field boundaries in this drone image",
+            (
+                "uploaded_raster",
+                "object_candidate_screening",
+                "analyze_raster_object_candidates",
+                True,
+            ),
+        ),
+        (
+            "analyze crop stress in this uploaded raster",
+            (
+                "uploaded_raster",
+                "raster_surface_screening",
+                "create_raster_h3_context_layer",
+                True,
+            ),
+        ),
+        (
+            "show Sentinel satellite imagery for Nyamagabe",
+            ("satellite_product", "spectral_or_scene_analysis", "search_satellite_imagery", False),
+        ),
+        (
+            "compute NDVI from satellite data for this area",
+            ("satellite_product", "spectral_or_scene_analysis", "compute_spectral_index", False),
+        ),
+        (
+            "count houses from the satellite basemap here",
+            (
+                "external_footprints",
+                "building_count_or_exposure",
+                "analyze_open_buildings_exposure",
+                False,
+            ),
+        ),
+    ],
+)
+def test_choose_geospatial_evidence_path_selects_contextual_engine(
+    msg: str, expected: tuple[str, str, str, bool]
+) -> None:
+    decision = choose_geospatial_evidence_path(msg)
+
+    assert (
+        decision.source_kind,
+        decision.task,
+        decision.primary_tool,
+        decision.should_fast_route,
+    ) == expected
 
 
 def test_raster_context_does_not_capture_plain_place_analysis() -> None:

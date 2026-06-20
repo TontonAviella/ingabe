@@ -76,15 +76,15 @@ async def analyze_open_buildings_exposure(
     """Analyze building/housing exposure using Google Open Buildings footprints and render it as an H3 map.
 
     Use when the user asks for exact building footprints, counts, settlement
-    exposure, flood/rain impact on housing, city/infrastructure exposure, or
-    how Open Buildings combines with TESSERA/H3. For houses/buildings visible
-    inside an uploaded drone/orthophoto raster, use create_raster_h3_context_layer
-    first so the answer is based on the local pixels already on the map; use
-    Open Buildings afterward as confirmation or for exact exposure counts. If
-    cached building footprints are not available, call with empty building inputs
-    and include_ingest_plan=true only when that external footprint evidence is
-    actually needed. This tool does not download massive Open Buildings CSV
-    tiles in the live response path; production should ingest/cache them first.
+    exposure, flood/rain impact on housing, city/infrastructure exposure, houses
+    from a basemap/satellite background, or how Open Buildings combines with
+    TESSERA/H3. For houses/buildings visible inside an uploaded drone/orthophoto
+    raster, this is the footprint confirmation path; do not use raster H3 cells
+    as a substitute for building counts. If cached building footprints are not
+    available, call with empty building inputs and include_ingest_plan=true only
+    when that external footprint evidence is actually needed. This tool does not
+    download massive Open Buildings CSV tiles in the live response path;
+    production should ingest/cache them first.
     """
 
     bbox = parse_bbox(args.bbox)

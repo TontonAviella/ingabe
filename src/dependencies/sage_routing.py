@@ -58,6 +58,27 @@ class FastToolCall:
     arguments: dict[str, object]
     reason: str
 
+
+@dataclass(frozen=True)
+class GeospatialEvidenceDecision:
+    """Evidence-first route for geospatial questions.
+
+    This is intentionally separate from `FastToolCall`: a decision may point to
+    an engine that should be wired next, but should not be fast-routed until the
+    concrete backend tool exists.
+    """
+
+    source_kind: str
+    task: str
+    primary_tool: str | None
+    evidence_level: str
+    should_fast_route: bool
+    reason: str
+    supporting_tools: tuple[str, ...] = ()
+
+
+RASTER_OBJECT_CANDIDATES_TOOL = "analyze_raster_object_candidates"
+
 # Map tool name -> category. Tools not in this dict are treated as
 # "uncategorized" and included whenever we cannot rule them out (i.e.
 # whenever we fall back to the full list). Category labels reflect what
@@ -157,6 +178,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # --- H3/city/environment insight layers ---
     "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
+    "analyze_raster_object_candidates": SPATIAL_INSIGHT,
     "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
@@ -552,11 +574,266 @@ _RASTER_BUILDING_ASSET_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+_RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "building",
+        re.compile(
+            r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
+            r"settlement|settlements)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "road",
+        re.compile(
+            r"\b(road|roads|track|tracks|path|paths|street|streets|lane|lanes)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "linear_boundary",
+        re.compile(
+            r"\b(field\s+boundar(?:y|ies)|farm\s+boundar(?:y|ies)|"
+            r"parcel\s+boundar(?:y|ies)|boundary|boundaries|fence|fences)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "vegetation_patch",
+        re.compile(
+            r"\b(tree|trees|crop|crops|vegetation|plant|plants|orchard|orchards)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "bare_rectangle",
+        re.compile(
+            r"\b(court|courts|playground|playgrounds|playing\s+areas?|playing\s+fields?|"
+            r"sports\s+field|bare\s+rectangle|empty\s+rectangle)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "water",
+        re.compile(r"\b(water|wetness|pond|ponds|lake|lakes|stream|streams)\b", re.IGNORECASE),
+    ),
+)
+
+_RASTER_OBJECT_ACTION_KEYWORDS = re.compile(
+    r"\b(detect|segment|count|counts|counted|how\s+many|where|find|identify|"
+    r"recognize|extract|visible|most|concentrat(?:e|ed|ion)?|locate|"
+    r"show|display|map|show\s+me\s+where)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_SURFACE_ANALYSIS_KEYWORDS = re.compile(
+    r"\b(stress|health|ndvi|ndre|index|indices|greenness|wet\s+soil|"
+    r"crop\s+condition|vegetation\s+condition|damage|risk|priority|attention)\b",
+    re.IGNORECASE,
+)
+
 _RASTER_EXACT_COUNT_KEYWORDS = re.compile(
     r"\b(how\s+many|count|counts|counted|number\s+of|total|exact|"
     r"confirmed|enumerate|quantity)\b",
     re.IGNORECASE,
 )
+
+_BASEMAP_ONLY_KEYWORDS = re.compile(
+    r"\b(basemap|base\s+map|background\s+map|satellite\s+basemap|"
+    r"esri|google\s+maps?|mapbox\s+satellite|world\s+imagery)\b",
+    re.IGNORECASE,
+)
+
+_SATELLITE_PRODUCT_KEYWORDS = re.compile(
+    r"\b(sentinel|sentinel-?2|landsat|planetary\s+computer|earth\s+search|"
+    r"stac|satellite\s+(?:image|imagery|scene|data|product)|"
+    r"ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b",
+    re.IGNORECASE,
+)
+
+
+def raster_object_target_classes(text: str) -> list[str]:
+    """Return object classes Sage should screen for in an uploaded raster."""
+    prompt = str(text or "")
+    targets = [
+        target
+        for target, pattern in _RASTER_OBJECT_TARGET_PATTERNS
+        if pattern.search(prompt)
+    ]
+    if re.search(r"\b(objects?|everything|all\s+visible|anything\s+visible)\b", prompt, re.IGNORECASE):
+        for target in (
+            "building",
+            "road",
+            "linear_boundary",
+            "vegetation_patch",
+            "bare_rectangle",
+            "water",
+        ):
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def detect_raster_object_candidate_question(text: str) -> bool:
+    prompt = str(text or "")
+    if not _RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt)):
+        return False
+    targets = raster_object_target_classes(prompt)
+    if not targets:
+        return False
+    if detect_raster_building_count_question(prompt):
+        return True
+    if _RASTER_OBJECT_ACTION_KEYWORDS.search(prompt):
+        return True
+    return False
+
+
+def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
+    """Choose the evidence engine before choosing a map layer.
+
+    Users should not need to know H3, SamGeo, GeoLibre, Open Buildings, or
+    satellite products. This function captures the decision we expect Sage to
+    make from the wording of the question. The returned tool is a recommended
+    engine, not automatically a safe fast path.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return GeospatialEvidenceDecision(
+            source_kind="unknown",
+            task="clarify",
+            primary_tool=None,
+            evidence_level="unknown",
+            should_fast_route=False,
+            reason="empty_prompt",
+        )
+
+    if detect_raster_area_question(prompt):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="measure_area",
+            primary_tool="describe_user_raster",
+            evidence_level="metadata_or_valid_pixel_area",
+            should_fast_route=True,
+            reason="uploaded_raster_area",
+        )
+
+    is_basemap_only = bool(_BASEMAP_ONLY_KEYWORDS.search(prompt))
+    mentions_satellite_product = bool(_SATELLITE_PRODUCT_KEYWORDS.search(prompt))
+    mentions_uploaded_raster = bool(_RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt)))
+    wants_building_count = detect_raster_building_count_question(prompt)
+    wants_object_candidates = detect_raster_object_candidate_question(prompt)
+    raster_context_args = build_raster_context_tool_args(prompt)
+
+    if mentions_satellite_product and not is_basemap_only:
+        spectral_tool = (
+            "compute_spectral_index"
+            if re.search(r"\b(ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b", prompt, re.IGNORECASE)
+            else "search_satellite_imagery"
+        )
+        return GeospatialEvidenceDecision(
+            source_kind="satellite_product",
+            task="spectral_or_scene_analysis",
+            primary_tool=spectral_tool,
+            evidence_level="requires_satellite_product_pixels",
+            should_fast_route=False,
+            reason="satellite_product_requested",
+            supporting_tools=("display_satellite_layer",),
+        )
+
+    if wants_building_count and mentions_uploaded_raster and not is_basemap_only:
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_count",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_count_until_validated",
+            should_fast_route=True,
+            reason="raster_house_count_uses_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if (
+        wants_object_candidates
+        and mentions_uploaded_raster
+        and not is_basemap_only
+        and not (
+            raster_context_args
+            and raster_context_args.get("domain") == "agriculture"
+            and _RASTER_SURFACE_ANALYSIS_KEYWORDS.search(prompt)
+            and not _RASTER_EXACT_COUNT_KEYWORDS.search(prompt)
+        )
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_screening",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_screening_until_validated",
+            should_fast_route=True,
+            reason="uploaded_raster_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if raster_context_args and raster_context_args.get("domain") == "housing" and not is_basemap_only:
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_screening",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_screening_until_validated",
+            should_fast_route=True,
+            reason="raster_housing_uses_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if raster_context_args:
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="raster_surface_screening",
+            primary_tool="create_raster_h3_context_layer",
+            evidence_level="screening_cells",
+            should_fast_route=True,
+            reason="uploaded_raster_surface_context",
+        )
+
+    if wants_building_count or (
+        is_basemap_only and _RASTER_BUILDING_ASSET_KEYWORDS.search(prompt)
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="external_footprints",
+            task="building_count_or_exposure",
+            primary_tool="analyze_open_buildings_exposure",
+            evidence_level="requires_building_footprints",
+            should_fast_route=False,
+            reason="basemap_is_not_analyzable_pixels",
+            supporting_tools=("search_location",),
+        )
+
+    admin_args = build_admin_boundary_tool_args(prompt)
+    if admin_args:
+        return GeospatialEvidenceDecision(
+            source_kind="admin_boundary",
+            task="display_boundary",
+            primary_tool="show_admin_boundary",
+            evidence_level="official_boundary",
+            should_fast_route=True,
+            reason="admin_boundary_display",
+        )
+
+    return GeospatialEvidenceDecision(
+        source_kind="unknown",
+        task="clarify_or_full_toolset",
+        primary_tool=None,
+        evidence_level="unknown",
+        should_fast_route=False,
+        reason="no_high_confidence_evidence_path",
+    )
 
 _RASTER_NAME_STOPWORDS = {
     "a",
@@ -702,9 +979,26 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
 
 
 def build_fast_tool_call(text: str) -> FastToolCall | None:
-    args = build_admin_boundary_tool_args(text)
-    if args:
-        return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    decision = choose_geospatial_evidence_path(text)
+    if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
+        args = build_admin_boundary_tool_args(text)
+        if args:
+            return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    if decision.should_fast_route and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL:
+        return FastToolCall(
+            RASTER_OBJECT_CANDIDATES_TOOL,
+            {
+                "target_classes": raster_object_target_classes(text) or ["building"],
+                "max_candidates": 500,
+                "max_sample_pixels": 200_000,
+                "min_area_m2": 8.0,
+                "max_area_m2": 1500.0,
+                "confidence_threshold": 0.35,
+                "engine_preference": "auto",
+                "render_map": True,
+            },
+            f"fast:{decision.task}",
+        )
     raster_context_args = build_raster_context_tool_args(text)
     if raster_context_args:
         return FastToolCall(
@@ -712,13 +1006,15 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             raster_context_args,
             "fast:raster_context",
         )
-    if detect_raster_area_question(text):
+    if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall("describe_user_raster", {}, "fast:raster_area")
     return None
 
 
 def filter_tools_by_categories(
-    tools: list[dict], categories: Iterable[str]
+    tools: list[dict],
+    categories: Iterable[str],
+    excluded_tool_names: Iterable[str] = (),
 ) -> list[dict]:
     """Return the subset of `tools` whose names map to one of `categories`,
     plus all ALWAYS_ON tools and any uncategorized tools.
@@ -729,11 +1025,14 @@ def filter_tools_by_categories(
     """
     cat_set = set(categories)
     cat_set.add(ALWAYS_ON)
+    excluded = set(excluded_tool_names)
     out: list[dict] = []
     for tool in tools:
         name = tool.get("function", {}).get("name", "")
         if not name:
             out.append(tool)
+            continue
+        if name in excluded:
             continue
         cat = _TOOL_CATEGORIES.get(name)
         if cat is None or cat in cat_set:
@@ -800,12 +1099,16 @@ class RoutingDecision:
         primary_model_override: When set, caller should use this model
             as the head of the fallback chain instead of OPENAI_MODEL.
         reason: Short human-readable label for logs and observability.
+        excluded_tool_names: Tool names to remove even when their category is
+            selected. Used when a proxy/rendering tool would be misleading for
+            the question's evidence requirement.
     """
 
     is_small_talk: bool
     selected_categories: frozenset[str]
     primary_model_override: str | None
     reason: str
+    excluded_tool_names: frozenset[str] = frozenset()
 
 
 def _tool_round_in_flight(history: list[dict] | None) -> bool:
@@ -859,6 +1162,23 @@ def route_chat(
             reason="small_talk",
         )
 
+    evidence_decision = choose_geospatial_evidence_path(user_message)
+    excluded_tool_names: frozenset[str] = frozenset()
+    if evidence_decision.task in {
+        "object_candidate_count",
+        "object_candidate_screening",
+        "building_count_or_exposure",
+    }:
+        # H3 is a rendering/indexing layer, not an object detector. Keep it out
+        # of house/building count turns so Sage cannot present proxy cells as
+        # evidence. Open Buildings remains available through SPATIAL_INSIGHT.
+        excluded_tool_names = frozenset(
+            {
+                "create_h3_spatial_insight_layer",
+                "create_raster_h3_context_layer",
+            }
+        )
+
     cats = classify_intent(user_message)
     if cats:
         return RoutingDecision(
@@ -866,6 +1186,7 @@ def route_chat(
             selected_categories=cats,
             primary_model_override=None,
             reason=f"intent:{','.join(sorted(cats))}",
+            excluded_tool_names=excluded_tool_names,
         )
 
     return RoutingDecision(
@@ -873,6 +1194,7 @@ def route_chat(
         selected_categories=frozenset(),
         primary_model_override=None,
         reason="default",
+        excluded_tool_names=excluded_tool_names,
     )
 
 
