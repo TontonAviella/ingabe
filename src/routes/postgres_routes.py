@@ -5,7 +5,6 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 import aiohttp
-import fiona
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -69,11 +68,6 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-
-fiona.drvsupport.supported_drivers["WFS"] = "r"  # type: ignore[attr-defined]
-fiona.drvsupport.supported_drivers["PMTiles"] = "r"  # type: ignore[attr-defined]
-fiona.drvsupport.supported_drivers["KML"] = "r"  # type: ignore[attr-defined]
-
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)

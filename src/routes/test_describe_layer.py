@@ -73,30 +73,30 @@ async def test_describe_layer_endpoint(test_map_with_coho_layer, auth_client):
         "Missing or incorrect dataset bounds"
     )
     assert "Feature Count: 677" in content, "Missing or incorrect feature count"
-    assert "CRS: EPSG:3857" in content, "Missing or incorrect CRS info"
-    assert "Driver: GPKG" in content, "Missing or incorrect driver info"
+    assert "Driver: GeoParquet" in content, "Missing or incorrect driver info"
+    assert "GeoParquet Reader: PyArrow" in content, "Missing GeoParquet reader info"
+    assert "Query Engine: DuckDB read_parquet" in content, "Missing query engine info"
+    assert "CRS: EPSG:4326" in content, "Missing or incorrect analytics CRS info"
+    assert "Original SRID: EPSG:3857" in content, "Missing or incorrect original CRS info"
 
     # Check for attribute fields
     assert "### Attribute Fields" in content, "Missing attribute fields section"
-    assert "#### float" in content, "Missing float type section"
-    assert "#### int32" in content, "Missing int32 type section"
-    assert "#### str:" in content, "Missing string type section"
-    assert "Acreage" in content, "Missing Acreage field"
-    assert "Shape__Are" in content, "Missing Shape__Are field"
-    assert "Shape__Len" in content, "Missing Shape__Len field"
-    assert "OBJECTID" in content, "Missing OBJECTID field"
-    assert "CALWNUM" in content, "Missing CALWNUM field"
-    assert "Planning_W" in content, "Missing Planning_W field"
+    assert "Acreage: double" in content, "Missing Acreage field"
+    assert "Shape__Are: double" in content, "Missing Shape__Are field"
+    assert "Shape__Len: double" in content, "Missing Shape__Len field"
+    assert "OBJECTID: int32" in content, "Missing OBJECTID field"
+    assert "CALWNUM: string" in content, "Missing CALWNUM field"
+    assert "Planning_W: string" in content, "Missing Planning_W field"
 
     # Check for attribute table section
     assert "## Sampled Features Attribute Table" in content, (
         "Missing attribute table section"
     )
     # Check that it mentions sampling some number of features
-    assert re.search(r"Randomly sampled \d+ of 677 features for this table", content), (
+    assert "Sampled 5 of 677 features with DuckDB read_parquet." in content, (
         "Missing sampling information"
     )
-    assert "Acreage,CALWNUM,OBJECTID,Planning_W,Shape__Are,Shape__Len" in content, (
+    assert "OBJECTID,CALWNUM,Planning_W,Acreage,Shape__Are,Shape__Len" in content, (
         "Missing CSV header"
     )
 
@@ -104,7 +104,7 @@ async def test_describe_layer_endpoint(test_map_with_coho_layer, auth_client):
     # Just verify the first row has the expected format
     # Allow for truncated values (ee version truncates at 20 chars)
     assert re.search(
-        r"\d+\.\d+,\d+\.\d+,1,S\. Fork Winchuck",
+        r"1,1101\.00000,S\. Fork Winchuck River,\d+\.\d+",
         content,
     ), "CSV data doesn't match expected format"
 

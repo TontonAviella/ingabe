@@ -1883,7 +1883,8 @@ async def _enrich_background(
                     })
 
         elif layer_type == LAYER_TYPE_VECTOR:
-            import fiona
+            from src.geoprocessing.vector_io import read_vector_feature_records
+
             s3_client = await get_async_s3_client()
             bucket = get_bucket_name()
 
@@ -1893,11 +1894,9 @@ async def _enrich_background(
                     s3_client.download_file(bucket, s3_key, tmp.name),
                     "download", f"layer {layer_id}",
                 )
-                with fiona.open(tmp.name) as collection:
-                    for fid, feat in enumerate(collection, start=1):
-                        geom = feat.get("geometry")
-                        if geom:
-                            features.append({"id": fid, "geom": dict(geom)})
+                for record in read_vector_feature_records(tmp.name):
+                    if record.geometry:
+                        features.append({"id": record.feature_id, "geom": record.geometry})
 
         if not features:
             logger.warning("Enrichment background: no features for layer %s", layer_id)
@@ -1937,8 +1936,9 @@ async def _enrich_background(
 
         # For vector layers, write enrichment values back into the source file
         if layer_type == LAYER_TYPE_VECTOR and s3_key:
-            import fiona
             import shutil
+
+            from src.geoprocessing.vector_io import write_vector_enrichment
 
             s3_enrich = await get_async_s3_client()
             bucket_enrich = get_bucket_name()
@@ -1951,14 +1951,7 @@ async def _enrich_background(
                     s3_enrich.download_file(bucket_enrich, s3_key, src_path),
                     "download", f"enrich write-back {layer_id}",
                 )
-                with fiona.open(src_path) as src:
-                    schema = src.schema.copy()
-                    schema["properties"][metric_key] = "float"
-                    with fiona.open(dst_path, "w", driver=src.driver, crs=src.crs, schema=schema) as dst:
-                        for fid, feat in enumerate(src, start=1):
-                            props = dict(feat["properties"])
-                            props[metric_key] = values.get(fid)
-                            dst.write({"geometry": feat["geometry"], "properties": props})
+                write_vector_enrichment(src_path, dst_path, metric_key, values)
 
                 await s3_op(
                     s3_enrich.upload_file(dst_path, bucket_enrich, s3_key),
@@ -2135,7 +2128,8 @@ async def enrich_layer_batch(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Vector layer missing S3 key",
             )
-        import fiona
+        from src.geoprocessing.vector_io import read_vector_feature_records
+
         s3_client = await get_async_s3_client()
         bucket = get_bucket_name()
         suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
@@ -2144,11 +2138,9 @@ async def enrich_layer_batch(
                 s3_client.download_file(bucket, layer.s3_key, tmp.name),
                 "download", f"layer {layer.layer_id}",
             )
-            with fiona.open(tmp.name) as collection:
-                for fid, feat in enumerate(collection, start=1):
-                    geom = feat.get("geometry")
-                    if geom:
-                        features.append({"id": fid, "geom": dict(geom)})
+            for record in read_vector_feature_records(tmp.name):
+                if record.geometry:
+                    features.append({"id": record.feature_id, "geom": record.geometry})
 
     if not features:
         raise HTTPException(
@@ -2444,8 +2436,7 @@ async def get_layer_bounds(
 async def _compute_vector_bounds(layer: MapLayer) -> list | None:
     """Compute bounds from a vector file stored in S3."""
     try:
-        import fiona
-        from pyproj import Transformer
+        from src.geoprocessing.vector_io import compute_vector_bounds
 
         s3_client = await get_async_s3_client()
         bucket = get_bucket_name()
@@ -2454,14 +2445,7 @@ async def _compute_vector_bounds(layer: MapLayer) -> list | None:
                 s3_client.download_file(bucket, layer.s3_key, tmp.name),
                 "download", f"bounds for {layer.layer_id}",
             )
-            with fiona.open(tmp.name) as src:
-                b = src.bounds  # (xmin, ymin, xmax, ymax)
-                if src.crs and str(src.crs.to_epsg()) != "4326":
-                    t = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
-                    x1, y1 = t.transform(b[0], b[1])
-                    x2, y2 = t.transform(b[2], b[3])
-                    return [x1, y1, x2, y2]
-                return [b[0], b[1], b[2], b[3]]
+            return compute_vector_bounds(tmp.name)
     except Exception as e:
         logger.warning("Failed to compute vector bounds for %s: %s", layer.layer_id, e)
         return None

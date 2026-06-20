@@ -57,7 +57,6 @@ fastapi-cli==0.0.7
 fastapi-mcp==0.3.3
 fastjsonschema==2.16.3
 filelock==3.18.0
-fiona==1.10.1
 forge3d==1.26.0
 fonttools==4.38.0
 frozenlist==1.6.0

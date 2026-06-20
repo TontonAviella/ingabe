@@ -6,7 +6,6 @@ import os
 import shutil
 import uuid
 
-import fiona
 from fastapi import HTTPException, status
 
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
@@ -108,9 +107,11 @@ class VectorUploadHandler(BaseUploadHandler):
         temp_file_path = result.updated_temp_file_path or ctx.temp_file_path
 
         try:
-            sublayers = fiona.listlayers(temp_file_path)
+            from src.geoprocessing.vector_io import list_renderable_vector_layers
+
+            sublayers = list_renderable_vector_layers(temp_file_path)
         except Exception:
-            logger.debug("fiona.listlayers failed for %s, treating as single layer", temp_file_path)
+            logger.debug("Renderable layer listing failed for %s, treating as single layer", temp_file_path)
             sublayers = []
         multi = len(sublayers) > 1
         if not sublayers:

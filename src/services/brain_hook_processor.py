@@ -147,9 +147,7 @@ async def _create_pages_from_s3_vector(
     geometry_type: Optional[str] = None,
 ) -> int:
     """Download vector file from S3 and create brain pages from features."""
-    import fiona
-    from shapely.geometry import mapping, shape
-
+    from src.geoprocessing.vector_io import read_vector_feature_records
     from src.utils import get_s3_client
 
     s3_client = get_s3_client()
@@ -181,66 +179,61 @@ async def _create_pages_from_s3_vector(
             logger.warning("Failed to download %s from S3, creating summary page only", s3_key)
             return await _create_layer_summary_page(conn, brain, layer_id, layer_name, user_id, geometry_type)
 
-        # Read features with fiona
+        # Read features with pyogrio/GeoPandas.
         try:
             pages_created = 0
-            with fiona.open(tmp.name) as src:
-                for i, feature in enumerate(src):
-                    if i >= MAX_FEATURES_PER_LAYER:
-                        logger.info("Hit feature cap (%d) for layer %s", MAX_FEATURES_PER_LAYER, layer_id)
-                        break
+            for i, feature in enumerate(
+                read_vector_feature_records(
+                    tmp.name,
+                    max_features=MAX_FEATURES_PER_LAYER,
+                )
+            ):
+                props = feature.properties
+                geom = feature.geometry
 
-                    props = dict(feature.get("properties", {}))
-                    geom = feature.get("geometry")
+                # Build page content
+                name = _extract_feature_name(props, i, layer_name)
+                slug = _validate_slug(f"layer-{layer_id}-f{i}")
+                page_type = _infer_page_type(props, geometry_type)
+                truth = _build_feature_truth(props, layer_name, page_type)
+                geom_json = json.dumps(geom) if geom is not None else None
 
-                    # Build page content
-                    name = _extract_feature_name(props, i, layer_name)
-                    slug = _validate_slug(f"layer-{layer_id}-f{i}")
-                    page_type = _infer_page_type(props, geometry_type)
-                    truth = _build_feature_truth(props, layer_name, page_type)
+                await brain.put_page(
+                    conn,
+                    slug,
+                    PageInput(
+                        type=page_type,
+                        title=name,
+                        compiled_truth=truth,
+                        frontmatter=_clean_frontmatter(props),
+                        geom_geojson=geom_json,
+                    ),
+                    owner_uuid=user_id,
+                )
 
-                    # fiona 1.10 returns Geometry objects (not dicts) which json.dumps
-                    # can't handle. Use __geo_interface__ to get the GeoJSON-shaped dict.
-                    if geom is None:
-                        geom_json = None
-                    elif hasattr(geom, "__geo_interface__"):
-                        geom_json = json.dumps(geom.__geo_interface__)
-                    else:
-                        geom_json = json.dumps(geom)
+                # Add timeline entry for creation
+                await brain.add_timeline_entry(
+                    conn,
+                    slug,
+                    TimelineInput(
+                        date=date.today(),
+                        summary=f"Created from vector upload: {layer_name}",
+                        source="vector_upload",
+                    ),
+                    owner_uuid=user_id,
+                )
 
-                    await brain.put_page(
-                        conn,
-                        slug,
-                        PageInput(
-                            type=page_type,
-                            title=name,
-                            compiled_truth=truth,
-                            frontmatter=_clean_frontmatter(props),
-                            geom_geojson=geom_json,
-                        ),
-                        owner_uuid=user_id,
-                    )
+                # Link feature page to layer summary page
+                layer_slug = _validate_slug(f"layer-{layer_id}")
+                try:
+                    await brain.add_link(conn, layer_slug, slug, link_type="contains")
+                except ValueError:
+                    pass  # Layer summary page doesn't exist yet
 
-                    # Add timeline entry for creation
-                    await brain.add_timeline_entry(
-                        conn,
-                        slug,
-                        TimelineInput(
-                            date=date.today(),
-                            summary=f"Created from vector upload: {layer_name}",
-                            source="vector_upload",
-                        ),
-                        owner_uuid=user_id,
-                    )
+                pages_created += 1
 
-                    # Link feature page to layer summary page
-                    layer_slug = _validate_slug(f"layer-{layer_id}")
-                    try:
-                        await brain.add_link(conn, layer_slug, slug, link_type="contains")
-                    except ValueError:
-                        pass  # Layer summary page doesn't exist yet
-
-                    pages_created += 1
+            if pages_created == MAX_FEATURES_PER_LAYER:
+                logger.info("Hit feature cap (%d) for layer %s", MAX_FEATURES_PER_LAYER, layer_id)
 
             # Also create a summary page for the layer itself
             await _create_layer_summary_page(conn, brain, layer_id, layer_name, user_id, geometry_type)
