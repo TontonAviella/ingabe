@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+import geopandas as gpd
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
@@ -50,14 +53,21 @@ def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -
             min_area_m2=20,
             max_area_m2=600,
             confidence_threshold=0.25,
-            engine_preference="auto",
+            engine_preference="rasterio_numpy",
         )
     )
 
     assert result["status"] == "success"
     assert result["summary"]["candidate_count"] >= 3
     assert result["summary"]["class_counts"]["building"] >= 3
+    assert result["summary"]["analytics_format"] == "geoparquet"
+    assert result["summary"]["geojson_role"] == "live_map_transport_only"
     assert result["summary"]["confirmed_count"] is False
+    assert result["geoparquet"]["role"] == "primary_analytics_store"
+    assert os.path.exists(result["geoparquet"]["path"])
+    stored = gpd.read_parquet(result["geoparquet"]["path"])
+    assert len(stored) == result["summary"]["candidate_count"]
+    assert set(stored["candidate_class"]) == {"building"}
     assert result["geojson"]["features"]
     assert all(
         feature["properties"]["candidate_class"] == "building"
@@ -105,12 +115,14 @@ def test_analyze_raster_object_candidates_can_screen_road_like_segments(tmp_path
             min_area_m2=20,
             max_area_m2=2000,
             confidence_threshold=0.25,
-            engine_preference="auto",
+            engine_preference="rasterio_numpy",
         )
     )
 
     assert result["status"] == "success"
     assert result["summary"]["class_counts"]["road"] >= 1
+    assert result["summary"]["analytics_format"] == "geoparquet"
+    assert result["geoparquet"]["feature_count"] == result["summary"]["candidate_count"]
     assert all(
         feature["properties"]["candidate_class"] == "road"
         for feature in result["geojson"]["features"]

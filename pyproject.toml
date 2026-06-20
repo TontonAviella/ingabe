@@ -13,6 +13,7 @@ dependencies = [
     "dask==2024.12.1",
     "fastapi==0.115.12",
     "forge3d==1.26.0",
+    "geolibre-wasm==0.4.4",
     "geopandas==1.1.3",
     "h3==4.1.0",
     # Hermes Agent — Nous Research's MIT-licensed Python AI agent framework.
@@ -29,6 +30,7 @@ dependencies = [
     "niyamit-sphere==0.2.0",
     "numpy==2.3.1",
     "openai==2.36.0",
+    "opencv-python-headless==4.13.0.92",
     "opentelemetry-api==1.36.0",
     "opentelemetry-exporter-otlp-proto-http==1.36.0",
     "opentelemetry-sdk==1.36.0",
@@ -47,7 +49,12 @@ dependencies = [
     "slowapi==0.1.9",
     "rasterio==1.4.4",
     "rioxarray==0.17.0",
+    "segment-anything==1.0",
+    "segment-geospatial==1.3.3",
     "sqlalchemy==2.0.41",
+    "torch==2.12.1",
+    "torchvision==0.27.1",
+    "wasmtime==45.0.0",
     "whitebox==2.3.6",
     "xarray==2024.11.0",
 ]

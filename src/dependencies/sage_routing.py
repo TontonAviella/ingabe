@@ -994,7 +994,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
                 "min_area_m2": 8.0,
                 "max_area_m2": 1500.0,
                 "confidence_threshold": 0.35,
-                "engine_preference": "auto",
+                "engine_preference": "samgeo",
                 "render_map": True,
             },
             f"fast:{decision.task}",

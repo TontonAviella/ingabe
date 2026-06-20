@@ -151,6 +151,12 @@ async def analyze_raster_object_candidates(
                 "This ran against the raw TIFF. Large raw drone rasters can be slow; "
                 "COG/preview-backed segmentation is the fast production path."
             )
+        await _upload_geoparquet_artifact(
+            result,
+            meta=meta,
+            source_layer_id=args.layer_id,
+            s3_client=s3_client,
+        )
 
     if args.render_map and result.get("status") == "success":
         source_id = f"sage-raster-objects-{uuid.uuid4().hex[:8]}"
@@ -194,3 +200,46 @@ def _candidate_style() -> dict[str, Any]:
         "stroke_color": "#fef08a",
         "stroke_width": 3,
     }
+
+
+async def _upload_geoparquet_artifact(
+    result: dict[str, Any],
+    *,
+    meta: IngabeToolCallMetaArgs,
+    source_layer_id: str,
+    s3_client: Any,
+) -> None:
+    artifact = result.get("geoparquet")
+    if not isinstance(artifact, dict):
+        return
+    local_path = artifact.get("path")
+    if not isinstance(local_path, str) or not os.path.exists(local_path):
+        return
+
+    from src.utils import get_bucket_name
+
+    key = (
+        f"geoparquet/{meta.user_uuid}/{meta.project_id}/"
+        f"raster-object-candidates/{source_layer_id}-{uuid.uuid4().hex[:8]}.parquet"
+    )
+    try:
+        await s3_client.upload_file(local_path, get_bucket_name(), key)
+    except Exception as exc:
+        logger.warning("Failed to upload raster object GeoParquet artifact: %s", exc)
+        artifact["upload_error"] = f"{type(exc).__name__}: {exc}"
+        return
+    finally:
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass
+
+    artifact.pop("path", None)
+    artifact["key"] = key
+    artifact["storage"] = "s3"
+    result["geoparquet_key"] = key
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else None
+    if summary is not None:
+        summary["geoparquet_key"] = key
+        summary["analytics_format"] = "geoparquet"
+        summary["geojson_role"] = "live_map_transport_only"
