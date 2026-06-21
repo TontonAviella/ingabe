@@ -415,10 +415,15 @@ def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer(
     assert "vegetation" in str(fast.arguments["analysis_goal"])
 
 
-def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates() -> None:
-    fast = build_fast_tool_call(
-        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?"
-    )
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+        "show me where the houses is and count them all in Cyampirita_Orthophoto?",
+    ],
+)
+def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(msg: str) -> None:
+    fast = build_fast_tool_call(msg)
 
     assert fast is not None
     assert fast.tool_name == "analyze_raster_object_candidates"
@@ -471,7 +476,7 @@ def test_detect_raster_object_candidate_question_for_non_house_targets() -> None
 
 def test_route_chat_excludes_h3_proxy_for_raster_house_count() -> None:
     decision = route_chat(
-        "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+        "show me where the houses is and count them all in Cyampirita_Orthophoto?",
         history=[],
     )
 
@@ -485,6 +490,7 @@ def test_route_chat_excludes_h3_proxy_for_raster_house_count() -> None:
     "msg",
     [
         "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+        "show me where the houses is and count them all in Cyampirita_Orthophoto?",
         "count the buildings in this drone orthophoto",
         "what is the exact number of roofs in this raster?",
     ],
@@ -518,6 +524,15 @@ def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> No
         ),
         (
             "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
+            (
+                "uploaded_raster",
+                "object_candidate_count",
+                "analyze_raster_object_candidates",
+                True,
+            ),
+        ),
+        (
+            "show me where the houses is and count them all in Cyampirita_Orthophoto?",
             (
                 "uploaded_raster",
                 "object_candidate_count",

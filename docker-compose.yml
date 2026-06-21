@@ -70,6 +70,10 @@ services:
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
       - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
       - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
+      - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/cache}
+      - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
+      - TORCH_HOME=${TORCH_HOME:-/cache/torch}
+      - MUNDI_SAMGEO_CHECKPOINT_DIR=${MUNDI_SAMGEO_CHECKPOINT_DIR:-/cache/samgeo}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}

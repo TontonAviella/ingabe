@@ -92,7 +92,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH="/app:/usr/local/lib/python3.11/dist-packages:/usr/lib/python3/dist-packages" \
     LD_LIBRARY_PATH="/usr/local/lib:/usr/lib" \
     GDAL_DATA="/usr/local/share/gdal" \
-    GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins"
+    GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins" \
+    XDG_CACHE_HOME="/cache" \
+    MPLCONFIGDIR="/cache/matplotlib" \
+    TORCH_HOME="/cache/torch" \
+    MUNDI_SAMGEO_CHECKPOINT_DIR="/cache/samgeo"
 
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -100,8 +104,9 @@ RUN chmod +x /entrypoint.sh
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
-    && mkdir -p /cache \
+    && mkdir -p /cache/matplotlib /cache/torch /cache/samgeo \
     && chown appuser:appuser /cache \
+    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/samgeo \
     && chown appuser:appuser /home/appuser \
     && chmod 755 /home/appuser
 # /home/appuser must be appuser-owned BEFORE first volume mount, because docker

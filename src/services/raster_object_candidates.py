@@ -202,6 +202,7 @@ def _maybe_analyze_with_samgeo(payload: RasterObjectCandidateInput) -> dict[str,
     if preference not in {"auto", "samgeo", "segment-geospatial", "segment_geospatial"}:
         return None
 
+    _ensure_geoai_cache_env()
     if not _module_status("samgeo")["installed"]:
         if preference == "auto":
             return None
@@ -233,6 +234,7 @@ def _maybe_analyze_with_samgeo(payload: RasterObjectCandidateInput) -> dict[str,
 
 
 def _samgeo_auto_enabled() -> bool:
+    _ensure_geoai_cache_env()
     if os.environ.get("MUNDI_SAMGEO_AUTO", "").strip().lower() in {"1", "true", "yes"}:
         return True
     model_type = os.environ.get("MUNDI_SAMGEO_MODEL_TYPE", "vit_b")
@@ -249,6 +251,7 @@ def _samgeo_auto_enabled() -> bool:
 
 
 def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -> dict[str, Any]:
+    _ensure_geoai_cache_env()
     from samgeo import SamGeo
 
     targets = _normalize_targets(payload.target_classes)
@@ -372,6 +375,30 @@ def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -
     if geoparquet:
         result["geoparquet"] = geoparquet
     return result
+
+
+def _ensure_geoai_cache_env() -> None:
+    cache_root = os.environ.get("XDG_CACHE_HOME") or "/cache"
+    try:
+        os.makedirs(cache_root, exist_ok=True)
+    except OSError:
+        cache_root = "/tmp/ingabe_geoai_cache"
+        os.makedirs(cache_root, exist_ok=True)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_root)
+
+    defaults = {
+        "MPLCONFIGDIR": os.path.join(cache_root, "matplotlib"),
+        "TORCH_HOME": os.path.join(cache_root, "torch"),
+        "MUNDI_SAMGEO_CHECKPOINT_DIR": os.path.join(cache_root, "samgeo"),
+    }
+    for key, path in defaults.items():
+        os.environ.setdefault(key, path)
+        try:
+            os.makedirs(os.environ[key], exist_ok=True)
+        except OSError:
+            fallback = os.path.join("/tmp/ingabe_geoai_cache", key.lower())
+            os.makedirs(fallback, exist_ok=True)
+            os.environ[key] = fallback
 
 
 def _validate_payload(payload: RasterObjectCandidateInput) -> None:
