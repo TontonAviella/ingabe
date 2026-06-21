@@ -16,7 +16,8 @@ os.environ["OPENAI_MODEL"] = "test-chat-model"
 os.environ["SAGE_SMALL_TALK_MODEL"] = "test-chat-model"
 os.environ["OPENROUTER_FALLBACK_MODEL"] = ""
 os.environ["OPENROUTER_FALLBACK_MODELS"] = ""
-os.environ.setdefault("OPENAI_API_KEY", "test-api-key")
+if not os.environ.get("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = "test-api-key"
 os.environ["POSTHOG_BACKEND_DISABLED"] = "1"
 
 # Tests run inside the prod container which has CLERK_SECRET_KEY set, so the

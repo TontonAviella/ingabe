@@ -489,6 +489,7 @@ async def add_postgis_connection(
 
         try:
             from src.dependencies.brain_dep import get_brain_service
+
             payload = {
                 "layer_id": connection_id,
                 "layer_name": connection_data.connection_name or "Database",
@@ -497,16 +498,30 @@ async def add_postgis_connection(
             }
             await get_brain_service().enqueue_hook(conn, "vector_upload", payload)
         except Exception:
-            logger.debug("Brain hook enqueue skipped for postgis connection %s", connection_id)
+            logger.debug(
+                "Brain hook enqueue skipped for postgis connection %s", connection_id
+            )
 
         # Start background task to generate database documentation
+        try:
+            documentation_openai_client = get_openai_client(request)
+        except HTTPException as e:
+            if e.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                raise
+            logger.info(
+                "Skipping database documentation LLM client for postgis connection %s: %s",
+                connection_id,
+                e.detail,
+            )
+            documentation_openai_client = None
+
         background_tasks.add_task(
             database_documenter.generate_documentation,
             connection_id,
             connection_uri,
             connection_data.connection_name or "Database",
             connection_manager,
-            get_openai_client(request),
+            documentation_openai_client,
             chat_args_provider,
             user_id,
         )
@@ -774,7 +789,9 @@ async def get_project_social_preview(
     except ClientError:
         # Re-render with semaphore to limit concurrent renders
         async with SOCIAL_RENDER_SEMAPHORE:
-            logger.info("Rendering social image for map %s (semaphore acquired)", latest_map_id)
+            logger.info(
+                "Rendering social image for map %s (semaphore acquired)", latest_map_id
+            )
 
             try:
                 style_json = await get_map_style_internal(
@@ -804,7 +821,9 @@ async def get_project_social_preview(
                     img = Image.open(io.BytesIO(render_body))
                     img.load()
                 except UnidentifiedImageError as e:
-                    raise ValueError("renderer produced non-image social preview") from e
+                    raise ValueError(
+                        "renderer produced non-image social preview"
+                    ) from e
 
                 webp_buffer = io.BytesIO()
                 img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
@@ -819,7 +838,9 @@ async def get_project_social_preview(
                         ContentType="image/webp",
                     )
                 except Exception as e:
-                    logger.warning("Failed to cache social image for map %s: %s", latest_map_id, e)
+                    logger.warning(
+                        "Failed to cache social image for map %s: %s", latest_map_id, e
+                    )
 
             except Exception as e:
                 logger.warning(
@@ -1181,7 +1202,9 @@ async def _extract_text_pptx(data: bytes) -> str:
                             slide_parts.append(para.text)
                 if shape.has_table:
                     for row in shape.table.rows:
-                        cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                        cells = [
+                            cell.text.strip() for cell in row.cells if cell.text.strip()
+                        ]
                         if cells:
                             slide_parts.append(" | ".join(cells))
             if len(slide_parts) > 1:
@@ -1285,7 +1308,10 @@ async def upload_document_to_brain(
             Body=data,
         )
     except Exception:
-        logger.warning("S3 upload failed for brain doc %s, continuing without raw file storage", doc_id)
+        logger.warning(
+            "S3 upload failed for brain doc %s, continuing without raw file storage",
+            doc_id,
+        )
         s3_key = ""
 
     brain = get_brain_service()
@@ -1334,7 +1360,13 @@ async def upload_document_to_brain(
                 owner_uuid=user_id,
             )
 
-    logger.info("Document uploaded to Brain: %s (%s, %d bytes, %d chars text)", slug, filename, len(data), len(text))
+    logger.info(
+        "Document uploaded to Brain: %s (%s, %d bytes, %d chars text)",
+        slug,
+        filename,
+        len(data),
+        len(text),
+    )
 
     return DocumentUploadResponse(
         document_id=doc_id,
