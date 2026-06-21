@@ -4,7 +4,7 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
-## [0.5.2.0] - 2026-06-19
+## [0.5.2.0] - 2026-06-21
 
 ### Added
 - GeoParquet is now the primary vector analytics artifact for uploads and generated H3 insight layers. Vector processing writes a GeoParquet copy alongside PMTiles, stores the S3 key and analytics metadata, and DuckDB queries prefer the GeoParquet path before falling back to GeoPackage.
@@ -17,6 +17,8 @@ All notable changes to mundi.ai will be documented in this file.
 
 ### Changed
 - Vector analytics now treat GeoJSON/GeoPackage/Shapefile formats as ingest inputs, not the long-term analytics store. PMTiles remains the rendering artifact; GeoParquet is the query artifact.
+- Live Sage map previews now gzip large GeoJSON layer updates over the WebSocket when that is smaller than raw JSON, while keeping GeoParquet as the analytics artifact.
+- Raster object candidate replies now distinguish likely building/roof candidate polygons from confirmed house counts, so Sage does not overstate what an orthophoto-only screening pass proves.
 - Server-side map snapshots and social previews generate inline PMTiles URLs with the internal S3 endpoint so Docker renderers do not try to fetch `localhost:9000`.
 - Renderer output is now validated after MBGL runs; empty PNG output becomes an explicit 500 with renderer diagnostics instead of silently producing blank previews.
 - H3 spatial insight persistence now reuses the shared vector processing path, so H3 layers get the same PMTiles and GeoParquet metadata as uploaded vector layers.
@@ -25,6 +27,7 @@ All notable changes to mundi.ai will be documented in this file.
 
 ### Fixed
 - Added missing `pydantic-settings` and `psycopg2-binary` project dependencies to the `uv` lock path so local `uv run pytest` imports match the Docker/runtime environment.
+- Fixed compressed GeoJSON preview replay after map style refreshes, so Sage-added vector layers remain renderable after basemap/style changes.
 - Fixed pipeline evidence tool schemas to keep strict required-field compatibility for Sage/Hermes tool calling.
 - Fixed map snapshot tests and MBGL renderer tests around the new internal-S3 render path.
 
