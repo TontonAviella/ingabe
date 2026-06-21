@@ -154,10 +154,17 @@ def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dic
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
         "geojson_role": "live_map_transport_only",
+        "live_preview_transport": "gzip_geojson_when_smaller",
         "candidate_count_available": True,
+        "count_semantics": "candidate_screening",
+        "count_units": "candidate_polygons",
         "confirmed_count": False,
         "confirmed_count_available": False,
+        "confirmed_building_count": None,
+        "candidate_building_count": None,
     }
+    if "building" in targets:
+        summary["candidate_building_count"] = int(summary["class_counts"].get("building", 0))
     if samgeo_attempt and samgeo_attempt.get("status") != "success":
         summary["samgeo_fallback_reason"] = samgeo_attempt.get("error") or samgeo_attempt.get("status")
 
@@ -323,10 +330,17 @@ def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
         "geojson_role": "live_map_transport_only",
+        "live_preview_transport": "gzip_geojson_when_smaller",
         "candidate_count_available": True,
+        "count_semantics": "candidate_screening",
+        "count_units": "candidate_polygons",
         "confirmed_count": False,
         "confirmed_count_available": False,
+        "confirmed_building_count": None,
+        "candidate_building_count": None,
     }
+    if "building" in targets:
+        summary["candidate_building_count"] = int(summary["class_counts"].get("building", 0))
     if geoparquet:
         summary["geoparquet_size_bytes"] = geoparquet["size_bytes"]
         summary["geoparquet_feature_count"] = geoparquet["feature_count"]

@@ -1958,7 +1958,12 @@ async def _maybe_run_fast_raster_context_turn(
     return True
 
 
-def _raster_object_fast_reply(result: dict, layer_name: str) -> str:
+def _raster_object_fast_reply(
+    result: dict,
+    layer_name: str,
+    *,
+    requested_building_count: bool = False,
+) -> str:
     if result.get("status") != "success":
         return (
             f"I could not extract object candidates from {layer_name}: "
@@ -1974,6 +1979,15 @@ def _raster_object_fast_reply(result: dict, layer_name: str) -> str:
     )
     performance_note = summary.get("performance_note")
     suffix = f" {performance_note}" if performance_note else ""
+    if requested_building_count and (class_counts.get("building") or summary.get("candidate_building_count")):
+        building_candidates = int(class_counts.get("building") or summary.get("candidate_building_count") or 0)
+        return (
+            f"I found {building_candidates} likely building/roof candidate polygons in {layer_name} and added them on top "
+            "of the orthophoto. I did not produce a confirmed house count from this raster alone. "
+            f"{honesty} A confirmed house count needs footprint evidence such as Open Buildings, OSM/local survey data, "
+            "or a trained building detector/human validation step."
+            f"{suffix}"
+        )
     return (
         f"I extracted {candidate_count} object candidates from {layer_name} and added them on top of the orthophoto "
         f"({class_text}). {honesty}{suffix}"
@@ -1997,6 +2011,8 @@ async def _maybe_run_fast_raster_object_turn(
     fast_call = build_fast_tool_call(user_text)
     if not fast_call or fast_call.tool_name != "analyze_raster_object_candidates":
         return False
+
+    requested_building_count = detect_raster_building_count_question(user_text)
 
     started = asyncio.get_running_loop().time()
     turn_id = f"fast-raster-objects-{conversation.id}-{_uuid.uuid4().hex[:8]}"
@@ -2058,7 +2074,11 @@ async def _maybe_run_fast_raster_object_turn(
             ),
         )
 
-    assistant_text = _raster_object_fast_reply(result, layer_name)
+    assistant_text = _raster_object_fast_reply(
+        result,
+        layer_name,
+        requested_building_count=requested_building_count,
+    )
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
     capture_for_session(
         "backend_sage_fast_raster_objects_answered",
@@ -2069,6 +2089,10 @@ async def _maybe_run_fast_raster_object_turn(
             "layer_id": str(layer["layer_id"]),
             "status": result.get("status"),
             "candidate_count": summary.get("candidate_count") or result.get("geojson_feature_count"),
+            "candidate_building_count": summary.get("candidate_building_count"),
+            "confirmed_count_available": summary.get("confirmed_count_available"),
+            "requested_building_count": requested_building_count,
+            "count_semantics": summary.get("count_semantics"),
             "class_counts": json.dumps(summary.get("class_counts") or {}),
             "source_storage": summary.get("source_storage"),
             "engine_used": (

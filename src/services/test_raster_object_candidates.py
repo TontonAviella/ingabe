@@ -62,7 +62,13 @@ def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -
     assert result["summary"]["class_counts"]["building"] >= 3
     assert result["summary"]["analytics_format"] == "geoparquet"
     assert result["summary"]["geojson_role"] == "live_map_transport_only"
+    assert result["summary"]["live_preview_transport"] == "gzip_geojson_when_smaller"
+    assert result["summary"]["count_semantics"] == "candidate_screening"
+    assert result["summary"]["count_units"] == "candidate_polygons"
     assert result["summary"]["confirmed_count"] is False
+    assert result["summary"]["confirmed_count_available"] is False
+    assert result["summary"]["confirmed_building_count"] is None
+    assert result["summary"]["candidate_building_count"] >= 3
     assert result["geoparquet"]["role"] == "primary_analytics_store"
     assert os.path.exists(result["geoparquet"]["path"])
     stored = gpd.read_parquet(result["geoparquet"]["path"])
