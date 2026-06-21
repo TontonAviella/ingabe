@@ -179,7 +179,7 @@ services:
       RULES=$$(/usr/bin/mc ilm rule list myminio/${S3_BUCKET:-test-bucket} 2>/dev/null) || RULES='';
       case $$RULES in
         *snapshots/*) echo '[mc] lifecycle rule for snapshots/ already present';;
-        *) /usr/bin/mc ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket}; echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day';;
+        *) /usr/bin/mc ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket} && echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day' || echo '[mc] lifecycle rule unsupported; snapshots cleanup must be handled externally';;
       esac;
       echo '[mc] bootstrap complete';
       "
