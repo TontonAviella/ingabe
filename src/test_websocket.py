@@ -1,9 +1,14 @@
-import pytest
-import uuid
+import asyncio
+import json
 import time
-from unittest.mock import patch, AsyncMock
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from src._test_streaming_mock import MockResponse, recv_non_streaming
+from src.routes import websocket as websocket_routes
 
 
 @pytest.fixture
@@ -51,6 +56,74 @@ def test_websocket_404(sync_auth_client):
             f"/api/maps/ws/{test_map_id}/messages/updates"
         ):
             pytest.fail("WebSocket connection should have failed without token")
+
+
+def _ephemeral_payload(conversation_id: int):
+    return websocket_routes.EphemeralNotificationPayload(
+        conversation_id=conversation_id,
+        ephemeral=True,
+        action_id=str(uuid.uuid4()),
+        layer_id=None,
+        action="Sage is thinking...",
+        timestamp=datetime.now(timezone.utc),
+        completed_at=None,
+        status="active",
+        bounds=None,
+        updates={"style_json": False},
+    )
+
+
+@pytest.mark.anyio
+async def test_publish_and_distribute_sends_local_before_redis(monkeypatch):
+    conversation_id = 987654321
+    queue: asyncio.Queue = asyncio.Queue()
+    payload = _ephemeral_payload(conversation_id)
+    published_payloads = []
+
+    async def fake_publish(payload_json: str) -> bool:
+        published_payloads.append(json.loads(payload_json))
+        assert queue.qsize() == 1
+        return True
+
+    monkeypatch.setattr(websocket_routes, "_publish_to_redis", fake_publish)
+
+    async with websocket_routes.subscribers_lock:
+        websocket_routes.subscribers_by_conversation[conversation_id].add(queue)
+    try:
+        await websocket_routes._publish_and_distribute(payload)
+
+        assert queue.qsize() == 1
+        delivered = await queue.get()
+        assert delivered.action_id == payload.action_id
+        assert (
+            published_payloads[0]["_redis_origin_id"]
+            == websocket_routes._REDIS_ORIGIN_ID
+        )
+    finally:
+        async with websocket_routes.subscribers_lock:
+            websocket_routes.subscribers_by_conversation[conversation_id].discard(queue)
+            if not websocket_routes.subscribers_by_conversation[conversation_id]:
+                del websocket_routes.subscribers_by_conversation[conversation_id]
+
+
+@pytest.mark.anyio
+async def test_redis_loopback_from_same_process_is_ignored():
+    conversation_id = 987654322
+    queue: asyncio.Queue = asyncio.Queue()
+    payload_dict = _ephemeral_payload(conversation_id).model_dump(mode="json")
+    payload_dict["_redis_origin_id"] = websocket_routes._REDIS_ORIGIN_ID
+
+    async with websocket_routes.subscribers_lock:
+        websocket_routes.subscribers_by_conversation[conversation_id].add(queue)
+    try:
+        await websocket_routes._distribute_from_json(json.dumps(payload_dict))
+
+        assert queue.empty()
+    finally:
+        async with websocket_routes.subscribers_lock:
+            websocket_routes.subscribers_by_conversation[conversation_id].discard(queue)
+            if not websocket_routes.subscribers_by_conversation[conversation_id]:
+                del websocket_routes.subscribers_by_conversation[conversation_id]
 
 
 def test_websocket_receive_ephemeral_action(
