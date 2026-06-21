@@ -13,6 +13,7 @@ from src.services.h3_spatial_insight import (
 )
 from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.rain_impact import parse_bbox
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
@@ -163,14 +164,14 @@ async def create_h3_spatial_insight_layer(
                 f"Rendering spatial risk preview: {args.location_label}",
                 bounds=bbox,
             ) as payload:
-                payload.updates["add_geojson_layer"] = {
-                    "source_id": source_id,
-                    "geojson": result["geojson"],
-                    "name": f"Spatial Risk - {args.location_label}",
-                    "bounds": bbox,
-                    "style_hint": render_engine.get("style_hint", "h3_spatial_insight_risk"),
-                    "style": style,
-                }
+                payload.updates["add_geojson_layer"] = geojson_layer_update(
+                    source_id=source_id,
+                    geojson=result["geojson"],
+                    name=f"Spatial Risk - {args.location_label}",
+                    bounds=bbox,
+                    style_hint=render_engine.get("style_hint", "h3_spatial_insight_risk"),
+                    style=style,
+                )
                 await asyncio.sleep(0.2)
             render_engine["source_id"] = source_id
             render_engine["rendered"] = True

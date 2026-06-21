@@ -102,9 +102,15 @@ export interface GeoJsonLayerStyle {
 export interface GeoJsonLayerUpdate {
   source_id: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  geojson: any;
+  geojson?: any;
+  geojson_gzip_b64?: string;
+  geojson_encoding?: 'identity' | 'gzip+base64';
+  geojson_raw_size_bytes?: number;
+  geojson_compressed_size_bytes?: number;
+  geojson_transport_size_bytes?: number;
   name?: string;
   style?: GeoJsonLayerStyle;
+  style_hint?: string;
   bounds?: [number, number, number, number];
 }
 

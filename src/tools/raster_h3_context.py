@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from src.routes.websocket import kue_ephemeral_action
 from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.h3_spatial_insight import h3_cell_geojson_geometry
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
@@ -206,14 +207,14 @@ async def create_raster_h3_context_layer(
                 f"Rendering raster context preview: {row['name']}",
                 bounds=result.get("bbox"),
             ) as payload:
-                payload.updates["add_geojson_layer"] = {
-                    "source_id": source_id,
-                    "geojson": result["geojson"],
-                    "name": f"Raster Context - {row['name']}",
-                    "bounds": result.get("bbox"),
-                    "style_hint": "h3_spatial_insight_risk",
-                    "style": _inline_style(args.render_3d),
-                }
+                payload.updates["add_geojson_layer"] = geojson_layer_update(
+                    source_id=source_id,
+                    geojson=result["geojson"],
+                    name=f"Raster Context - {row['name']}",
+                    bounds=result.get("bbox"),
+                    style_hint="h3_spatial_insight_risk",
+                    style=_inline_style(args.render_3d),
+                )
                 await asyncio.sleep(0.2)
             render_engine["source_id"] = source_id
             render_engine["rendered"] = True

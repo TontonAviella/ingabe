@@ -9,6 +9,7 @@ from src.routes.websocket import kue_ephemeral_action
 from src.services.forge3d_adapter import build_forge3d_impact_layer
 from src.services.rain_impact import parse_bbox
 from src.services.sphere_flood import SphereFloodInput, analyze_sphere_flood_impact as run_sphere_flood
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 
@@ -126,14 +127,14 @@ async def analyze_sphere_flood_impact(
             "Rendering Sphere flood damage map",
             bounds=bbox,
         ) as payload:
-            payload.updates["add_geojson_layer"] = {
-                "source_id": source_id,
-                "geojson": result["geojson"],
-                "name": "Sphere Flood Damage",
-                "bounds": bbox,
-                "style_hint": style_hint,
-                "style": style,
-            }
+            payload.updates["add_geojson_layer"] = geojson_layer_update(
+                source_id=source_id,
+                geojson=result["geojson"],
+                name="Sphere Flood Damage",
+                bounds=bbox,
+                style_hint=style_hint,
+                style=style,
+            )
             await asyncio.sleep(0.2)
         map_meta["source_id"] = source_id
         map_meta["rendered"] = True

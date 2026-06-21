@@ -11,6 +11,7 @@ import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
 import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
+import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
 import type {
   Conversation,
   EphemeralAction,
@@ -207,10 +208,21 @@ export default function ProjectView() {
         } else {
           const gl = layer;
           if (map.getSource(gl.source_id)) continue;
+          let geojsonData: unknown;
+          try {
+            geojsonData = decodeGeoJsonLayerData(gl);
+          } catch (err) {
+            trackError('sage_geojson_layer_replay_decode_failed', err instanceof Error ? err.message : String(err), {
+              project_id: projectId,
+              source_id: gl.source_id,
+              encoding: gl.geojson_encoding || 'unknown',
+            });
+            continue;
+          }
           map.addSource(gl.source_id, {
             type: 'geojson',
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            data: gl.geojson as any,
+            data: geojsonData as any,
           });
           const style = gl.style || {};
           const colorProperty: string | null = style.color_property ?? null;
@@ -245,7 +257,7 @@ export default function ProjectView() {
         console.error('Failed to replay ephemeral layer', layer.source_id, e);
       }
     }
-  }, []);
+  }, [projectId]);
 
   // Helper function to add a new error
   const addError = useCallback(
@@ -642,10 +654,25 @@ export default function ProjectView() {
             const gl = action.updates.add_geojson_layer;
             const map = mapRef.current;
             if (!map.getSource(gl.source_id)) {
+              let geojsonData: unknown;
+              try {
+                geojsonData = decodeGeoJsonLayerData(gl);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                trackError('sage_geojson_layer_decode_failed', message, {
+                  project_id: projectId,
+                  map_id: action.map_id,
+                  action_id: action.action_id,
+                  source_id: gl.source_id,
+                  encoding: gl.geojson_encoding || 'unknown',
+                });
+                toast.error(`Could not render ${gl.name || 'map layer'}: ${message}`);
+                return;
+              }
               map.addSource(gl.source_id, {
                 type: 'geojson',
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                data: gl.geojson as any,
+                data: geojsonData as any,
               });
               const style = gl.style || {};
               const colorProperty: string | null = style.color_property ?? null;
@@ -711,7 +738,10 @@ export default function ProjectView() {
                 action_id: action.action_id,
                 source_id: gl.source_id,
                 has_3d_extrusion: gl.style?.extrude_3d === true,
-                feature_count: Array.isArray(gl.geojson?.features) ? gl.geojson.features.length : null,
+                feature_count: geoJsonFeatureCount(geojsonData),
+                encoding: gl.geojson_encoding || 'identity',
+                raw_size_bytes: gl.geojson_raw_size_bytes ?? null,
+                transport_size_bytes: gl.geojson_transport_size_bytes ?? null,
               });
             }
           }

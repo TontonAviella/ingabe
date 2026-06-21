@@ -11,6 +11,7 @@ from src.services.rain_impact import (
     analyze_expected_rain_impact as analyze_expected_rain_impact_service,
     parse_bbox,
 )
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 
@@ -109,14 +110,14 @@ async def analyze_expected_rain_impact(
             f"Rendering rain impact map: {args.location_label}",
             bounds=bbox,
         ) as payload:
-            payload.updates["add_geojson_layer"] = {
-                "source_id": source_id,
-                "geojson": result["geojson"],
-                "name": f"Expected Rain Impact - {args.location_label}",
-                "bounds": bbox,
-                "style_hint": result["map"]["style_hint"],
-                "style": style,
-            }
+            payload.updates["add_geojson_layer"] = geojson_layer_update(
+                source_id=source_id,
+                geojson=result["geojson"],
+                name=f"Expected Rain Impact - {args.location_label}",
+                bounds=bbox,
+                style_hint=result["map"]["style_hint"],
+                style=style,
+            )
             await asyncio.sleep(0.2)
         result["map"]["source_id"] = source_id
         result["map"]["rendered"] = True

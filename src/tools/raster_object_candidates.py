@@ -14,6 +14,7 @@ from src.services.raster_object_candidates import (
     RasterObjectCandidateInput,
     analyze_raster_object_candidates as analyze_raster_object_candidates_service,
 )
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
@@ -166,14 +167,14 @@ async def analyze_raster_object_candidates(
             f"Rendering object candidates: {row['name']}",
             bounds=result.get("bbox"),
         ) as payload:
-            payload.updates["add_geojson_layer"] = {
-                "source_id": source_id,
-                "geojson": result["geojson"],
-                "name": f"Object Candidates - {row['name']}",
-                "bounds": result.get("bbox"),
-                "style_hint": "raster_object_candidates",
-                "style": style,
-            }
+            payload.updates["add_geojson_layer"] = geojson_layer_update(
+                source_id=source_id,
+                geojson=result["geojson"],
+                name=f"Object Candidates - {row['name']}",
+                bounds=result.get("bbox"),
+                style_hint="raster_object_candidates",
+                style=style,
+            )
             await asyncio.sleep(0.2)
         result.setdefault("engines", {}).setdefault("render", {})["source_id"] = source_id
         result["engines"]["render"]["rendered"] = True

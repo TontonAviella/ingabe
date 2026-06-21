@@ -11,6 +11,7 @@ from src.services.open_buildings import (
     analyze_open_buildings_exposure as analyze_open_buildings_exposure_service,
 )
 from src.services.rain_impact import parse_bbox
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 
@@ -126,14 +127,14 @@ async def analyze_open_buildings_exposure(
             f"Rendering Open Buildings exposure: {args.location_label}",
             bounds=bbox,
         ) as payload:
-            payload.updates["add_geojson_layer"] = {
-                "source_id": source_id,
-                "geojson": result["geojson"],
-                "name": f"Building Exposure - {args.location_label}",
-                "bounds": bbox,
-                "style_hint": "open_buildings_h3_exposure",
-                "style": style,
-            }
+            payload.updates["add_geojson_layer"] = geojson_layer_update(
+                source_id=source_id,
+                geojson=result["geojson"],
+                name=f"Building Exposure - {args.location_label}",
+                bounds=bbox,
+                style_hint="open_buildings_h3_exposure",
+                style=style,
+            )
             await asyncio.sleep(0.2)
         result["engines"]["render"]["source_id"] = source_id
         result["engines"]["render"]["rendered"] = True

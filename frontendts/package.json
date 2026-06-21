@@ -48,6 +48,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "fflate": "^0.7.4",
     "jspdf": "^4.1.0",
     "legend-symbol-ts": "github:brendanashworth/legend-symbol#4f0b923",
     "lucide-react": "^0.503.0",

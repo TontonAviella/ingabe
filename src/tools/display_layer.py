@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services.stac_service import STACService
+from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
@@ -380,14 +381,14 @@ async def display_geojson_layer(
         f"Adding layer: {args.layer_name}",
         bounds=bbox,
     ) as payload:
-        payload.updates["add_geojson_layer"] = {
-            "source_id": source_id,
-            "geojson": geojson,
-            "name": args.layer_name,
-            "bounds": bbox,
-            "style_hint": args.style_hint,
-            "style": preset,
-        }
+        payload.updates["add_geojson_layer"] = geojson_layer_update(
+            source_id=source_id,
+            geojson=geojson,
+            name=args.layer_name,
+            bounds=bbox,
+            style_hint=args.style_hint,
+            style=preset,
+        )
         await asyncio.sleep(0.2)
 
     feature_count = (
