@@ -25,7 +25,9 @@ class RasterObjectCandidateInput:
     engine_preference: str
 
 
-def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dict[str, Any]:
+def analyze_raster_object_candidates(
+    payload: RasterObjectCandidateInput,
+) -> dict[str, Any]:
     """Extract object candidate polygons from an uploaded RGB orthophoto.
 
     SamGeo is the preferred segmentation engine when requested. The lightweight
@@ -56,17 +58,27 @@ def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dic
                 "error": "Object candidate extraction needs an RGB raster with at least 3 bands.",
             }
 
-        red = ds.read(1, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
-        green = ds.read(2, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
-        blue = ds.read(3, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
+        red = ds.read(
+            1, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
+        green = ds.read(
+            2, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
+        blue = ds.read(
+            3, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
 
         raster_bounds = payload.bounds_wgs84
         if not raster_bounds and ds.crs:
-            raster_bounds = list(transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21))
+            raster_bounds = list(
+                transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21)
+            )
 
         if ds.crs:
             source_crs = ds.crs
-            source_transform = ds.transform * Affine.scale(ds.width / out_w, ds.height / out_h)
+            source_transform = ds.transform * Affine.scale(
+                ds.width / out_w, ds.height / out_h
+            )
         elif payload.bounds_wgs84:
             source_crs = CRS.from_epsg(4326)
             west, south, east, north = payload.bounds_wgs84
@@ -102,7 +114,9 @@ def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dic
 
     for target in targets:
         mask = _mask_for_target(target, valid, brightness, grvi, saturation, r, g, b)
-        mask = rasterio.features.sieve(mask.astype("uint8"), size=_sieve_size(out_w, out_h, target)).astype(bool)
+        mask = rasterio.features.sieve(
+            mask.astype("uint8"), size=_sieve_size(out_w, out_h, target)
+        ).astype(bool)
         sampled_masks[target] = int(np.count_nonzero(mask))
         if sampled_masks[target] == 0:
             continue
@@ -164,9 +178,13 @@ def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dic
         "candidate_building_count": None,
     }
     if "building" in targets:
-        summary["candidate_building_count"] = int(summary["class_counts"].get("building", 0))
+        summary["candidate_building_count"] = int(
+            summary["class_counts"].get("building", 0)
+        )
     if samgeo_attempt and samgeo_attempt.get("status") != "success":
-        summary["samgeo_fallback_reason"] = samgeo_attempt.get("error") or samgeo_attempt.get("status")
+        summary["samgeo_fallback_reason"] = samgeo_attempt.get(
+            "error"
+        ) or samgeo_attempt.get("status")
 
     geoparquet = _write_features_to_geoparquet(candidate_features)
     result = {
@@ -197,7 +215,9 @@ def analyze_raster_object_candidates(payload: RasterObjectCandidateInput) -> dic
     return result
 
 
-def _maybe_analyze_with_samgeo(payload: RasterObjectCandidateInput) -> dict[str, Any] | None:
+def _maybe_analyze_with_samgeo(
+    payload: RasterObjectCandidateInput,
+) -> dict[str, Any] | None:
     preference = str(payload.engine_preference or "auto").strip().lower()
     if preference not in {"auto", "samgeo", "segment-geospatial", "segment_geospatial"}:
         return None
@@ -209,7 +229,12 @@ def _maybe_analyze_with_samgeo(payload: RasterObjectCandidateInput) -> dict[str,
         return {
             "status": "samgeo_unavailable",
             "error": "SamGeo is not installed. Install segment-geospatial to use this engine.",
-            "engines": {"selection": {"requested": payload.engine_preference, "used": "unavailable"}},
+            "engines": {
+                "selection": {
+                    "requested": payload.engine_preference,
+                    "used": "unavailable",
+                }
+            },
         }
 
     if preference == "auto" and not _samgeo_auto_enabled():
@@ -247,10 +272,15 @@ def _samgeo_auto_enabled() -> bool:
         "vit_l": "sam_vit_l_0b3195.pth",
         "vit_b": "sam_vit_b_01ec64.pth",
     }.get(model_type)
-    return bool(checkpoint_name and os.path.exists(os.path.join(checkpoint_dir, checkpoint_name)))
+    return bool(
+        checkpoint_name
+        and os.path.exists(os.path.join(checkpoint_dir, checkpoint_name))
+    )
 
 
-def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -> dict[str, Any]:
+def _analyze_with_samgeo(
+    payload: RasterObjectCandidateInput, *, start: float
+) -> dict[str, Any]:
     _ensure_geoai_cache_env()
     from samgeo import SamGeo
 
@@ -260,8 +290,12 @@ def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -
     device = os.environ.get("MUNDI_SAMGEO_DEVICE") or None
     points_per_side = int(os.environ.get("MUNDI_SAMGEO_POINTS_PER_SIDE", "16"))
     pred_iou_thresh = float(os.environ.get("MUNDI_SAMGEO_PRED_IOU_THRESH", "0.84"))
-    stability_score_thresh = float(os.environ.get("MUNDI_SAMGEO_STABILITY_THRESH", "0.88"))
-    min_mask_region_area = int(os.environ.get("MUNDI_SAMGEO_MIN_MASK_REGION_AREA", "24"))
+    stability_score_thresh = float(
+        os.environ.get("MUNDI_SAMGEO_STABILITY_THRESH", "0.88")
+    )
+    min_mask_region_area = int(
+        os.environ.get("MUNDI_SAMGEO_MIN_MASK_REGION_AREA", "24")
+    )
     min_size_pixels = int(os.environ.get("MUNDI_SAMGEO_MIN_SIZE_PIXELS", "0"))
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -343,7 +377,9 @@ def _analyze_with_samgeo(payload: RasterObjectCandidateInput, *, start: float) -
         "candidate_building_count": None,
     }
     if "building" in targets:
-        summary["candidate_building_count"] = int(summary["class_counts"].get("building", 0))
+        summary["candidate_building_count"] = int(
+            summary["class_counts"].get("building", 0)
+        )
     if geoparquet:
         summary["geoparquet_size_bytes"] = geoparquet["size_bytes"]
         summary["geoparquet_feature_count"] = geoparquet["feature_count"]
@@ -496,19 +532,25 @@ def _normalize_targets(target_classes: list[str]) -> list[str]:
     for raw in target_classes or ["building"]:
         key = str(raw or "").strip().lower().replace(" ", "_")
         target = aliases.get(key, key)
-        if target in {
-            "building",
-            "road",
-            "linear_boundary",
-            "vegetation_patch",
-            "bare_rectangle",
-            "water",
-        } and target not in normalized:
+        if (
+            target
+            in {
+                "building",
+                "road",
+                "linear_boundary",
+                "vegetation_patch",
+                "bare_rectangle",
+                "water",
+            }
+            and target not in normalized
+        ):
             normalized.append(target)
     return normalized or ["building"]
 
 
-def _write_sample_rgb_geotiff(payload: RasterObjectCandidateInput, output_path: str) -> dict[str, Any]:
+def _write_sample_rgb_geotiff(
+    payload: RasterObjectCandidateInput, output_path: str
+) -> dict[str, Any]:
     import numpy as np
     import rasterio
     from affine import Affine
@@ -520,11 +562,19 @@ def _write_sample_rgb_geotiff(payload: RasterObjectCandidateInput, output_path: 
     with rasterio.open(payload.raster_url) as ds:
         out_h, out_w = _target_shape(ds.width, ds.height, payload.max_sample_pixels)
         if ds.count < 3:
-            raise ValueError("SamGeo object extraction needs an RGB raster with at least 3 bands.")
+            raise ValueError(
+                "SamGeo object extraction needs an RGB raster with at least 3 bands."
+            )
 
-        red = ds.read(1, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
-        green = ds.read(2, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
-        blue = ds.read(3, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True)
+        red = ds.read(
+            1, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
+        green = ds.read(
+            2, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
+        blue = ds.read(
+            3, out_shape=(out_h, out_w), resampling=Resampling.bilinear, masked=True
+        )
         valid = _valid_rgb_mask(red, green, blue)
         r, g, b = _normalize_rgb(red, green, blue, valid)
         rgb = (np.stack([r, g, b]) * 255.0).astype("uint8")
@@ -532,17 +582,23 @@ def _write_sample_rgb_geotiff(payload: RasterObjectCandidateInput, output_path: 
 
         raster_bounds = payload.bounds_wgs84
         if not raster_bounds and ds.crs:
-            raster_bounds = list(transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21))
+            raster_bounds = list(
+                transform_bounds(ds.crs, "EPSG:4326", *ds.bounds, densify_pts=21)
+            )
 
         if ds.crs:
             source_crs = ds.crs
-            source_transform = ds.transform * Affine.scale(ds.width / out_w, ds.height / out_h)
+            source_transform = ds.transform * Affine.scale(
+                ds.width / out_w, ds.height / out_h
+            )
         elif payload.bounds_wgs84:
             source_crs = CRS.from_epsg(4326)
             west, south, east, north = payload.bounds_wgs84
             source_transform = from_bounds(west, south, east, north, out_w, out_h)
         else:
-            raise ValueError("SamGeo object extraction needs raster CRS or stored WGS84 bounds.")
+            raise ValueError(
+                "SamGeo object extraction needs raster CRS or stored WGS84 bounds."
+            )
 
         profile = {
             "driver": "GTiff",
@@ -642,12 +698,16 @@ def _features_from_samgeo_mask(
             if target is None:
                 continue
 
-            sampled_masks[target] = sampled_masks.get(target, 0) + int(np.count_nonzero(segment_pixels))
+            sampled_masks[target] = sampled_masks.get(target, 0) + int(
+                np.count_nonzero(segment_pixels)
+            )
             confidence = _confidence(target, area_m2, aspect, source_geom.length)
             if confidence < confidence_threshold:
                 continue
             try:
-                geometry_wgs84 = transform_geom(mask_ds.crs, "EPSG:4326", geom, precision=7)
+                geometry_wgs84 = transform_geom(
+                    mask_ds.crs, "EPSG:4326", geom, precision=7
+                )
             except Exception:
                 geometry_wgs84 = geom
             class_counts[target] = class_counts.get(target, 0) + 1
@@ -730,15 +790,24 @@ def _mask_for_target(
         low_vegetation = grvi <= 0.10
         neutral_or_colored_roof = saturation <= 0.62
         blue_or_metal_roof = (b >= g * 0.92) & (brightness >= 0.42) & (grvi <= 0.16)
-        return valid & low_vegetation & (bright_roof | blue_or_metal_roof) & neutral_or_colored_roof
+        return (
+            valid
+            & low_vegetation
+            & (bright_roof | blue_or_metal_roof)
+            & neutral_or_colored_roof
+        )
     if target == "road":
         return valid & (grvi <= 0.08) & (brightness >= 0.38) & (saturation <= 0.55)
     if target == "linear_boundary":
         import numpy as np
 
         gradient = np.zeros_like(brightness, dtype="float32")
-        gradient[:, 1:] = np.maximum(gradient[:, 1:], np.abs(brightness[:, 1:] - brightness[:, :-1]))
-        gradient[1:, :] = np.maximum(gradient[1:, :], np.abs(brightness[1:, :] - brightness[:-1, :]))
+        gradient[:, 1:] = np.maximum(
+            gradient[:, 1:], np.abs(brightness[:, 1:] - brightness[:, :-1])
+        )
+        gradient[1:, :] = np.maximum(
+            gradient[1:, :], np.abs(brightness[1:, :] - brightness[:-1, :])
+        )
         valid_gradient = gradient[valid]
         threshold = 0.18
         if valid_gradient.size:
@@ -775,7 +844,9 @@ def _features_from_mask(
     from rasterio.warp import transform_geom
 
     features: list[dict[str, Any]] = []
-    for geom, value in rasterio.features.shapes(mask.astype("uint8"), mask=mask, transform=source_transform):
+    for geom, value in rasterio.features.shapes(
+        mask.astype("uint8"), mask=mask, transform=source_transform
+    ):
         if int(value) != 1:
             continue
         source_geom = shape(geom)
@@ -827,7 +898,9 @@ def _features_from_mask(
         )
         if len(features) >= max_candidates * 3:
             break
-    return sorted(features, key=lambda feature: feature["properties"]["confidence"], reverse=True)[:max_candidates]
+    return sorted(
+        features, key=lambda feature: feature["properties"]["confidence"], reverse=True
+    )[:max_candidates]
 
 
 def _class_max_area(target: str, max_area_m2: float) -> float:
@@ -848,7 +921,12 @@ def _area_m2(geom: Any, crs: Any) -> float:
         return float(abs(geom.area))
     minx, miny, maxx, maxy = geom.bounds
     mid_lat = (miny + maxy) / 2.0
-    return float(abs(geom.area) * 111_320.0 * 111_320.0 * max(math.cos(math.radians(mid_lat)), 0.1))
+    return float(
+        abs(geom.area)
+        * 111_320.0
+        * 111_320.0
+        * max(math.cos(math.radians(mid_lat)), 0.1)
+    )
 
 
 def _confidence(target: str, area_m2: float, aspect: float, perimeter: float) -> float:
@@ -856,14 +934,26 @@ def _confidence(target: str, area_m2: float, aspect: float, perimeter: float) ->
         area_score = _triangular_score(area_m2, low=12, ideal=90, high=600)
         aspect_score = _clamp(1.0 - max(0.0, aspect - 1.0) / 5.0, 0.0, 1.0)
         compactness = _compactness(area_m2, perimeter)
-        return _clamp(0.25 + 0.38 * area_score + 0.22 * aspect_score + 0.15 * compactness, 0.0, 0.96)
+        return _clamp(
+            0.25 + 0.38 * area_score + 0.22 * aspect_score + 0.15 * compactness,
+            0.0,
+            0.96,
+        )
     if target == "road":
-        return _clamp(0.30 + min(aspect / 12.0, 0.45) + min(area_m2 / 5000.0, 0.20), 0.0, 0.92)
+        return _clamp(
+            0.30 + min(aspect / 12.0, 0.45) + min(area_m2 / 5000.0, 0.20), 0.0, 0.92
+        )
     if target == "linear_boundary":
-        return _clamp(0.25 + min(aspect / 14.0, 0.45) + min(area_m2 / 8000.0, 0.18), 0.0, 0.88)
+        return _clamp(
+            0.25 + min(aspect / 14.0, 0.45) + min(area_m2 / 8000.0, 0.18), 0.0, 0.88
+        )
     if target == "vegetation_patch":
         return _clamp(0.35 + min(area_m2 / 3000.0, 0.45), 0.0, 0.90)
-    return _clamp(0.35 + _triangular_score(area_m2, low=20, ideal=400, high=5000) * 0.45, 0.0, 0.90)
+    return _clamp(
+        0.35 + _triangular_score(area_m2, low=20, ideal=400, high=5000) * 0.45,
+        0.0,
+        0.90,
+    )
 
 
 def _triangular_score(value: float, *, low: float, ideal: float, high: float) -> float:
@@ -930,7 +1020,9 @@ def _count_by_class(features: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _write_features_to_geoparquet(features: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _write_features_to_geoparquet(
+    features: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     if not features:
         return None
 
@@ -940,7 +1032,9 @@ def _write_features_to_geoparquet(features: list[dict[str, Any]]) -> dict[str, A
     if gdf.empty:
         return None
 
-    fd, output_path = tempfile.mkstemp(prefix="raster-object-candidates-", suffix=".parquet")
+    fd, output_path = tempfile.mkstemp(
+        prefix="raster-object-candidates-", suffix=".parquet"
+    )
     os.close(fd)
     compression = "zstd"
     try:

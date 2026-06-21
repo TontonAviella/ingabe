@@ -3,7 +3,7 @@ name = "mundi.ai"
 version = "0.0.1"
 description = "Mundi.ai is an open source web GIS"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "aioboto3==14.3.0",
     "aiohttp==3.11.18",
@@ -27,10 +27,10 @@ dependencies = [
     "httpx==0.28.1",
     "httpx-ws==0.7.2",
     "laspy==2.6.1",
-    "niyamit-sphere==0.2.0",
-    "numpy==2.3.1",
+    "niyamit-sphere==0.1.1",
+    "numpy==1.26.4",
     "openai==2.36.0",
-    "opencv-python-headless==4.13.0.92",
+    "opencv-python-headless==4.10.0.84",
     "opentelemetry-api==1.36.0",
     "opentelemetry-exporter-otlp-proto-http==1.36.0",
     "opentelemetry-sdk==1.36.0",
@@ -50,7 +50,7 @@ dependencies = [
     "rasterio==1.4.4",
     "rioxarray==0.17.0",
     "segment-anything==1.0",
-    "segment-geospatial==1.3.3",
+    "segment-geospatial==0.11.0",
     "sqlalchemy==2.0.41",
     "torch==2.12.1",
     "torchvision==0.27.1",

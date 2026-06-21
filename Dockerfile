@@ -10,7 +10,7 @@ ARG BASE_IMAGE=ghcr.io/tontonaviella/mundi-base:latest
 
 # ── Python dependencies ──
 FROM ${BASE_IMAGE} AS python-builder
-COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 # Install development headers for building Python packages + gfortran for DSSAT.
@@ -34,9 +34,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
     grep -Ev '^(torch|torchvision)==' requirements.txt > /tmp/requirements-no-torch.txt && \
     uv pip install \
+        --index-strategy unsafe-best-match \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
-        "torch==2.4.1" "torchvision==0.19.1" && \
+        "torch==2.12.1+cpu" "torchvision==0.27.1+cpu" && \
     uv pip install -r /tmp/requirements-no-torch.txt && \
     uv pip install hyperdx-opentelemetry && \
     uv pip install /app/clay-source && \
@@ -74,7 +75,7 @@ WORKDIR /app
 
 # Copy Python virtual environment from builder
 COPY --from=python-builder /app/.venv /app/.venv
-COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-install DuckDB extensions so they don't need network access at runtime

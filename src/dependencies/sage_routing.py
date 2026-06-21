@@ -198,15 +198,22 @@ _SMALL_TALK_MAX_LEN = 80
 _SMALL_TALK_PATTERNS = [
     re.compile(r"^(hi+|hey+|hello+|yo|sup|howdy)\b[\s!.,?]*$", re.IGNORECASE),
     re.compile(r"^(good\s+(morning|afternoon|evening|day))[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(thanks?|thank\s+you|thx|ty|cheers|merci|murakoze)[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(ok|okay|cool|nice|great|awesome|got\s+it|sounds\s+good)[\s!.,?]*$", re.IGNORECASE),
+    re.compile(
+        r"^(thanks?|thank\s+you|thx|ty|cheers|merci|murakoze)[\s!.,?]*$", re.IGNORECASE
+    ),
+    re.compile(
+        r"^(ok|okay|cool|nice|great|awesome|got\s+it|sounds\s+good)[\s!.,?]*$",
+        re.IGNORECASE,
+    ),
     re.compile(r"^(yes|no|yep|nope|sure|maybe)[\s!.,?]*$", re.IGNORECASE),
     re.compile(
         r"^(how\s+(are\s+you|r\s+u|is\s+it\s+going)|what's\s+up|whats\s+up)[\s!.,?]*$",
         re.IGNORECASE,
     ),
     re.compile(r"^(bye|goodbye|see\s+you|see\s+ya|later|cya)[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do)\??$", re.IGNORECASE),
+    re.compile(
+        r"^(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do)\??$", re.IGNORECASE
+    ),
 ]
 
 # Words that, if present, override the small-talk match. The user might
@@ -489,7 +496,10 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         if explicit:
             name = _clean_admin_boundary_candidate(explicit.group(1))
             if name:
-                if level == "province" and name.lower() not in {"kigali", "kigali city"}:
+                if level == "province" and name.lower() not in {
+                    "kigali",
+                    "kigali city",
+                }:
                     if not name.lower().endswith("province"):
                         name = f"{name} Province"
                 return {"admin_level": level, "name": name}
@@ -615,7 +625,9 @@ _RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "water",
-        re.compile(r"\b(water|wetness|pond|ponds|lake|lakes|stream|streams)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(water|wetness|pond|ponds|lake|lakes|stream|streams)\b", re.IGNORECASE
+        ),
     ),
 )
 
@@ -660,7 +672,11 @@ def raster_object_target_classes(text: str) -> list[str]:
         for target, pattern in _RASTER_OBJECT_TARGET_PATTERNS
         if pattern.search(prompt)
     ]
-    if re.search(r"\b(objects?|everything|all\s+visible|anything\s+visible)\b", prompt, re.IGNORECASE):
+    if re.search(
+        r"\b(objects?|everything|all\s+visible|anything\s+visible)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
         for target in (
             "building",
             "road",
@@ -719,7 +735,9 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
 
     is_basemap_only = bool(_BASEMAP_ONLY_KEYWORDS.search(prompt))
     mentions_satellite_product = bool(_SATELLITE_PRODUCT_KEYWORDS.search(prompt))
-    mentions_uploaded_raster = bool(_RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt)))
+    mentions_uploaded_raster = bool(
+        _RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt))
+    )
     wants_building_count = detect_raster_building_count_question(prompt)
     wants_object_candidates = detect_raster_object_candidate_question(prompt)
     raster_context_args = build_raster_context_tool_args(prompt)
@@ -727,7 +745,11 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
     if mentions_satellite_product and not is_basemap_only:
         spectral_tool = (
             "compute_spectral_index"
-            if re.search(r"\b(ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b", prompt, re.IGNORECASE)
+            if re.search(
+                r"\b(ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b",
+                prompt,
+                re.IGNORECASE,
+            )
             else "search_satellite_imagery"
         )
         return GeospatialEvidenceDecision(
@@ -778,7 +800,11 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             ),
         )
 
-    if raster_context_args and raster_context_args.get("domain") == "housing" and not is_basemap_only:
+    if (
+        raster_context_args
+        and raster_context_args.get("domain") == "housing"
+        and not is_basemap_only
+    ):
         return GeospatialEvidenceDecision(
             source_kind="uploaded_raster",
             task="object_candidate_screening",
@@ -834,6 +860,7 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
         should_fast_route=False,
         reason="no_high_confidence_evidence_path",
     )
+
 
 _RASTER_NAME_STOPWORDS = {
     "a",
@@ -907,7 +934,9 @@ def detect_raster_context_question(text: str) -> bool:
         return False
     if _RASTER_CONTEXT_KEYWORDS.search(prompt):
         return True
-    return any(pattern.search(prompt) for _domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS)
+    return any(
+        pattern.search(prompt) for _domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS
+    )
 
 
 def detect_raster_building_count_question(text: str) -> bool:
@@ -984,7 +1013,10 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
-    if decision.should_fast_route and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL:
+    if (
+        decision.should_fast_route
+        and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
+    ):
         return FastToolCall(
             RASTER_OBJECT_CANDIDATES_TOOL,
             {
@@ -1080,6 +1112,7 @@ SMALL_TALK_SYSTEM_PROMPT = (
     "satellite data, or agriculture, ask them to clarify."
 )
 
+
 # Default fast model for small-talk turns. Local container, no transatlantic
 # RTT. Override via env if the deployment has something better.
 def _small_talk_model() -> str:
@@ -1151,10 +1184,7 @@ def route_chat(
     Returns:
         A RoutingDecision the caller can act on.
     """
-    if (
-        detect_small_talk(user_message)
-        and not _tool_round_in_flight(history)
-    ):
+    if detect_small_talk(user_message) and not _tool_round_in_flight(history):
         return RoutingDecision(
             is_small_talk=True,
             selected_categories=frozenset(),

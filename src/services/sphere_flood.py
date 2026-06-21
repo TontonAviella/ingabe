@@ -48,7 +48,7 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
             "status": "unavailable",
             "engine": "sphere",
             "error": error or "Sphere packages are not installed",
-            "install_hint": "Install niyamit-sphere==0.2.0 with sphere-core, sphere-data, and sphere-flood.",
+            "install_hint": "Install niyamit-sphere==0.1.1 with sphere-core, sphere-data, and sphere-flood.",
         }
 
     try:
@@ -88,14 +88,28 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
         props = dict(feature.get("properties") or {})
         rows.append(
             {
-                "id": str(props.get("id") or props.get("asset_id") or f"asset-{idx + 1}"),
-                "occupancy_type": str(props.get("occupancy_type") or payload.default_occupancy),
-                "first_floor_height": _num(props.get("first_floor_height_ft"), payload.default_first_floor_height_m * M_TO_FT),
+                "id": str(
+                    props.get("id") or props.get("asset_id") or f"asset-{idx + 1}"
+                ),
+                "occupancy_type": str(
+                    props.get("occupancy_type") or payload.default_occupancy
+                ),
+                "first_floor_height": _num(
+                    props.get("first_floor_height_ft"),
+                    payload.default_first_floor_height_m * M_TO_FT,
+                ),
                 "foundation_type": int(_num(props.get("foundation_type"), 7)),
                 "number_stories": _num(props.get("number_stories"), 1),
-                "area": _num(props.get("area_sqft"), _num(props.get("area_m2"), payload.default_area_m2) * SQM_TO_SQFT),
-                "building_cost": _num(props.get("building_value_usd"), payload.default_building_value_usd),
-                "content_cost": _num(props.get("content_value_usd"), payload.default_content_value_usd),
+                "area": _num(
+                    props.get("area_sqft"),
+                    _num(props.get("area_m2"), payload.default_area_m2) * SQM_TO_SQFT,
+                ),
+                "building_cost": _num(
+                    props.get("building_value_usd"), payload.default_building_value_usd
+                ),
+                "content_cost": _num(
+                    props.get("content_value_usd"), payload.default_content_value_usd
+                ),
                 "inventory_cost": _num(props.get("inventory_value_usd"), 0),
                 "geometry": point,
                 "_original_properties": props,
@@ -112,7 +126,9 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
 
     gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
     buildings = Buildings(gdf)
-    vulnerability = DefaultFloodVulnerability(buildings=buildings, flood_type=payload.flood_type)
+    vulnerability = DefaultFloodVulnerability(
+        buildings=buildings, flood_type=payload.flood_type
+    )
     analysis = HazusFloodAnalysis(
         buildings=buildings,
         vulnerability_func=vulnerability,
@@ -137,16 +153,24 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
             {
                 "sphere_asset_id": row.get("id"),
                 "flood_depth_m": round(payload.flood_depth_m, 3),
-                "depth_in_structure_ft": round(_num(row.get("depth_in_structure"), 0), 3),
+                "depth_in_structure_ft": round(
+                    _num(row.get("depth_in_structure"), 0), 3
+                ),
                 "building_damage_percent": round(damage_percent, 2),
-                "content_damage_percent": round(_num(row.get("content_damage_percent"), 0), 2),
+                "content_damage_percent": round(
+                    _num(row.get("content_damage_percent"), 0), 2
+                ),
                 "building_loss_usd": round(building_loss, 2),
                 "content_loss_usd": round(content_loss, 2),
                 "inventory_loss_usd": round(inventory_loss, 2),
                 "total_loss_usd": round(total_asset_loss, 2),
                 "debris_total_tons": round(_num(row.get("debris_total"), 0), 3),
-                "restoration_min_days": round(_num(row.get("restoration_minimum"), 0), 1),
-                "restoration_max_days": round(_num(row.get("restoration_maximum"), 0), 1),
+                "restoration_min_days": round(
+                    _num(row.get("restoration_minimum"), 0), 1
+                ),
+                "restoration_max_days": round(
+                    _num(row.get("restoration_maximum"), 0), 1
+                ),
                 "risk_score": round(min(100.0, damage_percent), 1),
             }
         )
@@ -183,7 +207,9 @@ def analyze_sphere_flood_impact(payload: SphereFloodInput) -> dict[str, Any]:
 def _load_features(raw_geojson: str) -> list[dict[str, Any]]:
     data = json.loads(raw_geojson)
     if data.get("type") == "FeatureCollection":
-        return [feature for feature in data.get("features", []) if isinstance(feature, dict)]
+        return [
+            feature for feature in data.get("features", []) if isinstance(feature, dict)
+        ]
     if data.get("type") == "Feature":
         return [data]
     raise ValueError("exposure_geojson must be a Feature or FeatureCollection")

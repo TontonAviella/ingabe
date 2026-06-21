@@ -82,12 +82,12 @@ from src.dependencies.sage_routing import (
         "ok.",
         "yes!",
         # Smart quotes from auto-correct.
-        "hi’",   # right single quotation mark
+        "hi’",  # right single quotation mark
         "thanks”",  # right double quotation mark
         # Trailing emoji.
-        "hi \U0001F44B",   # waving hand
-        "thanks \U0001F64F",  # folded hands
-        "ok \U0001F44D",     # thumbs up
+        "hi \U0001f44b",  # waving hand
+        "thanks \U0001f64f",  # folded hands
+        "ok \U0001f44d",  # thumbs up
     ],
 )
 def test_detect_small_talk_positive(msg: str) -> None:
@@ -127,7 +127,10 @@ def test_detect_small_talk_negative(msg: str) -> None:
         ("dry spell in Nyagatare last month", {AGRICULTURE}),
         ("analyze my drone ortho", {USER_RASTER}),
         ("what is happening in this drone image", {USER_RASTER, SPATIAL_INSIGHT}),
-        ("what damage should we expect around this orthophoto", {USER_RASTER, SPATIAL_INSIGHT}),
+        (
+            "what damage should we expect around this orthophoto",
+            {USER_RASTER, SPATIAL_INSIGHT},
+        ),
         ("is this agriculture or housing infrastructure on the map", {SPATIAL_INSIGHT}),
         ("compare this raster to last week's", {USER_RASTER}),
         ("find similar tiles to this one", {USER_RASTER}),
@@ -139,9 +142,7 @@ def test_detect_small_talk_negative(msg: str) -> None:
         ("how many houses are exposed to flood risk here", {SPATIAL_INSIGHT}),
     ],
 )
-def test_classify_intent_known_domains(
-    msg: str, expected: set[str]
-) -> None:
+def test_classify_intent_known_domains(msg: str, expected: set[str]) -> None:
     cats = classify_intent(msg)
     # We only assert the expected categories are present; classify_intent
     # may include others (e.g. "raster" matches both USER_RASTER and
@@ -253,7 +254,10 @@ def test_tool_category_helpers_support_observability() -> None:
     )
     assert routing_alignment_for_tool("zoom_to_bounds", {USER_RASTER}) == "always_on"
     assert routing_alignment_for_tool("get_soil_moisture", {USER_RASTER}) == "mismatch"
-    assert routing_alignment_for_tool("unknown_new_tool", {USER_RASTER}) == "uncategorized_kept"
+    assert (
+        routing_alignment_for_tool("unknown_new_tool", {USER_RASTER})
+        == "uncategorized_kept"
+    )
     assert routing_alignment_for_tool("get_soil_moisture", set()) == "full_toolset"
 
 
@@ -268,9 +272,7 @@ def test_route_chat_small_talk() -> None:
 
 
 def test_route_chat_real_ask_filters_intent() -> None:
-    decision = route_chat(
-        "what's the NDVI in Musanze", history=[]
-    )
+    decision = route_chat("what's the NDVI in Musanze", history=[])
     assert decision.is_small_talk is False
     assert SATELLITE in decision.selected_categories
     assert decision.reason.startswith("intent:")
@@ -320,12 +322,24 @@ def test_explicit_satellite_place_keeps_satellite_tools() -> None:
     [
         ("show me Nyamagabe", {"admin_level": "auto", "name": "Nyamagabe"}),
         ("show me Musanze district", {"admin_level": "district", "name": "Musanze"}),
-        ("i wanna see the Busasamana sector", {"admin_level": "sector", "name": "Busasamana"}),
+        (
+            "i wanna see the Busasamana sector",
+            {"admin_level": "sector", "name": "Busasamana"},
+        ),
         ("view Busasamana sector", {"admin_level": "sector", "name": "Busasamana"}),
         ("locate Gasharu village", {"admin_level": "village", "name": "Gasharu"}),
-        ("show me Southern Province", {"admin_level": "province", "name": "Southern Province"}),
-        ("I want to see all villages in Gasabo district", {"admin_level": "village", "name": "*", "district": "Gasabo"}),
-        ("show all villages in Gasabo district", {"admin_level": "village", "name": "*", "district": "Gasabo"}),
+        (
+            "show me Southern Province",
+            {"admin_level": "province", "name": "Southern Province"},
+        ),
+        (
+            "I want to see all villages in Gasabo district",
+            {"admin_level": "village", "name": "*", "district": "Gasabo"},
+        ),
+        (
+            "show all villages in Gasabo district",
+            {"admin_level": "village", "name": "*", "district": "Gasabo"},
+        ),
     ],
 )
 def test_build_admin_boundary_tool_args(msg: str, expected: dict[str, object]) -> None:
@@ -395,7 +409,10 @@ def test_build_fast_tool_call_raster_area_routes_to_describer() -> None:
             "housing",
         ),
         ("what is happening on this orthophoto?", "mixed"),
-        ("where are the road and drainage issues in this drone image?", "infrastructure"),
+        (
+            "where are the road and drainage issues in this drone image?",
+            "infrastructure",
+        ),
         ("analyze crop stress in this uploaded raster", "agriculture"),
     ],
 )
@@ -404,7 +421,9 @@ def test_detect_raster_context_question(msg: str, expected_domain: str) -> None:
     assert raster_context_domain(msg) == expected_domain
 
 
-def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer() -> None:
+def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer() -> (
+    None
+):
     fast = build_fast_tool_call("analyze crop stress in this uploaded raster")
 
     assert fast is not None
@@ -422,7 +441,9 @@ def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer(
         "show me where the houses is and count them all in Cyampirita_Orthophoto?",
     ],
 )
-def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(msg: str) -> None:
+def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(
+    msg: str,
+) -> None:
     fast = build_fast_tool_call(msg)
 
     assert fast is not None
@@ -569,11 +590,21 @@ def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> No
         ),
         (
             "show Sentinel satellite imagery for Nyamagabe",
-            ("satellite_product", "spectral_or_scene_analysis", "search_satellite_imagery", False),
+            (
+                "satellite_product",
+                "spectral_or_scene_analysis",
+                "search_satellite_imagery",
+                False,
+            ),
         ),
         (
             "compute NDVI from satellite data for this area",
-            ("satellite_product", "spectral_or_scene_analysis", "compute_spectral_index", False),
+            (
+                "satellite_product",
+                "spectral_or_scene_analysis",
+                "compute_spectral_index",
+                False,
+            ),
         ),
         (
             "count houses from the satellite basemap here",
@@ -673,7 +704,7 @@ def test_route_chat_allows_small_talk_after_completed_tool_round() -> None:
                 }
             ],
         },
-        {"role": "tool", "tool_call_id": "call_1", "content": "{\"mean\": 0.62}"},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"mean": 0.62}'},
         {
             "role": "assistant",
             "content": "NDVI in Huye averages 0.62 — healthy vegetation.",
