@@ -5,6 +5,19 @@ from typing import Dict, Generator, Optional
 
 # Set fast timeout for postgres connections in tests
 os.environ["MUNDI_POSTGIS_TIMEOUT_SEC"] = "0.5"
+os.environ["MUNDI_AUTH_MODE"] = "edit"
+
+# docker-compose defaults OPENAI_MODEL to an Ollama model. The production chat
+# loop routes ollama:* models through a direct AsyncOpenAI client pointed at the
+# Ollama service, bypassing tests that patch get_openai_client(). The CI pytest
+# container does not start Ollama, so keep the test default on the patchable
+# client path unless an individual test deliberately overrides it.
+os.environ["OPENAI_MODEL"] = "test-chat-model"
+os.environ["SAGE_SMALL_TALK_MODEL"] = "test-chat-model"
+os.environ["OPENROUTER_FALLBACK_MODEL"] = ""
+os.environ["OPENROUTER_FALLBACK_MODELS"] = ""
+os.environ.setdefault("OPENAI_API_KEY", "test-api-key")
+os.environ["POSTHOG_BACKEND_DISABLED"] = "1"
 
 # Tests run inside the prod container which has CLERK_SECRET_KEY set, so the
 # Clerk-mode auth path blocks unauthenticated requests with 401 before the
@@ -72,6 +85,7 @@ def _ensure_migrations_run():
     every session to wait on that lock before tests start.
     """
     from src.database.migrate import run_migrations
+
     asyncio.run(run_migrations())
     yield
 
@@ -97,7 +111,10 @@ async def client():
 @pytest.fixture(scope="session")
 async def auth_client(client):
     # Accept either Clerk auth or legacy edit mode
-    assert os.environ.get("CLERK_SECRET_KEY") or os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    assert (
+        os.environ.get("CLERK_SECRET_KEY")
+        or os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    )
 
     yield client
 
@@ -192,7 +209,10 @@ def sync_client(_migrations_done):
 
 @pytest.fixture(scope="function")
 def sync_auth_client(sync_client):
-    assert os.environ.get("CLERK_SECRET_KEY") or os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    assert (
+        os.environ.get("CLERK_SECRET_KEY")
+        or os.environ.get("MUNDI_AUTH_MODE") == "edit"
+    )
     yield sync_client
 
 
