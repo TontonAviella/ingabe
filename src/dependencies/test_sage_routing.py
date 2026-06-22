@@ -437,6 +437,32 @@ def test_build_fast_tool_call_raster_context_routes_surface_context_to_h3_layer(
 @pytest.mark.parametrize(
     "msg",
     [
+        "show me house concentration zones in Cyampirita_Orthophoto",
+        "show me where houses look concentrated in this orthophoto",
+        "summarize the built up areas in Cyampirita_Orthophoto",
+    ],
+)
+def test_build_fast_tool_call_routes_zone_summary_to_h3_layer(msg: str) -> None:
+    fast = build_fast_tool_call(msg)
+
+    assert fast is not None
+    assert fast.tool_name == "create_raster_h3_context_layer"
+    assert fast.reason == "fast:raster_context"
+    assert fast.arguments["domain"] == "housing"
+    assert fast.arguments["render_map"] is True
+
+
+def test_build_fast_tool_call_routes_raster_area_to_metadata() -> None:
+    fast = build_fast_tool_call("how many hectares is Cyampirita_Orthophoto")
+
+    assert fast is not None
+    assert fast.tool_name == "describe_user_raster"
+    assert fast.reason == "fast:raster_area"
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
         "show me where there's more house in that Cyampirita_Orthophoto file and how many houses?",
         "show me where the houses is and count them all in Cyampirita_Orthophoto?",
     ],
@@ -565,8 +591,17 @@ def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> No
             "show me where houses look concentrated in this orthophoto",
             (
                 "uploaded_raster",
-                "object_candidate_screening",
-                "analyze_raster_object_candidates",
+                "raster_zone_summary",
+                "create_raster_h3_context_layer",
+                True,
+            ),
+        ),
+        (
+            "summarize the built up areas in Cyampirita_Orthophoto",
+            (
+                "uploaded_raster",
+                "raster_zone_summary",
+                "create_raster_h3_context_layer",
                 True,
             ),
         ),
@@ -628,6 +663,35 @@ def test_choose_geospatial_evidence_path_selects_contextual_engine(
         decision.primary_tool,
         decision.should_fast_route,
     ) == expected
+
+
+@pytest.mark.parametrize(
+    "msg, primary_tool",
+    [
+        (
+            "show me where the houses is and count them all in Cyampirita_Orthophoto?",
+            "analyze_raster_object_candidates",
+        ),
+        (
+            "show me house concentration zones in Cyampirita_Orthophoto",
+            "create_raster_h3_context_layer",
+        ),
+        (
+            "analyze crop stress in this uploaded raster",
+            "create_raster_h3_context_layer",
+        ),
+    ],
+)
+def test_uploaded_raster_decisions_keep_satellite_as_context(
+    msg: str,
+    primary_tool: str,
+) -> None:
+    decision = choose_geospatial_evidence_path(msg)
+
+    assert decision.primary_tool == primary_tool
+    assert "search_satellite_imagery" in decision.supporting_tools
+    assert "compute_spectral_index" in decision.supporting_tools
+    assert "display_satellite_layer" in decision.supporting_tools
 
 
 def test_raster_context_does_not_capture_plain_place_analysis() -> None:

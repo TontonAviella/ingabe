@@ -42,6 +42,7 @@ try:
     )
 
     from src.pipelines import (
+        geolibre_assets,
         hooks,
         lakehouse_assets,
         raster_assets,
@@ -64,12 +65,14 @@ if HAS_DAGSTER:
     vector_asset_list = load_assets_from_modules([vector_assets])
     lakehouse_asset_list = load_assets_from_modules([lakehouse_assets])
     rwanda_asset_list = load_assets_from_modules([rwanda_assets])
+    geolibre_asset_list = load_assets_from_modules([geolibre_assets])
 
     all_assets = [
         *raster_asset_list,
         *vector_asset_list,
         *lakehouse_asset_list,
         *rwanda_asset_list,
+        *geolibre_asset_list,
     ]
 
     # ─── Define jobs for specific asset groups ─────────────────────────────
@@ -207,6 +210,13 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
+    geolibre_runtime_probe_job = define_asset_job(
+        name="geolibre_runtime_probe_job",
+        description="Validate GeoLibre-Rust/WASM vector and raster workflows",
+        selection=AssetSelection.assets(geolibre_assets.geolibre_runtime_probe),
+        tags={"category": "geolibre", "runtime": "true"},
+    )
+
     # ─── Define resource instances ──────────────────────────────────────────
     resource_defs = {
         "s3": resources.S3Resource.from_env(),
@@ -246,6 +256,7 @@ if HAS_DAGSTER:
         nightly_cache_cleanup_job,
         nightly_parcel_ndvi_job,
         daily_weather_ingest_job,
+        geolibre_runtime_probe_job,
     ]
 
     # ─── Define Dagster Definitions ────────────────────────────────────────
@@ -276,13 +287,14 @@ if HAS_DAGSTER:
             schedules.nightly_cache_cleanup_schedule,
             schedules.nightly_parcel_ndvi_schedule,
             schedules.daily_weather_ingest_schedule,
+            schedules.geolibre_runtime_probe_schedule,
         ],
         resources=resource_defs,
     )
 
     logger.info("Dagster definitions loaded successfully")
     logger.info("Assets: %d", len(all_assets))
-    logger.info("Jobs: 18, Sensors: 3, Schedules: 14")
+    logger.info("Jobs: 19, Sensors: 3, Schedules: 15")
 
 # Export for workspace.yaml reference
 __all__ = ["defs", "HAS_DAGSTER"]

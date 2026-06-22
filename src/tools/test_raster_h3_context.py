@@ -40,8 +40,8 @@ def test_housing_context_is_visual_proxy_not_building_detection() -> None:
     assert scores[0] > 0
     assert props["domain"] == "housing"
     assert props["confidence"] == "low"
-    assert "not confirmed building/road detection" in props["evidence_basis"]
-    assert "verify with buildings" in props["likely_issue"]
+    assert "not individual house or road marks" in props["evidence_basis"]
+    assert "inspect the marked area" in props["likely_issue"]
 
 
 def test_drone_is_source_modality_not_agriculture_domain() -> None:

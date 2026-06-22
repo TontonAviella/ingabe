@@ -39,7 +39,7 @@ class TestPipelineDefinitions:
         # Check assets
         assert len(defs.assets) > 0
 
-        # Check jobs (6 core + 4 Rwanda + 9 precompute)
+        # Check jobs (6 core + 4 Rwanda + 9 precompute + GeoLibre runtime probe)
         job_names = {job.name for job in defs.jobs}
         assert "raster_processing_job" in job_names
         assert "vector_processing_job" in job_names
@@ -60,6 +60,7 @@ class TestPipelineDefinitions:
         assert "nightly_cache_cleanup_job" in job_names
         assert "nightly_parcel_ndvi_job" in job_names
         assert "daily_weather_ingest_job" in job_names
+        assert "geolibre_runtime_probe_job" in job_names
 
         # Check sensors
         assert len(defs.sensors) == 3
@@ -68,7 +69,7 @@ class TestPipelineDefinitions:
         assert "failed_cog_retry_sensor" in sensor_names
         assert "satellite_scene_sensor" in sensor_names
 
-        # Check schedules (6 core + 8 precompute)
+        # Check schedules (6 core + 9 precompute/runtime)
         schedule_names = {schedule.name for schedule in defs.schedules}
         assert "hourly_compaction" in schedule_names
         assert "daily_snapshot_expiry" in schedule_names
@@ -85,6 +86,7 @@ class TestPipelineDefinitions:
         assert "nightly_cache_cleanup" in schedule_names
         assert "nightly_parcel_ndvi" in schedule_names
         assert "daily_weather_ingest" in schedule_names
+        assert "geolibre_runtime_probe" in schedule_names
 
         # Check resources
         assert "s3" in defs.resources
@@ -127,6 +129,8 @@ class TestPipelineDefinitions:
 
         # iceberg_registration depends on vector_tile_generation
         assert pmtiles_key in get_parent_keys(iceberg_key)
+
+        assert get_parent_keys(AssetKey(["geolibre_runtime_probe"])) == set()
 
 
 class TestResources:
@@ -251,6 +255,12 @@ class TestSchedules:
         schedule = schedules.daily_parcel_sync
         assert schedule.cron_schedule == "0 2 * * *"  # 2 AM daily
         assert schedule.name == "daily_rwanda_parcel_sync"
+
+    def test_geolibre_runtime_probe_schedule_cron(self):
+        """Test GeoLibre runtime probe schedule configuration."""
+        schedule = schedules.geolibre_runtime_probe_schedule
+        assert schedule.cron_schedule == "15 * * * *"
+        assert schedule.name == "geolibre_runtime_probe"
 
 
 class TestUploadHandlerIntegration:

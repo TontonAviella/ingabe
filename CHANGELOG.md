@@ -4,6 +4,17 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.3.0] - 2026-06-22
+
+### Added
+- Sage can now run GeoLibre-Rust/Whitebox-backed geoprocessing through a generic runner, including Open Buildings-style vector conversion and satellite raster index smoke flows with PostHog and pipeline-evidence proof.
+- Uploaded-raster house, road, crop, tree, and boundary questions now route to visible object marks first, while keeping satellite imagery, spectral indices, H3 zones, and known vector datasets available as supporting context.
+- Dagster now includes a GeoLibre runtime probe so scheduled evidence can show whether Rust geospatial tools are available and producing outputs.
+
+### Changed
+- Sage explains raster object results in plain language: likely roof/house shapes are a reviewable map estimate, H3 cells are area/zone summaries, and backend names stay out of normal answers unless the user asks for diagnostics.
+- Open Buildings exposure planning can hand small vector extracts through GeoLibre conversion so building context and raster/satellite context can share the same processing path.
+
 ## [0.5.2.1] - 2026-06-22
 
 ### Fixed

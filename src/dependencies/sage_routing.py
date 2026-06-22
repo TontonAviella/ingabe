@@ -180,6 +180,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_raster_object_candidates": SPATIAL_INSIGHT,
     "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
+    "get_geolibre_tool_capabilities": SPATIAL_INSIGHT,
+    "run_geolibre_tool": SPATIAL_INSIGHT,
+    "run_geolibre_smoke_suite_tool": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
     "get_entity": BRAIN,
@@ -309,7 +312,7 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(
             r"\b(layer|style|symbology|postgis|sql|geojson|flatgeobuf|"
             r"reproject|buffer|dissolve|merge|clip|intersect|join|grid|"
-            r"zonal|aggregate|h3|hex|hexagon|whitebox|terrain|runoff|"
+            r"zonal|aggregate|h3|hex|hexagon|whitebox|geolibre|rust|terrain|runoff|"
             r"housing|house|houses|building|buildings|open\s+buildings|"
             r"settlement|city|urban|"
             r"infrastructure|road|roads|bridge|drainage|culvert|environment|"
@@ -364,7 +367,7 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"housing|house|houses|building|buildings|open\s+buildings|"
             r"settlement|city|urban|"
             r"infrastructure|road|roads|bridge|bridges|drainage|culvert|"
-            r"environment|pollution|erosion|runoff|whitebox|terrain|"
+            r"environment|pollution|erosion|runoff|whitebox|geolibre|rust|terrain|"
             r"drone\s+analysis|basemap|satellite\s+basemap)\b",
             re.IGNORECASE,
         ),
@@ -539,7 +542,15 @@ _RASTER_OBJECT_KEYWORDS = re.compile(
 _RASTER_CONTEXT_KEYWORDS = re.compile(
     r"\b(analy[sz]e|analysis|where|most|many|cluster|concentrat(?:e|ed|ion)?|"
     r"visible|happening|seeing|inspect|attention|priority|zone|zones|"
-    r"risk|damage|problem|issue|context)\b",
+    r"risk|damage|problem|issue|context|summary|summari[sz]e|density|"
+    r"densities|hotspot|hotspots|areas?|built[-\s]?up|builtup)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_ZONE_SUMMARY_KEYWORDS = re.compile(
+    r"\b(cluster|clusters|concentrat(?:e|ed|ion)?|density|densities|"
+    r"hotspot|hotspots|zone|zones|summary|summari[sz]e|"
+    r"built[-\s]?up|builtup|where\s+(?:there'?s\s+)?(?:more|most))\b",
     re.IGNORECASE,
 )
 
@@ -548,7 +559,7 @@ _RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "housing",
         re.compile(
             r"\b(house|houses|housing|building|buildings|settlement|"
-            r"roof|roofs|village|urban)\b",
+            r"roof|roofs|village|urban|built[-\s]?up|builtup)\b",
             re.IGNORECASE,
         ),
     ),
@@ -741,6 +752,7 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
     wants_building_count = detect_raster_building_count_question(prompt)
     wants_object_candidates = detect_raster_object_candidate_question(prompt)
     raster_context_args = build_raster_context_tool_args(prompt)
+    wants_zone_summary = bool(_RASTER_ZONE_SUMMARY_KEYWORDS.search(prompt))
 
     if mentions_satellite_product and not is_basemap_only:
         spectral_tool = (
@@ -773,6 +785,30 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             supporting_tools=(
                 "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
+                "search_satellite_imagery",
+                "compute_spectral_index",
+                "display_satellite_layer",
+            ),
+        )
+
+    if (
+        raster_context_args
+        and wants_zone_summary
+        and mentions_uploaded_raster
+        and not is_basemap_only
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="raster_zone_summary",
+            primary_tool="create_raster_h3_context_layer",
+            evidence_level="screening_cells",
+            should_fast_route=True,
+            reason="uploaded_raster_zone_summary",
+            supporting_tools=(
+                RASTER_OBJECT_CANDIDATES_TOOL,
+                "search_satellite_imagery",
+                "compute_spectral_index",
+                "display_satellite_layer",
             ),
         )
 
@@ -797,6 +833,9 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             supporting_tools=(
                 "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
+                "search_satellite_imagery",
+                "compute_spectral_index",
+                "display_satellite_layer",
             ),
         )
 
@@ -815,6 +854,9 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             supporting_tools=(
                 "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
+                "search_satellite_imagery",
+                "compute_spectral_index",
+                "display_satellite_layer",
             ),
         )
 
@@ -826,6 +868,11 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             evidence_level="screening_cells",
             should_fast_route=True,
             reason="uploaded_raster_surface_context",
+            supporting_tools=(
+                "search_satellite_imagery",
+                "compute_spectral_index",
+                "display_satellite_layer",
+            ),
         )
 
     if wants_building_count or (
@@ -1013,6 +1060,8 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
+        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
     if (
         decision.should_fast_route
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
@@ -1038,8 +1087,6 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             raster_context_args,
             "fast:raster_context",
         )
-    if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
-        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
     return None
 
 

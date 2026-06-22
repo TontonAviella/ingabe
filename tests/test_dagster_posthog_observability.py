@@ -66,6 +66,42 @@ def test_observed_asset_emits_dagster_geospatial_and_satellite_events(monkeypatc
     assert "files_uploaded" not in props
 
 
+def test_observed_geolibre_asset_preserves_runtime_counts(monkeypatch):
+    captured: list[tuple[str, dict]] = []
+
+    def fake_capture(event, *, distinct_id=None, properties=None, groups=None):
+        captured.append((event, dict(properties or {})))
+        return True
+
+    monkeypatch.setattr(observability, "capture_backend_event", fake_capture)
+
+    @observability.observed_dagster_asset(
+        asset_name="geolibre_runtime_probe",
+        pipeline_family="geolibre_runtime",
+        source_category="geolibre",
+        analysis_domain="platform",
+        evidence_kind="runtime_smoke",
+    )
+    def asset_fn(context):
+        return {
+            "status": "success",
+            "tool_count": 747,
+            "sample_workflow_count": 2,
+            "sample_success_count": 2,
+            "workflows": [{"large": "object should not be captured"}],
+        }
+
+    asset_fn(_FakeContext())
+
+    props = captured[0][1]
+    assert props["pipeline_family"] == "geolibre_runtime"
+    assert props["source_category"] == "geolibre"
+    assert props["tool_count"] == 747
+    assert props["sample_workflow_count"] == 2
+    assert props["sample_success_count"] == 2
+    assert "workflows" not in props
+
+
 def test_observed_asset_emits_failure_without_error_message(monkeypatch):
     captured: list[tuple[str, dict]] = []
 

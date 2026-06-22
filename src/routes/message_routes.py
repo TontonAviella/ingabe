@@ -1678,16 +1678,14 @@ def _raster_context_fast_reply(
 
     if requested_building_count:
         reply = (
-            f"I cannot truthfully count houses in {layer_name} from this RGB "
-            "orthophoto alone. I did not detect or count buildings; I only "
-            "created a settlement-looking visual screening layer from the "
-            "uploaded pixels."
+            f"This view of {layer_name} highlights built-up-looking areas, "
+            "but it does not mark individual houses yet."
         )
         reply += stats_sentence
         reply += (
-            " A real house count needs building-footprint evidence such as "
-            "Open Buildings, OSM/local survey footprints, or a building "
-            "detector result run on this image."
+            " For a house count, I need the small roof/house shapes outlined "
+            "on the map. Once those marks are visible, treat the number as a "
+            "reviewable estimate until the important ones are spot-checked."
         )
         return reply
 
@@ -1722,9 +1720,9 @@ def _raster_context_fast_reply(
 
     if domain in {"housing", "infrastructure"}:
         reply += (
-            " This is a fast visual screen from the uploaded image, not confirmed "
-            "asset detection or an exact count. Use building footprints, roads, "
-            "drainage data, or a detector output before making exposure claims."
+            " This is a fast visual screen from the uploaded image, so use it "
+            "to find where to look first. It is not an exact count of houses, "
+            "roads, or other assets."
         )
     elif evidence_basis:
         reply += f" Evidence basis: {evidence_basis}."
@@ -1902,9 +1900,6 @@ def _raster_object_fast_reply(
     candidate_count = int(summary.get("candidate_count") or result.get("geojson_feature_count") or 0)
     class_counts = summary.get("class_counts") if isinstance(summary.get("class_counts"), dict) else {}
     class_text = ", ".join(f"{klass}: {count}" for klass, count in sorted(class_counts.items())) or "building candidates"
-    honesty = summary.get("honesty_note") or (
-        "These are candidate polygons from the uploaded image, not confirmed assets."
-    )
     performance_note = summary.get("performance_note")
     rendered_layer_id = result.get("layer_id")
     if not rendered_layer_id:
@@ -1912,34 +1907,44 @@ def _raster_object_fast_reply(
         render_engine = engines.get("render") if isinstance(engines.get("render"), dict) else {}
         rendered_layer_id = render_engine.get("layer_id")
     layer_hint = (
-        f" Look at the visible vector layer `Object Candidates - {layer_name}`"
-        f" for the mapped locations"
+        f" Look at the outlined layer `Object Candidates - {layer_name}`"
+        f" to see each marked location"
         f"{f' (layer {rendered_layer_id})' if rendered_layer_id else ''}."
         if rendered_layer_id
-        else " I added the candidate polygons on top of the orthophoto."
+        else " I added the marks on top of the orthophoto."
     )
     cap_note = ""
     if summary.get("candidate_count_capped"):
         max_candidates = int(summary.get("max_candidates") or candidate_count)
         cap_note = (
-            f" Returned the top {candidate_count} candidates because live map responses "
-            f"are capped at {max_candidates}; this is not an exhaustive house count."
+            f" I showed the top {candidate_count} likely matches because live map "
+            f"answers are capped at {max_candidates}; there may be more to review."
         )
-    suffix = f"{cap_note} {performance_note}".strip()
+    plain_performance_note = _plain_raster_object_performance_note(performance_note)
+    suffix = f"{cap_note} {plain_performance_note}".strip()
     suffix = f" {suffix}" if suffix else ""
     if requested_building_count and (class_counts.get("building") or summary.get("candidate_building_count")):
         building_candidates = int(class_counts.get("building") or summary.get("candidate_building_count") or 0)
         return (
-            f"I found {building_candidates} likely building/roof candidate polygons in {layer_name}."
-            f"{layer_hint} I did not produce a confirmed house count from this raster alone. "
-            f"{honesty} A confirmed house count needs footprint evidence such as Open Buildings, OSM/local survey data, "
-            "or a trained building detector/human validation step."
+            f"I marked {building_candidates} likely house/roof shapes in {layer_name}."
+            f"{layer_hint} Treat this as a map-based estimate from the image, "
+            "not an official house count. Spot-check the important marks on "
+            "the image, especially where roofs touch trees, shadows, or roads."
             f"{suffix}"
         )
     return (
-        f"I extracted {candidate_count} object candidates from {layer_name} ({class_text})."
-        f"{layer_hint} {honesty}{suffix}"
+        f"I marked {candidate_count} likely objects in {layer_name} ({class_text})."
+        f"{layer_hint} Use these marks as a starting point and spot-check the important ones on the image.{suffix}"
     )
+
+
+def _plain_raster_object_performance_note(note: object) -> str:
+    if not note:
+        return ""
+    lowered = str(note).lower()
+    if "timed out" in lowered or "fallback" in lowered or "rasterio" in lowered:
+        return "I used the quick image-analysis path for this live answer; a deeper pass can refine the marks later."
+    return ""
 
 
 async def _maybe_run_fast_raster_object_turn(

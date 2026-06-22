@@ -141,6 +141,14 @@ from src.tools.pipeline_evidence import (
     get_pipeline_evidence_status,
     GetPipelineEvidenceStatusArgs,
 )
+from src.tools.geolibre import (
+    get_geolibre_tool_capabilities,
+    GetGeolibreToolCapabilitiesArgs,
+    run_geolibre_tool,
+    RunGeolibreToolArgs,
+    run_geolibre_smoke_suite_tool,
+    RunGeolibreSmokeSuiteArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -339,6 +347,21 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "get_pipeline_evidence_status": (
             get_pipeline_evidence_status,
             GetPipelineEvidenceStatusArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_geolibre_tool_capabilities": (
+            get_geolibre_tool_capabilities,
+            GetGeolibreToolCapabilitiesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "run_geolibre_tool": (
+            run_geolibre_tool,
+            RunGeolibreToolArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "run_geolibre_smoke_suite_tool": (
+            run_geolibre_smoke_suite_tool,
+            RunGeolibreSmokeSuiteArgs,
             IngabeToolCallMetaArgs,
         ),
     }

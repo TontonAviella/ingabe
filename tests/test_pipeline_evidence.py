@@ -32,6 +32,23 @@ def test_pipeline_evidence_records_and_filters_latest_safe_records(tmp_path, mon
         },
     )
     assert record_pipeline_evidence(
+        "geolibre_tool_completed",
+        {
+            "pipeline_family": "open_buildings_geolibre",
+            "source_category": "open_buildings",
+            "analysis_domain": "housing",
+            "evidence_kind": "open_buildings_vector_conversion",
+            "tool_id": "write_geoparquet",
+            "tool_source": "geolibre",
+            "tool_category": "Conversion",
+            "status": "success",
+            "success": True,
+            "output_file_count": 1,
+            "output_bytes": 2048,
+            "url": "must-not-be-written",
+        },
+    )
+    assert record_pipeline_evidence(
         "geospatial_pipeline_flow_completed",
         {
             "asset_name": "daily_weather_ingest",
@@ -53,7 +70,12 @@ def test_pipeline_evidence_records_and_filters_latest_safe_records(tmp_path, mon
     assert record["stale"] is False
 
     all_evidence = read_pipeline_evidence()
-    assert all_evidence["evidence_count"] == 2
+    assert all_evidence["evidence_count"] == 3
+    geolibre = read_pipeline_evidence(source_category="open_buildings")
+    assert geolibre["status"] == "ok"
+    assert geolibre["latest"][0]["tool_id"] == "write_geoparquet"
+    assert geolibre["latest"][0]["output_file_count"] == 1
+    assert "url" not in geolibre["latest"][0]
 
 
 def test_pipeline_evidence_reports_no_evidence_for_missing_filter(tmp_path, monkeypatch):
