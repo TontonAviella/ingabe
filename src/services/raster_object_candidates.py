@@ -141,7 +141,9 @@ def analyze_raster_object_candidates(
             -feature["properties"].get("area_m2", 0),
         ),
         reverse=True,
-    )[: payload.max_candidates]
+    )
+    pre_cap_candidate_count = len(candidate_features)
+    candidate_features = candidate_features[: payload.max_candidates]
 
     for index, feature in enumerate(candidate_features, start=1):
         feature["properties"]["candidate_rank"] = index
@@ -151,6 +153,9 @@ def analyze_raster_object_candidates(
         "source_layer_id": payload.layer_id,
         "source_layer_name": payload.layer_name,
         "candidate_count": len(candidate_features),
+        "pre_cap_candidate_count": pre_cap_candidate_count,
+        "max_candidates": payload.max_candidates,
+        "candidate_count_capped": pre_cap_candidate_count > payload.max_candidates,
         "class_counts": _count_by_class(candidate_features) or class_counts,
         "requested_targets": targets,
         "sample_shape": f"{out_w}x{out_h}",
@@ -340,7 +345,9 @@ def _analyze_with_samgeo(
             -feature["properties"].get("area_m2", 0),
         ),
         reverse=True,
-    )[: payload.max_candidates]
+    )
+    pre_cap_candidate_count = len(candidate_features)
+    candidate_features = candidate_features[: payload.max_candidates]
     for index, feature in enumerate(candidate_features, start=1):
         feature["properties"]["candidate_rank"] = index
 
@@ -350,6 +357,9 @@ def _analyze_with_samgeo(
         "source_layer_id": payload.layer_id,
         "source_layer_name": payload.layer_name,
         "candidate_count": len(candidate_features),
+        "pre_cap_candidate_count": pre_cap_candidate_count,
+        "max_candidates": payload.max_candidates,
+        "candidate_count_capped": pre_cap_candidate_count > payload.max_candidates,
         "class_counts": _count_by_class(candidate_features) or class_counts,
         "requested_targets": targets,
         "sample_shape": sample_meta["sample_shape"],
@@ -900,7 +910,7 @@ def _features_from_mask(
             break
     return sorted(
         features, key=lambda feature: feature["properties"]["confidence"], reverse=True
-    )[:max_candidates]
+    )
 
 
 def _class_max_area(target: str, max_area_m2: float) -> float:

@@ -5,11 +5,15 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import replace
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from src.routes.websocket import kue_ephemeral_action
+from src.services.raster_object_layer_persistence import (
+    persist_raster_object_candidate_layer,
+)
 from src.services.raster_object_candidates import (
     RasterObjectCandidateInput,
     analyze_raster_object_candidates as analyze_raster_object_candidates_service,
@@ -118,32 +122,85 @@ async def analyze_raster_object_candidates(
     if os.environ.get("MUNDI_DEV_ALLOW_UNSAFE_SSL") == "1":
         os.environ.setdefault("GDAL_HTTP_UNSAFESSL", "YES")
 
+    payload = RasterObjectCandidateInput(
+        raster_url=raster_url,
+        layer_id=args.layer_id,
+        layer_name=row["name"],
+        bounds_wgs84=list(row["bounds"]) if row["bounds"] else None,
+        target_classes=args.target_classes,
+        max_candidates=args.max_candidates,
+        max_sample_pixels=args.max_sample_pixels,
+        min_area_m2=args.min_area_m2,
+        max_area_m2=args.max_area_m2,
+        confidence_threshold=args.confidence_threshold,
+        engine_preference=args.engine_preference,
+    )
+    timeout_seconds = _timeout_seconds_for_engine(args.engine_preference)
+
     try:
-        result = await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: analyze_raster_object_candidates_service(
-                    RasterObjectCandidateInput(
-                        raster_url=raster_url,
-                        layer_id=args.layer_id,
-                        layer_name=row["name"],
-                        bounds_wgs84=list(row["bounds"]) if row["bounds"] else None,
-                        target_classes=args.target_classes,
-                        max_candidates=args.max_candidates,
-                        max_sample_pixels=args.max_sample_pixels,
-                        min_area_m2=args.min_area_m2,
-                        max_area_m2=args.max_area_m2,
-                        confidence_threshold=args.confidence_threshold,
-                        engine_preference=args.engine_preference,
-                    )
-                ),
-            ),
-            timeout=120,
+        result = await _run_service_with_timeout(payload, timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "raster object candidate extraction timed out for layer %s using %s after %.1fs",
+            args.layer_id,
+            args.engine_preference,
+            timeout_seconds,
         )
+        if _should_fallback_after_timeout(args.engine_preference):
+            fallback_payload = replace(payload, engine_preference="rasterio_numpy")
+            fallback_timeout = _timeout_seconds_for_engine("rasterio_numpy")
+            try:
+                result = await _run_service_with_timeout(
+                    fallback_payload, fallback_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.exception(
+                    "raster object fallback extraction timed out for layer %s",
+                    args.layer_id,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"SamGeo timed out after {timeout_seconds:.0f}s, and the "
+                        f"rasterio/numpy fallback timed out after {fallback_timeout:.0f}s."
+                    ),
+                }
+            except Exception as fallback_exc:
+                logger.exception(
+                    "raster object fallback extraction failed for layer %s",
+                    args.layer_id,
+                )
+                return {
+                    "status": "error",
+                    "error": (
+                        f"SamGeo timed out after {timeout_seconds:.0f}s, and the "
+                        f"rasterio/numpy fallback failed: {_exception_message(fallback_exc)}"
+                    ),
+                }
+            _annotate_timeout_fallback(
+                result,
+                requested_engine=args.engine_preference,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            return {
+                "status": "error",
+                "error": (
+                    "Raster object candidate extraction timed out after "
+                    f"{timeout_seconds:.0f}s."
+                ),
+            }
     except Exception as exc:
         logger.exception("raster object candidate extraction failed for layer %s", args.layer_id)
-        return {"status": "error", "error": f"Raster object candidate extraction failed: {exc}"}
+        return {
+            "status": "error",
+            "error": (
+                "Raster object candidate extraction failed: "
+                f"{_exception_message(exc)}"
+            ),
+        }
 
+    persisted_layer = None
     if result.get("status") == "success":
         summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
         summary["source_storage"] = source_storage
@@ -152,6 +209,91 @@ async def analyze_raster_object_candidates(
                 "This ran against the raw TIFF. Large raw drone rasters can be slow; "
                 "COG/preview-backed segmentation is the fast production path."
             )
+
+    if args.render_map and result.get("status") == "success":
+        engines = result.setdefault("engines", {})
+        render_engine = engines.setdefault("render", {})
+        transport = engines.setdefault("transport", {})
+        try:
+            persisted_layer = await persist_raster_object_candidate_layer(
+                result=result,
+                user_uuid=meta.user_uuid,
+                map_id=meta.map_id,
+                project_id=meta.project_id,
+                layer_name=f"Object Candidates - {row['name']}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Raster object layer persistence failed; using inline fallback: %s",
+                exc,
+                exc_info=True,
+            )
+
+        if persisted_layer:
+            async with kue_ephemeral_action(
+                meta.conversation_id,
+                f"Saving object candidates layer: {row['name']}",
+                layer_id=persisted_layer.layer_id,
+                update_style_json=True,
+                bounds=persisted_layer.bounds or result.get("bbox"),
+            ) as payload:
+                payload.updates["raster_object_layer_persisted"] = {
+                    "layer_id": persisted_layer.layer_id,
+                    "name": f"Object Candidates - {row['name']}",
+                    "pmtiles": True,
+                    "geoparquet": bool(persisted_layer.geoparquet_key),
+                    "pmtiles_maxzoom": persisted_layer.pmtiles_maxzoom,
+                    "feature_count": persisted_layer.feature_count,
+                }
+                await asyncio.sleep(0.2)
+            summary = (
+                result.get("summary") if isinstance(result.get("summary"), dict) else {}
+            )
+            summary["render_transport"] = "pmtiles"
+            summary["browser_transport"] = "pmtiles"
+            summary["geojson_role"] = "temporary_backend_conversion_only"
+            summary["geoparquet_key"] = persisted_layer.geoparquet_key
+            render_engine["layer_id"] = persisted_layer.layer_id
+            render_engine["rendered"] = True
+            render_engine["style_hint"] = "raster_object_candidates"
+            transport["current"] = "pmtiles_vector_layer"
+            transport["browser"] = "PMTiles/MVT"
+            transport["analytics_cache"] = (
+                "GeoParquet" if persisted_layer.geoparquet_key else "pending"
+            )
+            result["layer_id"] = persisted_layer.layer_id
+            result["pmtiles_key"] = persisted_layer.pmtiles_key
+            result["geoparquet_key"] = persisted_layer.geoparquet_key
+            result["pmtiles_maxzoom"] = persisted_layer.pmtiles_maxzoom
+            _discard_local_geoparquet_artifact(result)
+        else:
+            await _upload_geoparquet_artifact(
+                result,
+                meta=meta,
+                source_layer_id=args.layer_id,
+                s3_client=s3_client,
+            )
+            source_id = f"sage-raster-objects-{uuid.uuid4().hex[:8]}"
+            style = _candidate_style()
+            async with kue_ephemeral_action(
+                meta.conversation_id,
+                f"Rendering object candidates preview: {row['name']}",
+                bounds=result.get("bbox"),
+            ) as payload:
+                payload.updates["add_geojson_layer"] = geojson_layer_update(
+                    source_id=source_id,
+                    geojson=result["geojson"],
+                    name=f"Object Candidates - {row['name']}",
+                    bounds=result.get("bbox"),
+                    style_hint="raster_object_candidates",
+                    style=style,
+                )
+                await asyncio.sleep(0.2)
+            render_engine["source_id"] = source_id
+            render_engine["rendered"] = True
+            render_engine["style_hint"] = "raster_object_candidates"
+            transport["current"] = "inline_geojson_preview_fallback"
+    elif result.get("status") == "success":
         await _upload_geoparquet_artifact(
             result,
             meta=meta,
@@ -159,33 +301,86 @@ async def analyze_raster_object_candidates(
             s3_client=s3_client,
         )
 
-    if args.render_map and result.get("status") == "success":
-        source_id = f"sage-raster-objects-{uuid.uuid4().hex[:8]}"
-        style = _candidate_style()
-        async with kue_ephemeral_action(
-            meta.conversation_id,
-            f"Rendering object candidates: {row['name']}",
-            bounds=result.get("bbox"),
-        ) as payload:
-            payload.updates["add_geojson_layer"] = geojson_layer_update(
-                source_id=source_id,
-                geojson=result["geojson"],
-                name=f"Object Candidates - {row['name']}",
-                bounds=result.get("bbox"),
-                style_hint="raster_object_candidates",
-                style=style,
-            )
-            await asyncio.sleep(0.2)
-        result.setdefault("engines", {}).setdefault("render", {})["source_id"] = source_id
-        result["engines"]["render"]["rendered"] = True
-        result["engines"]["render"]["style_hint"] = "raster_object_candidates"
-
     if result.get("status") == "success":
         geojson = result["geojson"]
         result["geojson_feature_count"] = len(geojson.get("features", []))
-        result["geojson"] = json.dumps(geojson)
+        if persisted_layer:
+            result["geojson"] = (
+                "omitted from tool response; persisted as PMTiles/MVT layer "
+                f"{persisted_layer.layer_id}"
+            )
+        else:
+            result["geojson"] = json.dumps(geojson)
 
     return result
+
+
+async def _run_service_with_timeout(
+    payload: RasterObjectCandidateInput,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    return await asyncio.wait_for(
+        asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: analyze_raster_object_candidates_service(payload),
+        ),
+        timeout=timeout_seconds,
+    )
+
+
+def _timeout_seconds_for_engine(engine_preference: str) -> float:
+    engine = str(engine_preference or "").strip().lower()
+    env_key = (
+        "MUNDI_RASTER_OBJECT_SAMGEO_TIMEOUT_SECONDS"
+        if _should_fallback_after_timeout(engine)
+        else "MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS"
+    )
+    default = "30" if _should_fallback_after_timeout(engine) else "120"
+    raw = os.environ.get(env_key, default)
+    try:
+        return max(5.0, float(raw))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _should_fallback_after_timeout(engine_preference: str) -> bool:
+    return str(engine_preference or "").strip().lower() in {
+        "samgeo",
+        "segment-geospatial",
+        "segment_geospatial",
+    }
+
+
+def _annotate_timeout_fallback(
+    result: dict[str, Any],
+    *,
+    requested_engine: str,
+    timeout_seconds: float,
+) -> None:
+    summary = result.get("summary")
+    if isinstance(summary, dict):
+        reason = (
+            f"SamGeo timed out after {timeout_seconds:.0f}s on this live request; "
+            "used the rasterio/numpy candidate extractor instead."
+        )
+        summary["samgeo_fallback_reason"] = reason
+        previous = summary.get("performance_note")
+        summary["performance_note"] = f"{previous} {reason}".strip() if previous else reason
+
+    engines = result.setdefault("engines", {})
+    if isinstance(engines, dict):
+        engines["samgeo_timeout_fallback"] = {
+            "requested": requested_engine,
+            "used": "rasterio_numpy_candidate_extractor_v1",
+            "timeout_seconds": timeout_seconds,
+        }
+
+
+def _exception_message(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
 
 
 def _candidate_style() -> dict[str, Any]:
@@ -244,3 +439,20 @@ async def _upload_geoparquet_artifact(
         summary["geoparquet_key"] = key
         summary["analytics_format"] = "geoparquet"
         summary["geojson_role"] = "live_map_transport_only"
+
+
+def _discard_local_geoparquet_artifact(result: dict[str, Any]) -> None:
+    artifact = result.get("geoparquet")
+    if not isinstance(artifact, dict):
+        return
+    local_path = artifact.get("path")
+    if isinstance(local_path, str):
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass
+    artifact.pop("path", None)
+    key = result.get("geoparquet_key")
+    if isinstance(key, str):
+        artifact["key"] = key
+        artifact["storage"] = "s3"

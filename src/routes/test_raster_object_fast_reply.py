@@ -26,6 +26,31 @@ def test_raster_object_reply_does_not_confirm_house_count() -> None:
     assert "I counted 11 houses" not in reply
 
 
+def test_raster_object_reply_discloses_candidate_cap() -> None:
+    reply = _raster_object_fast_reply(
+        {
+            "status": "success",
+            "layer_id": "Lobjects123",
+            "summary": {
+                "candidate_count": 500,
+                "candidate_building_count": 500,
+                "class_counts": {"building": 500},
+                "candidate_count_capped": True,
+                "max_candidates": 500,
+                "honesty_note": "These are candidate polygons from the uploaded image, not confirmed houses.",
+            },
+        },
+        "Cyampirita_Orthophoto",
+        requested_building_count=True,
+    )
+
+    assert "top 500 candidates" in reply
+    assert "not an exhaustive house count" in reply
+    assert "visible vector layer `Object Candidates - Cyampirita_Orthophoto`" in reply
+    assert "layer Lobjects123" in reply
+    assert "500 houses" not in reply
+
+
 def test_raster_object_reply_keeps_generic_candidate_language() -> None:
     reply = _raster_object_fast_reply(
         {

@@ -1906,19 +1906,39 @@ def _raster_object_fast_reply(
         "These are candidate polygons from the uploaded image, not confirmed assets."
     )
     performance_note = summary.get("performance_note")
-    suffix = f" {performance_note}" if performance_note else ""
+    rendered_layer_id = result.get("layer_id")
+    if not rendered_layer_id:
+        engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
+        render_engine = engines.get("render") if isinstance(engines.get("render"), dict) else {}
+        rendered_layer_id = render_engine.get("layer_id")
+    layer_hint = (
+        f" Look at the visible vector layer `Object Candidates - {layer_name}`"
+        f" for the mapped locations"
+        f"{f' (layer {rendered_layer_id})' if rendered_layer_id else ''}."
+        if rendered_layer_id
+        else " I added the candidate polygons on top of the orthophoto."
+    )
+    cap_note = ""
+    if summary.get("candidate_count_capped"):
+        max_candidates = int(summary.get("max_candidates") or candidate_count)
+        cap_note = (
+            f" Returned the top {candidate_count} candidates because live map responses "
+            f"are capped at {max_candidates}; this is not an exhaustive house count."
+        )
+    suffix = f"{cap_note} {performance_note}".strip()
+    suffix = f" {suffix}" if suffix else ""
     if requested_building_count and (class_counts.get("building") or summary.get("candidate_building_count")):
         building_candidates = int(class_counts.get("building") or summary.get("candidate_building_count") or 0)
         return (
-            f"I found {building_candidates} likely building/roof candidate polygons in {layer_name} and added them on top "
-            "of the orthophoto. I did not produce a confirmed house count from this raster alone. "
+            f"I found {building_candidates} likely building/roof candidate polygons in {layer_name}."
+            f"{layer_hint} I did not produce a confirmed house count from this raster alone. "
             f"{honesty} A confirmed house count needs footprint evidence such as Open Buildings, OSM/local survey data, "
             "or a trained building detector/human validation step."
             f"{suffix}"
         )
     return (
-        f"I extracted {candidate_count} object candidates from {layer_name} and added them on top of the orthophoto "
-        f"({class_text}). {honesty}{suffix}"
+        f"I extracted {candidate_count} object candidates from {layer_name} ({class_text})."
+        f"{layer_hint} {honesty}{suffix}"
     )
 
 

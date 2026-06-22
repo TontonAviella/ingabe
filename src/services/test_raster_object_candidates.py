@@ -59,6 +59,8 @@ def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -
 
     assert result["status"] == "success"
     assert result["summary"]["candidate_count"] >= 3
+    assert result["summary"]["max_candidates"] == 20
+    assert result["summary"]["candidate_count_capped"] is False
     assert result["summary"]["class_counts"]["building"] >= 3
     assert result["summary"]["analytics_format"] == "geoparquet"
     assert result["summary"]["geojson_role"] == "live_map_transport_only"
@@ -83,6 +85,26 @@ def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -
         feature["properties"]["aspect_ratio"] <= 5.5
         for feature in result["geojson"]["features"]
     )
+
+    capped_result = analyze_raster_object_candidates(
+        RasterObjectCandidateInput(
+            raster_url=str(path),
+            layer_id="Lsynthetic",
+            layer_name="Synthetic Orthophoto",
+            bounds_wgs84=None,
+            target_classes=["building"],
+            max_candidates=1,
+            max_sample_pixels=20_000,
+            min_area_m2=20,
+            max_area_m2=600,
+            confidence_threshold=0.25,
+            engine_preference="rasterio_numpy",
+        )
+    )
+
+    assert capped_result["summary"]["candidate_count"] == 1
+    assert capped_result["summary"]["pre_cap_candidate_count"] >= 3
+    assert capped_result["summary"]["candidate_count_capped"] is True
 
 
 def test_analyze_raster_object_candidates_can_screen_road_like_segments(tmp_path) -> None:
