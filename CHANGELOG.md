@@ -4,6 +4,11 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.3.1] - 2026-06-23
+
+### Fixed
+- Clarify capped raster object results so Sage says how many review marks were shown, not how many houses or objects were counted.
+
 ## [0.5.3.0] - 2026-06-22
 
 ### Added

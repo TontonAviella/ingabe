@@ -166,8 +166,8 @@ def analyze_raster_object_candidates(
         "elapsed_ms": elapsed_ms,
         "evidence_level": "candidate_polygons_not_confirmed_assets",
         "honesty_note": (
-            "These are likely object marks from the uploaded image. Treat the count "
-            "as a map-based estimate until the important marks are spot-checked."
+            "These are object review marks from the uploaded image. Treat the number "
+            "as marks to inspect, not a final object count."
         ),
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
@@ -369,8 +369,8 @@ def _analyze_with_samgeo(
         "elapsed_ms": elapsed_ms,
         "evidence_level": "samgeo_candidate_masks_not_confirmed_assets",
         "honesty_note": (
-            "These are likely object marks from the uploaded image. Treat the count "
-            "as a map-based estimate until the important marks are spot-checked."
+            "These are object review marks from the uploaded image. Treat the number "
+            "as marks to inspect, not a final object count."
         ),
         "analytics_format": "geoparquet",
         "render_transport": "geojson",

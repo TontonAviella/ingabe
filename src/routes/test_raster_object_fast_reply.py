@@ -20,8 +20,8 @@ def test_raster_object_reply_does_not_confirm_house_count() -> None:
         requested_building_count=True,
     )
 
-    assert "marked 11 likely house/roof shapes" in reply
-    assert "map-based estimate from the image" in reply
+    assert "marked 11 possible roof/house shapes" in reply
+    assert "marks to review from the image" in reply
     assert "Spot-check the important marks" in reply
     assert "I counted 11 houses" not in reply
     assert "Open Buildings" not in reply
@@ -48,11 +48,14 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
         requested_building_count=True,
     )
 
-    assert "top 500 likely matches" in reply
-    assert "there may be more to review" in reply
+    assert "displayed 500 roof/house review marks" in reply
+    assert "capped at 500 marks" in reply
+    assert "marks shown for review" in reply
+    assert "not as the number of houses" in reply
     assert "outlined layer `Object Candidates - Cyampirita_Orthophoto`" in reply
     assert "layer Lobjects123" in reply
     assert "500 houses" not in reply
+    assert "top 500 likely matches" not in reply
 
 
 def test_raster_object_reply_keeps_generic_candidate_language() -> None:
@@ -68,7 +71,7 @@ def test_raster_object_reply_keeps_generic_candidate_language() -> None:
         "Cyampirita_Orthophoto",
     )
 
-    assert "marked 4 likely objects" in reply
+    assert "marked 4 possible objects" in reply
     assert "road: 2" in reply
     assert "water: 2" in reply
-    assert "starting point" in reply
+    assert "review marks" in reply

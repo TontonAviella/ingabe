@@ -28,7 +28,7 @@ def test_building_count_reply_refuses_to_count_from_raster_proxy() -> None:
     assert "does not mark individual houses yet" in reply
     assert "small roof/house shapes outlined" in reply
     assert "screening cells" in reply
-    assert "reviewable estimate" in reply
+    assert "marks to review" in reply
     assert "likely house/settlement attention cells" not in reply
 
 
