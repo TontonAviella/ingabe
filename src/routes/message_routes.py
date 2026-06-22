@@ -1684,8 +1684,8 @@ def _raster_context_fast_reply(
         reply += stats_sentence
         reply += (
             " For a house count, I need the small roof/house shapes outlined "
-            "on the map. Once those marks are visible, treat the number as a "
-            "reviewable estimate until the important ones are spot-checked."
+            "on the map. Once those marks are visible, treat the number as "
+            "marks to review until the important ones are spot-checked."
         )
         return reply
 
@@ -1913,28 +1913,41 @@ def _raster_object_fast_reply(
         if rendered_layer_id
         else " I added the marks on top of the orthophoto."
     )
+    is_capped = bool(summary.get("candidate_count_capped"))
+    plain_performance_note = _plain_raster_object_performance_note(performance_note)
+    performance_suffix = f" {plain_performance_note}" if plain_performance_note else ""
     cap_note = ""
-    if summary.get("candidate_count_capped"):
+    if is_capped:
         max_candidates = int(summary.get("max_candidates") or candidate_count)
         cap_note = (
-            f" I showed the top {candidate_count} likely matches because live map "
-            f"answers are capped at {max_candidates}; there may be more to review."
+            f" I displayed {candidate_count} review marks because live map "
+            f"answers are capped at {max_candidates}; read that as marks "
+            "shown, not a full object count."
         )
-    plain_performance_note = _plain_raster_object_performance_note(performance_note)
     suffix = f"{cap_note} {plain_performance_note}".strip()
     suffix = f" {suffix}" if suffix else ""
     if requested_building_count and (class_counts.get("building") or summary.get("candidate_building_count")):
         building_candidates = int(class_counts.get("building") or summary.get("candidate_building_count") or 0)
+        if is_capped:
+            max_candidates = int(summary.get("max_candidates") or candidate_count)
+            return (
+                f"I displayed {candidate_count} roof/house review marks in {layer_name} "
+                f"because this live map layer is capped at {max_candidates} marks."
+                f"{layer_hint} Read {candidate_count} as marks shown for review, "
+                "not as the number of houses. There may be more roof/house shapes "
+                "outside this capped result; spot-check the important marks on the image."
+                f"{performance_suffix}"
+            )
         return (
-            f"I marked {building_candidates} likely house/roof shapes in {layer_name}."
-            f"{layer_hint} Treat this as a map-based estimate from the image, "
-            "not an official house count. Spot-check the important marks on "
-            "the image, especially where roofs touch trees, shadows, or roads."
+            f"I marked {building_candidates} possible roof/house shapes in {layer_name}."
+            f"{layer_hint} Read {building_candidates} as marks to review from the image, "
+            "not a final house count yet. Spot-check the important marks, "
+            "especially where roofs touch trees, shadows, or roads."
             f"{suffix}"
         )
     return (
-        f"I marked {candidate_count} likely objects in {layer_name} ({class_text})."
-        f"{layer_hint} Use these marks as a starting point and spot-check the important ones on the image.{suffix}"
+        f"I marked {candidate_count} possible objects in {layer_name} ({class_text})."
+        f"{layer_hint} Use these as review marks and spot-check the important ones on the image.{suffix}"
     )
 
 
