@@ -2,11 +2,38 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from src.services.open_buildings import (
     OpenBuildingsExposureInput,
     analyze_open_buildings_exposure,
     select_open_buildings_tiles_for_bbox,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fake_geolibre_open_buildings_conversion(monkeypatch):
+    def fake_run(payload):
+        assert payload.tool_id == "write_geoparquet"
+        assert payload.source_category == "open_buildings"
+        return {
+            "status": "success",
+            "backend": "geolibre_wasm",
+            "tool_id": payload.tool_id,
+            "tool_source": "geolibre",
+            "tool_category": "Conversion",
+            "output_file_count": 1,
+            "output_bytes": 2048,
+            "output_files": [
+                {
+                    "path": "open_buildings.parquet",
+                    "size_bytes": 2048,
+                    "media_kind": "geoparquet",
+                }
+            ],
+        }
+
+    monkeypatch.setattr("src.services.geolibre_runner.run_geolibre_tool", fake_run)
 
 
 def test_analyze_open_buildings_exposure_from_csv_generates_h3_layer():
@@ -37,6 +64,8 @@ def test_analyze_open_buildings_exposure_from_csv_generates_h3_layer():
     assert result["summary"]["mean_confidence"] == 0.885
     assert result["building_exposure_feature_count"] == 2
     assert result["engines"]["exposure"]["source"] == "Google Open Buildings V3"
+    assert result["geolibre_vector_conversion"]["status"] == "success"
+    assert result["engines"]["geolibre"]["tool_id"] == "write_geoparquet"
     assert result["geojson"]["features"]
     assert any(
         feature["properties"]["building_count"] > 0

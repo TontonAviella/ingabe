@@ -166,9 +166,8 @@ def analyze_raster_object_candidates(
         "elapsed_ms": elapsed_ms,
         "evidence_level": "candidate_polygons_not_confirmed_assets",
         "honesty_note": (
-            "These are raster-derived object candidates. Treat counts as candidates, "
-            "not confirmed houses, until checked against Open Buildings, OSM, field "
-            "survey, SAM/YOLO segmentation, or human review."
+            "These are likely object marks from the uploaded image. Treat the count "
+            "as a map-based estimate until the important marks are spot-checked."
         ),
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
@@ -370,9 +369,8 @@ def _analyze_with_samgeo(
         "elapsed_ms": elapsed_ms,
         "evidence_level": "samgeo_candidate_masks_not_confirmed_assets",
         "honesty_note": (
-            "SamGeo segmented object masks from the uploaded raster. These are still "
-            "candidate objects, not confirmed houses or infrastructure, until checked "
-            "against Open Buildings, OSM, field survey, a trained class detector, or human review."
+            "These are likely object marks from the uploaded image. Treat the count "
+            "as a map-based estimate until the important marks are spot-checked."
         ),
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
@@ -1010,9 +1008,9 @@ def _evidence_for_target(target: str) -> str:
 
 def _recommended_action_for_target(target: str) -> str:
     if target == "building":
-        return "Verify with Open Buildings/OSM/local survey or a trained detector before using as a house count."
+        return "Spot-check the marked roof shapes before using the number as a house count."
     if target == "road":
-        return "Verify with OSM/road centerlines or field inspection before using as infrastructure evidence."
+        return "Spot-check the marked linework before using it as road or track evidence."
     if target == "linear_boundary":
         return "Verify with surveyed parcel data or field mapping before using as a farm/field boundary."
     if target == "vegetation_patch":

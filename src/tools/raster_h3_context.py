@@ -682,10 +682,10 @@ def _likely_issue(domain: str, score: float) -> str:
         return "green vegetation signal; keep as baseline context"
     if domain in {"housing", "infrastructure"}:
         if score >= 60:
-            return "non-vegetated or bright-surface candidate; verify with buildings, roads, and drainage evidence"
+            return "built-up-looking or exposed surface; inspect the marked area before treating it as a real asset"
         if score >= 40:
-            return "mixed surface context; do not infer housing without exposure data"
-        return "mostly vegetated visual context; no confirmed infrastructure inference"
+            return "mixed surface context; use it as a clue, not a house or road count"
+        return "mostly vegetated visual context; no clear asset pattern"
     if domain == "environment":
         if score >= 60:
             return "low vegetation or exposed/wet surface proxy; check erosion, drainage, or pollution evidence"
@@ -702,8 +702,8 @@ def _recommended_action(domain: str, score: float) -> str:
         return "Use as raster-backed context; compare with crop condition, soil wetness, and field boundaries."
     if domain in {"housing", "infrastructure"}:
         if score >= 60:
-            return "Overlay building footprints, roads, drainage lines, or inspection points before calling this confirmed exposure."
-        return "Keep as visual context; use Open Buildings/OSM/field survey data for asset-level decisions."
+            return "Use these cells to decide where to zoom in and mark individual houses, roads, or drainage features."
+        return "Keep as visual context and compare it with what is visibly marked on the image."
     if domain == "environment":
         if score >= 60:
             return "Inspect drainage, runoff paths, erosion signs, or wetness indicators in these cells."
@@ -715,7 +715,7 @@ def _evidence_note(domain: str) -> str:
     if domain == "agriculture":
         return "uploaded raster pixels grouped into internal cells using GRVI/brightness; RGB-only proxy, not true NDVI"
     if domain in {"housing", "infrastructure"}:
-        return "uploaded raster pixels grouped into internal cells; visual proxy only, not confirmed building/road detection"
+        return "uploaded image grouped into screening cells; not individual house or road marks"
     if domain == "environment":
         return "uploaded raster pixels grouped into internal cells using greenness and exposed-surface proxy"
     return "uploaded raster pixels grouped into internal cells; domain-specific evidence still needed"
@@ -737,7 +737,7 @@ def _next_best_evidence(domain: str) -> list[str]:
     if domain == "agriculture":
         return ["crop/field boundary", "true NDVI/NDRE band if available", "soil wetness or recent rain"]
     if domain == "housing":
-        return ["Open Buildings footprints", "local building/parcel survey", "flood depth or drainage exposure"]
+        return ["visible house/roof marks", "local parcel or settlement notes", "nearby roads, drainage, or flood context"]
     if domain == "infrastructure":
         return ["roads/drainage/culverts layer", "Whitebox terrain/hydrology metrics", "field inspection points"]
     if domain == "environment":

@@ -163,3 +163,12 @@ daily_weather_ingest_schedule = ScheduleDefinition(
     description="Daily AgERA5 weather data → district aggregation → DuckDB cache",
     default_status=DefaultScheduleStatus.RUNNING,
 )
+
+geolibre_runtime_probe_schedule = ScheduleDefinition(
+    name="geolibre_runtime_probe",
+    cron_schedule="15 * * * *",  # Hourly proof that the Rust/WASM runner works
+    job_name="geolibre_runtime_probe_job",
+    execution_timezone="UTC",
+    description="Hourly GeoLibre-Rust/WASM smoke proof for vector and raster workflows",
+    default_status=DefaultScheduleStatus.RUNNING,
+)

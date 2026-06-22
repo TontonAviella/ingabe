@@ -13,17 +13,21 @@ def test_raster_object_reply_does_not_confirm_house_count() -> None:
                 "class_counts": {"building": 11, "road": 3},
                 "confirmed_count_available": False,
                 "count_semantics": "candidate_screening",
-                "honesty_note": "These are candidate polygons from the uploaded image, not confirmed houses.",
+                "honesty_note": "These are likely marks from the uploaded image.",
             },
         },
         "Cyampirita_Orthophoto",
         requested_building_count=True,
     )
 
-    assert "11 likely building/roof candidate polygons" in reply
-    assert "did not produce a confirmed house count" in reply
-    assert "confirmed house count needs footprint evidence" in reply
+    assert "marked 11 likely house/roof shapes" in reply
+    assert "map-based estimate from the image" in reply
+    assert "Spot-check the important marks" in reply
     assert "I counted 11 houses" not in reply
+    assert "Open Buildings" not in reply
+    assert "OSM" not in reply
+    assert "SAM" not in reply
+    assert "YOLO" not in reply
 
 
 def test_raster_object_reply_discloses_candidate_cap() -> None:
@@ -37,16 +41,16 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
                 "class_counts": {"building": 500},
                 "candidate_count_capped": True,
                 "max_candidates": 500,
-                "honesty_note": "These are candidate polygons from the uploaded image, not confirmed houses.",
+                "honesty_note": "These are likely marks from the uploaded image.",
             },
         },
         "Cyampirita_Orthophoto",
         requested_building_count=True,
     )
 
-    assert "top 500 candidates" in reply
-    assert "not an exhaustive house count" in reply
-    assert "visible vector layer `Object Candidates - Cyampirita_Orthophoto`" in reply
+    assert "top 500 likely matches" in reply
+    assert "there may be more to review" in reply
+    assert "outlined layer `Object Candidates - Cyampirita_Orthophoto`" in reply
     assert "layer Lobjects123" in reply
     assert "500 houses" not in reply
 
@@ -58,13 +62,13 @@ def test_raster_object_reply_keeps_generic_candidate_language() -> None:
             "summary": {
                 "candidate_count": 4,
                 "class_counts": {"road": 2, "water": 2},
-                "honesty_note": "These are candidate polygons from the uploaded image, not confirmed assets.",
+                "honesty_note": "These are likely marks from the uploaded image.",
             },
         },
         "Cyampirita_Orthophoto",
     )
 
-    assert "4 object candidates" in reply
+    assert "marked 4 likely objects" in reply
     assert "road: 2" in reply
     assert "water: 2" in reply
-    assert "not confirmed assets" in reply
+    assert "starting point" in reply

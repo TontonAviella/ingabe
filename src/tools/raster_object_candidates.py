@@ -79,8 +79,9 @@ async def analyze_raster_object_candidates(
     houses are in this orthophoto?", "show roads/trees/playing areas", or
     "detect visible objects in this drone raster." This is the raster object
     path that should run before H3 risk cells when the user asks for objects or
-    counts. Counts are candidate counts unless verified by Open Buildings, OSM,
-    local survey, SAM/YOLO, or human review.
+    counts. In user-facing replies, describe the result as marked likely
+    objects or a map-based estimate until important marks are spot-checked;
+    avoid backend/data-source names unless the user asks how it works.
     """
 
     from src.structures import get_async_read_connection

@@ -24,11 +24,11 @@ def test_building_count_reply_refuses_to_count_from_raster_proxy() -> None:
         requested_building_count=True,
     )
 
-    assert "cannot truthfully count houses" in reply
-    assert "I did not detect or count buildings" in reply
-    assert "settlement-looking visual screening layer" in reply
+    assert "highlights built-up-looking areas" in reply
+    assert "does not mark individual houses yet" in reply
+    assert "small roof/house shapes outlined" in reply
     assert "screening cells" in reply
-    assert "building-footprint evidence" in reply
+    assert "reviewable estimate" in reply
     assert "likely house/settlement attention cells" not in reply
 
 
@@ -51,5 +51,6 @@ def test_housing_proxy_reply_does_not_claim_exact_assets() -> None:
     )
 
     assert "settlement-looking visual patterns" in reply
-    assert "not confirmed asset detection or an exact count" in reply
+    assert "find where to look first" in reply
+    assert "not an exact count" in reply
     assert "likely house/settlement attention cells" not in reply

@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from src.services.forge3d_adapter import forge3d_available
+from src.services.geolibre_runner import geolibre_runner_status
 from src.services.sphere_flood import sphere_available
 from src.services.tessera_embeddings import tessera_embedding_status
 from src.services.whitebox_engine import whitebox_engine_status
@@ -107,7 +108,7 @@ def _geolibre_wasm_status() -> dict[str, Any]:
     cache_dir = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "geolibre"
     runtime_cached = bool(list(cache_dir.glob("geolibre-cli-*.wasm"))) if cache_dir.exists() else False
     installed = bool(package["installed"])
-    return {
+    status = {
         "installed": installed,
         "package": package,
         "runtime_cached": runtime_cached,
@@ -128,6 +129,15 @@ def _geolibre_wasm_status() -> dict[str, Any]:
             "It helps prepare, render, convert, tile, and post-process raster/vector data."
         ),
     }
+    if installed:
+        try:
+            runner = geolibre_runner_status(include_manifest_sample=False)
+            for key in ("tool_count", "runtime_path", "runtime_cached", "error"):
+                if key in runner:
+                    status[key] = runner[key]
+        except Exception as exc:
+            status["error"] = str(exc)
+    return status
 
 
 async def _rasterd_status() -> dict[str, Any]:

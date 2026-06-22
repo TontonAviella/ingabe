@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import math
+import os
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
@@ -130,6 +131,10 @@ def analyze_open_buildings_exposure(payload: OpenBuildingsExposureInput) -> dict
     h3_result["dataset"] = open_buildings_dataset_contract()
     h3_result["building_exposure_geojson"] = exposure_geojson
     h3_result["building_exposure_feature_count"] = len(features)
+    h3_result["geolibre_vector_conversion"] = _maybe_run_geolibre_open_buildings_conversion(
+        exposure_geojson,
+        feature_count=len(features),
+    )
     h3_result["ingest_plan"] = ingest_plan
     h3_result["engines"]["exposure"] = {
         "source": "Google Open Buildings V3",
@@ -140,6 +145,16 @@ def analyze_open_buildings_exposure(payload: OpenBuildingsExposureInput) -> dict
             "Production should prefetch/cache tiles, then serve exposure from local storage."
         ),
     }
+    if h3_result["geolibre_vector_conversion"].get("status") == "success":
+        h3_result["engines"]["geolibre"] = {
+            "backend": "geolibre_wasm",
+            "tool_id": "write_geoparquet",
+            "source": "open_buildings_vector_conversion",
+            "output_file_count": h3_result["geolibre_vector_conversion"].get(
+                "output_file_count"
+            ),
+            "output_bytes": h3_result["geolibre_vector_conversion"].get("output_bytes"),
+        }
     return h3_result
 
 
@@ -401,6 +416,54 @@ def _validate_payload(payload: OpenBuildingsExposureInput) -> None:
         raise ValueError("max_buildings must be at least 1")
     if payload.max_hexes < 1:
         raise ValueError("max_hexes must be at least 1")
+
+
+def _maybe_run_geolibre_open_buildings_conversion(
+    exposure_geojson: dict[str, Any],
+    *,
+    feature_count: int,
+) -> dict[str, Any]:
+    max_features = int(os.environ.get("MUNDI_GEOLIBRE_OPEN_BUILDINGS_MAX_FEATURES", "5000"))
+    if feature_count > max_features:
+        return {
+            "status": "skipped",
+            "reason": "feature_count_above_live_geolibre_limit",
+            "feature_count": feature_count,
+            "max_features": max_features,
+        }
+
+    try:
+        from src.services.geolibre_runner import GeolibreRunInput, run_geolibre_tool
+
+        return run_geolibre_tool(
+            GeolibreRunInput(
+                tool_id="write_geoparquet",
+                args=[
+                    "--input=/work/open_buildings.geojson",
+                    "--output=/work/open_buildings.parquet",
+                    "--compression=zstd",
+                ],
+                input_files={
+                    "open_buildings.geojson": json.dumps(exposure_geojson).encode("utf-8")
+                },
+                source_category="open_buildings",
+                pipeline_family="open_buildings_geolibre",
+                analysis_domain="housing",
+                evidence_kind="open_buildings_vector_conversion",
+                context={
+                    "geolibre_workflow": "open_buildings_exposure",
+                    "features": feature_count,
+                },
+            )
+        )
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "backend": "geolibre_wasm",
+            "tool_id": "write_geoparquet",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:240],
+        }
 
 
 def _bbox_geom(bbox: list[float]) -> BaseGeometry:
