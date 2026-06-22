@@ -8,11 +8,16 @@ by a background task in ``postgres_routes.py`` using ``gdalwarp`` subprocess.
 import asyncio
 import json
 import logging
+import os
 import re
+import time
+from urllib.parse import urlparse
 
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_INLINE_STATS_MAX_BYTES = 16 * 1024 * 1024
 
 
 class RasterUploadHandler(BaseUploadHandler):
@@ -78,12 +83,34 @@ class RasterUploadHandler(BaseUploadHandler):
         (e.g. multi-band NDVI/NDRE), killing the uvicorn worker.
         Using ``gdalinfo -json`` as a subprocess is 100% isolated.
         """
+        cmd = ["gdalinfo", "-json"]
+        if (
+            os.environ.get("RASTER_UPLOAD_COMPUTE_STATS", "0") == "1"
+            or _should_compute_inline_stats(ctx)
+        ):
+            cmd.append("-stats")
+
+        started = time.monotonic()
+        env = os.environ.copy()
+        if ctx.temp_file_path.startswith("/vsis3/"):
+            endpoint = urlparse(os.environ.get("S3_ENDPOINT_URL", "http://minio:9000"))
+            env.setdefault("AWS_ACCESS_KEY_ID", os.environ.get("S3_ACCESS_KEY_ID", ""))
+            env.setdefault("AWS_SECRET_ACCESS_KEY", os.environ.get("S3_SECRET_ACCESS_KEY", ""))
+            env.setdefault("AWS_REGION", os.environ.get("S3_DEFAULT_REGION", "us-east-1"))
+            env.setdefault("AWS_S3_ENDPOINT", endpoint.netloc)
+            env.setdefault("AWS_HTTPS", "YES" if endpoint.scheme == "https" else "NO")
+            env.setdefault("AWS_VIRTUAL_HOSTING", "FALSE")
+            env.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+            env.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff")
+
         proc = await asyncio.create_subprocess_exec(
-            "gdalinfo", "-json", "-stats", ctx.temp_file_path,
+            *cmd, ctx.temp_file_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         stdout, stderr = await proc.communicate()
+        elapsed = time.monotonic() - started
         if proc.returncode != 0:
             logger.warning("gdalinfo failed for %s: %s", ctx.layer_id, stderr.decode())
             return None
@@ -137,5 +164,38 @@ class RasterUploadHandler(BaseUploadHandler):
         ctx.metadata_dict["width"] = size[0] if size else 0
         ctx.metadata_dict["height"] = size[1] if len(size) > 1 else 0
 
-        logger.info("Raster metadata extracted via gdalinfo subprocess for %s", ctx.layer_id)
+        logger.info(
+            "Raster metadata extracted via gdalinfo subprocess for %s in %.2fs",
+            ctx.layer_id,
+            elapsed,
+        )
         return bounds
+
+
+def _should_compute_inline_stats(ctx: UploadContext) -> bool:
+    """Compute tiny-raster stats inline without blocking large drone uploads."""
+    try:
+        max_bytes = int(
+            os.environ.get(
+                "RASTER_UPLOAD_INLINE_STATS_MAX_BYTES",
+                str(DEFAULT_INLINE_STATS_MAX_BYTES),
+            )
+        )
+    except ValueError:
+        max_bytes = DEFAULT_INLINE_STATS_MAX_BYTES
+    if max_bytes <= 0:
+        return False
+
+    size = ctx.file_size_bytes
+    if size is None:
+        if _is_gdal_virtual_path(ctx.temp_file_path):
+            return False
+        try:
+            size = os.path.getsize(ctx.temp_file_path)
+        except OSError:
+            return False
+    return size <= max_bytes
+
+
+def _is_gdal_virtual_path(path: str) -> bool:
+    return path.startswith(("/vsi",))

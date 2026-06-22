@@ -6,12 +6,10 @@ import os
 import tempfile
 from typing import List, Optional
 
-import fiona
 import laspy
 from fastapi import HTTPException, status
-from osgeo import gdal, osr
 from opentelemetry import trace
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 
 from src.upload.models import (
     LayerBoundsMetadata,
@@ -22,6 +20,24 @@ from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+gdal = None
+osr = None
+
+
+def _require_osgeo():
+    """Import GDAL only for raster paths so route imports work without osgeo."""
+    global gdal, osr
+    if gdal is None or osr is None:
+        try:
+            from osgeo import gdal as _gdal, osr as _osr
+        except ModuleNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="GDAL Python bindings are required for raster preprocessing",
+            ) from exc
+        gdal = _gdal
+        osr = _osr
+    return gdal, osr
 
 
 def preprocess_raster(temp_file_path: str, metadata: dict):
@@ -30,6 +46,7 @@ def preprocess_raster(temp_file_path: str, metadata: dict):
     Mutates ``metadata`` in-place to add EPSG and band statistics.
     Returns bounds as ``[xmin, ymin, xmax, ymax]`` in EPSG:4326, or ``None``.
     """
+    gdal, osr = _require_osgeo()
     bounds = None
     ds = gdal.Open(temp_file_path)
     if ds:
@@ -188,6 +205,7 @@ async def get_layer_bounds_and_metadata(
 
     try:
         if layer_type == LAYER_TYPE_RASTER:
+            gdal, osr = _require_osgeo()
             # Use GDAL for raster bounds extraction
             ds = gdal.Open(ogr_source)
             if ds:
@@ -236,58 +254,63 @@ async def get_layer_bounds_and_metadata(
                 ds = None
 
         elif layer_type == LAYER_TYPE_VECTOR:
-            # Use Fiona for vector bounds and metadata extraction
-            open_kwargs = {}
+            import pyogrio
+
+            read_kwargs = {}
             if dataset_layer is not None:
-                open_kwargs["layer"] = dataset_layer
+                read_kwargs["layer"] = dataset_layer
 
-            with fiona.open(ogr_source, **open_kwargs) as collection:
-                # Get bounds and feature count
-                bounds = list(collection.bounds) if collection.bounds else None
-                feature_count = len(collection)
-                metadata_updates.feature_count = feature_count
+            info = pyogrio.read_info(ogr_source, **read_kwargs)
+            raw_bounds = info.get("total_bounds")
+            bounds = list(raw_bounds) if raw_bounds is not None else None
+            feature_count = info.get("features")
+            metadata_updates.feature_count = feature_count
 
-                # Detect geometry type from schema
-                if collection.schema and "geometry" in collection.schema:
-                    geom_type = collection.schema["geometry"]
-                    geometry_type = geom_type.lower() if geom_type else "unknown"
+            geom_type = info.get("geometry_type")
+            geometry_type = str(geom_type).lower() if geom_type else "unknown"
+            if geometry_type in {"unknown", "none"}:
+                try:
+                    sample = pyogrio.read_dataframe(
+                        ogr_source,
+                        max_features=32,
+                        columns=[],
+                        **read_kwargs,
+                    )
+                    geom_types = {
+                        str(value).lower()
+                        for value in sample.geometry.dropna().geom_type.unique()
+                    }
+                    if len(geom_types) == 1:
+                        geometry_type = next(iter(geom_types))
+                    elif geom_types:
+                        if any("polygon" in value for value in geom_types):
+                            geometry_type = "polygon"
+                        elif any("line" in value for value in geom_types):
+                            geometry_type = "linestring"
+                        elif any("point" in value for value in geom_types):
+                            geometry_type = "point"
+                except Exception:
+                    logger.debug("pyogrio geometry type sampling failed", exc_info=True)
+            if geometry_type != "unknown":
+                metadata_updates.geometry_type = geometry_type
 
-                    # Check first feature for more specific geometry type
-                    if feature_count > 0:
-                        first_feature = next(iter(collection))
-                        if (
-                            first_feature
-                            and "geometry" in first_feature
-                            and "type" in first_feature["geometry"]
-                        ):
-                            actual_type = first_feature["geometry"]["type"].lower()
-                            if actual_type and actual_type != "null":
-                                geometry_type = actual_type
+            src_crs = info.get("crs")
+            if src_crs:
+                src_crs_obj = CRS.from_user_input(src_crs)
+                epsg = src_crs_obj.to_epsg()
+                if epsg:
+                    metadata_updates.original_srid = epsg
 
-                # Store geometry type in metadata if not unknown
-                if geometry_type != "unknown":
-                    metadata_updates.geometry_type = geometry_type
-
-                # Handle CRS transformation to EPSG:4326
-                src_crs = collection.crs
-                if src_crs:
-                    # Store EPSG code if available
-                    if hasattr(src_crs, "to_epsg") and src_crs.to_epsg():
-                        metadata_updates.original_srid = src_crs.to_epsg()
-
-                    # Transform bounds if not already EPSG:4326
-                    crs_string = src_crs.to_string()
-                    if (
-                        "EPSG:4326" not in crs_string
-                        and "WGS84" not in crs_string
-                        and bounds is not None
-                    ):
-                        transformer = Transformer.from_crs(
-                            src_crs, "EPSG:4326", always_xy=True
-                        )
-                        xmin, ymin = transformer.transform(bounds[0], bounds[1])
-                        xmax, ymax = transformer.transform(bounds[2], bounds[3])
-                        bounds = [xmin, ymin, xmax, ymax]
+                if (
+                    epsg != 4326
+                    and bounds is not None
+                ):
+                    transformer = Transformer.from_crs(
+                        src_crs_obj, "EPSG:4326", always_xy=True
+                    )
+                    xmin, ymin = transformer.transform(bounds[0], bounds[1])
+                    xmax, ymax = transformer.transform(bounds[2], bounds[3])
+                    bounds = [xmin, ymin, xmax, ymax]
 
         # For point_cloud, we don't extract bounds here (handled elsewhere)
 

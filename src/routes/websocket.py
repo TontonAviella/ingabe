@@ -85,8 +85,13 @@ DISCONNECT_TTL = 30.0  # Keep disconnected user data for 30 seconds
 MAX_MISSED_MESSAGES = 100  # Limit buffer size per user per conversation
 
 CHAT_CH = "chat_completion_messages_notify"
-REDIS_WS_CHANNEL = "ws:ephemeral"  # Redis Pub/Sub channel for cross-worker ephemeral messages
-REDIS_SATELLITE_CHANNEL = "ws:satellite"  # Redis Pub/Sub channel for satellite scene updates
+REDIS_WS_CHANNEL = (
+    "ws:ephemeral"  # Redis Pub/Sub channel for cross-worker ephemeral messages
+)
+REDIS_SATELLITE_CHANNEL = (
+    "ws:satellite"  # Redis Pub/Sub channel for satellite scene updates
+)
+_REDIS_ORIGIN_ID = str(uuid.uuid4())
 chat_q: asyncio.Queue[str] = asyncio.Queue()
 # Global subscriber registry for satellite updates (broadcast to all connected clients)
 satellite_subscribers: set[asyncio.Queue] = set()
@@ -101,10 +106,12 @@ _redis_sub_task: asyncio.Task | None = None
 # Redis Pub/Sub for cross-worker WebSocket message routing
 # ---------------------------------------------------------------------------
 
+
 async def _get_redis_pubsub():
     """Create a Redis Pub/Sub connection for subscribing."""
     try:
         from redis.asyncio import Redis as AsyncRedis
+
         redis = AsyncRedis(
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", 6379)),
@@ -123,6 +130,7 @@ async def _publish_to_redis(payload_json: str) -> bool:
     """
     try:
         from redis.asyncio import Redis as AsyncRedis
+
         redis = AsyncRedis(
             host=os.environ.get("REDIS_HOST", "localhost"),
             port=int(os.environ.get("REDIS_PORT", 6379)),
@@ -134,7 +142,10 @@ async def _publish_to_redis(payload_json: str) -> bool:
         finally:
             await redis.aclose()
     except Exception:
-        logger.debug("Failed to publish to Redis Pub/Sub (falling back to local)", exc_info=True)
+        logger.debug(
+            "Failed to publish to Redis Pub/Sub; local subscribers already received payload",
+            exc_info=True,
+        )
         return False
 
 
@@ -161,7 +172,8 @@ async def _redis_pubsub_listener():
             await pubsub.subscribe(REDIS_WS_CHANNEL, REDIS_SATELLITE_CHANNEL)
             logger.info(
                 "Redis Pub/Sub subscriber connected to channels: %s, %s",
-                REDIS_WS_CHANNEL, REDIS_SATELLITE_CHANNEL,
+                REDIS_WS_CHANNEL,
+                REDIS_SATELLITE_CHANNEL,
             )
             reconnect_delay = 1
 
@@ -200,6 +212,7 @@ async def _redis_pubsub_listener():
 # Local distribution helpers
 # ---------------------------------------------------------------------------
 
+
 def _parse_payload(payload_dict: dict) -> ConversationRelatedPayload:
     """Parse a dict into the appropriate payload model."""
     if payload_dict.get("streaming"):
@@ -211,7 +224,9 @@ def _parse_payload(payload_dict: dict) -> ConversationRelatedPayload:
     return ChatCompletionReferenceNotificationPayload(**payload_dict)
 
 
-async def _distribute_to_local(conversation_id: int, parsed_payload: ConversationRelatedPayload):
+async def _distribute_to_local(
+    conversation_id: int, parsed_payload: ConversationRelatedPayload
+):
     """Distribute a parsed payload to local in-memory subscriber queues
     and buffer for recently disconnected users.
     """
@@ -246,6 +261,8 @@ async def _distribute_to_local(conversation_id: int, parsed_payload: Conversatio
 async def _distribute_from_json(payload_json: str):
     """Parse JSON and distribute to local subscribers."""
     payload_dict = json.loads(payload_json)
+    if payload_dict.pop("_redis_origin_id", None) == _REDIS_ORIGIN_ID:
+        return
     parsed_payload = _parse_payload(payload_dict)
     assert parsed_payload.conversation_id, "conversation_id is required"
     await _distribute_to_local(parsed_payload.conversation_id, parsed_payload)
@@ -271,18 +288,21 @@ async def _broadcast_satellite_update(payload_json: str):
 async def _publish_and_distribute(payload: ConversationRelatedPayload):
     """Publish an ephemeral payload via Redis Pub/Sub for cross-worker delivery.
 
-    Falls back to local-only distribution if Redis is unavailable.
+    Always delivers to local subscribers synchronously first. The Redis publish is
+    only for other workers; the origin tag prevents this worker from processing
+    its own Pub/Sub loopback later and duplicating messages.
     """
-    payload_json = payload.model_dump_json()
-    published = await _publish_to_redis(payload_json)
-    if not published:
-        # Redis unavailable — distribute locally only (single-worker fallback)
-        await _distribute_to_local(payload.conversation_id, payload)
+    await _distribute_to_local(payload.conversation_id, payload)
+
+    payload_dict = json.loads(payload.model_dump_json())
+    payload_dict["_redis_origin_id"] = _REDIS_ORIGIN_ID
+    await _publish_to_redis(json.dumps(payload_dict))
 
 
 # ---------------------------------------------------------------------------
 # Startup / lifecycle
 # ---------------------------------------------------------------------------
+
 
 def start_chat_listener():
     global _listener_task
@@ -503,12 +523,15 @@ async def ws_conversation_chat(
                     logger.debug("Failed to send satellite update", exc_info=True)
                 continue
 
-            assert isinstance(payload, (
-                ChatCompletionReferenceNotificationPayload,
-                EphemeralNotificationPayload,
-                EphemeralErrorNotificationPayload,
-                StreamingTokenPayload,
-            ))
+            assert isinstance(
+                payload,
+                (
+                    ChatCompletionReferenceNotificationPayload,
+                    EphemeralNotificationPayload,
+                    EphemeralErrorNotificationPayload,
+                    StreamingTokenPayload,
+                ),
+            )
 
             if isinstance(payload, StreamingTokenPayload):
                 await ws.send_json(payload.model_dump(mode="json"))
@@ -549,7 +572,12 @@ async def ws_conversation_chat(
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        logger.error("Unexpected WebSocket error for conversation %s: %s", conversation_id, e, exc_info=True)
+        logger.error(
+            "Unexpected WebSocket error for conversation %s: %s",
+            conversation_id,
+            e,
+            exc_info=True,
+        )
     finally:
         # Track this user as recently disconnected from this specific conversation
         user_conversation_key = (user_id, conversation_id)
@@ -649,7 +677,9 @@ async def kue_notify_error(conversation_id: int, error_message: str):
     await _publish_and_distribute(payload)
 
 
-async def kue_stream_token(conversation_id: int, token: str, done: bool = False, turn_id: str | None = None):
+async def kue_stream_token(
+    conversation_id: int, token: str, done: bool = False, turn_id: str | None = None
+):
     """Push a single streaming token (or done signal) to the frontend."""
     payload = StreamingTokenPayload(
         conversation_id=conversation_id,

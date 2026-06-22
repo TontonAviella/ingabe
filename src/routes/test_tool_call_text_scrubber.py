@@ -1,4 +1,4 @@
-"""Unit tests for _ToolCallTextScrubber in src/routes/message_routes.py.
+"""Unit tests for ToolCallTextScrubber.
 
 The scrubber removes `<tool_call>...</tool_call>` XML markup that Nemotron
 3 Super 120B (and other thinking models) sometimes emit as visible text
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.routes.message_routes import _ToolCallTextScrubber
+from src.services.tool_call_scrubber import _ToolCallTextScrubber
 
 
 # ---------------------------------------------------------------------------

@@ -9,8 +9,10 @@ from typing import List, Optional
 
 from boto3.s3.transfer import TransferConfig
 
+from src.postgis_tiles import MVT_LAYER_NAME
 from src.structures import get_async_db_connection
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
+from src.upload.geoparquet import generate_geoparquet_from_ogr_source
 from src.upload.models import VectorProcessingResult
 from src.upload.preprocessing import get_layer_bounds_and_metadata
 from src.utils import get_async_s3_client, get_bucket_name
@@ -18,6 +20,96 @@ from src.utils import get_async_s3_client, get_bucket_name
 logger = logging.getLogger(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
+MAX_TIPPECANOE_MAXZOOM = 22
+
+
+def _normalize_tippecanoe_maxzoom(maxzoom: int | None) -> int | None:
+    if maxzoom is None:
+        return None
+    return max(0, min(MAX_TIPPECANOE_MAXZOOM, int(maxzoom)))
+
+
+def _build_flatgeobuf_reproject_command(
+    *,
+    output_path: str,
+    ogr_source: str,
+    dataset_layer: str | None = None,
+) -> list[str]:
+    command = [
+        "ogr2ogr",
+        "-f",
+        "FlatGeobuf",
+        "-t_srs",
+        "EPSG:4326",
+        "-nlt",
+        "PROMOTE_TO_MULTI",
+        "-nln",
+        MVT_LAYER_NAME,
+        "-skipfailures",
+        "-lco",
+        "SPATIAL_INDEX=YES",
+    ]
+
+    if ogr_source.startswith("CSV:"):
+        command.extend(
+            [
+                "-oo",
+                "X_POSSIBLE_NAMES=long,longitude,lng,x",
+                "-oo",
+                "Y_POSSIBLE_NAMES=lat,latitude,y",
+                "-oo",
+                "KEEP_GEOM_COLUMNS=NO",
+            ]
+        )
+
+    command.extend([output_path, ogr_source])
+    if dataset_layer is not None:
+        command.append(dataset_layer)
+    return command
+
+
+def _build_tippecanoe_pmtiles_command(
+    *,
+    output_path: str,
+    input_path: str,
+    maxzoom: int | None = None,
+) -> list[str]:
+    command = [
+        "tippecanoe",
+        "-o",
+        output_path,
+        "-q",
+    ]
+    normalized_maxzoom = _normalize_tippecanoe_maxzoom(maxzoom)
+    if normalized_maxzoom is None:
+        command.append("-zg")
+    else:
+        command.extend(["-z", str(normalized_maxzoom)])
+    command.extend(
+        [
+            "--drop-densest-as-needed",
+            "-l",
+            MVT_LAYER_NAME,
+            input_path,
+        ]
+    )
+    return command
+
+
+def _build_ogr_pmtiles_fallback_command(
+    *,
+    output_path: str,
+    input_path: str,
+) -> list[str]:
+    return [
+        "ogr2ogr",
+        "-f",
+        "PMTiles",
+        "-nln",
+        MVT_LAYER_NAME,
+        output_path,
+        input_path,
+    ]
 
 
 async def generate_pmtiles_from_ogr_source(
@@ -27,6 +119,7 @@ async def generate_pmtiles_from_ogr_source(
     user_id: str | None = None,
     project_id: str | None = None,
     dataset_layer: str | None = None,
+    tippecanoe_maxzoom: int | None = None,
 ) -> str:
     """Generate PMTiles from any OGR-compatible source and store in S3.
 
@@ -40,38 +133,11 @@ async def generate_pmtiles_from_ogr_source(
         # Reproject to EPSG:4326 and convert to FlatGeobuf
         reprojected_file = os.path.join(temp_dir, "reprojected.fgb")
 
-        # Build ogr2ogr command with source-specific options
-        ogr_cmd = [
-            "ogr2ogr",
-            "-f",
-            "FlatGeobuf",
-            "-t_srs",
-            "EPSG:4326",
-            "-nlt",
-            "PROMOTE_TO_MULTI",
-            "-skipfailures",
-            "-lco",
-            "SPATIAL_INDEX=YES",
-        ]
-
-        # Add CSV-specific options for lat/long column detection
-        if ogr_source.startswith("CSV:"):
-            ogr_cmd.extend(
-                [
-                    "-oo",
-                    "X_POSSIBLE_NAMES=long,longitude,lng,x",
-                    "-oo",
-                    "Y_POSSIBLE_NAMES=lat,latitude,y",
-                    "-oo",
-                    "KEEP_GEOM_COLUMNS=NO",
-                ]
-            )
-
-        ogr_cmd.extend([reprojected_file, ogr_source])
-        # If a specific dataset layer is requested (e.g., GeoPackage sublayer),
-        # pass it as an additional source argument to ogr2ogr to select that layer.
-        if dataset_layer is not None:
-            ogr_cmd.append(dataset_layer)
+        ogr_cmd = _build_flatgeobuf_reproject_command(
+            output_path=reprojected_file,
+            ogr_source=ogr_source,
+            dataset_layer=dataset_layer,
+        )
 
         process = await asyncio.create_subprocess_exec(
             *ogr_cmd,
@@ -86,15 +152,11 @@ async def generate_pmtiles_from_ogr_source(
             )
 
         # Run tippecanoe to generate pmtiles
-        tippecanoe_cmd = [
-            "tippecanoe",
-            "-o",
-            local_output_file,
-            "-q",  # Quiet mode - suppress progress indicators
-            "-zg",  # Always try to guess maxzoom
-            "--drop-densest-as-needed",
-            reprojected_file,
-        ]
+        tippecanoe_cmd = _build_tippecanoe_pmtiles_command(
+            output_path=local_output_file,
+            input_path=reprojected_file,
+            maxzoom=tippecanoe_maxzoom,
+        )
 
         process = await asyncio.create_subprocess_exec(
             *tippecanoe_cmd,
@@ -110,13 +172,10 @@ async def generate_pmtiles_from_ogr_source(
                 "Can't guess maxzoom (-zg) without at least two distinct feature locations"
                 in err_text
             ):
-                pmtiles_ogr_cmd = [
-                    "ogr2ogr",
-                    "-f",
-                    "PMTiles",
-                    local_output_file,
-                    reprojected_file,
-                ]
+                pmtiles_ogr_cmd = _build_ogr_pmtiles_fallback_command(
+                    output_path=local_output_file,
+                    input_path=reprojected_file,
+                )
                 process2 = await asyncio.create_subprocess_exec(
                     *pmtiles_ogr_cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -144,6 +203,10 @@ async def generate_pmtiles_from_ogr_source(
         )
 
         # Update the database with the PMTiles key (atomic JSONB merge — no race)
+        metadata_update: dict[str, object] = {"pmtiles_key": pmtiles_key}
+        normalized_maxzoom = _normalize_tippecanoe_maxzoom(tippecanoe_maxzoom)
+        if normalized_maxzoom is not None:
+            metadata_update["pmtiles_maxzoom"] = normalized_maxzoom
         async with get_async_db_connection() as conn:
             await conn.execute(
                 """
@@ -151,7 +214,7 @@ async def generate_pmtiles_from_ogr_source(
                 SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb
                 WHERE layer_id = $2
                 """,
-                json.dumps({"pmtiles_key": pmtiles_key}),
+                json.dumps(metadata_update),
                 layer_id,
             )
 
@@ -287,6 +350,7 @@ async def process_vector_layer_common(
     user_id: str,
     project_id: str,
     dataset_layer: str | None = None,
+    tippecanoe_maxzoom: int | None = None,
 ) -> VectorProcessingResult:
     """Unified processing pipeline for vector layers from any source.
 
@@ -317,6 +381,27 @@ async def process_vector_layer_common(
     metadata_updates.source = "remote" if not ogr_source.startswith("/") else "upload"
     metadata_updates.layer_name = layer_name
 
+    if feature_count and feature_count > 0:
+        try:
+            geoparquet = await generate_geoparquet_from_ogr_source(
+                layer_id=layer_id,
+                ogr_source=ogr_source,
+                user_id=user_id,
+                project_id=project_id,
+                dataset_layer=dataset_layer,
+            )
+            metadata_updates.geoparquet_key = geoparquet.key
+            metadata_updates.geoparquet_size_bytes = geoparquet.size_bytes
+            metadata_updates.geoparquet_compression = geoparquet.compression
+            metadata_updates.geoparquet_crs = geoparquet.crs
+            metadata_updates.analytics_format = "geoparquet"
+            metadata_updates.source_storage_format = "geoparquet"
+            metadata_updates.geoanalytics_primary = True
+        except Exception as e:
+            logger.warning("GeoParquet analytics generation failed for %s: %s", ogr_source, e)
+            metadata_updates.analytics_format = "pending"
+            metadata_updates.geoanalytics_primary = False
+
     # Generate PMTiles for vector layers with features
     pmtiles_key: Optional[str] = None
     if feature_count and feature_count > 0:
@@ -328,8 +413,12 @@ async def process_vector_layer_common(
                 user_id,
                 project_id,
                 dataset_layer=dataset_layer,
+                tippecanoe_maxzoom=tippecanoe_maxzoom,
             )
             metadata_updates.pmtiles_key = pmtiles_key
+            metadata_updates.pmtiles_maxzoom = _normalize_tippecanoe_maxzoom(
+                tippecanoe_maxzoom
+            )
         except Exception as e:
             logger.warning("PMTiles generation failed for %s: %s", ogr_source, e)
             # Continue without PMTiles - not critical

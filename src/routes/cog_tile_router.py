@@ -12,15 +12,21 @@ Endpoint: GET /api/cog-tiles/{z}/{x}/{y}.png
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import os
+import re
+import time
 from functools import lru_cache
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from src.dependencies.session import verify_session_required
 from src.services.map_service import validate_remote_url
+from src.structures import async_read_conn
 from src.tile_cache import tile_cache
+from src.utils import get_async_s3_client, get_bucket_name, s3_op
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,10 @@ _Reader = None
 _cmap = None
 _TileOutsideBounds = None
 _Image = None
+_LOCAL_LAYER_REF_RE = re.compile(r"^mundi-layer:([A-Za-z0-9_-]{1,80})$")
+_LOCAL_LAYER_API_RE = re.compile(r"^/api/layer/([A-Za-z0-9_-]{1,80})\.cog\.tif$")
+_LOCAL_COG_URL_CACHE: dict[str, tuple[float, str, str]] = {}
+_LOCAL_COG_URL_TTL = 120.0
 
 
 def _ensure_rio_tiler():
@@ -86,6 +96,98 @@ def _cache_key(url_hash: str, expression: str) -> str:
     return f"cog:{url_hash}:{expression}"
 
 
+def _local_layer_id(asset_url: str) -> str | None:
+    """Return layer id for trusted local raster references.
+
+    Browser-facing Sage tools must not receive raw MinIO presigned URLs because
+    Docker hostnames resolve to private IPs. A `mundi-layer:<id>` reference keeps
+    the tile URL same-origin; this route resolves it server-side after auth.
+    """
+    match = _LOCAL_LAYER_REF_RE.match(asset_url)
+    if match:
+        return match.group(1)
+    match = _LOCAL_LAYER_API_RE.match(asset_url)
+    if match:
+        return match.group(1)
+    return None
+
+
+async def _resolve_cog_asset(asset_url: str, request: Request) -> tuple[str, str]:
+    layer_id = _local_layer_id(asset_url)
+    if not layer_id:
+        validate_remote_url(asset_url, "raster")
+        return asset_url, asset_url
+
+    session = await verify_session_required(request)
+    user_id = session.get_user_id()
+    async with async_read_conn("cog_tile_local_layer", user_id=user_id) as conn:
+        layer_row = await conn.fetchrow(
+            """
+            SELECT layer_id, owner_uuid, metadata, s3_key
+            FROM map_layers
+            WHERE layer_id = $1
+            """,
+            layer_id,
+        )
+        if not layer_row:
+            raise HTTPException(status_code=404, detail=f"Layer {layer_id} not found")
+
+        if str(layer_row["owner_uuid"]) != user_id:
+            project_row = await conn.fetchrow(
+                """
+                SELECT p.owner_uuid, p.editor_uuids, p.viewer_uuids
+                FROM user_mundiai_projects p
+                JOIN user_mundiai_maps m ON m.project_id = p.id
+                WHERE $1 = ANY(m.layers)
+                  AND p.soft_deleted_at IS NULL
+                  AND m.soft_deleted_at IS NULL
+                LIMIT 1
+                """,
+                layer_id,
+            )
+            editors = project_row["editor_uuids"] if project_row else []
+            viewers = project_row["viewer_uuids"] if project_row else []
+            can_access = bool(
+                project_row
+                and (
+                    str(project_row["owner_uuid"]) == user_id
+                    or user_id in [str(u) for u in (editors or []) + (viewers or [])]
+                )
+            )
+            if not can_access:
+                raise HTTPException(status_code=404, detail=f"Layer {layer_id} not found")
+
+    metadata = layer_row["metadata"] or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
+    if not cog_key:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Layer {layer_id} does not have an optimized COG yet",
+        )
+
+    now = time.monotonic()
+    cached = _LOCAL_COG_URL_CACHE.get(cog_key)
+    if cached and (now - cached[0]) < _LOCAL_COG_URL_TTL:
+        return cached[1], cached[2]
+
+    bucket = get_bucket_name()
+    s3_client = await get_async_s3_client(signature_version="s3v4")
+    resolved_url = await s3_op(
+        s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": cog_key},
+            ExpiresIn=180,
+        ),
+        "presigned URL",
+        f"local display layer {layer_id}",
+    )
+    cache_identity = f"mundi-layer:{layer_id}:{cog_key}"
+    _LOCAL_COG_URL_CACHE[cog_key] = (now, resolved_url, cache_identity)
+    return resolved_url, cache_identity
+
+
 @lru_cache(maxsize=8)
 def _colormap_lut(cm_name: str):
     import numpy as np
@@ -103,6 +205,7 @@ async def get_cog_tile(
     z: int,
     x: int,
     y: int,
+    request: Request,
     url: str = Query(..., description="COG URL (Earth Search S3 or any public COG)"),
     expression: str = Query(
         "visual",
@@ -119,12 +222,22 @@ async def get_cog_tile(
     if z < 0 or z > 18 or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(status_code=400, detail="Invalid tile coordinates")
 
-    for u in [url, nir_url, green_url, swir_url]:
-        if u:
-            validate_remote_url(u, "raster")
+    url, url_identity = await _resolve_cog_asset(url, request)
+    if nir_url:
+        nir_url, nir_identity = await _resolve_cog_asset(nir_url, request)
+    else:
+        nir_identity = ""
+    if green_url:
+        green_url, green_identity = await _resolve_cog_asset(green_url, request)
+    else:
+        green_identity = ""
+    if swir_url:
+        swir_url, swir_identity = await _resolve_cog_asset(swir_url, request)
+    else:
+        swir_identity = ""
 
     url_hash = hashlib.sha256(
-        f"{url}:{nir_url}:{green_url}:{swir_url}:{colormap}:{rescale}:{band_index}".encode()
+        f"{url_identity}:{nir_identity}:{green_identity}:{swir_identity}:{colormap}:{rescale}:{band_index}".encode()
     ).hexdigest()[:16]
     cache_id = _cache_key(url_hash, expression)
 

@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import copy
 import tempfile
 import asyncio
 import subprocess
@@ -19,16 +20,168 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from src.structures import get_async_db_connection, async_conn
-from src.utils import get_bucket_name, get_async_s3_client, generate_id, s3_op
+from src.utils import (
+    get_async_s3_client,
+    get_bucket_name,
+    get_s3_public_endpoint_url,
+    generate_id,
+    s3_op,
+)
 from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
+from src.services.raster_zoom import raster_source_minzoom
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
+LEGACY_MVT_SOURCE_LAYER_NAMES = ("reprojected",)
+VISIBLE_H3_RISK_COLOR = [
+    "step",
+    ["coalesce", ["get", "risk_score"], 0],
+    "#06b6d4",
+    40,
+    "#facc15",
+    60,
+    "#f97316",
+    80,
+    "#dc2626",
+    90,
+    "#e879f9",
+]
+VISIBLE_H3_RISK_OPACITY = [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["get", "risk_score"], 0],
+    0,
+    0.18,
+    40,
+    0.38,
+    60,
+    0.58,
+    80,
+    0.76,
+    100,
+    0.84,
+]
+VISIBLE_H3_OUTLINE_COLOR = [
+    "case",
+    [">=", ["coalesce", ["get", "risk_score"], 0], 60],
+    "#ffffff",
+    "#111827",
+]
+VISIBLE_H3_OUTLINE_WIDTH = [
+    "interpolate",
+    ["linear"],
+    ["coalesce", ["get", "risk_score"], 0],
+    0,
+    0.75,
+    60,
+    1.4,
+    90,
+    2.2,
+]
+
+
+def _normalize_h3_resolution_filter(filter_expr: object) -> object:
+    if (
+        isinstance(filter_expr, list)
+        and len(filter_expr) == 3
+        and filter_expr[0] == "=="
+        and filter_expr[1] == ["get", "h3_resolution"]
+    ):
+        resolution = filter_expr[2]
+        try:
+            numeric_resolution = int(resolution)
+        except (TypeError, ValueError):
+            return filter_expr
+        return [
+            "any",
+            ["==", ["get", "h3_resolution"], numeric_resolution],
+            ["==", ["get", "h3_resolution"], str(numeric_resolution)],
+        ]
+    return filter_expr
+
+
+def _normalize_runtime_h3_attention_style(layer: dict) -> dict:
+    normalized_layer = copy.deepcopy(layer)
+    layer_id = normalized_layer.get("id")
+    layer_type = normalized_layer.get("type")
+    if not isinstance(layer_id, str):
+        return normalized_layer
+
+    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")):
+        normalized_layer["filter"] = _normalize_h3_resolution_filter(
+            normalized_layer.get("filter")
+        )
+
+    paint = normalized_layer.setdefault("paint", {})
+    if not isinstance(paint, dict):
+        return normalized_layer
+
+    if layer_id.startswith("h3-risk-fill-") and layer_type == "fill":
+        paint["fill-color"] = VISIBLE_H3_RISK_COLOR
+        paint["fill-opacity"] = VISIBLE_H3_RISK_OPACITY
+    elif layer_id.startswith("h3-risk-extrusion-") and layer_type == "fill-extrusion":
+        paint["fill-extrusion-color"] = VISIBLE_H3_RISK_COLOR
+        paint["fill-extrusion-opacity"] = VISIBLE_H3_RISK_OPACITY
+    elif layer_id.startswith("h3-risk-outline-") and layer_type == "line":
+        paint["line-color"] = VISIBLE_H3_OUTLINE_COLOR
+        paint["line-width"] = VISIBLE_H3_OUTLINE_WIDTH
+        paint["line-opacity"] = 0.92
+
+    return normalized_layer
+
+
+def append_mvt_layers_with_legacy_source_fallbacks(
+    target_layers: list[dict],
+    maplibre_layers: list[dict],
+) -> None:
+    """Append stored MVT layers plus aliases for older PMTiles source-layer names."""
+
+    normalized_layers = [
+        _normalize_runtime_h3_attention_style(layer)
+        for layer in maplibre_layers
+    ]
+    target_layers.extend(normalized_layers)
+    existing_ids = {
+        layer.get("id")
+        for layer in target_layers
+        if isinstance(layer.get("id"), str)
+    }
+    for layer in normalized_layers:
+        if layer.get("source-layer") != MVT_LAYER_NAME:
+            continue
+        layer_id = layer.get("id")
+        if not isinstance(layer_id, str) or not layer_id:
+            continue
+        for legacy_source_layer in LEGACY_MVT_SOURCE_LAYER_NAMES:
+            fallback_id = f"{layer_id}-legacy-{legacy_source_layer}"
+            if fallback_id in existing_ids:
+                continue
+            fallback_layer = copy.deepcopy(layer)
+            fallback_layer["id"] = fallback_id
+            fallback_layer["source-layer"] = legacy_source_layer
+            metadata = fallback_layer.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["legacy_source_layer_fallback"] = True
+            target_layers.append(fallback_layer)
+            existing_ids.add(fallback_id)
+
+
+def vector_source_maxzoom(metadata: dict) -> int | None:
+    raw_maxzoom = metadata.get("pmtiles_maxzoom")
+    if raw_maxzoom is None:
+        return None
+    try:
+        maxzoom = int(raw_maxzoom)
+    except (TypeError, ValueError):
+        return None
+    if maxzoom < 0 or maxzoom > 24:
+        return None
+    return maxzoom
 
 
 def validate_remote_url(url: str, source_type: str) -> str:
@@ -288,6 +441,7 @@ async def get_map_style_internal(
     only_show_inline_sources: bool = False,
     override_layers: Optional[str] = None,
     basemap: Optional[str] = None,
+    inline_s3_endpoint_url: Optional[str] = None,
 ):
     # Get vector layers for this map from the database
     async with async_conn("get_map_style_internal.fetch_layers") as conn:
@@ -479,19 +633,24 @@ async def get_map_style_internal(
             if cache_param:
                 tile_url += f"?{cache_param}"
 
-            # maxzoom 22 + per-source bounds: MapLibre will only request tiles
-            # inside the COG's geographic footprint (no edge-vanish, no flicker)
-            # AND will fetch fresh tiles all the way to z22, so rio-tiler reads
-            # native pixels from a 2-3 cm/px drone ortho instead of MapLibre
-            # upscaling a z19 tile.
+            try:
+                raster_source_maxzoom = int(os.environ.get("RASTER_SOURCE_MAXZOOM", "20"))
+            except ValueError:
+                raster_source_maxzoom = 20
+            raster_source_maxzoom = max(0, min(22, raster_source_maxzoom))
+
+            # Keep per-source bounds so MapLibre only requests tiles inside the
+            # COG footprint. Default maxzoom favors interactive speed; raise
+            # RASTER_SOURCE_MAXZOOM for inspection-grade native drone pixels.
+            _b = layer.get("bounds")
+            raster_minzoom = raster_source_minzoom(metadata, _b)
             raster_source: dict = {
                 "type": "raster",
                 "tiles": [tile_url],
                 "tileSize": 256,
-                "minzoom": 0,
-                "maxzoom": 22,
+                "minzoom": raster_minzoom,
+                "maxzoom": raster_source_maxzoom,
             }
-            _b = layer.get("bounds")
             if _b and len(_b) == 4:
                 # DB column is [west, south, east, north] in WGS84.
                 raster_source["bounds"] = [float(_b[0]), float(_b[1]), float(_b[2]), float(_b[3])]
@@ -595,6 +754,7 @@ async def get_map_style_internal(
     # Pre-generate all presigned URLs in parallel (avoids sequential S3 calls)
     presigned_urls: dict[str, str] = {}
     if only_show_inline_sources:
+        presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
         layers_needing_presigned: list[tuple[str, str]] = []
         for layer in vector_layers:
             if not layer["remote_url"]:
@@ -605,7 +765,7 @@ async def get_map_style_internal(
 
         if layers_needing_presigned:
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client()
+            s3_client = await get_async_s3_client(endpoint_url=presign_endpoint_url)
 
             async def _gen_url(key: str) -> str:
                 return await s3_op(
@@ -620,52 +780,63 @@ async def get_map_style_internal(
     # Add vector layers as sources and layers to the style
     for idx, layer in enumerate(vector_layers, 1):
         layer_id = layer["layer_id"]
+        metadata = json.loads(layer.get("metadata", "{}"))
+        source_maxzoom = vector_source_maxzoom(metadata)
+
+        def _vector_pmtiles_source(url: str) -> dict:
+            source: dict[str, object] = {"type": "vector", "url": url}
+            if source_maxzoom is not None:
+                source["maxzoom"] = source_maxzoom
+            return source
 
         if layer_id in presigned_urls:
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles://{presigned_urls[layer_id]}",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles://{presigned_urls[layer_id]}"
+            )
         elif only_show_inline_sources and not layer["remote_url"]:
             # Fallback: pmtiles_key was missing — should not happen
-            metadata = json.loads(layer.get("metadata", "{}"))
             pmtiles_key = metadata.get("pmtiles_key")
             assert pmtiles_key is not None, f"Missing pmtiles_key for layer {layer_id}"
 
             bucket_name = get_bucket_name()
-            s3_client = await get_async_s3_client()
+            presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
+            s3_client = await get_async_s3_client(endpoint_url=presign_endpoint_url)
             presigned_url = await s3_op(
                 s3_client.generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": pmtiles_key}, ExpiresIn=28800),
                 "presigned URL", f"PMTiles {pmtiles_key}",
             )
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles://{presigned_url}",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles://{presigned_url}"
+            )
         else:
             # Default to PMTiles
-            style_json["sources"][layer_id] = {
-                "type": "vector",
-                "url": f"pmtiles:///api/layer/{layer_id}.pmtiles",
-            }
+            style_json["sources"][layer_id] = _vector_pmtiles_source(
+                f"pmtiles:///api/layer/{layer_id}.pmtiles"
+            )
 
         # Check if override_layers is not None
         if override_layers is not None and layer_id in override_layers:
-            for ml_layer in override_layers[layer_id]:
-                # source-layer is prohibited for geojson sources
-                if style_json["sources"][layer_id]["type"] == "geojson":
+            maplibre_layers = override_layers[layer_id]
+            if style_json["sources"][layer_id]["type"] == "geojson":
+                for ml_layer in maplibre_layers:
+                    # source-layer is prohibited for geojson sources
                     assert ml_layer["source-layer"] == MVT_LAYER_NAME
                     del ml_layer["source-layer"]
                     assert "source-layer" not in ml_layer
-                style_json["layers"].append(ml_layer)
+                    style_json["layers"].append(ml_layer)
+            else:
+                append_mvt_layers_with_legacy_source_fallbacks(style_json["layers"], maplibre_layers)
         # Use stored style_json from layer_styles if no override_layers
         elif layer["maplibre_layers"]:
-            for ml_layer in json.loads(layer["maplibre_layers"]):
-                style_json["layers"].append(ml_layer)
+            append_mvt_layers_with_legacy_source_fallbacks(
+                style_json["layers"],
+                json.loads(layer["maplibre_layers"]),
+            )
 
     # Pre-generate presigned URLs for PostGIS layers with PMTiles (inline mode)
     postgis_presigned: dict[str, str] = {}
     if only_show_inline_sources:
+        presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
         postgis_needing_presigned: list[tuple[str, str]] = []
         for layer in postgis_layers:
             if layer["type"] == LAYER_TYPE_POSTGIS:
@@ -677,7 +848,7 @@ async def get_map_style_internal(
                     postgis_needing_presigned.append((layer["layer_id"], pk))
         if postgis_needing_presigned:
             _bucket = get_bucket_name()
-            _s3 = await get_async_s3_client()
+            _s3 = await get_async_s3_client(endpoint_url=presign_endpoint_url)
 
             async def _gen_postgis_url(key: str) -> str:
                 return await s3_op(
@@ -979,6 +1150,18 @@ async def render_map_internal(
 
             temp_output.seek(0)
             screenshot_data = temp_output.read()
+            if not screenshot_data:
+                renderer_stderr = stderr.decode(errors="replace").strip()
+                renderer_stdout = stdout.decode(errors="replace").strip()
+                message = "renderer produced empty PNG output"
+                if renderer_stderr:
+                    message = f"{message}: {renderer_stderr}"
+                elif renderer_stdout:
+                    message = f"{message}: {renderer_stdout}"
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message,
+                )
 
             return (
                 Response(

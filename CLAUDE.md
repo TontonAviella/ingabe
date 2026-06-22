@@ -93,7 +93,8 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **Cloudflare R2** (optional, when 4 R2_* env vars set): transit upload layer for fast uploads from Africa edges; background worker pulls R2 → MinIO. 1-day lifecycle delete on R2 bucket.
 - **Redis**: Caching layer
 - **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
-- **Ollama**: Local LLM container hosting nomic-embed-text (Brain embeddings) + qwen2.5:7b-64k (Sage fallback). Sage primary uses gemma4:31b via Ollama Cloud direct API.
+- **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through OpenRouter; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
+- **Life-Harness runtime guard** (`src/services/life_harness.py` + `external/life-harness` submodule): production adaptation of the pinned upstream Life-Harness benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 task-relevant agriculture procedure retrieval around the frozen brain model.
 - **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)
@@ -123,9 +124,10 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `REDIS_HOST/PORT` | Redis cache |
 | `OPENAI_API_KEY` | LLM provider key (used as bearer for `OPENAI_BASE_URL`). Prod uses an OpenRouter key (`sk-or-v1-…`). Rotate via OpenRouter dashboard → update `/home/deploy/mundi.ai/.env` → restart `mundi-app` with prod compose files. |
 | `OPENAI_BASE_URL` | LLM endpoint. **Prod: `https://openrouter.ai/api/v1`.** (Old CLAUDE.md said Ollama Cloud; that's wrong, we switched.) |
-| `OPENAI_MODEL` | Primary chat model. **Prod: `nvidia/nemotron-3-super-120b-a12b:free`.** (Old CLAUDE.md said `gemma4:31b`; that's wrong.) Reasoning model → reasoning tokens count toward `max_tokens`; floor `max_tokens` at 150 for short outputs. |
+| `OPENAI_MODEL` | Primary chat model. **Prod: `nvidia/nemotron-3-super-120b-a12b:free`.** Local Docker/offline default can use `ollama:gemma4:12b-it-qat`. Reasoning model → reasoning tokens count toward `max_tokens`; floor `max_tokens` at 150 for short outputs. |
 | `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain. `ollama:<tag>` entries route to local Ollama container. Prod: `openai/gpt-4o-mini,ollama:qwen2.5:7b-64k`. |
 | `MUNDI_USE_HERMES` | `0` (default) → existing hand-rolled chat loop in `process_chat_interaction_task`. `1` → route through `src/services/hermes_runtime.py` (Hermes Agent runtime). Toggle this flag for the Phase 2 cutover. Rollback = back to `0` + restart. |
+| `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
 | `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
 | `BRAIN_EMBEDDINGS_API_KEY` | Required when `BRAIN_EMBEDDINGS_PROVIDER=openai`. Distinct from `OPENAI_API_KEY` so Brain auth is isolated from Sage chat auth. |
@@ -175,6 +177,7 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Repeated Sage/Hermes workflow, harness, resolver, skill, or cron design | `.claude/skills/sage-harness-upgrade/SKILL.md` |
 
 <!-- gitnexus:end -->
 
@@ -216,5 +219,6 @@ Key routing rules:
 - Import cookies for authenticated testing → invoke /setup-browser-cookies
 - Performance regression, page speed, benchmarks → invoke /benchmark
 - Review what gstack has learned → invoke /learn
+- Repeated Sage/Hermes workflow, "make this permanent", "we asked twice", "thin harness/fat skills", resolver, skill, or cron design → read `.claude/skills/sage-harness-upgrade/SKILL.md`
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health

@@ -39,7 +39,7 @@ def rls_conn():
     cur.execute("GRANT USAGE ON SCHEMA public TO rls_test_role")
     cur.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO rls_test_role")
     cur.execute("GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO rls_test_role")
-    cur.execute("GRANT rls_test_role TO CURRENT_USER")
+    cur.execute("GRANT rls_test_role TO current_user")
 
     conn.autocommit = False
     cur.execute("SET ROLE rls_test_role")

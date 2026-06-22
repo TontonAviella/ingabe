@@ -289,6 +289,7 @@ async def test_set_layer_style_via_chat_completion(
 
     matching_layers = []
     fill_layers = []
+    canonical_fill_layers = []
     line_layers = []
 
     for layer in style_json.get("layers", []):
@@ -297,6 +298,8 @@ async def test_set_layer_style_via_chat_completion(
 
             if layer.get("type") == "fill":
                 fill_layers.append(layer)
+                if not layer.get("metadata", {}).get("legacy_source_layer_fallback"):
+                    canonical_fill_layers.append(layer)
                 actual_color = layer.get("paint", {}).get("fill-color")
 
                 assert actual_color == test_fill_color, (
@@ -307,8 +310,8 @@ async def test_set_layer_style_via_chat_completion(
             elif layer.get("type") == "line":
                 line_layers.append(layer)
 
-    assert len(fill_layers) == 1, (
-        f"Expected at least 1 fill layer with source {layer_id}, found {len(fill_layers)}"
+    assert len(canonical_fill_layers) == 1, (
+        f"Expected 1 canonical fill layer with source {layer_id}, found {len(canonical_fill_layers)}"
     )
     assert len(line_layers) == 0, (
         f"Expected 0 line layer with source {layer_id}, found {len(line_layers)}"

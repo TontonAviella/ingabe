@@ -1,7 +1,13 @@
 .venv
 .git
 .github
+.claude
+.gstack
+.basedpyright
+.ruff_cache
 **/node_modules
+**/.next
+frontendts/opensrc/
 **/__pycache__
 **/*.pyc
 .pytest_cache

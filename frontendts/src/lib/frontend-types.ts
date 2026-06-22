@@ -25,5 +25,6 @@ export interface UploadingFile {
   file: File;
   progress: number;
   status: 'uploading' | 'completed' | 'error';
+  phase?: string;
   error?: string;
 }

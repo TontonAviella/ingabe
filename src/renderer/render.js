@@ -73,29 +73,47 @@ process.stdin.on('end', async () => {
     options.zoom = viewport.zoom;
   }
 
-  map.render(options, (err, buffer) => {
+  map.render(options, async (err, buffer) => {
     if (err) {
       try {
         console.error(JSON.stringify({
           type: 'RenderError',
           severity: 'ERROR',
-          message: (err && err.message) || String(err)
+          text: (err && err.message) || String(err)
         }));
       } catch (_) {
         try { console.error('Render error:', String(err)); } catch (_) {}
       }
+      process.exit(1);
     } else {
-      var image = sharp(buffer, {
-        raw: {
-          width: options.width,
-          height: options.height,
-          channels: 4
-        }
-      });
+      try {
+        const image = sharp(buffer, {
+          raw: {
+            width: options.width,
+            height: options.height,
+            channels: 4
+          }
+        });
 
-      image.toFile(process.argv[2], function (err) {
-        if (err) throw err;
-      });
+        await image.png().toFile(process.argv[2]);
+        console.log(JSON.stringify({
+          type: 'RenderComplete',
+          severity: 'INFO',
+          text: `Wrote ${process.argv[2]}`
+        }));
+        process.exit(0);
+      } catch (writeErr) {
+        try {
+          console.error(JSON.stringify({
+            type: 'RenderWriteError',
+            severity: 'ERROR',
+            text: (writeErr && writeErr.message) || String(writeErr)
+          }));
+        } catch (_) {
+          try { console.error('Render write error:', String(writeErr)); } catch (_) {}
+        }
+        process.exit(1);
+      }
     }
   });
 });

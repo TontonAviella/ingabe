@@ -11,7 +11,8 @@ import secrets
 logger = logging.getLogger(__name__)
 from functools import lru_cache
 from openai import AsyncOpenAI
-from fastapi import Request
+from fastapi import HTTPException, Request, status
+from src.llm_defaults import DEFAULT_CHAT_MODEL, resolve_chat_endpoint
 
 
 def generate_id(length=12, prefix=""):
@@ -26,14 +27,25 @@ def generate_id(length=12, prefix=""):
     return prefix + result
 
 
+def get_s3_public_endpoint_url() -> str:
+    """Endpoint that browser-facing presigned S3 URLs should use.
+
+    In local Docker, the app reaches MinIO at http://minio:9000 but Chrome
+    cannot resolve that container hostname. S3_PUBLIC_ENDPOINT_URL lets us sign
+    URLs for a public/browser address while keeping internal storage traffic on
+    S3_ENDPOINT_URL.
+    """
+    return os.environ.get("S3_PUBLIC_ENDPOINT_URL") or os.environ["S3_ENDPOINT_URL"]
+
+
 @lru_cache
-def get_s3_client():
+def get_s3_client(endpoint_url: str | None = None):
     config = boto3.session.Config(
         signature_version="s3v4",
     )
     return boto3.Session().client(
         "s3",
-        endpoint_url=os.environ["S3_ENDPOINT_URL"],
+        endpoint_url=endpoint_url or os.environ["S3_ENDPOINT_URL"],
         aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
         region_name=os.environ["S3_DEFAULT_REGION"],
@@ -46,16 +58,17 @@ _session = aioboto3.Session()
 _clients = {}
 
 
-async def get_async_s3_client(signature_version: str = "s3v4"):
+async def get_async_s3_client(signature_version: str = "s3v4", endpoint_url: str | None = None):
     loop = asyncio.get_running_loop()
-    key = (loop, signature_version)
+    resolved_endpoint_url = endpoint_url or os.environ["S3_ENDPOINT_URL"]
+    key = (loop, signature_version, resolved_endpoint_url)
     if key not in _clients:
         config = boto3.session.Config(
             signature_version=signature_version,
         )
         _clients[key] = await _session.client(
             "s3",
-            endpoint_url=os.environ["S3_ENDPOINT_URL"],
+            endpoint_url=resolved_endpoint_url,
             aws_access_key_id=os.environ["S3_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
             region_name=os.environ["S3_DEFAULT_REGION"],
@@ -232,18 +245,60 @@ async def s3_op(coro, operation: str, resource_id: str = "", *, raise_http: bool
         raise RuntimeError(f"Storage service temporarily unavailable: {exc}") from exc
 
 
+def _uses_only_local_ollama_models() -> bool:
+    model_chain = [
+        os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL),
+        *(
+            os.environ.get("OPENROUTER_FALLBACK_MODELS", "").strip()
+            or os.environ.get("OPENROUTER_FALLBACK_MODEL", "").strip()
+        ).split(","),
+    ]
+    model_chain = [model.strip() for model in model_chain if model.strip()]
+    return bool(model_chain) and all(model.startswith("ollama:") for model in model_chain)
+
+
 def get_openai_client(request: Request) -> AsyncOpenAI:
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    # openai>=2.0 raises ImmediatePropagationError on AsyncOpenAI() construction
-    # when no api_key is passed AND OPENAI_API_KEY is unset in the environment.
-    # openai 1.x was lazy and deferred the credential check to first call. CI
-    # test envs don't set OPENAI_API_KEY (intentionally — no real LLM calls
-    # happen) and were broken by the 1.x→2.x bump in PR #41. We pass a
-    # placeholder so the constructor succeeds; any actual chat completion
-    # call will still fail with the same upstream auth error as before.
-    api_key = os.environ.get("OPENAI_API_KEY") or "missing-OPENAI_API_KEY"
+    base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    api_key = os.environ.get("OPENAI_API_KEY") or None
+    local_openai_compatible = any(
+        host in base_url for host in ("ollama", "localhost", "127.0.0.1", "host.docker.internal")
+    )
+
+    if not api_key and local_openai_compatible:
+        api_key = "ollama"
+    elif not api_key and not _uses_only_local_ollama_models():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Sage is missing LLM credentials. Set OPENAI_API_KEY for OpenAI/OpenRouter "
+                "or configure OPENAI_MODEL=ollama:<model> with a local chat model."
+            ),
+        )
+    elif not api_key:
+        # openai>=2.0 requires some api_key value during AsyncOpenAI()
+        # construction. Local-only Ollama test configs should still construct
+        # the client even when no hosted credential exists.
+        api_key = "missing-OPENAI_API_KEY"
+
     extra_headers = {}
     if "openrouter.ai" in base_url:
         extra_headers["HTTP-Referer"] = "https://mundi.ai"
         extra_headers["X-Title"] = "Mundi.ai"
     return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)
+
+
+def get_chat_client_for_model(request: Request, model: str | None = None) -> tuple[AsyncOpenAI, str]:
+    """Return an OpenAI-compatible client and provider-native model name."""
+
+    endpoint = resolve_chat_endpoint(
+        model or os.environ.get("OPENAI_MODEL", DEFAULT_CHAT_MODEL),
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_BASE_URL"),
+        ollama_base_url=os.environ.get("OLLAMA_BASE_URL"),
+    )
+    if endpoint.is_local_ollama:
+        return (
+            AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key),
+            endpoint.model,
+        )
+    return get_openai_client(request), endpoint.model

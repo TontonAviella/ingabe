@@ -52,6 +52,34 @@ async def test_soft_delete_postgis_connection_as_owner(auth_client):
 
 
 @pytest.mark.anyio
+async def test_add_postgis_connection_without_llm_credentials(auth_client, monkeypatch):
+    """Adding a connection should not require optional documentation LLM credentials."""
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test-model")
+
+    map_response = await auth_client.post(
+        "/api/maps/create",
+        json={
+            "title": "Test Map Without LLM Credentials",
+            "description": "Test project for optional postgres documentation",
+        },
+    )
+    assert map_response.status_code == 200
+    project_id = map_response.json()["project_id"]
+
+    add_response = await auth_client.post(
+        f"/api/projects/{project_id}/postgis-connections",
+        json={
+            "connection_uri": "postgresql://test:test@example.com:5432/testdb",
+            "connection_name": "Connection Without LLM Credentials",
+        },
+    )
+    assert add_response.status_code == 200, add_response.text
+
+
+@pytest.mark.anyio
 async def test_soft_delete_nonexistent_connection(auth_client):
     """Test deleting non-existent connection returns 404"""
 

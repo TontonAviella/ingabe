@@ -13,8 +13,8 @@ Two levers here:
 1. **Small-talk fast-path** — if the user said something trivial (greeting,
    thanks, ack), there is no possible tool call. We bypass the tool list
    entirely, replace the system prompt with a one-liner, and route the
-   request to the local Ollama qwen2.5:7b-64k container instead of the
-   transatlantic 31B. This is the bulk of the win.
+   request to the local Gemma 4 brain model instead of the transatlantic
+   31B. This is the bulk of the win.
 
 2. **Tool subsetting** — if the user is clearly in one domain (map edit,
    agriculture, user-raster analysis, brain), trim the tool list to that
@@ -34,6 +34,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+
 # ---------------------------------------------------------------------------
 # Tool category map
 # ---------------------------------------------------------------------------
@@ -45,6 +47,37 @@ SATELLITE = "satellite"
 AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
+SPATIAL_INSIGHT = "spatial_insight"
+
+
+@dataclass(frozen=True)
+class FastToolCall:
+    """Deterministic tool route that can bypass the LLM safely."""
+
+    tool_name: str
+    arguments: dict[str, object]
+    reason: str
+
+
+@dataclass(frozen=True)
+class GeospatialEvidenceDecision:
+    """Evidence-first route for geospatial questions.
+
+    This is intentionally separate from `FastToolCall`: a decision may point to
+    an engine that should be wired next, but should not be fast-routed until the
+    concrete backend tool exists.
+    """
+
+    source_kind: str
+    task: str
+    primary_tool: str | None
+    evidence_level: str
+    should_fast_route: bool
+    reason: str
+    supporting_tools: tuple[str, ...] = ()
+
+
+RASTER_OBJECT_CANDIDATES_TOOL = "analyze_raster_object_candidates"
 
 # Map tool name -> category. Tools not in this dict are treated as
 # "uncategorized" and included whenever we cannot rule them out (i.e.
@@ -59,17 +92,14 @@ BRAIN = "brain"
 # dropping uncategorized tools) is the failure mode we never want.
 _TOOL_CATEGORIES: dict[str, str] = {
     # --- Always available: trivial display + geocoding ---
-    # `add_layer_to_map`, `display_satellite_layer`, `search_satellite_imagery`
-    # live here because any domain turn can end with "show me the result on
-    # the map". Excluding them from a filtered turn would mean the LLM has
-    # the data but no way to surface it.
+    # Keep this set intentionally small. Satellite tools are not always-on:
+    # plain "show me Nyamagabe" should prefer admin boundaries/locations, not
+    # drift into imagery unless the user asks for imagery or an index.
     "zoom_to_bounds": ALWAYS_ON,
     "create_point_layer": ALWAYS_ON,
     "search_location": ALWAYS_ON,
     "reverse_geocode_coordinates": ALWAYS_ON,
     "add_layer_to_map": ALWAYS_ON,
-    "search_satellite_imagery": ALWAYS_ON,
-    "display_satellite_layer": ALWAYS_ON,
     # --- Map editing / postgis / generic geoprocessing ---
     "new_layer_from_postgis": MAP_EDIT,
     "set_layer_style": MAP_EDIT,
@@ -94,7 +124,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "qgis_intersection": MAP_EDIT,
     "qgis_joinbylocationsummary": MAP_EDIT,
     "qgis_statisticsbycategories": MAP_EDIT,
-    # --- Satellite imagery (compute side; display is ALWAYS_ON) ---
+    # --- Satellite imagery ---
+    "search_satellite_imagery": SATELLITE,
+    "display_satellite_layer": SATELLITE,
     "compute_spectral_index": SATELLITE,
     # --- Agricultural data products ---
     "get_field_health": AGRICULTURE,
@@ -143,6 +175,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
     "find_similar_tiles": USER_RASTER,
+    # --- H3/city/environment insight layers ---
+    "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
+    "create_raster_h3_context_layer": SPATIAL_INSIGHT,
+    "analyze_raster_object_candidates": SPATIAL_INSIGHT,
+    "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
     "get_entity": BRAIN,
@@ -161,15 +198,22 @@ _SMALL_TALK_MAX_LEN = 80
 _SMALL_TALK_PATTERNS = [
     re.compile(r"^(hi+|hey+|hello+|yo|sup|howdy)\b[\s!.,?]*$", re.IGNORECASE),
     re.compile(r"^(good\s+(morning|afternoon|evening|day))[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(thanks?|thank\s+you|thx|ty|cheers|merci|murakoze)[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(ok|okay|cool|nice|great|awesome|got\s+it|sounds\s+good)[\s!.,?]*$", re.IGNORECASE),
+    re.compile(
+        r"^(thanks?|thank\s+you|thx|ty|cheers|merci|murakoze)[\s!.,?]*$", re.IGNORECASE
+    ),
+    re.compile(
+        r"^(ok|okay|cool|nice|great|awesome|got\s+it|sounds\s+good)[\s!.,?]*$",
+        re.IGNORECASE,
+    ),
     re.compile(r"^(yes|no|yep|nope|sure|maybe)[\s!.,?]*$", re.IGNORECASE),
     re.compile(
         r"^(how\s+(are\s+you|r\s+u|is\s+it\s+going)|what's\s+up|whats\s+up)[\s!.,?]*$",
         re.IGNORECASE,
     ),
     re.compile(r"^(bye|goodbye|see\s+you|see\s+ya|later|cya)[\s!.,?]*$", re.IGNORECASE),
-    re.compile(r"^(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do)\??$", re.IGNORECASE),
+    re.compile(
+        r"^(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do)\??$", re.IGNORECASE
+    ),
 ]
 
 # Words that, if present, override the small-talk match. The user might
@@ -177,11 +221,13 @@ _SMALL_TALK_PATTERNS = [
 # small-talk turns.
 _DOMAIN_BLOCKERS = re.compile(
     r"\b("
-    r"map|layer|field|farm|district|sector|cell|parcel|"
+    r"map|layer|field|farm|province|district|sector|cell|village|parcel|"
+    r"admin|administrative|boundary|boundaries|location|"
     r"ndvi|ndwi|nbr|sar|ndre|raster|drone|satellite|cog|"
     r"insurance|harvest|yield|crop|soil|weather|forecast|drought|flood|"
     r"rainfall|temperature|moisture|"
     r"rwanda|kigali|musanze|huye|kayonza|gicumbi|nyagatare|nyabihu|"
+    r"nyamagabe|rulindo|ruhanga|gasabo|rusizi|"
     r"show|display|plot|render|zoom|find|search|analyze|analyse|compute|"
     r"upload|download|export|"
     r"yesterday|today|tomorrow|week|month|season|year|january|february|"
@@ -245,15 +291,32 @@ def detect_small_talk(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
+    # Rwanda administrative boundaries / plain place display.
+    (
+        re.compile(
+            r"\b("
+            r"admin(?:istrative)?|boundar(?:y|ies)|"
+            r"province|district|sector|cell|village|"
+            r"intara|akarere|umurenge|akagari|umudugudu|"
+            r"show\s+me|show|display|locate|where\s+is|find|zoom\s+to"
+            r")\b",
+            re.IGNORECASE,
+        ),
+        frozenset({MAP_EDIT}),
+    ),
     # Map / layer editing
     (
         re.compile(
             r"\b(layer|style|symbology|postgis|sql|geojson|flatgeobuf|"
             r"reproject|buffer|dissolve|merge|clip|intersect|join|grid|"
-            r"zonal|aggregate)\b",
+            r"zonal|aggregate|h3|hex|hexagon|whitebox|terrain|runoff|"
+            r"housing|house|houses|building|buildings|open\s+buildings|"
+            r"settlement|city|urban|"
+            r"infrastructure|road|roads|bridge|drainage|culvert|environment|"
+            r"pollution|erosion)\b",
             re.IGNORECASE,
         ),
-        frozenset({MAP_EDIT}),
+        frozenset({MAP_EDIT, SPATIAL_INSIGHT}),
     ),
     # Satellite imagery (Earth Search, Sentinel-2)
     (
@@ -286,10 +349,26 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"this\s+(raster|drone|ortho|image|cog)|"
             r"uploaded|drone|ortho(photo|mosaic)?|tiff|geotiff|"
             r"stress\s+zone|pixel|histogram|distribution|"
+            r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
+            r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"compare\s+(raster|image)|similar\s+tile|find\s+similar)\b",
             re.IGNORECASE,
         ),
-        frozenset({USER_RASTER}),
+        frozenset({USER_RASTER, SPATIAL_INSIGHT}),
+    ),
+    # H3-first spatial intelligence for housing, infrastructure, environment,
+    # city, and drone/basemap analysis.
+    (
+        re.compile(
+            r"\b(h3|hex|hexagon|spatial\s+insight|insight\s+layer|"
+            r"housing|house|houses|building|buildings|open\s+buildings|"
+            r"settlement|city|urban|"
+            r"infrastructure|road|roads|bridge|bridges|drainage|culvert|"
+            r"environment|pollution|erosion|runoff|whitebox|terrain|"
+            r"drone\s+analysis|basemap|satellite\s+basemap)\b",
+            re.IGNORECASE,
+        ),
+        frozenset({SPATIAL_INSIGHT, MAP_EDIT, USER_RASTER}),
     ),
     # Knowledge graph / Brain
     (
@@ -320,8 +399,654 @@ def classify_intent(text: str) -> frozenset[str]:
     return frozenset(cats)
 
 
+_ADMIN_ANALYSIS_BLOCKERS = re.compile(
+    r"\b("
+    r"ndvi|ndwi|nbr|evi|savi|ndre|ndbi|index|indices|satellite|sentinel|"
+    r"weather|forecast|rain|rainfall|temperature|drought|flood|soil|crop|"
+    r"yield|harvest|insurance|risk|analy[sz]e|analysis|statistics?|stats|"
+    r"zonal|land\s*cover|worldcover|emissions?|food\s+security"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_ADMIN_DISPLAY_ACTION_RE = (
+    r"show|display|locate|find|draw|outline|map|put|"
+    r"zoom(?:\s+to)?|go\s+to|where\s+is|see|view|look\s+at"
+)
+
+_ADMIN_DISPLAY_REQUEST_RE = (
+    rf"(?:(?:i|we)\s+)?"
+    rf"(?:(?:want|would\s+like|would\s+love)\s+to\s+|wanna\s+)?"
+    rf"(?:{_ADMIN_DISPLAY_ACTION_RE})"
+)
+
+
+def detect_admin_boundary_display(text: str) -> bool:
+    """True for pure Rwanda admin boundary/location display requests."""
+    stripped = " ".join(str(text or "").strip().split())
+    if not stripped or _ADMIN_ANALYSIS_BLOCKERS.search(stripped):
+        return False
+
+    if re.search(
+        r"\b(province|district|sector|cell|village|admin(?:istrative)?|"
+        r"boundar(?:y|ies)|intara|akarere|umurenge|akagari|umudugudu)\b",
+        stripped,
+        re.IGNORECASE,
+    ):
+        return bool(
+            re.search(
+                rf"\b(?:{_ADMIN_DISPLAY_REQUEST_RE})\b",
+                stripped,
+                re.IGNORECASE,
+            )
+        )
+
+    return bool(
+        re.match(
+            r"(?i)^(?:please\s+)?(?:again\s+)?"
+            rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})"
+            r"\s+(?:me|us\s+)?(?:the\s+)?[a-z][a-z\s.'-]{1,60}"
+            r"(?:\s+on\s+the\s+map)?[?.!]*$",
+            stripped,
+        )
+    )
+
+
+def _clean_admin_boundary_candidate(value: str) -> str:
+    cleaned = " ".join(str(value or "").strip().split())
+    cleaned = re.sub(r"(?i)\b(on|onto)\s+the\s+map\b.*$", "", cleaned)
+    cleaned = re.sub(r"(?i)\b(boundary|boundaries|outline)\b", "", cleaned)
+    cleaned = re.sub(
+        r"(?i)^\s*(?:please\s+)?(?:again\s+)?"
+        rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})\s+",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)^\s*(?:me|us)\s+", "", cleaned)
+    cleaned = re.sub(r"(?i)^\s*(?:the|a|an|all|every)\s+", "", cleaned)
+    cleaned = re.sub(r"(?i)^\s*(?:around|for|of|in|at)\s+", "", cleaned)
+    return cleaned.strip(" \t\r\n,.;:!?\"'`")
+
+
+def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
+    """Build deterministic args for a pure admin-boundary display prompt."""
+    if not detect_admin_boundary_display(text):
+        return None
+    prompt = " ".join(str(text or "").strip().split())
+
+    child_match = re.search(
+        rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
+        r"\s*(?:me|us)?\s*(?:all|the|every)?\s*"
+        r"(villages|cells|sectors)\s+"
+        r"(?:in|of|within|under|inside)\s+(.+?)\s+"
+        r"(district|sector|cell)\b",
+        prompt,
+    )
+    if child_match:
+        child_level = child_match.group(1).lower().rstrip("s")
+        parent_name = _clean_admin_boundary_candidate(child_match.group(2))
+        parent_level = child_match.group(3).lower()
+        if parent_name:
+            args: dict[str, object] = {"admin_level": child_level, "name": "*"}
+            args[parent_level] = parent_name
+            return args
+
+    for level in ("village", "cell", "sector", "district", "province"):
+        explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
+        if explicit:
+            name = _clean_admin_boundary_candidate(explicit.group(1))
+            if name:
+                if level == "province" and name.lower() not in {
+                    "kigali",
+                    "kigali city",
+                }:
+                    if not name.lower().endswith("province"):
+                        name = f"{name} Province"
+                return {"admin_level": level, "name": name}
+
+    simple = re.match(
+        r"(?i)^(?:please\s+)?(?:again\s+)?"
+        rf"(?:{_ADMIN_DISPLAY_REQUEST_RE})"
+        r"\s+(?:me|us\s+)?(?:the\s+)?(.+?)(?:\s+on\s+the\s+map)?[?.!]*$",
+        prompt,
+    )
+    if simple:
+        name = _clean_admin_boundary_candidate(simple.group(1))
+        if name:
+            return {"admin_level": "auto", "name": name}
+
+    where = re.match(r"(?i)^where\s+is\s+(.+?)[?.!]*$", prompt)
+    if where:
+        name = _clean_admin_boundary_candidate(where.group(1))
+        if name:
+            return {"admin_level": "auto", "name": name}
+
+    return None
+
+
+_RASTER_AREA_KEYWORDS = re.compile(
+    r"\b(hectares?|ha|area|acreage|size|coverage|covers?|covering|"
+    r"footprint|extent|how\s+(?:big|large|many\s+hectares))\b",
+    re.IGNORECASE,
+)
+
+_RASTER_OBJECT_KEYWORDS = re.compile(
+    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|image|cog|"
+    r"tiff|geotiff|layer|file|upload(?:ed)?|field)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_CONTEXT_KEYWORDS = re.compile(
+    r"\b(analy[sz]e|analysis|where|most|many|cluster|concentrat(?:e|ed|ion)?|"
+    r"visible|happening|seeing|inspect|attention|priority|zone|zones|"
+    r"risk|damage|problem|issue|context)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "housing",
+        re.compile(
+            r"\b(house|houses|housing|building|buildings|settlement|"
+            r"roof|roofs|village|urban)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "infrastructure",
+        re.compile(
+            r"\b(infrastructure|road|roads|drainage|drain|culvert|"
+            r"bridge|bridges|canal|path|paths)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "environment",
+        re.compile(
+            r"\b(environment|environmental|erosion|runoff|water|wet|"
+            r"flood|pollution|bare\s+soil)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "agriculture",
+        re.compile(
+            r"\b(agriculture|agricultural|farm|farms|field|fields|crop|"
+            r"crops|vegetation|stress|ndvi|plant|plants)\b",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
+_RASTER_BUILDING_ASSET_KEYWORDS = re.compile(
+    r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
+    r"settlement|settlements)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "building",
+        re.compile(
+            r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
+            r"settlement|settlements)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "road",
+        re.compile(
+            r"\b(road|roads|track|tracks|path|paths|street|streets|lane|lanes)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "linear_boundary",
+        re.compile(
+            r"\b(field\s+boundar(?:y|ies)|farm\s+boundar(?:y|ies)|"
+            r"parcel\s+boundar(?:y|ies)|boundary|boundaries|fence|fences)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "vegetation_patch",
+        re.compile(
+            r"\b(tree|trees|crop|crops|vegetation|plant|plants|orchard|orchards)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "bare_rectangle",
+        re.compile(
+            r"\b(court|courts|playground|playgrounds|playing\s+areas?|playing\s+fields?|"
+            r"sports\s+field|bare\s+rectangle|empty\s+rectangle)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "water",
+        re.compile(
+            r"\b(water|wetness|pond|ponds|lake|lakes|stream|streams)\b", re.IGNORECASE
+        ),
+    ),
+)
+
+_RASTER_OBJECT_ACTION_KEYWORDS = re.compile(
+    r"\b(detect|segment|count|counts|counted|how\s+many|where|find|identify|"
+    r"recognize|extract|visible|most|concentrat(?:e|ed|ion)?|locate|"
+    r"show|display|map|show\s+me\s+where)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_SURFACE_ANALYSIS_KEYWORDS = re.compile(
+    r"\b(stress|health|ndvi|ndre|index|indices|greenness|wet\s+soil|"
+    r"crop\s+condition|vegetation\s+condition|damage|risk|priority|attention)\b",
+    re.IGNORECASE,
+)
+
+_RASTER_EXACT_COUNT_KEYWORDS = re.compile(
+    r"\b(how\s+many|count|counts|counted|number\s+of|total|exact|"
+    r"confirmed|enumerate|quantity)\b",
+    re.IGNORECASE,
+)
+
+_BASEMAP_ONLY_KEYWORDS = re.compile(
+    r"\b(basemap|base\s+map|background\s+map|satellite\s+basemap|"
+    r"esri|google\s+maps?|mapbox\s+satellite|world\s+imagery)\b",
+    re.IGNORECASE,
+)
+
+_SATELLITE_PRODUCT_KEYWORDS = re.compile(
+    r"\b(sentinel|sentinel-?2|landsat|planetary\s+computer|earth\s+search|"
+    r"stac|satellite\s+(?:image|imagery|scene|data|product)|"
+    r"ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b",
+    re.IGNORECASE,
+)
+
+
+def raster_object_target_classes(text: str) -> list[str]:
+    """Return object classes Sage should screen for in an uploaded raster."""
+    prompt = str(text or "")
+    targets = [
+        target
+        for target, pattern in _RASTER_OBJECT_TARGET_PATTERNS
+        if pattern.search(prompt)
+    ]
+    if re.search(
+        r"\b(objects?|everything|all\s+visible|anything\s+visible)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
+        for target in (
+            "building",
+            "road",
+            "linear_boundary",
+            "vegetation_patch",
+            "bare_rectangle",
+            "water",
+        ):
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
+def detect_raster_object_candidate_question(text: str) -> bool:
+    prompt = str(text or "")
+    if not _RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt)):
+        return False
+    targets = raster_object_target_classes(prompt)
+    if not targets:
+        return False
+    if detect_raster_building_count_question(prompt):
+        return True
+    if _RASTER_OBJECT_ACTION_KEYWORDS.search(prompt):
+        return True
+    return False
+
+
+def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
+    """Choose the evidence engine before choosing a map layer.
+
+    Users should not need to know H3, SamGeo, GeoLibre, Open Buildings, or
+    satellite products. This function captures the decision we expect Sage to
+    make from the wording of the question. The returned tool is a recommended
+    engine, not automatically a safe fast path.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return GeospatialEvidenceDecision(
+            source_kind="unknown",
+            task="clarify",
+            primary_tool=None,
+            evidence_level="unknown",
+            should_fast_route=False,
+            reason="empty_prompt",
+        )
+
+    if detect_raster_area_question(prompt):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="measure_area",
+            primary_tool="describe_user_raster",
+            evidence_level="metadata_or_valid_pixel_area",
+            should_fast_route=True,
+            reason="uploaded_raster_area",
+        )
+
+    is_basemap_only = bool(_BASEMAP_ONLY_KEYWORDS.search(prompt))
+    mentions_satellite_product = bool(_SATELLITE_PRODUCT_KEYWORDS.search(prompt))
+    mentions_uploaded_raster = bool(
+        _RASTER_OBJECT_KEYWORDS.search(_normalize_raster_name(prompt))
+    )
+    wants_building_count = detect_raster_building_count_question(prompt)
+    wants_object_candidates = detect_raster_object_candidate_question(prompt)
+    raster_context_args = build_raster_context_tool_args(prompt)
+
+    if mentions_satellite_product and not is_basemap_only:
+        spectral_tool = (
+            "compute_spectral_index"
+            if re.search(
+                r"\b(ndvi|ndwi|nbr|evi|savi|ndre|spectral\s+index)\b",
+                prompt,
+                re.IGNORECASE,
+            )
+            else "search_satellite_imagery"
+        )
+        return GeospatialEvidenceDecision(
+            source_kind="satellite_product",
+            task="spectral_or_scene_analysis",
+            primary_tool=spectral_tool,
+            evidence_level="requires_satellite_product_pixels",
+            should_fast_route=False,
+            reason="satellite_product_requested",
+            supporting_tools=("display_satellite_layer",),
+        )
+
+    if wants_building_count and mentions_uploaded_raster and not is_basemap_only:
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_count",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_count_until_validated",
+            should_fast_route=True,
+            reason="raster_house_count_uses_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if (
+        wants_object_candidates
+        and mentions_uploaded_raster
+        and not is_basemap_only
+        and not (
+            raster_context_args
+            and raster_context_args.get("domain") == "agriculture"
+            and _RASTER_SURFACE_ANALYSIS_KEYWORDS.search(prompt)
+            and not _RASTER_EXACT_COUNT_KEYWORDS.search(prompt)
+        )
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_screening",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_screening_until_validated",
+            should_fast_route=True,
+            reason="uploaded_raster_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if (
+        raster_context_args
+        and raster_context_args.get("domain") == "housing"
+        and not is_basemap_only
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="object_candidate_screening",
+            primary_tool=RASTER_OBJECT_CANDIDATES_TOOL,
+            evidence_level="candidate_screening_until_validated",
+            should_fast_route=True,
+            reason="raster_housing_uses_object_candidates",
+            supporting_tools=(
+                "analyze_open_buildings_exposure",
+                "create_raster_h3_context_layer",
+            ),
+        )
+
+    if raster_context_args:
+        return GeospatialEvidenceDecision(
+            source_kind="uploaded_raster",
+            task="raster_surface_screening",
+            primary_tool="create_raster_h3_context_layer",
+            evidence_level="screening_cells",
+            should_fast_route=True,
+            reason="uploaded_raster_surface_context",
+        )
+
+    if wants_building_count or (
+        is_basemap_only and _RASTER_BUILDING_ASSET_KEYWORDS.search(prompt)
+    ):
+        return GeospatialEvidenceDecision(
+            source_kind="external_footprints",
+            task="building_count_or_exposure",
+            primary_tool="analyze_open_buildings_exposure",
+            evidence_level="requires_building_footprints",
+            should_fast_route=False,
+            reason="basemap_is_not_analyzable_pixels",
+            supporting_tools=("search_location",),
+        )
+
+    admin_args = build_admin_boundary_tool_args(prompt)
+    if admin_args:
+        return GeospatialEvidenceDecision(
+            source_kind="admin_boundary",
+            task="display_boundary",
+            primary_tool="show_admin_boundary",
+            evidence_level="official_boundary",
+            should_fast_route=True,
+            reason="admin_boundary_display",
+        )
+
+    return GeospatialEvidenceDecision(
+        source_kind="unknown",
+        task="clarify_or_full_toolset",
+        primary_tool=None,
+        evidence_level="unknown",
+        should_fast_route=False,
+        reason="no_high_confidence_evidence_path",
+    )
+
+
+_RASTER_NAME_STOPWORDS = {
+    "a",
+    "an",
+    "area",
+    "cog",
+    "current",
+    "drone",
+    "field",
+    "file",
+    "geotiff",
+    "ha",
+    "hectare",
+    "hectares",
+    "image",
+    "layer",
+    "map",
+    "my",
+    "of",
+    "ortho",
+    "orthomosaic",
+    "orthophoto",
+    "raster",
+    "size",
+    "the",
+    "this",
+    "tiff",
+    "uploaded",
+}
+
+
+def _normalize_raster_name(value: str) -> str:
+    text = re.sub(r"[_/.-]+", " ", str(value or "").lower())
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def detect_raster_area_question(text: str) -> bool:
+    """True for simple area/hectare questions about a user raster layer."""
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    normalized_prompt = _normalize_raster_name(prompt)
+    if not _RASTER_AREA_KEYWORDS.search(normalized_prompt):
+        return False
+    return bool(_RASTER_OBJECT_KEYWORDS.search(normalized_prompt))
+
+
+def raster_context_domain(text: str) -> str:
+    """Return the user-intended domain for a raster context question."""
+    prompt = " ".join(str(text or "").strip().split())
+    for domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS:
+        if pattern.search(prompt):
+            return domain
+    return "mixed"
+
+
+def detect_raster_context_question(text: str) -> bool:
+    """True when a user asks for analysis of an uploaded raster/orthophoto.
+
+    This is the deterministic route for questions like "where are most houses
+    in this orthophoto?" The first pass must use the user's raster pixels. Exact
+    asset counts can use Open Buildings later, but should not block the first
+    map answer.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    normalized_prompt = _normalize_raster_name(prompt)
+    if not _RASTER_OBJECT_KEYWORDS.search(normalized_prompt):
+        return False
+    if _RASTER_CONTEXT_KEYWORDS.search(prompt):
+        return True
+    return any(
+        pattern.search(prompt) for _domain, pattern in _RASTER_CONTEXT_DOMAIN_PATTERNS
+    )
+
+
+def detect_raster_building_count_question(text: str) -> bool:
+    """True when the user wants confirmed house/building counts from a raster.
+
+    RGB drone/orthophoto pixels can support fast visual screening, but they are
+    not a building-footprint source. This detector lets the fast path keep that
+    distinction visible instead of presenting H3 proxy cells as asset counts.
+    """
+    prompt = " ".join(str(text or "").strip().split())
+    if not prompt:
+        return False
+    return bool(
+        _RASTER_BUILDING_ASSET_KEYWORDS.search(prompt)
+        and _RASTER_EXACT_COUNT_KEYWORDS.search(prompt)
+    )
+
+
+def build_raster_context_tool_args(text: str) -> dict[str, object] | None:
+    if not detect_raster_context_question(text):
+        return None
+    domain = raster_context_domain(text)
+    goals = {
+        "housing": "screen likely house or settlement concentration from uploaded orthophoto pixels",
+        "infrastructure": "screen likely road, drainage, or infrastructure attention zones from uploaded raster pixels",
+        "environment": "screen environmental surface attention zones from uploaded raster pixels",
+        "agriculture": "screen vegetation condition and field attention zones from uploaded raster pixels",
+        "mixed": "screen visual context and priority inspection zones from uploaded raster pixels",
+    }
+    return {
+        "domain": domain,
+        "analysis_goal": goals.get(domain, goals["mixed"]),
+        # Base 10 creates an overview plus zoom-adaptive 11/12 cells inside the tool.
+        "h3_resolution": 10,
+        "max_hexes": 12000,
+        "max_sample_pixels": 60000,
+        "render_map": True,
+        "render_3d": False,
+    }
+
+
+def raster_layer_match_score(question: str, layer_name: str) -> float:
+    """Score how clearly `question` refers to `layer_name`.
+
+    The caller still owns ambiguity handling. This helper deliberately gives
+    no credit for generic words like "orthophoto" or "raster" unless the full
+    normalized layer name appears in the question.
+    """
+    q_norm = _normalize_raster_name(question)
+    layer_norm = _normalize_raster_name(layer_name)
+    if not q_norm or not layer_norm:
+        return 0.0
+    if layer_norm in q_norm:
+        return 1.0
+
+    q_tokens = set(q_norm.split())
+    name_tokens = [
+        token
+        for token in layer_norm.split()
+        if len(token) > 2 and token not in _RASTER_NAME_STOPWORDS
+    ]
+    if not name_tokens:
+        return 0.0
+
+    hits = sum(1 for token in name_tokens if token in q_tokens)
+    if hits == 0:
+        return 0.0
+    return hits / len(name_tokens)
+
+
+def build_fast_tool_call(text: str) -> FastToolCall | None:
+    decision = choose_geospatial_evidence_path(text)
+    if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
+        args = build_admin_boundary_tool_args(text)
+        if args:
+            return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+    if (
+        decision.should_fast_route
+        and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
+    ):
+        return FastToolCall(
+            RASTER_OBJECT_CANDIDATES_TOOL,
+            {
+                "target_classes": raster_object_target_classes(text) or ["building"],
+                "max_candidates": 500,
+                "max_sample_pixels": 200_000,
+                "min_area_m2": 8.0,
+                "max_area_m2": 1500.0,
+                "confidence_threshold": 0.35,
+                "engine_preference": "samgeo",
+                "render_map": True,
+            },
+            f"fast:{decision.task}",
+        )
+    raster_context_args = build_raster_context_tool_args(text)
+    if raster_context_args:
+        return FastToolCall(
+            "create_raster_h3_context_layer",
+            raster_context_args,
+            "fast:raster_context",
+        )
+    if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
+        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
+    return None
+
+
 def filter_tools_by_categories(
-    tools: list[dict], categories: Iterable[str]
+    tools: list[dict],
+    categories: Iterable[str],
+    excluded_tool_names: Iterable[str] = (),
 ) -> list[dict]:
     """Return the subset of `tools` whose names map to one of `categories`,
     plus all ALWAYS_ON tools and any uncategorized tools.
@@ -332,16 +1057,46 @@ def filter_tools_by_categories(
     """
     cat_set = set(categories)
     cat_set.add(ALWAYS_ON)
+    excluded = set(excluded_tool_names)
     out: list[dict] = []
     for tool in tools:
         name = tool.get("function", {}).get("name", "")
         if not name:
             out.append(tool)
             continue
+        if name in excluded:
+            continue
         cat = _TOOL_CATEGORIES.get(name)
         if cat is None or cat in cat_set:
             out.append(tool)
     return out
+
+
+def tool_category_for_name(tool_name: str) -> str:
+    """Return the router category for a tool name.
+
+    This is intentionally exported for observability: PostHog can then compare
+    the route Sage selected for a turn with the tool the model actually called.
+    """
+    return _TOOL_CATEGORIES.get(tool_name, "uncategorized")
+
+
+def routing_alignment_for_tool(
+    tool_name: str,
+    selected_categories: Iterable[str],
+) -> str:
+    """Describe whether a called tool matched the router-selected categories."""
+    category = tool_category_for_name(tool_name)
+    selected = set(selected_categories)
+    if not selected:
+        return "full_toolset"
+    if category == ALWAYS_ON:
+        return "always_on"
+    if category == "uncategorized":
+        return "uncategorized_kept"
+    if category in selected:
+        return "matched"
+    return "mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -357,10 +1112,11 @@ SMALL_TALK_SYSTEM_PROMPT = (
     "satellite data, or agriculture, ask them to clarify."
 )
 
+
 # Default fast model for small-talk turns. Local container, no transatlantic
-# RTT, ~7B params. Override via env if the deployment has something better.
+# RTT. Override via env if the deployment has something better.
 def _small_talk_model() -> str:
-    return os.environ.get("SAGE_SMALL_TALK_MODEL", "ollama:qwen2.5:7b-64k")
+    return os.environ.get("SAGE_SMALL_TALK_MODEL", DEFAULT_SMALL_TALK_MODEL)
 
 
 @dataclass(frozen=True)
@@ -376,12 +1132,16 @@ class RoutingDecision:
         primary_model_override: When set, caller should use this model
             as the head of the fallback chain instead of OPENAI_MODEL.
         reason: Short human-readable label for logs and observability.
+        excluded_tool_names: Tool names to remove even when their category is
+            selected. Used when a proxy/rendering tool would be misleading for
+            the question's evidence requirement.
     """
 
     is_small_talk: bool
     selected_categories: frozenset[str]
     primary_model_override: str | None
     reason: str
+    excluded_tool_names: frozenset[str] = frozenset()
 
 
 def _tool_round_in_flight(history: list[dict] | None) -> bool:
@@ -424,15 +1184,29 @@ def route_chat(
     Returns:
         A RoutingDecision the caller can act on.
     """
-    if (
-        detect_small_talk(user_message)
-        and not _tool_round_in_flight(history)
-    ):
+    if detect_small_talk(user_message) and not _tool_round_in_flight(history):
         return RoutingDecision(
             is_small_talk=True,
             selected_categories=frozenset(),
             primary_model_override=_small_talk_model(),
             reason="small_talk",
+        )
+
+    evidence_decision = choose_geospatial_evidence_path(user_message)
+    excluded_tool_names: frozenset[str] = frozenset()
+    if evidence_decision.task in {
+        "object_candidate_count",
+        "object_candidate_screening",
+        "building_count_or_exposure",
+    }:
+        # H3 is a rendering/indexing layer, not an object detector. Keep it out
+        # of house/building count turns so Sage cannot present proxy cells as
+        # evidence. Open Buildings remains available through SPATIAL_INSIGHT.
+        excluded_tool_names = frozenset(
+            {
+                "create_h3_spatial_insight_layer",
+                "create_raster_h3_context_layer",
+            }
         )
 
     cats = classify_intent(user_message)
@@ -442,6 +1216,7 @@ def route_chat(
             selected_categories=cats,
             primary_model_override=None,
             reason=f"intent:{','.join(sorted(cats))}",
+            excluded_tool_names=excluded_tool_names,
         )
 
     return RoutingDecision(
@@ -449,6 +1224,7 @@ def route_chat(
         selected_categories=frozenset(),
         primary_model_override=None,
         reason="default",
+        excluded_tool_names=excluded_tool_names,
     )
 
 

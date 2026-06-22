@@ -9,8 +9,8 @@ from redis import Redis
 def get_redis_client() -> Redis:
     """Return a shared Redis client singleton (string responses)."""
     return Redis(
-        host=os.environ["REDIS_HOST"],
-        port=int(os.environ["REDIS_PORT"]),
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
         decode_responses=True,
     )
 
@@ -23,8 +23,8 @@ def get_redis_binary_client() -> Redis:
     ``decode_responses`` must be False.
     """
     return Redis(
-        host=os.environ["REDIS_HOST"],
-        port=int(os.environ["REDIS_PORT"]),
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
         decode_responses=False,
     )
 

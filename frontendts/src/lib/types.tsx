@@ -94,14 +94,23 @@ export interface GeoJsonLayerStyle {
   fill_opacity?: number;
   stroke_color?: string;
   stroke_width?: number;
+  extrude_3d?: boolean;
+  extrusion_property?: string;
+  extrusion_scale?: number;
 }
 
 export interface GeoJsonLayerUpdate {
   source_id: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  geojson: any;
+  geojson?: any;
+  geojson_gzip_b64?: string;
+  geojson_encoding?: 'identity' | 'gzip+base64';
+  geojson_raw_size_bytes?: number;
+  geojson_compressed_size_bytes?: number;
+  geojson_transport_size_bytes?: number;
   name?: string;
   style?: GeoJsonLayerStyle;
+  style_hint?: string;
   bounds?: [number, number, number, number];
 }
 
@@ -137,6 +146,7 @@ export interface MessageSendRequest {
   message: ChatCompletionUserMessageParam;
   selected_feature: SelectedFeature | null;
   viewport_bounds?: [number, number, number, number];
+  client_turn_id?: string;
 }
 
 export interface MessageSendResponse {

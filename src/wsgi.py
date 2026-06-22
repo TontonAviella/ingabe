@@ -34,6 +34,11 @@ from src.routes.inbox_routes import router as inbox_router
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
+from src.services.posthog_analytics import (
+    capture_backend_event,
+    elapsed_ms,
+    route_template,
+)
 from slowapi.errors import RateLimitExceeded
 # from fastapi_mcp import FastApiMCP
 
@@ -157,10 +162,15 @@ def _configure_app_logging():
     sys.stderr = os.fdopen(sys.stderr.fileno(), "w", buffering=1, closefd=False)
 
     # dictConfig can disable pre-existing loggers even with
-    # disable_existing_loggers=False.  Force-enable all src.* loggers
-    # that were created during module import (before lifespan ran).
+    # disable_existing_loggers=False.  Force-enable all src.* and mundi.*
+    # loggers that were created during module import (before lifespan ran).
+    # mundi.* covers cron workers and channel senders (sage_alerts, telegram,
+    # whatsapp) whose caplog-asserting tests otherwise see empty records once
+    # any test in the same pytest invocation triggers lifespan.
     for name, lgr in logging.Logger.manager.loggerDict.items():
-        if isinstance(lgr, logging.Logger) and name.startswith("src"):
+        if isinstance(lgr, logging.Logger) and (
+            name.startswith("src") or name.startswith("mundi")
+        ):
             lgr.disabled = False
 
     src_logger = logging.getLogger("src")
@@ -298,12 +308,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # script. Loads from static.cloudflareinsights.com, beacons to
         # cloudflareinsights.com. Both must be in the CSP or the beacon
         # silently fails with a CSP violation in the browser console.
+        s3_connect_src = " ".join(
+            endpoint
+            for endpoint in (
+                os.environ.get("S3_ENDPOINT_URL", ""),
+                os.environ.get("S3_PUBLIC_ENDPOINT_URL", ""),
+            )
+            if endpoint
+        )
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
-            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {os.environ.get('S3_ENDPOINT_URL', '')} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
+            f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {s3_connect_src} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
             "frame-ancestors 'none'"
@@ -339,20 +357,57 @@ class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
         _active_requests += 1
         _request_count += 1
         start = time.monotonic()
+        status_code: int | None = None
         try:
             response: Response = await call_next(request)
+            status_code = response.status_code
             if response.status_code >= 500:
                 _request_errors += 1
             response.headers["X-Request-ID"] = request_id
             return response
-        except Exception:
+        except Exception as exc:
             _request_errors += 1
+            capture_backend_event(
+                "backend_http_exception",
+                properties={
+                    "method": request.method,
+                    "path_template": route_template(request),
+                    "duration_ms": elapsed_ms(start),
+                    "error_type": type(exc).__name__,
+                    "request_id": request_id,
+                },
+            )
             raise
         finally:
             elapsed = time.monotonic() - start
             _request_latency_sum += elapsed
             _request_latency_count += 1
             _active_requests -= 1
+            duration_ms = int(elapsed * 1000)
+            slow_threshold_ms = int(os.environ.get("POSTHOG_SLOW_REQUEST_MS", "3000"))
+            if status_code is not None and request.url.path.startswith("/api/"):
+                if status_code >= 500:
+                    capture_backend_event(
+                        "backend_http_error",
+                        properties={
+                            "method": request.method,
+                            "path_template": route_template(request),
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_id": request_id,
+                        },
+                    )
+                elif duration_ms >= slow_threshold_ms:
+                    capture_backend_event(
+                        "backend_http_slow_request",
+                        properties={
+                            "method": request.method,
+                            "path_template": route_template(request),
+                            "status_code": status_code,
+                            "duration_ms": duration_ms,
+                            "request_id": request_id,
+                        },
+                    )
 
 
 app.add_middleware(RequestIdMetricsMiddleware)

@@ -86,6 +86,8 @@ async def brain_conn():
 
     url = _build_postgres_url()
     c = await asyncpg.connect(url)
+    await c.execute("SELECT set_config('app.user_id', '', false)")
+    await c.execute("DELETE FROM brain_pages WHERE slug LIKE 'test-%'")
     await c.execute("SELECT set_config('app.user_id', $1, false)", TEST_OWNER)
 
     # Seed one page for tests that need an existing page. Use ON CONFLICT

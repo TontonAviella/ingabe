@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 from functools import lru_cache
-from typing import Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 from src.structures import get_async_db_connection
@@ -22,10 +22,10 @@ class DatabaseDocumenter(ABC):
         connection_uri: str,
         connection_name: str,
         connection_manager: PostgresConnectionManager,
-        openai_client: AsyncOpenAI,
+        openai_client: Optional[AsyncOpenAI],
         chat_args_provider: ChatArgsProvider,
         user_id: str,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Generate database documentation and friendly name.
         Returns tuple of (friendly_name, documentation_markdown)
@@ -40,10 +40,10 @@ class DefaultDatabaseDocumenter(DatabaseDocumenter):
         connection_uri: str,
         connection_name: str,
         connection_manager: PostgresConnectionManager,
-        openai_client: AsyncOpenAI,
+        openai_client: Optional[AsyncOpenAI],
         chat_args_provider: ChatArgsProvider,
         user_id: str,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Generate basic database documentation and friendly name.
         This function analyzes the PostgreSQL database schema (equivalent to \\d+)
@@ -107,6 +107,13 @@ class DefaultDatabaseDocumenter(DatabaseDocumenter):
             finally:
                 # Ensure the connection is closed to avoid leaks
                 await conn.close()
+
+            if openai_client is None:
+                logger.info(
+                    "Skipping database documentation LLM generation for connection %s: LLM client unavailable",
+                    connection_id,
+                )
+                return None, None
 
             # Generate friendly name
             name_prompt = f"""Based on the following database tables, generate a short, friendly display name (2-4 words) that describes what this database contains or its purpose.
@@ -187,7 +194,8 @@ Schema:
         except Exception as e:
             logger.warning(
                 "Error generating database documentation for connection %s: %s",
-                connection_id, e,
+                connection_id,
+                e,
             )
             # Don't raise the exception - background tasks should fail silently as requested
             # Connection manager already handled error reporting

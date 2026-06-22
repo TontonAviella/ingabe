@@ -40,7 +40,11 @@ envVarGroups:
       - key: S3_DEFAULT_REGION
         value: auto
       - key: OPENAI_MODEL
-        value: deepseek/deepseek-v3.2
+        value: nvidia/nemotron-3-super-120b-a12b:free
+      - key: SAGE_SMALL_TALK_MODEL
+        value: nvidia/nemotron-3-super-120b-a12b:free
+      - key: BRAIN_QUERY_EXPANSION_MODEL
+        value: nvidia/nemotron-3-super-120b-a12b:free
       - key: CDSAPI_URL
         value: https://cds.climate.copernicus.eu/api
       - key: OTEL_SERVICE_NAME
@@ -48,6 +52,8 @@ envVarGroups:
       - key: VITE_POSTHOG_KEY
         value: phc_W7tOZXWc5oPtpiYyyINii49GodL1NgyS6z30pNW8aTP
       - key: VITE_POSTHOG_HOST
+        value: https://us.i.posthog.com
+      - key: POSTHOG_HOST
         value: https://us.i.posthog.com
 
   - name: mundi-secrets
@@ -69,7 +75,7 @@ envVarGroups:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL
-        sync: false
+        value: https://openrouter.ai/api/v1
       - key: SH_CLIENT_ID
         sync: false
       - key: SH_CLIENT_SECRET
@@ -83,6 +89,8 @@ envVarGroups:
       - key: OTEL_EXPORTER_OTLP_ENDPOINT
         sync: false
       - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: POSTHOG_API_KEY
         sync: false
 
 # ---------------------------------------------------------------------------

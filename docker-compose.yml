@@ -27,6 +27,10 @@ services:
         condition: service_healthy
       qgis-processing:
         condition: service_healthy
+      rasterd:
+        condition: service_started
+      geokernel:
+        condition: service_started
     environment:
       - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
       # Clerk authentication (set these to enable real multi-user auth)
@@ -37,24 +41,39 @@ services:
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
       - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
       - S3_BUCKET=${S3_BUCKET:-test-bucket}
       - WEBSITE_DOMAIN=${VITE_WEBSITE_DOMAIN:-http://localhost:8000}
       - QGIS_PROCESSING_URL=http://qgis-processing:8817
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - RASTER_TILE_ENGINE_URL=${RASTER_TILE_ENGINE_URL:-http://rasterd:8877}
+      - RASTER_TILE_ENGINE_TIMEOUT=${RASTER_TILE_ENGINE_TIMEOUT:-30.0}
+      - RASTER_TILE_ENGINE_CONCURRENCY=${RASTER_TILE_ENGINE_CONCURRENCY:-1}
+      - RASTER_TILE_ENGINE_DIRECT_S3=${RASTER_TILE_ENGINE_DIRECT_S3:-1}
+      - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
+      - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
+      - GEOKERNEL_URL=${GEOKERNEL_URL:-http://geokernel:8878}
+      - GEOKERNEL_TIMEOUT=${GEOKERNEL_TIMEOUT:-5.0}
+      - GEOKERNEL_H3_CONTAINMENT_MODE=${GEOKERNEL_H3_CONTAINMENT_MODE:-centroid}
+      - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4.1-nano}
+      - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b-it-qat}
       - LLM_CONTEXT_LIMIT=${LLM_CONTEXT_LIMIT:-131072}
       - OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434/v1}
-      - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-}
+      - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b-it-qat}
       # Hermes Phase 2 — in-process AIAgent runtime (default OFF)
       - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
       - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
       - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
       - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
+      - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/cache}
+      - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
+      - TORCH_HOME=${TORCH_HOME:-/cache/torch}
+      - MUNDI_SAMGEO_CHECKPOINT_DIR=${MUNDI_SAMGEO_CHECKPOINT_DIR:-/cache/samgeo}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
@@ -65,6 +84,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ingabe}
+      - POSTHOG_API_KEY=${POSTHOG_API_KEY:-phc_W7tOZXWc5oPtpiYyyINii49GodL1NgyS6z30pNW8aTP}
+      - POSTHOG_HOST=${POSTHOG_HOST:-https://us.i.posthog.com}
+      - POSTHOG_BACKEND_DISABLED=${POSTHOG_BACKEND_DISABLED:-0}
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - POSTGIS_LOCALHOST_POLICY=docker_rewrite
@@ -95,7 +117,7 @@ services:
       # - TILE_CACHE_TTL=3600  # seconds
       # - OPENAI_BASE_URL=http://host.docker.internal:11434/v1
       # - OPENAI_API_KEY=ollama
-      # - OPENAI_MODEL=orieg/gemma3-tools:1b
+      # - OPENAI_MODEL=ollama:gemma4:12b-it-qat
       #-  MUNDI_EMBED_ALLOWED_ORIGINS=http://localhost:4321
     command: >
       bash -c "bash /app/scripts/start-services.sh"
@@ -115,6 +137,9 @@ services:
 
   minio:
     image: bitnamilegacy/minio:latest
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER:-admin}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-changeme}
@@ -133,13 +158,30 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # Idempotent bootstrap: every step is safe on re-run.
+    # `mc admin user add` errors on existing user; `mc ilm rule add` errors on
+    # duplicate prefix. The previous version masked both with `2>/dev/null || echo`,
+    # which hid genuine failures and printed misleading success messages.
     entrypoint: >
       /bin/sh -c "
+      set -e;
       /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-admin} ${MINIO_ROOT_PASSWORD:-changeme};
-      /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
-      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} ||
-      (sleep 3 && /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user});
-      echo 'S3 user setup complete!';
+      if /usr/bin/mc admin user info myminio ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1; then
+        echo '[mc] user ${S3_ACCESS_KEY_ID:-s3user} already exists';
+      else
+        /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
+        echo '[mc] created user ${S3_ACCESS_KEY_ID:-s3user}';
+      fi;
+      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1 || true;
+      echo '[mc] policy readwrite ensured on ${S3_ACCESS_KEY_ID:-s3user}';
+      printf '%s\n' '<CORSConfiguration><CORSRule><AllowedOrigin>http://localhost:5173</AllowedOrigin><AllowedOrigin>http://localhost:8000</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedMethod>POST</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3000</MaxAgeSeconds></CORSRule></CORSConfiguration>' > /tmp/mundi-cors.xml;
+      /usr/bin/mc cors set myminio/${S3_BUCKET:-test-bucket} /tmp/mundi-cors.xml && echo '[mc] CORS policy ensured for browser uploads' || echo '[mc] CORS policy unsupported; browser uploads use backend proxy';
+      RULES=$$(/usr/bin/mc ilm rule list myminio/${S3_BUCKET:-test-bucket} 2>/dev/null) || RULES='';
+      case $$RULES in
+        *snapshots/*) echo '[mc] lifecycle rule for snapshots/ already present';;
+        *) /usr/bin/mc ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket} && echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day' || echo '[mc] lifecycle rule unsupported; snapshots cleanup must be handled externally';;
+      esac;
+      echo '[mc] bootstrap complete';
       "
 
   postgresdb:
@@ -170,6 +212,51 @@ services:
       timeout: 2s
       retries: 5
 
+  rasterd:
+    build:
+      context: ./services/rasterd
+      dockerfile: Dockerfile
+      args:
+        - RASTERD_CARGO_FEATURES=${RASTERD_CARGO_FEATURES:-}
+    image: mundi-rasterd:local
+    container_name: mundi-rasterd
+    ports:
+      - "${RASTERD_PORT:-8877}:8877"
+    environment:
+      - RUST_LOG=${RASTERD_RUST_LOG:-info}
+      - RASTERD_TILE_CACHE_ENTRIES=${RASTERD_TILE_CACHE_ENTRIES:-4096}
+      - RASTERD_RENDER_CONCURRENCY=${RASTERD_RENDER_CONCURRENCY:-1}
+      - AWS_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - AWS_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - AWS_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - AWS_S3_ENDPOINT=${RASTERD_AWS_S3_ENDPOINT:-minio:9000}
+      - AWS_HTTPS=${RASTERD_AWS_HTTPS:-NO}
+      - AWS_VIRTUAL_HOSTING=${RASTERD_AWS_VIRTUAL_HOSTING:-FALSE}
+      - GDAL_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.tiff
+      - GDAL_HTTP_MULTIRANGE=YES
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+      - CPL_VSIL_CURL_CACHE_SIZE=134217728
+      - VSI_CACHE=TRUE
+      - VSI_CACHE_SIZE=134217728
+      - GDAL_CACHEMAX=256
+    restart: unless-stopped
+
+  geokernel:
+    build:
+      context: ./services/geokernel
+      dockerfile: Dockerfile
+    image: mundi-geokernel:local
+    container_name: mundi-geokernel
+    ports:
+      - "${GEOKERNEL_PORT:-8878}:8878"
+    environment:
+      - RUST_LOG=${GEOKERNEL_RUST_LOG:-info}
+      - GEOKERNEL_PORT=8878
+    restart: unless-stopped
+
   qgis-processing:
     platform: linux/amd64
     image: ${QGIS_PROCESSING_IMAGE:-qgis-processing:local}
@@ -186,6 +273,104 @@ services:
       timeout: 30s
       retries: 3
       start_period: 10s
+
+  # --- Sage snapshot senders ---
+  # Both subscribe to Redis 'mundi:render_snapshot', drop payloads that don't
+  # match their MUNDI_*_PARTNER_ID, download PNG from MinIO, post to the
+  # respective channel. Default MUNDI_*_LIVE=0 → log-only stub.
+  #
+  # WhatsApp is the dominant messaging channel in Rwanda — it is a first-class
+  # peer to Telegram, not a Phase 2 add-on. Run both by default; let env vars
+  # gate which one actually delivers.
+
+  whatsapp-sender:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-whatsapp-sender
+    command: python -m src.senders.whatsapp_sender
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_WHATSAPP_LIVE=${MUNDI_WHATSAPP_LIVE:-0}
+      - MUNDI_WHATSAPP_ACCESS_TOKEN=${MUNDI_WHATSAPP_ACCESS_TOKEN:-}
+      - MUNDI_WHATSAPP_PHONE_NUMBER_ID=${MUNDI_WHATSAPP_PHONE_NUMBER_ID:-}
+      - MUNDI_WHATSAPP_PARTNER_ID=${MUNDI_WHATSAPP_PARTNER_ID:-}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
+  telegram-sender:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-telegram-sender
+    command: python -m src.senders.telegram_sender
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_TELEGRAM_LIVE=${MUNDI_TELEGRAM_LIVE:-0}
+      - MUNDI_TELEGRAM_BOT_TOKEN=${MUNDI_TELEGRAM_BOT_TOKEN:-}
+      - MUNDI_TELEGRAM_PARTNER_ID=${MUNDI_TELEGRAM_PARTNER_ID:-}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
+
+  # --- Phase 3: Proactive Sage cron-fired alerts ---
+  # Reads alert_subscriptions every TICK_INTERVAL_SEC; for each due row renders
+  # the configured map+bbox, uploads PNG to MinIO, publishes on
+  # 'mundi:render_snapshot'. WhatsApp/Telegram senders deliver. NO LLM in loop.
+  sage-alerts-cron:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    container_name: mundi-sage-alerts-cron
+    command: python -m src.cron.sage_alerts
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgresdb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - MUNDI_SAGE_ALERTS_TICK_SEC=${MUNDI_SAGE_ALERTS_TICK_SEC:-30}
+      - MUNDI_SAGE_ALERTS_MAX_PER_TICK=${MUNDI_SAGE_ALERTS_MAX_PER_TICK:-20}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-mundidb}
+      - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
+      - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-http://minio:9000}
+      - S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./src:/app/src
+    restart: unless-stopped
 
   # --- Optional: PostgreSQL read replica (uncomment to scale read-heavy workloads) ---
   # Requires the primary to have wal_level=replica (default in PostgreSQL 10+).

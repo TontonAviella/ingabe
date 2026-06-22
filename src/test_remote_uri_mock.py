@@ -58,31 +58,6 @@ def mock_esri_requests(monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", patched_cpe)
 
-    import fiona
-    from fiona.drvsupport import supported_drivers
-
-    supported_drivers["ESRIJSON"] = "r"
-
-    real_fiona_open = fiona.open
-
-    def patched_fiona_open(path, *args, **kwargs):
-        if isinstance(path, str) and (
-            path.startswith("ESRIJSON:") or ESRI_MARKER in path
-        ):
-            fixture_path = os.path.abspath(
-                os.path.join(
-                    os.path.dirname(__file__),
-                    "..",
-                    "test_fixtures",
-                    "esri_pool_permits_sample.esri.json",
-                )
-            )
-            # Open the local ESRIJSON file using the ESRIJSON driver
-            return real_fiona_open(fixture_path, driver="ESRIJSON", *args, **kwargs)
-        return real_fiona_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(fiona, "open", patched_fiona_open)
-
     # Short-circuit URL validation for ESRIJSON to avoid DNS/network
     from src.routes import postgres_routes as pr2
 

@@ -10,7 +10,7 @@ analysis history.
 Same idea for Clay v1.5 embeddings: when embed_layer finishes, this module
 stamps the brain page's frontmatter with `clay_tiles_embedded: N` and
 `clay_collection: clay_tiles_v1` so a future query can see at-a-glance which
-layers are searchable by visual similarity (without round-tripping to Milvus).
+layers are searchable by visual similarity (without round-tripping to Qdrant).
 
 ALL functions are best-effort. Brain failures (page missing, DB hiccup, RLS
 block) never propagate. The verdict the tool returns to Sage is the source

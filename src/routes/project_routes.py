@@ -2,6 +2,7 @@ import os
 import math
 import json
 import hashlib
+import time
 from fastapi import (
     Request,
     APIRouter,
@@ -55,6 +56,11 @@ from src.services.map_service import (
     generate_id,
     get_map_style_internal,
     render_map_internal,
+)
+from src.services.posthog_analytics import (
+    capture_backend_event,
+    capture_for_session,
+    elapsed_ms,
 )
 
 # Global semaphore to limit concurrent social image renderings
@@ -113,6 +119,7 @@ async def list_user_projects(
     List all projects associated with the authenticated user.
     A project is associated if the user is the owner, an editor, or a viewer.
     """
+    started_at = time.monotonic()
     user_id = session.get_user_id()
 
     # Calculate offset for pagination
@@ -212,11 +219,25 @@ async def list_user_projects(
                 )
             )
 
-    return UserProjectsResponse(
+    response = UserProjectsResponse(
         projects=projects_response,
         total_pages=total_pages,
         total_items=total_items,
     )
+    capture_for_session(
+        "backend_projects_listed",
+        session,
+        {
+            "page": page,
+            "limit": limit,
+            "include_deleted": include_deleted,
+            "project_count": len(projects_response),
+            "total_items": total_items,
+            "total_pages": total_pages,
+            "duration_ms": elapsed_ms(started_at),
+        },
+    )
+    return response
 
 
 @project_router.get(
@@ -416,6 +437,7 @@ async def add_postgis_connection(
     Add a PostgreSQL connection URI to a project.
     Only the project owner or editors can add connections.
     """
+    started_at = time.monotonic()
     user_id = session.get_user_id()
 
     async with get_async_db_connection() as conn:
@@ -467,6 +489,7 @@ async def add_postgis_connection(
 
         try:
             from src.dependencies.brain_dep import get_brain_service
+
             payload = {
                 "layer_id": connection_id,
                 "layer_name": connection_data.connection_name or "Database",
@@ -475,24 +498,50 @@ async def add_postgis_connection(
             }
             await get_brain_service().enqueue_hook(conn, "vector_upload", payload)
         except Exception:
-            logger.debug("Brain hook enqueue skipped for postgis connection %s", connection_id)
+            logger.debug(
+                "Brain hook enqueue skipped for postgis connection %s", connection_id
+            )
 
         # Start background task to generate database documentation
+        try:
+            documentation_openai_client = get_openai_client(request)
+        except HTTPException as e:
+            if e.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+                raise
+            logger.info(
+                "Skipping database documentation LLM client for postgis connection %s: %s",
+                connection_id,
+                e.detail,
+            )
+            documentation_openai_client = None
+
         background_tasks.add_task(
             database_documenter.generate_documentation,
             connection_id,
             connection_uri,
             connection_data.connection_name or "Database",
             connection_manager,
-            get_openai_client(request),
+            documentation_openai_client,
             chat_args_provider,
             user_id,
         )
 
-        return PostgresCreateConnectionResponse(
+        response = PostgresCreateConnectionResponse(
             message="PostgreSQL connection added successfully",
             connection_id=connection_id,
         )
+        capture_for_session(
+            "backend_postgis_connection_added",
+            session,
+            {
+                "project_id": project.id,
+                "connection_id": connection_id,
+                "was_demo_connection": connection_data.connection_uri.strip() == "DEMO",
+                "connection_rewritten": was_rewritten,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
 
 
 @project_router.delete(
@@ -509,6 +558,7 @@ async def soft_delete_postgis_connection(
     Soft delete a PostgreSQL connection from a project.
     Only the project owner or editors can delete connections.
     """
+    started_at = time.monotonic()
     async with get_async_db_connection() as conn:
         # Check if the connection exists and belongs to this project
         connection = await conn.fetchrow(
@@ -544,9 +594,19 @@ async def soft_delete_postgis_connection(
             project.id,
         )
 
-        return PostgresConnectionResponse(
+        response = PostgresConnectionResponse(
             success=True, message="PostgreSQL connection deleted successfully"
         )
+        capture_for_session(
+            "backend_postgis_connection_deleted",
+            session,
+            {
+                "project_id": project.id,
+                "connection_id": connection_id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
+        return response
 
 
 @project_router.get(
@@ -650,6 +710,33 @@ class SocialImageCacheBustedError(Exception):
     pass
 
 
+def _default_social_preview_response(
+    base_map_provider: BaseMapProvider,
+    *,
+    cache_seconds: int = 900,
+) -> Response:
+    try:
+        with open(base_map_provider.get_default_preview_path(), "rb") as f:
+            image_data = f.read()
+    except OSError as e:
+        logger.error("Default social preview is unavailable: %s", e)
+        return Response(
+            content=b"",
+            media_type="image/webp",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return Response(
+        content=image_data,
+        media_type="image/webp",
+        headers={
+            "Content-Type": "image/webp",
+            "Cache-Control": f"max-age={cache_seconds}, public",
+        },
+    )
+
+
 @project_router.get("/{project_id}/social.webp", response_class=Response)
 async def get_project_social_preview(
     project_id: str,
@@ -669,6 +756,9 @@ async def get_project_social_preview(
             raise HTTPException(status_code=404, detail="Project not found")
         project = MundiProject(**dict(row))
 
+    if not project.maps:
+        return _default_social_preview_response(base_map_provider)
+
     latest_map_id = project.maps[-1]
 
     # If map has no layers, stream the provider's default basemap preview directly
@@ -684,15 +774,7 @@ async def get_project_social_preview(
 
         layer_ids = (map_row["layers"] or []) if map_row else []
     if not layer_ids:
-        with open(base_map_provider.get_default_preview_path(), "rb") as f:
-            return Response(
-                content=f.read(),
-                media_type="image/webp",
-                headers={
-                    "Content-Type": "image/webp",
-                    "Cache-Control": "max-age=900, public",
-                },
-            )
+        return _default_social_preview_response(base_map_provider)
 
     # S3 configuration - key by map_id instead of project_id
     bucket_name = get_bucket_name()
@@ -707,38 +789,66 @@ async def get_project_social_preview(
     except ClientError:
         # Re-render with semaphore to limit concurrent renders
         async with SOCIAL_RENDER_SEMAPHORE:
-            logger.info("Rendering social image for map %s (semaphore acquired)", latest_map_id)
-
-            style_json = await get_map_style_internal(
-                latest_map_id,
-                base_map_provider,
-                only_show_inline_sources=True,
+            logger.info(
+                "Rendering social image for map %s (semaphore acquired)", latest_map_id
             )
 
-            render_response, _ = await render_map_internal(
-                map_id=latest_map_id,
-                bbox=None,
-                width=1200,
-                height=630,
-                renderer="mbgl",
-                bgcolor="#ffffff",
-                style_json=style_json,
-            )
+            try:
+                style_json = await get_map_style_internal(
+                    latest_map_id,
+                    base_map_provider,
+                    only_show_inline_sources=True,
+                    inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+                )
 
-            from PIL import Image
-            img = Image.open(io.BytesIO(render_response.body))
-            webp_buffer = io.BytesIO()
-            img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
+                render_response, _ = await render_map_internal(
+                    map_id=latest_map_id,
+                    bbox=None,
+                    width=1200,
+                    height=630,
+                    renderer="mbgl",
+                    bgcolor="#ffffff",
+                    style_json=style_json,
+                )
 
-            s3 = await get_async_s3_client()
-            await s3.put_object(
-                Bucket=bucket_name,
-                Key=s3_key,
-                Body=webp_buffer.getvalue(),
-                ContentType="image/webp",
-            )
+                from PIL import Image, UnidentifiedImageError
 
-            image_data = webp_buffer.getvalue()
+                render_body = getattr(render_response, "body", b"") or b""
+                if not render_body:
+                    raise ValueError("renderer produced empty social preview")
+
+                try:
+                    img = Image.open(io.BytesIO(render_body))
+                    img.load()
+                except UnidentifiedImageError as e:
+                    raise ValueError(
+                        "renderer produced non-image social preview"
+                    ) from e
+
+                webp_buffer = io.BytesIO()
+                img.save(webp_buffer, format="WEBP", quality=80, lossless=False)
+                image_data = webp_buffer.getvalue()
+
+                s3 = await get_async_s3_client()
+                try:
+                    await s3.put_object(
+                        Bucket=bucket_name,
+                        Key=s3_key,
+                        Body=image_data,
+                        ContentType="image/webp",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to cache social image for map %s: %s", latest_map_id, e
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    "Social image render failed for map %s; using default preview: %s",
+                    latest_map_id,
+                    e,
+                )
+                return _default_social_preview_response(base_map_provider)
 
     return Response(
         content=image_data,
@@ -763,6 +873,7 @@ async def delete_project(
     Soft deletes a map project. This project will no longer be listed in the user's
     list of projects, but will appear in recently deleted projects.
     """
+    started_at = time.monotonic()
     async with get_async_db_connection() as conn:
         # Soft delete the project
         updated_project = await conn.fetchrow(
@@ -781,6 +892,14 @@ async def delete_project(
                 detail="Failed to delete project",
             )
 
+        capture_backend_event(
+            "backend_project_deleted",
+            distinct_id=str(project.owner_uuid),
+            properties={
+                "project_id": project.id,
+                "duration_ms": elapsed_ms(started_at),
+            },
+        )
         return {
             "message": "Project successfully deleted",
             "project_id": project.id,
@@ -899,7 +1018,10 @@ async def get_project_embed(
     from src.services.map_service import get_map_style_internal
 
     style_json = await get_map_style_internal(
-        latest_map_id, base_map_provider, only_show_inline_sources=True
+        latest_map_id,
+        base_map_provider,
+        only_show_inline_sources=True,
+        inline_s3_endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
     )
 
     # Override the calculated center and zoom in the style JSON
@@ -1080,7 +1202,9 @@ async def _extract_text_pptx(data: bytes) -> str:
                             slide_parts.append(para.text)
                 if shape.has_table:
                     for row in shape.table.rows:
-                        cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                        cells = [
+                            cell.text.strip() for cell in row.cells if cell.text.strip()
+                        ]
                         if cells:
                             slide_parts.append(" | ".join(cells))
             if len(slide_parts) > 1:
@@ -1184,7 +1308,10 @@ async def upload_document_to_brain(
             Body=data,
         )
     except Exception:
-        logger.warning("S3 upload failed for brain doc %s, continuing without raw file storage", doc_id)
+        logger.warning(
+            "S3 upload failed for brain doc %s, continuing without raw file storage",
+            doc_id,
+        )
         s3_key = ""
 
     brain = get_brain_service()
@@ -1233,7 +1360,13 @@ async def upload_document_to_brain(
                 owner_uuid=user_id,
             )
 
-    logger.info("Document uploaded to Brain: %s (%s, %d bytes, %d chars text)", slug, filename, len(data), len(text))
+    logger.info(
+        "Document uploaded to Brain: %s (%s, %d bytes, %d chars text)",
+        slug,
+        filename,
+        len(data),
+        len(text),
+    )
 
     return DocumentUploadResponse(
         document_id=doc_id,

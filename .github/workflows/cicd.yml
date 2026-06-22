@@ -46,7 +46,8 @@ jobs:
 
       - name: Build application images
         run: |
-          docker buildx bake app \
+          python3 scripts/posthog_check_event.py --stage ci --check docker_build_app -- \
+            docker buildx bake app \
             --set app.cache-from=type=gha \
             --set app.cache-to=type=gha,mode=max \
             --set app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000 \
@@ -54,6 +55,10 @@ jobs:
             --set app.args.VITE_POSTHOG_HOST=https://us.i.posthog.com \
             --file docker-compose.yml \
             --load
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 45
 
       - name: Run tests
@@ -84,7 +89,13 @@ jobs:
         # NotNullViolationError once the OOM cascade was fixed and the
         # tests actually had a chance to run. loadfile preserves the
         # author's intended same-worker test ordering inside each file.
-        run: docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
+        run: >
+          python3 scripts/posthog_check_event.py --stage backend --check backend_pytest --
+          docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 25
 
       - name: Start services for E2E
@@ -111,9 +122,12 @@ jobs:
 
       - name: Run E2E smoke tests
         working-directory: frontendts
-        run: npx playwright test --reporter=github
+        run: ../scripts/posthog_check_event.py --stage e2e --check playwright_smoke -- npx playwright test --reporter=github
         env:
           E2E_BASE_URL: http://localhost:8000
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 5
 
       - name: Upload E2E artifacts on failure

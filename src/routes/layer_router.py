@@ -85,21 +85,143 @@ def _get_empty_tile() -> bytes:
 import time as _time
 
 
-async def _get_presigned_url(cog_key: str) -> str:
-    """Return a presigned URL for the COG, reusing cached URLs when possible."""
+async def _get_presigned_url(s3_key: str) -> str:
+    """Return a presigned URL for a raster object, reusing cached URLs when possible."""
     now = _time.monotonic()
-    cached = _presigned_url_cache.get(cog_key)
+    cached = _presigned_url_cache.get(s3_key)
     if cached and (now - cached[0]) < _PRESIGNED_URL_TTL:
         return cached[1]
 
     bucket = get_bucket_name()
     s3 = await get_async_s3_client(signature_version="s3v4")
     url = await s3_op(
-        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": cog_key}, ExpiresIn=180),
-        "presigned URL", f"raster tile {cog_key}",
+        s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": s3_key}, ExpiresIn=180),
+        "presigned URL", f"raster tile {s3_key}",
     )
-    _presigned_url_cache[cog_key] = (now, url)
+    _presigned_url_cache[s3_key] = (now, url)
     return url
+
+
+def _get_raster_engine_url() -> str:
+    return os.environ.get("RASTER_TILE_ENGINE_URL", "").strip().rstrip("/")
+
+
+def _get_raster_engine_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("RASTER_TILE_ENGINE_TIMEOUT", "30.0")))
+    except ValueError:
+        return 30.0
+
+
+def _get_raster_engine_concurrency() -> int:
+    try:
+        return max(1, int(os.environ.get("RASTER_TILE_ENGINE_CONCURRENCY", "1")))
+    except ValueError:
+        return 1
+
+
+def _get_raster_engine_asset_url(s3_key: str | None) -> str | None:
+    """Return a GDAL-readable asset path for the Rust raster engine."""
+    if not s3_key:
+        return None
+    direct_s3 = os.environ.get("RASTER_TILE_ENGINE_DIRECT_S3", "").strip().lower()
+    if direct_s3 in {"1", "true", "yes", "on"}:
+        return f"/vsis3/{get_bucket_name()}/{s3_key}"
+    return None
+
+
+def _raster_engine_can_render_plain_png(metadata: dict) -> bool:
+    """Return True when rasterd can render this layer without Python styling.
+
+    Single-band rasters with stored value statistics use the Python color-ramp
+    path so NDVI/DEM-style layers keep their semantic colors.
+    """
+    return "raster_value_stats_b1" not in (metadata or {})
+
+
+def _raw_raster_tiles_available(s3_key: str | None, metadata: dict, bounds) -> bool:
+    """Raw upload tiles are live when rasterd can place and render the source."""
+    return bool(
+        s3_key
+        and _get_raster_engine_url()
+        and _raster_engine_can_render_plain_png(metadata)
+        and bounds
+        and len(bounds) == 4
+    )
+
+
+def _raster_engine_bands(metadata: dict) -> str:
+    band_count = (metadata or {}).get("band_count")
+    try:
+        band_count = int(band_count) if band_count is not None else None
+    except (TypeError, ValueError):
+        band_count = None
+    if isinstance(band_count, int):
+        if band_count <= 1:
+            return "1"
+        if band_count == 2:
+            return "1,2"
+    return "1,2,3"
+
+
+def _get_raster_engine_client():
+    """Return a pooled HTTP client for the optional Rust raster sidecar."""
+    global _raster_engine_client
+    if _raster_engine_client is None:
+        import httpx
+        timeout_s = _get_raster_engine_timeout()
+        concurrency = _get_raster_engine_concurrency()
+        _raster_engine_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_s, connect=min(timeout_s, 2.0)),
+            limits=httpx.Limits(
+                max_connections=concurrency,
+                max_keepalive_connections=concurrency,
+            ),
+        )
+    return _raster_engine_client
+
+
+async def _try_raster_engine_tile(
+    *,
+    layer_id: str,
+    asset_url: str,
+    metadata: dict,
+    z: int,
+    x: int,
+    y: int,
+) -> bytes | None:
+    """Delegate plain RGB/grayscale raster tiles to the optional Rust sidecar."""
+    engine_url = _get_raster_engine_url()
+    if not engine_url:
+        return None
+    if not _raster_engine_can_render_plain_png(metadata):
+        return None
+    bands = _raster_engine_bands(metadata)
+
+    try:
+        client = _get_raster_engine_client()
+        async with RASTER_ENGINE_SEMAPHORE:
+            resp = await client.get(
+                f"{engine_url}/tiles/{z}/{x}/{y}.png",
+                params={"url": asset_url, "layer_id": layer_id, "bands": bands},
+            )
+    except Exception as exc:
+        logger.warning(
+            "Rust raster engine unavailable for layer=%s z=%s x=%s y=%s: %s %r",
+            layer_id, z, x, y, type(exc).__name__, exc,
+        )
+        return None
+
+    if resp.status_code == 200 and resp.content:
+        return resp.content
+    if resp.status_code in {204, 400, 404, 422, 501}:
+        return None
+
+    logger.warning(
+        "Rust raster engine failed for layer=%s z=%s x=%s y=%s status=%s",
+        layer_id, z, x, y, resp.status_code,
+    )
+    return None
 
 
 def _get_dask():
@@ -118,6 +240,7 @@ from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
 from src.services.enrichment_service import AVAILABLE_METRICS, compute_metric, compute_all_lulc_metrics, _LULC_CLASS_MAP
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
+from src.services.raster_zoom import raster_source_minzoom
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
 from src.utils import generate_id
@@ -133,11 +256,32 @@ SOCIAL_RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
 # when MapLibre fires 20-50 concurrent tile requests on zoom/pan.
 # 8 vCPU Hetzner → allow more concurrent reads (default was 6, too conservative).
 RASTER_TILE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("RASTER_TILE_CONCURRENCY", "12")))
+RASTER_ENGINE_SEMAPHORE = asyncio.Semaphore(_get_raster_engine_concurrency())
+_RASTER_TILE_INFLIGHT_LOCKS: dict[str, asyncio.Lock] = {}
+_RASTER_TILE_INFLIGHT_GUARD = asyncio.Lock()
 
-# Cache presigned URLs per COG key to avoid regenerating on every tile request.
+
+async def _get_raster_tile_inflight_lock(layer_id: str, z: int, x: int, y: int) -> tuple[str, asyncio.Lock]:
+    """Return a per-tile lock so duplicate browser requests share one render."""
+    key = f"{layer_id}:{z}:{x}:{y}"
+    async with _RASTER_TILE_INFLIGHT_GUARD:
+        lock = _RASTER_TILE_INFLIGHT_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _RASTER_TILE_INFLIGHT_LOCKS[key] = lock
+        return key, lock
+
+
+async def _release_raster_tile_inflight_lock(key: str, lock: asyncio.Lock) -> None:
+    async with _RASTER_TILE_INFLIGHT_GUARD:
+        if _RASTER_TILE_INFLIGHT_LOCKS.get(key) is lock:
+            _RASTER_TILE_INFLIGHT_LOCKS.pop(key, None)
+
+# Cache presigned URLs per raster object key to avoid regenerating on every tile request.
 # Presigned URLs are valid for 180s; we cache for 120s to avoid edge-case expiry.
 _presigned_url_cache: dict[str, tuple[float, str]] = {}
 _PRESIGNED_URL_TTL = 120  # seconds
+_raster_engine_client = None
 
 # Pre-generated transparent 256x256 PNG tile (avoids PIL per empty tile)
 _EMPTY_TILE_PNG: bytes | None = None
@@ -149,6 +293,108 @@ redis = get_redis_client()
 
 
 layer_router = APIRouter()
+
+
+@layer_router.get(
+    "/layer/{layer_id}/render-status",
+    operation_id="get_layer_render_status",
+)
+async def get_layer_render_status(
+    layer_id: str,
+):
+    """Return whether a layer has enough assets to render quickly."""
+    async with async_conn("render_status") as conn:
+        row = await conn.fetchrow(
+            "SELECT layer_id, type, metadata, bounds, s3_key FROM map_layers WHERE layer_id = $1",
+            layer_id,
+        )
+    if not row:
+        raise HTTPException(404, f"Layer {layer_id} not found")
+
+    layer_type = row["type"]
+    if layer_type != LAYER_TYPE_RASTER:
+        return {"ready": True, "status": "ready", "type": layer_type}
+
+    metadata = row["metadata"] or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    cog_key = metadata.get("cog_key") if isinstance(metadata, dict) else None
+    raw_tiles_ready = _raw_raster_tiles_available(row["s3_key"], metadata, row["bounds"])
+    cog_status = metadata.get("cog_status") if isinstance(metadata, dict) else None
+    if not cog_key:
+        if raw_tiles_ready:
+            detail = metadata.get("cog_status_detail") or "Raw raster tiles ready; optimized tiles continue in background"
+            if cog_status == "failed":
+                detail = "Raw raster tiles ready; optimized COG generation failed"
+            return {
+                "ready": True,
+                "status": "ready_raw",
+                "type": layer_type,
+                "optimized_ready": False,
+                "detail": detail,
+                "updated_at": metadata.get("cog_status_updated_at"),
+                "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+                "minzoom": raster_source_minzoom(metadata, row["bounds"]),
+            }
+        if cog_status == "failed":
+            return {
+                "ready": False,
+                "status": "cog_failed",
+                "type": layer_type,
+                "detail": metadata.get("cog_error") or metadata.get("cog_status_detail") or "Raster tile optimization failed",
+                "updated_at": metadata.get("cog_status_updated_at"),
+            }
+        if cog_status == "generating":
+            return {
+                "ready": False,
+                "status": "generating_cog",
+                "type": layer_type,
+                "detail": metadata.get("cog_status_detail") or "Optimizing raster tiles",
+                "updated_at": metadata.get("cog_status_updated_at"),
+            }
+        return {
+            "ready": False,
+            "status": "pending_cog",
+            "type": layer_type,
+            "detail": "Optimizing raster tiles",
+        }
+
+    try:
+        s3 = await get_async_s3_client(signature_version="s3v4")
+        await s3_op(
+            s3.head_object(Bucket=get_bucket_name(), Key=cog_key),
+            "head_object",
+            f"COG status {cog_key}",
+        )
+    except Exception:
+        if raw_tiles_ready:
+            return {
+                "ready": True,
+                "status": "ready_raw",
+                "type": layer_type,
+                "optimized_ready": False,
+                "detail": "Raw raster tiles ready; waiting for optimized raster file",
+                "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
+                "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+                "minzoom": raster_source_minzoom(metadata, row["bounds"]),
+            }
+        return {
+            "ready": False,
+            "status": "missing_cog_object",
+            "type": layer_type,
+            "detail": "Waiting for optimized raster file",
+            "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
+        }
+
+    return {
+        "ready": True,
+        "status": "ready",
+        "type": layer_type,
+        "optimized_ready": True,
+        "cog_key": cog_key,
+        "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+        "minzoom": raster_source_minzoom(metadata, row["bounds"]),
+    }
 
 
 @layer_router.get(
@@ -796,80 +1042,138 @@ async def get_raster_xyz_tile(
             headers=_tile_headers,
         )
 
-    # --- Cache miss: render from COG -------------------------------------
+    # --- Cache miss: render from optimized COG or raw uploaded raster -----
     metadata = layer.metadata_dict or {}
     cog_key = metadata.get("cog_key")
+    source_key = cog_key or layer.s3_key
+    source_kind = "optimized_cog" if cog_key else "raw_upload"
 
-    if not cog_key:
-        # No COG yet — return transparent tile immediately.
+    if not source_key:
         return Response(
             content=_get_empty_tile(),
             media_type="image/png",
-            headers={**_tile_headers, "X-COG-Status": "pending", "Cache-Control": "no-cache"},
+            headers={**_tile_headers, "X-Raster-Status": "missing_source", "Cache-Control": "no-cache"},
         )
 
-    # Reuse presigned URL across concurrent tile requests for the same COG
-    asset_url = await _get_presigned_url(cog_key)
-
-    _ensure_rio_tiler()
-
-    def _render_tile() -> bytes:
-        with _Reader(asset_url) as src:
-            # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
-            # mask, so a 4-band drone ortho becomes 5 bands at encode and
-            # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
-            # raster with >3 bands; the mask becomes the alpha channel.
-            band_count = (metadata or {}).get("band_count")
-            if isinstance(band_count, int) and band_count > 3:
-                img = src.tile(x, y, z, indexes=(1, 2, 3))
-            else:
-                img = src.tile(x, y, z)
-
-            if "raster_value_stats_b1" in metadata:
-                min_val = metadata["raster_value_stats_b1"]["min"]
-                max_val = metadata["raster_value_stats_b1"]["max"]
-
-                img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
-
-                cm = _cmap.get("spectral_r")
-                return img.render(img_format="PNG", colormap=cm)
-            else:
-                return img.render(img_format="PNG")
-
-    try:
-        async with RASTER_TILE_SEMAPHORE:
-            loop = asyncio.get_running_loop()
-            content = await loop.run_in_executor(None, _render_tile)
-
-        # Store in Redis for subsequent requests
-        await tile_cache.put(layer.layer_id, z, x, y, content)
-
-        return Response(
-            content=content,
-            media_type="image/png",
-            headers=_tile_headers,
-        )
-    except _TileOutsideBounds:
-        # Expected: tile coords outside raster extent — transparent tile, cached
+    raster_minzoom = raster_source_minzoom(metadata, layer.bounds)
+    if z < raster_minzoom:
         empty_png = _get_empty_tile()
         await tile_cache.put(layer.layer_id, z, x, y, empty_png)
         return Response(
             content=empty_png,
             media_type="image/png",
-            headers=_tile_headers,
+            headers={**_tile_headers, "X-Raster-MinZoom": str(raster_minzoom)},
         )
-    except Exception as e:
-        error_class = type(e).__name__
-        logger.error(
-            "Raster tile render failed for layer=%s z=%d x=%d y=%d: %s: %s",
-            layer.layer_id, z, x, y, error_class, str(e),
-            exc_info=True
-        )
-        return Response(
-            content=_get_empty_tile(),
-            media_type="image/png",
-            headers=_tile_headers,
-        )
+
+    lock_key, render_lock = await _get_raster_tile_inflight_lock(layer.layer_id, z, x, y)
+    try:
+        async with render_lock:
+            cached = await tile_cache.get(layer.layer_id, z, x, y)
+            if cached is not None:
+                return Response(
+                    content=cached,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+
+            engine_tile = None
+            engine_asset_url = _get_raster_engine_asset_url(source_key)
+            if not engine_asset_url and _get_raster_engine_url():
+                engine_asset_url = await _get_presigned_url(source_key)
+
+            if engine_asset_url:
+                engine_tile = await _try_raster_engine_tile(
+                    layer_id=layer.layer_id,
+                    asset_url=engine_asset_url,
+                    metadata=metadata,
+                    z=z,
+                    x=x,
+                    y=y,
+                )
+            if engine_tile is not None:
+                await tile_cache.put(layer.layer_id, z, x, y, engine_tile)
+                return Response(
+                    content=engine_tile,
+                    media_type="image/png",
+                    headers={**_tile_headers, "X-Raster-Source": source_kind},
+                )
+
+            if not cog_key:
+                return Response(
+                    content=_get_empty_tile(),
+                    media_type="image/png",
+                    headers={
+                        **_tile_headers,
+                        "X-COG-Status": "pending",
+                        "X-Raster-Status": "raw_engine_unavailable",
+                        "Cache-Control": "no-cache",
+                    },
+                )
+
+            # Reuse presigned URL across concurrent tile requests for the Python fallback.
+            asset_url = await _get_presigned_url(cog_key)
+
+            _ensure_rio_tiler()
+
+            def _render_tile() -> bytes:
+                with _Reader(asset_url) as src:
+                    # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
+                    # mask, so a 4-band drone ortho becomes 5 bands at encode and
+                    # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
+                    # raster with >3 bands; the mask becomes the alpha channel.
+                    band_count = (metadata or {}).get("band_count")
+                    if isinstance(band_count, int) and band_count > 3:
+                        img = src.tile(x, y, z, indexes=(1, 2, 3))
+                    else:
+                        img = src.tile(x, y, z)
+
+                    if "raster_value_stats_b1" in metadata:
+                        min_val = metadata["raster_value_stats_b1"]["min"]
+                        max_val = metadata["raster_value_stats_b1"]["max"]
+
+                        img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
+
+                        cm = _cmap.get("spectral_r")
+                        return img.render(img_format="PNG", colormap=cm)
+                    else:
+                        return img.render(img_format="PNG")
+
+            try:
+                async with RASTER_TILE_SEMAPHORE:
+                    loop = asyncio.get_running_loop()
+                    content = await loop.run_in_executor(None, _render_tile)
+
+                # Store in Redis for subsequent requests.
+                await tile_cache.put(layer.layer_id, z, x, y, content)
+
+                return Response(
+                    content=content,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+            except _TileOutsideBounds:
+                # Expected: tile coords outside raster extent — transparent tile, cached
+                empty_png = _get_empty_tile()
+                await tile_cache.put(layer.layer_id, z, x, y, empty_png)
+                return Response(
+                    content=empty_png,
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+            except Exception as e:
+                error_class = type(e).__name__
+                logger.error(
+                    "Raster tile render failed for layer=%s z=%d x=%d y=%d: %s: %s",
+                    layer.layer_id, z, x, y, error_class, str(e),
+                    exc_info=True
+                )
+                return Response(
+                    content=_get_empty_tile(),
+                    media_type="image/png",
+                    headers=_tile_headers,
+                )
+    finally:
+        await _release_raster_tile_inflight_lock(lock_key, render_lock)
 
 
 @layer_router.get(
@@ -1579,7 +1883,8 @@ async def _enrich_background(
                     })
 
         elif layer_type == LAYER_TYPE_VECTOR:
-            import fiona
+            from src.geoprocessing.vector_io import read_vector_feature_records
+
             s3_client = await get_async_s3_client()
             bucket = get_bucket_name()
 
@@ -1589,11 +1894,9 @@ async def _enrich_background(
                     s3_client.download_file(bucket, s3_key, tmp.name),
                     "download", f"layer {layer_id}",
                 )
-                with fiona.open(tmp.name) as collection:
-                    for fid, feat in enumerate(collection, start=1):
-                        geom = feat.get("geometry")
-                        if geom:
-                            features.append({"id": fid, "geom": dict(geom)})
+                for record in read_vector_feature_records(tmp.name):
+                    if record.geometry:
+                        features.append({"id": record.feature_id, "geom": record.geometry})
 
         if not features:
             logger.warning("Enrichment background: no features for layer %s", layer_id)
@@ -1633,8 +1936,9 @@ async def _enrich_background(
 
         # For vector layers, write enrichment values back into the source file
         if layer_type == LAYER_TYPE_VECTOR and s3_key:
-            import fiona
             import shutil
+
+            from src.geoprocessing.vector_io import write_vector_enrichment
 
             s3_enrich = await get_async_s3_client()
             bucket_enrich = get_bucket_name()
@@ -1647,14 +1951,7 @@ async def _enrich_background(
                     s3_enrich.download_file(bucket_enrich, s3_key, src_path),
                     "download", f"enrich write-back {layer_id}",
                 )
-                with fiona.open(src_path) as src:
-                    schema = src.schema.copy()
-                    schema["properties"][metric_key] = "float"
-                    with fiona.open(dst_path, "w", driver=src.driver, crs=src.crs, schema=schema) as dst:
-                        for fid, feat in enumerate(src, start=1):
-                            props = dict(feat["properties"])
-                            props[metric_key] = values.get(fid)
-                            dst.write({"geometry": feat["geometry"], "properties": props})
+                write_vector_enrichment(src_path, dst_path, metric_key, values)
 
                 await s3_op(
                     s3_enrich.upload_file(dst_path, bucket_enrich, s3_key),
@@ -1831,7 +2128,8 @@ async def enrich_layer_batch(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Vector layer missing S3 key",
             )
-        import fiona
+        from src.geoprocessing.vector_io import read_vector_feature_records
+
         s3_client = await get_async_s3_client()
         bucket = get_bucket_name()
         suffix = os.path.splitext(layer.s3_key)[1] or ".fgb"
@@ -1840,11 +2138,9 @@ async def enrich_layer_batch(
                 s3_client.download_file(bucket, layer.s3_key, tmp.name),
                 "download", f"layer {layer.layer_id}",
             )
-            with fiona.open(tmp.name) as collection:
-                for fid, feat in enumerate(collection, start=1):
-                    geom = feat.get("geometry")
-                    if geom:
-                        features.append({"id": fid, "geom": dict(geom)})
+            for record in read_vector_feature_records(tmp.name):
+                if record.geometry:
+                    features.append({"id": record.feature_id, "geom": record.geometry})
 
     if not features:
         raise HTTPException(
@@ -2140,8 +2436,7 @@ async def get_layer_bounds(
 async def _compute_vector_bounds(layer: MapLayer) -> list | None:
     """Compute bounds from a vector file stored in S3."""
     try:
-        import fiona
-        from pyproj import Transformer
+        from src.geoprocessing.vector_io import compute_vector_bounds
 
         s3_client = await get_async_s3_client()
         bucket = get_bucket_name()
@@ -2150,14 +2445,7 @@ async def _compute_vector_bounds(layer: MapLayer) -> list | None:
                 s3_client.download_file(bucket, layer.s3_key, tmp.name),
                 "download", f"bounds for {layer.layer_id}",
             )
-            with fiona.open(tmp.name) as src:
-                b = src.bounds  # (xmin, ymin, xmax, ymax)
-                if src.crs and str(src.crs.to_epsg()) != "4326":
-                    t = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
-                    x1, y1 = t.transform(b[0], b[1])
-                    x2, y2 = t.transform(b[2], b[3])
-                    return [x1, y1, x2, y2]
-                return [b[0], b[1], b[2], b[3]]
+            return compute_vector_bounds(tmp.name)
     except Exception as e:
         logger.warning("Failed to compute vector bounds for %s: %s", layer.layer_id, e)
         return None

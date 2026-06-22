@@ -2,6 +2,42 @@
 
 All notable changes to mundi.ai will be documented in this file.
 
+## Unreleased
+
+## [0.5.2.1] - 2026-06-22
+
+### Fixed
+- Persist raster object/building candidate results as real PMTiles vector map layers, so users can see the mapped polygons instead of only receiving an inline chat summary.
+- Make Sage's raster object replies point to the visible `Object Candidates - <layer>` vector layer and clearly describe counts as likely candidate polygons, not confirmed houses.
+- Fall back to the rasterio/numpy candidate extractor when SamGeo times out during a live request, while making that fallback visible in the response.
+
+## [0.5.2.0] - 2026-06-21
+
+### Added
+- GeoParquet is now the primary vector analytics artifact for uploads and generated H3 insight layers. Vector processing writes a GeoParquet copy alongside PMTiles, stores the S3 key and analytics metadata, and DuckDB queries prefer the GeoParquet path before falling back to GeoPackage.
+- Browser-side DuckDB-WASM is now a real bundled dependency instead of a Vite stub, with a loader and smoke test proving the app resolves the actual `@duckdb/duckdb-wasm` package.
+- Rust geospatial acceleration work for rasterd/geokernel, H3 overlap, raw drone TIFF tile fallback, H3 insight persistence, Forge3D mesh benchmarks, and zoom-adaptive raster/H3 map layers.
+- PostHog and pipeline-evidence observability for backend workflows, Dagster/satellite evidence checks, Sage tool lifecycle telemetry, and raster/H3 processing visibility.
+- Sage/Hermes geospatial tools for rain impact, Sphere flood impact, spatial engines, raster-H3 context, Open Buildings exposure planning, render snapshots, Telegram/WhatsApp senders, Kinyarwanda voice, and partner skill filtering.
+- The upstream Life-Harness repo is pinned as a submodule at `external/life-harness`, with Hermes/Sage adopting its runtime harness pattern for pre-execution tool validation, explicit tool contracts, repeated-tool-call blocking, and task-relevant agriculture procedure retrieval.
+- PESTEL analysis docs and operating notes for shifting the same geospatial intelligence system across agriculture, housing, environment, and infrastructure contexts.
+
+### Changed
+- Vector analytics now treat GeoJSON/GeoPackage/Shapefile formats as ingest inputs, not the long-term analytics store. PMTiles remains the rendering artifact; GeoParquet is the query artifact.
+- Live Sage map previews now gzip large GeoJSON layer updates over the WebSocket when that is smaller than raw JSON, while keeping GeoParquet as the analytics artifact.
+- Raster object candidate replies now distinguish likely building/roof candidate polygons from confirmed house counts, so Sage does not overstate what an orthophoto-only screening pass proves.
+- Server-side map snapshots and social previews generate inline PMTiles URLs with the internal S3 endpoint so Docker renderers do not try to fetch `localhost:9000`.
+- Renderer output is now validated after MBGL runs; empty PNG output becomes an explicit 500 with renderer diagnostics instead of silently producing blank previews.
+- H3 spatial insight persistence now reuses the shared vector processing path, so H3 layers get the same PMTiles and GeoParquet metadata as uploaded vector layers.
+- Hosted Sage/Hermes returns to Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through `OPENAI_BASE_URL=https://openrouter.ai/api/v1`; local Docker keeps `ollama:gemma4:12b-it-qat` for offline/no-API operation.
+- Local QAT tool-call hardening: Hermes now keeps strict tool schemas for Gemma/Ollama, and the Gemma smoke test uses explicit required-field descriptions for `field_name`, `risk`, and `action`. This fixes the earlier `{"action":"scout"}` incomplete-argument failure observed on 2026-06-11.
+
+### Fixed
+- Added missing `pydantic-settings` and `psycopg2-binary` project dependencies to the `uv` lock path so local `uv run pytest` imports match the Docker/runtime environment.
+- Fixed compressed GeoJSON preview replay after map style refreshes, so Sage-added vector layers remain renderable after basemap/style changes.
+- Fixed pipeline evidence tool schemas to keep strict required-field compatibility for Sage/Hermes tool calling.
+- Fixed map snapshot tests and MBGL renderer tests around the new internal-S3 render path.
+
 ## [0.5.1.0] - 2026-05-14
 
 ### Added

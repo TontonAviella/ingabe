@@ -1,4 +1,5 @@
 import React from 'react';
+import { trackError } from '../lib/analytics';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -22,6 +23,9 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+    trackError('react_error_boundary', error, {
+      component_stack_count: errorInfo.componentStack?.split('\n').filter(Boolean).length ?? 0,
+    });
   }
 
   render() {

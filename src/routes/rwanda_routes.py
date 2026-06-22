@@ -39,12 +39,13 @@ import asyncio
 import logging
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import h3
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
@@ -52,6 +53,47 @@ from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 logger = logging.getLogger(__name__)
 
 rwanda_router = APIRouter()
+
+
+class H3AdminPolyfillRequest(BaseModel):
+    geojson: dict[str, Any] = Field(
+        ...,
+        description="Admin boundary GeoJSON FeatureCollection, Feature, Polygon, or MultiPolygon.",
+    )
+    resolution: int = Field(
+        default=7,
+        ge=0,
+        le=15,
+        description="H3 resolution. Use 7 for district view and 9+ for local detail.",
+    )
+    admin_level: str | None = Field(
+        default=None,
+        description="Boundary level label, for example district, sector, admin_cell, or village.",
+    )
+    id_property: str | None = Field(
+        default=None,
+        description="Optional source property to use as admin_id.",
+    )
+    name_property: str | None = Field(
+        default=None,
+        description="Optional source property to use as admin_name.",
+    )
+    max_hexes: int = Field(
+        default=50_000,
+        ge=1,
+        le=500_000,
+        description="Safety limit for generated H3 features.",
+    )
+    min_overlap_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Minimum fraction of each H3 hex that must overlap the admin polygon.",
+    )
+    include_geometry: bool = Field(
+        default=True,
+        description="Whether to include full H3 polygon geometry in the response.",
+    )
 
 
 # ── Admin-level bbox lookup ──────────────────────────────────────────────
@@ -513,6 +555,62 @@ async def generate_h3_grid(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Grid generation failed: {e}",
+        )
+
+
+@rwanda_router.post(
+    "/rwanda/grid/h3/admin-polyfill",
+    operation_id="generate_rwanda_admin_h3_polyfill",
+)
+async def generate_admin_h3_polyfill(
+    request: H3AdminPolyfillRequest,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Convert Rwanda admin-boundary polygons into H3 hex membership.
+
+    Use this when district/sector/admin-cell/village boundaries define the
+    place, but the dashboard should analyze and render the data on a uniform H3
+    grid. Edge hexes include overlap ratios so metrics can be weighted instead
+    of visually overstated.
+    """
+    from src.services.admin_h3 import AdminH3Error, AdminH3Options, admin_geojson_to_h3
+    from src.services.geokernel_client import admin_geojson_to_h3_via_geokernel
+
+    options = AdminH3Options(
+        resolution=request.resolution,
+        admin_level=request.admin_level,
+        id_property=request.id_property,
+        name_property=request.name_property,
+        max_hexes=request.max_hexes,
+        min_overlap_ratio=request.min_overlap_ratio,
+        include_geometry=request.include_geometry,
+    )
+
+    def _generate():
+        return admin_geojson_to_h3(
+            request.geojson,
+            options=options,
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await admin_geojson_to_h3_via_geokernel(request.geojson, options=options)
+        if result is None:
+            result = await loop.run_in_executor(None, _generate)
+        logger.info(
+            "Generated admin H3 polyfill: resolution=%d cells=%d admin_level=%s",
+            request.resolution,
+            len(result["features"]),
+            request.admin_level,
+        )
+        return result
+    except AdminH3Error as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error("Admin H3 polyfill failed: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Admin H3 polyfill failed: {e}",
         )
 
 

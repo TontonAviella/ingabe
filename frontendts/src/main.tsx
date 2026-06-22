@@ -1,10 +1,10 @@
-import posthog from 'posthog-js';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import '@geoman-io/maplibre-geoman-free/dist/maplibre-geoman.css'; // Geoman draw primitives
 import { init } from '@mundi/ee';
 import App from './App';
+import { initAnalytics, trackError } from './lib/analytics';
 
 // After a deploy, the old JS chunk filenames no longer exist on the server.
 // If a user has the tab open during a deploy, lazy imports will fail with
@@ -20,16 +20,10 @@ window.addEventListener('vite:preloadError', (e) => {
 // Clear the guard on successful page load so future deploys can retry
 sessionStorage.removeItem('chunk-reload');
 
-// Initialize PostHog analytics (only when key is provided)
-const posthogKey = import.meta.env.VITE_POSTHOG_KEY;
-if (posthogKey) {
-  posthog.init(posthogKey, {
-    api_host: import.meta.env.VITE_POSTHOG_HOST || 'https://us.i.posthog.com',
-    autocapture: true,
-    capture_pageview: true,
-    capture_pageleave: true,
-    persistence: 'localStorage+cookie',
-  });
+try {
+  initAnalytics();
+} catch (e: unknown) {
+  console.error('[Analytics] init failed', e);
 }
 
 init()
@@ -43,6 +37,7 @@ init()
   .catch((e: unknown) => {
     // eslint-disable-next-line no-console
     console.error('[EE] init failed', e);
+    trackError('app_init_failed', e);
     const rootEl = document.getElementById('root')!;
     createRoot(rootEl).render(
       <StrictMode>

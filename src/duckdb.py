@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import time
 import duckdb
+import hashlib
 import json
 import re
 import os
+import tempfile
+from contextlib import asynccontextmanager
 from fastapi import HTTPException, status
 
-from src.fs_lru import layer_cache
+from src.fs_lru import FileCache, layer_cache
+from src.structures import get_async_read_connection
+from src.utils import get_async_s3_client, get_bucket_name
 
 DUCKDB_RESERVED_KEYWORDS = {
     "select",
@@ -48,6 +53,54 @@ DUCKDB_RESERVED_KEYWORDS = {
 }
 
 
+def _geoparquet_cache() -> FileCache:
+    cache_dir = os.environ.get(
+        "GEOPARQUET_CACHE_DIR",
+        os.environ.get("LAYER_CACHE_DIR", "/cache"),
+    )
+    max_size = int(os.environ.get("GEOPARQUET_CACHE_MAX_BYTES", 512 * 1024 * 1024))
+    global _GEOPARQUET_CACHE_SINGLETON
+    try:
+        return _GEOPARQUET_CACHE_SINGLETON
+    except NameError:
+        _GEOPARQUET_CACHE_SINGLETON = FileCache(cache_dir=cache_dir, max_size=max_size)
+        return _GEOPARQUET_CACHE_SINGLETON
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _quoted_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _metadata_dict(raw_metadata) -> dict:
+    if isinstance(raw_metadata, dict):
+        return raw_metadata
+    if isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _metadata_geoparquet_key(raw_metadata) -> str | None:
+    metadata = _metadata_dict(raw_metadata)
+    geoparquet_key = metadata.get("geoparquet_key")
+    if isinstance(geoparquet_key, str) and geoparquet_key.strip():
+        return geoparquet_key
+    return None
+
+
+def _json_default(value):
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    return str(value)
+
+
 def quoted_col_for(name: str) -> str:
     if not name:
         return '"{}"'.format(name)
@@ -61,6 +114,93 @@ def quoted_col_for(name: str) -> str:
         return f'"{name}"'
 
     return name
+
+
+async def _layer_metadata(layer_id: str) -> dict:
+    async with get_async_read_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT metadata FROM map_layers WHERE layer_id = $1",
+            layer_id,
+        )
+    if not row:
+        return {}
+    return _metadata_dict(row["metadata"])
+
+
+def _geoparquet_cache_key(layer_id: str, geoparquet_key: str) -> str:
+    digest = hashlib.sha256(geoparquet_key.encode("utf-8")).hexdigest()[:16]
+    return f"{layer_id}-{digest}.parquet"
+
+
+async def _ensure_geoparquet_cached(layer_id: str, geoparquet_key: str) -> str:
+    cache = _geoparquet_cache()
+    cache_key = _geoparquet_cache_key(layer_id, geoparquet_key)
+    if not cache.has(cache_key):
+        s3 = await get_async_s3_client()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local_path = os.path.join(temp_dir, cache_key)
+            await s3.download_file(get_bucket_name(), geoparquet_key, local_path)
+            cache.set_from_file(cache_key, local_path)
+    return cache_key
+
+
+@asynccontextmanager
+async def _geoparquet_layer_filename(layer_id: str, geoparquet_key: str):
+    cache = _geoparquet_cache()
+    cache_key = await _ensure_geoparquet_cached(layer_id, geoparquet_key)
+    cache.lock(cache_key)
+    try:
+        yield cache.get_path(cache_key)
+    finally:
+        cache.unlock(cache_key)
+
+
+def _run_duckdb_query_from_path(
+    *,
+    sql_query: str,
+    layer_id: str,
+    analytics_path: str,
+    source_format: str,
+    start_time: float,
+    max_n_rows: int,
+) -> dict:
+    con = duckdb.connect(":memory:")
+    con.execute("SET memory_limit='256MB';")
+    con.execute("SET threads=1;")
+    con.execute("SET home_directory='/cache';")
+    con.install_extension("spatial")
+    con.load_extension("spatial")
+
+    try:
+        layer_identifier = _quoted_identifier(layer_id)
+        path_literal = _sql_literal(analytics_path)
+        if source_format == "geoparquet":
+            con.execute(f"""
+                CREATE OR REPLACE VIEW {layer_identifier} AS
+                SELECT * FROM read_parquet({path_literal});
+            """)
+        else:
+            con.execute(f"""
+                CREATE OR REPLACE TABLE {layer_identifier} AS
+                SELECT * FROM ST_Read({path_literal});
+            """)
+
+        cursor = con.execute(sql_query)
+        headers = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()[:max_n_rows]
+        result_json = json.loads(json.dumps(rows, default=_json_default))
+
+        return {
+            "status": "success",
+            "duration_ms": 1000 * (time.time() - start_time),
+            "result": result_json,
+            "headers": headers,
+            "row_count": len(rows),
+            "query": sql_query,
+            "source_format": source_format,
+        }
+    finally:
+        con.close()
 
 
 def get_lakehouse_connection() -> duckdb.DuckDBPyConnection:
@@ -108,42 +248,29 @@ async def execute_duckdb_query(
     sql_query: str, layer_id: str, max_n_rows: int = 25, timeout: int = 30
 ):
     start_time = time.time()
-    cache = layer_cache()
-    # Acquire cached geopackage path in async context
-    async with cache.layer_filename(layer_id) as gpkg_path:
+    metadata = await _layer_metadata(layer_id)
+    geoparquet_key = _metadata_geoparquet_key(metadata)
+    source_format = "geoparquet" if geoparquet_key else "geopackage"
+
+    path_context = (
+        _geoparquet_layer_filename(layer_id, geoparquet_key)
+        if geoparquet_key
+        else layer_cache().layer_filename(layer_id)
+    )
+
+    async with path_context as analytics_path:
+        loop = asyncio.get_running_loop()
 
         def query_func():
-            con = duckdb.connect(":memory:")
-            con.execute("SET memory_limit='256MB';")
-            con.execute("SET threads=1;")
-            con.execute("SET home_directory='/cache';")
-            con.install_extension("spatial")
-            con.load_extension("spatial")
+            return _run_duckdb_query_from_path(
+                sql_query=sql_query,
+                layer_id=layer_id,
+                analytics_path=analytics_path,
+                source_format=source_format,
+                start_time=start_time,
+                max_n_rows=max_n_rows,
+            )
 
-            try:
-                # Create table from cached geopackage file
-                con.execute(f"""
-                    CREATE OR REPLACE TABLE {layer_id} AS
-                    SELECT * FROM ST_Read('{gpkg_path}');
-                """)
-
-                cursor = con.execute(sql_query)
-                headers = [col[0] for col in cursor.description]
-                rows = cursor.fetchall()[:max_n_rows]
-                result_json = json.loads(json.dumps(rows))
-
-                return {
-                    "status": "success",
-                    "duration_ms": 1000 * (time.time() - start_time),
-                    "result": result_json,
-                    "headers": headers,
-                    "row_count": len(rows),
-                    "query": sql_query,
-                }
-            finally:
-                con.close()
-
-        loop = asyncio.get_running_loop()
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(None, query_func), timeout=timeout

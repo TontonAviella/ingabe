@@ -1,0 +1,27 @@
+[package]
+name = "mundi-rasterd"
+version = "0.1.0"
+edition = "2021"
+description = "Rust raster tile sidecar for Mundi uploaded drone orthophotos"
+license = "AGPL-3.0-or-later"
+
+[features]
+default = []
+# Compile-time marker for the experimental Forge3D COG path. The current tile
+# server remains GDAL-backed; active Forge3D scene use lives in the Python tool
+# adapter until rasterd has a real Forge3D renderer implementation.
+forge3d-cog = []
+
+[dependencies]
+anyhow = "1"
+axum = "0.7"
+gdal = { version = "0.17", features = ["bindgen"] }
+gdal-sys = { version = "0.10", features = ["bindgen"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+lru = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -26,6 +26,11 @@ from typing import Optional
 import asyncpg
 import numpy as np
 
+from src.llm_defaults import (
+    DEFAULT_BRAIN_QUERY_EXPANSION_MODEL,
+    DEFAULT_CHAT_MODEL,
+    resolve_chat_endpoint,
+)
 from src.services.brain_service import BrainService, ChunkInput
 
 logger = logging.getLogger(__name__)
@@ -44,6 +49,18 @@ _OPENAI_DEFAULT_MODEL = "text-embedding-3-large"
 _OPENAI_DEFAULT_DIMS = 1536
 _CHUNK_SIZE = 500  # tokens (~2000 chars)
 _CHUNK_OVERLAP = 50  # tokens overlap between chunks
+
+
+def _resolve_query_expansion_endpoint():
+    chat_model = os.environ.get("BRAIN_QUERY_EXPANSION_MODEL", "").strip() or os.environ.get(
+        "OPENAI_MODEL", DEFAULT_BRAIN_QUERY_EXPANSION_MODEL
+    )
+    return resolve_chat_endpoint(
+        chat_model or DEFAULT_CHAT_MODEL,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        base_url=os.environ.get("OPENAI_BASE_URL"),
+        ollama_base_url=os.environ.get("OLLAMA_BASE_URL"),
+    )
 
 
 def _resolve_embed_config() -> dict:
@@ -392,22 +409,16 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
         return [query]
 
-    # expand_query is a CHAT call, not an embedding call. Use the same LLM
-    # client config the rest of Sage uses (OPENAI_API_KEY/OPENAI_BASE_URL),
-    # which currently routes via OpenRouter or local Ollama. The embedding
-    # provider is independent and may be a different service.
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    chat_model = os.environ.get("BRAIN_QUERY_EXPANSION_MODEL", "").strip() or os.environ.get(
-        "OPENAI_MODEL", "gpt-4.1-nano"
-    )
-    if not api_key:
+    # expand_query is a CHAT call, not an embedding call. It follows the same
+    # Gemma brain profile as Sage/Hermes, while embeddings remain independent.
+    endpoint = _resolve_query_expansion_endpoint()
+    if not endpoint.api_key:
         return [query]
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    client = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url)
     try:
         resp = await client.chat.completions.create(
-            model=chat_model,
+            model=endpoint.model,
             messages=[
                 {
                     "role": "system",
@@ -421,8 +432,8 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
             ],
             temperature=0.7,
             # 400 (not 200) to accommodate reasoning-model overhead.
-            # Thinking models (Nemotron) emit reasoning_tokens that count toward
-            # this budget; tight caps truncate the alternative-query list.
+            # Thinking models can emit reasoning tokens that count toward this
+            # budget; tight caps truncate the alternative-query list.
             max_tokens=400,
         )
     except AuthenticationError:

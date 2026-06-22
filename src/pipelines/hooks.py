@@ -20,6 +20,8 @@ import os
 
 from dagster import HookContext, failure_hook, success_hook
 
+from src.pipelines.posthog_observability import capture_dagster_hook_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -27,7 +29,7 @@ logger = logging.getLogger(__name__)
 def notify_on_failure(context: HookContext):
     """Log structured failure alert for Grafana/OTEL ingestion."""
     run_id = context.run_id
-    job_name = context.op_exception  # will be None at job level
+    error_type = type(context.op_exception).__name__ if context.op_exception else "unknown"
 
     # Structured log entry — picked up by OTEL exporter → Grafana
     logger.error(
@@ -42,6 +44,11 @@ def notify_on_failure(context: HookContext):
             "dagster.job.name": context.job_name,
             "alert": True,
         },
+    )
+    capture_dagster_hook_event(
+        context,
+        status="failure",
+        error_type=error_type,
     )
 
     # Optional: send email alert
@@ -64,6 +71,7 @@ def log_on_success(context: HookContext):
             "dagster.job.name": context.job_name,
         },
     )
+    capture_dagster_hook_event(context, status="success")
 
 
 def _send_email_alert(context: HookContext, email_to: str):

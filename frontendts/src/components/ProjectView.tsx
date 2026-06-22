@@ -9,7 +9,9 @@ import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, isAuthConfigured, use
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
+import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
+import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
 import type {
   Conversation,
   EphemeralAction,
@@ -20,6 +22,13 @@ import type {
   TileLayerUpdate,
 } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
+
+type UploadResponse = {
+  name: string;
+  dag_child_map_id?: string;
+  id?: string;
+  type?: string;
+};
 
 const DROPZONE_ACCEPT: Accept = {
   'application/geo+json': ['.geojson', '.json'],
@@ -199,10 +208,21 @@ export default function ProjectView() {
         } else {
           const gl = layer;
           if (map.getSource(gl.source_id)) continue;
+          let geojsonData: unknown;
+          try {
+            geojsonData = decodeGeoJsonLayerData(gl);
+          } catch (err) {
+            trackError('sage_geojson_layer_replay_decode_failed', err instanceof Error ? err.message : String(err), {
+              project_id: projectId,
+              source_id: gl.source_id,
+              encoding: gl.geojson_encoding || 'unknown',
+            });
+            continue;
+          }
           map.addSource(gl.source_id, {
             type: 'geojson',
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            data: gl.geojson as any,
+            data: geojsonData as any,
           });
           const style = gl.style || {};
           const colorProperty: string | null = style.color_property ?? null;
@@ -237,33 +257,42 @@ export default function ProjectView() {
         console.error('Failed to replay ephemeral layer', layer.source_id, e);
       }
     }
-  }, []);
+  }, [projectId]);
 
   // Helper function to add a new error
-  const addError = useCallback((message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
-    setErrors((prevErrors) => {
-      // if it already exists, bail out
-      if (prevErrors.some((err) => err.message === message)) return prevErrors;
+  const addError = useCallback(
+    (message: string, shouldOverrideMessages: boolean = false, sourceId?: string) => {
+      setErrors((prevErrors) => {
+        // if it already exists, bail out
+        if (prevErrors.some((err) => err.message === message)) return prevErrors;
 
-      const newError: ErrorEntry = {
-        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-        message,
-        timestamp: new Date(),
-        shouldOverrideMessages,
-        sourceId,
-      };
+        const newError: ErrorEntry = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          message,
+          timestamp: new Date(),
+          shouldOverrideMessages,
+          sourceId,
+        };
 
-      console.error(message);
-      if (!shouldOverrideMessages) toast.error(message);
+        console.error(message);
+        trackError('ui_error_shown', message, {
+          project_id: projectId,
+          map_id: versionId ?? null,
+          source_id: sourceId,
+          override_messages: shouldOverrideMessages,
+        });
+        if (!shouldOverrideMessages) toast.error(message);
 
-      // schedule the auto-dismiss
-      setTimeout(() => {
-        setErrors((current) => current.filter((e) => e.id !== newError.id));
-      }, 30000);
+        // schedule the auto-dismiss
+        setTimeout(() => {
+          setErrors((current) => current.filter((e) => e.id !== newError.id));
+        }, 30000);
 
-      return [...prevErrors, newError];
-    });
-  }, []);
+        return [...prevErrors, newError];
+      });
+    },
+    [projectId, versionId],
+  );
 
   // Helper function to dismiss a specific error
   const dismissError = useCallback((errorId: string) => {
@@ -281,6 +310,88 @@ export default function ProjectView() {
 
   // Add state for tracking uploading files
   const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
+  const uploadStartedAtRef = useRef<Map<string, number>>(new Map());
+
+  const updateUploadFile = useCallback((fileId: string, patch: Partial<UploadingFile>) => {
+    setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, ...patch } : f)));
+  }, []);
+
+  const waitForRasterRenderReady = useCallback(
+    async (layerId: string, fileId: string) => {
+      const startedAt = Date.now();
+      const timeoutMs = 15 * 60 * 1000;
+      let lastPhase = '';
+      let lastProgress = 98;
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const res = await fetchMaybeAuth(`/api/layer/${layerId}/render-status`);
+        if (res.ok) {
+          const status = (await res.json()) as {
+            ready?: boolean;
+            status?: string;
+            detail?: string;
+            progress?: number;
+            optimized_ready?: boolean;
+          };
+          if (status.ready) {
+            trackDuration('raster_render_ready', startedAt, {
+              project_id: projectId,
+              map_id: versionId ?? null,
+              layer_id: layerId,
+              file_id: fileId,
+              render_status: status.status,
+              optimized_ready: status.optimized_ready ?? null,
+            });
+            if (status.status === 'ready_raw') {
+              updateUploadFile(fileId, {
+                progress: 99,
+                phase: status.detail || 'Raw raster tiles ready; optimizing in background',
+              });
+            }
+            return;
+          }
+
+          if (status.status === 'cog_failed') {
+            const error = new Error(status.detail || 'Raster tile optimization failed');
+            trackError('raster_render_failed', error, {
+              project_id: projectId,
+              map_id: versionId ?? null,
+              layer_id: layerId,
+              file_id: fileId,
+              render_status: status.status,
+            });
+            throw error;
+          }
+
+          const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+          const elapsedLabel = elapsedSeconds >= 60 ? ` (${Math.floor(elapsedSeconds / 60)} min)` : '';
+          const basePhase = status.detail || (status.status === 'pending_cog' ? 'Optimizing raster tiles' : 'Preparing raster');
+          const phase = `${basePhase}${elapsedLabel}`;
+          const progress =
+            typeof status.progress === 'number' ? Math.max(98, Math.min(99, Math.round(status.progress))) : elapsedSeconds >= 120 ? 99 : 98;
+          if (phase !== lastPhase || progress !== lastProgress) {
+            lastPhase = phase;
+            lastProgress = progress;
+            updateUploadFile(fileId, { progress, phase });
+          }
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+
+      updateUploadFile(fileId, {
+        progress: 99,
+        phase: 'Layer added; optimized tiles continue in background',
+      });
+      trackDuration('raster_render_wait_timeout', startedAt, {
+        project_id: projectId,
+        map_id: versionId ?? null,
+        layer_id: layerId,
+        file_id: fileId,
+      });
+    },
+    [projectId, updateUploadFile, versionId],
+  );
 
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -458,6 +569,12 @@ export default function ProjectView() {
           if (action.error_message) {
             streamingTurnId.current = null;
             setStreamingText('');
+            trackError('sage_action_failed', action.error_message, {
+              project_id: projectId,
+              map_id: action.map_id,
+              action_id: action.action_id,
+              layer_id: action.layer_id,
+            });
             addError(action.error_message, true);
             return;
           }
@@ -518,6 +635,13 @@ export default function ProjectView() {
               if (!ephemeralLayersRef.current.some((l) => l.source_id === tl.source_id)) {
                 ephemeralLayersRef.current = [...ephemeralLayersRef.current, tl];
               }
+              track('sage_tile_layer_added', {
+                project_id: projectId,
+                map_id: action.map_id,
+                action_id: action.action_id,
+                source_id: tl.source_id,
+                tile_count: tl.tiles.length,
+              });
             }
           }
 
@@ -530,10 +654,25 @@ export default function ProjectView() {
             const gl = action.updates.add_geojson_layer;
             const map = mapRef.current;
             if (!map.getSource(gl.source_id)) {
+              let geojsonData: unknown;
+              try {
+                geojsonData = decodeGeoJsonLayerData(gl);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                trackError('sage_geojson_layer_decode_failed', message, {
+                  project_id: projectId,
+                  map_id: action.map_id,
+                  action_id: action.action_id,
+                  source_id: gl.source_id,
+                  encoding: gl.geojson_encoding || 'unknown',
+                });
+                toast.error(`Could not render ${gl.name || 'map layer'}: ${message}`);
+                return;
+              }
               map.addSource(gl.source_id, {
                 type: 'geojson',
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                data: gl.geojson as any,
+                data: geojsonData as any,
               });
               const style = gl.style || {};
               const colorProperty: string | null = style.color_property ?? null;
@@ -541,6 +680,9 @@ export default function ProjectView() {
               const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
               const strokeColor = style.stroke_color || '#1a1a1a';
               const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
+              const extrude3d = style.extrude_3d === true;
+              const extrusionProperty = typeof style.extrusion_property === 'string' ? style.extrusion_property : colorProperty;
+              const extrusionScale = typeof style.extrusion_scale === 'number' ? style.extrusion_scale : 40;
               // Build a MapLibre 'step' expression from the categorical stops so each
               // feature gets the color matching its property bucket.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -555,15 +697,29 @@ export default function ProjectView() {
                 }
                 fillColorExpr = expr;
               }
-              map.addLayer({
-                id: `${gl.source_id}-fill`,
-                type: 'fill',
-                source: gl.source_id,
-                paint: {
-                  'fill-color': fillColorExpr,
-                  'fill-opacity': fillOpacity,
-                },
-              });
+              if (extrude3d && extrusionProperty) {
+                map.addLayer({
+                  id: `${gl.source_id}-extrusion`,
+                  type: 'fill-extrusion',
+                  source: gl.source_id,
+                  paint: {
+                    'fill-extrusion-color': fillColorExpr,
+                    'fill-extrusion-opacity': Math.min(fillOpacity + 0.08, 0.9),
+                    'fill-extrusion-base': 0,
+                    'fill-extrusion-height': ['*', ['coalesce', ['to-number', ['get', extrusionProperty]], 0], extrusionScale],
+                  },
+                });
+              } else {
+                map.addLayer({
+                  id: `${gl.source_id}-fill`,
+                  type: 'fill',
+                  source: gl.source_id,
+                  paint: {
+                    'fill-color': fillColorExpr,
+                    'fill-opacity': fillOpacity,
+                  },
+                });
+              }
               map.addLayer({
                 id: `${gl.source_id}-stroke`,
                 type: 'line',
@@ -576,6 +732,17 @@ export default function ProjectView() {
               if (!ephemeralLayersRef.current.some((l) => l.source_id === gl.source_id)) {
                 ephemeralLayersRef.current = [...ephemeralLayersRef.current, gl];
               }
+              track('sage_geojson_layer_added', {
+                project_id: projectId,
+                map_id: action.map_id,
+                action_id: action.action_id,
+                source_id: gl.source_id,
+                has_3d_extrusion: gl.style?.extrude_3d === true,
+                feature_count: geoJsonFeatureCount(geojsonData),
+                encoding: gl.geojson_encoding || 'identity',
+                raw_size_bytes: gl.geojson_raw_size_bytes ?? null,
+                transport_size_bytes: gl.geojson_transport_size_bytes ?? null,
+              });
             }
           }
 
@@ -585,6 +752,15 @@ export default function ProjectView() {
           } else if (action.status === 'completed') {
             // Remove from active actions
             setActiveActions((prev) => prev.filter((a) => a.action_id !== action.action_id));
+            track('sage_action_completed', {
+              project_id: projectId,
+              map_id: action.map_id,
+              action_id: action.action_id,
+              layer_id: action.layer_id,
+              updated_style_json: action.updates?.style_json === true,
+              added_tile_layer: Boolean(action.updates?.add_tile_layer),
+              added_geojson_layer: Boolean(action.updates?.add_geojson_layer),
+            });
 
             if (action.updates?.style_json) {
               invalidateMapData();
@@ -605,14 +781,17 @@ export default function ProjectView() {
         }
       } catch (e) {
         console.error('Error processing WebSocket message:', e);
+        trackError('project_websocket_message_failed', e, {
+          project_id: projectId,
+          map_id: versionId ?? null,
+        });
         addError('Failed to process update from server.', false);
       }
     }
-  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient]);
+  }, [lastMessage, addError, zoomHistoryIndex, invalidateMapData, queryClient, projectId, versionId]);
 
-  const MULTIPART_THRESHOLD = 50 * 1024 * 1024; // 50 MB
   // Browsers cap parallel HTTP requests to one origin at 6. Going higher just
-  // queues the extras. 6 is the right ceiling for s3.gis.nozalabs.rw.
+  // queues the extras. 6 is the right ceiling for chunked backend uploads.
   const MULTIPART_CONCURRENCY = 6;
   const RESUME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -681,10 +860,20 @@ export default function ProjectView() {
 
   const uploadFile = useMutation({
     retry: false,
-    mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<{ name: string; dag_child_map_id?: string }> => {
+    mutationFn: async ({ file, fileId }: { file: File; fileId: string }): Promise<UploadResponse> => {
       if (!versionId) throw new Error('No version ID available');
+      const uploadStartedAt = uploadStartedAtRef.current.get(fileId) ?? Date.now();
 
-      const useMultipart = file.size >= MULTIPART_THRESHOLD;
+      // Use one reliable path for all files. The backend proxies 10 MB chunks
+      // to storage, so Chrome never has to reach MinIO directly.
+      const useMultipart = true;
+      track('file_upload_started', {
+        project_id: projectId,
+        map_id: versionId,
+        file_id: fileId,
+        upload_path: useMultipart ? 'multipart_proxy' : 'single_put',
+        ...fileAnalytics(file),
+      });
 
       if (useMultipart) {
         // --- Multipart upload: parallel chunks for large files ---
@@ -726,6 +915,15 @@ export default function ProjectView() {
               const s3Set = new Set(status.parts.map((p) => p.part_number));
               const confirmed = saved.completed_parts.filter((p) => s3Set.has(p.part_number));
               const pct = Math.round((confirmed.length / saved.total_parts) * 100);
+              track('file_upload_resume_available', {
+                project_id: projectId,
+                map_id: versionId,
+                file_id: fileId,
+                confirmed_parts: confirmed.length,
+                total_parts: saved.total_parts,
+                percent_complete: pct,
+                ...fileAnalytics(file),
+              });
               const ok = window.confirm(
                 `Resume previous upload of "${saved.filename}"?\n\n` +
                   `${confirmed.length} of ${saved.total_parts} chunks already on the server (~${pct}%).\n\n` +
@@ -733,6 +931,13 @@ export default function ProjectView() {
                   `Cancel = start over from 0%.`,
               );
               if (ok) {
+                track('file_upload_resume_selected', {
+                  project_id: projectId,
+                  map_id: versionId,
+                  file_id: fileId,
+                  confirmed_parts: confirmed.length,
+                  total_parts: saved.total_parts,
+                });
                 completedParts.push(...confirmed);
                 init = {
                   upload_id: saved.upload_id,
@@ -746,7 +951,14 @@ export default function ProjectView() {
               }
             }
           }
-          if (!init) clearResumeState(projectId, fingerprint);
+          if (!init) {
+            track('file_upload_resume_declined_or_expired', {
+              project_id: projectId,
+              map_id: versionId,
+              file_id: fileId,
+            });
+            clearResumeState(projectId, fingerprint);
+          }
         }
 
         if (!init) {
@@ -757,9 +969,26 @@ export default function ProjectView() {
           );
           if (!initRes.ok) {
             const err = await initRes.json().catch(() => ({ detail: initRes.statusText }));
-            throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to init multipart upload');
+            const error = new Error(typeof err.detail === 'string' ? err.detail : 'Failed to init multipart upload');
+            trackError('file_upload_init_failed', error, {
+              project_id: projectId,
+              map_id: versionId,
+              file_id: fileId,
+              http_status: initRes.status,
+              ...fileAnalytics(file),
+            });
+            throw error;
           }
           init = (await initRes.json()) as InitShape;
+          track('file_upload_multipart_initialized', {
+            project_id: projectId,
+            map_id: versionId,
+            file_id: fileId,
+            layer_id: init.layer_id,
+            total_parts: init.total_parts,
+            part_size_bytes: init.part_size,
+            ...fileAnalytics(file),
+          });
         }
 
         const partSize = init.part_size;
@@ -802,14 +1031,15 @@ export default function ProjectView() {
           if (raw > highWaterPercent) highWaterPercent = raw;
           if (highWaterPercent === lastDisplayedPercent) return;
           lastDisplayedPercent = highWaterPercent;
-          setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: highWaterPercent } : f)));
+          updateUploadFile(fileId, { progress: highWaterPercent, phase: 'Uploading bytes' });
         };
 
-        const putPartOnce = (partUrl: string, blob: Blob, partNum: number): Promise<XMLHttpRequest> =>
-          new Promise<XMLHttpRequest>((resolve, reject) => {
+        const putPartOnce = async (partUrl: string, blob: Blob, partNum: number, attempt: number): Promise<XMLHttpRequest> => {
+          const token = isAuthConfigured() ? await getJwt({ skipCache: attempt > 0 }) : undefined;
+          return new Promise<XMLHttpRequest>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            // 15 min per 50MB chunk → tolerates ~55 KB/s sustained on a single
-            // stream. With 6 parallel streams, overall throughput floor ~330 KB/s.
+            // 15 min per 10 MB chunk tolerates slow rural connections while
+            // still failing dead network requests eventually.
             xhr.timeout = 15 * 60 * 1000;
             xhr.upload.addEventListener('progress', (ev) => {
               if (ev.lengthComputable) {
@@ -825,8 +1055,11 @@ export default function ProjectView() {
             xhr.addEventListener('timeout', () => reject(new Error('timeout')));
             xhr.addEventListener('abort', () => reject(new Error('aborted')));
             xhr.open('PUT', partUrl);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
             xhr.send(blob);
           });
+        };
 
         const uploadPart = async (partNum: number): Promise<void> => {
           const start = (partNum - 1) * partSize;
@@ -837,18 +1070,16 @@ export default function ProjectView() {
           let lastErr: unknown = null;
           for (let attempt = 0; attempt < 4; attempt++) {
             try {
-              // Re-presign on each attempt (URL expires in 1h, attempt may be late).
-              const presignRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-multipart-presign`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ s3_key: init.s3_key, upload_id: init.upload_id, part_numbers: [partNum] }),
-              });
-              if (!presignRes.ok) throw new Error(`presign HTTP ${presignRes.status}`);
-              const { urls } = (await presignRes.json()) as { urls: Record<number, string> };
-
               inFlightBytes.set(partNum, 0);
-              const resp = await putPartOnce(urls[partNum], blob, partNum);
-              const etag = (resp.getResponseHeader('ETag') || '').replace(/"/g, '');
+              const partUrl =
+                `/api/maps/${init.dag_child_map_id}/upload-multipart-part` +
+                `?upload_id=${encodeURIComponent(init.upload_id)}` +
+                `&s3_key=${encodeURIComponent(init.s3_key)}` +
+                `&part_number=${partNum}`;
+              const resp = await putPartOnce(partUrl, blob, partNum, attempt);
+              const parsed = JSON.parse(resp.responseText || '{}') as { etag?: string };
+              const etag = parsed.etag || '';
+              if (!etag) throw new Error('missing ETag from upload part');
               completedParts.push({ part_number: partNum, etag });
               inFlightBytes.delete(partNum);
               completedBytes += end - start;
@@ -883,14 +1114,26 @@ export default function ProjectView() {
           }
         };
         const workerCount = Math.min(MULTIPART_CONCURRENCY, queue.length || 1);
+        const byteUploadStartedAt = Date.now();
         await Promise.all(Array.from({ length: workerCount }, () => worker()));
+        trackDuration('file_upload_bytes_sent', byteUploadStartedAt, {
+          project_id: projectId,
+          map_id: versionId,
+          file_id: fileId,
+          layer_id: init.layer_id,
+          worker_count: workerCount,
+          total_parts: totalParts,
+          skipped_parts: completedSet.size,
+          ...fileAnalytics(file),
+        });
 
-        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 92 } : f)));
+        updateUploadFile(fileId, { progress: 92, phase: 'Assembling uploaded parts' });
 
         // Complete multipart upload (assembles parts in S3). Send the upload
         // filename — backend strips .gz and decompresses if needed.
         // Long timeout: S3 has to assemble all parts. For 60+ parts on a
         // 3 GB file this can take a couple of minutes. Default 30s aborts.
+        const assembleStartedAt = Date.now();
         const assembleRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-multipart-complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -906,16 +1149,32 @@ export default function ProjectView() {
         });
         if (!assembleRes.ok) {
           const err = await assembleRes.json().catch(() => ({ detail: assembleRes.statusText }));
-          throw new Error(typeof err.detail === 'string' ? err.detail : 'Failed to assemble multipart upload');
+          const error = new Error(typeof err.detail === 'string' ? err.detail : 'Failed to assemble multipart upload');
+          trackError('file_upload_assemble_failed', error, {
+            project_id: projectId,
+            map_id: versionId,
+            file_id: fileId,
+            layer_id: init.layer_id,
+            http_status: assembleRes.status,
+          });
+          throw error;
         }
+        trackDuration('file_upload_assembled', assembleStartedAt, {
+          project_id: projectId,
+          map_id: versionId,
+          file_id: fileId,
+          layer_id: init.layer_id,
+          total_parts: completedParts.length,
+        });
 
-        setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 95 } : f)));
+        updateUploadFile(fileId, { progress: 95, phase: 'Preparing map layer' });
 
         // Process the uploaded file (same as single-PUT flow). Backend
         // strips .gz from filename and decompresses before processing.
         // Long timeout: backend downloads from S3, runs preprocessing
         // (gunzip if compressed, COG generation, raster reprojection, etc).
         // For a 3 GB file this is 5-15 minutes. Default 30s aborts.
+        const processStartedAt = Date.now();
         const completeRes = await fetchMaybeAuth(`/api/maps/${init.dag_child_map_id}/upload-complete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -929,12 +1188,43 @@ export default function ProjectView() {
         });
         if (!completeRes.ok) {
           const err = await completeRes.json().catch(() => ({ detail: completeRes.statusText }));
-          throw new Error(typeof err.detail === 'string' ? err.detail : 'Processing failed after upload');
+          const error = new Error(typeof err.detail === 'string' ? err.detail : 'Processing failed after upload');
+          trackError('file_upload_processing_failed', error, {
+            project_id: projectId,
+            map_id: versionId,
+            file_id: fileId,
+            layer_id: init.layer_id,
+            http_status: completeRes.status,
+          });
+          throw error;
+        }
+        const completePayload = (await completeRes.json()) as UploadResponse;
+        trackDuration('file_upload_processed', processStartedAt, {
+          project_id: projectId,
+          map_id: versionId,
+          file_id: fileId,
+          layer_id: completePayload.id ?? init.layer_id,
+          layer_type: completePayload.type,
+          ...fileAnalytics(file),
+        });
+        updateUploadFile(fileId, { progress: 98, phase: 'Opening raster tiles' });
+
+        if (completePayload?.type === 'raster' && completePayload?.id) {
+          await waitForRasterRenderReady(completePayload.id, fileId);
         }
 
         // Successful round trip: resume state is no longer needed.
         clearResumeState(projectId, fingerprint);
-        return await completeRes.json();
+        trackDuration('file_upload_ready', uploadStartedAt, {
+          project_id: projectId,
+          map_id: versionId,
+          file_id: fileId,
+          layer_id: completePayload.id ?? init.layer_id,
+          layer_type: completePayload.type,
+          path: 'multipart_proxy',
+          ...fileAnalytics(file),
+        });
+        return completePayload;
       }
 
       // --- Single PUT for small files (< 50 MB) ---
@@ -960,7 +1250,7 @@ export default function ProjectView() {
         xhr.upload.addEventListener('progress', (event) => {
           if (event.lengthComputable) {
             const progress = Math.round((event.loaded / event.total) * 95);
-            setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress } : f)));
+            updateUploadFile(fileId, { progress, phase: 'Uploading bytes' });
           }
         });
         xhr.addEventListener('load', () => {
@@ -972,7 +1262,7 @@ export default function ProjectView() {
         xhr.send(file);
       });
 
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, progress: 97 } : f)));
+      updateUploadFile(fileId, { progress: 97, phase: 'Preparing map layer' });
 
       const completeRes = await fetchMaybeAuth(`/api/maps/${presign.dag_child_map_id}/upload-complete`, {
         method: 'POST',
@@ -990,13 +1280,30 @@ export default function ProjectView() {
         throw new Error(typeof d2 === 'string' ? d2 : d2 ? JSON.stringify(d2) : 'Processing failed after upload');
       }
 
-      return await completeRes.json();
+      const completePayload = await completeRes.json();
+      updateUploadFile(fileId, { progress: 98, phase: 'Opening raster tiles' });
+      if (completePayload?.type === 'raster' && completePayload?.id) {
+        await waitForRasterRenderReady(completePayload.id, fileId);
+      }
+      return completePayload;
     },
     onSuccess: (response, { fileId }) => {
       toast.success(`Layer "${response.name}" uploaded successfully! Navigating to new map...`);
+      const startedAt = uploadStartedAtRef.current.get(fileId);
+      if (startedAt) {
+        trackDuration('file_upload_succeeded', startedAt, {
+          project_id: projectId,
+          map_id: versionId ?? null,
+          file_id: fileId,
+          layer_id: response.id ?? null,
+          layer_type: response.type ?? null,
+          dag_child_map_id: response.dag_child_map_id ?? null,
+        });
+      }
+      uploadStartedAtRef.current.delete(fileId);
 
       // Mark as completed
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, status: 'completed', progress: 100 } : f)));
+      updateUploadFile(fileId, { status: 'completed', progress: 100, phase: 'Ready to render' });
 
       // Remove from uploading list after delay
       setTimeout(() => {
@@ -1020,8 +1327,17 @@ export default function ProjectView() {
     },
     onError: (error, { file, fileId }) => {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      setUploadingFiles((prev) => prev.map((f) => (f.id === fileId ? { ...f, status: 'error', error: errorMessage } : f)));
+      updateUploadFile(fileId, { status: 'error', error: errorMessage });
       toast.error(`Error uploading ${file.name}: ${errorMessage}`);
+      const startedAt = uploadStartedAtRef.current.get(fileId);
+      trackError('file_upload_failed', error, {
+        project_id: projectId,
+        map_id: versionId ?? null,
+        file_id: fileId,
+        duration_ms: startedAt ? Math.max(0, Math.round(Date.now() - startedAt)) : null,
+        ...fileAnalytics(file),
+      });
+      uploadStartedAtRef.current.delete(fileId);
 
       // Remove from uploading list after delay to show error state
       setTimeout(() => {
@@ -1041,6 +1357,12 @@ export default function ProjectView() {
       const validFiles = acceptedFiles.filter((file) => {
         if (file.size > maxFileSize) {
           toast.error(`File "${file.name}" is too large. Files over 5GB aren't supported yet.`);
+          track('file_upload_rejected', {
+            project_id: projectId,
+            map_id: versionId,
+            reason: 'over_size_limit',
+            ...fileAnalytics(file),
+          });
           return false;
         }
         return true;
@@ -1054,17 +1376,27 @@ export default function ProjectView() {
         file,
         progress: 0,
         status: 'uploading',
+        phase: 'Queued',
       }));
 
       // Add to uploading files state
       setUploadingFiles((prev) => [...prev, ...newUploadingFiles]);
+      for (const uploadingFile of newUploadingFiles) {
+        uploadStartedAtRef.current.set(uploadingFile.id, Date.now());
+        track('file_upload_queued', {
+          project_id: projectId,
+          map_id: versionId,
+          file_id: uploadingFile.id,
+          ...fileAnalytics(uploadingFile.file),
+        });
+      }
 
       // Start uploading each file
       newUploadingFiles.forEach((uploadingFile) => {
         uploadFile.mutate({ file: uploadingFile.file, fileId: uploadingFile.id });
       });
     },
-    [versionId, uploadFile],
+    [projectId, versionId, uploadFile],
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({

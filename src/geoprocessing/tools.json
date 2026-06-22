@@ -361,7 +361,9 @@
             "default": "EPSG:4326"
           }
         },
-        "required": ["EXTENT"]
+        "required": [
+          "EXTENT"
+        ]
       }
     }
   },
@@ -394,11 +396,18 @@
           "STATISTICS": {
             "type": "array",
             "description": "Statistics to compute: 0=Count, 1=Sum, 2=Mean, 3=Median, 4=StDev, 5=Min, 6=Max. Default: [2] (Mean)",
-            "items": { "type": "integer" },
-            "default": [2]
+            "items": {
+              "type": "integer"
+            },
+            "default": [
+              2
+            ]
           }
         },
-        "required": ["INPUT", "INPUT_RASTER"]
+        "required": [
+          "INPUT",
+          "INPUT_RASTER"
+        ]
       }
     }
   },
@@ -406,13 +415,16 @@
     "type": "function",
     "function": {
       "name": "query_rwanda_zonal_stats",
-      "description": "Query agricultural zonal statistics for Rwanda. Use query_type='district_summary' (DEFAULT) for per-district NDVI/crop overviews — works for all districts, a single province, or a single district. Use query_type='ndvi_timeseries' ONLY when you have a specific h3_index or parcel_id.",
+      "description": "Query agricultural zonal statistics for Rwanda. Use query_type='district_summary' (DEFAULT) for per-district NDVI/crop overviews \u2014 works for all districts, a single province, or a single district. Use query_type='ndvi_timeseries' ONLY when you have a specific h3_index or parcel_id.",
       "parameters": {
         "type": "object",
         "properties": {
           "query_type": {
             "type": "string",
-            "enum": ["district_summary", "ndvi_timeseries"],
+            "enum": [
+              "district_summary",
+              "ndvi_timeseries"
+            ],
             "description": "district_summary: aggregated NDVI stats per district/province (no h3_index needed, this is the default). ndvi_timeseries: weekly NDVI time-series for a SPECIFIC h3_index or parcel_id (REQUIRED, will error without one)."
           },
           "district": {
@@ -425,11 +437,11 @@
           },
           "h3_index": {
             "type": "string",
-            "description": "H3 hexagon index — REQUIRED for ndvi_timeseries, not used for district_summary"
+            "description": "H3 hexagon index \u2014 REQUIRED for ndvi_timeseries, not used for district_summary"
           },
           "parcel_id": {
             "type": "string",
-            "description": "Parcel ID — REQUIRED for ndvi_timeseries (alternative to h3_index), not used for district_summary"
+            "description": "Parcel ID \u2014 REQUIRED for ndvi_timeseries (alternative to h3_index), not used for district_summary"
           },
           "date_from": {
             "type": "string",
@@ -444,7 +456,9 @@
             "description": "Week start date in YYYY-MM-DD format (optional, for district_summary)"
           }
         },
-        "required": ["query_type"]
+        "required": [
+          "query_type"
+        ]
       }
     }
   },
@@ -481,7 +495,7 @@
     "type": "function",
     "function": {
       "name": "get_field_health",
-      "description": "Get real-time vegetation health statistics for a specific polygon/area using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. PREFERRED tool when the user asks about NDVI, crop health, vegetation, or field monitoring for a specific area, buffer zone, field, or any polygon that is NOT an admin boundary. Use the geometry from an existing layer on the map (buffer, drawn polygon, uploaded field boundary).",
+      "description": "Get real-time vegetation health statistics for a specific polygon/area using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. PREFERRED tool when the user asks about NDVI, crop health, vegetation, or field monitoring for a specific area, buffer zone, field, or any polygon that is NOT an admin boundary. Use the geometry from an existing layer on the map (buffer, drawn polygon, uploaded field boundary). WHEN TO USE: a user-drawn polygon, any geography, optionally a specific date. WHEN NOT TO USE: Rwanda admin boundary (district/sector/cell) \u2014 use get_agri_indices. Cached weekly aggregates \u2014 use get_ndvi_stats or get_parcel_ndvi_stats.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -500,11 +514,16 @@
           },
           "index": {
             "type": "string",
-            "enum": ["ndvi", "multi"],
+            "enum": [
+              "ndvi",
+              "multi"
+            ],
             "description": "Index type: 'ndvi' for NDVI only, 'multi' for NDVI+NDWI+BSI. Default: ndvi"
           }
         },
-        "required": ["geometry"]
+        "required": [
+          "geometry"
+        ]
       }
     }
   },
@@ -512,7 +531,7 @@
     "type": "function",
     "function": {
       "name": "get_ndvi_stats",
-      "description": "Read the latest NDVI vegetation index statistics for a single Rwanda district. Returns one weekly mean NDVI number. ONLY use for simple single-number NDVI lookups like 'what is the NDVI in Musanze'. Do NOT use for situation overviews, status reports, or assessment questions — use get_insurance_intelligence instead, which combines rainfall + NDVI + ET + dry spells + triggers into one report.",
+      "description": "Read the latest NDVI vegetation index statistics for a single Rwanda district. Returns one weekly mean NDVI number. ONLY use for simple single-number NDVI lookups like 'what is the NDVI in Musanze'. Do NOT use for situation overviews, status reports, or assessment questions \u2014 use get_insurance_intelligence instead, which combines rainfall + NDVI + ET + dry spells + triggers into one report. WHEN TO USE: one weekly mean NDVI value for ONE named Rwanda district. WHEN NOT TO USE: sector/cell granularity \u2014 use get_cell_ndvi_stats. Real-time over a polygon \u2014 use get_field_health. User-uploaded field \u2014 use get_parcel_ndvi_stats.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -530,7 +549,7 @@
     "type": "function",
     "function": {
       "name": "get_cell_ndvi_stats",
-      "description": "Read NDVI vegetation index statistics at sector or cell level within a district. Returns sector_name and cell_name in every row so results can be grouped by sector. When sector is provided, returns only cells in that sector. When only district is provided, returns all sectors with their cells. Use as a SUPPLEMENT after get_insurance_intelligence when the user wants spatial breakdown. Do NOT use as the primary tool for situation/overview questions.",
+      "description": "Read NDVI vegetation index statistics at sector or cell level within a district. Returns sector_name and cell_name in every row so results can be grouped by sector. When sector is provided, returns only cells in that sector. When only district is provided, returns all sectors with their cells. Use as a SUPPLEMENT after get_insurance_intelligence when the user wants spatial breakdown. Do NOT use as the primary tool for situation/overview questions. WHEN TO USE: sector- or cell-level NDVI within a named Rwanda district. WHEN NOT TO USE: district-level summary \u2014 use get_ndvi_stats. User-uploaded polygon \u2014 use get_parcel_ndvi_stats.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -601,11 +620,17 @@
           },
           "depth": {
             "type": "string",
-            "enum": ["0-20", "20-50"],
+            "enum": [
+              "0-20",
+              "20-50"
+            ],
             "description": "Soil depth range in centimeters. Default: 0-20"
           }
         },
-        "required": ["longitude", "latitude"]
+        "required": [
+          "longitude",
+          "latitude"
+        ]
       }
     }
   },
@@ -613,7 +638,7 @@
     "type": "function",
     "function": {
       "name": "get_parcel_ndvi_stats",
-      "description": "Read parcel-level NDVI statistics from the DuckDB cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health.",
+      "description": "Read parcel-level NDVI statistics from the DuckDB cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health. WHEN TO USE: user-uploaded field boundary by slug or name (e.g. Cyampirita, Kabarama, Kabari). WHEN NOT TO USE: Rwanda admin boundary \u2014 use get_ndvi_stats or get_cell_ndvi_stats. Real-time on an arbitrary polygon \u2014 use get_field_health.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -635,14 +660,18 @@
     "type": "function",
     "function": {
       "name": "get_agri_indices",
-      "description": "Get REAL-TIME agricultural vegetation indices for Rwanda ADMINISTRATIVE BOUNDARIES only (districts, sectors, cells). Computes 6 indices: NDVI, EVI, NDWI, SAVI, NDRE, NDBI. Only use when the user explicitly asks for district/sector/cell level analysis. Do NOT use for custom areas, buffers, fields, or drawn polygons — use get_field_health instead for those.",
+      "description": "Get REAL-TIME agricultural vegetation indices for Rwanda ADMINISTRATIVE BOUNDARIES only (districts, sectors, cells). Computes 6 indices: NDVI, EVI, NDWI, SAVI, NDRE, NDBI. Only use when the user explicitly asks for district/sector/cell level analysis. Do NOT use for custom areas, buffers, fields, or drawn polygons \u2014 use get_field_health instead for those. WHEN TO USE: Rwanda ADMIN boundaries (district/sector/cell) needing live multi-index values now. WHEN NOT TO USE: user-drawn polygon \u2014 use get_field_health. Pre-aggregated weekly NDVI only \u2014 use get_ndvi_stats or get_cell_ndvi_stats.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "admin_level": {
             "type": "string",
-            "enum": ["district", "sector", "cell"],
+            "enum": [
+              "district",
+              "sector",
+              "cell"
+            ],
             "description": "Administrative level: 'district' (30 units), 'sector' (416 units, ADM3), 'cell' (2148 units, ADM4). Default: district"
           },
           "name": {
@@ -670,14 +699,17 @@
     "type": "function",
     "function": {
       "name": "add_land_cover_layer",
-      "description": "Add ESRI 10m Annual LULC 2024 land cover layer to the map. Shows cropland vs non-cropland at 10m resolution from satellite imagery. Two modes: 'all' shows all 9 land cover classes (water, trees, flooded vegetation, crops, built area, bare ground, snow/ice, clouds, rangeland). 'cropland' highlights cropland in green and mutes everything else. IMPORTANT: always clip to the area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon to auto-detect the correct admin boundary. NEVER guess district names. NEVER show the entire country unless the user explicitly asks for it.",
+      "description": "Add ESRI 10m Annual LULC 2024 land cover layer to the map. Shows cropland vs non-cropland at 10m resolution from satellite imagery. Two modes: 'all' shows all 9 land cover classes (water, trees, flooded vegetation, crops, built area, bare ground, snow/ice, clouds, rangeland). 'cropland' highlights cropland in green and mutes everything else. IMPORTANT: always clip to the area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon to auto-detect the correct admin boundary. NEVER guess district names. NEVER show the entire country unless the user explicitly asks for it. WHEN TO USE: the user wants to SEE land cover on the map. WHEN NOT TO USE: numeric land-cover area or percentage for a region \u2014 use query_worldcover_stats. This tool only adds a visual layer.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "mode": {
             "type": "string",
-            "enum": ["all", "cropland"],
+            "enum": [
+              "all",
+              "cropland"
+            ],
             "description": "Visualization mode: 'all' shows all 9 land cover classes with distinct colours. 'cropland' highlights cropland areas in green and mutes all other classes. Default: all"
           },
           "lat": {
@@ -690,22 +722,24 @@
           },
           "bbox": {
             "type": "array",
-            "items": { "type": "number" },
+            "items": {
+              "type": "number"
+            },
             "minItems": 4,
             "maxItems": 4,
             "description": "Bounding box [west, south, east, north] in EPSG:4326 to clip the layer to. Use when the user refers to a custom area (buffer circle, drawn polygon, existing layer extent). Extract the bounds from the relevant layer in MapState."
           },
           "district": {
             "type": "string",
-            "description": "Rwanda district name — only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
+            "description": "Rwanda district name \u2014 only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
           },
           "sector": {
             "type": "string",
-            "description": "Rwanda sector name — only use if the user explicitly names a sector."
+            "description": "Rwanda sector name \u2014 only use if the user explicitly names a sector."
           },
           "cell": {
             "type": "string",
-            "description": "Rwanda cell name — only use if the user explicitly names a cell."
+            "description": "Rwanda cell name \u2014 only use if the user explicitly names a cell."
           }
         },
         "required": []
@@ -716,14 +750,17 @@
     "type": "function",
     "function": {
       "name": "query_worldcover_stats",
-      "description": "Query ESRI 10m LULC 2024 land-cover statistics for a specific area. Two query types: 'land_cover' returns area in hectares for each land-cover class (crops, trees, rangeland, etc.). 'largest_cropland' returns the biggest contiguous cropland plantations ranked by area. IMPORTANT: always scope to the user's area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon from the Center Point layer — the tool will auto-detect the correct admin boundary. NEVER guess district names — use bbox or lat/lon and let the tool resolve the location.",
+      "description": "Query ESRI 10m LULC 2024 land-cover statistics for a specific area. Two query types: 'land_cover' returns area in hectares for each land-cover class (crops, trees, rangeland, etc.). 'largest_cropland' returns the biggest contiguous cropland plantations ranked by area. IMPORTANT: always scope to the user's area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon from the Center Point layer \u2014 the tool will auto-detect the correct admin boundary. NEVER guess district names \u2014 use bbox or lat/lon and let the tool resolve the location.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "query_type": {
             "type": "string",
-            "enum": ["land_cover", "largest_cropland"],
+            "enum": [
+              "land_cover",
+              "largest_cropland"
+            ],
             "description": "land_cover: area breakdown by land-cover class (DEFAULT). largest_cropland: ranked list of biggest contiguous cropland areas."
           },
           "lat": {
@@ -736,22 +773,24 @@
           },
           "bbox": {
             "type": "array",
-            "items": { "type": "number" },
+            "items": {
+              "type": "number"
+            },
             "minItems": 4,
             "maxItems": 4,
             "description": "Bounding box [west, south, east, north] in EPSG:4326. Use when the user refers to a custom area (buffer circle, drawn polygon, existing layer extent). Extract the bounds from the relevant layer in MapState. This performs on-the-fly analysis for the exact area."
           },
           "district": {
             "type": "string",
-            "description": "Rwanda district name — only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
+            "description": "Rwanda district name \u2014 only use if the user explicitly names a district. Prefer lat/lon or bbox instead."
           },
           "sector": {
             "type": "string",
-            "description": "Rwanda sector name — only use if the user explicitly names a sector."
+            "description": "Rwanda sector name \u2014 only use if the user explicitly names a sector."
           },
           "cell": {
             "type": "string",
-            "description": "Rwanda cell name — only use if the user explicitly names a cell."
+            "description": "Rwanda cell name \u2014 only use if the user explicitly names a cell."
           },
           "limit": {
             "type": "integer",
@@ -766,7 +805,7 @@
     "type": "function",
     "function": {
       "name": "get_crop_classifications",
-      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report — use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district — NEVER guess district names.",
+      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report \u2014 use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district \u2014 NEVER guess district names. WHEN TO USE: read the most recent weekly crop classification result for parcels from the cache. WHEN NOT TO USE: classify a parcel that has not been processed yet \u2014 use identify_parcel_crop.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -781,7 +820,7 @@
           },
           "district": {
             "type": "string",
-            "description": "District name — only use if the user explicitly names a district. Prefer lat/lon instead."
+            "description": "District name \u2014 only use if the user explicitly names a district. Prefer lat/lon instead."
           }
         },
         "required": []
@@ -792,14 +831,17 @@
     "type": "function",
     "function": {
       "name": "get_anomaly_alerts",
-      "description": "Read the latest vegetation anomaly alerts. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use alongside get_insurance_intelligence for situation overviews — it adds spatial hotspot detail. Also use standalone when the user asks specifically about crop problems, stress alerts, or anomalies.",
+      "description": "Read the latest vegetation anomaly alerts. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use alongside get_insurance_intelligence for situation overviews \u2014 it adds spatial hotspot detail. Also use standalone when the user asks specifically about crop problems, stress alerts, or anomalies.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "severity": {
             "type": "string",
-            "enum": ["high", "moderate"],
+            "enum": [
+              "high",
+              "moderate"
+            ],
             "description": "Filter by severity level"
           },
           "district": {
@@ -833,7 +875,7 @@
     "type": "function",
     "function": {
       "name": "get_drought_status",
-      "description": "Read pre-computed drought status from the DuckDB cache. Uses Vegetation Condition Index (VCI) with NDWI water stress analysis per district. Returns drought status (normal/watch/moderate_drought/severe_drought), VCI score, and affected period count. Use when the user asks about drought, water stress, or dry conditions.",
+      "description": "Read pre-computed drought status from the DuckDB cache. Uses Vegetation Condition Index (VCI) with NDWI water stress analysis per district. Returns drought status (normal/watch/moderate_drought/severe_drought), VCI score, and affected period count. Use when the user asks about drought, water stress, or dry conditions. WHEN TO USE: drought severity now (VCI + NDWI). WHEN NOT TO USE: forward-looking yield risk \u2014 use get_yield_risk. Recent NDVI drop alerts \u2014 use get_anomaly_alerts. Historical no-rain windows \u2014 use detect_dry_spells.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -844,7 +886,12 @@
           },
           "status": {
             "type": "string",
-            "enum": ["severe_drought", "moderate_drought", "watch", "normal"],
+            "enum": [
+              "severe_drought",
+              "moderate_drought",
+              "watch",
+              "normal"
+            ],
             "description": "Filter by drought status"
           }
         },
@@ -867,7 +914,14 @@
           },
           "stage": {
             "type": "string",
-            "enum": ["dormant", "green_up", "peak", "senescence", "harvest", "stable"],
+            "enum": [
+              "dormant",
+              "green_up",
+              "peak",
+              "senescence",
+              "harvest",
+              "stable"
+            ],
             "description": "Filter by current growth stage"
           }
         },
@@ -879,7 +933,7 @@
     "type": "function",
     "function": {
       "name": "get_weather_stats",
-      "description": "Read daily weather statistics from the PostgreSQL cache. Data comes from Copernicus AgERA5 agrometeorological indicators at 0.1° (~10km) grid resolution, aggregated to district level. Returns daily temperature (mean/max/min °C), precipitation (mm/day), and solar radiation (MJ/m²/day). NOTE: Results are district-level averages. Actual conditions vary within a district due to elevation, terrain, and microclimates. For location-specific weather, use get_forecast with exact lat/lon instead. Use this tool for HISTORICAL weather only.",
+      "description": "Read daily weather statistics from the PostgreSQL cache. Data comes from Copernicus AgERA5 agrometeorological indicators at 0.1\u00b0 (~10km) grid resolution, aggregated to district level. Returns daily temperature (mean/max/min \u00b0C), precipitation (mm/day), and solar radiation (MJ/m\u00b2/day). NOTE: Results are district-level averages. Actual conditions vary within a district due to elevation, terrain, and microclimates. For location-specific weather, use get_forecast with exact lat/lon instead. Use this tool for HISTORICAL weather only.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -905,7 +959,7 @@
     "type": "function",
     "function": {
       "name": "get_forecast",
-      "description": "Get weather forecast for any location in Rwanda. Fuses 4 models — ECMWF IFS (9km), GFS (13km), ICON (11km), GraphCast AI (28km) — for consensus forecasts with risk assessment. Returns daily temperature, precipitation, wind, ET0, soil moisture, and a natural-language risk briefing. Each location gets unique interpolated values (sector-level precision). Use when the user asks about weather forecast, future weather, expected rainfall, upcoming conditions, or any forward-looking weather question.",
+      "description": "Get weather forecast for any location in Rwanda. Fuses 4 models \u2014 ECMWF IFS (9km), GFS (13km), ICON (11km), GraphCast AI (28km) \u2014 for consensus forecasts with risk assessment. Returns daily temperature, precipitation, wind, ET0, soil moisture, and a natural-language risk briefing. Each location gets unique interpolated values (sector-level precision). Use when the user asks about weather forecast, future weather, expected rainfall, upcoming conditions, or any forward-looking weather question.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -920,7 +974,7 @@
           },
           "district": {
             "type": "string",
-            "description": "Rwanda district name — will use district centroid if lat/lon not provided"
+            "description": "Rwanda district name \u2014 will use district centroid if lat/lon not provided"
           },
           "forecast_days": {
             "type": "integer",
@@ -942,7 +996,7 @@
         "properties": {
           "district": {
             "type": "string",
-            "description": "Specific district to check accuracy for (optional — defaults to all districts)"
+            "description": "Specific district to check accuracy for (optional \u2014 defaults to all districts)"
           },
           "lookback_days": {
             "type": "integer",
@@ -980,12 +1034,22 @@
           },
           "emission_type": {
             "type": "string",
-            "enum": ["CH4", "N2O", "CO2", "NH3"],
+            "enum": [
+              "CH4",
+              "N2O",
+              "CO2",
+              "NH3"
+            ],
             "description": "Filter by gas: CH4 (methane), N2O (nitrous oxide), CO2 (carbon dioxide), NH3 (ammonia)"
           },
           "sector": {
             "type": "string",
-            "enum": ["AGS", "ENF", "MNM", "AWB"],
+            "enum": [
+              "AGS",
+              "ENF",
+              "MNM",
+              "AWB"
+            ],
             "description": "Filter by agriculture sector: AGS (agricultural soils), ENF (enteric fermentation), MNM (manure management), AWB (agricultural waste burning)"
           }
         },
@@ -1019,7 +1083,9 @@
             "description": "End date ISO 8601 (default: today)"
           }
         },
-        "required": ["geometry"]
+        "required": [
+          "geometry"
+        ]
       }
     }
   },
@@ -1038,7 +1104,15 @@
           },
           "crop_type": {
             "type": "string",
-            "enum": ["maize", "beans", "rice", "wheat", "sorghum", "potato", "cassava"],
+            "enum": [
+              "maize",
+              "beans",
+              "rice",
+              "wheat",
+              "sorghum",
+              "potato",
+              "cassava"
+            ],
             "description": "Crop type for baseline fertilizer rates (default: maize)"
           },
           "num_zones": {
@@ -1046,7 +1120,9 @@
             "description": "Number of management zones (2-5, default 3)"
           }
         },
-        "required": ["geometry"]
+        "required": [
+          "geometry"
+        ]
       }
     }
   },
@@ -1068,7 +1144,9 @@
             "description": "Number of management zones for stratification (2-5, default 3)"
           }
         },
-        "required": ["geometry"]
+        "required": [
+          "geometry"
+        ]
       }
     }
   },
@@ -1076,7 +1154,7 @@
     "type": "function",
     "function": {
       "name": "identify_parcel_crop",
-      "description": "Identify what crop is growing on a field parcel using Sentinel-2 NDVI time-series and temporal signature matching. Compares the observed growth curve against known Rwanda crop profiles (maize, beans, cassava, rice, sorghum, banana, tea, coffee, potato, wheat, fallow). Returns the most likely crop with confidence score and ranked alternatives. PREFERRED tool when farmer asks 'what crop is on my field?', 'can you detect what I planted?', or 'identify the crop'. Requires a polygon geometry (field boundary).",
+      "description": "Identify what crop is growing on a field parcel using Sentinel-2 NDVI time-series and temporal signature matching. Compares the observed growth curve against known Rwanda crop profiles (maize, beans, cassava, rice, sorghum, banana, tea, coffee, potato, wheat, fallow). Returns the most likely crop with confidence score and ranked alternatives. PREFERRED tool when farmer asks 'what crop is on my field?', 'can you detect what I planted?', or 'identify the crop'. Requires a polygon geometry (field boundary). WHEN TO USE: classify ONE specific parcel right now from Sentinel-2 time-series. WHEN NOT TO USE: look up an already-classified parcel \u2014 call get_crop_classifications first (cached weekly). General 'what crops grow here' \u2014 use get_entity or search_brain.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -1090,7 +1168,9 @@
             "description": "Number of months of NDVI history to analyze (default: 6, min: 3)"
           }
         },
-        "required": ["geometry"]
+        "required": [
+          "geometry"
+        ]
       }
     }
   },
@@ -1124,7 +1204,11 @@
             "description": "Growing season (e.g. '2026A', '2026B'). Auto-detected if omitted."
           }
         },
-        "required": ["predicted_crop", "actual_crop", "confirmed"]
+        "required": [
+          "predicted_crop",
+          "actual_crop",
+          "confirmed"
+        ]
       }
     }
   },
@@ -1132,7 +1216,7 @@
     "type": "function",
     "function": {
       "name": "get_soil_moisture",
-      "description": "Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil.",
+      "description": "Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil. WHEN TO USE: WaPOR 100m dekadal (10-day) area-aggregated soil moisture, optical-derived. WHEN NOT TO USE: point measurement at sub-daily cadence that sees through clouds and vegetation \u2014 use get_cygnss_soil_moisture. Soil texture/chemistry \u2014 use get_soil_properties.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -1154,7 +1238,10 @@
             "description": "End date (YYYY-MM-DD). Default: latest available"
           }
         },
-        "required": ["latitude", "longitude"]
+        "required": [
+          "latitude",
+          "longitude"
+        ]
       }
     }
   },
@@ -1188,7 +1275,10 @@
             "description": "If true, also return transpiration and net primary productivity. Default: false"
           }
         },
-        "required": ["latitude", "longitude"]
+        "required": [
+          "latitude",
+          "longitude"
+        ]
       }
     }
   },
@@ -1207,7 +1297,10 @@
           },
           "period": {
             "type": "string",
-            "enum": ["current", "projected"],
+            "enum": [
+              "current",
+              "projected"
+            ],
             "description": "current = latest observed situation, projected = near-term outlook. Default: current"
           }
         },
@@ -1226,7 +1319,7 @@
         "properties": {
           "district": {
             "type": "string",
-            "description": "District name to filter (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+            "description": "District name to filter (e.g. Gasabo, Bugesera). Optional \u2014 defaults to all districts"
           },
           "date_from": {
             "type": "string",
@@ -1238,7 +1331,7 @@
           },
           "threshold_mm": {
             "type": "number",
-            "description": "Daily precipitation threshold in mm — days below this count as dry. Default: 2.0"
+            "description": "Daily precipitation threshold in mm \u2014 days below this count as dry. Default: 2.0"
           },
           "min_duration_days": {
             "type": "integer",
@@ -1260,12 +1353,15 @@
         "properties": {
           "district": {
             "type": "string",
-            "description": "District name (e.g. Gasabo, Bugesera). Optional — defaults to all districts"
+            "description": "District name (e.g. Gasabo, Bugesera). Optional \u2014 defaults to all districts"
           },
           "season": {
             "type": "string",
-            "enum": ["A", "B"],
-            "description": "Rwanda growing season: A (Sep-Jan) or B (Feb-Jun). Optional — defaults to last 90 days"
+            "enum": [
+              "A",
+              "B"
+            ],
+            "description": "Rwanda growing season: A (Sep-Jan) or B (Feb-Jun). Optional \u2014 defaults to last 90 days"
           },
           "threshold_mm": {
             "type": "number",
@@ -1280,18 +1376,21 @@
     "type": "function",
     "function": {
       "name": "get_insurance_intelligence",
-      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, season progress, parametric trigger thresholds, and multi-model forecast outlook (ECMWF IFS + GFS + ICON + GraphCast) into one unified report. Reports are location-based (not crop-specific) — they show weather and vegetation conditions for the area regardless of what is planted. Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. COMPARISON MODE: when the user asks to compare areas (e.g. 'compare sectors in Nyamasheke', 'which districts get more rain', 'difference between sectors'), set compare_level to the level being compared. This returns ALL signals for every child area in one call. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required.",
+      "description": "Get a comprehensive agricultural situation report for any location in Rwanda. This is the PRIMARY tool for any question about the 'situation', 'status', 'overview', 'how is [place] doing', or 'what's happening in [place]'. Combines rainfall (CHIRPS cumulative + SPI drought index), vegetation health (NDVI + Sentinel-1 SAR), evapotranspiration (WaPOR), soil moisture, dry spells, season progress, parametric trigger thresholds, and multi-model forecast outlook (ECMWF IFS + GFS + ICON + GraphCast) into one unified report. Reports are location-based (not crop-specific) \u2014 they show weather and vegetation conditions for the area regardless of what is planted. Supports 4 audience views: farmer (simple), insurance (trigger table), agronomist (technical + recommendations), scientist (full methodology). Works at any admin level: district, sector, cell, or village. COMPARISON MODE: when the user asks to compare areas (e.g. 'compare sectors in Nyamasheke', 'which districts get more rain', 'difference between sectors'), set compare_level to the level being compared. This returns ALL signals for every child area in one call. IMPORTANT: at least one location parameter (district, sector, cell, or village) is required. WHEN TO USE: open-ended 'what is happening here' / 'how is this farm doing' over a Rwanda location \u2014 fuses NDVI + weather + drought + crop into one report. WHEN NOT TO USE: the user asked one narrow question (just rainfall, just NDVI, just soil) \u2014 call the specific tool. Do NOT default to this for every Rwanda question.",
       "strict": false,
       "parameters": {
         "type": "object",
         "properties": {
           "crop": {
             "type": "string",
-            "description": "Optional crop name if the user explicitly mentions one. The report shows location-based conditions (rainfall, NDVI, soil moisture, etc) regardless — we cannot detect what crop is planted from satellite. Leave empty or omit for general location reports."
+            "description": "Optional crop name if the user explicitly mentions one. The report shows location-based conditions (rainfall, NDVI, soil moisture, etc) regardless \u2014 we cannot detect what crop is planted from satellite. Leave empty or omit for general location reports."
           },
           "season": {
             "type": "string",
-            "enum": ["A", "B"],
+            "enum": [
+              "A",
+              "B"
+            ],
             "description": "Growing season: A (Sep-Feb) or B (Feb-Jul). Auto-detected if omitted"
           },
           "district": {
@@ -1308,17 +1407,26 @@
           },
           "village": {
             "type": "string",
-            "description": "Village name — most specific admin level"
+            "description": "Village name \u2014 most specific admin level"
           },
           "audience": {
             "type": "string",
-            "enum": ["farmer", "insurance", "agronomist", "scientist"],
+            "enum": [
+              "farmer",
+              "insurance",
+              "agronomist",
+              "scientist"
+            ],
             "description": "Who is reading this report. Default: farmer"
           },
           "compare_level": {
             "type": "string",
-            "enum": ["district", "sector", "cell"],
-            "description": "COMPARISON MODE: set this to compare all child areas at this admin level. 'sector' with district=X compares all sectors in district X. 'cell' with sector=Y compares all cells in sector Y. 'district' compares all 30 districts nationwide. Returns rainfall, SPI, NDVI, soil moisture, ET, temperature, SAR, and dry spells for every area. Only set this when the user asks to COMPARE areas — omit for single-location reports."
+            "enum": [
+              "district",
+              "sector",
+              "cell"
+            ],
+            "description": "COMPARISON MODE: set this to compare all child areas at this admin level. 'sector' with district=X compares all sectors in district X. 'cell' with sector=Y compares all cells in sector Y. 'district' compares all 30 districts nationwide. Returns rainfall, SPI, NDVI, soil moisture, ET, temperature, SAR, and dry spells for every area. Only set this when the user asks to COMPARE areas \u2014 omit for single-location reports."
           }
         },
         "required": []
@@ -1342,7 +1450,9 @@
             "description": "Date to predict NDVI for (YYYY-MM-DD). Default: today"
           }
         },
-        "required": ["bbox"]
+        "required": [
+          "bbox"
+        ]
       }
     }
   },
@@ -1363,7 +1473,9 @@
             "description": "Target date (YYYY-MM-DD). Default: most recent S1 pass"
           }
         },
-        "required": ["bbox"]
+        "required": [
+          "bbox"
+        ]
       }
     }
   },
@@ -1388,7 +1500,11 @@
             "description": "Post-flood date (YYYY-MM-DD)"
           }
         },
-        "required": ["bbox", "date_before", "date_after"]
+        "required": [
+          "bbox",
+          "date_before",
+          "date_after"
+        ]
       }
     }
   },
@@ -1409,7 +1525,9 @@
             "description": "Comma-separated years to analyse (e.g. '2020,2021,2022'). Available: 2015-2022 (PALSAR-2), 2007-2010 (PALSAR). Default: 2020,2021,2022"
           }
         },
-        "required": ["bbox"]
+        "required": [
+          "bbox"
+        ]
       }
     }
   },
@@ -1430,7 +1548,9 @@
             "description": "Comma-separated years (need at least 2). Default: 2018,2019,2020,2021,2022"
           }
         },
-        "required": ["bbox"]
+        "required": [
+          "bbox"
+        ]
       }
     }
   },
@@ -1438,7 +1558,7 @@
     "type": "function",
     "function": {
       "name": "check_cygnss_availability",
-      "description": "Check what NASA CYGNSS (GNSS-Reflectometry) data is available for a bounding box. CYGNSS is an 8-satellite constellation that measures GPS signal reflections to detect soil moisture and surface water. Coverage ±38° latitude (Rwanda is dead center), median 3-hour revisit, ~6-day latency. CYGNSS's killer feature: L-band penetrates vegetation canopy, detecting water UNDER trees where Sentinel-1 and optical fail. Returns granule counts, latest dates, and auth status. No auth needed for this diagnostic tool. Use first before calling get_cygnss_soil_moisture or get_cygnss_watermask.",
+      "description": "Check what NASA CYGNSS (GNSS-Reflectometry) data is available for a bounding box. CYGNSS is an 8-satellite constellation that measures GPS signal reflections to detect soil moisture and surface water. Coverage \u00b138\u00b0 latitude (Rwanda is dead center), median 3-hour revisit, ~6-day latency. CYGNSS's killer feature: L-band penetrates vegetation canopy, detecting water UNDER trees where Sentinel-1 and optical fail. Returns granule counts, latest dates, and auth status. No auth needed for this diagnostic tool. Use first before calling get_cygnss_soil_moisture or get_cygnss_watermask.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1455,7 +1575,7 @@
     "type": "function",
     "function": {
       "name": "get_cygnss_soil_moisture",
-      "description": "Get CYGNSS soil moisture timeseries for a point (lat/lon). Returns volumetric water content (m³/m³, 0-5cm depth) at 9km or 36km resolution. Interpretation: <0.10 dry, 0.10-0.25 moist, 0.25-0.40 wet/flood risk, >0.40 likely standing water. Complements WaPOR (100m dekadal) with higher temporal resolution. Requires NASA Earthdata credentials — if unavailable, returns granule availability without data. Use for drought monitoring, irrigation planning, or flood risk at a specific field.",
+      "description": "Get CYGNSS soil moisture timeseries for a point (lat/lon). Returns volumetric water content (m\u00b3/m\u00b3, 0-5cm depth) at 9km or 36km resolution. Interpretation: <0.10 dry, 0.10-0.25 moist, 0.25-0.40 wet/flood risk, >0.40 likely standing water. Complements WaPOR (100m dekadal) with higher temporal resolution. Requires NASA Earthdata credentials \u2014 if unavailable, returns granule availability without data. Use for drought monitoring, irrigation planning, or flood risk at a specific field.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1476,7 +1596,10 @@
             "description": "Grid resolution, 9 or 36 km. Default: 9"
           }
         },
-        "required": ["lat", "lon"]
+        "required": [
+          "lat",
+          "lon"
+        ]
       }
     }
   },
@@ -1484,7 +1607,7 @@
     "type": "function",
     "function": {
       "name": "get_cygnss_watermask",
-      "description": "Get CYGNSS binary water/land classification at ~1km resolution for a bounding box. L-band GNSS-R detects water under vegetation canopy — ponds hidden under banana groves show up here where Sentinel-1 fails. Coarser than SAR water detection (detect_water_bodies at ~10m) but sees through canopy. Use for aquaculture pond verification under forest cover, or cross-validating Sentinel-1 flood extent. Requires NASA Earthdata credentials.",
+      "description": "Get CYGNSS binary water/land classification at ~1km resolution for a bounding box. L-band GNSS-R detects water under vegetation canopy \u2014 ponds hidden under banana groves show up here where Sentinel-1 fails. Coarser than SAR water detection (detect_water_bodies at ~10m) but sees through canopy. Use for aquaculture pond verification under forest cover, or cross-validating Sentinel-1 flood extent. Requires NASA Earthdata credentials.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -1501,7 +1624,9 @@
             "description": "'watermask_daily' (1km, daily) or 'watermask_monthly' (1km, monthly). Default: watermask_daily"
           }
         },
-        "required": ["bbox"]
+        "required": [
+          "bbox"
+        ]
       }
     }
   },
@@ -1526,7 +1651,9 @@
             "description": "Max results to return (default 10, max 100)"
           }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     }
   },
@@ -1543,7 +1670,9 @@
             "description": "The entity slug (e.g. 'field-gasabo-001', 'farmer-uwimana')"
           }
         },
-        "required": ["slug"]
+        "required": [
+          "slug"
+        ]
       }
     }
   },
@@ -1576,7 +1705,10 @@
             "description": "Source of the observation (e.g. 'field_visit', 'satellite', 'user_report'). Default: 'user_report'"
           }
         },
-        "required": ["slug", "summary"]
+        "required": [
+          "slug",
+          "summary"
+        ]
       }
     }
   },
@@ -1594,7 +1726,9 @@
             "description": "Place name to search for, e.g. 'Musanze district, Rwanda' or 'Kigali'"
           }
         },
-        "required": ["query"],
+        "required": [
+          "query"
+        ],
         "additionalProperties": false
       }
     }
@@ -1625,7 +1759,12 @@
             "description": "Display name for the map layer, e.g. 'Musanze TCI Jan 2025'"
           }
         },
-        "required": ["bbox", "date_from", "date_to", "layer_name"],
+        "required": [
+          "bbox",
+          "date_from",
+          "date_to",
+          "layer_name"
+        ],
         "additionalProperties": false
       }
     }
@@ -1634,7 +1773,7 @@
     "type": "function",
     "function": {
       "name": "compute_spectral_index",
-      "description": "Compute a spectral index (NDVI, NDWI, or NBR) over an area and display it on the map with a colormap. Returns area statistics (mean, std, min, max). Use this for vegetation health analysis (NDVI), water/flood detection (NDWI), or burn severity mapping (NBR). Always call search_location first to get the bbox.",
+      "description": "Compute a spectral index (NDVI, NDWI, or NBR) over an area and display it on the map with a colormap. Returns area statistics (mean, std, min, max). Use this for vegetation health analysis (NDVI), water/flood detection (NDWI), or burn severity mapping (NBR). Always call search_location first to get the bbox. WHEN TO USE: the user wants to SEE NDVI/NDWI/NBR as a coloured layer on the map. WHEN NOT TO USE: numbers/stats only \u2014 use get_field_health or get_ndvi_stats. This tool renders; it does not return tabular metrics.",
       "strict": true,
       "parameters": {
         "type": "object",
@@ -1645,7 +1784,11 @@
           },
           "index": {
             "type": "string",
-            "enum": ["ndvi", "ndwi", "nbr"],
+            "enum": [
+              "ndvi",
+              "ndwi",
+              "nbr"
+            ],
             "description": "Spectral index to compute: 'ndvi' (vegetation health), 'ndwi' (water/flooding), or 'nbr' (burn severity)"
           },
           "date_from": {
@@ -1661,7 +1804,13 @@
             "description": "Display name for the map layer, e.g. 'NDVI Musanze Jan 2025'"
           }
         },
-        "required": ["bbox", "index", "date_from", "date_to", "layer_name"],
+        "required": [
+          "bbox",
+          "index",
+          "date_from",
+          "date_to",
+          "layer_name"
+        ],
         "additionalProperties": false
       }
     }

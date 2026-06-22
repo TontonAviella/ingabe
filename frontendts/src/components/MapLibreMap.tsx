@@ -5,6 +5,8 @@ import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLa
 import { StyleBridge } from '../lib/StyleBridge';
 import { BasemapControl } from './BasemapControl';
 
+const HIDDEN_SELECTED_FEATURE_FIELDS = new Set(['h3_index', 'h3_resolution', 'screening_model', 'analysis_goal', 'domain']);
+
 function renderTree(tree: RenderElement | null): JSX.Element | null {
   if (!tree) return null;
   return React.createElement(tree.element, tree.attributes, tree.children?.map(renderTree));
@@ -145,6 +147,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
+import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import type {
   Conversation,
@@ -223,6 +226,48 @@ const BASEMAP_SOURCE_IDS = new Set([
   'ne2_shaded',
   'openmaptiles',
 ]);
+
+const H3_RENDER_LAYER_PREFIXES = ['h3-risk-fill-', 'h3-risk-extrusion-', 'h3-risk-outline-'];
+
+function getH3RenderLayerIds(map: MLMap): string[] {
+  const style = map.getStyle();
+  const layers = style.layers ?? [];
+  const h3LayerIds = layers
+    .map((layer) => layer.id)
+    .filter(
+      (layerId): layerId is string =>
+        H3_RENDER_LAYER_PREFIXES.some((prefix) => layerId.startsWith(prefix)) && Boolean(map.getLayer(layerId)),
+    );
+  return Array.from(new Set(h3LayerIds));
+}
+
+function trackH3RenderVerification(map: MLMap, projectId: string, mapId: string) {
+  const h3LayerIds = getH3RenderLayerIds(map);
+  if (h3LayerIds.length === 0) return;
+
+  const sourceIds = new Set(
+    h3LayerIds
+      .map((layerId) => map.getLayer(layerId))
+      .filter((layer): layer is NonNullable<ReturnType<MLMap['getLayer']>> => Boolean(layer))
+      .map((layer) => ('source' in layer ? layer.source : null))
+      .filter((sourceId): sourceId is string => typeof sourceId === 'string'),
+  );
+  const canvas = map.getCanvas();
+  const viewport: [[number, number], [number, number]] = [
+    [0, 0],
+    [canvas.clientWidth, canvas.clientHeight],
+  ];
+  const features = map.queryRenderedFeatures(viewport, { layers: h3LayerIds });
+  track('map_h3_render_verified', {
+    project_id: projectId,
+    map_id: mapId,
+    h3_style_layer_count: h3LayerIds.length,
+    h3_source_count: sourceIds.size,
+    h3_rendered_feature_count: features.length,
+    zoom: Number(map.getZoom().toFixed(2)),
+    status: features.length > 0 ? 'visible' : 'empty',
+  });
+}
 
 export default function MapLibreMap({
   mapId,
@@ -427,6 +472,7 @@ export default function MapLibreMap({
   // current style and applies it with a single setStyle() call.
   // This is more robust than imperatively adding/removing layers because
   // setStyle() handles all the internal bookkeeping atomically.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: paint overrides are read from a mutable ref at action time.
   const handleBasemapChange = useCallback(
     async (newBasemap: string) => {
       const map = localMapRef.current;
@@ -837,8 +883,10 @@ export default function MapLibreMap({
   );
 
   // effect runs when map initializes AND when new point clouds are added
+  // biome-ignore lint/correctness/useExhaustiveDependencies: container recreation is driven by map and point-cloud lifecycle; style updates run elsewhere.
   useEffect(() => {
     if (!mapContainerRef.current) return;
+    const mapInitStartedAt = Date.now();
 
     // need to nuke in order to re-draw, TODO this can be improved
     if (localMapRef.current) {
@@ -904,6 +952,13 @@ export default function MapLibreMap({
 
       newMap.on('load', () => {
         setIsMapReady(true);
+        trackDuration('map_renderer_initialized', mapInitStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          layer_count: mapData?.layers?.length ?? 0,
+          point_cloud_layer_count: pointCloudLayers.length,
+          deckgl_3d_layer_count: deckgl3dLayers.length,
+        });
         // deck.gl overlay — dynamically imported and isolated so it can't prevent other setup
         (async () => {
           try {
@@ -931,6 +986,12 @@ export default function MapLibreMap({
             newMap.addControl(deckOverlay);
           } catch (deckErr) {
             console.error('Error initializing deck.gl overlay:', deckErr);
+            trackError('map_deck_overlay_failed', deckErr, {
+              project_id: project.id,
+              map_id: mapId,
+              point_cloud_layer_count: pointCloudLayers.length,
+              deckgl_3d_layer_count: deckgl3dLayers.length,
+            });
           }
         })();
 
@@ -994,6 +1055,11 @@ export default function MapLibreMap({
           // 401 on tile requests = expired Clerk token. Refresh and reload tiles
           // instead of showing a confusing "Token expired" error to the user.
           if (e.error.status === 401) {
+            track('map_tile_auth_refresh_started', {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : null,
+            });
             (async () => {
               // No skipCache: TokenManager deduplicates concurrent 401 refresh calls.
               // 20 tiles failing at once → 1 Clerk token request, not 20.
@@ -1017,6 +1083,11 @@ export default function MapLibreMap({
                 }
               } else {
                 // Clerk session is fully dead, user needs to re-login
+                trackError('map_tile_auth_refresh_failed', e.error, {
+                  project_id: project.id,
+                  map_id: mapId,
+                  http_status: e.error.status,
+                });
                 addError('Session expired. Please refresh the page to sign in again.', true);
               }
             })();
@@ -1024,6 +1095,12 @@ export default function MapLibreMap({
           }
           // Non-auth 4xx errors: show the user the message
           if (e.error.status >= 400 && e.error.status < 500 && e.error.body instanceof Blob) {
+            trackError('map_renderer_http_error', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : null,
+              http_status: e.error.status,
+            });
             // Read the body of the error
             (async () => {
               const bodyStr = await e.error.body.text();
@@ -1045,18 +1122,41 @@ export default function MapLibreMap({
           } else if (e.error.status == 502 && e.error.message.indexOf('.mvt') !== -1) {
             // This just means database is slow
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_timeout', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError('PostGIS query took 60+ seconds, database might be overloaded', true, sourceId);
           } else if (e.error.status == 422 && e.error.message.indexOf('.mvt') !== -1) {
             // Layer query is structurally incompatible with vector tile rendering
             // (e.g. non-integer id column, invalid geometry). Actionable by the user.
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_invalid_query', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError("This layer's query is incompatible with the map renderer. Ask Sage to recreate it.", true, sourceId);
           } else if (e.error.status == 500 && e.error.message.indexOf('.mvt') !== -1) {
             // Potentially an error with the query
             const sourceId = 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : undefined;
+            trackError('map_vector_tile_query_failed', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              source_id: sourceId,
+              http_status: e.error.status,
+            });
             addError('PostGIS query errored while executing, either re-create a new query or contact support', true, sourceId);
           } else {
             // Unknown type of error?
+            trackError('map_renderer_error', e.error, {
+              project_id: project.id,
+              map_id: mapId,
+              http_status: e.error.status,
+            });
             addError('Error loading map data: ' + e.error.message, true);
           }
         } else {
@@ -1070,6 +1170,12 @@ export default function MapLibreMap({
             const match = msg.match(/Bad response code:\s*(\d+)/);
             const code = match ? parseInt(match[1], 10) : null;
             if (code === 423) {
+              track('map_tile_generation_pending', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               addError('Vector tiles are still generating. Please refresh in a moment. This will take 2-3 minutes.', true, sourceId);
               return;
             }
@@ -1078,6 +1184,12 @@ export default function MapLibreMap({
               // external provider rate limiting. Trigger a style refresh to get
               // fresh presigned URLs, debounced to once per 30 seconds.
               console.warn('Tile source returned 403 (presigned URL may have expired)', sourceId);
+              track('map_tile_presigned_url_expired', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               if (styleUpdateCounterRef.current !== undefined) {
                 const now = Date.now();
                 if (!lastPresignedRefreshRef.current || now - lastPresignedRefreshRef.current > 30_000) {
@@ -1094,9 +1206,20 @@ export default function MapLibreMap({
               // 502 for tile/pmtiles requests means the file isn't in storage yet —
               // not actionable by the user, so log quietly instead of toasting.
               console.warn('Tile source returned 502 (file may be missing from storage)', sourceId);
+              track('map_tile_storage_pending', {
+                project_id: project.id,
+                map_id: mapId,
+                source_id: sourceId,
+                http_status: code,
+              });
               return;
             }
           }
+          trackError('map_renderer_error', e.error, {
+            project_id: project.id,
+            map_id: mapId,
+            source_id: sourceId,
+          });
           addError('Error loading map data: ' + (msg ?? 'Unknown error'), true, sourceId);
         }
       });
@@ -1116,6 +1239,10 @@ export default function MapLibreMap({
       };
     } catch (err) {
       console.error('Error initializing map:', err);
+      trackError('map_renderer_init_failed', err, {
+        project_id: project.id,
+        map_id: mapId,
+      });
       addError('Failed to initialize map: ' + (err instanceof Error ? err.message : String(err)), true);
     }
   }, [addError, pointCloudLayers, createPointCloudLayer, mapRef]); // listen to point cloud layers
@@ -1352,6 +1479,16 @@ export default function MapLibreMap({
 
       // Update the style using setStyle
       map.setStyle(style);
+      map.once('idle', () => {
+        try {
+          trackH3RenderVerification(map, project.id, mapId);
+        } catch (err) {
+          trackError('map_h3_render_verification_failed', err, {
+            project_id: project.id,
+            map_id: mapId,
+          });
+        }
+      });
 
       // Re-apply non-mercator projection after the style finishes loading
       if (currentProjection?.type && currentProjection.type !== 'mercator') {
@@ -1376,11 +1513,10 @@ export default function MapLibreMap({
       console.error('Error updating style:', err);
       addError('Failed to update map style: ' + (err instanceof Error ? err.message : String(err)), true);
     }
-  }, [styleData, addError]); // Only re-run when actual style data changes
+  }, [styleData, addError, mapId, project.id]); // Only re-run when actual style data changes
 
   // Load legend symbols separately — depends on mapData but should NOT
   // trigger a full setStyle() call (which wipes paint overrides).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: styleData guard ensures map has a style
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !styleData) return;
@@ -1486,12 +1622,26 @@ export default function MapLibreMap({
   // Function to send a message
   const sendMessage = async (text: string) => {
     if (!text.trim()) return;
+    const messageStartedAt = Date.now();
+    const trimmedText = text.trim();
+    const clientTurnId = createAnalyticsTurnId();
+    track('sage_message_submitted', {
+      project_id: project.id,
+      map_id: mapId,
+      conversation_id: conversationId ?? null,
+      client_turn_id: clientTurnId,
+      had_existing_conversation: conversationId !== null,
+      message_length: trimmedText.length,
+      selected_feature_present: Boolean(selectedFeature),
+      viewport_bounds_present: Boolean(mapRef.current),
+      websocket_ready: readyStateRef.current === ReadyState.OPEN,
+    });
 
     setInputValue(''); // Clear input after preparing to send
 
     const userMessage: ChatCompletionUserMessageParam = {
       role: 'user',
-      content: text,
+      content: trimmedText,
     };
 
     // Create and add ephemeral action
@@ -1515,6 +1665,7 @@ export default function MapLibreMap({
 
       // If no conversation, create one first
       if (conversationIdToUse === null) {
+        const conversationStartedAt = Date.now();
         // Creating conversation also an ephemeral action
         const createConversationAction: EphemeralAction = {
           map_id: mapId,
@@ -1544,6 +1695,12 @@ export default function MapLibreMap({
         const newConv = (await createResp.json()) as Conversation;
         conversationIdToUse = newConv.id;
         setConversationId(conversationIdToUse);
+        trackDuration('sage_conversation_created', conversationStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
+        });
 
         // Wait briefly for websocket to connect to the new conversation
         const maxWaitMs = 10000;
@@ -1559,6 +1716,7 @@ export default function MapLibreMap({
       const sendBody: MessageSendRequest = {
         message: userMessage,
         selected_feature: null,
+        client_turn_id: clientTurnId,
       };
       if (selectedFeature) {
         sendBody.selected_feature = {
@@ -1581,18 +1739,43 @@ export default function MapLibreMap({
 
       if (response.ok) {
         await response.json();
+        trackDuration('sage_message_send_succeeded', messageStartedAt, {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
+          selected_feature_present: Boolean(selectedFeature),
+          viewport_bounds_present: Boolean(sendBody.viewport_bounds),
+        });
         invalidateProjectData();
       } else if (response.status === 401) {
         // Session expired during chat send. Give a clear, actionable message.
+        trackError('sage_message_send_failed', new Error(`HTTP ${response.status}`), {
+          project_id: project.id,
+          map_id: mapId,
+          conversation_id: conversationIdToUse,
+          client_turn_id: clientTurnId,
+          http_status: response.status,
+        });
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
         return;
       } else {
         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
         const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        const error = new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
+        (error as Error & { status?: number }).status = response.status;
+        throw error;
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Network error';
+      trackError('sage_message_send_failed', error, {
+        project_id: project.id,
+        map_id: mapId,
+        conversation_id: conversationId ?? null,
+        client_turn_id: clientTurnId,
+        duration_ms: Math.max(0, Math.round(Date.now() - messageStartedAt)),
+        selected_feature_present: Boolean(selectedFeature),
+      });
       // Translate cryptic "Token expired" into actionable message
       if (msg.toLowerCase().includes('token expired') || msg.toLowerCase().includes('unauthorized')) {
         addError('Your session has expired. Please refresh the page to continue chatting.', true);
@@ -1663,6 +1846,7 @@ export default function MapLibreMap({
   }, [currentBasemap]);
 
   // Fetch scene info when Sentinel-2 Live basemap is active
+  // biome-ignore lint/correctness/useExhaustiveDependencies: mapInstanceId is an intentional trigger-only dependency.
   useEffect(() => {
     const map = localMapRef.current;
     if (!map || !isSentinel2Active) return;
@@ -1892,6 +2076,7 @@ export default function MapLibreMap({
                           // Hide auto-enriched metric columns added by the
                           // (now removed) enrichment API. These are computed
                           // values, not original layer attributes.
+                          if (HIDDEN_SELECTED_FEATURE_FIELDS.has(key)) return false;
                           const enrichedPrefixes = [
                             'soil_',
                             'ndvi_',

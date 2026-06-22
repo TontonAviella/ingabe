@@ -360,8 +360,8 @@ async def interpret_raster_health(
         response["sanity_warning"] = desc["sanity_warning"]
 
     # Surface a paintable view of the analyzed NDVI band itself, in addition to
-    # the verdict polygon. describe_user_raster has already minted a 6h presigned
-    # COG URL — reuse it so Sage doesn't have to round-trip another tool.
+    # the verdict polygon. describe_user_raster already surfaces a safe local
+    # COG reference, so Sage doesn't have to round-trip another tool.
     try:
         cog_url = desc.get("displayable_cog_url")
         if cog_url and desc.get("bounds_wgs84"):

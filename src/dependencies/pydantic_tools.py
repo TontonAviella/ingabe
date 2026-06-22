@@ -105,6 +105,42 @@ from src.tools.similarity import (
     find_similar_tiles,
     FindSimilarTilesArgs,
 )
+from src.tools.render_snapshot import (
+    render_map_snapshot,
+    RenderMapSnapshotArgs,
+)
+from src.tools.rain_impact import (
+    analyze_expected_rain_impact,
+    AnalyzeExpectedRainImpactArgs,
+)
+from src.tools.sphere_flood import (
+    analyze_sphere_flood_impact,
+    AnalyzeSphereFloodImpactArgs,
+)
+from src.tools.h3_spatial_insight import (
+    create_h3_spatial_insight_layer,
+    CreateH3SpatialInsightLayerArgs,
+)
+from src.tools.raster_h3_context import (
+    create_raster_h3_context_layer,
+    CreateRasterH3ContextLayerArgs,
+)
+from src.tools.raster_object_candidates import (
+    analyze_raster_object_candidates,
+    AnalyzeRasterObjectCandidatesArgs,
+)
+from src.tools.open_buildings import (
+    analyze_open_buildings_exposure,
+    AnalyzeOpenBuildingsExposureArgs,
+)
+from src.tools.spatial_engines import (
+    get_spatial_engine_capabilities,
+    GetSpatialEngineCapabilitiesArgs,
+)
+from src.tools.pipeline_evidence import (
+    get_pipeline_evidence_status,
+    GetPipelineEvidenceStatusArgs,
+)
 from src.openstreetmap import has_openstreetmap_api_key
 
 
@@ -258,6 +294,51 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "find_similar_tiles": (
             find_similar_tiles,
             FindSimilarTilesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "render_map_snapshot": (
+            render_map_snapshot,
+            RenderMapSnapshotArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_expected_rain_impact": (
+            analyze_expected_rain_impact,
+            AnalyzeExpectedRainImpactArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_sphere_flood_impact": (
+            analyze_sphere_flood_impact,
+            AnalyzeSphereFloodImpactArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "create_h3_spatial_insight_layer": (
+            create_h3_spatial_insight_layer,
+            CreateH3SpatialInsightLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "create_raster_h3_context_layer": (
+            create_raster_h3_context_layer,
+            CreateRasterH3ContextLayerArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_raster_object_candidates": (
+            analyze_raster_object_candidates,
+            AnalyzeRasterObjectCandidatesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "analyze_open_buildings_exposure": (
+            analyze_open_buildings_exposure,
+            AnalyzeOpenBuildingsExposureArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_spatial_engine_capabilities": (
+            get_spatial_engine_capabilities,
+            GetSpatialEngineCapabilitiesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_pipeline_evidence_status": (
+            get_pipeline_evidence_status,
+            GetPipelineEvidenceStatusArgs,
             IngabeToolCallMetaArgs,
         ),
     }

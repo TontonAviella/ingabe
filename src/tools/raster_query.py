@@ -199,21 +199,16 @@ async def describe_user_raster(
         "compatible_tools": _compatible_tools_for_type(raster_type),
     }
 
-    # Surface a long-expiry (6h) presigned COG URL plus per-band display hints
+    # Surface a same-origin local layer reference plus per-band display hints
     # so Sage can pass them to display_layer for proper colormapped rendering of
     # specific drone-export bands (NDVI in band 2, NDRE in band 3, etc.). The
     # default user-raster tile endpoint shows the first 3 bands as RGB, which
-    # gives a useless false-color view for packed-indices drone exports.
+    # gives a useless false-color view for packed-indices drone exports. Do not
+    # expose raw MinIO presigned URLs to Sage/browser map tiles: local Docker
+    # hostnames resolve to private IPs and should stay backend-only.
     if cog_key and bounds and len(bounds) == 4:
         try:
-            from src.utils import get_async_s3_client, get_bucket_name
-            s3_client = await get_async_s3_client()
-            bucket = get_bucket_name()
-            display_url = await s3_client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket, "Key": cog_key},
-                ExpiresIn=21600,  # 6 hours, long enough for a chat session
-            )
+            display_url = f"mundi-layer:{row['layer_id']}"
             west, south, east, north = bounds
             bbox_str = f"{west},{south},{east},{north}"
             response["displayable_cog_url"] = display_url

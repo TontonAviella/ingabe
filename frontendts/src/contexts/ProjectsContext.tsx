@@ -1,6 +1,7 @@
 import { apiFetch, useIsReady } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, ReactNode, useContext, useState } from 'react';
+import { track, trackDuration, trackError } from '../lib/analytics';
 import { MapProject } from '../lib/types';
 
 interface ProjectsContextValue {
@@ -51,9 +52,23 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     queryFn: async () => {
       const response = await apiFetch(`/api/projects/?page=${currentPage}&limit=12&include_deleted=${showDeleted}`);
       if (!response.ok) {
-        throw new Error(`Failed to fetch projects: ${response.status} ${response.statusText}`);
+        const error = new Error(`Failed to fetch projects: ${response.status} ${response.statusText}`);
+        trackError('project_list_fetch_failed', error, {
+          http_status: response.status,
+          page: currentPage,
+          include_deleted: showDeleted,
+        });
+        throw error;
       }
-      return response.json();
+      try {
+        return await response.json();
+      } catch (error) {
+        trackError('project_list_parse_failed', error, {
+          page: currentPage,
+          include_deleted: showDeleted,
+        });
+        throw error;
+      }
     },
   });
 
@@ -64,15 +79,26 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     queryFn: async () => {
       const response = await apiFetch('/api/projects/');
       if (!response.ok) {
-        throw new Error(`Failed to fetch all projects: ${response.status} ${response.statusText}`);
+        const error = new Error(`Failed to fetch all projects: ${response.status} ${response.statusText}`);
+        trackError('project_sidebar_fetch_failed', error, {
+          http_status: response.status,
+        });
+        throw error;
       }
-      return response.json();
+      try {
+        return await response.json();
+      } catch (error) {
+        trackError('project_sidebar_parse_failed', error);
+        throw error;
+      }
     },
   });
 
   // Mutation for creating projects
   const createProjectMutation = useMutation({
     mutationFn: async () => {
+      const startedAt = Date.now();
+      track('project_create_started');
       const response = await apiFetch('/api/maps/create', {
         method: 'POST',
         headers: {
@@ -88,10 +114,17 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create map');
+        const error = new Error(`Failed to create map: ${response.status} ${response.statusText}`);
+        trackError('project_create_failed', error, { http_status: response.status });
+        throw error;
       }
 
-      return response.json();
+      const payload = await response.json();
+      trackDuration('project_create_succeeded', startedAt, {
+        project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
+        map_id: typeof payload?.map_id === 'string' ? payload.map_id : undefined,
+      });
+      return payload;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -101,15 +134,21 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   // Mutation for deleting projects
   const deleteProjectMutation = useMutation({
     mutationFn: async (projectId: string) => {
+      const startedAt = Date.now();
+      track('project_delete_started', { project_id: projectId });
       const response = await apiFetch(`/api/projects/${projectId}`, {
         method: 'DELETE',
       });
 
       if (!response.ok) {
-        throw new Error('Failed to delete map');
+        const error = new Error(`Failed to delete map: ${response.status} ${response.statusText}`);
+        trackError('project_delete_failed', error, { project_id: projectId, http_status: response.status });
+        throw error;
       }
 
-      return response.json();
+      const payload = await response.json();
+      trackDuration('project_delete_succeeded', startedAt, { project_id: projectId });
+      return payload;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });

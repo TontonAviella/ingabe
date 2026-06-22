@@ -10,7 +10,7 @@ ARG BASE_IMAGE=ghcr.io/tontonaviella/mundi-base:latest
 
 # ── Python dependencies ──
 FROM ${BASE_IMAGE} AS python-builder
-COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 # Install development headers for building Python packages + gfortran for DSSAT.
@@ -27,18 +27,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY requirements.txt /app/
 COPY clay-source /app/clay-source
-# Install CPU-only torch before clay-source so its `torch>=2.4.0` transitive dep
-# is already satisfied. Default PyPI torch wheel is CUDA (~2GB compressed) which
-# OOMs the ubuntu-latest CI runner during unpack. Hetzner CPX42 has no GPU so
-# CUDA torch was wasted bytes anyway.
+# Install CPU-only torch before the rest of the Python stack so Torch-dependent
+# packages do not pull the default CUDA wheels. Hetzner CPX42 and CI runners
+# have no GPU, so CUDA torch is wasted bytes and can exhaust disk/memory.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
-    uv pip install -r requirements.txt && \
-    uv pip install hyperdx-opentelemetry && \
+    grep -Ev '^(torch|torchvision)==' requirements.txt > /tmp/requirements-no-torch.txt && \
     uv pip install \
+        --index-strategy unsafe-best-match \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
-        "torch==2.4.1" "torchvision==0.19.1" && \
+        "torch==2.12.1+cpu" "torchvision==0.27.1+cpu" && \
+    uv pip install -r /tmp/requirements-no-torch.txt && \
+    uv pip install hyperdx-opentelemetry && \
     uv pip install /app/clay-source && \
     uv pip uninstall \
         nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
@@ -74,7 +75,7 @@ WORKDIR /app
 
 # Copy Python virtual environment from builder
 COPY --from=python-builder /app/.venv /app/.venv
-COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-install DuckDB extensions so they don't need network access at runtime
@@ -92,7 +93,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH="/app:/usr/local/lib/python3.11/dist-packages:/usr/lib/python3/dist-packages" \
     LD_LIBRARY_PATH="/usr/local/lib:/usr/lib" \
     GDAL_DATA="/usr/local/share/gdal" \
-    GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins"
+    GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins" \
+    XDG_CACHE_HOME="/cache" \
+    MPLCONFIGDIR="/cache/matplotlib" \
+    TORCH_HOME="/cache/torch" \
+    MUNDI_SAMGEO_CHECKPOINT_DIR="/cache/samgeo"
 
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -100,8 +105,9 @@ RUN chmod +x /entrypoint.sh
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
-    && mkdir -p /cache \
+    && mkdir -p /cache/matplotlib /cache/torch /cache/samgeo \
     && chown appuser:appuser /cache \
+    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/samgeo \
     && chown appuser:appuser /home/appuser \
     && chmod 755 /home/appuser
 # /home/appuser must be appuser-owned BEFORE first volume mount, because docker
