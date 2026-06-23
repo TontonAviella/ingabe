@@ -4,6 +4,14 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.4.0] - 2026-06-23
+
+### Fixed
+- Prevent cancelled Sage background work from leaving the chat stuck on "Sage is thinking..." by recording failure telemetry, sending a final stream-done event, and showing a plain retry message.
+- Make GeoLibre runtime proof and pipeline-evidence writes resilient to root-owned Docker cache volumes, with app-owned cache initialization and fallback cache paths.
+- Harden local Docker startup by reusing the Bitnami MinIO client, disabling Redis protected mode on the internal Compose network, and allowing `REDIS_IMAGE` overrides for local recovery.
+- Stop Vite dev dependency scanning from indexing the local `opensrc` source cache.
+
 ## [0.5.3.1] - 2026-06-23
 
 ### Fixed
