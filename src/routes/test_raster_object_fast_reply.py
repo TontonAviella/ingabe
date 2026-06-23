@@ -52,8 +52,9 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
     assert "capped at 500 marks" in reply
     assert "marks shown for review" in reply
     assert "not as the number of houses" in reply
-    assert "outlined layer `Object Candidates - Cyampirita_Orthophoto`" in reply
+    assert "outlined layer `House/Roof Review Marks - Cyampirita_Orthophoto`" in reply
     assert "layer Lobjects123" in reply
+    assert "Object Candidates" not in reply
     assert "500 houses" not in reply
     assert "top 500 likely matches" not in reply
 
@@ -75,3 +76,34 @@ def test_raster_object_reply_keeps_generic_candidate_language() -> None:
     assert "road: 2" in reply
     assert "water: 2" in reply
     assert "review marks" in reply
+
+
+def test_raster_object_reply_timeout_is_plain_language() -> None:
+    reply = _raster_object_fast_reply(
+        {
+            "status": "timeout",
+            "error": "Raster object marking exceeded the live chat timeout.",
+        },
+        "Cyampirita_Orthophoto",
+        requested_building_count=True,
+    )
+
+    assert "could not finish marking the houses" in reply
+    assert "does not keep thinking forever" in reply
+    assert "object candidates" not in reply
+    assert "SamGeo" not in reply
+    assert "GeoLibre" not in reply
+
+
+def test_raster_object_error_is_plain_language() -> None:
+    reply = _raster_object_fast_reply(
+        {
+            "status": "error",
+            "error": "backend tool unavailable",
+        },
+        "Cyampirita_Orthophoto",
+    )
+
+    assert "could not mark the requested features" in reply
+    assert "backend tool unavailable" in reply
+    assert "object candidates" not in reply

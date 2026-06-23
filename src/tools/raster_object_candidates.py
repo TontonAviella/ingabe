@@ -212,6 +212,8 @@ async def analyze_raster_object_candidates(
                 "COG/preview-backed segmentation is the fast production path."
             )
 
+    visible_layer_name = _visible_review_layer_name(row["name"], args.target_classes)
+
     if args.render_map and result.get("status") == "success":
         engines = result.setdefault("engines", {})
         render_engine = engines.setdefault("render", {})
@@ -222,7 +224,7 @@ async def analyze_raster_object_candidates(
                 user_uuid=meta.user_uuid,
                 map_id=meta.map_id,
                 project_id=meta.project_id,
-                layer_name=f"Object Candidates - {row['name']}",
+                layer_name=visible_layer_name,
             )
         except Exception as exc:
             logger.warning(
@@ -234,14 +236,14 @@ async def analyze_raster_object_candidates(
         if persisted_layer:
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Saving object candidates layer: {row['name']}",
+                f"Saving review marks layer: {row['name']}",
                 layer_id=persisted_layer.layer_id,
                 update_style_json=True,
                 bounds=persisted_layer.bounds or result.get("bbox"),
             ) as payload:
                 payload.updates["raster_object_layer_persisted"] = {
                     "layer_id": persisted_layer.layer_id,
-                    "name": f"Object Candidates - {row['name']}",
+                    "name": visible_layer_name,
                     "pmtiles": True,
                     "geoparquet": bool(persisted_layer.geoparquet_key),
                     "pmtiles_maxzoom": persisted_layer.pmtiles_maxzoom,
@@ -279,13 +281,13 @@ async def analyze_raster_object_candidates(
             style = _candidate_style()
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Rendering object candidates preview: {row['name']}",
+                f"Rendering review marks preview: {row['name']}",
                 bounds=result.get("bbox"),
             ) as payload:
                 payload.updates["add_geojson_layer"] = geojson_layer_update(
                     source_id=source_id,
                     geojson=result["geojson"],
-                    name=f"Object Candidates - {row['name']}",
+                    name=visible_layer_name,
                     bounds=result.get("bbox"),
                     style_hint="raster_object_candidates",
                     style=style,
@@ -315,6 +317,13 @@ async def analyze_raster_object_candidates(
             result["geojson"] = json.dumps(geojson)
 
     return result
+
+
+def _visible_review_layer_name(source_layer_name: str, target_classes: list[str]) -> str:
+    normalized = {str(value).strip().lower() for value in target_classes if value}
+    if normalized and normalized <= {"building", "house", "roof"}:
+        return f"House/Roof Review Marks - {source_layer_name}"
+    return f"Feature Review Marks - {source_layer_name}"
 
 
 async def _run_service_with_timeout(
