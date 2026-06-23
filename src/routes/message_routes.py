@@ -7742,6 +7742,16 @@ async def process_chat_interaction_task_safely(
 ):
     started_at = time.monotonic()
     lock_key = f"chat_lock:{conversation.id}"
+
+    async def clear_streaming_state() -> None:
+        try:
+            await kue_stream_token(conversation.id, "", done=True, turn_id=None)
+        except Exception:
+            logger.debug(
+                "kue_stream_token done=True (safe wrapper) failed",
+                exc_info=True,
+            )
+
     try:
         await process_chat_interaction_task(
             request,
@@ -7768,6 +7778,29 @@ async def process_chat_interaction_task_safely(
                 "duration_ms": elapsed_ms(started_at),
             },
         )
+    except asyncio.CancelledError:
+        logger.warning(
+            "Sage chat processing was cancelled for conversation %s",
+            conversation.id,
+        )
+        capture_for_session(
+            "backend_sage_message_failed",
+            session,
+            {
+                "map_id": map_id,
+                "conversation_id": conversation.id,
+                "client_turn_id": client_turn_id,
+                "message_id": user_message_id,
+                "duration_ms": elapsed_ms(started_at),
+                "error_type": "CancelledError",
+            },
+        )
+        await clear_streaming_state()
+        await kue_notify_error(
+            conversation.id,
+            "Sage stopped before finishing this request. Please try again.",
+        )
+        raise
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Sage could not process this request."
         logger.warning(
@@ -7788,6 +7821,7 @@ async def process_chat_interaction_task_safely(
                 "status_code": exc.status_code,
             },
         )
+        await clear_streaming_state()
         await kue_notify_error(conversation.id, detail)
     except Exception as exc:
         logger.exception("Sage chat processing crashed for conversation %s", conversation.id)
@@ -7803,6 +7837,7 @@ async def process_chat_interaction_task_safely(
                 "error_type": type(exc).__name__,
             },
         )
+        await clear_streaming_state()
         await kue_notify_error(
             conversation.id,
             "Sage hit an internal error while processing this request. Please try again.",
