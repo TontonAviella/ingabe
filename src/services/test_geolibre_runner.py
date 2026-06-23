@@ -116,3 +116,19 @@ def test_list_geolibre_tool_manifests_filters(monkeypatch):
     assert result["status"] == "success"
     assert result["matched_count"] == 1
     assert result["tools"][0]["id"] == "spectral_index"
+
+
+def test_geolibre_runner_status_reports_success_when_runtime_loads(monkeypatch):
+    _install_fake_geolibre(monkeypatch)
+    monkeypatch.setattr(
+        geolibre_runner,
+        "_python_package_status",
+        lambda import_name, package_name: {"installed": True, "version": "test"},
+    )
+
+    status = geolibre_runner.geolibre_runner_status(include_manifest_sample=True)
+
+    assert status["status"] == "success"
+    assert status["installed"] is True
+    assert status["tool_count"] == 3
+    assert status["sample_tools"][0]["id"] == "spectral_index"

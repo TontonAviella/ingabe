@@ -8,6 +8,7 @@ local, privacy-safe way to answer "is this pipeline fresh?" without inventing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from contextlib import contextmanager
@@ -22,6 +23,9 @@ except ImportError:  # pragma: no cover - Windows fallback for local dev only.
 
 _DEFAULT_PATH = "/tmp/ingabe_cache/pipeline_evidence.json"
 _MAX_EVENTS = 80
+_FALLBACK_RELATIVE_PATH = Path("ingabe") / "pipeline_evidence.json"
+
+logger = logging.getLogger(__name__)
 
 _SAFE_KEYS = {
     "analysis_domain",
@@ -76,22 +80,20 @@ def record_pipeline_evidence(event: str, properties: Mapping[str, Any]) -> bool:
     if not record:
         return False
 
-    path = _evidence_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _evidence_lock(path):
-        payload = _read_payload(path)
-        events = [record, *payload.get("events", [])][:_MAX_EVENTS]
+    errors: list[str] = []
+    for path in _candidate_evidence_paths():
+        try:
+            _write_record(path, record)
+            return True
+        except OSError as exc:
+            errors.append(f"{path}: {type(exc).__name__}: {exc}")
 
-        latest = payload.get("latest", {})
-        latest[_record_key(record)] = record
-
-        next_payload = {
-            "updated_at": _now_iso(),
-            "latest": latest,
-            "events": events,
-        }
-        _atomic_write(path, next_payload)
-    return True
+    if errors:
+        logger.warning(
+            "Pipeline evidence write skipped; no writable path: %s",
+            "; ".join(errors),
+        )
+    return False
 
 
 def read_pipeline_evidence(
@@ -102,8 +104,7 @@ def read_pipeline_evidence(
     stale_after_hours: float = 24.0,
 ) -> dict[str, Any]:
     """Return latest local pipeline evidence, optionally filtered."""
-    path = _evidence_path()
-    payload = _read_payload(path)
+    path, payload = _read_first_available_payload()
     latest = list(payload.get("latest", {}).values())
     if source_category:
         latest = [
@@ -174,11 +175,30 @@ def _read_payload(path: Path) -> dict[str, Any]:
                 payload.setdefault("latest", {})
                 payload.setdefault("events", [])
                 return payload
-    except FileNotFoundError:
-        pass
     except Exception:
-        pass
+        return _empty_payload()
+    return _empty_payload()
+
+
+def _empty_payload() -> dict[str, Any]:
     return {"updated_at": None, "latest": {}, "events": []}
+
+
+def _write_record(path: Path, record: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _evidence_lock(path):
+        payload = _read_payload(path)
+        events = [dict(record), *payload.get("events", [])][:_MAX_EVENTS]
+
+        latest = payload.get("latest", {})
+        latest[_record_key(record)] = dict(record)
+
+        next_payload = {
+            "updated_at": _now_iso(),
+            "latest": latest,
+            "events": events,
+        }
+        _atomic_write(path, next_payload)
 
 
 def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
@@ -208,8 +228,46 @@ def _evidence_lock(path: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _read_first_available_payload() -> tuple[Path, dict[str, Any]]:
+    candidates = _candidate_evidence_paths()
+    for path in candidates:
+        if path.exists():
+            payload = _read_payload(path)
+            if (
+                payload.get("updated_at")
+                or payload.get("latest")
+                or payload.get("events")
+            ):
+                return path, payload
+    return candidates[0], _empty_payload()
+
+
+def _candidate_evidence_paths() -> list[Path]:
+    configured = os.environ.get("PIPELINE_EVIDENCE_PATH")
+    if configured and Path(configured) != Path(_DEFAULT_PATH):
+        return [Path(configured)]
+
+    candidates = [Path(configured or _DEFAULT_PATH)]
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        candidates.append(Path(xdg_cache_home) / _FALLBACK_RELATIVE_PATH)
+
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(Path(home) / ".cache" / _FALLBACK_RELATIVE_PATH)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(path)
+    return deduped
+
+
 def _evidence_path() -> Path:
-    return Path(os.environ.get("PIPELINE_EVIDENCE_PATH", _DEFAULT_PATH))
+    return _candidate_evidence_paths()[0]
 
 
 def _now_iso() -> str:
