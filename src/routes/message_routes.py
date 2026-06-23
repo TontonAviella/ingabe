@@ -1891,9 +1891,15 @@ def _raster_object_fast_reply(
     requested_building_count: bool = False,
 ) -> str:
     if result.get("status") != "success":
+        if result.get("status") == "timeout":
+            return (
+                f"I could not finish marking the houses in {layer_name} within the live chat limit. "
+                "I stopped this attempt so Sage does not keep thinking forever. "
+                "Zoom into the village area and ask again, or run the deeper map analysis job."
+            )
+        detail = result.get("error") or result.get("status") or "unknown error"
         return (
-            f"I could not extract object candidates from {layer_name}: "
-            f"{result.get('error') or result.get('status') or 'unknown error'}"
+            f"I could not mark the requested features in {layer_name}: {detail}"
         )
 
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
@@ -1906,8 +1912,13 @@ def _raster_object_fast_reply(
         engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
         render_engine = engines.get("render") if isinstance(engines.get("render"), dict) else {}
         rendered_layer_id = render_engine.get("layer_id")
+    visible_layer_name = (
+        f"House/Roof Review Marks - {layer_name}"
+        if requested_building_count
+        else f"Feature Review Marks - {layer_name}"
+    )
     layer_hint = (
-        f" Look at the outlined layer `Object Candidates - {layer_name}`"
+        f" Look at the outlined layer `{visible_layer_name}`"
         f" to see each marked location"
         f"{f' (layer {rendered_layer_id})' if rendered_layer_id else ''}."
         if rendered_layer_id
@@ -1958,6 +1969,14 @@ def _plain_raster_object_performance_note(note: object) -> str:
     if "timed out" in lowered or "fallback" in lowered or "rasterio" in lowered:
         return "I used the quick image-analysis path for this live answer; a deeper pass can refine the marks later."
     return ""
+
+
+def _fast_raster_object_turn_timeout_seconds() -> float:
+    raw = os.environ.get("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "90")
+    try:
+        return max(15.0, float(raw))
+    except (TypeError, ValueError):
+        return 90.0
 
 
 async def _maybe_run_fast_raster_object_turn(
@@ -2023,22 +2042,103 @@ async def _maybe_run_fast_raster_object_turn(
     tool_args = dict(fast_call.arguments)
     tool_args["layer_id"] = str(layer["layer_id"])
     layer_name = str(layer.get("name") or "that raster")
+    fast_timeout_seconds = _fast_raster_object_turn_timeout_seconds()
+
+    capture_for_session(
+        "backend_sage_fast_raster_objects_started",
+        session,
+        {
+            "map_id": map_id,
+            "conversation_id": conversation.id,
+            "layer_id": str(layer["layer_id"]),
+            "requested_building_count": requested_building_count,
+            "target_classes_csv": ",".join(
+                str(value) for value in tool_args.get("target_classes", []) if value
+            ),
+            "max_candidates": tool_args.get("max_candidates"),
+            "engine_preference": tool_args.get("engine_preference"),
+            "timeout_seconds": fast_timeout_seconds,
+        },
+    )
 
     async with kue_ephemeral_action(
         conversation.id,
-        "Extracting object candidates from orthophoto...",
+        (
+            "Marking likely houses on the orthophoto..."
+            if requested_building_count
+            else "Marking requested features on the orthophoto..."
+        ),
         layer_id=str(layer["layer_id"]),
     ):
-        result = await analyze_raster_object_candidates(
-            AnalyzeRasterObjectCandidatesArgs(**tool_args),
-            IngabeToolCallMetaArgs(
-                user_uuid=user_id,
-                conversation_id=conversation.id,
-                map_id=map_id,
-                project_id=str(project_row["project_id"]),
-                session=session,
-            ),
-        )
+        try:
+            result = await asyncio.wait_for(
+                analyze_raster_object_candidates(
+                    AnalyzeRasterObjectCandidatesArgs(**tool_args),
+                    IngabeToolCallMetaArgs(
+                        user_uuid=user_id,
+                        conversation_id=conversation.id,
+                        map_id=map_id,
+                        project_id=str(project_row["project_id"]),
+                        session=session,
+                    ),
+                ),
+                timeout=fast_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Sage fast raster object route timed out: conv=%s layer_id=%s timeout=%.1fs",
+                conversation.id,
+                layer["layer_id"],
+                fast_timeout_seconds,
+            )
+            result = {
+                "status": "timeout",
+                "error": (
+                    "Raster object marking exceeded the live chat timeout "
+                    f"of {fast_timeout_seconds:.0f}s."
+                ),
+                "summary": {
+                    "source_layer_id": str(layer["layer_id"]),
+                    "source_layer_name": layer_name,
+                    "candidate_count": 0,
+                    "candidate_building_count": 0,
+                    "confirmed_count_available": False,
+                    "requested_targets": tool_args.get("target_classes", []),
+                    "count_semantics": "not_available_timeout",
+                    "timeout_seconds": fast_timeout_seconds,
+                },
+                "engines": {
+                    "selection": {
+                        "requested": tool_args.get("engine_preference"),
+                        "used": "timeout_before_result",
+                    }
+                },
+            }
+        except Exception as exc:
+            logger.exception(
+                "Sage fast raster object route crashed: conv=%s layer_id=%s",
+                conversation.id,
+                layer["layer_id"],
+            )
+            result = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "summary": {
+                    "source_layer_id": str(layer["layer_id"]),
+                    "source_layer_name": layer_name,
+                    "candidate_count": 0,
+                    "candidate_building_count": 0,
+                    "confirmed_count_available": False,
+                    "requested_targets": tool_args.get("target_classes", []),
+                    "count_semantics": "not_available_error",
+                },
+                "engines": {
+                    "selection": {
+                        "requested": tool_args.get("engine_preference"),
+                        "used": "error_before_result",
+                    }
+                },
+            }
 
     assistant_text = _raster_object_fast_reply(
         result,
