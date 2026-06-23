@@ -31,6 +31,8 @@ services:
         condition: service_started
       geokernel:
         condition: service_started
+      cache-init:
+        condition: service_completed_successfully
     environment:
       - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
       # Clerk authentication (set these to enable real multi-user auth)
@@ -74,6 +76,7 @@ services:
       - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
       - TORCH_HOME=${TORCH_HOME:-/cache/torch}
       - MUNDI_SAMGEO_CHECKPOINT_DIR=${MUNDI_SAMGEO_CHECKPOINT_DIR:-/cache/samgeo}
+      - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
@@ -135,6 +138,14 @@ services:
       - ./services/insurance_report.py:/app/insurance_report.py
       - ingabe-cache:/tmp/ingabe_cache
 
+  cache-init:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    user: root
+    command: >
+      bash -c "mkdir -p /tmp/ingabe_cache && chown -R appuser:appuser /tmp/ingabe_cache"
+    volumes:
+      - ingabe-cache:/tmp/ingabe_cache
+
   minio:
     image: bitnamilegacy/minio:latest
     ports:
@@ -154,7 +165,7 @@ services:
       retries: 10
 
   mc:
-    image: minio/mc
+    image: ${MC_IMAGE:-bitnamilegacy/minio:latest}
     depends_on:
       minio:
         condition: service_healthy
@@ -165,21 +176,23 @@ services:
     entrypoint: >
       /bin/sh -c "
       set -e;
-      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-admin} ${MINIO_ROOT_PASSWORD:-changeme};
-      if /usr/bin/mc admin user info myminio ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1; then
+      MC=/opt/bitnami/minio-client/bin/mc;
+      if [ ! -x $$MC ] && [ -x /usr/bin/mc ]; then MC=/usr/bin/mc; fi;
+      $$MC alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-admin} ${MINIO_ROOT_PASSWORD:-changeme};
+      if $$MC admin user info myminio ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1; then
         echo '[mc] user ${S3_ACCESS_KEY_ID:-s3user} already exists';
       else
-        /usr/bin/mc admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
+        $$MC admin user add myminio ${S3_ACCESS_KEY_ID:-s3user} ${S3_SECRET_ACCESS_KEY:-changeme};
         echo '[mc] created user ${S3_ACCESS_KEY_ID:-s3user}';
       fi;
-      /usr/bin/mc admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1 || true;
+      $$MC admin policy attach myminio readwrite --user ${S3_ACCESS_KEY_ID:-s3user} >/dev/null 2>&1 || true;
       echo '[mc] policy readwrite ensured on ${S3_ACCESS_KEY_ID:-s3user}';
       printf '%s\n' '<CORSConfiguration><CORSRule><AllowedOrigin>http://localhost:5173</AllowedOrigin><AllowedOrigin>http://localhost:8000</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedMethod>POST</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3000</MaxAgeSeconds></CORSRule></CORSConfiguration>' > /tmp/mundi-cors.xml;
-      /usr/bin/mc cors set myminio/${S3_BUCKET:-test-bucket} /tmp/mundi-cors.xml && echo '[mc] CORS policy ensured for browser uploads' || echo '[mc] CORS policy unsupported; browser uploads use backend proxy';
-      RULES=$$(/usr/bin/mc ilm rule list myminio/${S3_BUCKET:-test-bucket} 2>/dev/null) || RULES='';
+      $$MC cors set myminio/${S3_BUCKET:-test-bucket} /tmp/mundi-cors.xml && echo '[mc] CORS policy ensured for browser uploads' || echo '[mc] CORS policy unsupported; browser uploads use backend proxy';
+      RULES=$$($$MC ilm rule list myminio/${S3_BUCKET:-test-bucket} 2>/dev/null) || RULES='';
       case $$RULES in
         *snapshots/*) echo '[mc] lifecycle rule for snapshots/ already present';;
-        *) /usr/bin/mc ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket} && echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day' || echo '[mc] lifecycle rule unsupported; snapshots cleanup must be handled externally';;
+        *) $$MC ilm rule add --expire-days 1 --prefix snapshots/ myminio/${S3_BUCKET:-test-bucket} && echo '[mc] added lifecycle rule: snapshots/ -> expire after 1 day' || echo '[mc] lifecycle rule unsupported; snapshots cleanup must be handled externally';;
       esac;
       echo '[mc] bootstrap complete';
       "
@@ -204,8 +217,8 @@ services:
 
 
   redis:
-    image: redis:alpine
-    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    image: ${REDIS_IMAGE:-redis:alpine}
+    command: redis-server --protected-mode no --maxmemory 2gb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 1s
@@ -442,6 +455,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      cache-init:
+        condition: service_completed_successfully
     environment:
       - DAGSTER_HOME=/app/dagster_home
       - DAGSTER_PG_URL=postgresql://${POSTGRES_USER:-mundiuser}:${POSTGRES_PASSWORD:-changeme}@${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/dagster
@@ -461,6 +476,7 @@ services:
       - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
       - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
       - CDSAPI_KEY=${CDSAPI_KEY:-}
+      - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
     volumes:
       - ./src:/app/src
       - dagster-home:/app/dagster_home

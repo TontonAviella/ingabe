@@ -50,6 +50,9 @@ export default defineConfig(({ mode }) => ({
   },
   base: '/',
   server: {
+    watch: {
+      ignored: ['**/opensrc/**'],
+    },
     proxy: {
       '/api': { target: 'http://localhost:8000', ws: true, changeOrigin: true },
     },
@@ -70,6 +73,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   optimizeDeps: {
+    entries: ['index.html'],
     include: ['react-router-dom', '@duckdb/duckdb-wasm'],
   },
 }))

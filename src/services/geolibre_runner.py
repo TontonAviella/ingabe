@@ -51,6 +51,7 @@ def geolibre_runner_status(include_manifest_sample: bool = False) -> dict[str, A
     package = _python_package_status("geolibre_wasm", "geolibre-wasm")
     installed = bool(package["installed"])
     status: dict[str, Any] = {
+        "status": "unknown",
         "installed": installed,
         "package": package,
         "backend": GEOLIBRE_BACKEND,
@@ -66,6 +67,7 @@ def geolibre_runner_status(include_manifest_sample: bool = False) -> dict[str, A
         else [],
     }
     if not installed:
+        status["status"] = "error"
         status["error"] = "geolibre_wasm is not installed in this runtime."
         return status
 
@@ -74,6 +76,7 @@ def geolibre_runner_status(include_manifest_sample: bool = False) -> dict[str, A
         import geolibre_wasm as gl
 
         tools = gl.list_tools()
+        status["status"] = "success"
         status["tool_count"] = len(tools)
         status["runtime_path"] = gl.runtime_path()
         status["runtime_cached"] = Path(str(status["runtime_path"])).is_file()
@@ -92,6 +95,7 @@ def geolibre_runner_status(include_manifest_sample: bool = False) -> dict[str, A
                 if tool in manifests
             ]
     except Exception as exc:
+        status["status"] = "error"
         status["error"] = str(exc)
     return status
 

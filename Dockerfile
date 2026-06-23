@@ -105,9 +105,9 @@ RUN chmod +x /entrypoint.sh
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
-    && mkdir -p /cache/matplotlib /cache/torch /cache/samgeo \
+    && mkdir -p /cache/matplotlib /cache/torch /cache/samgeo /cache/ingabe /tmp/ingabe_cache \
     && chown appuser:appuser /cache \
-    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/samgeo \
+    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/samgeo /cache/ingabe /tmp/ingabe_cache \
     && chown appuser:appuser /home/appuser \
     && chmod 755 /home/appuser
 # /home/appuser must be appuser-owned BEFORE first volume mount, because docker

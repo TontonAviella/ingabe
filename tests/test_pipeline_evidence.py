@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
+from src.services import pipeline_evidence as evidence_service
 from src.services.pipeline_evidence import (
     read_pipeline_evidence,
     record_pipeline_evidence,
@@ -114,6 +115,60 @@ def test_pipeline_evidence_concurrent_writes_keep_latest_records(tmp_path, monke
     assert {record["asset_name"] for record in result["latest"]} == {
         f"asset_{idx}" for idx in range(16)
     }
+
+
+def test_pipeline_evidence_falls_back_when_default_path_is_unwritable(
+    tmp_path,
+    monkeypatch,
+):
+    blocked_parent = tmp_path / "blocked-parent"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    fallback_cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(fallback_cache))
+    default_path = str(blocked_parent / "pipeline_evidence.json")
+    monkeypatch.setattr(
+        evidence_service,
+        "_DEFAULT_PATH",
+        default_path,
+    )
+    monkeypatch.setenv("PIPELINE_EVIDENCE_PATH", default_path)
+
+    assert record_pipeline_evidence(
+        "geolibre_runtime_probe_completed",
+        {
+            "pipeline_family": "geolibre_runtime",
+            "source_category": "geolibre",
+            "status": "success",
+            "tool_count": 747,
+        },
+    )
+
+    result = read_pipeline_evidence(source_category="geolibre")
+
+    assert result["status"] == "ok"
+    assert result["latest"][0]["tool_count"] == 747
+    assert result["evidence_path_configured"].startswith(str(fallback_cache))
+
+
+def test_pipeline_evidence_explicit_bad_path_returns_false(tmp_path, monkeypatch):
+    blocked_parent = tmp_path / "blocked-parent"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv(
+        "PIPELINE_EVIDENCE_PATH",
+        str(blocked_parent / "pipeline_evidence.json"),
+    )
+
+    assert (
+        record_pipeline_evidence(
+            "geolibre_runtime_probe_completed",
+            {
+                "pipeline_family": "geolibre_runtime",
+                "source_category": "geolibre",
+                "status": "success",
+            },
+        )
+        is False
+    )
 
 
 def test_pipeline_evidence_tool_schema_is_strict_compatible():
