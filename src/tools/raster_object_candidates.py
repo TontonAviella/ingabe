@@ -61,7 +61,11 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
     engine_preference: str = Field(
         ...,
-        description="Engine preference: auto, samgeo, yolo, geolibre_rust, or rasterio_numpy. Falls back honestly if unavailable.",
+        description=(
+            "Engine preference: terramind_geolibre, terramind_samgeo, auto, "
+            "samgeo, yolo, geolibre_rust, or rasterio_numpy. Falls back honestly "
+            "if unavailable."
+        ),
     )
     render_map: bool = Field(
         ...,
@@ -163,8 +167,8 @@ async def analyze_raster_object_candidates(
                 return {
                     "status": "error",
                     "error": (
-                        f"SamGeo timed out after {timeout_seconds:.0f}s, and the "
-                        f"rasterio/numpy fallback timed out after {fallback_timeout:.0f}s."
+                        f"The deep image pass timed out after {timeout_seconds:.0f}s, "
+                        f"and the quick raster marker timed out after {fallback_timeout:.0f}s."
                     ),
                 }
             except Exception as fallback_exc:
@@ -175,8 +179,8 @@ async def analyze_raster_object_candidates(
                 return {
                     "status": "error",
                     "error": (
-                        f"SamGeo timed out after {timeout_seconds:.0f}s, and the "
-                        f"rasterio/numpy fallback failed: {_exception_message(fallback_exc)}"
+                        f"The deep image pass timed out after {timeout_seconds:.0f}s, "
+                        f"and the quick raster marker failed: {_exception_message(fallback_exc)}"
                     ),
                 }
             _annotate_timeout_fallback(
@@ -342,7 +346,7 @@ async def _run_service_with_timeout(
 def _timeout_seconds_for_engine(engine_preference: str) -> float:
     engine = str(engine_preference or "").strip().lower()
     env_key = (
-        "MUNDI_RASTER_OBJECT_SAMGEO_TIMEOUT_SECONDS"
+        "MUNDI_RASTER_OBJECT_DEEP_TIMEOUT_SECONDS"
         if _should_fallback_after_timeout(engine)
         else "MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS"
     )
@@ -355,10 +359,17 @@ def _timeout_seconds_for_engine(engine_preference: str) -> float:
 
 
 def _should_fallback_after_timeout(engine_preference: str) -> bool:
-    return str(engine_preference or "").strip().lower() in {
+    engine = str(engine_preference or "").strip().lower()
+    return engine in {
         "samgeo",
         "segment-geospatial",
         "segment_geospatial",
+        "terramind",
+        "terramind_first",
+        "terramind_samgeo",
+        "terramind_geolibre",
+        "geoai_planner",
+        "semantic_planner",
     }
 
 
@@ -370,21 +381,38 @@ def _annotate_timeout_fallback(
 ) -> None:
     summary = result.get("summary")
     if isinstance(summary, dict):
+        engine_label = _plain_engine_label(requested_engine)
         reason = (
-            f"SamGeo timed out after {timeout_seconds:.0f}s on this live request; "
-            "used the rasterio/numpy candidate extractor instead."
+            f"{engine_label} timed out after {timeout_seconds:.0f}s on this live "
+            "request; used the quick raster marker instead."
         )
-        summary["samgeo_fallback_reason"] = reason
+        summary["deep_pass_fallback_reason"] = reason
         previous = summary.get("performance_note")
         summary["performance_note"] = f"{previous} {reason}".strip() if previous else reason
 
     engines = result.setdefault("engines", {})
     if isinstance(engines, dict):
-        engines["samgeo_timeout_fallback"] = {
+        engines["deep_pass_timeout_fallback"] = {
             "requested": requested_engine,
-            "used": "rasterio_numpy_candidate_extractor_v1",
+            "used": "rasterio_numpy_candidate_extractor_v2",
             "timeout_seconds": timeout_seconds,
         }
+
+
+def _plain_engine_label(engine_preference: str) -> str:
+    engine = str(engine_preference or "").strip().lower()
+    if engine in {
+        "terramind",
+        "terramind_first",
+        "terramind_samgeo",
+        "terramind_geolibre",
+        "geoai_planner",
+        "semantic_planner",
+    }:
+        return "The deep semantic image pass"
+    if engine in {"samgeo", "segment-geospatial", "segment_geospatial"}:
+        return "The mask-drawing pass"
+    return "The image analysis pass"
 
 
 def _exception_message(exc: BaseException) -> str:

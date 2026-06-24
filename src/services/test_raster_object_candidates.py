@@ -155,3 +155,85 @@ def test_analyze_raster_object_candidates_can_screen_road_like_segments(tmp_path
         feature["properties"]["candidate_class"] == "road"
         for feature in result["geojson"]["features"]
     )
+
+
+def test_analyze_raster_object_candidates_splits_land_pattern_targets(tmp_path) -> None:
+    path = tmp_path / "synthetic_land_patterns.tif"
+    image = np.zeros((3, 180, 180), dtype=np.uint8)
+    image[0, :, :] = 82
+    image[1, :, :] = 116
+    image[2, :, :] = 70
+
+    # A compact bright roof.
+    image[:, 18:32, 18:34] = np.array([232, 232, 218], dtype=np.uint8)[:, None, None]
+
+    # A long dirt road.
+    image[:, 58:66, 8:172] = np.array([205, 176, 122], dtype=np.uint8)[:, None, None]
+
+    # Textured tree canopy block.
+    for row in range(92, 134):
+        for col in range(18, 62):
+            shade = 25 if (row + col) % 5 < 2 else 0
+            image[:, row, col] = np.array([42, 142 + shade, 48], dtype=np.uint8)
+
+    # Smooth crop/field patch.
+    image[:, 96:152, 94:160] = np.array([58, 168, 68], dtype=np.uint8)[:, None, None]
+
+    # Sharp field boundary/track line.
+    image[:, 152:156, 78:170] = np.array([220, 210, 155], dtype=np.uint8)[:, None, None]
+
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=180,
+        height=180,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(0, 180, 1, 1),
+    ) as ds:
+        ds.write(image)
+
+    result = analyze_raster_object_candidates(
+        RasterObjectCandidateInput(
+            raster_url=str(path),
+            layer_id="Lpatterns",
+            layer_name="Synthetic Pattern Orthophoto",
+            bounds_wgs84=None,
+            target_classes=[
+                "building",
+                "road",
+                "tree",
+                "crop",
+                "field_boundary",
+            ],
+            max_candidates=40,
+            max_sample_pixels=60_000,
+            min_area_m2=8,
+            max_area_m2=10_000,
+            confidence_threshold=0.20,
+            engine_preference="terramind_geolibre",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["engines"]["selection"]["requested"] == "terramind_geolibre"
+    assert (
+        result["engines"]["selection"]["used"]
+        == "rasterio_semantic_proxy_waiting_for_terramind_head_v1"
+    )
+    assert result["engines"]["selection"]["semantic_planner_used"] is False
+    assert result["summary"]["semantic_planner_used"] is False
+    assert result["summary"]["requested_targets"] == [
+        "building",
+        "road",
+        "tree_canopy",
+        "crop_patch",
+        "linear_boundary",
+    ]
+    classes = {
+        feature["properties"]["candidate_class"]
+        for feature in result["geojson"]["features"]
+    }
+    assert {"building", "road", "tree_canopy", "crop_patch", "linear_boundary"} <= classes
