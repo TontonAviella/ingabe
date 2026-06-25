@@ -104,7 +104,9 @@ async def analyze_raster_object_candidates(
     if str(row["owner_uuid"]) != str(meta.user_uuid):
         return {"error": f"Layer {args.layer_id} is not owned by you."}
     if row["type"] != "raster":
-        return {"error": f"Layer {args.layer_id} is type '{row['type']}', not a raster."}
+        return {
+            "error": f"Layer {args.layer_id} is type '{row['type']}', not a raster."
+        }
 
     metadata = (
         json.loads(row["metadata"])
@@ -156,18 +158,21 @@ async def analyze_raster_object_candidates(
             timeout_seconds=timeout_seconds,
         )
     except Exception as exc:
-        logger.exception("raster object candidate extraction failed for layer %s", args.layer_id)
+        logger.exception(
+            "raster object candidate extraction failed for layer %s", args.layer_id
+        )
         return {
             "status": "error",
             "error": (
-                "Raster object candidate extraction failed: "
-                f"{_exception_message(exc)}"
+                f"Raster object candidate extraction failed: {_exception_message(exc)}"
             ),
         }
 
     persisted_layer = None
     if result.get("status") == "success":
-        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        summary = (
+            result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        )
         summary["source_storage"] = source_storage
         if source_storage == "raw_tiff":
             summary["performance_note"] = (
@@ -282,7 +287,9 @@ async def analyze_raster_object_candidates(
     return result
 
 
-def _visible_review_layer_name(source_layer_name: str, target_classes: list[str]) -> str:
+def _visible_review_layer_name(
+    source_layer_name: str, target_classes: list[str]
+) -> str:
     normalized = {str(value).strip().lower() for value in target_classes if value}
     if normalized and normalized <= {"building", "house", "roof"}:
         return f"House/Roof Review Marks - {source_layer_name}"
@@ -304,7 +311,11 @@ async def _run_service_with_timeout(
 
 def _timeout_seconds_for_engine(engine_preference: str) -> float:
     engine = str(engine_preference or "").strip().lower().replace("-", "_")
-    default = "240" if engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"} else "120"
+    default = (
+        "240"
+        if engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"}
+        else "120"
+    )
     raw = os.environ.get("MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS", default)
     try:
         return max(5.0, float(raw))
@@ -319,8 +330,7 @@ def _timeout_result(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     error = (
-        "Raster object candidate extraction timed out after "
-        f"{timeout_seconds:.0f}s."
+        f"Raster object candidate extraction timed out after {timeout_seconds:.0f}s."
     )
     screening_model = "timeout_before_result"
     summary = {

@@ -221,7 +221,9 @@ def analyze_raster_object_candidates(
             if key not in {"features"}
         }
         if used_engine != "fastsam_s_candidate_masks_v1":
-            summary["fastsam_fallback_reason"] = fastsam_attempt.get("error") or fastsam_attempt.get("status")
+            summary["fastsam_fallback_reason"] = fastsam_attempt.get(
+                "error"
+            ) or fastsam_attempt.get("status")
     if "building" in targets:
         summary["candidate_building_count"] = int(
             summary["class_counts"].get("building", 0)
@@ -311,14 +313,10 @@ def _normalized_rgb_uint8(r: Any, g: Any, b: Any) -> Any:
     import numpy as np
 
     channels = [
-        np.nan_to_num(channel, nan=0.0, posinf=1.0, neginf=0.0)
-        for channel in (r, g, b)
+        np.nan_to_num(channel, nan=0.0, posinf=1.0, neginf=0.0) for channel in (r, g, b)
     ]
     return np.dstack(
-        [
-            np.clip(channel * 255, 0, 255).astype("uint8")
-            for channel in channels
-        ]
+        [np.clip(channel * 255, 0, 255).astype("uint8") for channel in channels]
     )
 
 
@@ -411,7 +409,9 @@ def _mask_for_target(
         valid_gradient = gradient[valid]
         texture_threshold = 0.04
         if valid_gradient.size:
-            texture_threshold = max(texture_threshold, float(np.percentile(valid_gradient, 62)))
+            texture_threshold = max(
+                texture_threshold, float(np.percentile(valid_gradient, 62))
+            )
         return (
             valid
             & (grvi >= 0.16)
@@ -424,7 +424,9 @@ def _mask_for_target(
         valid_gradient = gradient[valid]
         smooth_threshold = 0.35
         if valid_gradient.size:
-            smooth_threshold = min(smooth_threshold, float(np.percentile(valid_gradient, 92)))
+            smooth_threshold = min(
+                smooth_threshold, float(np.percentile(valid_gradient, 92))
+            )
         return (
             valid
             & (grvi >= 0.12)
@@ -658,7 +660,9 @@ def _recommended_action_for_target(target: str) -> str:
     if target == "building":
         return "Spot-check the marked roof shapes before using the number as a house count."
     if target == "road":
-        return "Spot-check the marked linework before using it as road or track evidence."
+        return (
+            "Spot-check the marked linework before using it as road or track evidence."
+        )
     if target == "linear_boundary":
         return "Verify with surveyed parcel data or field mapping before using as a farm/field boundary."
     if target == "tree_canopy":
@@ -752,7 +756,9 @@ def _features_from_fastsam(
             object_overlap = overlap_pixels / max(object_pixels, 1)
             target_pixels = int(np.count_nonzero(target_mask))
             target_overlap = overlap_pixels / max(target_pixels, 1)
-            if object_overlap < _fastsam_object_overlap_threshold(target) and target_overlap < _fastsam_target_overlap_threshold(target):
+            if object_overlap < _fastsam_object_overlap_threshold(
+                target
+            ) and target_overlap < _fastsam_target_overlap_threshold(target):
                 continue
             feature_batch = _features_from_mask(
                 refined_mask,

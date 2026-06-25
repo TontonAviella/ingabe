@@ -108,7 +108,9 @@ def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -
     assert capped_result["summary"]["candidate_count_capped"] is True
 
 
-def test_analyze_raster_object_candidates_can_screen_road_like_segments(tmp_path) -> None:
+def test_analyze_raster_object_candidates_can_screen_road_like_segments(
+    tmp_path,
+) -> None:
     path = tmp_path / "synthetic_roads.tif"
     image = np.zeros((3, 140, 140), dtype=np.uint8)
     image[0, :, :] = 55
@@ -225,8 +227,7 @@ def test_analyze_raster_object_candidates_splits_land_pattern_targets(tmp_path) 
         == "rasterio_numpy_candidate_extractor_v2"
     )
     assert (
-        result["summary"]["screening_model"]
-        == "rasterio_numpy_candidate_extractor_v2"
+        result["summary"]["screening_model"] == "rasterio_numpy_candidate_extractor_v2"
     )
     assert result["summary"]["requested_targets"] == [
         "building",
@@ -239,7 +240,13 @@ def test_analyze_raster_object_candidates_splits_land_pattern_targets(tmp_path) 
         feature["properties"]["candidate_class"]
         for feature in result["geojson"]["features"]
     }
-    assert {"building", "road", "tree_canopy", "crop_patch", "linear_boundary"} <= classes
+    assert {
+        "building",
+        "road",
+        "tree_canopy",
+        "crop_patch",
+        "linear_boundary",
+    } <= classes
 
 
 def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
