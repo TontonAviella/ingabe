@@ -14,6 +14,7 @@ of truth for the user; Brain logging is additive.
 
 import logging
 import re
+from datetime import date as _date
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -47,11 +48,13 @@ async def record_raster_analysis(
     try:
         from src.structures import get_async_db_connection
         from src.services.brain_service import BrainService, TimelineInput
+
         slug = _slug_for_layer(layer_id)
         async with get_async_db_connection(user_id=owner_uuid) as conn:
             brain = BrainService()
             await brain.add_timeline_entry(
-                conn, slug,
+                conn,
+                slug,
                 TimelineInput(
                     date=_date.today(),
                     summary=summary[:500],
@@ -67,6 +70,8 @@ async def record_raster_analysis(
         # DB error. Verdict is already returned to user; Brain is additive.
         logger.debug(
             "record_raster_analysis: skipped for layer %s (source=%s)",
-            layer_id, source, exc_info=True,
+            layer_id,
+            source,
+            exc_info=True,
         )
         return False
