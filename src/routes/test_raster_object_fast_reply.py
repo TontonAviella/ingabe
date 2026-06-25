@@ -91,7 +91,6 @@ def test_raster_object_reply_timeout_is_plain_language() -> None:
     assert "could not finish marking the houses" in reply
     assert "does not keep thinking forever" in reply
     assert "object candidates" not in reply
-    assert "SamGeo" not in reply
     assert "GeoLibre" not in reply
 
 

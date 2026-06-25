@@ -26,10 +26,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt /app/
-COPY clay-source /app/clay-source
-# Install CPU-only torch before the rest of the Python stack so Torch-dependent
-# packages do not pull the default CUDA wheels. Hetzner CPX42 and CI runners
-# have no GPU, so CUDA torch is wasted bytes and can exhaust disk/memory.
+# Install CPU-only torch before the rest of the Python stack so the image does
+# not pull default CUDA wheels. CI runners have no GPU, so CUDA torch is wasted
+# bytes and can exhaust disk/memory.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
     grep -Ev '^(torch|torchvision)==' requirements.txt > /tmp/requirements-no-torch.txt && \
@@ -40,7 +39,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         "torch==2.12.1+cpu" "torchvision==0.27.1+cpu" && \
     uv pip install -r /tmp/requirements-no-torch.txt && \
     uv pip install hyperdx-opentelemetry && \
-    uv pip install /app/clay-source && \
     uv pip uninstall \
         nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
         nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 \
@@ -96,8 +94,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     GDAL_DRIVER_PATH="/usr/local/lib/gdalplugins" \
     XDG_CACHE_HOME="/cache" \
     MPLCONFIGDIR="/cache/matplotlib" \
-    TORCH_HOME="/cache/torch" \
-    MUNDI_SAMGEO_CHECKPOINT_DIR="/cache/samgeo"
+    TORCH_HOME="/cache/torch"
 
 COPY scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -105,9 +102,9 @@ RUN chmod +x /entrypoint.sh
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
-    && mkdir -p /cache/matplotlib /cache/torch /cache/samgeo /cache/ingabe /tmp/ingabe_cache \
+    && mkdir -p /cache/matplotlib /cache/torch /cache/ingabe /tmp/ingabe_cache \
     && chown appuser:appuser /cache \
-    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/samgeo /cache/ingabe /tmp/ingabe_cache \
+    && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/ingabe /tmp/ingabe_cache \
     && chown appuser:appuser /home/appuser \
     && chmod 755 /home/appuser
 # /home/appuser must be appuser-owned BEFORE first volume mount, because docker

@@ -2146,6 +2146,12 @@ async def _maybe_run_fast_raster_object_turn(
         requested_building_count=requested_building_count,
     )
     summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
+    selection = (
+        engines.get("selection")
+        if isinstance(engines.get("selection"), dict)
+        else {}
+    )
     capture_for_session(
         "backend_sage_fast_raster_objects_answered",
         session,
@@ -2154,18 +2160,19 @@ async def _maybe_run_fast_raster_object_turn(
             "conversation_id": conversation.id,
             "layer_id": str(layer["layer_id"]),
             "status": result.get("status"),
-            "candidate_count": summary.get("candidate_count") or result.get("geojson_feature_count"),
+            "candidate_count": summary.get("candidate_count")
+            or result.get("geojson_feature_count"),
             "candidate_building_count": summary.get("candidate_building_count"),
             "confirmed_count_available": summary.get("confirmed_count_available"),
             "requested_building_count": requested_building_count,
             "count_semantics": summary.get("count_semantics"),
             "class_counts": json.dumps(summary.get("class_counts") or {}),
             "source_storage": summary.get("source_storage"),
-            "engine_used": (
-                ((result.get("engines") or {}).get("selection") or {}).get("used")
-                if isinstance(result.get("engines"), dict)
-                else None
-            ),
+            "engine_requested": selection.get("requested"),
+            "engine_used": selection.get("used"),
+            "screening_model": summary.get("screening_model")
+            or selection.get("used"),
+            "candidate_count_capped": summary.get("candidate_count_capped"),
             "duration_ms": int((asyncio.get_running_loop().time() - started) * 1000),
         },
     )
@@ -7942,7 +7949,7 @@ async def send_map_message(
     )
 
     # Inject a compact, query-aware Brain packet: semantic memory, spatial
-    # memory, and Clay/Qdrant visual-index metadata without large payloads.
+    # memory without large payloads.
     try:
         from src.dependencies.brain_dep import get_brain_service
         from src.database.pool import get_async_db_connection

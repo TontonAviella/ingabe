@@ -58,7 +58,6 @@ services:
       - GEOKERNEL_URL=${GEOKERNEL_URL:-http://geokernel:8878}
       - GEOKERNEL_TIMEOUT=${GEOKERNEL_TIMEOUT:-5.0}
       - GEOKERNEL_H3_CONTAINMENT_MODE=${GEOKERNEL_H3_CONTAINMENT_MODE:-centroid}
-      - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b-it-qat}
@@ -75,12 +74,6 @@ services:
       - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/cache}
       - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
       - TORCH_HOME=${TORCH_HOME:-/cache/torch}
-      - MUNDI_SAMGEO_CHECKPOINT_DIR=${MUNDI_SAMGEO_CHECKPOINT_DIR:-/cache/samgeo}
-      - MUNDI_TERRAMIND_RASTER_PLANNER=${MUNDI_TERRAMIND_RASTER_PLANNER:-1}
-      - MUNDI_TERRAMIND_MAX_SAMPLE_PIXELS=${MUNDI_TERRAMIND_MAX_SAMPLE_PIXELS:-1200000}
-      - MUNDI_TERRAMIND_MAX_CHIPS=${MUNDI_TERRAMIND_MAX_CHIPS:-320}
-      - MUNDI_TERRAMIND_BATCH_SIZE=${MUNDI_TERRAMIND_BATCH_SIZE:-24}
-      - MUNDI_RASTER_OBJECT_DEEP_TIMEOUT_SECONDS=${MUNDI_RASTER_OBJECT_DEEP_TIMEOUT_SECONDS:-75}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
@@ -135,6 +128,7 @@ services:
       - ./alembic:/app/alembic
       - ./conftest.py:/app/conftest.py
       - ./pytest.ini:/app/pytest.ini
+      - ./FastSAM-s.pt:/app/FastSAM-s.pt:ro
       - ./docs:/app/docs
       - ./scripts:/app/scripts
       - ./services/api_monitor.py:/app/api_monitor.py

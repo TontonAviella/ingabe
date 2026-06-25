@@ -120,8 +120,6 @@ netcdf4==1.7.4
 niyamit-sphere==0.1.1
 numpy==2.2.6
 scikit-learn==1.6.1
-segment-anything==1.0
-segment-geospatial==0.11.0
 sentinelhub==3.11.3
 oauthlib==3.2.2
 olefile==0.46
@@ -130,7 +128,6 @@ opentelemetry-api==1.36.0
 opentelemetry-sdk==1.36.0
 opentelemetry-exporter-otlp-proto-http==1.36.0
 openeo==0.47.0
-opencv-python-headless==4.10.0.84
 owslib==0.27.2
 packaging==24.2
 pandas==2.2.3
@@ -175,7 +172,6 @@ pytest-timeout==2.3.1
 pytest-xdist==3.8.0
 python-dateutil==2.8.2
 python-dotenv==1.2.2
-qdrant-client==1.17.1
 python-multipart==0.0.20
 pythran==0.11.0
 pytz==2022.7.1
@@ -213,7 +209,6 @@ tldextract==5.3.0
 toml==0.10.2
 tomli==2.2.1
 tomli-w==1.1.0
-terratorch==1.2.8
 torch==2.12.1
 torchvision==0.27.1
 tqdm==4.67.1

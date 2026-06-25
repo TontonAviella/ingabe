@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import uuid
-from dataclasses import replace
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -62,9 +61,8 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     engine_preference: str = Field(
         ...,
         description=(
-            "Engine preference: terramind_geolibre, terramind_samgeo, auto, "
-            "samgeo, yolo, geolibre_rust, or rasterio_numpy. Falls back honestly "
-            "if unavailable."
+            "Engine preference. Use fastsam for object mask review marks, or "
+            "rasterio_numpy for the lightweight raster fallback."
         ),
     )
     render_map: bool = Field(
@@ -77,11 +75,11 @@ async def analyze_raster_object_candidates(
     args: AnalyzeRasterObjectCandidatesArgs,
     meta: IngabeToolCallMetaArgs,
 ) -> dict[str, Any]:
-    """Find and render object candidate polygons from an uploaded orthophoto.
+    """Find and render basic object review polygons from an uploaded orthophoto.
 
     Use this for questions like "where are the houses?", "how many likely
     houses are in this orthophoto?", "show roads/trees/playing areas", or
-    "detect visible objects in this drone raster." This is the raster object
+    "detect visible objects in this drone raster." This is the basic raster object
     path that should run before H3 risk cells when the user asks for objects or
     counts. In user-facing replies, describe the result as review marks from
     the image. If the live response is capped, say the number is marks shown,
@@ -106,7 +104,9 @@ async def analyze_raster_object_candidates(
     if str(row["owner_uuid"]) != str(meta.user_uuid):
         return {"error": f"Layer {args.layer_id} is not owned by you."}
     if row["type"] != "raster":
-        return {"error": f"Layer {args.layer_id} is type '{row['type']}', not a raster."}
+        return {
+            "error": f"Layer {args.layer_id} is type '{row['type']}', not a raster."
+        }
 
     metadata = (
         json.loads(row["metadata"])
@@ -152,63 +152,27 @@ async def analyze_raster_object_candidates(
             args.engine_preference,
             timeout_seconds,
         )
-        if _should_fallback_after_timeout(args.engine_preference):
-            fallback_payload = replace(payload, engine_preference="rasterio_numpy")
-            fallback_timeout = _timeout_seconds_for_engine("rasterio_numpy")
-            try:
-                result = await _run_service_with_timeout(
-                    fallback_payload, fallback_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.exception(
-                    "raster object fallback extraction timed out for layer %s",
-                    args.layer_id,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"The deep image pass timed out after {timeout_seconds:.0f}s, "
-                        f"and the quick raster marker timed out after {fallback_timeout:.0f}s."
-                    ),
-                }
-            except Exception as fallback_exc:
-                logger.exception(
-                    "raster object fallback extraction failed for layer %s",
-                    args.layer_id,
-                )
-                return {
-                    "status": "error",
-                    "error": (
-                        f"The deep image pass timed out after {timeout_seconds:.0f}s, "
-                        f"and the quick raster marker failed: {_exception_message(fallback_exc)}"
-                    ),
-                }
-            _annotate_timeout_fallback(
-                result,
-                requested_engine=args.engine_preference,
-                timeout_seconds=timeout_seconds,
-            )
-        else:
-            return {
-                "status": "error",
-                "error": (
-                    "Raster object candidate extraction timed out after "
-                    f"{timeout_seconds:.0f}s."
-                ),
-            }
+        return _timeout_result(
+            payload,
+            requested_engine=args.engine_preference,
+            timeout_seconds=timeout_seconds,
+        )
     except Exception as exc:
-        logger.exception("raster object candidate extraction failed for layer %s", args.layer_id)
+        logger.exception(
+            "raster object candidate extraction failed for layer %s", args.layer_id
+        )
         return {
             "status": "error",
             "error": (
-                "Raster object candidate extraction failed: "
-                f"{_exception_message(exc)}"
+                f"Raster object candidate extraction failed: {_exception_message(exc)}"
             ),
         }
 
     persisted_layer = None
     if result.get("status") == "success":
-        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        summary = (
+            result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        )
         summary["source_storage"] = source_storage
         if source_storage == "raw_tiff":
             summary["performance_note"] = (
@@ -323,7 +287,9 @@ async def analyze_raster_object_candidates(
     return result
 
 
-def _visible_review_layer_name(source_layer_name: str, target_classes: list[str]) -> str:
+def _visible_review_layer_name(
+    source_layer_name: str, target_classes: list[str]
+) -> str:
     normalized = {str(value).strip().lower() for value in target_classes if value}
     if normalized and normalized <= {"building", "house", "roof"}:
         return f"House/Roof Review Marks - {source_layer_name}"
@@ -344,75 +310,56 @@ async def _run_service_with_timeout(
 
 
 def _timeout_seconds_for_engine(engine_preference: str) -> float:
-    engine = str(engine_preference or "").strip().lower()
-    env_key = (
-        "MUNDI_RASTER_OBJECT_DEEP_TIMEOUT_SECONDS"
-        if _should_fallback_after_timeout(engine)
-        else "MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS"
+    engine = str(engine_preference or "").strip().lower().replace("-", "_")
+    default = (
+        "240"
+        if engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"}
+        else "120"
     )
-    default = "30" if _should_fallback_after_timeout(engine) else "120"
-    raw = os.environ.get(env_key, default)
+    raw = os.environ.get("MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS", default)
     try:
         return max(5.0, float(raw))
     except (TypeError, ValueError):
         return float(default)
 
 
-def _should_fallback_after_timeout(engine_preference: str) -> bool:
-    engine = str(engine_preference or "").strip().lower()
-    return engine in {
-        "samgeo",
-        "segment-geospatial",
-        "segment_geospatial",
-        "terramind",
-        "terramind_first",
-        "terramind_samgeo",
-        "terramind_geolibre",
-        "geoai_planner",
-        "semantic_planner",
-    }
-
-
-def _annotate_timeout_fallback(
-    result: dict[str, Any],
+def _timeout_result(
+    payload: RasterObjectCandidateInput,
     *,
     requested_engine: str,
     timeout_seconds: float,
-) -> None:
-    summary = result.get("summary")
-    if isinstance(summary, dict):
-        engine_label = _plain_engine_label(requested_engine)
-        reason = (
-            f"{engine_label} timed out after {timeout_seconds:.0f}s on this live "
-            "request; used the quick raster marker instead."
-        )
-        summary["deep_pass_fallback_reason"] = reason
-        previous = summary.get("performance_note")
-        summary["performance_note"] = f"{previous} {reason}".strip() if previous else reason
-
-    engines = result.setdefault("engines", {})
-    if isinstance(engines, dict):
-        engines["deep_pass_timeout_fallback"] = {
-            "requested": requested_engine,
-            "used": "rasterio_numpy_candidate_extractor_v2",
-            "timeout_seconds": timeout_seconds,
-        }
-
-
-def _plain_engine_label(engine_preference: str) -> str:
-    engine = str(engine_preference or "").strip().lower()
-    if engine in {
-        "terramind",
-        "terramind_first",
-        "terramind_samgeo",
-        "terramind_geolibre",
-        "geoai_planner",
-        "semantic_planner",
-    }:
-        return "The deep semantic image pass"
-    if engine in {"samgeo", "segment-geospatial", "segment_geospatial"}:
-        return "The mask-drawing pass"
-    return "The image analysis pass"
+) -> dict[str, Any]:
+    error = (
+        f"Raster object candidate extraction timed out after {timeout_seconds:.0f}s."
+    )
+    screening_model = "timeout_before_result"
+    summary = {
+        "source_layer_id": payload.layer_id,
+        "source_layer_name": payload.layer_name,
+        "candidate_count": 0,
+        "candidate_building_count": 0,
+        "candidate_count_available": False,
+        "candidate_count_capped": False,
+        "confirmed_count": False,
+        "confirmed_count_available": False,
+        "requested_targets": payload.target_classes,
+        "count_semantics": "not_available_timeout",
+        "timeout_seconds": timeout_seconds,
+        "screening_model": screening_model,
+        "performance_note": error,
+    }
+    return {
+        "status": "error",
+        "error": error,
+        "summary": summary,
+        "engines": {
+            "selection": {
+                "requested": requested_engine,
+                "used": screening_model,
+                "timeout_seconds": timeout_seconds,
+            }
+        },
+    }
 
 
 def _exception_message(exc: BaseException) -> str:

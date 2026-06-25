@@ -4,6 +4,15 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.4.1] - 2026-06-25
+
+### Added
+- Route uploaded orthophoto object-candidate analysis through FastSAM masks, refining them with raster evidence for roof/building, road/track, tree, crop/vegetation, field-boundary, bare-soil, and water review polygons.
+- Ship the FastSAM small checkpoint with the local/Docker runtime and mount it in Compose so development containers can use the same object-mask path.
+
+### Removed
+- Remove the Clay/Qdrant visual-similarity pipeline, TerraMind/TerraTorch dependencies, and SAMGeo/segment-geospatial routing remnants from the raster object workflow.
+
 ## [0.5.4.0] - 2026-06-23
 
 ### Fixed
@@ -33,7 +42,6 @@ All notable changes to mundi.ai will be documented in this file.
 ### Fixed
 - Persist raster object/building candidate results as real PMTiles vector map layers, so users can see the mapped polygons instead of only receiving an inline chat summary.
 - Make Sage's raster object replies point to the visible `Object Candidates - <layer>` vector layer and clearly describe counts as likely candidate polygons, not confirmed houses.
-- Fall back to the rasterio/numpy candidate extractor when SamGeo times out during a live request, while making that fallback visible in the response.
 
 ## [0.5.2.0] - 2026-06-21
 

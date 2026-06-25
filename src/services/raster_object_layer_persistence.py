@@ -50,6 +50,18 @@ async def persist_raster_object_candidate_layer(
     summary = (
         result.get("summary", {}) if isinstance(result.get("summary"), dict) else {}
     )
+    engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
+    selection = (
+        engines.get("selection")
+        if isinstance(engines.get("selection"), dict)
+        else {}
+    )
+    screening_model = (
+        result.get("screening_model")
+        or summary.get("screening_model")
+        or selection.get("used")
+        or "raster_object_candidates_v1"
+    )
     pmtiles_maxzoom = object_pmtiles_maxzoom()
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -78,9 +90,10 @@ async def persist_raster_object_candidate_layer(
         {
             "source": "sage_raster_object_candidates",
             "analysis_kind": "raster_object_candidates",
-            "screening_model": result.get(
-                "screening_model", "raster_object_candidates_v1"
-            ),
+            "screening_model": screening_model,
+            "engine_requested": selection.get("requested"),
+            "engine_used": selection.get("used"),
+            "performance_note": summary.get("performance_note"),
             "source_layer_id": summary.get("source_layer_id"),
             "source_layer_name": summary.get("source_layer_name"),
             "target_classes": summary.get("requested_targets"),

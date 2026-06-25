@@ -174,7 +174,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_stress_zones": USER_RASTER,
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
-    "find_similar_tiles": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
@@ -733,7 +732,7 @@ def detect_raster_object_candidate_question(text: str) -> bool:
 def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
     """Choose the evidence engine before choosing a map layer.
 
-    Users should not need to know H3, SamGeo, GeoLibre, Open Buildings, or
+    Users should not need to know H3, GeoLibre, Open Buildings, or
     satellite products. This function captures the decision we expect Sage to
     make from the wording of the question. The returned tool is a recommended
     engine, not automatically a safe fast path.
@@ -1091,7 +1090,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
                 "confidence_threshold": 0.50,
-                "engine_preference": "terramind_geolibre",
+                "engine_preference": "fastsam",
                 "render_map": True,
             },
             f"fast:{decision.task}",
