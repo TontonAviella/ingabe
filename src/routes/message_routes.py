@@ -7949,7 +7949,7 @@ async def send_map_message(
     )
 
     # Inject a compact, query-aware Brain packet: semantic memory, spatial
-    # memory, and Clay/Qdrant visual-index metadata without large payloads.
+    # memory without large payloads.
     try:
         from src.dependencies.brain_dep import get_brain_service
         from src.database.pool import get_async_db_connection

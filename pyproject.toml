@@ -49,7 +49,6 @@ dependencies = [
     "rasterio==1.4.4",
     "rioxarray==0.17.0",
     "sqlalchemy==2.0.41",
-    "terratorch==1.2.8",
     "torch==2.12.1",
     "torchvision==0.27.1",
     "wasmtime==45.0.0",

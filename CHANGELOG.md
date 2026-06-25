@@ -4,6 +4,15 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.4.1] - 2026-06-25
+
+### Added
+- Route uploaded orthophoto object-candidate analysis through FastSAM masks, refining them with raster evidence for roof/building, road/track, tree, crop/vegetation, field-boundary, bare-soil, and water review polygons.
+- Ship the FastSAM small checkpoint with the local/Docker runtime and mount it in Compose so development containers can use the same object-mask path.
+
+### Removed
+- Remove the Clay/Qdrant visual-similarity pipeline, TerraMind/TerraTorch dependencies, and SAMGeo/segment-geospatial routing remnants from the raster object workflow.
+
 ## [0.5.4.0] - 2026-06-23
 
 ### Fixed

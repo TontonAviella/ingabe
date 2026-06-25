@@ -7,20 +7,13 @@ timeline entry to the raster-{layer_id} brain page (created earlier by
 brain_hook_processor._process_raster_upload), so Brain accumulates a real
 analysis history.
 
-Same idea for Clay v1.5 embeddings: when embed_layer finishes, this module
-stamps the brain page's frontmatter with `clay_tiles_embedded: N` and
-`clay_collection: clay_tiles_v1` so a future query can see at-a-glance which
-layers are searchable by visual similarity (without round-tripping to Qdrant).
-
 ALL functions are best-effort. Brain failures (page missing, DB hiccup, RLS
 block) never propagate. The verdict the tool returns to Sage is the source
 of truth for the user; Brain logging is additive.
 """
 
-import json
 import logging
 import re
-from datetime import date as _date
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -75,132 +68,5 @@ async def record_raster_analysis(
         logger.debug(
             "record_raster_analysis: skipped for layer %s (source=%s)",
             layer_id, source, exc_info=True,
-        )
-        return False
-
-
-async def record_clay_embedding_status(
-    layer_id: str,
-    tile_count: int,
-    collection_name: str = "clay_tiles_v1",
-    embedding_dim: int = 1024,
-    owner_uuid: Optional[str] = None,
-) -> bool:
-    """Stamp the raster-{layer_id} brain page's frontmatter with Clay
-    embedding metadata so cross-system queries can locate the visual index.
-
-    Performs a JSONB merge on brain_pages.frontmatter — only the
-    clay_* keys are added, every other key is preserved.
-    """
-    try:
-        from src.structures import get_async_db_connection
-        slug = _slug_for_layer(layer_id)
-        patch = {
-            "clay_tiles_embedded": int(tile_count),
-            "clay_collection": collection_name,
-            "clay_embedding_dim": int(embedding_dim),
-            "clay_embedded_at": _date.today().isoformat(),
-        }
-        async with get_async_db_connection(user_id=owner_uuid) as conn:
-            await conn.execute(
-                """
-                UPDATE brain_pages
-                   SET frontmatter = COALESCE(frontmatter, '{}'::jsonb) || $2::jsonb,
-                       updated_at  = now()
-                 WHERE slug = $1
-                """,
-                slug, json.dumps(patch),
-            )
-            # Also append a one-line timeline entry so the embedding event
-            # shows up in the layer's history.
-            from src.services.brain_service import BrainService, TimelineInput
-            brain = BrainService()
-            await brain.add_timeline_entry(
-                conn, slug,
-                TimelineInput(
-                    date=_date.today(),
-                    summary=f"Clay v1.5 visual embeddings ready: {tile_count} tiles in {collection_name}",
-                    source="clay_embedding",
-                    detail="",
-                ),
-                owner_uuid=owner_uuid,
-            )
-        return True
-    except Exception:
-        logger.debug(
-            "record_clay_embedding_status: skipped for layer %s",
-            layer_id, exc_info=True,
-        )
-        return False
-
-
-def record_clay_embedding_status_sync(
-    layer_id: str,
-    tile_count: int,
-    collection_name: str = "clay_tiles_v1",
-    embedding_dim: int = 1024,
-    owner_uuid: Optional[str] = None,
-) -> bool:
-    """Sync sibling of record_clay_embedding_status, callable from
-    clay_embedding._embed_layer_sync without an event loop."""
-    try:
-        import os
-        import psycopg2
-        slug = _slug_for_layer(layer_id)
-        patch = {
-            "clay_tiles_embedded": int(tile_count),
-            "clay_collection": collection_name,
-            "clay_embedding_dim": int(embedding_dim),
-            "clay_embedded_at": _date.today().isoformat(),
-        }
-        pg_url = (
-            f"host={os.environ.get('POSTGRES_HOST', 'postgresdb')} "
-            f"port={os.environ.get('POSTGRES_PORT', '5432')} "
-            f"dbname={os.environ.get('POSTGRES_DB', 'mundidb')} "
-            f"user={os.environ.get('POSTGRES_USER', 'mundiuser')} "
-            f"password={os.environ.get('POSTGRES_PASSWORD', 'changeme')}"
-        )
-        conn = psycopg2.connect(pg_url)
-        try:
-            with conn.cursor() as cur:
-                # Set the partner GUC the RLS policies expect; user_id too
-                # so writes are owned correctly.
-                if owner_uuid:
-                    cur.execute("SELECT set_config('app.user_id', %s, false)", (owner_uuid,))
-                cur.execute(
-                    """
-                    UPDATE brain_pages
-                       SET frontmatter = COALESCE(frontmatter, '{}'::jsonb) || %s::jsonb,
-                           updated_at  = now()
-                     WHERE slug = %s
-                     RETURNING id
-                    """,
-                    (json.dumps(patch), slug),
-                )
-                page_row = cur.fetchone()
-                if page_row:
-                    cur.execute(
-                        """
-                        INSERT INTO brain_timeline_entries
-                            (page_id, date, source, summary, detail, owner_uuid)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (
-                            page_row[0],
-                            _date.today(),
-                            "clay_embedding",
-                            f"Clay v1.5 visual embeddings ready: {tile_count} tiles in {collection_name}",
-                            "",
-                            owner_uuid,
-                        ),
-                    )
-            conn.commit()
-        finally:
-            conn.close()
-        return True
-    except Exception:
-        logger.debug(
-            "record_clay_embedding_status_sync: skipped for layer %s",
-            layer_id, exc_info=True,
         )
         return False

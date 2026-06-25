@@ -83,8 +83,6 @@ class FakeConn:
                 "title": "RGB drone flight",
                 "frontmatter": {
                     "layer_id": "layer-rgb-1",
-                    "clay_tiles_embedded": 42,
-                    "clay_collection": "clay_tiles_v1",
                 },
                 "updated_at": datetime(2026, 6, 9, tzinfo=timezone.utc),
             }
@@ -104,7 +102,7 @@ def test_extract_user_message_text_supports_content_parts():
 
 
 @pytest.mark.asyncio
-async def test_build_brain_context_packet_includes_query_spatial_and_clay():
+async def test_build_brain_context_packet_includes_query_and_spatial_memory():
     packet = await build_brain_context_packet(
         FakeConn(),
         FakeBrain(),
@@ -116,9 +114,7 @@ async def test_build_brain_context_packet_includes_query_spatial_and_clay():
     assert '<BrainContext format="memory_packet">' in packet
     assert "source=query" in packet
     assert "source=spatial" in packet
-    assert "Clay/Qdrant visual index:" in packet
-    assert "layer_id=layer-rgb-1" in packet
-    assert "tiles=42" in packet
+    assert "visual index:" not in packet
 
 
 @pytest.mark.asyncio

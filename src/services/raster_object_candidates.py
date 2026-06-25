@@ -5,6 +5,8 @@ import os
 import tempfile
 import time
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from shapely.geometry import shape
@@ -39,7 +41,7 @@ class RasterObjectCandidateInput:
 def analyze_raster_object_candidates(
     payload: RasterObjectCandidateInput,
 ) -> dict[str, Any]:
-    """Extract basic object review polygons from an uploaded RGB orthophoto."""
+    """Extract object review polygons from an uploaded RGB orthophoto."""
     _validate_payload(payload)
 
     start = time.perf_counter()
@@ -111,8 +113,7 @@ def analyze_raster_object_candidates(
         grvi = np.where((g + r) > 0, (g - r) / (g + r), 0.0)
 
     targets = _normalize_targets(payload.target_classes)
-    candidate_features: list[dict[str, Any]] = []
-    class_counts: dict[str, int] = {}
+    target_masks: dict[str, Any] = {}
     sampled_masks: dict[str, int] = {}
 
     for target in targets:
@@ -120,13 +121,20 @@ def analyze_raster_object_candidates(
         mask = rasterio.features.sieve(
             mask.astype("uint8"), size=_sieve_size(out_w, out_h, target)
         ).astype(bool)
+        target_masks[target] = mask
         sampled_masks[target] = int(np.count_nonzero(mask))
-        if sampled_masks[target] == 0:
-            continue
 
-        target_features = _features_from_mask(
-            mask,
-            target=target,
+    candidate_features: list[dict[str, Any]] = []
+    fastsam_attempt: dict[str, Any] | None = None
+    used_engine = _fallback_engine_name(payload.engine_preference)
+    runtime = "python/rasterio/numpy/shapely"
+
+    if _should_try_fastsam(payload.engine_preference):
+        rgb_uint8 = _normalized_rgb_uint8(r, g, b)
+        fastsam_attempt = _features_from_fastsam(
+            rgb_uint8,
+            target_masks=target_masks,
+            targets=targets,
             source_transform=source_transform,
             source_crs=source_crs,
             min_area_m2=payload.min_area_m2,
@@ -134,8 +142,28 @@ def analyze_raster_object_candidates(
             confidence_threshold=payload.confidence_threshold,
             max_candidates=payload.max_candidates,
         )
-        class_counts[target] = len(target_features)
-        candidate_features.extend(target_features)
+        if fastsam_attempt.get("status") == "success":
+            candidate_features = list(fastsam_attempt.get("features") or [])
+            used_engine = "fastsam_s_candidate_masks_v1"
+            runtime = "python/ultralytics/fastsam/rasterio/shapely"
+
+    if not candidate_features:
+        for target, mask in target_masks.items():
+            if sampled_masks[target] == 0:
+                continue
+            candidate_features.extend(
+                _features_from_mask(
+                    mask,
+                    target=target,
+                    source_transform=source_transform,
+                    source_crs=source_crs,
+                    min_area_m2=payload.min_area_m2,
+                    max_area_m2=payload.max_area_m2,
+                    confidence_threshold=payload.confidence_threshold,
+                    max_candidates=payload.max_candidates,
+                    screening_model="rasterio_numpy_candidate_extractor_v2",
+                )
+            )
 
     candidate_features = sorted(
         candidate_features,
@@ -159,7 +187,7 @@ def analyze_raster_object_candidates(
         "pre_cap_candidate_count": pre_cap_candidate_count,
         "max_candidates": payload.max_candidates,
         "candidate_count_capped": pre_cap_candidate_count > payload.max_candidates,
-        "class_counts": _count_by_class(candidate_features) or class_counts,
+        "class_counts": _count_by_class(candidate_features),
         "requested_targets": targets,
         "sample_shape": f"{out_w}x{out_h}",
         "sampled_mask_pixels": sampled_masks,
@@ -183,9 +211,17 @@ def analyze_raster_object_candidates(
         "confirmed_count_available": False,
         "confirmed_building_count": None,
         "candidate_building_count": None,
-        "screening_model": _fallback_engine_name(payload.engine_preference),
+        "screening_model": used_engine,
         "analysis_plan": _analysis_plan_for_request(payload.engine_preference),
     }
+    if fastsam_attempt:
+        summary["fastsam_status"] = {
+            key: value
+            for key, value in fastsam_attempt.items()
+            if key not in {"features"}
+        }
+        if used_engine != "fastsam_s_candidate_masks_v1":
+            summary["fastsam_fallback_reason"] = fastsam_attempt.get("error") or fastsam_attempt.get("status")
     if "building" in targets:
         summary["candidate_building_count"] = int(
             summary["class_counts"].get("building", 0)
@@ -199,8 +235,8 @@ def analyze_raster_object_candidates(
         "engines": {
             "selection": {
                 "requested": payload.engine_preference,
-                "used": _fallback_engine_name(payload.engine_preference),
-                "runtime": "python/rasterio/numpy/shapely",
+                "used": used_engine,
+                "runtime": runtime,
                 "planner_order": _planner_order_for_request(payload.engine_preference),
             },
             "optional_engines": _optional_engine_status(),
@@ -269,6 +305,21 @@ def _normalize_rgb(red: Any, green: Any, blue: Any, valid: Any) -> tuple[Any, An
             scale = float(np.nanmax(finite)) or 1.0
             offset = 0.0
     return tuple(np.clip((arr - offset) / scale, 0.0, 1.0) for arr in arrays)  # type: ignore[return-value]
+
+
+def _normalized_rgb_uint8(r: Any, g: Any, b: Any) -> Any:
+    import numpy as np
+
+    channels = [
+        np.nan_to_num(channel, nan=0.0, posinf=1.0, neginf=0.0)
+        for channel in (r, g, b)
+    ]
+    return np.dstack(
+        [
+            np.clip(channel * 255, 0, 255).astype("uint8")
+            for channel in channels
+        ]
+    )
 
 
 def _normalize_targets(target_classes: list[str]) -> list[str]:
@@ -423,6 +474,8 @@ def _features_from_mask(
     max_area_m2: float,
     confidence_threshold: float,
     max_candidates: int,
+    screening_model: str = "raster_object_candidates_v1",
+    extra_properties: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     import rasterio.features
     from rasterio.warp import transform_geom
@@ -465,21 +518,24 @@ def _features_from_mask(
         except Exception:
             geometry_wgs84 = geom
 
+        properties = {
+            "candidate_class": target,
+            "candidate_label": _label_for_target(target),
+            "confidence": round(confidence, 3),
+            "area_m2": round(area_m2, 2),
+            "aspect_ratio": round(aspect, 2),
+            "evidence_basis": _evidence_for_target(target),
+            "confirmed": False,
+            "recommended_action": _recommended_action_for_target(target),
+            "screening_model": screening_model,
+        }
+        if extra_properties:
+            properties.update(extra_properties)
         features.append(
             {
                 "type": "Feature",
                 "geometry": geometry_wgs84,
-                "properties": {
-                    "candidate_class": target,
-                    "candidate_label": _label_for_target(target),
-                    "confidence": round(confidence, 3),
-                    "area_m2": round(area_m2, 2),
-                    "aspect_ratio": round(aspect, 2),
-                    "evidence_basis": _evidence_for_target(target),
-                    "confirmed": False,
-                    "recommended_action": _recommended_action_for_target(target),
-                    "screening_model": "raster_object_candidates_v1",
-                },
+                "properties": properties,
             }
         )
         if len(features) >= max_candidates * 3:
@@ -624,6 +680,207 @@ def _count_by_class(features: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _should_try_fastsam(engine_preference: str) -> bool:
+    engine = str(engine_preference or "").strip().lower().replace("-", "_")
+    return engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"}
+
+
+def _features_from_fastsam(
+    rgb_uint8: Any,
+    *,
+    target_masks: dict[str, Any],
+    targets: list[str],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> dict[str, Any]:
+    import numpy as np
+
+    status = _fastsam_weights_status()
+    if not status["available"]:
+        return {"status": "unavailable", "error": status["reason"], "weights": status}
+
+    try:
+        model = _load_fastsam_model(status["path"])
+        imgsz = _fastsam_imgsz(rgb_uint8.shape[1], rgb_uint8.shape[0])
+        results = model(
+            rgb_uint8,
+            imgsz=imgsz,
+            device=os.environ.get("MUNDI_FASTSAM_DEVICE", "cpu"),
+            retina_masks=True,
+            verbose=False,
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "weights": status,
+        }
+
+    if not results:
+        return {"status": "empty", "mask_count": 0, "weights": status}
+    masks_obj = getattr(results[0], "masks", None)
+    data = getattr(masks_obj, "data", None)
+    if data is None:
+        return {"status": "empty", "mask_count": 0, "weights": status}
+
+    try:
+        mask_stack = data.detach().cpu().numpy()
+    except AttributeError:
+        mask_stack = np.asarray(data)
+    if mask_stack.ndim == 2:
+        mask_stack = mask_stack[None, :, :]
+
+    features: list[dict[str, Any]] = []
+    height, width = rgb_uint8.shape[:2]
+    for mask_index, raw_mask in enumerate(mask_stack):
+        object_mask = _resize_bool_mask(raw_mask > 0.5, width=width, height=height)
+        object_pixels = int(np.count_nonzero(object_mask))
+        if object_pixels == 0:
+            continue
+        for target in targets:
+            target_mask = target_masks.get(target)
+            if target_mask is None:
+                continue
+            refined_mask = object_mask & target_mask
+            overlap_pixels = int(np.count_nonzero(refined_mask))
+            if overlap_pixels == 0:
+                continue
+            object_overlap = overlap_pixels / max(object_pixels, 1)
+            target_pixels = int(np.count_nonzero(target_mask))
+            target_overlap = overlap_pixels / max(target_pixels, 1)
+            if object_overlap < _fastsam_object_overlap_threshold(target) and target_overlap < _fastsam_target_overlap_threshold(target):
+                continue
+            feature_batch = _features_from_mask(
+                refined_mask,
+                target=target,
+                source_transform=source_transform,
+                source_crs=source_crs,
+                min_area_m2=min_area_m2,
+                max_area_m2=max_area_m2,
+                confidence_threshold=confidence_threshold,
+                max_candidates=max_candidates,
+                screening_model="fastsam_s_candidate_masks_v1",
+                extra_properties={
+                    "fastsam_mask_index": int(mask_index),
+                    "fastsam_object_overlap": round(object_overlap, 3),
+                    "fastsam_target_overlap": round(target_overlap, 3),
+                },
+            )
+            features.extend(feature_batch)
+            if len(features) >= max_candidates * 4:
+                break
+        if len(features) >= max_candidates * 4:
+            break
+
+    features = sorted(
+        _dedupe_candidate_features(features),
+        key=lambda feature: feature["properties"].get("confidence", 0),
+        reverse=True,
+    )
+    return {
+        "status": "success" if features else "empty",
+        "mask_count": int(mask_stack.shape[0]),
+        "feature_count": len(features),
+        "weights": status,
+        "features": features,
+    }
+
+
+def _fastsam_object_overlap_threshold(target: str) -> float:
+    if target in {"road", "linear_boundary"}:
+        return 0.04
+    if target in {"crop_patch", "vegetation_patch"}:
+        return 0.10
+    return 0.14
+
+
+def _fastsam_target_overlap_threshold(target: str) -> float:
+    if target in {"road", "linear_boundary"}:
+        return 0.02
+    if target in {"crop_patch", "vegetation_patch"}:
+        return 0.04
+    return 0.06
+
+
+def _resize_bool_mask(mask: Any, *, width: int, height: int) -> Any:
+    import numpy as np
+
+    if mask.shape == (height, width):
+        return mask.astype(bool)
+    from PIL import Image
+
+    resized = Image.fromarray(mask.astype("uint8") * 255).resize(
+        (width, height),
+        resample=Image.Resampling.NEAREST,
+    )
+    return np.asarray(resized) > 0
+
+
+def _dedupe_candidate_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, tuple[float, float, float, float]]] = set()
+    deduped: list[dict[str, Any]] = []
+    for feature in features:
+        geom = shape(feature["geometry"])
+        bounds = tuple(round(value, 7) for value in geom.bounds)
+        klass = str(feature.get("properties", {}).get("candidate_class") or "")
+        key = (klass, bounds)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(feature)
+    return deduped
+
+
+def _fastsam_imgsz(width: int, height: int) -> int:
+    raw = os.environ.get("MUNDI_FASTSAM_IMGSZ")
+    if raw:
+        try:
+            return max(128, int(raw))
+        except ValueError:
+            pass
+    longest = max(width, height)
+    rounded = int(math.ceil(longest / 32) * 32)
+    return min(1536, max(256, rounded))
+
+
+def _fastsam_weights_status() -> dict[str, Any]:
+    candidates = []
+    env_path = os.environ.get("MUNDI_FASTSAM_WEIGHTS")
+    if env_path:
+        candidates.append(Path(env_path))
+    project_root = Path(__file__).resolve().parents[2]
+    candidates.extend(
+        [
+            project_root / "FastSAM-s.pt",
+            Path.cwd() / "FastSAM-s.pt",
+            Path("/app/FastSAM-s.pt"),
+        ]
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return {
+                "available": True,
+                "path": str(candidate),
+                "size_bytes": candidate.stat().st_size,
+            }
+    return {
+        "available": False,
+        "reason": "FastSAM-s.pt not found; set MUNDI_FASTSAM_WEIGHTS or place it at the project root.",
+        "checked_paths": [str(path) for path in candidates],
+    }
+
+
+@lru_cache(maxsize=2)
+def _load_fastsam_model(weights_path: str) -> Any:
+    from ultralytics import FastSAM
+
+    return FastSAM(weights_path)
+
+
 def _write_features_to_geoparquet(
     features: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -658,7 +915,12 @@ def _write_features_to_geoparquet(
 
 
 def _analysis_plan_for_request(engine_preference: str) -> str:
-    _ = engine_preference
+    if _should_try_fastsam(engine_preference):
+        return (
+            "Use FastSAM masks for object-shaped regions, refine them with "
+            "target-specific raster evidence, then treat the marks as visual "
+            "review aids rather than trusted counts."
+        )
     return (
         "Use basic raster evidence to create review polygons, then treat the marks "
         "as visual review aids rather than trusted counts."
@@ -666,7 +928,12 @@ def _analysis_plan_for_request(engine_preference: str) -> str:
 
 
 def _planner_order_for_request(engine_preference: str) -> list[str]:
-    _ = engine_preference
+    if _should_try_fastsam(engine_preference):
+        return [
+            "FastSAM generic object masks",
+            "target-specific raster evidence refinement",
+            "GeoLibre-ready polygon cleanup/vector output",
+        ]
     return [
         "target-specific raster candidate masks",
         "GeoLibre-ready polygon cleanup/vector output",
@@ -674,12 +941,22 @@ def _planner_order_for_request(engine_preference: str) -> list[str]:
 
 
 def _fallback_engine_name(engine_preference: str) -> str:
-    _ = engine_preference
+    if _should_try_fastsam(engine_preference):
+        return "rasterio_numpy_candidate_extractor_v2_after_fastsam_unavailable"
     return "rasterio_numpy_candidate_extractor_v2"
 
 
 def _optional_engine_status() -> dict[str, dict[str, Any]]:
     return {
+        "fastsam": {
+            **_module_status("ultralytics"),
+            "weights": _fastsam_weights_status(),
+            "note": (
+                "FastSAM provides generic object masks; Ingabe refines those masks "
+                "with raster evidence for roofs, roads/tracks, trees, crops, field "
+                "boundaries, bare soil, and water review marks."
+            ),
+        },
         "geolibre_rust_wasm": {
             **_module_status("geolibre_wasm"),
             "note": (

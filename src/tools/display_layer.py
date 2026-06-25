@@ -287,7 +287,7 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
         "stroke_color": "#1a1a1a",
         "stroke_width": 1.5,
     },
-    # Visual-similarity hits (find_similar_tiles): cosine score 0..1, sequential
+    # Similarity-style overlays: score 0..1, sequential
     # color from pale yellow (weak) → red (top match). Same-flight neighbors
     # typically 0.65-0.85; cross-flight matches above 0.7 are meaningful.
     "similarity_score": {

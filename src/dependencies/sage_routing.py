@@ -174,7 +174,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_stress_zones": USER_RASTER,
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
-    "find_similar_tiles": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
@@ -1091,7 +1090,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
                 "confidence_threshold": 0.50,
-                "engine_preference": "rasterio_numpy",
+                "engine_preference": "fastsam",
                 "render_map": True,
             },
             f"fast:{decision.task}",

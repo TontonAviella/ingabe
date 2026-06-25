@@ -61,8 +61,8 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     engine_preference: str = Field(
         ...,
         description=(
-            "Engine preference. Only rasterio_numpy/basic raster review marks are "
-            "supported in this build; use rasterio_numpy."
+            "Engine preference. Use fastsam for object mask review marks, or "
+            "rasterio_numpy for the lightweight raster fallback."
         ),
     )
     render_map: bool = Field(
@@ -303,8 +303,8 @@ async def _run_service_with_timeout(
 
 
 def _timeout_seconds_for_engine(engine_preference: str) -> float:
-    _ = engine_preference
-    default = "120"
+    engine = str(engine_preference or "").strip().lower().replace("-", "_")
+    default = "240" if engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"} else "120"
     raw = os.environ.get("MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS", default)
     try:
         return max(5.0, float(raw))

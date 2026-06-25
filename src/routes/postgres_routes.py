@@ -1258,23 +1258,6 @@ async def _set_layer_cog_status(
         return metadata
 
 
-async def _maybe_embed_layer_after_cog(layer_id: str) -> None:
-    """Optionally run Clay embeddings after COG readiness.
-
-    Local and Hetzner CPU paths prioritize map availability; embeddings are useful
-    for visual search, but they should not slow or destabilize upload rendering.
-    """
-    if os.environ.get("CLAY_EMBED_ON_UPLOAD", "0") != "1":
-        logger.info("Clay embedding skipped for %s (set CLAY_EMBED_ON_UPLOAD=1 to enable)", layer_id)
-        return
-    try:
-        from src.services.clay_embedding import embed_layer
-        emb_res = await embed_layer(layer_id)
-        logger.info("Clay embedding complete for %s: %s", layer_id, emb_res)
-    except Exception:
-        logger.warning("Clay embedding failed for %s (non-fatal)", layer_id, exc_info=True)
-
-
 def _truthy_env(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -1480,7 +1463,6 @@ async def _background_generate_cog(
                 "cog_source": "reused_existing",
             },
         )
-        await _maybe_embed_layer_after_cog(layer_id)
         return
 
     tmp_dir = cleanup_dir or tempfile.mkdtemp()
@@ -1549,7 +1531,6 @@ async def _background_generate_cog(
                     "source_epsg": source_epsg,
                 },
             )
-            await _maybe_embed_layer_after_cog(layer_id)
             return
 
         # Always use gdalwarp subprocess for COG generation.
@@ -1641,7 +1622,6 @@ async def _background_generate_cog(
                 "source_epsg": source_epsg,
             },
         )
-        await _maybe_embed_layer_after_cog(layer_id)
     except Exception as e:
         logger.error("Background COG generation failed for %s: %s", layer_id, e)
         capture_backend_event(

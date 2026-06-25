@@ -58,7 +58,6 @@ services:
       - GEOKERNEL_URL=${GEOKERNEL_URL:-http://geokernel:8878}
       - GEOKERNEL_TIMEOUT=${GEOKERNEL_TIMEOUT:-5.0}
       - GEOKERNEL_H3_CONTAINMENT_MODE=${GEOKERNEL_H3_CONTAINMENT_MODE:-centroid}
-      - CLAY_EMBED_ON_UPLOAD=${CLAY_EMBED_ON_UPLOAD:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b-it-qat}
@@ -129,6 +128,7 @@ services:
       - ./alembic:/app/alembic
       - ./conftest.py:/app/conftest.py
       - ./pytest.ini:/app/pytest.ini
+      - ./FastSAM-s.pt:/app/FastSAM-s.pt:ro
       - ./docs:/app/docs
       - ./scripts:/app/scripts
       - ./services/api_monitor.py:/app/api_monitor.py
