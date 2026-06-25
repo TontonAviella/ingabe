@@ -612,6 +612,20 @@ _RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        "tree_canopy",
+        re.compile(
+            r"\b(tree|trees|canopy|canopies|orchard|orchards)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "crop_patch",
+        re.compile(
+            r"\b(crop|crops|cropland|(?<!playing\s)(?<!sports\s)fields?(?!\s+boundar(?:y|ies))|plant|plants)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "linear_boundary",
         re.compile(
             r"\b(field\s+boundar(?:y|ies)|farm\s+boundar(?:y|ies)|"
@@ -622,7 +636,7 @@ _RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "vegetation_patch",
         re.compile(
-            r"\b(tree|trees|crop|crops|vegetation|plant|plants|orchard|orchards)\b",
+            r"\b(vegetation|green\s+patch|green\s+patches)\b",
             re.IGNORECASE,
         ),
     ),
@@ -692,7 +706,8 @@ def raster_object_target_classes(text: str) -> list[str]:
             "building",
             "road",
             "linear_boundary",
-            "vegetation_patch",
+            "tree_canopy",
+            "crop_patch",
             "bare_rectangle",
             "water",
         ):
@@ -1066,16 +1081,17 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         decision.should_fast_route
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
     ):
+        targets = raster_object_target_classes(text) or ["building"]
         return FastToolCall(
             RASTER_OBJECT_CANDIDATES_TOOL,
             {
-                "target_classes": raster_object_target_classes(text) or ["building"],
+                "target_classes": targets,
                 "max_candidates": 500,
                 "max_sample_pixels": 200_000,
                 "min_area_m2": 8.0,
-                "max_area_m2": 1500.0,
-                "confidence_threshold": 0.35,
-                "engine_preference": "samgeo",
+                "max_area_m2": _raster_object_max_area_m2(targets),
+                "confidence_threshold": 0.50,
+                "engine_preference": "terramind_geolibre",
                 "render_map": True,
             },
             f"fast:{decision.task}",
@@ -1088,6 +1104,20 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             "fast:raster_context",
         )
     return None
+
+
+def _raster_object_max_area_m2(targets: list[str]) -> float:
+    broad_targets = {
+        "road",
+        "linear_boundary",
+        "crop_patch",
+        "vegetation_patch",
+        "bare_rectangle",
+        "water",
+    }
+    if any(target in broad_targets for target in targets):
+        return 25_000.0
+    return 1500.0
 
 
 def filter_tools_by_categories(

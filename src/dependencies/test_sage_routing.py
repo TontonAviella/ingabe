@@ -476,7 +476,8 @@ def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(
     assert fast.tool_name == "analyze_raster_object_candidates"
     assert fast.reason == "fast:object_candidate_count"
     assert fast.arguments["target_classes"] == ["building"]
-    assert fast.arguments["engine_preference"] == "samgeo"
+    assert fast.arguments["engine_preference"] == "terramind_geolibre"
+    assert fast.arguments["max_area_m2"] == 1500.0
     assert fast.arguments["render_map"] is True
 
 
@@ -487,15 +488,16 @@ def test_build_fast_tool_call_selects_multiple_raster_object_targets() -> None:
 
     assert fast is not None
     assert fast.tool_name == "analyze_raster_object_candidates"
-    assert fast.arguments["engine_preference"] == "samgeo"
+    assert fast.arguments["engine_preference"] == "terramind_geolibre"
     assert fast.arguments["target_classes"] == [
         "building",
         "road",
+        "tree_canopy",
         "linear_boundary",
-        "vegetation_patch",
         "bare_rectangle",
         "water",
     ]
+    assert fast.arguments["max_area_m2"] == 25_000.0
 
 
 def test_build_fast_tool_call_selects_shown_raster_object_targets() -> None:
@@ -507,8 +509,8 @@ def test_build_fast_tool_call_selects_shown_raster_object_targets() -> None:
     assert fast.tool_name == "analyze_raster_object_candidates"
     assert fast.arguments["target_classes"] == [
         "road",
+        "tree_canopy",
         "linear_boundary",
-        "vegetation_patch",
         "bare_rectangle",
         "water",
     ]

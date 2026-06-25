@@ -40,6 +40,7 @@ async def get_spatial_engine_capabilities(
             "geojson_3d_extrusion": True,
             "note": "Browser map extrusion remains MapLibre/deck.gl unless a Forge3D viewer/export path is selected.",
         },
+        "terramind_semantic_planner": _terramind_status(),
         "samgeo_segmentation": _samgeo_status(),
         "geolibre_wasm": _geolibre_wasm_status(),
     }
@@ -99,6 +100,31 @@ def _samgeo_status() -> dict[str, Any]:
             "SamGeo can extract masks from drone/satellite rasters, but semantic labels "
             "and confirmed counts still require prompts, detector labels, validation data, "
             "or footprint evidence."
+        ),
+    }
+
+
+def _terramind_status() -> dict[str, Any]:
+    terratorch = _python_package_status("terratorch")
+    torch = _python_package_status("torch")
+    installed = bool(terratorch["installed"])
+    return {
+        "installed": installed,
+        "package": terratorch,
+        "optional_backends": {"torch": torch},
+        "active_for": (
+            [
+                "semantic raster region planning",
+                "Earth-observation foundation-model embeddings",
+                "future fine-tuned segmentation/classification heads",
+            ]
+            if installed
+            else []
+        ),
+        "note": (
+            "TerraMind/TerraTorch should choose likely object or land-cover regions "
+            "before mask drawing. A trusted object count still needs a configured "
+            "fine-tuned head, reference labels, or review workflow."
         ),
     }
 
