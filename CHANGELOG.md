@@ -33,7 +33,6 @@ All notable changes to mundi.ai will be documented in this file.
 ### Fixed
 - Persist raster object/building candidate results as real PMTiles vector map layers, so users can see the mapped polygons instead of only receiving an inline chat summary.
 - Make Sage's raster object replies point to the visible `Object Candidates - <layer>` vector layer and clearly describe counts as likely candidate polygons, not confirmed houses.
-- Fall back to the rasterio/numpy candidate extractor when SamGeo times out during a live request, while making that fallback visible in the response.
 
 ## [0.5.2.0] - 2026-06-21
 

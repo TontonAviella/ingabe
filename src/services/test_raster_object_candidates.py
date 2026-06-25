@@ -213,18 +213,20 @@ def test_analyze_raster_object_candidates_splits_land_pattern_targets(tmp_path) 
             min_area_m2=8,
             max_area_m2=10_000,
             confidence_threshold=0.20,
-            engine_preference="terramind_geolibre",
+            engine_preference="rasterio_numpy",
         )
     )
 
     assert result["status"] == "success"
-    assert result["engines"]["selection"]["requested"] == "terramind_geolibre"
+    assert result["engines"]["selection"]["requested"] == "rasterio_numpy"
     assert (
         result["engines"]["selection"]["used"]
-        == "rasterio_semantic_proxy_waiting_for_terramind_head_v1"
+        == "rasterio_numpy_candidate_extractor_v2"
     )
-    assert result["engines"]["selection"]["semantic_planner_used"] is False
-    assert result["summary"]["semantic_planner_used"] is False
+    assert (
+        result["summary"]["screening_model"]
+        == "rasterio_numpy_candidate_extractor_v2"
+    )
     assert result["summary"]["requested_targets"] == [
         "building",
         "road",
