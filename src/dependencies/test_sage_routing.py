@@ -477,6 +477,7 @@ def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(
     assert fast.reason == "fast:object_candidate_count"
     assert fast.arguments["target_classes"] == ["building"]
     assert fast.arguments["engine_preference"] == "fastsam"
+    assert fast.arguments["max_sample_pixels"] == 650_000
     assert fast.arguments["max_area_m2"] == 1500.0
     assert fast.arguments["render_map"] is True
 

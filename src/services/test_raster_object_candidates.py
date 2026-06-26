@@ -321,7 +321,7 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
             max_candidates=10,
             max_sample_pixels=20_000,
             min_area_m2=20,
-            max_area_m2=600,
+            max_area_m2=1000,
             confidence_threshold=0.20,
             engine_preference="fastsam",
         )
@@ -336,6 +336,14 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
         feature["properties"]["screening_model"]
         for feature in result["geojson"]["features"]
     } == {"fastsam_s_candidate_masks_v1"}
+    assert {
+        feature["properties"]["fastsam_geometry_source"]
+        for feature in result["geojson"]["features"]
+    } == {"fastsam_object_mask"}
+    assert all(
+        feature["properties"]["fastsam_object_overlap"] >= 0.24
+        for feature in result["geojson"]["features"]
+    )
 
 
 def test_analyze_raster_object_candidates_requires_fastsam_when_requested(
