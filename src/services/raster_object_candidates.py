@@ -840,12 +840,21 @@ def _features_from_fastsam(
             object_overlap = overlap_pixels / max(object_pixels, 1)
             target_pixels = int(np.count_nonzero(target_mask))
             target_overlap = overlap_pixels / max(target_pixels, 1)
-            if object_overlap < _fastsam_object_overlap_threshold(
-                target
-            ) and target_overlap < _fastsam_target_overlap_threshold(target):
+            if not _fastsam_target_evidence_is_strong_enough(
+                target=target,
+                object_overlap=object_overlap,
+                target_overlap=target_overlap,
+                overlap_pixels=overlap_pixels,
+                image_pixels=height * width,
+            ):
                 continue
+            geometry_mask = _fastsam_geometry_mask_for_target(
+                target=target,
+                object_mask=object_mask,
+                refined_mask=refined_mask,
+            )
             feature_batch = _features_from_mask(
-                refined_mask,
+                geometry_mask,
                 target=target,
                 source_transform=source_transform,
                 source_crs=source_crs,
@@ -858,6 +867,10 @@ def _features_from_fastsam(
                     "fastsam_mask_index": int(mask_index),
                     "fastsam_object_overlap": round(object_overlap, 3),
                     "fastsam_target_overlap": round(target_overlap, 3),
+                    "fastsam_overlap_pixels": int(overlap_pixels),
+                    "fastsam_geometry_source": _fastsam_geometry_source_for_target(
+                        target
+                    ),
                 },
             )
             features.extend(feature_batch)
@@ -878,6 +891,45 @@ def _features_from_fastsam(
         "weights": status,
         "features": features,
     }
+
+
+def _fastsam_target_evidence_is_strong_enough(
+    *,
+    target: str,
+    object_overlap: float,
+    target_overlap: float,
+    overlap_pixels: int,
+    image_pixels: int,
+) -> bool:
+    min_pixels = max(8, int(image_pixels * 0.000002))
+    if overlap_pixels < min_pixels:
+        return False
+    if target == "building":
+        # Building overlays must be real FastSAM objects with roof-like evidence
+        # across a meaningful part of the object. The old OR check let large
+        # vegetation/ground masks through and then saved roof-colored fragments.
+        return object_overlap >= 0.24
+    return (
+        object_overlap >= _fastsam_object_overlap_threshold(target)
+        or target_overlap >= _fastsam_target_overlap_threshold(target)
+    )
+
+
+def _fastsam_geometry_mask_for_target(
+    *,
+    target: str,
+    object_mask: Any,
+    refined_mask: Any,
+) -> Any:
+    if target == "building":
+        return object_mask
+    return refined_mask
+
+
+def _fastsam_geometry_source_for_target(target: str) -> str:
+    if target == "building":
+        return "fastsam_object_mask"
+    return "fastsam_mask_refined_by_target_evidence"
 
 
 def _fastsam_object_overlap_threshold(target: str) -> float:
