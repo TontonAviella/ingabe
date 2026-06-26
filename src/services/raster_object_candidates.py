@@ -146,6 +146,17 @@ def analyze_raster_object_candidates(
             candidate_features = list(fastsam_attempt.get("features") or [])
             used_engine = "fastsam_s_candidate_masks_v1"
             runtime = "python/ultralytics/fastsam/rasterio/shapely"
+        elif _strict_fastsam_requested(payload.engine_preference):
+            elapsed_ms = round((time.perf_counter() - start) * 1000.0, 1)
+            return _fastsam_required_error_result(
+                payload,
+                fastsam_attempt=fastsam_attempt,
+                raster_bounds=raster_bounds,
+                targets=targets,
+                sample_shape=f"{out_w}x{out_h}",
+                sampled_masks=sampled_masks,
+                elapsed_ms=elapsed_ms,
+            )
 
     if not candidate_features:
         for target, mask in target_masks.items():
@@ -197,8 +208,8 @@ def analyze_raster_object_candidates(
         "elapsed_ms": elapsed_ms,
         "evidence_level": "candidate_polygons_not_confirmed_assets",
         "honesty_note": (
-            "These are object review marks from the uploaded image. Treat the number "
-            "as marks to inspect, not a final object count."
+            "These are object mask overlays from the uploaded image. Treat the number "
+            "as polygons to inspect, not a final object count."
         ),
         "analytics_format": "geoparquet",
         "render_transport": "geojson",
@@ -689,6 +700,79 @@ def _should_try_fastsam(engine_preference: str) -> bool:
     return engine in {"auto", "fastsam", "fastsam_s", "ultralytics_fastsam"}
 
 
+def _strict_fastsam_requested(engine_preference: str) -> bool:
+    engine = str(engine_preference or "").strip().lower().replace("-", "_")
+    return engine in {"fastsam", "fastsam_s", "ultralytics_fastsam"}
+
+
+def _fastsam_required_error_result(
+    payload: RasterObjectCandidateInput,
+    *,
+    fastsam_attempt: dict[str, Any],
+    raster_bounds: list[float] | None,
+    targets: list[str],
+    sample_shape: str,
+    sampled_masks: dict[str, int],
+    elapsed_ms: float,
+) -> dict[str, Any]:
+    reason = str(
+        fastsam_attempt.get("error")
+        or fastsam_attempt.get("reason")
+        or fastsam_attempt.get("status")
+        or "FastSAM did not return usable masks."
+    )
+    summary = {
+        "source_layer_id": payload.layer_id,
+        "source_layer_name": payload.layer_name,
+        "candidate_count": 0,
+        "pre_cap_candidate_count": 0,
+        "max_candidates": payload.max_candidates,
+        "candidate_count_capped": False,
+        "class_counts": {},
+        "requested_targets": targets,
+        "sample_shape": sample_shape,
+        "sampled_mask_pixels": sampled_masks,
+        "confidence_threshold": payload.confidence_threshold,
+        "min_area_m2": payload.min_area_m2,
+        "max_area_m2": payload.max_area_m2,
+        "elapsed_ms": elapsed_ms,
+        "evidence_level": "fastsam_required_but_unavailable",
+        "honesty_note": (
+            "FastSAM was requested for this orthophoto mask run, but it was not "
+            "available. No fallback mask was rendered."
+        ),
+        "candidate_count_available": False,
+        "count_semantics": "not_available_fastsam_required",
+        "count_units": "candidate_polygons",
+        "confirmed_count": False,
+        "confirmed_count_available": False,
+        "confirmed_building_count": None,
+        "candidate_building_count": 0,
+        "screening_model": "fastsam_required_unavailable",
+        "fastsam_status": {
+            key: value
+            for key, value in fastsam_attempt.items()
+            if key not in {"features"}
+        },
+        "fastsam_fallback_reason": reason,
+    }
+    return {
+        "status": "error",
+        "error": f"FastSAM is required for this mask run but is not available: {reason}",
+        "summary": summary,
+        "bbox": raster_bounds,
+        "engines": {
+            "selection": {
+                "requested": payload.engine_preference,
+                "used": "fastsam_required_unavailable",
+                "runtime": "unavailable",
+                "planner_order": _planner_order_for_request(payload.engine_preference),
+            },
+            "optional_engines": _optional_engine_status(),
+        },
+    }
+
+
 def _features_from_fastsam(
     rgb_uint8: Any,
     *,
@@ -960,7 +1044,7 @@ def _optional_engine_status() -> dict[str, dict[str, Any]]:
             "note": (
                 "FastSAM provides generic object masks; Ingabe refines those masks "
                 "with raster evidence for roofs, roads/tracks, trees, crops, field "
-                "boundaries, bare soil, and water review marks."
+                "boundaries, bare soil, and water mask overlays."
             ),
         },
         "geolibre_rust_wasm": {

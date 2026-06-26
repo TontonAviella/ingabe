@@ -207,7 +207,28 @@ def build_raster_object_candidate_maplibre_layers(
         "source": layer_id,
         "source-layer": MVT_LAYER_NAME,
     }
-    confidence_color = [
+    class_color = [
+        "match",
+        ["get", "candidate_class"],
+        "building",
+        "#22d3ee",
+        "tree_canopy",
+        "#22c55e",
+        "vegetation_patch",
+        "#84cc16",
+        "crop_patch",
+        "#a3e635",
+        "road",
+        "#fb923c",
+        "linear_boundary",
+        "#f97316",
+        "bare_rectangle",
+        "#eab308",
+        "water",
+        "#3b82f6",
+        "#ec4899",
+    ]
+    confidence_outline = [
         "step",
         ["coalesce", ["get", "confidence"], 0],
         "#22d3ee",
@@ -224,18 +245,19 @@ def build_raster_object_candidate_maplibre_layers(
             "id": f"raster-object-candidates-fill-{layer_id}",
             "type": "fill",
             "paint": {
-                "fill-color": confidence_color,
+                "fill-color": class_color,
                 "fill-opacity": [
                     "interpolate",
                     ["linear"],
                     ["coalesce", ["get", "confidence"], 0],
                     0,
-                    0.30,
+                    0.45,
                     0.50,
-                    0.55,
+                    0.68,
                     1,
-                    0.72,
+                    0.82,
                 ],
+                "fill-outline-color": "#0f172a",
             },
         },
         {
@@ -247,7 +269,7 @@ def build_raster_object_candidate_maplibre_layers(
                     "case",
                     [">=", ["coalesce", ["get", "confidence"], 0], 0.70],
                     "#ffffff",
-                    "#00f5ff",
+                    confidence_outline,
                 ],
                 "line-width": [
                     "interpolate",

@@ -20,9 +20,10 @@ def test_raster_object_reply_does_not_confirm_house_count() -> None:
         requested_building_count=True,
     )
 
-    assert "marked 11 possible roof/house shapes" in reply
-    assert "marks to review from the image" in reply
-    assert "Spot-check the important marks" in reply
+    assert "found 11 possible roof/house shapes" in reply
+    assert "colored mask layer" in reply
+    assert "map overlay to review" in reply
+    assert "Spot-check the important areas" in reply
     assert "I counted 11 houses" not in reply
     assert "Open Buildings" not in reply
     assert "OSM" not in reply
@@ -48,11 +49,11 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
         requested_building_count=True,
     )
 
-    assert "displayed 500 roof/house review marks" in reply
-    assert "capped at 500 marks" in reply
-    assert "marks shown for review" in reply
-    assert "not as the number of houses" in reply
-    assert "outlined layer `House/Roof Review Marks - Cyampirita_Orthophoto`" in reply
+    assert "found 500 possible roof/house shapes" in reply
+    assert "colored mask layer" in reply
+    assert "capped at 500" in reply
+    assert "not the final house count" in reply
+    assert "layer `House/Roof Masks - Cyampirita_Orthophoto`" in reply
     assert "layer Lobjects123" in reply
     assert "Object Candidates" not in reply
     assert "500 houses" not in reply
@@ -72,10 +73,10 @@ def test_raster_object_reply_keeps_generic_candidate_language() -> None:
         "Cyampirita_Orthophoto",
     )
 
-    assert "marked 4 possible objects" in reply
+    assert "found 4 possible features" in reply
     assert "road: 2" in reply
     assert "water: 2" in reply
-    assert "review marks" in reply
+    assert "colored mask layer" in reply
 
 
 def test_raster_object_reply_timeout_is_plain_language() -> None:
@@ -106,3 +107,29 @@ def test_raster_object_error_is_plain_language() -> None:
     assert "could not mark the requested features" in reply
     assert "backend tool unavailable" in reply
     assert "object candidates" not in reply
+
+
+def test_raster_object_reply_discloses_fastsam_fallback() -> None:
+    reply = _raster_object_fast_reply(
+        {
+            "status": "success",
+            "summary": {
+                "candidate_count": 8,
+                "candidate_building_count": 8,
+                "class_counts": {"building": 8},
+                "screening_model": "rasterio_numpy_candidate_extractor_v2",
+            },
+            "engines": {
+                "selection": {
+                    "requested": "fastsam",
+                    "used": "rasterio_numpy_candidate_extractor_v2",
+                }
+            },
+        },
+        "Cyampirita_Orthophoto",
+        requested_building_count=True,
+    )
+
+    assert "FastSAM was not available for this live run" in reply
+    assert "quick image screener" in reply
+    assert "rough overlay" in reply

@@ -1907,22 +1907,29 @@ def _raster_object_fast_reply(
     class_counts = summary.get("class_counts") if isinstance(summary.get("class_counts"), dict) else {}
     class_text = ", ".join(f"{klass}: {count}" for klass, count in sorted(class_counts.items())) or "building candidates"
     performance_note = summary.get("performance_note")
+    engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
+    selection = (
+        engines.get("selection")
+        if isinstance(engines.get("selection"), dict)
+        else {}
+    )
+    engine_used = str(selection.get("used") or summary.get("screening_model") or "").strip()
+    used_fastsam = engine_used == "fastsam_s_candidate_masks_v1"
     rendered_layer_id = result.get("layer_id")
     if not rendered_layer_id:
-        engines = result.get("engines") if isinstance(result.get("engines"), dict) else {}
         render_engine = engines.get("render") if isinstance(engines.get("render"), dict) else {}
         rendered_layer_id = render_engine.get("layer_id")
     visible_layer_name = (
-        f"House/Roof Review Marks - {layer_name}"
+        f"House/Roof Masks - {layer_name}"
         if requested_building_count
-        else f"Feature Review Marks - {layer_name}"
+        else f"Feature Masks - {layer_name}"
     )
     layer_hint = (
-        f" Look at the outlined layer `{visible_layer_name}`"
-        f" to see each marked location"
+        f" Turn on the layer `{visible_layer_name}`"
+        f" to see the colored polygons on the orthophoto"
         f"{f' (layer {rendered_layer_id})' if rendered_layer_id else ''}."
         if rendered_layer_id
-        else " I added the marks on top of the orthophoto."
+        else " I added the colored polygons on top of the orthophoto."
     )
     is_capped = bool(summary.get("candidate_count_capped"))
     plain_performance_note = _plain_raster_object_performance_note(performance_note)
@@ -1931,34 +1938,43 @@ def _raster_object_fast_reply(
     if is_capped:
         max_candidates = int(summary.get("max_candidates") or candidate_count)
         cap_note = (
-            f" I displayed {candidate_count} review marks because live map "
-            f"answers are capped at {max_candidates}; read that as marks "
-            "shown, not a full object count."
+            f" I displayed {candidate_count} mask polygons because live map "
+            f"answers are capped at {max_candidates}; read that as the visible "
+            "overlay size, not a full object count."
         )
     suffix = f"{cap_note} {plain_performance_note}".strip()
     suffix = f" {suffix}" if suffix else ""
+    engine_note = ""
+    if not used_fastsam and engine_used:
+        engine_note = (
+            " FastSAM was not available for this live run, so I used the quick "
+            "image screener. Treat this as a rough overlay until FastSAM is active."
+        )
     if requested_building_count and (class_counts.get("building") or summary.get("candidate_building_count")):
         building_candidates = int(class_counts.get("building") or summary.get("candidate_building_count") or 0)
         if is_capped:
             max_candidates = int(summary.get("max_candidates") or candidate_count)
             return (
-                f"I displayed {candidate_count} roof/house review marks in {layer_name} "
-                f"because this live map layer is capped at {max_candidates} marks."
-                f"{layer_hint} Read {candidate_count} as marks shown for review, "
-                "not as the number of houses. There may be more roof/house shapes "
-                "outside this capped result; spot-check the important marks on the image."
-                f"{performance_suffix}"
+                f"I found {candidate_count} possible roof/house shapes in {layer_name} "
+                f"and added them as a colored mask layer. The live layer is capped at "
+                f"{max_candidates}, so this is not the final house count."
+                f"{layer_hint} Some roofs may still be missing or mixed with trees, "
+                "shadows, and bare ground."
+                f"{engine_note}{performance_suffix}"
             )
         return (
-            f"I marked {building_candidates} possible roof/house shapes in {layer_name}."
-            f"{layer_hint} Read {building_candidates} as marks to review from the image, "
-            "not a final house count yet. Spot-check the important marks, "
+            f"I found {building_candidates} possible roof/house shapes in {layer_name} "
+            "and added them as a colored mask layer."
+            f"{layer_hint} Treat this as a map overlay to review, not a final house count yet. "
+            "Spot-check the important areas, "
             "especially where roofs touch trees, shadows, or roads."
-            f"{suffix}"
+            f"{engine_note}{suffix}"
         )
     return (
-        f"I marked {candidate_count} possible objects in {layer_name} ({class_text})."
-        f"{layer_hint} Use these as review marks and spot-check the important ones on the image.{suffix}"
+        f"I found {candidate_count} possible features in {layer_name} ({class_text}) "
+        "and added them as a colored mask layer."
+        f"{layer_hint} Review the overlay against the image before treating the counts as final."
+        f"{engine_note}{suffix}"
     )
 
 

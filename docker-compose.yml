@@ -74,6 +74,7 @@ services:
       - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/cache}
       - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
       - TORCH_HOME=${TORCH_HOME:-/cache/torch}
+      - YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR:-/cache/ultralytics}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
