@@ -61,7 +61,7 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     engine_preference: str = Field(
         ...,
         description=(
-            "Engine preference. Use fastsam for object mask review marks, or "
+            "Engine preference. Use fastsam for object mask overlays, or "
             "rasterio_numpy for the lightweight raster fallback."
         ),
     )
@@ -81,10 +81,10 @@ async def analyze_raster_object_candidates(
     houses are in this orthophoto?", "show roads/trees/playing areas", or
     "detect visible objects in this drone raster." This is the basic raster object
     path that should run before H3 risk cells when the user asks for objects or
-    counts. In user-facing replies, describe the result as review marks from
-    the image. If the live response is capped, say the number is marks shown,
-    not the number of objects. Avoid backend/data-source names unless the user
-    asks how it works.
+    counts. In user-facing replies, describe the result as mask overlays from
+    the image. If the live response is capped, say the number is the visible
+    overlay size, not the number of objects. Avoid backend/data-source names
+    unless the user asks how it works.
     """
 
     from src.structures import get_async_read_connection
@@ -204,7 +204,7 @@ async def analyze_raster_object_candidates(
         if persisted_layer:
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Saving review marks layer: {row['name']}",
+                f"Saving mask overlay layer: {row['name']}",
                 layer_id=persisted_layer.layer_id,
                 update_style_json=True,
                 bounds=persisted_layer.bounds or result.get("bbox"),
@@ -249,7 +249,7 @@ async def analyze_raster_object_candidates(
             style = _candidate_style()
             async with kue_ephemeral_action(
                 meta.conversation_id,
-                f"Rendering review marks preview: {row['name']}",
+                f"Rendering mask overlay preview: {row['name']}",
                 bounds=result.get("bbox"),
             ) as payload:
                 payload.updates["add_geojson_layer"] = geojson_layer_update(
@@ -292,8 +292,8 @@ def _visible_review_layer_name(
 ) -> str:
     normalized = {str(value).strip().lower() for value in target_classes if value}
     if normalized and normalized <= {"building", "house", "roof"}:
-        return f"House/Roof Review Marks - {source_layer_name}"
-    return f"Feature Review Marks - {source_layer_name}"
+        return f"House/Roof Masks - {source_layer_name}"
+    return f"Feature Masks - {source_layer_name}"
 
 
 async def _run_service_with_timeout(

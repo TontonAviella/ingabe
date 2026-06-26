@@ -336,3 +336,59 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
         feature["properties"]["screening_model"]
         for feature in result["geojson"]["features"]
     } == {"fastsam_s_candidate_masks_v1"}
+
+
+def test_analyze_raster_object_candidates_requires_fastsam_when_requested(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "synthetic_missing_fastsam_ortho.tif"
+    image = np.zeros((3, 80, 80), dtype=np.uint8)
+    image[0, :, :] = 55
+    image[1, :, :] = 145
+    image[2, :, :] = 65
+    image[:, 20:36, 20:40] = np.array([235, 232, 220], dtype=np.uint8)[:, None, None]
+
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=80,
+        height=80,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(0, 80, 1, 1),
+    ) as ds:
+        ds.write(image)
+
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_fastsam_weights_status",
+        lambda: {
+            "available": False,
+            "reason": "FastSAM-s.pt not found in test",
+        },
+    )
+
+    result = analyze_raster_object_candidates(
+        RasterObjectCandidateInput(
+            raster_url=str(path),
+            layer_id="Lmissingfastsam",
+            layer_name="Missing FastSAM Orthophoto",
+            bounds_wgs84=None,
+            target_classes=["building"],
+            max_candidates=10,
+            max_sample_pixels=20_000,
+            min_area_m2=8,
+            max_area_m2=600,
+            confidence_threshold=0.20,
+            engine_preference="fastsam",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "FastSAM is required" in result["error"]
+    assert result["engines"]["selection"]["used"] == "fastsam_required_unavailable"
+    assert result["summary"]["candidate_count"] == 0
+    assert result["summary"]["count_semantics"] == "not_available_fastsam_required"
