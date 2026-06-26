@@ -211,7 +211,7 @@ def build_raster_object_candidate_maplibre_layers(
         "match",
         ["get", "candidate_class"],
         "building",
-        "#22d3ee",
+        "#facc15",
         "tree_canopy",
         "#22c55e",
         "vegetation_patch",
@@ -231,7 +231,7 @@ def build_raster_object_candidate_maplibre_layers(
     confidence_outline = [
         "step",
         ["coalesce", ["get", "confidence"], 0],
-        "#22d3ee",
+        "#facc15",
         0.40,
         "#facc15",
         0.60,

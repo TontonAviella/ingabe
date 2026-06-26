@@ -504,6 +504,13 @@ def _features_from_mask(
             source_geom = source_geom.buffer(0)
         if source_geom.is_empty:
             continue
+        min_rect = source_geom.minimum_rotated_rectangle
+        rectangularity_area = float(getattr(min_rect, "area", 0.0) or 0.0)
+        rectangularity = (
+            float(source_geom.area) / rectangularity_area
+            if rectangularity_area > 0
+            else 0.0
+        )
 
         area_m2 = _area_m2(source_geom, source_crs)
         if area_m2 < min_area_m2 or area_m2 > _class_max_area(target, max_area_m2):
@@ -523,7 +530,17 @@ def _features_from_mask(
             continue
 
         confidence = _confidence(target, area_m2, aspect, source_geom.length)
-        if confidence < confidence_threshold:
+        if (
+            target == "building"
+            and extra_properties
+            and extra_properties.get("fastsam_support") == "supplemental_roof_recall"
+            and (rectangularity < 0.42 or aspect > 3.6)
+        ):
+            continue
+        effective_confidence_threshold = _effective_confidence_threshold(
+            target, confidence_threshold
+        )
+        if confidence < effective_confidence_threshold:
             continue
 
         try:
@@ -537,10 +554,12 @@ def _features_from_mask(
             "confidence": round(confidence, 3),
             "area_m2": round(area_m2, 2),
             "aspect_ratio": round(aspect, 2),
+            "rectangularity": round(rectangularity, 3),
             "evidence_basis": _evidence_for_target(target),
             "confirmed": False,
             "recommended_action": _recommended_action_for_target(target),
             "screening_model": screening_model,
+            "confidence_threshold_used": round(effective_confidence_threshold, 3),
         }
         if extra_properties:
             properties.update(extra_properties)
@@ -572,6 +591,12 @@ def _class_max_area(target: str, max_area_m2: float) -> float:
     if target == "vegetation_patch":
         return max(max_area_m2, 25_000.0)
     return max_area_m2
+
+
+def _effective_confidence_threshold(target: str, confidence_threshold: float) -> float:
+    if target == "building":
+        return max(confidence_threshold, 0.65)
+    return confidence_threshold
 
 
 def _area_m2(geom: Any, crs: Any) -> float:
@@ -793,6 +818,29 @@ def _features_from_fastsam(
 
     try:
         model = _load_fastsam_model(status["path"])
+        if _should_use_fastsam_tiles(rgb_uint8.shape[1], rgb_uint8.shape[0]):
+            features, mask_count = _features_from_fastsam_tiles(
+                model,
+                rgb_uint8,
+                target_masks=target_masks,
+                targets=targets,
+                source_transform=source_transform,
+                source_crs=source_crs,
+                min_area_m2=min_area_m2,
+                max_area_m2=max_area_m2,
+                confidence_threshold=confidence_threshold,
+                max_candidates=max_candidates,
+            )
+            return {
+                "status": "success" if features else "empty",
+                "mask_count": mask_count,
+                "feature_count": len(features),
+                "weights": status,
+                "features": features,
+                "inference_mode": "tiled",
+                "tile_size": _fastsam_tile_size(),
+                "tile_stride": _fastsam_tile_stride(),
+            }
         imgsz = _fastsam_imgsz(rgb_uint8.shape[1], rgb_uint8.shape[0])
         results = model(
             rgb_uint8,
@@ -822,8 +870,46 @@ def _features_from_fastsam(
     if mask_stack.ndim == 2:
         mask_stack = mask_stack[None, :, :]
 
+    features = _features_from_fastsam_mask_stack(
+        mask_stack,
+        rgb_shape=rgb_uint8.shape[:2],
+        target_masks=target_masks,
+        targets=targets,
+        source_transform=source_transform,
+        source_crs=source_crs,
+        min_area_m2=min_area_m2,
+        max_area_m2=max_area_m2,
+        confidence_threshold=confidence_threshold,
+        max_candidates=max_candidates,
+    )
+    return {
+        "status": "success" if features else "empty",
+        "mask_count": int(mask_stack.shape[0]),
+        "feature_count": len(features),
+        "weights": status,
+        "features": features,
+        "inference_mode": "full_frame",
+    }
+
+
+def _features_from_fastsam_mask_stack(
+    mask_stack: Any,
+    *,
+    rgb_shape: tuple[int, int],
+    target_masks: dict[str, Any],
+    targets: list[str],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    import numpy as np
+
     features: list[dict[str, Any]] = []
-    height, width = rgb_uint8.shape[:2]
+    accepted_geometry_masks: dict[str, list[Any]] = {target: [] for target in targets}
+    height, width = rgb_shape
     for mask_index, raw_mask in enumerate(mask_stack):
         object_mask = _resize_bool_mask(raw_mask > 0.5, width=width, height=height)
         object_pixels = int(np.count_nonzero(object_mask))
@@ -874,23 +960,292 @@ def _features_from_fastsam(
                 },
             )
             features.extend(feature_batch)
+            if feature_batch:
+                accepted_geometry_masks.setdefault(target, []).append(geometry_mask)
             if len(features) >= max_candidates * 4:
                 break
         if len(features) >= max_candidates * 4:
             break
 
-    features = sorted(
+    if "building" in targets and len(features) < max_candidates:
+        features.extend(
+            _fastsam_supplemental_roof_evidence_features(
+                target_masks=target_masks,
+                accepted_geometry_masks=accepted_geometry_masks.get("building", []),
+                source_transform=source_transform,
+                source_crs=source_crs,
+                min_area_m2=min_area_m2,
+                max_area_m2=max_area_m2,
+                confidence_threshold=confidence_threshold,
+                max_candidates=max_candidates - len(features),
+            )
+        )
+
+    return sorted(
         _dedupe_candidate_features(features),
         key=lambda feature: feature["properties"].get("confidence", 0),
         reverse=True,
     )
-    return {
-        "status": "success" if features else "empty",
-        "mask_count": int(mask_stack.shape[0]),
-        "feature_count": len(features),
-        "weights": status,
-        "features": features,
-    }
+
+
+def _features_from_fastsam_tiles(
+    model: Any,
+    rgb_uint8: Any,
+    *,
+    target_masks: dict[str, Any],
+    targets: list[str],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> tuple[list[dict[str, Any]], int]:
+    import numpy as np
+
+    height, width = rgb_uint8.shape[:2]
+    tile_size = _fastsam_tile_size()
+    stride = _fastsam_tile_stride()
+    features: list[dict[str, Any]] = []
+    accepted_geometry_masks: dict[str, list[Any]] = {target: [] for target in targets}
+    mask_count = 0
+
+    for y0 in _tile_starts(height, tile_size, stride):
+        for x0 in _tile_starts(width, tile_size, stride):
+            tile = rgb_uint8[
+                y0 : min(y0 + tile_size, height),
+                x0 : min(x0 + tile_size, width),
+            ]
+            if tile.size == 0 or float(tile.mean()) <= 1.0:
+                continue
+            results = model(
+                tile,
+                imgsz=_fastsam_imgsz(tile.shape[1], tile.shape[0]),
+                device=os.environ.get("MUNDI_FASTSAM_DEVICE", "cpu"),
+                retina_masks=True,
+                conf=float(os.environ.get("MUNDI_FASTSAM_TILE_CONF", "0.35")),
+                iou=float(os.environ.get("MUNDI_FASTSAM_TILE_IOU", "0.8")),
+                verbose=False,
+            )
+            if not results:
+                continue
+            masks_obj = getattr(results[0], "masks", None)
+            data = getattr(masks_obj, "data", None)
+            if data is None:
+                continue
+            try:
+                mask_stack = data.detach().cpu().numpy()
+            except AttributeError:
+                mask_stack = np.asarray(data)
+            if mask_stack.ndim == 2:
+                mask_stack = mask_stack[None, :, :]
+            for raw_mask in mask_stack:
+                local_mask = _resize_bool_mask(
+                    raw_mask > 0.5,
+                    width=tile.shape[1],
+                    height=tile.shape[0],
+                )
+                object_mask = np.zeros((height, width), dtype=bool)
+                object_mask[
+                    y0 : y0 + tile.shape[0],
+                    x0 : x0 + tile.shape[1],
+                ] = local_mask
+                mask_count += 1
+                feature_batch = _features_from_fastsam_object_mask(
+                    object_mask,
+                    mask_index=mask_count - 1,
+                    target_masks=target_masks,
+                    targets=targets,
+                    source_transform=source_transform,
+                    source_crs=source_crs,
+                    min_area_m2=min_area_m2,
+                    max_area_m2=max_area_m2,
+                    confidence_threshold=confidence_threshold,
+                    max_candidates=max_candidates,
+                )
+                features.extend(feature_batch)
+                for feature in feature_batch:
+                    target = str(
+                        feature.get("properties", {}).get("candidate_class") or ""
+                    )
+                    if target in accepted_geometry_masks:
+                        accepted_geometry_masks[target].append(object_mask)
+                if len(features) >= max_candidates * 4:
+                    break
+            if len(features) >= max_candidates * 4:
+                break
+        if len(features) >= max_candidates * 4:
+            break
+
+    if "building" in targets and len(features) < max_candidates:
+        features.extend(
+            _fastsam_supplemental_roof_evidence_features(
+                target_masks=target_masks,
+                accepted_geometry_masks=accepted_geometry_masks.get("building", []),
+                source_transform=source_transform,
+                source_crs=source_crs,
+                min_area_m2=min_area_m2,
+                max_area_m2=max_area_m2,
+                confidence_threshold=confidence_threshold,
+                max_candidates=max_candidates - len(features),
+            )
+        )
+
+    return (
+        sorted(
+            _dedupe_candidate_features(features),
+            key=lambda feature: feature["properties"].get("confidence", 0),
+            reverse=True,
+        ),
+        mask_count,
+    )
+
+
+def _features_from_fastsam_object_mask(
+    object_mask: Any,
+    *,
+    mask_index: int,
+    target_masks: dict[str, Any],
+    targets: list[str],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    import numpy as np
+
+    features: list[dict[str, Any]] = []
+    object_pixels = int(np.count_nonzero(object_mask))
+    if object_pixels == 0:
+        return features
+    height, width = object_mask.shape[:2]
+    for target in targets:
+        target_mask = target_masks.get(target)
+        if target_mask is None:
+            continue
+        refined_mask = object_mask & target_mask
+        overlap_pixels = int(np.count_nonzero(refined_mask))
+        if overlap_pixels == 0:
+            continue
+        object_overlap = overlap_pixels / max(object_pixels, 1)
+        target_pixels = int(np.count_nonzero(target_mask))
+        target_overlap = overlap_pixels / max(target_pixels, 1)
+        if not _fastsam_target_evidence_is_strong_enough(
+            target=target,
+            object_overlap=object_overlap,
+            target_overlap=target_overlap,
+            overlap_pixels=overlap_pixels,
+            image_pixels=height * width,
+        ):
+            continue
+        geometry_mask = _fastsam_geometry_mask_for_target(
+            target=target,
+            object_mask=object_mask,
+            refined_mask=refined_mask,
+        )
+        features.extend(
+            _features_from_mask(
+                geometry_mask,
+                target=target,
+                source_transform=source_transform,
+                source_crs=source_crs,
+                min_area_m2=min_area_m2,
+                max_area_m2=max_area_m2,
+                confidence_threshold=confidence_threshold,
+                max_candidates=max_candidates,
+                screening_model="fastsam_s_candidate_masks_v1",
+                extra_properties={
+                    "fastsam_mask_index": int(mask_index),
+                    "fastsam_object_overlap": round(object_overlap, 3),
+                    "fastsam_target_overlap": round(target_overlap, 3),
+                    "fastsam_overlap_pixels": int(overlap_pixels),
+                    "fastsam_geometry_source": _fastsam_geometry_source_for_target(
+                        target
+                    ),
+                    "fastsam_inference_mode": "tiled",
+                },
+            )
+        )
+    return features
+
+
+def _fastsam_supplemental_roof_evidence_features(
+    *,
+    target_masks: dict[str, Any],
+    accepted_geometry_masks: list[Any],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> list[dict[str, Any]]:
+    if max_candidates <= 0:
+        return []
+
+    import numpy as np
+
+    roof_mask = target_masks.get("building")
+    if roof_mask is None:
+        return []
+
+    available_mask = roof_mask.copy()
+    context_mask = None
+    if accepted_geometry_masks:
+        covered = np.zeros_like(available_mask, dtype=bool)
+        for accepted_mask in accepted_geometry_masks:
+            covered |= accepted_mask.astype(bool)
+        context_mask = _dilated_context_mask(
+            covered,
+            radius=max(30, int(min(available_mask.shape[:2]) * 0.08)),
+        )
+        available_mask &= ~covered
+    if context_mask is None:
+        return []
+    available_mask &= context_mask
+
+    if int(np.count_nonzero(available_mask)) == 0:
+        return []
+
+    # Roofs that become too small after whole-image downsampling may not get
+    # their own FastSAM object. Add only compact roof-evidence components so we
+    # recover recall without returning the huge blocky color-mask layer again.
+    return _features_from_mask(
+        available_mask,
+        target="building",
+        source_transform=source_transform,
+        source_crs=source_crs,
+        min_area_m2=min_area_m2,
+        max_area_m2=min(max_area_m2, 420.0),
+        confidence_threshold=max(0.58, confidence_threshold + 0.06),
+        max_candidates=max_candidates,
+        screening_model="fastsam_s_candidate_masks_v1",
+        extra_properties={
+            "fastsam_geometry_source": "roof_evidence_component_after_fastsam",
+            "fastsam_support": "supplemental_roof_recall",
+        },
+    )
+
+
+def _dilated_context_mask(mask: Any, *, radius: int) -> Any:
+    import numpy as np
+
+    if radius <= 0:
+        return mask.astype(bool)
+    try:
+        from scipy import ndimage
+
+        return ndimage.binary_dilation(
+            mask.astype(bool),
+            structure=np.ones((3, 3), dtype=bool),
+            iterations=radius,
+        )
+    except Exception:
+        # If scipy is unavailable, keep the path conservative instead of adding
+        # broad color-only recall away from FastSAM-supported roof masks.
+        return mask.astype(bool)
 
 
 def _fastsam_target_evidence_is_strong_enough(
@@ -962,19 +1317,83 @@ def _resize_bool_mask(mask: Any, *, width: int, height: int) -> Any:
     return np.asarray(resized) > 0
 
 
+def _should_use_fastsam_tiles(width: int, height: int) -> bool:
+    raw = os.environ.get("MUNDI_FASTSAM_TILED")
+    if raw is not None:
+        return raw.strip().lower() not in {"0", "false", "no", "off"}
+    return max(width, height) > _fastsam_tile_size()
+
+
+def _fastsam_tile_size() -> int:
+    raw = os.environ.get("MUNDI_FASTSAM_TILE_SIZE")
+    try:
+        return max(256, int(raw)) if raw else 640
+    except (TypeError, ValueError):
+        return 640
+
+
+def _fastsam_tile_stride() -> int:
+    raw = os.environ.get("MUNDI_FASTSAM_TILE_STRIDE")
+    try:
+        stride = int(raw) if raw else 512
+    except (TypeError, ValueError):
+        stride = 512
+    return max(128, min(stride, _fastsam_tile_size()))
+
+
+def _tile_starts(length: int, tile_size: int, stride: int) -> list[int]:
+    if length <= tile_size:
+        return [0]
+    starts = list(range(0, max(1, length - tile_size + 1), stride))
+    final_start = max(0, length - tile_size)
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
+
+
 def _dedupe_candidate_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, tuple[float, float, float, float]]] = set()
     deduped: list[dict[str, Any]] = []
-    for feature in features:
+    sorted_features = sorted(
+        features,
+        key=lambda feature: feature["properties"].get("confidence", 0),
+        reverse=True,
+    )
+    for feature in sorted_features:
         geom = shape(feature["geometry"])
         bounds = tuple(round(value, 7) for value in geom.bounds)
         klass = str(feature.get("properties", {}).get("candidate_class") or "")
         key = (klass, bounds)
         if key in seen:
             continue
+        if any(
+            klass == str(other.get("properties", {}).get("candidate_class") or "")
+            and _bbox_iou(bounds, shape(other["geometry"]).bounds) >= 0.72
+            for other in deduped
+        ):
+            continue
         seen.add(key)
         deduped.append(feature)
     return deduped
+
+
+def _bbox_iou(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    intersection = (ix2 - ix1) * (iy2 - iy1)
+    area_a = max((ax2 - ax1) * (ay2 - ay1), 0.0)
+    area_b = max((bx2 - bx1) * (by2 - by1), 0.0)
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0 else 0.0
 
 
 def _fastsam_imgsz(width: int, height: int) -> int:

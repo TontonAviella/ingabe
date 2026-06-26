@@ -297,7 +297,7 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
     class _FakeFastSAM:
         def __call__(self, image_array, **kwargs):
             mask = np.zeros(image_array.shape[:2], dtype="float32")
-            mask[20:46, 20:52] = 1.0
+            mask[24:42, 24:48] = 1.0
             return [_FakeResult(mask[None, :, :])]
 
     monkeypatch.setattr(
@@ -322,7 +322,7 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
             max_sample_pixels=20_000,
             min_area_m2=20,
             max_area_m2=1000,
-            confidence_threshold=0.20,
+            confidence_threshold=0.65,
             engine_preference="fastsam",
         )
     )
@@ -344,6 +344,95 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
         feature["properties"]["fastsam_object_overlap"] >= 0.24
         for feature in result["geojson"]["features"]
     )
+
+
+def test_analyze_raster_object_candidates_adds_small_roof_recall_after_fastsam(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "synthetic_fastsam_roof_recall.tif"
+    image = np.zeros((3, 120, 120), dtype=np.uint8)
+    image[0, :, :] = 55
+    image[1, :, :] = 145
+    image[2, :, :] = 65
+    image[:, 24:42, 24:48] = np.array([235, 232, 220], dtype=np.uint8)[:, None, None]
+    image[:, 58:74, 60:78] = np.array([238, 235, 224], dtype=np.uint8)[:, None, None]
+
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=120,
+        height=120,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_origin(0, 120, 1, 1),
+    ) as ds:
+        ds.write(image)
+
+    class _FakeMaskTensor:
+        def __init__(self, data: np.ndarray) -> None:
+            self._data = data
+
+        def detach(self) -> "_FakeMaskTensor":
+            return self
+
+        def cpu(self) -> "_FakeMaskTensor":
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return self._data
+
+    class _FakeMasks:
+        def __init__(self, data: np.ndarray) -> None:
+            self.data = _FakeMaskTensor(data)
+
+    class _FakeResult:
+        def __init__(self, data: np.ndarray) -> None:
+            self.masks = _FakeMasks(data)
+
+    class _FakeFastSAM:
+        def __call__(self, image_array, **kwargs):
+            mask = np.zeros(image_array.shape[:2], dtype="float32")
+            mask[24:42, 24:48] = 1.0
+            return [_FakeResult(mask[None, :, :])]
+
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_fastsam_weights_status",
+        lambda: {"available": True, "path": "/tmp/FastSAM-s.pt", "size_bytes": 1},
+    )
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_load_fastsam_model",
+        lambda _weights_path: _FakeFastSAM(),
+    )
+
+    result = analyze_raster_object_candidates(
+        RasterObjectCandidateInput(
+            raster_url=str(path),
+            layer_id="Lfastsamrecall",
+            layer_name="Synthetic FastSAM Roof Recall Orthophoto",
+            bounds_wgs84=None,
+            target_classes=["building"],
+            max_candidates=10,
+            max_sample_pixels=20_000,
+            min_area_m2=20,
+            max_area_m2=1000,
+            confidence_threshold=0.65,
+            engine_preference="fastsam",
+        )
+    )
+
+    assert result["status"] == "success"
+    sources = {
+        feature["properties"].get("fastsam_geometry_source")
+        for feature in result["geojson"]["features"]
+    }
+    assert "fastsam_object_mask" in sources
+    assert "roof_evidence_component_after_fastsam" in sources
+    assert result["summary"]["class_counts"]["building"] >= 2
 
 
 def test_analyze_raster_object_candidates_requires_fastsam_when_requested(

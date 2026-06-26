@@ -1081,15 +1081,16 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
     ):
         targets = raster_object_target_classes(text) or ["building"]
+        building_only = targets == ["building"]
         return FastToolCall(
             RASTER_OBJECT_CANDIDATES_TOOL,
             {
                 "target_classes": targets,
-                "max_candidates": 500,
-                "max_sample_pixels": 650_000,
+                "max_candidates": 1_500,
+                "max_sample_pixels": 2_000_000,
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
-                "confidence_threshold": 0.50,
+                "confidence_threshold": 0.65 if building_only else 0.42,
                 "engine_preference": "fastsam",
                 "render_map": True,
             },
