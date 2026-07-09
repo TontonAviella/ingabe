@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
+import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/projectViewLoadState';
 import type {
   Conversation,
   EphemeralAction,
@@ -63,7 +64,7 @@ export default function ProjectView() {
   const [sourcesRefetchInterval, setSourcesRefetchInterval] = useState<number | false>(false);
 
   // handle a single store of project<->map<->conversation data
-  const { data: project } = useQuery({
+  const { data: project, error: projectError } = useQuery({
     queryKey: ['project', projectId],
     queryFn: async () => {
       const res = await fetchMaybeAuth(`/api/projects/${projectId}`);
@@ -77,6 +78,7 @@ export default function ProjectView() {
       return (await res.json()) as MapProject;
     },
     enabled: isReady,
+    retry: shouldRetryProjectQuery,
     // Do not poll the project route; sources polling is handled below
     refetchInterval: false,
   });
@@ -89,7 +91,7 @@ export default function ProjectView() {
       if (!res.ok) throw new Error('Failed to fetch project sources');
       return (await res.json()) as PostgresConnectionDetails[];
     },
-    enabled: isReady,
+    enabled: isReady && !!project,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
     // While any connection is still being documented, poll this endpoint
@@ -110,7 +112,7 @@ export default function ProjectView() {
       if (!res.ok) throw new Error('Failed to fetch conversations');
       return (await res.json()) as Conversation[];
     },
-    enabled: isReady,
+    enabled: isReady && !!project,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
   });
@@ -129,7 +131,7 @@ export default function ProjectView() {
     queryClient.invalidateQueries({ queryKey: ['project', projectId] });
   }, [queryClient, projectId]);
 
-  const { error, data: mapData } = useQuery({
+  const { error: mapError, data: mapData } = useQuery({
     queryKey: ['project', projectId, 'map', versionId],
     queryFn: async () => {
       const res = await apiFetch(`/api/maps/${versionId}`);
@@ -140,7 +142,7 @@ export default function ProjectView() {
     },
     // prevent map (query parameter) refreshing this
     refetchOnMount: false,
-    enabled: isReady && !!versionId,
+    enabled: isReady && !!project && !!versionId,
   });
 
   const { data: mapTree } = useQuery({
@@ -152,7 +154,7 @@ export default function ProjectView() {
       if (!res.ok) throw new Error('Failed to fetch map tree');
       return (await res.json()) as MapTreeResponse;
     },
-    enabled: isReady && !!versionId,
+    enabled: isReady && !!project && !!versionId,
     retry: 5,
     retryDelay: (attempt) => 1000 * attempt,
     placeholderData: (previousData) => {
@@ -1438,24 +1440,26 @@ export default function ProjectView() {
     );
   }
 
-  if (!project || !versionId) {
+  const loadState = getProjectViewLoadState(project, versionId, projectError, mapError);
+
+  if (loadState.kind === 'error') {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-bold mb-4">Error Loading Map</h1>
+        <p>Failed to load map data: {loadState.message}</p>
+        <a href="/maps" className="text-blue-500 hover:underline">
+          Back to Maps
+        </a>
+      </div>
+    );
+  }
+
+  if (loadState.kind === 'loading') {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">
           Loading project {projectId} version {versionId}...
         </h1>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">Error Loading Map</h1>
-        <p>Failed to load map data: {error.message}</p>
-        <a href="/maps" className="text-blue-500 hover:underline">
-          Back to Maps
-        </a>
       </div>
     );
   }
@@ -1467,9 +1471,9 @@ export default function ProjectView() {
 
       {/* Interactive Map Section */}
       <MapLibreMap
-        mapId={versionId}
+        mapId={loadState.versionId}
         height="100%"
-        project={project}
+        project={loadState.project}
         mapData={mapData}
         mapTree={mapTree || null}
         conversationId={effectiveConversationId}
