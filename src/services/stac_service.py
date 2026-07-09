@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 STAC_CATALOGS = {
     "earth_search": "https://earth-search.aws.element84.com/v1",
     "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
-    "cdse": "https://catalogue.dataspace.copernicus.eu/stac",
+    "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
 
 # Rwanda bounding box (approximate)
@@ -58,7 +58,7 @@ RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
 SENTINEL2_COLLECTIONS = {
     "earth_search": "sentinel-2-l2a",
     "planetary_computer": "sentinel-2-l2a",
-    "cdse": "SENTINEL-2",
+    "cdse": "sentinel-2-l2a",
 }
 
 # Drought status constants (WMO VCI thresholds)
