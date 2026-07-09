@@ -340,6 +340,22 @@ def test_explicit_satellite_place_keeps_satellite_tools() -> None:
             "show all villages in Gasabo district",
             {"admin_level": "village", "name": "*", "district": "Gasabo"},
         ),
+        (
+            "show me the sectors of nyanza ?",
+            {"admin_level": "sector", "name": "*", "district": "nyanza"},
+        ),
+        (
+            "show me sectors of nyanza ?",
+            {"admin_level": "sector", "name": "*", "district": "nyanza"},
+        ),
+        (
+            "show all sectors in Nyanza",
+            {"admin_level": "sector", "name": "*", "district": "Nyanza"},
+        ),
+        (
+            "show me the cells of Busasamana",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana"},
+        ),
     ],
 )
 def test_build_admin_boundary_tool_args(msg: str, expected: dict[str, object]) -> None:
