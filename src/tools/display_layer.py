@@ -90,31 +90,31 @@ class DisplayLayerArgs(BaseModel):
         ...,
         description="1-based band index for single-band rasters (use 1 for most soil COGs and z-score rasters).",
     )
-    source_catalog: str = Field(
-        "",
-        description="Source catalog from the preceding search result, such as earth_search.",
+    source_catalog: str | None = Field(
+        ...,
+        description="Source catalog from the preceding search result, such as earth_search; pass null when unavailable.",
     )
-    source_collection: str = Field(
-        "",
-        description="Collection from the preceding search result, such as sentinel-2-l2a.",
+    source_collection: str | None = Field(
+        ...,
+        description="Collection from the preceding search result, such as sentinel-2-l2a; pass null when unavailable.",
     )
-    scene_id: str = Field(
-        "",
-        description="Exact satellite scene ID from the preceding search result, when applicable.",
+    scene_id: str | None = Field(
+        ...,
+        description="Exact satellite scene ID from the preceding search result; pass null when not applicable.",
     )
-    scene_date: str = Field(
-        "",
-        description="Exact acquisition datetime from the preceding search result, when applicable.",
+    scene_date: str | None = Field(
+        ...,
+        description="Exact acquisition datetime from the preceding search result; pass null when not applicable.",
     )
     cloud_cover: float | None = Field(
-        None,
+        ...,
         ge=0,
         le=100,
-        description="Cloud-cover percentage from the preceding search result, when applicable.",
+        description="Cloud-cover percentage from the preceding search result; pass null when not applicable.",
     )
-    platform: str = Field(
-        "",
-        description="Satellite platform from the preceding search result, such as sentinel-2b.",
+    platform: str | None = Field(
+        ...,
+        description="Satellite platform from the preceding search result, such as sentinel-2b; pass null when unavailable.",
     )
 
 
