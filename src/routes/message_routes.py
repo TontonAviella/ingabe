@@ -1988,11 +1988,11 @@ def _plain_raster_object_performance_note(note: object) -> str:
 
 
 def _fast_raster_object_turn_timeout_seconds() -> float:
-    raw = os.environ.get("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "90")
+    raw = os.environ.get("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "300")
     try:
         return max(15.0, float(raw))
     except (TypeError, ValueError):
-        return 90.0
+        return 300.0
 
 
 async def _maybe_run_fast_raster_object_turn(
