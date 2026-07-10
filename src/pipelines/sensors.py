@@ -3,7 +3,7 @@
 Implements sensors that detect new file uploads to S3/MinIO and trigger
 the appropriate processing pipelines based on file type.
 
-Also includes a satellite scene sensor that polls Sentinel Hub Catalog API
+Also includes a satellite scene sensor that polls the public Earth Search STAC API
 for new Sentinel-2 L2A scenes over Rwanda and invalidates the tile cache.
 """
 
@@ -13,8 +13,8 @@ import math
 import threading
 import time
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
-import requests
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
 
 from src.pipelines.resources import PostgresResource, RedisResource, S3Resource
@@ -23,15 +23,12 @@ from src.pipelines.posthog_observability import (
     observed_dagster_sensor,
 )
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD
+from src.services.stac_service import STACService
 
 logger = logging.getLogger(__name__)
 
 # Rwanda bounding box (WGS84)
 _RWANDA_BBOX = [28.86, -2.84, 30.90, -1.05]
-
-# Sentinel Hub Catalog API
-_SH_CATALOG_URL = "https://services.sentinel-hub.com/api/v1/catalog/1.0.0/search"
-
 
 def build_s3_upload_sensor(raster_job, vector_job):
     """Factory that creates the s3_upload_sensor with proper job targets."""
@@ -215,7 +212,7 @@ def build_failed_cog_retry_sensor(raster_job):
     return failed_cog_retry_sensor
 
 
-def _warm_satellite_cache(base_url: str = "http://localhost:8000"):
+def _warm_satellite_cache(base_url: str = "http://app:8000"):
     """Pre-fetch all satellite tiles covering Rwanda at z8-z13 for both TRUE-COLOR and NDVI.
 
     Runs synchronously — designed to be called in a background thread.
@@ -251,10 +248,54 @@ def _warm_satellite_cache(base_url: str = "http://localhost:8000"):
     logger.info("Satellite cache warming complete: %d tiles cached", cached)
 
 
+def _parse_scene_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _search_new_satellite_scenes(
+    last_cursor: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[list[dict], str]:
+    """Return Earth Search scenes newer than the sensor cursor."""
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    cursor_time = _parse_scene_datetime(last_cursor) or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    cursor_time = min(cursor_time, current_time)
+    search_start = max(cursor_time, current_time - timedelta(days=7))
+    datetime_range = (
+        f"{search_start.isoformat().replace('+00:00', 'Z')}/"
+        f"{current_time.isoformat().replace('+00:00', 'Z')}"
+    )
+
+    result = STACService("earth_search").search_imagery(
+        bbox=_RWANDA_BBOX,
+        datetime_range=datetime_range,
+        max_cloud_cover=100.0,
+        limit=25,
+    )
+    if result.get("error"):
+        raise RuntimeError(str(result["error"]))
+
+    scenes = []
+    for item in result.get("items", []):
+        scene_time = _parse_scene_datetime(str(item.get("datetime") or ""))
+        if scene_time and scene_time > cursor_time:
+            scenes.append(item)
+    scenes.sort(key=lambda item: str(item.get("datetime") or ""))
+    latest_datetime = str(scenes[-1]["datetime"]) if scenes else last_cursor
+    return scenes, latest_datetime
+
+
 def build_satellite_scene_sensor():
     """Factory that creates a sensor to detect new Sentinel-2 scenes over Rwanda.
 
-    Polls the Sentinel Hub Catalog API every 4 hours. On new scene detection:
+    Polls the public Earth Search STAC API every 4 hours. On new scene detection:
     1. Invalidates all cached satellite tiles in Redis
     2. Publishes a notification to the ``ws:satellite`` Redis Pub/Sub channel
     """
@@ -273,78 +314,18 @@ def build_satellite_scene_sensor():
         context: SensorEvaluationContext,
         redis: RedisResource,
     ):
-        """Poll Sentinel Hub Catalog for new S2 L2A scenes over Rwanda."""
-        import os
-        from datetime import datetime, timezone
-
+        """Poll Earth Search for new S2 L2A scenes over Rwanda."""
         started_at = time.monotonic()
-        sh_client_id = os.environ.get("SH_CLIENT_ID", "")
-        sh_client_secret = os.environ.get("SH_CLIENT_SECRET", "")
-
-        if not sh_client_id or not sh_client_secret:
-            return SkipReason("Sentinel Hub credentials not configured")
-
-        # Get OAuth2 token
-        token_url = (
-            "https://services.sentinel-hub.com/auth/realms/main/"
-            "protocol/openid-connect/token"
-        )
-        try:
-            token_resp = requests.post(
-                token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": sh_client_id,
-                    "client_secret": sh_client_secret,
-                },
-                timeout=15,
-            )
-            token_resp.raise_for_status()
-            access_token = token_resp.json()["access_token"]
-        except Exception as e:
-            context.log.error(f"Failed to get SH access token: {e}")
-            return SkipReason(f"Failed to get SH access token: {e}")
-
-        # Build catalog search — look for scenes from the last 7 days
         last_cursor = context.cursor or "2020-01-01T00:00:00Z"
-
-        search_body = {
-            "collections": ["sentinel-2-l2a"],
-            "bbox": _RWANDA_BBOX,
-            "datetime": f"{last_cursor}/..".replace("+00:00", "Z"),
-            "limit": 5,
-            "fields": {
-                "include": ["properties.datetime"],
-            },
-        }
-
         try:
-            resp = requests.post(
-                _SH_CATALOG_URL,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json=search_body,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            catalog_result = resp.json()
+            features, latest_dt = _search_new_satellite_scenes(last_cursor)
         except Exception as e:
-            context.log.error(f"Sentinel Hub Catalog search failed: {e}")
+            context.log.error(f"Earth Search Catalog search failed: {e}")
             return SkipReason(f"Catalog search failed: {e}")
 
-        features = catalog_result.get("features", [])
         if not features:
             context.log.debug("No new Sentinel-2 scenes over Rwanda")
             return SkipReason("No new scenes detected")
-
-        # Find the latest scene datetime
-        latest_dt = last_cursor
-        for feat in features:
-            dt = feat.get("properties", {}).get("datetime", "")
-            if dt > latest_dt:
-                latest_dt = dt
 
         context.log.info(
             f"Detected {len(features)} new Sentinel-2 scene(s) over Rwanda, latest: {latest_dt}"

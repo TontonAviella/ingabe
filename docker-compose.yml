@@ -146,6 +146,14 @@ services:
     volumes:
       - ingabe-cache:/tmp/ingabe_cache
 
+  dagster-home-init:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    user: root
+    command: >
+      bash -c "mkdir -p /app/dagster_home/storage && chown -R appuser:appuser /app/dagster_home/storage"
+    volumes:
+      - dagster-home:/app/dagster_home
+
   minio:
     image: bitnamilegacy/minio:latest
     ports:
@@ -456,6 +464,8 @@ services:
       minio:
         condition: service_healthy
       cache-init:
+        condition: service_completed_successfully
+      dagster-home-init:
         condition: service_completed_successfully
     environment:
       - DAGSTER_HOME=/app/dagster_home
