@@ -163,6 +163,7 @@ def _record_key(record: Mapping[str, Any]) -> str:
             str(record.get("source_category") or "unknown"),
             str(record.get("pipeline_family") or "unknown"),
             str(name),
+            str(record.get("event") or "unknown"),
         ]
     )
 
