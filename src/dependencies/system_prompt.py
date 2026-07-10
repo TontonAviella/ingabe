@@ -68,7 +68,9 @@ IMPORTANT RULES — follow these strictly:
    - get_soil_properties returns nitrogen, then call display_layer with the iSDAsoil COG URL
      and style_hint='soil_nitrogen' so the user can see spatial variation around the point.
    - search_satellite_imagery returns scene URLs, then call display_layer with style_hint='visual'
-     for true color or style_hint='ndvi' for vegetation.
+     for true color or style_hint='ndvi' for vegetation. Copy the selected result's catalog,
+     collection, scene ID, datetime, cloud cover, and platform into display_layer's matching
+     optional provenance fields so the saved layer remains auditable after reload.
    - get_alos_l_band_stats returns a `displayable_layers` payload with the HH COG URL; pass it
      to display_layer with style_hint='sar_backscatter_db' to paint the L-band biomass map.
    - describe_user_raster on drone exports surfaces `displayable_cog_url` as a safe

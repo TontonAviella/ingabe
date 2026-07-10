@@ -2,12 +2,12 @@ import asyncio
 import logging
 import uuid
 from typing import Any, Dict
-from urllib.parse import quote
 
 from pydantic import BaseModel, Field
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services.stac_service import STACService
+from src.services.remote_cog_layer import persist_remote_cog_layer
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
 
@@ -90,6 +90,32 @@ class DisplayLayerArgs(BaseModel):
         ...,
         description="1-based band index for single-band rasters (use 1 for most soil COGs and z-score rasters).",
     )
+    source_catalog: str = Field(
+        "",
+        description="Source catalog from the preceding search result, such as earth_search.",
+    )
+    source_collection: str = Field(
+        "",
+        description="Collection from the preceding search result, such as sentinel-2-l2a.",
+    )
+    scene_id: str = Field(
+        "",
+        description="Exact satellite scene ID from the preceding search result, when applicable.",
+    )
+    scene_date: str = Field(
+        "",
+        description="Exact acquisition datetime from the preceding search result, when applicable.",
+    )
+    cloud_cover: float | None = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Cloud-cover percentage from the preceding search result, when applicable.",
+    )
+    platform: str = Field(
+        "",
+        description="Satellite platform from the preceding search result, such as sentinel-2b.",
+    )
 
 
 async def display_layer(
@@ -123,25 +149,42 @@ async def display_layer(
             "error": f"Unknown style_hint '{args.style_hint}'. Valid: {sorted(STYLE_PRESETS.keys())}",
         }
 
-    # Build the cog-tiles URL with the right query params for this style preset.
-    # The frontend will use this template; MapLibre fills {z}/{x}/{y} per tile.
-    params = [f"url={quote(args.asset_url, safe='')}", f"expression={preset['expression']}"]
-    if preset["expression"] == "single_band":
-        params.append(f"colormap={preset['colormap']}")
-        params.append(f"rescale={preset['rescale']}")
-        params.append(f"band_index={args.band_index}")
-
-    tile_url = "/api/cog-tiles/{z}/{x}/{y}.png?" + "&".join(params)
-    source_id = f"sage-display-{uuid.uuid4().hex[:8]}"
+    try:
+        persisted = await persist_remote_cog_layer(
+            map_id=meta.map_id,
+            user_uuid=meta.session.get_user_id(),
+            partner_id=meta.session.get_org_id(),
+            layer_name=args.layer_name,
+            remote_url=args.asset_url,
+            bounds=bbox,
+            expression=preset["expression"],
+            style_hint=args.style_hint,
+            colormap=preset["colormap"],
+            rescale=preset["rescale"],
+            band_index=args.band_index if preset["expression"] == "single_band" else None,
+            extra_metadata={
+                "source_catalog": args.source_catalog,
+                "collection": args.source_collection,
+                "scene_id": args.scene_id,
+                "scene_date": args.scene_date,
+                "cloud_cover": args.cloud_cover,
+                "platform": args.platform,
+            },
+        )
+    except Exception as exc:
+        logger.exception("Failed to persist displayed COG layer")
+        return {"status": "error", "error": f"Could not save map layer: {exc}"}
 
     async with kue_ephemeral_action(
         meta.conversation_id,
         f"Adding layer: {args.layer_name}",
+        layer_id=persisted.layer_id,
+        update_style_json=True,
         bounds=bbox,
     ) as payload:
         payload.updates["add_tile_layer"] = {
-            "source_id": source_id,
-            "tiles": [tile_url],
+            "source_id": persisted.source_id,
+            "tiles": [persisted.tile_url],
             "tileSize": 256,
             "maxzoom": 14,
             "name": args.layer_name,
@@ -152,12 +195,13 @@ async def display_layer(
 
     return {
         "status": "displayed",
-        "source_id": source_id,
+        "layer_id": persisted.layer_id,
+        "source_id": persisted.source_id,
         "title": args.layer_name,
         "style_hint": args.style_hint,
         "asset_url": args.asset_url,
         "bbox": bbox,
-        "tile_template": tile_url,
+        "tile_template": persisted.tile_url,
     }
 
 
@@ -495,17 +539,39 @@ async def display_satellite_layer(
             return {"status": "error", "error": "Scene has no visual or red band asset"}
         visual_href = red_href
 
-    tile_url = _build_cog_tile_url(visual_href, expression="visual")
-    source_id = f"sage-tci-{uuid.uuid4().hex[:8]}"
+    try:
+        persisted = await persist_remote_cog_layer(
+            map_id=meta.map_id,
+            user_uuid=meta.session.get_user_id(),
+            partner_id=meta.session.get_org_id(),
+            layer_name=args.layer_name,
+            remote_url=visual_href,
+            bounds=bbox,
+            expression="visual",
+            style_hint="visual",
+            extra_metadata={
+                "source_catalog": "earth_search",
+                "collection": "sentinel-2-l2a",
+                "scene_id": best.get("id"),
+                "scene_date": best.get("datetime"),
+                "cloud_cover": best.get("cloud_cover"),
+                "platform": best.get("platform"),
+            },
+        )
+    except Exception as exc:
+        logger.exception("Failed to persist satellite COG layer")
+        return {"status": "error", "error": f"Could not save satellite layer: {exc}"}
 
     async with kue_ephemeral_action(
         meta.conversation_id,
         f"Adding satellite layer: {args.layer_name}",
+        layer_id=persisted.layer_id,
+        update_style_json=True,
         bounds=bbox,
     ) as payload:
         payload.updates["add_tile_layer"] = {
-            "source_id": source_id,
-            "tiles": [tile_url],
+            "source_id": persisted.source_id,
+            "tiles": [persisted.tile_url],
             "tileSize": 256,
             "maxzoom": 14,
             "name": args.layer_name,
@@ -515,8 +581,9 @@ async def display_satellite_layer(
 
     return {
         "status": "displayed",
+        "layer_id": persisted.layer_id,
         "layer_name": args.layer_name,
-        "source_id": source_id,
+        "source_id": persisted.source_id,
         "scene_id": best.get("id"),
         "scene_date": best.get("datetime"),
         "cloud_cover": best.get("cloud_cover"),
