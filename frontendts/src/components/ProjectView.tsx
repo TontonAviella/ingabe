@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
+import { parseMapResponse } from '../lib/mapResponse';
 import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/projectViewLoadState';
 import type {
   Conversation,
@@ -135,10 +136,7 @@ export default function ProjectView() {
     queryKey: ['project', projectId, 'map', versionId],
     queryFn: async () => {
       const res = await apiFetch(`/api/maps/${versionId}`);
-      if (res.status === 404) {
-        throw new Error('Map not found');
-      }
-      return await res.json();
+      return parseMapResponse(res);
     },
     // prevent map (query parameter) refreshing this
     refetchOnMount: false,

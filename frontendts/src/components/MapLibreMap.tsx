@@ -850,7 +850,7 @@ export default function MapLibreMap({
       // Check if style and style.layers exist before proceeding
       if (!style || !style.layers) return;
 
-      mapData?.layers.forEach((layer) => {
+      mapData?.layers?.forEach((layer) => {
         const layerId = layer.id;
 
         const mapLayer = style.layers.find((styleLayer) => 'source' in styleLayer && (styleLayer as any).source === layerId);
@@ -2016,11 +2016,11 @@ export default function MapLibreMap({
             <CardHeader className="px-2">
               <CardTitle className="text-base flex justify-between items-center gap-2">
                 <div className="flex gap-2 items-baseline">
-                  {mapData?.layers.find((l) => l.id === selectedFeature.source) ? (
+                  {mapData?.layers?.find((l) => l.id === selectedFeature.source) ? (
                     <>
-                      <span>{mapData?.layers.find((l) => l.id === selectedFeature.source)?.name}</span>
+                      <span>{mapData?.layers?.find((l) => l.id === selectedFeature.source)?.name}</span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {mapData?.layers.find((l) => l.id === selectedFeature.source)?.type}
+                        {mapData?.layers?.find((l) => l.id === selectedFeature.source)?.type}
                       </span>
                     </>
                   ) : (
