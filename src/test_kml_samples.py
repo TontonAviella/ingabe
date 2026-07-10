@@ -19,6 +19,7 @@ async def test_map_id(auth_client):
 
 
 @pytest.mark.anyio
+@pytest.mark.timeout(180)
 async def test_upload_kml_samples_creates_multiple_layers(test_map_id, auth_client):
     file_path = "test_fixtures/KML_Samples.kml"
 

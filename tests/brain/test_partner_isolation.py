@@ -357,16 +357,20 @@ async def test_sage_query_log_attribution(conn_a):
 
 
 # ---------------------------------------------------------------------------
-# Fuzz guard — 100 adversarial slug queries from partner A against B's data
+# Adversarial guard — varied query shapes from partner A against B's data
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.postgres
 async def test_adversarial_queries_never_leak(conn_a, seeded_db):
-    """Run 100 varied read patterns from A's session looking for any leak of
-    B's partner_internal row. Catches policy-bypass regressions introduced by
+    """Run varied read patterns from A's session looking for any leak of B's
+    partner_internal row. Catches policy-bypass regressions introduced by
     future RLS edits (e.g. someone adds a permissive policy that ORs with
     partner isolation).
+
+    Each distinct query shape is sufficient to exercise the RLS policy once.
+    Repeating the unindexed ILIKE and regex scans against the full knowledge
+    base makes this gate scale with production data without adding coverage.
     """
     patterns = [
         "SELECT slug FROM brain_pages WHERE slug = $1",
@@ -381,8 +385,7 @@ async def test_adversarial_queries_never_leak(conn_a, seeded_db):
     target = seeded_db["b_internal"]
     leaks = 0
     probes = 0
-    for i in range(100):
-        pat = patterns[i % len(patterns)]
+    for pat in patterns:
         probes += 1
         rows = await conn_a.fetch(pat, target)
         # A leak is any row or count>0 referencing B's slug.
@@ -393,8 +396,8 @@ async def test_adversarial_queries_never_leak(conn_a, seeded_db):
             if any(isinstance(v, int) and v > 0 for v in vals) and "count" in pat:
                 leaks += 1
 
-    assert probes == 100
+    assert probes == len(patterns)
     assert leaks == 0, (
-        f"{leaks}/100 adversarial queries leaked partner B's slug to partner "
+        f"{leaks}/{probes} adversarial queries leaked partner B's slug to partner "
         "A's session. RLS policy regression — block merge."
     )
