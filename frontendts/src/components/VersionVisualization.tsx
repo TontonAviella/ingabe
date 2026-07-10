@@ -378,7 +378,7 @@ export default function VersionVisualization({
   };
 
   return conversationsEnabled ? (
-    <div className="z-30 max-h-screen h-full w-96 bg-white dark:bg-gray-800 shadow-md flex flex-col text-halfway-sm-xs">
+    <div className="z-30 max-h-screen h-full w-full bg-white dark:bg-gray-800 shadow-md flex flex-col text-halfway-sm-xs">
       <div className="flex-1 overflow-auto p-2">
         <div className="mb-4 bg-gray-700 rounded-md">
           <div className="p-2 flex items-center justify-between">
