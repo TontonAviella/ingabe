@@ -11,11 +11,14 @@ test environments keep working without Clerk.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional
 
 import jwt
@@ -30,7 +33,65 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _jwks_cache: dict | None = None
 _jwks_fetched_at: float = 0.0
+_jwks_refresh_retry_at: float = 0.0
 _JWKS_TTL = 6 * 3600  # seconds
+_JWKS_STALE_MAX_AGE = 7 * 24 * 3600
+_JWKS_REFRESH_BACKOFF = 60
+
+
+class ClerkJWKSUnavailableError(RuntimeError):
+    """Raised when Clerk keys cannot be refreshed and no safe cache exists."""
+
+
+def _jwks_cache_path() -> Path:
+    return Path(
+        os.environ.get(
+            "CLERK_JWKS_CACHE_PATH",
+            "/tmp/ingabe_cache/clerk_jwks.json",
+        )
+    )
+
+
+def _valid_jwks(payload: object) -> bool:
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("keys"), list)
+        and bool(payload["keys"])
+    )
+
+
+def _load_persisted_jwks(now: float) -> tuple[dict, float] | None:
+    path = _jwks_cache_path()
+    try:
+        modified_at = path.stat().st_mtime
+        if now - modified_at > _JWKS_STALE_MAX_AGE:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return (payload, modified_at) if _valid_jwks(payload) else None
+
+
+def _persist_jwks(payload: dict) -> None:
+    path = _jwks_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=".clerk_jwks.",
+            suffix=".json",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+            os.replace(temporary_path, path)
+        finally:
+            try:
+                os.unlink(temporary_path)
+            except FileNotFoundError:
+                pass
+    except OSError as exc:
+        logger.warning("Could not persist Clerk JWKS cache at %s: %s", path, exc)
 
 
 def _get_clerk_jwks_url() -> str | None:
@@ -46,11 +107,19 @@ def _get_clerk_jwks_url() -> str | None:
 
 def _fetch_jwks() -> dict:
     """Fetch JWKS from Clerk (cached with TTL)."""
-    global _jwks_cache, _jwks_fetched_at
+    global _jwks_cache, _jwks_fetched_at, _jwks_refresh_retry_at
 
     now = time.time()
     if _jwks_cache and (now - _jwks_fetched_at) < _JWKS_TTL:
         return _jwks_cache
+    if _jwks_cache and now < _jwks_refresh_retry_at:
+        return _jwks_cache
+
+    persisted = _load_persisted_jwks(now)
+    if persisted and not _jwks_cache:
+        _jwks_cache, _jwks_fetched_at = persisted
+        if (now - _jwks_fetched_at) < _JWKS_TTL:
+            return _jwks_cache
 
     import requests
 
@@ -60,10 +129,31 @@ def _fetch_jwks() -> dict:
             "Cannot fetch JWKS: set CLERK_ISSUER or CLERK_FRONTEND_API"
         )
 
-    resp = requests.get(url, timeout=5)
-    resp.raise_for_status()
-    _jwks_cache = resp.json()
+    try:
+        resp = requests.get(url, timeout=5)
+        resp.raise_for_status()
+        refreshed = resp.json()
+        if not _valid_jwks(refreshed):
+            raise ValueError("Clerk JWKS response did not contain signing keys")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        fallback = _jwks_cache or (persisted[0] if persisted else None)
+        if fallback:
+            _jwks_cache = fallback
+            _jwks_refresh_retry_at = now + _JWKS_REFRESH_BACKOFF
+            logger.warning(
+                "Clerk JWKS refresh failed; using bounded cached keys for %ss: %s",
+                _JWKS_REFRESH_BACKOFF,
+                exc,
+            )
+            return _jwks_cache
+        raise ClerkJWKSUnavailableError(
+            "Clerk signing keys are temporarily unavailable"
+        ) from exc
+
+    _jwks_cache = refreshed
     _jwks_fetched_at = now
+    _jwks_refresh_retry_at = 0.0
+    _persist_jwks(_jwks_cache)
     logger.info("Refreshed Clerk JWKS from %s", url)
     return _jwks_cache
 
@@ -79,8 +169,9 @@ def _get_signing_key(token: str) -> jwt.algorithms.RSAAlgorithm:
             return jwt.algorithms.RSAAlgorithm.from_jwk(key_data)
 
     # kid not found — force refresh and retry once
-    global _jwks_fetched_at
+    global _jwks_fetched_at, _jwks_refresh_retry_at
     _jwks_fetched_at = 0.0
+    _jwks_refresh_retry_at = 0.0
     jwks = _fetch_jwks()
     for key_data in jwks.get("keys", []):
         if key_data.get("kid") == kid:
@@ -273,6 +364,11 @@ async def _authenticate_clerk(token: str) -> ClerkUserContext:
     """Verify Clerk JWT and return a ClerkUserContext."""
     try:
         claims = _decode_clerk_jwt(token)
+    except ClerkJWKSUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service temporarily unavailable",
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
     except jwt.InvalidTokenError as e:
@@ -378,6 +474,9 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
         if token:
             try:
                 claims = _decode_clerk_jwt(token)
+            except ClerkJWKSUnavailableError as e:
+                logger.warning("WS Clerk JWKS unavailable: %s", e)
+                raise WebSocketException(code=1013)
             except jwt.ExpiredSignatureError as e:
                 logger.warning("WS JWT expired: %s (token_prefix=%s)", e, token[:20])
                 raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
