@@ -10,6 +10,7 @@ for new Sentinel-2 L2A scenes over Rwanda and invalidates the tile cache.
 import json
 import logging
 import math
+import os
 import threading
 import time
 import urllib.request
@@ -30,6 +31,31 @@ logger = logging.getLogger(__name__)
 # Rwanda bounding box (WGS84)
 _RWANDA_BBOX = [28.86, -2.84, 30.90, -1.05]
 
+
+def _validated_upload_cursor(
+    cursor: str | None,
+    *,
+    now: datetime,
+    max_backlog_hours: int,
+) -> tuple[str, str | None]:
+    """Return a safe cursor and why an existing backlog should be skipped."""
+    current = now.astimezone(timezone.utc)
+    current_cursor = current.isoformat()
+    if not cursor:
+        return current_cursor, "uninitialized"
+
+    try:
+        parsed = datetime.fromisoformat(cursor.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return current_cursor, "invalid"
+
+    if parsed < current - timedelta(hours=max_backlog_hours):
+        return current_cursor, "stale"
+    return parsed.isoformat(), None
+
 def build_s3_upload_sensor(raster_job, vector_job):
     """Factory that creates the s3_upload_sensor with proper job targets."""
 
@@ -48,7 +74,7 @@ def build_s3_upload_sensor(raster_job, vector_job):
         context: SensorEvaluationContext,
         s3: S3Resource,
         postgres: PostgresResource,
-    ) -> list[RunRequest]:
+    ) -> list[RunRequest] | SkipReason:
         """Detect new S3 uploads and trigger appropriate assets.
 
         Since MinIO doesn't have native S3 event notifications like AWS,
@@ -61,8 +87,19 @@ def build_s3_upload_sensor(raster_job, vector_job):
         Returns:
             List of RunRequests for newly uploaded files
         """
-        # Get cursor from previous run (last processed timestamp)
-        last_processed = context.cursor or "1970-01-01 00:00:00"
+        max_backlog_hours = max(1, int(os.getenv("S3_UPLOAD_SENSOR_MAX_BACKLOG_HOURS", "24")))
+        batch_size = max(1, min(20, int(os.getenv("S3_UPLOAD_SENSOR_BATCH_SIZE", "5"))))
+        last_processed, skipped_backlog = _validated_upload_cursor(
+            context.cursor,
+            now=datetime.now(timezone.utc),
+            max_backlog_hours=max_backlog_hours,
+        )
+        if skipped_backlog:
+            context.update_cursor(last_processed)
+            return SkipReason(
+                f"Initialized upload cursor at the current time ({skipped_backlog} cursor); "
+                "historical layers were not replayed"
+            )
 
         # Query for new uploads since last check
         query = """
@@ -70,16 +107,17 @@ def build_s3_upload_sensor(raster_job, vector_job):
             FROM map_layers
             WHERE created_on > %s
             ORDER BY created_on ASC
-            LIMIT 20
+            LIMIT %s
         """
 
         try:
-            results = postgres.execute_query(query, (last_processed,))
+            results = postgres.execute_query(query, (last_processed, batch_size))
         except Exception as e:
             context.log.error(f"Failed to query for new uploads: {e}")
             return []
 
         if not results:
+            context.update_cursor(datetime.now(timezone.utc).isoformat())
             context.log.debug("No new uploads detected")
             return []
 
