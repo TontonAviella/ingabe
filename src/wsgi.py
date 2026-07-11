@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -177,6 +177,11 @@ def _configure_app_logging():
     src_logger.info("Application logging configured (level=%s)", log_level_name)
 
 
+def _background_workers_enabled() -> bool:
+    return os.environ.get("MUNDI_BACKGROUND_WORKERS_ENABLED", "1").strip().lower() \
+        not in {"0", "false", "no", "off"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: configure logging on startup, close pools on shutdown.
@@ -207,33 +212,39 @@ async def lifespan(app: FastAPI):
                 )
             await asyncio.sleep(30)
 
-    hook_task = asyncio.create_task(_brain_hook_loop())
+    workers_enabled = _background_workers_enabled()
+    hook_task = asyncio.create_task(_brain_hook_loop()) if workers_enabled else None
 
     # Start the per-source ingestion scheduler (APScheduler, in-process).
     # Failure to start is logged but non-fatal — app continues to serve
     # even if brain_sources rows are missing or misconfigured.
-    try:
-        from src.services.brain_ingestion.scheduler import (
-            start_ingestion_scheduler,
-        )
-        await start_ingestion_scheduler()
-    except Exception:
-        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
-            "ingestion_scheduler_failed_to_start"
-        )
+    if workers_enabled:
+        try:
+            from src.services.brain_ingestion.scheduler import (
+                start_ingestion_scheduler,
+            )
+            await start_ingestion_scheduler()
+        except Exception:
+            logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+                "ingestion_scheduler_failed_to_start"
+            )
 
     yield
 
-    hook_task.cancel()
-    try:
-        from src.services.brain_ingestion.scheduler import (
-            shutdown_ingestion_scheduler,
-        )
-        await shutdown_ingestion_scheduler()
-    except Exception:
-        logging.getLogger("src.services.brain_ingestion.scheduler").exception(
-            "ingestion_scheduler_shutdown_failed"
-        )
+    if hook_task is not None:
+        hook_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await hook_task
+    if workers_enabled:
+        try:
+            from src.services.brain_ingestion.scheduler import (
+                shutdown_ingestion_scheduler,
+            )
+            await shutdown_ingestion_scheduler()
+        except Exception:
+            logging.getLogger("src.services.brain_ingestion.scheduler").exception(
+                "ingestion_scheduler_shutdown_failed"
+            )
     # Cleanup: close all connection pools and shared clients
     await close_all_pools()
     from src.dependencies.redis_client import close_async_redis

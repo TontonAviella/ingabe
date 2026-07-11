@@ -29,6 +29,7 @@ from src.services.brain_hook_processor import (
     _extract_feature_name,
     _infer_page_type,
     _build_feature_truth,
+    _clean_frontmatter,
 )
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,27 @@ SLUG_VERSION = f"test-version-page-{RUN_TAG}"
 SLUG_SPATIAL_KIGALI = f"test-spatial-kigali-{RUN_TAG}"
 SLUG_SPATIAL_BUTARE = f"test-spatial-butare-{RUN_TAG}"
 SLUG_EMBED = f"test-embed-page-{RUN_TAG}"
+
+
+async def test_clean_frontmatter_normalizes_real_vector_attribute_types():
+    cleaned = _clean_frontmatter(
+        {
+            "captured_at": datetime(2026, 7, 11, 8, 30),
+            "survey_day": date(2026, 7, 10),
+            "nested": {"quality": float("nan"), "values": (1, 2)},
+            "binary": b"not-json",
+        }
+    )
+
+    assert cleaned == {
+        "captured_at": "2026-07-11T08:30:00",
+        "survey_day": "2026-07-10",
+        "nested": {"values": [1, 2]},
+    }
+    # This is the exact serialization boundary used by BrainService.put_page.
+    import json
+
+    json.dumps(cleaned, allow_nan=False)
 
 
 _MIGRATIONS_DONE = False

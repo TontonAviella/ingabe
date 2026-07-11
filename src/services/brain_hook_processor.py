@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import asyncpg
@@ -610,16 +611,43 @@ def _clean_frontmatter(props: dict) -> dict:
     """Clean feature properties for storage as frontmatter."""
     clean = {}
     for k, v in props.items():
-        if v is None:
+        normalized = _json_safe_property(v)
+        if normalized is None:
             continue
-        # Skip binary/geometry fields
-        if isinstance(v, (bytes, memoryview)):
-            continue
-        # Truncate long strings
-        if isinstance(v, str) and len(v) > 1000:
-            v = v[:1000]
-        clean[k] = v
+        clean[str(k)] = normalized
     return clean
+
+
+def _json_safe_property(value):
+    if value is None or isinstance(value, (bytes, bytearray, memoryview)):
+        return None
+    if isinstance(value, str):
+        return value[:1000]
+    if isinstance(value, bool) or isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): normalized
+            for key, nested in value.items()
+            if (normalized := _json_safe_property(nested)) is not None
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [
+            normalized
+            for nested in value
+            if (normalized := _json_safe_property(nested)) is not None
+        ]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe_property(item())
+        except (TypeError, ValueError):
+            pass
+    return str(value)[:1000]
 
 
 async def run_hook_processor_once(limit: int = 10) -> dict:

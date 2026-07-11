@@ -9,11 +9,8 @@ for new Sentinel-2 L2A scenes over Rwanda and invalidates the tile cache.
 
 import json
 import logging
-import math
 import os
-import threading
 import time
-import urllib.request
 from datetime import datetime, timedelta, timezone
 
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
@@ -45,16 +42,55 @@ def _validated_upload_cursor(
         return current_cursor, "uninitialized"
 
     try:
-        parsed = datetime.fromisoformat(cursor.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        parsed = parsed.astimezone(timezone.utc)
+        parsed, layer_id = _decode_upload_cursor(cursor)
     except (TypeError, ValueError):
         return current_cursor, "invalid"
 
     if parsed < current - timedelta(hours=max_backlog_hours):
         return current_cursor, "stale"
-    return parsed.isoformat(), None
+    return _encode_upload_cursor(parsed, layer_id), None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _upload_timestamp_cursor(created_on: datetime | str) -> str:
+    """Normalize a database upload timestamp for cursor persistence."""
+    if isinstance(created_on, datetime):
+        parsed = created_on
+    else:
+        parsed = datetime.fromisoformat(str(created_on).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _decode_upload_cursor(cursor: str) -> tuple[datetime, str]:
+    raw = str(cursor or "").strip()
+    layer_id = ""
+    if raw.startswith("{"):
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("Upload cursor must be an object")
+        raw = str(payload.get("created_on") or "")
+        layer_id = str(payload.get("layer_id") or "")
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc), layer_id
+
+
+def _encode_upload_cursor(created_on: datetime | str, layer_id: str = "") -> str:
+    timestamp = _upload_timestamp_cursor(created_on)
+    if not layer_id:
+        return timestamp
+    return json.dumps(
+        {"created_on": timestamp, "layer_id": str(layer_id)},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
 
 def build_s3_upload_sensor(raster_job, vector_job):
     """Factory that creates the s3_upload_sensor with proper job targets."""
@@ -89,9 +125,10 @@ def build_s3_upload_sensor(raster_job, vector_job):
         """
         max_backlog_hours = max(1, int(os.getenv("S3_UPLOAD_SENSOR_MAX_BACKLOG_HOURS", "24")))
         batch_size = max(1, min(20, int(os.getenv("S3_UPLOAD_SENSOR_BATCH_SIZE", "5"))))
+        query_watermark = _utc_now()
         last_processed, skipped_backlog = _validated_upload_cursor(
             context.cursor,
-            now=datetime.now(timezone.utc),
+            now=query_watermark,
             max_backlog_hours=max_backlog_hours,
         )
         if skipped_backlog:
@@ -101,23 +138,28 @@ def build_s3_upload_sensor(raster_job, vector_job):
                 "historical layers were not replayed"
             )
 
+        cursor_timestamp, cursor_layer_id = _decode_upload_cursor(last_processed)
+
         # Query for new uploads since last check
         query = """
             SELECT layer_id, name, type, s3_key, created_on
             FROM map_layers
-            WHERE created_on > %s
-            ORDER BY created_on ASC
+            WHERE (created_on, layer_id) > (%s, %s)
+              AND created_on <= %s
+            ORDER BY created_on ASC, layer_id ASC
             LIMIT %s
         """
 
         try:
-            results = postgres.execute_query(query, (last_processed, batch_size))
+            results = postgres.execute_query(
+                query,
+                (cursor_timestamp, cursor_layer_id, query_watermark, batch_size),
+            )
         except Exception as e:
             context.log.error(f"Failed to query for new uploads: {e}")
             return []
 
         if not results:
-            context.update_cursor(datetime.now(timezone.utc).isoformat())
             context.log.debug("No new uploads detected")
             return []
 
@@ -127,10 +169,8 @@ def build_s3_upload_sensor(raster_job, vector_job):
         latest_timestamp = last_processed
 
         for layer_id, name, layer_type, s3_key, created_on in results:
-            # Update latest timestamp
-            created_on_str = str(created_on)
-            if created_on_str > latest_timestamp:
-                latest_timestamp = created_on_str
+            created_on_str = _upload_timestamp_cursor(created_on)
+            latest_timestamp = _encode_upload_cursor(created_on, str(layer_id))
 
             # Determine which assets to trigger based on layer type
             if layer_type == LAYER_TYPE_RASTER:
@@ -171,10 +211,8 @@ def build_s3_upload_sensor(raster_job, vector_job):
             else:
                 context.log.warning(f"Unknown layer type: {layer_type} for layer {layer_id}")
 
-        # Update cursor to latest timestamp
-        if run_requests:
-            context.update_cursor(latest_timestamp)
-            context.log.info(f"Updated cursor to {latest_timestamp}")
+        context.update_cursor(latest_timestamp)
+        context.log.info(f"Updated cursor to {latest_timestamp}")
 
         return run_requests
 
@@ -248,42 +286,6 @@ def build_failed_cog_retry_sensor(raster_job):
         return run_requests
 
     return failed_cog_retry_sensor
-
-
-def _warm_satellite_cache(base_url: str = "http://app:8000"):
-    """Pre-fetch all satellite tiles covering Rwanda at z8-z13 for both TRUE-COLOR and NDVI.
-
-    Runs synchronously — designed to be called in a background thread.
-    Takes ~15-20 minutes to complete (~5,500 tiles).
-    """
-    west, south, east, north = 28.86, -2.84, 30.90, -1.05
-    layers = ["TRUE-COLOR", "NDVI"]
-    cached = 0
-
-    def _lng_to_x(lng: float, z: int) -> int:
-        return int((lng + 180) / 360 * (1 << z))
-
-    def _lat_to_y(lat: float, z: int) -> int:
-        r = math.radians(lat)
-        return int((1 - math.log(math.tan(r) + 1 / math.cos(r)) / math.pi) / 2 * (1 << z))
-
-    for layer in layers:
-        for z in range(8, 14):
-            x0, x1 = _lng_to_x(west, z), _lng_to_x(east, z)
-            y0, y1 = _lat_to_y(north, z), _lat_to_y(south, z)
-            for x in range(x0, x1 + 1):
-                for y in range(y0, y1 + 1):
-                    url = (
-                        f"{base_url}/api/satellite/{z}/{x}/{y}.png"
-                        f"?layer={layer}&collection=sentinel-2-l2a"
-                    )
-                    try:
-                        urllib.request.urlopen(url, timeout=30)
-                        cached += 1
-                    except Exception:
-                        pass
-
-    logger.info("Satellite cache warming complete: %d tiles cached", cached)
 
 
 def _parse_scene_datetime(value: str) -> datetime | None:
@@ -394,17 +396,12 @@ def build_satellite_scene_sensor():
                 redis_client.publish("ws:satellite", notification)
                 context.log.info("Published satellite update notification")
         except Exception as e:
-            context.log.warning(f"Failed to invalidate cache / publish notification: {e}")
+            context.log.error(f"Failed to invalidate cache / publish notification: {e}")
+            return SkipReason(
+                "Satellite update delivery failed; keeping the previous cursor for retry"
+            )
 
-        # Re-warm tile cache in background thread (non-blocking)
-        try:
-            t = threading.Thread(target=_warm_satellite_cache, daemon=True)
-            t.start()
-            cache_warming_started = True
-            context.log.info("Started background cache warming thread")
-        except Exception as e:
-            context.log.warning(f"Failed to start cache warming: {e}")
-
+        # Cache refill stays demand-driven; scene detection must not fan out tile requests.
         # Update cursor to latest scene datetime
         context.update_cursor(latest_dt)
         capture_satellite_scene_sensor_success(
