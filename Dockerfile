@@ -31,20 +31,13 @@ COPY requirements.txt /app/
 # bytes and can exhaust disk/memory.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv && \
-    grep -Ev '^(torch|torchvision)==' requirements.txt > /tmp/requirements-no-torch.txt && \
+    grep -Ev '^(torch|torchvision|triton|nvidia-[^=]*|cuda-(bindings|pathfinder|toolkit))==' requirements.txt > /tmp/requirements-cpu.txt && \
     uv pip install \
         --index-strategy unsafe-best-match \
         --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple \
         "torch==2.12.1+cpu" "torchvision==0.27.1+cpu" && \
-    uv pip install -r /tmp/requirements-no-torch.txt && \
-    uv pip install hyperdx-opentelemetry && \
-    uv pip uninstall \
-        nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
-        nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 \
-        nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 \
-        nvidia-nccl-cu12 nvidia-nvjitlink-cu12 nvidia-nvtx-cu12 triton \
-        2>/dev/null || true
+    uv pip install -r /tmp/requirements-cpu.txt
 
 # ── Frontend build ──
 FROM node:20-bookworm-slim AS frontend-builder
@@ -77,7 +70,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-install DuckDB extensions so they don't need network access at runtime
-RUN python3 -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.install_extension('iceberg'); con.close()"
+RUN /app/.venv/bin/python -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.install_extension('iceberg'); con.close()"
 
 # Copy application files
 COPY . /app/
@@ -116,4 +109,5 @@ RUN useradd -r -m -s /bin/false appuser \
 # `-r` alone (system user) skips home directory creation.
 USER appuser
 
+ENTRYPOINT []
 CMD ["/entrypoint.sh"]
