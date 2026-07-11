@@ -457,6 +457,26 @@ def test_hidden_tools_total_count_is_82() -> None:
     )
 
 
+def test_display_layer_schema_matches_backend_provenance_contract() -> None:
+    _load_plugin_module()
+    from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
+
+    schema = GENERATED_SCHEMAS["display_layer"]["parameters"]
+    required = set(schema["required"])
+    provenance_fields = {
+        "source_catalog",
+        "source_collection",
+        "scene_id",
+        "scene_date",
+        "cloud_cover",
+        "platform",
+    }
+
+    assert provenance_fields <= required
+    assert provenance_fields <= set(schema["properties"])
+    assert "find_similar_tiles" not in GENERATED_SCHEMAS
+
+
 def test_hidden_tools_required_props_match_shim_handlers() -> None:
     """The 'required' list in each hidden schema MUST match the args that
     the corresponding legacy_tool_shim handler reads from ctx.arguments.

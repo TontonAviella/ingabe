@@ -643,10 +643,12 @@ export default function MapLibreMap({
     if (mapData?.changelog) {
       const formattedChangelog = mapData.changelog.map((entry) => ({
         summary: entry.message,
-        timestamp: new Date(entry.last_edited).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        timestamp: entry.last_edited
+          ? new Date(entry.last_edited).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : 'Unknown time',
         mapState: entry.map_state,
       }));
       setChangelog(formattedChangelog);

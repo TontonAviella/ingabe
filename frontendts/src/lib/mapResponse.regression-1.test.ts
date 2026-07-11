@@ -17,7 +17,21 @@ describe('map response contract regression', () => {
       headers: { 'content-type': 'application/json' },
     });
 
-    await expect(parseMapResponse(response)).rejects.toThrow('missing its layers array');
+    await expect(parseMapResponse(response)).rejects.toThrow('invalid shape');
+  });
+
+  it.each([
+    { map_id: 'Mbad', project_id: 'Pbad', layers: [null], changelog: [] },
+    { map_id: 'Mbad', project_id: 'Pbad', layers: [{ id: 'L1', name: 'Layer', type: 'raster', bounds: [NaN] }], changelog: [] },
+    { map_id: 'Mbad', project_id: 'Pbad', layers: [], changelog: 'not-an-array' },
+    { map_id: 'Mbad', project_id: 'Pbad', layers: [], changelog: [{ message: 'edit' }] },
+  ])('rejects nested payload values that would crash map rendering', async (payload) => {
+    const response = new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    await expect(parseMapResponse(response)).rejects.toThrow('invalid shape');
   });
 
   it('accepts a valid empty map', async () => {
