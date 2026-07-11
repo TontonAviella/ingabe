@@ -908,7 +908,7 @@ def _features_from_fastsam_mask_stack(
     import numpy as np
 
     features: list[dict[str, Any]] = []
-    accepted_geometry_masks: dict[str, list[Any]] = {target: [] for target in targets}
+    accepted_coverage_masks: dict[str, Any] = {}
     height, width = rgb_shape
     for mask_index, raw_mask in enumerate(mask_stack):
         object_mask = _resize_bool_mask(raw_mask > 0.5, width=width, height=height)
@@ -961,7 +961,11 @@ def _features_from_fastsam_mask_stack(
             )
             features.extend(feature_batch)
             if feature_batch:
-                accepted_geometry_masks.setdefault(target, []).append(geometry_mask)
+                coverage_mask = accepted_coverage_masks.get(target)
+                if coverage_mask is None:
+                    coverage_mask = np.zeros((height, width), dtype=bool)
+                    accepted_coverage_masks[target] = coverage_mask
+                coverage_mask |= geometry_mask
             if len(features) >= max_candidates * 4:
                 break
         if len(features) >= max_candidates * 4:
@@ -971,7 +975,7 @@ def _features_from_fastsam_mask_stack(
         features.extend(
             _fastsam_supplemental_roof_evidence_features(
                 target_masks=target_masks,
-                accepted_geometry_masks=accepted_geometry_masks.get("building", []),
+                accepted_coverage_mask=accepted_coverage_masks.get("building"),
                 source_transform=source_transform,
                 source_crs=source_crs,
                 min_area_m2=min_area_m2,
@@ -1002,12 +1006,16 @@ def _features_from_fastsam_tiles(
     max_candidates: int,
 ) -> tuple[list[dict[str, Any]], int]:
     import numpy as np
+    from affine import Affine
 
     height, width = rgb_uint8.shape[:2]
     tile_size = _fastsam_tile_size()
     stride = _fastsam_tile_stride()
     features: list[dict[str, Any]] = []
-    accepted_geometry_masks: dict[str, list[Any]] = {target: [] for target in targets}
+    accepted_coverage_masks: dict[str, Any] = {}
+    target_pixel_counts = {
+        target: int(np.count_nonzero(mask)) for target, mask in target_masks.items()
+    }
     mask_count = 0
 
     for y0 in _tile_starts(height, tile_size, stride):
@@ -1039,37 +1047,48 @@ def _features_from_fastsam_tiles(
                 mask_stack = np.asarray(data)
             if mask_stack.ndim == 2:
                 mask_stack = mask_stack[None, :, :]
+            tile_target_masks = {
+                target: target_mask[
+                    y0 : y0 + tile.shape[0],
+                    x0 : x0 + tile.shape[1],
+                ]
+                for target, target_mask in target_masks.items()
+            }
             for raw_mask in mask_stack:
                 local_mask = _resize_bool_mask(
                     raw_mask > 0.5,
                     width=tile.shape[1],
                     height=tile.shape[0],
                 )
-                object_mask = np.zeros((height, width), dtype=bool)
-                object_mask[
-                    y0 : y0 + tile.shape[0],
-                    x0 : x0 + tile.shape[1],
-                ] = local_mask
                 mask_count += 1
                 feature_batch = _features_from_fastsam_object_mask(
-                    object_mask,
+                    local_mask,
                     mask_index=mask_count - 1,
-                    target_masks=target_masks,
+                    target_masks=tile_target_masks,
                     targets=targets,
-                    source_transform=source_transform,
+                    source_transform=source_transform * Affine.translation(x0, y0),
                     source_crs=source_crs,
                     min_area_m2=min_area_m2,
                     max_area_m2=max_area_m2,
                     confidence_threshold=confidence_threshold,
                     max_candidates=max_candidates,
+                    target_pixel_counts=target_pixel_counts,
+                    image_pixels=height * width,
                 )
                 features.extend(feature_batch)
-                for feature in feature_batch:
-                    target = str(
-                        feature.get("properties", {}).get("candidate_class") or ""
-                    )
-                    if target in accepted_geometry_masks:
-                        accepted_geometry_masks[target].append(object_mask)
+                accepted_targets = {
+                    str(feature.get("properties", {}).get("candidate_class") or "")
+                    for feature in feature_batch
+                }
+                for target in accepted_targets.intersection(targets):
+                    coverage_mask = accepted_coverage_masks.get(target)
+                    if coverage_mask is None:
+                        coverage_mask = np.zeros((height, width), dtype=bool)
+                        accepted_coverage_masks[target] = coverage_mask
+                    coverage_mask[
+                        y0 : y0 + tile.shape[0],
+                        x0 : x0 + tile.shape[1],
+                    ] |= local_mask
                 if len(features) >= max_candidates * 4:
                     break
             if len(features) >= max_candidates * 4:
@@ -1081,7 +1100,7 @@ def _features_from_fastsam_tiles(
         features.extend(
             _fastsam_supplemental_roof_evidence_features(
                 target_masks=target_masks,
-                accepted_geometry_masks=accepted_geometry_masks.get("building", []),
+                accepted_coverage_mask=accepted_coverage_masks.get("building"),
                 source_transform=source_transform,
                 source_crs=source_crs,
                 min_area_m2=min_area_m2,
@@ -1113,6 +1132,8 @@ def _features_from_fastsam_object_mask(
     max_area_m2: float,
     confidence_threshold: float,
     max_candidates: int,
+    target_pixel_counts: dict[str, int] | None = None,
+    image_pixels: int | None = None,
 ) -> list[dict[str, Any]]:
     import numpy as np
 
@@ -1130,14 +1151,18 @@ def _features_from_fastsam_object_mask(
         if overlap_pixels == 0:
             continue
         object_overlap = overlap_pixels / max(object_pixels, 1)
-        target_pixels = int(np.count_nonzero(target_mask))
+        target_pixels = (
+            target_pixel_counts.get(target, 0)
+            if target_pixel_counts is not None
+            else int(np.count_nonzero(target_mask))
+        )
         target_overlap = overlap_pixels / max(target_pixels, 1)
         if not _fastsam_target_evidence_is_strong_enough(
             target=target,
             object_overlap=object_overlap,
             target_overlap=target_overlap,
             overlap_pixels=overlap_pixels,
-            image_pixels=height * width,
+            image_pixels=image_pixels or height * width,
         ):
             continue
         geometry_mask = _fastsam_geometry_mask_for_target(
@@ -1174,7 +1199,7 @@ def _features_from_fastsam_object_mask(
 def _fastsam_supplemental_roof_evidence_features(
     *,
     target_masks: dict[str, Any],
-    accepted_geometry_masks: list[Any],
+    accepted_coverage_mask: Any | None,
     source_transform: Any,
     source_crs: Any,
     min_area_m2: float,
@@ -1193,10 +1218,8 @@ def _fastsam_supplemental_roof_evidence_features(
 
     available_mask = roof_mask.copy()
     context_mask = None
-    if accepted_geometry_masks:
-        covered = np.zeros_like(available_mask, dtype=bool)
-        for accepted_mask in accepted_geometry_masks:
-            covered |= accepted_mask.astype(bool)
+    if accepted_coverage_mask is not None:
+        covered = accepted_coverage_mask.astype(bool, copy=False)
         context_mask = _dilated_context_mask(
             covered,
             radius=max(30, int(min(available_mask.shape[:2]) * 0.08)),
@@ -1264,10 +1287,9 @@ def _fastsam_target_evidence_is_strong_enough(
         # across a meaningful part of the object. The old OR check let large
         # vegetation/ground masks through and then saved roof-colored fragments.
         return object_overlap >= 0.24
-    return (
-        object_overlap >= _fastsam_object_overlap_threshold(target)
-        or target_overlap >= _fastsam_target_overlap_threshold(target)
-    )
+    return object_overlap >= _fastsam_object_overlap_threshold(
+        target
+    ) or target_overlap >= _fastsam_target_overlap_threshold(target)
 
 
 def _fastsam_geometry_mask_for_target(
@@ -1352,28 +1374,69 @@ def _tile_starts(length: int, tile_size: int, stride: int) -> list[int]:
 
 
 def _dedupe_candidate_features(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str, tuple[float, float, float, float]]] = set()
-    deduped: list[dict[str, Any]] = []
+    from shapely.geometry import box
+    from shapely.strtree import STRtree
+
     sorted_features = sorted(
         features,
         key=lambda feature: feature["properties"].get("confidence", 0),
         reverse=True,
     )
-    for feature in sorted_features:
-        geom = shape(feature["geometry"])
-        bounds = tuple(round(value, 7) for value in geom.bounds)
+    parsed_bounds = [
+        tuple(shape(feature["geometry"]).bounds) for feature in sorted_features
+    ]
+    bbox_geometries = [box(*bounds) for bounds in parsed_bounds]
+    seen: set[tuple[str, tuple[float, float, float, float]]] = set()
+    deduped: list[dict[str, Any]] = []
+    accepted_indexes: dict[str, list[tuple[list[int], Any] | None]] = {}
+
+    for feature_index, feature in enumerate(sorted_features):
+        bounds = parsed_bounds[feature_index]
+        rounded_bounds = tuple(round(value, 7) for value in bounds)
         klass = str(feature.get("properties", {}).get("candidate_class") or "")
-        key = (klass, bounds)
+        key = (klass, rounded_bounds)
         if key in seen:
             continue
-        if any(
-            klass == str(other.get("properties", {}).get("candidate_class") or "")
-            and _bbox_iou(bounds, shape(other["geometry"]).bounds) >= 0.72
-            for other in deduped
-        ):
+
+        index_levels = accepted_indexes.setdefault(klass, [])
+        is_duplicate = False
+        for level in index_levels:
+            if level is None:
+                continue
+            level_feature_indexes, tree = level
+            for local_index in tree.query(bbox_geometries[feature_index]):
+                other_index = level_feature_indexes[int(local_index)]
+                if _bbox_iou(bounds, parsed_bounds[other_index]) >= 0.72:
+                    is_duplicate = True
+                    break
+            if is_duplicate:
+                break
+        if is_duplicate:
             continue
+
         seen.add(key)
         deduped.append(feature)
+        pending_indexes = [feature_index]
+        level_index = 0
+        while True:
+            if level_index == len(index_levels):
+                index_levels.append(
+                    (
+                        pending_indexes,
+                        STRtree([bbox_geometries[index] for index in pending_indexes]),
+                    )
+                )
+                break
+            existing_level = index_levels[level_index]
+            if existing_level is None:
+                index_levels[level_index] = (
+                    pending_indexes,
+                    STRtree([bbox_geometries[index] for index in pending_indexes]),
+                )
+                break
+            pending_indexes = existing_level[0] + pending_indexes
+            index_levels[level_index] = None
+            level_index += 1
     return deduped
 
 

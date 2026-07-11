@@ -5,6 +5,7 @@ import os
 import geopandas as gpd
 import numpy as np
 import rasterio
+from affine import Affine
 from rasterio.transform import from_origin
 
 import src.services.raster_object_candidates as raster_object_candidates
@@ -489,3 +490,239 @@ def test_analyze_raster_object_candidates_requires_fastsam_when_requested(
     assert result["engines"]["selection"]["used"] == "fastsam_required_unavailable"
     assert result["summary"]["candidate_count"] == 0
     assert result["summary"]["count_semantics"] == "not_available_fastsam_required"
+
+
+def test_fastsam_tiles_keep_masks_local_and_accumulate_one_coverage_mask(
+    monkeypatch,
+) -> None:
+    height = width = 500
+    tile_size = 256
+    stride = 192
+    rgb = np.full((height, width, 3), 100, dtype=np.uint8)
+    building_mask = np.ones((height, width), dtype=bool)
+    source_transform = from_origin(100, 1_000, 2, 3)
+    extractor_calls: list[dict[str, object]] = []
+    supplemental_calls: list[np.ndarray] = []
+
+    class _FakeMasks:
+        def __init__(self, data: np.ndarray) -> None:
+            self.data = data
+
+    class _FakeResult:
+        def __init__(self, data: np.ndarray) -> None:
+            self.masks = _FakeMasks(data)
+
+    class _FakeFastSAM:
+        def __call__(self, tile, **_kwargs):
+            return [_FakeResult(np.ones((1, *tile.shape[:2]), dtype=np.float32))]
+
+    def _fake_object_features(object_mask, **kwargs):
+        transform = kwargs["source_transform"]
+        extractor_calls.append(
+            {
+                "object_shape": object_mask.shape,
+                "target_shape": kwargs["target_masks"]["building"].shape,
+                "origin": transform * (0, 0),
+                "target_pixels": kwargs["target_pixel_counts"]["building"],
+                "image_pixels": kwargs["image_pixels"],
+            }
+        )
+        origin_x, origin_y = transform * (0, 0)
+        return [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [origin_x, origin_y],
+                            [origin_x + 1, origin_y],
+                            [origin_x + 1, origin_y + 1],
+                            [origin_x, origin_y + 1],
+                            [origin_x, origin_y],
+                        ]
+                    ],
+                },
+                "properties": {
+                    "candidate_class": "building",
+                    "confidence": 0.9,
+                },
+            }
+        ]
+
+    def _fake_supplemental(*, accepted_coverage_mask, **_kwargs):
+        supplemental_calls.append(accepted_coverage_mask)
+        return []
+
+    monkeypatch.setenv("MUNDI_FASTSAM_TILE_SIZE", str(tile_size))
+    monkeypatch.setenv("MUNDI_FASTSAM_TILE_STRIDE", str(stride))
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_features_from_fastsam_object_mask",
+        _fake_object_features,
+    )
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_fastsam_supplemental_roof_evidence_features",
+        _fake_supplemental,
+    )
+
+    features, mask_count = raster_object_candidates._features_from_fastsam_tiles(
+        _FakeFastSAM(),
+        rgb,
+        target_masks={"building": building_mask},
+        targets=["building"],
+        source_transform=source_transform,
+        source_crs="EPSG:3857",
+        min_area_m2=1,
+        max_area_m2=1_000,
+        confidence_threshold=0.2,
+        max_candidates=100,
+    )
+
+    tile_starts = raster_object_candidates._tile_starts(width, tile_size, stride)
+    expected_origins = [
+        (source_transform * Affine.translation(x0, y0)) * (0, 0)
+        for y0 in tile_starts
+        for x0 in tile_starts
+    ]
+    assert mask_count == len(expected_origins)
+    assert len(features) == len(expected_origins)
+    assert [call["origin"] for call in extractor_calls] == expected_origins
+    assert {call["object_shape"] for call in extractor_calls} == {
+        (tile_size, tile_size)
+    }
+    assert {call["target_shape"] for call in extractor_calls} == {
+        (tile_size, tile_size)
+    }
+    assert {call["target_pixels"] for call in extractor_calls} == {height * width}
+    assert {call["image_pixels"] for call in extractor_calls} == {height * width}
+    assert len(supplemental_calls) == 1
+    coverage_mask = supplemental_calls[0]
+    assert isinstance(coverage_mask, np.ndarray)
+    assert coverage_mask.shape == (height, width)
+    assert coverage_mask.dtype == np.bool_
+    assert np.all(coverage_mask)
+
+
+def _candidate_feature(
+    name: str,
+    bounds: tuple[float, float, float, float],
+    confidence: float,
+    candidate_class: str = "building",
+) -> dict[str, object]:
+    minx, miny, maxx, maxy = bounds
+    return {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [minx, miny],
+                    [maxx, miny],
+                    [maxx, maxy],
+                    [minx, maxy],
+                    [minx, miny],
+                ]
+            ],
+        },
+        "properties": {
+            "name": name,
+            "candidate_class": candidate_class,
+            "confidence": confidence,
+        },
+    }
+
+
+def test_dedupe_candidate_features_preserves_confidence_first_iou_semantics() -> None:
+    features = [
+        _candidate_feature("low_exact", (0, 0, 10, 10), 0.1),
+        _candidate_feature("survives_chain", (3.2, 0, 13.2, 10), 0.7),
+        _candidate_feature("suppressed", (1.6, 0, 11.6, 10), 0.8),
+        _candidate_feature("winner", (0, 0, 10, 10), 0.9),
+        _candidate_feature("other_class", (0, 0, 10, 10), 0.6, "road"),
+        _candidate_feature("below_threshold", (21.7, 0, 31.7, 10), 0.4),
+        _candidate_feature("separate_winner", (20, 0, 30, 10), 0.5),
+        _candidate_feature("merged_level_duplicate", (23.2, 0, 33.2, 10), 0.3),
+    ]
+
+    deduped = raster_object_candidates._dedupe_candidate_features(features)
+
+    assert [feature["properties"]["name"] for feature in deduped] == [
+        "winner",
+        "survives_chain",
+        "other_class",
+        "separate_winner",
+        "below_threshold",
+    ]
+
+
+def test_dedupe_candidate_features_uses_bounded_spatial_queries(monkeypatch) -> None:
+    sparse_count = 600
+    dense_count = 600
+    features = [
+        _candidate_feature(
+            f"sparse_{index}",
+            (index * 20.0, 20, index * 20.0 + 10, 30),
+            0.8,
+        )
+        for index in range(sparse_count)
+    ]
+    features.extend(
+        _candidate_feature(
+            f"dense_{index}",
+            (index * 0.00001, 0, 10 + index * 0.00001, 10),
+            0.7,
+        )
+        for index in range(dense_count)
+    )
+    original_shape = raster_object_candidates.shape
+    original_bbox_iou = raster_object_candidates._bbox_iou
+    shape_calls = 0
+    bbox_iou_calls = 0
+
+    def _counting_shape(geometry):
+        nonlocal shape_calls
+        shape_calls += 1
+        return original_shape(geometry)
+
+    def _counting_bbox_iou(a, b):
+        nonlocal bbox_iou_calls
+        bbox_iou_calls += 1
+        return original_bbox_iou(a, b)
+
+    monkeypatch.setattr(raster_object_candidates, "shape", _counting_shape)
+    monkeypatch.setattr(raster_object_candidates, "_bbox_iou", _counting_bbox_iou)
+
+    deduped = raster_object_candidates._dedupe_candidate_features(features)
+
+    assert len(deduped) == sparse_count + 1
+    assert shape_calls == len(features)
+    assert bbox_iou_calls < len(features) * 2
+
+
+def test_building_confidence_boundary_is_enforced_at_point_65(monkeypatch) -> None:
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[4:12, 5:13] = True
+
+    for confidence, expected_count in ((0.649, 0), (0.65, 1), (0.651, 1)):
+        monkeypatch.setattr(
+            raster_object_candidates,
+            "_confidence",
+            lambda *_args, value=confidence, **_kwargs: value,
+        )
+        features = raster_object_candidates._features_from_mask(
+            mask,
+            target="building",
+            source_transform=from_origin(0, 20, 1, 1),
+            source_crs="EPSG:3857",
+            min_area_m2=1,
+            max_area_m2=1_000,
+            confidence_threshold=0.1,
+            max_candidates=10,
+            screening_model="fastsam_s_candidate_masks_v1",
+        )
+
+        assert len(features) == expected_count
+        if features:
+            assert features[0]["properties"]["confidence_threshold_used"] == 0.65
