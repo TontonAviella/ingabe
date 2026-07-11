@@ -32,6 +32,7 @@ from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
 from src.services.raster_zoom import raster_source_minzoom
+from src.services.remote_cog_layer import build_remote_cog_maplibre_layer
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -626,6 +627,14 @@ async def get_map_style_internal(
                 )
                 continue
 
+            if metadata.get("remote_cog"):
+                source_id, source, map_layer = build_remote_cog_maplibre_layer(
+                    layer_id, metadata, layer.get("bounds")
+                )
+                style_json["sources"][source_id] = source
+                style_json["layers"].append(map_layer)
+                continue
+
             source_id = f"raster-source-{layer_id}"
             # Add cache-busting parameter using last_edited timestamp
             cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
@@ -727,6 +736,14 @@ async def get_map_style_internal(
                         "paint": {"raster-opacity": 0.9},
                     }
                 )
+                continue
+
+            if metadata.get("remote_cog"):
+                source_id, source, map_layer = build_remote_cog_maplibre_layer(
+                    layer_id, metadata, layer.get("bounds")
+                )
+                style_json["sources"][source_id] = source
+                style_json["layers"].append(map_layer)
                 continue
 
             source_id = f"cog-source-{layer_id}"

@@ -122,7 +122,7 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { Activity, Brain, Database, Maximize2, Minimize2, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
+import { Activity, Brain, Database, History, Layers3, Maximize2, Minimize2, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -159,6 +159,8 @@ import type {
   MessageSendRequest,
   SanitizedMessage,
 } from '../lib/types';
+import type { MobileWorkspacePanel } from '../lib/workspacePanels';
+import { toggleMobileWorkspacePanel } from '../lib/workspacePanels';
 
 const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
 
@@ -314,6 +316,7 @@ export default function MapLibreMap({
   }>({});
   const [loadingSourceIds, setLoadingSourceIds] = useState<Set<string>>(new Set());
   const [assistantExpanded, setAssistantExpanded] = useState(false);
+  const [mobileWorkspacePanel, setMobileWorkspacePanel] = useState<MobileWorkspacePanel>(null);
   const [isMapReady, setIsMapReady] = useState(false);
   const [pieOverlays, setPieOverlays] = useState<Map<string, PieChartData>>(new Map());
   const [sceneInfo, setSceneInfo] = useState<{
@@ -640,10 +643,12 @@ export default function MapLibreMap({
     if (mapData?.changelog) {
       const formattedChangelog = mapData.changelog.map((entry) => ({
         summary: entry.message,
-        timestamp: new Date(entry.last_edited).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
+        timestamp: entry.last_edited
+          ? new Date(entry.last_edited).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            })
+          : 'Unknown time',
         mapState: entry.map_state,
       }));
       setChangelog(formattedChangelog);
@@ -850,7 +855,7 @@ export default function MapLibreMap({
       // Check if style and style.layers exist before proceeding
       if (!style || !style.layers) return;
 
-      mapData?.layers.forEach((layer) => {
+      mapData?.layers?.forEach((layer) => {
         const layerId = layer.id;
 
         const mapLayer = style.layers.find((styleLayer) => 'source' in styleLayer && (styleLayer as any).source === layerId);
@@ -1968,32 +1973,54 @@ export default function MapLibreMap({
         )}
 
         {mapData && openDropzone && (
-          <LayerList
-            project={project}
-            currentMapData={mapData}
-            mapRef={mapRef}
-            openDropzone={openDropzone}
-            isInConversation={conversationId !== null}
-            readyState={readyState}
-            activeActions={activeActions}
-            setShowAttributeTable={setShowAttributeTable}
-            setSelectedLayer={setSelectedLayer}
-            updateMapData={invalidateMapData}
-            layerSymbols={layerSymbols}
-            zoomHistory={zoomHistory}
-            zoomHistoryIndex={zoomHistoryIndex}
-            setZoomHistoryIndex={setZoomHistoryIndex}
-            uploadingFiles={uploadingFiles}
-            demoConfig={demoConfig}
-            hiddenLayerIDs={hiddenLayerIDs}
-            toggleLayerVisibility={toggleLayerVisibility}
-            errors={errors}
-            loadingLayerIDs={loadingLayerIDs}
-            paintOverrides={paintOverrides}
-            onLayerOpacityChange={setLayerOpacity}
-            onLayerColorChange={setLayerColor}
-          />
+          <>
+            <button
+              type="button"
+              className="absolute top-4 left-4 z-40 flex size-9 items-center justify-center rounded-md bg-background text-foreground shadow-md sm:hidden"
+              onClick={() => setMobileWorkspacePanel((current) => toggleMobileWorkspacePanel(current, 'layers'))}
+              aria-label={mobileWorkspacePanel === 'layers' ? 'Close layers' : 'Open layers'}
+              title={mobileWorkspacePanel === 'layers' ? 'Close layers' : 'Open layers'}
+            >
+              {mobileWorkspacePanel === 'layers' ? <X className="size-5" /> : <Layers3 className="size-5" />}
+            </button>
+            <div className={`${mobileWorkspacePanel === 'layers' ? 'block' : 'hidden'} sm:block`}>
+              <LayerList
+                project={project}
+                currentMapData={mapData}
+                mapRef={mapRef}
+                openDropzone={openDropzone}
+                isInConversation={conversationId !== null}
+                readyState={readyState}
+                activeActions={activeActions}
+                setShowAttributeTable={setShowAttributeTable}
+                setSelectedLayer={setSelectedLayer}
+                updateMapData={invalidateMapData}
+                layerSymbols={layerSymbols}
+                zoomHistory={zoomHistory}
+                zoomHistoryIndex={zoomHistoryIndex}
+                setZoomHistoryIndex={setZoomHistoryIndex}
+                uploadingFiles={uploadingFiles}
+                demoConfig={demoConfig}
+                hiddenLayerIDs={hiddenLayerIDs}
+                toggleLayerVisibility={toggleLayerVisibility}
+                errors={errors}
+                loadingLayerIDs={loadingLayerIDs}
+                paintOverrides={paintOverrides}
+                onLayerOpacityChange={setLayerOpacity}
+                onLayerColorChange={setLayerColor}
+              />
+            </div>
+          </>
         )}
+        <button
+          type="button"
+          className="absolute top-4 right-16 z-40 flex size-9 items-center justify-center rounded-md bg-background text-foreground shadow-md xl:hidden"
+          onClick={() => setMobileWorkspacePanel((current) => toggleMobileWorkspacePanel(current, 'history'))}
+          aria-label="Open chat history"
+          title="Open chat history"
+        >
+          <History className="size-5" />
+        </button>
         {/* Pie chart overlays for single-feature buffer layers */}
         {mapRef.current &&
           Array.from(pieOverlays.entries()).map(([layerId, data]) => (
@@ -2016,11 +2043,11 @@ export default function MapLibreMap({
             <CardHeader className="px-2">
               <CardTitle className="text-base flex justify-between items-center gap-2">
                 <div className="flex gap-2 items-baseline">
-                  {mapData?.layers.find((l) => l.id === selectedFeature.source) ? (
+                  {mapData?.layers?.find((l) => l.id === selectedFeature.source) ? (
                     <>
-                      <span>{mapData?.layers.find((l) => l.id === selectedFeature.source)?.name}</span>
+                      <span>{mapData?.layers?.find((l) => l.id === selectedFeature.source)?.name}</span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">
-                        {mapData?.layers.find((l) => l.id === selectedFeature.source)?.type}
+                        {mapData?.layers?.find((l) => l.id === selectedFeature.source)?.type}
                       </span>
                     </>
                   ) : (
@@ -2113,7 +2140,7 @@ export default function MapLibreMap({
         {/* Message display component - always show parent div, animate height */}
         {(criticalErrors.length > 0 || !!streamingText || activeActions.length > 0 || lastAssistantMsg) && (
           <div
-            className={`z-30 absolute bottom-12 mb-[34px] left-3/5 transform -translate-x-1/2 w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
+            className={`z-30 absolute bottom-12 mb-[34px] left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
             style={{ backgroundColor: 'rgba(30, 41, 57, 0.9)' }}
           >
             {/* Expand/contract toggle */}
@@ -2184,7 +2211,7 @@ export default function MapLibreMap({
           </div>
         )}
         <div
-          className={`z-30 absolute bottom-12 left-3/5 transform -translate-x-1/2 w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
+          className={`z-30 absolute bottom-12 left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
         >
           <Input
             className={`flex-1 border-none shadow-none !bg-transparent focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
@@ -2208,15 +2235,28 @@ export default function MapLibreMap({
         </div>
       </div>
 
-      <VersionVisualization
-        mapTree={mapTree}
-        conversationId={conversationId}
-        currentMapId={mapId}
-        conversations={conversations}
-        conversationsEnabled={conversationsEnabled}
-        setConversationId={setConversationId}
-        activeActions={activeActions}
-      />
+      <div
+        className={`${mobileWorkspacePanel === 'history' ? 'fixed' : 'hidden'} inset-y-0 right-0 z-50 w-[min(22rem,calc(100%-1rem))] bg-background shadow-xl xl:static xl:block xl:w-96 xl:shrink-0 xl:shadow-none`}
+      >
+        <button
+          type="button"
+          className="absolute top-4 right-4 z-10 flex size-8 items-center justify-center rounded-md bg-gray-700 text-gray-100 shadow xl:hidden"
+          onClick={() => setMobileWorkspacePanel(null)}
+          aria-label="Close chat history"
+          title="Close chat history"
+        >
+          <X className="size-4" />
+        </button>
+        <VersionVisualization
+          mapTree={mapTree}
+          conversationId={conversationId}
+          currentMapId={mapId}
+          conversations={conversations}
+          conversationsEnabled={conversationsEnabled}
+          setConversationId={setConversationId}
+          activeActions={activeActions}
+        />
+      </div>
     </>
   );
 }

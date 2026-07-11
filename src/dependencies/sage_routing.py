@@ -470,6 +470,27 @@ def _clean_admin_boundary_candidate(value: str) -> str:
     return cleaned.strip(" \t\r\n,.;:!?\"'`")
 
 
+_ADMIN_PLACEHOLDER_NAMES = {
+    "a",
+    "all",
+    "an",
+    "any",
+    "every",
+    "me",
+    "please",
+    "show",
+    "that",
+    "the",
+    "this",
+    "us",
+}
+
+
+def _is_admin_boundary_placeholder_name(value: str) -> bool:
+    words = re.sub(r"[^a-z]+", " ", str(value or "").lower()).split()
+    return not words or all(word in _ADMIN_PLACEHOLDER_NAMES for word in words)
+
+
 def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
@@ -493,11 +514,32 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
             args[parent_level] = parent_name
             return args
 
+    implicit_child_match = re.search(
+        rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
+        r"\s*(?:me|us)?\s*(?:all|the|every)?\s*"
+        r"(villages|cells|sectors)\s+"
+        r"(?:in|of|within|under|inside)\s+(.+?)"
+        r"(?:\s+on\s+the\s+map)?[?.!]*$",
+        prompt,
+    )
+    if implicit_child_match:
+        child_level = implicit_child_match.group(1).lower().rstrip("s")
+        parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
+        parent_level = {
+            "sector": "district",
+            "cell": "sector",
+            "village": "cell",
+        }.get(child_level)
+        if parent_level and not _is_admin_boundary_placeholder_name(parent_name):
+            args = {"admin_level": child_level, "name": "*"}
+            args[parent_level] = parent_name
+            return args
+
     for level in ("village", "cell", "sector", "district", "province"):
         explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
         if explicit:
             name = _clean_admin_boundary_candidate(explicit.group(1))
-            if name:
+            if name and not _is_admin_boundary_placeholder_name(name):
                 if level == "province" and name.lower() not in {
                     "kigali",
                     "kigali city",
@@ -514,13 +556,13 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     )
     if simple:
         name = _clean_admin_boundary_candidate(simple.group(1))
-        if name:
+        if name and not _is_admin_boundary_placeholder_name(name):
             return {"admin_level": "auto", "name": name}
 
     where = re.match(r"(?i)^where\s+is\s+(.+?)[?.!]*$", prompt)
     if where:
         name = _clean_admin_boundary_candidate(where.group(1))
-        if name:
+        if name and not _is_admin_boundary_placeholder_name(name):
             return {"admin_level": "auto", "name": name}
 
     return None
@@ -1081,15 +1123,16 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
     ):
         targets = raster_object_target_classes(text) or ["building"]
+        building_only = targets == ["building"]
         return FastToolCall(
             RASTER_OBJECT_CANDIDATES_TOOL,
             {
                 "target_classes": targets,
-                "max_candidates": 500,
-                "max_sample_pixels": 650_000,
+                "max_candidates": 1_500,
+                "max_sample_pixels": 2_000_000,
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
-                "confidence_threshold": 0.50,
+                "confidence_threshold": 0.65 if building_only else 0.42,
                 "engine_preference": "fastsam",
                 "render_map": True,
             },

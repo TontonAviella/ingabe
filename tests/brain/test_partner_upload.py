@@ -326,12 +326,13 @@ async def test_partner_hook_created(db, org_id):
     )
     assert hook_id is not None
 
-    hooks = await brain.get_pending_hooks(db, limit=100)
-    matching = [h for h in hooks if h["id"] == hook_id]
-    assert len(matching) == 1
-    assert matching[0]["hook_type"] == "partner_url_fetch"
+    hook = await db.fetchrow(
+        "SELECT * FROM brain_pending_hooks WHERE id = $1",
+        hook_id,
+    )
+    assert hook is not None
+    assert hook["hook_type"] == "partner_url_fetch"
 
-    # Cleanup
     await brain.complete_hook(db, hook_id)
 
 

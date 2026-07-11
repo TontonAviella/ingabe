@@ -29,6 +29,11 @@ _async_read_pool_lock = asyncio.Lock()
 tracer = trace.get_tracer(__name__)
 
 
+def _configured_pool_size(env_name: str) -> int:
+    """Keep each worker's pool within the shared Postgres connection budget."""
+    return max(2, int(os.environ.get(env_name, "10")))
+
+
 # ---------------------------------------------------------------------------
 # DSN builder
 # ---------------------------------------------------------------------------
@@ -54,7 +59,7 @@ async def _get_async_connection_pool() -> asyncpg.Pool:
     if _async_connection_pool is None:
         async with _async_pool_lock:
             if _async_connection_pool is None:
-                _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "25"))
+                _pool_max = _configured_pool_size("DB_POOL_MAX_SIZE")
                 _async_connection_pool = await asyncpg.create_pool(
                     dsn=_build_postgres_url(),
                     min_size=2,
@@ -77,7 +82,7 @@ async def _get_async_read_pool() -> asyncpg.Pool:
                     "POSTGRES_READ_PORT",
                     os.environ.get("POSTGRES_PORT", "5432"),
                 )
-                _read_pool_max = int(os.environ.get("DB_READ_POOL_MAX_SIZE", "25"))
+                _read_pool_max = _configured_pool_size("DB_READ_POOL_MAX_SIZE")
                 _async_read_pool = await asyncpg.create_pool(
                     dsn=_build_postgres_url(host=read_host, port=read_port),
                     min_size=2,

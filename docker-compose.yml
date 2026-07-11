@@ -78,6 +78,8 @@ services:
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+      - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
+      - DB_READ_POOL_MAX_SIZE=${DB_READ_POOL_MAX_SIZE:-10}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
@@ -145,6 +147,14 @@ services:
       bash -c "mkdir -p /tmp/ingabe_cache && chown -R appuser:appuser /tmp/ingabe_cache"
     volumes:
       - ingabe-cache:/tmp/ingabe_cache
+
+  dagster-home-init:
+    image: "${APP_IMAGE:-mundi-public:local}"
+    user: root
+    command: >
+      bash -c "mkdir -p /app/dagster_home/storage && chown -R appuser:appuser /app/dagster_home/storage"
+    volumes:
+      - dagster-home:/app/dagster_home
 
   minio:
     image: bitnamilegacy/minio:latest
@@ -456,6 +466,8 @@ services:
       minio:
         condition: service_healthy
       cache-init:
+        condition: service_completed_successfully
+      dagster-home-init:
         condition: service_completed_successfully
     environment:
       - DAGSTER_HOME=/app/dagster_home

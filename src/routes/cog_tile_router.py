@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from src.dependencies.session import verify_session_required
-from src.services.map_service import validate_remote_url
+from src.services.remote_cog_url import RemoteCogUrlError, validate_remote_cog_url
 from src.structures import async_read_conn
 from src.tile_cache import tile_cache
 from src.utils import get_async_s3_client, get_bucket_name, s3_op
@@ -115,8 +115,11 @@ def _local_layer_id(asset_url: str) -> str | None:
 async def _resolve_cog_asset(asset_url: str, request: Request) -> tuple[str, str]:
     layer_id = _local_layer_id(asset_url)
     if not layer_id:
-        validate_remote_url(asset_url, "raster")
-        return asset_url, asset_url
+        try:
+            validated_url = validate_remote_cog_url(asset_url)
+        except RemoteCogUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return validated_url, validated_url
 
     session = await verify_session_required(request)
     user_id = session.get_user_id()

@@ -170,6 +170,13 @@ def _sample_geoparquet_attributes(
         con.close()
 
 
+def _logical_arrow_type_name(field_type: Any) -> str:
+    return {
+        "large_string": "string",
+        "large_binary": "binary",
+    }.get(str(field_type), str(field_type))
+
+
 def _describe_geoparquet_file(
     analytics_path: str,
     layer_data: Dict[str, Any],
@@ -253,7 +260,7 @@ def _describe_geoparquet_file(
     markdown_content.append("\n### Attribute Fields\n")
     attribute_fields: list[str] = []
     for field in schema:
-        field_type = str(field.type)
+        field_type = _logical_arrow_type_name(field.type)
         markdown_content.append(f"{field.name}: {field_type}")
         if field.name != geo_column:
             attribute_fields.append(field.name)

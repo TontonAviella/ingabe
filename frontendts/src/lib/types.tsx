@@ -37,7 +37,7 @@ export interface MapLayerMetadata {
 export interface MapLayer {
   id: string;
   name: string;
-  path: string;
+  path?: string;
   type: string;
   metadata?: MapLayerMetadata;
   bounds?: number[];
@@ -63,7 +63,7 @@ export interface MapData {
   changelog: Array<{
     message: string;
     map_state: string;
-    last_edited: string;
+    last_edited: string | null;
   }>;
 }
 

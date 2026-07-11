@@ -4,6 +4,26 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.5.0] - 2026-07-11
+
+### Added
+- Add persisted, filled FastSAM review masks for buildings, trees, roads, crops, field boundaries, and bare soil across tiled full-resolution orthophotos, with strict 0.65 building confidence and bounded inference time.
+- Add scheduled public satellite discovery for Earth Search, Planetary Computer, and Copernicus Data Space, with durable retry-safe cursors and pipeline evidence.
+- Add authenticated remote COG layer persistence so satellite results survive reloads and remain traceable to their source scene and provider.
+
+### Changed
+- Make raster analysis follow an explicit procedural flow: validate the source, tile and segment it, classify and deduplicate masks, enforce confidence and coverage limits, persist reviewable polygons, and report only measured results.
+- Restore the complete locked geospatial runtime for Dagster, STAC, GeoParquet, Iceberg, COG tiling, LAZ point clouds, document ingestion, and satellite connectors while keeping Torch CPU-only in the production image.
+- Reduce Docker build context from roughly 2 GB to under 1 MB of changed inputs by excluding the local GitNexus index, and remove undeclared runtime package overrides.
+
+### Fixed
+- Parse Rwanda administrative prompts such as "show me the sectors of Nyanza" by selecting the requested place instead of filler words.
+- Prevent FastSAM mask timeouts, duplicate tiled polygons, global-size mask allocations, crude raster fallbacks, and misleading capped counts from reaching users as confirmed buildings.
+- Enforce exact trusted HTTPS hosts for remote COGs, reject private or forged URLs, preserve authoritative provenance, and allow project editors to attach styles only to maps they can edit.
+- Keep JWKS fallback bounded by cache age, isolate background workers during tests, serialize nested vector attributes safely, and replay missed WebSocket messages reliably.
+- Validate nested frontend map responses, retain layers through reload/auth races, restore responsive map controls, and remove unsupported Clay similarity tool exposure.
+- Repair reproducible container startup for Uvicorn, DuckDB, Dagster, LAZ decompression, and OpenTelemetry; dependency audits now report no known Python or npm vulnerabilities.
+
 ## [0.5.4.1] - 2026-06-25
 
 ### Added

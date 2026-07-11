@@ -340,6 +340,22 @@ def test_explicit_satellite_place_keeps_satellite_tools() -> None:
             "show all villages in Gasabo district",
             {"admin_level": "village", "name": "*", "district": "Gasabo"},
         ),
+        (
+            "show me the sectors of nyanza ?",
+            {"admin_level": "sector", "name": "*", "district": "nyanza"},
+        ),
+        (
+            "show me sectors of nyanza ?",
+            {"admin_level": "sector", "name": "*", "district": "nyanza"},
+        ),
+        (
+            "show all sectors in Nyanza",
+            {"admin_level": "sector", "name": "*", "district": "Nyanza"},
+        ),
+        (
+            "show me the cells of Busasamana",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana"},
+        ),
     ],
 )
 def test_build_admin_boundary_tool_args(msg: str, expected: dict[str, object]) -> None:
@@ -477,7 +493,9 @@ def test_build_fast_tool_call_routes_raster_house_count_to_object_candidates(
     assert fast.reason == "fast:object_candidate_count"
     assert fast.arguments["target_classes"] == ["building"]
     assert fast.arguments["engine_preference"] == "fastsam"
-    assert fast.arguments["max_sample_pixels"] == 650_000
+    assert fast.arguments["max_candidates"] == 1_500
+    assert fast.arguments["max_sample_pixels"] == 2_000_000
+    assert fast.arguments["confidence_threshold"] == 0.65
     assert fast.arguments["max_area_m2"] == 1500.0
     assert fast.arguments["render_map"] is True
 

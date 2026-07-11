@@ -19,6 +19,10 @@ os.environ["OPENROUTER_FALLBACK_MODELS"] = ""
 if not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = "test-api-key"
 os.environ["POSTHOG_BACKEND_DISABLED"] = "1"
+# Autonomous ingestion is tested directly. Running it in every TestClient
+# lifespan consumes hooks created by unrelated tests and makes suite results
+# depend on timing and database leftovers.
+os.environ["MUNDI_BACKGROUND_WORKERS_ENABLED"] = "0"
 
 # Tests run inside the prod container which has CLERK_SECRET_KEY set, so the
 # Clerk-mode auth path blocks unauthenticated requests with 401 before the
@@ -97,7 +101,6 @@ def anyio_backend():
 
 
 @pytest.fixture(scope="session")
-@pytest.mark.anyio
 async def client():
     # Run database migrations before tests
     from src.database.migrate import run_migrations
