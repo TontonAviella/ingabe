@@ -110,10 +110,16 @@ def _fetch_jwks() -> dict:
     global _jwks_cache, _jwks_fetched_at, _jwks_refresh_retry_at
 
     now = time.time()
-    if _jwks_cache and (now - _jwks_fetched_at) < _JWKS_TTL:
-        return _jwks_cache
-    if _jwks_cache and now < _jwks_refresh_retry_at:
-        return _jwks_cache
+    if _jwks_cache:
+        memory_cache_age = max(0.0, now - _jwks_fetched_at)
+        if memory_cache_age < _JWKS_TTL:
+            return _jwks_cache
+        if memory_cache_age > _JWKS_STALE_MAX_AGE:
+            _jwks_cache = None
+            _jwks_fetched_at = 0.0
+            _jwks_refresh_retry_at = 0.0
+        elif now < _jwks_refresh_retry_at:
+            return _jwks_cache
 
     persisted = _load_persisted_jwks(now)
     if persisted and not _jwks_cache:
@@ -136,7 +142,13 @@ def _fetch_jwks() -> dict:
         if not _valid_jwks(refreshed):
             raise ValueError("Clerk JWKS response did not contain signing keys")
     except (requests.RequestException, ValueError, TypeError) as exc:
-        fallback = _jwks_cache or (persisted[0] if persisted else None)
+        memory_fallback = (
+            _jwks_cache
+            if _jwks_cache
+            and max(0.0, now - _jwks_fetched_at) <= _JWKS_STALE_MAX_AGE
+            else None
+        )
+        fallback = memory_fallback or (persisted[0] if persisted else None)
         if fallback:
             _jwks_cache = fallback
             _jwks_refresh_retry_at = now + _JWKS_REFRESH_BACKOFF

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from src.database.pool import async_conn
+from src.services.remote_cog_url import validate_remote_cog_url
 from src.utils import generate_id
 
 
@@ -89,6 +91,17 @@ def build_remote_cog_maplibre_layer(
     return source_id, source, layer
 
 
+def validate_remote_cog_bounds(bounds: list[float]) -> list[float]:
+    if len(bounds) != 4:
+        raise ValueError("Remote COG bounds must contain west, south, east, north")
+    west, south, east, north = (float(value) for value in bounds)
+    if not all(math.isfinite(value) for value in (west, south, east, north)):
+        raise ValueError("Remote COG bounds must be finite")
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        raise ValueError("Remote COG bounds must be ordered WGS84 coordinates")
+    return [west, south, east, north]
+
+
 async def persist_remote_cog_layer(
     *,
     map_id: str,
@@ -104,28 +117,28 @@ async def persist_remote_cog_layer(
     extra_metadata: dict[str, Any] | None = None,
     partner_id: str | None = None,
 ) -> PersistedRemoteCogLayer:
-    # Import lazily because map_service imports the pure render helper above.
-    from src.services.map_service import validate_remote_url
-
-    validated_url = validate_remote_url(remote_url, "raster")
-    layer_id = generate_id(prefix="L")
-    style_id = generate_id(prefix="S")
+    validated_url = validate_remote_cog_url(remote_url)
+    validated_bounds = validate_remote_cog_bounds(bounds)
     metadata: dict[str, Any] = {
-        "remote_cog": True,
-        "remote_cog_url": validated_url,
-        "expression": expression,
-        "style_hint": style_hint,
-        "colormap": colormap,
-        "rescale": rescale,
-        "band_index": band_index,
-        "maxzoom": 14,
-        "opacity": 0.9,
+        key: value
+        for key, value in (extra_metadata or {}).items()
+        if value not in (None, "")
     }
+    metadata.update(
+        {
+            "remote_cog": True,
+            "remote_cog_url": validated_url,
+            "expression": expression,
+            "style_hint": style_hint,
+            "colormap": colormap,
+            "rescale": rescale,
+            "band_index": band_index,
+            "maxzoom": 14,
+            "opacity": 0.9,
+        }
+    )
+    # URL-derived provenance is authoritative over caller/LLM-supplied fields.
     metadata.update(infer_remote_cog_metadata(validated_url))
-    if extra_metadata:
-        metadata.update(
-            {key: value for key, value in extra_metadata.items() if value not in (None, "")}
-        )
 
     async with async_conn(
         "persist_remote_cog_layer",
@@ -141,10 +154,11 @@ async def persist_remote_cog_layer(
                 WHERE m.id = $1
                   AND m.soft_deleted_at IS NULL
                   AND p.soft_deleted_at IS NULL
-                  AND (
-                    p.owner_uuid = $2::uuid
+                AND (
+                    m.owner_uuid = $2::uuid
+                    OR p.owner_uuid = $2::uuid
                     OR $2::uuid = ANY(COALESCE(p.editor_uuids, ARRAY[]::uuid[]))
-                  )
+                )
                 FOR UPDATE OF m
                 """,
                 map_id,
@@ -153,55 +167,118 @@ async def persist_remote_cog_layer(
             if not map_row:
                 raise PermissionError(f"Map {map_id} is not editable by this user")
 
-            await conn.execute(
+            existing_layer = await conn.fetchrow(
                 """
-                INSERT INTO map_layers
-                (layer_id, owner_uuid, name, type, metadata, bounds, source_map_id,
-                 remote_url, created_on, last_edited)
-                VALUES ($1, $2::uuid, $3, 'raster', $4::jsonb, $5, $6, $7,
-                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                SELECT ml.layer_id,
+                       (
+                           SELECT ls.style_id
+                           FROM layer_styles ls
+                           WHERE ls.layer_id = ml.layer_id
+                           ORDER BY ls.created_on
+                           LIMIT 1
+                       ) AS style_id
+                FROM map_layers ml
+                WHERE ml.source_map_id = $1
+                  AND ml.type = 'raster'
+                  AND ml.remote_url = $2
+                  AND ml.metadata->>'remote_cog' = 'true'
+                  AND COALESCE(ml.metadata->>'expression', '') = $3
+                  AND COALESCE(ml.metadata->>'style_hint', '') = $4
+                  AND COALESCE(ml.metadata->>'colormap', '') = $5
+                  AND COALESCE(ml.metadata->>'rescale', '') = $6
+                  AND COALESCE(ml.metadata->>'band_index', '') = $7
+                ORDER BY ml.created_on
+                LIMIT 1
+                FOR UPDATE OF ml
                 """,
-                layer_id,
-                user_uuid,
-                layer_name,
-                json.dumps(metadata),
-                bounds,
                 map_id,
                 validated_url,
+                expression,
+                style_hint,
+                colormap,
+                rescale,
+                "" if band_index is None else str(band_index),
             )
-            await conn.execute(
-                """
-                INSERT INTO layer_styles
-                (style_id, layer_id, style_json, created_by, created_on)
-                VALUES ($1, $2, '[]'::jsonb, $3::uuid, CURRENT_TIMESTAMP)
-                """,
-                style_id,
-                layer_id,
-                user_uuid,
-            )
-            await conn.execute(
-                """
-                INSERT INTO map_layer_styles (map_id, layer_id, style_id)
-                VALUES ($1, $2, $3)
-                """,
-                map_id,
-                layer_id,
-                style_id,
-            )
-            current_layers = list(map_row["layers"] or [])
-            await conn.execute(
-                """
-                UPDATE user_mundiai_maps
-                SET layers = $1, last_edited = CURRENT_TIMESTAMP
-                WHERE id = $2
-                """,
-                current_layers + [layer_id],
-                map_id,
-            )
+
+            if existing_layer:
+                layer_id = str(existing_layer["layer_id"])
+                style_id = str(existing_layer["style_id"])
+                await conn.execute(
+                    """
+                    UPDATE map_layers
+                    SET name = $2, metadata = $3::jsonb, bounds = $4,
+                        last_edited = CURRENT_TIMESTAMP
+                    WHERE layer_id = $1
+                    """,
+                    layer_id,
+                    layer_name,
+                    json.dumps(metadata),
+                    validated_bounds,
+                )
+            else:
+                layer_id = generate_id(prefix="L")
+                style_id = generate_id(prefix="S")
+                await conn.execute(
+                    """
+                    INSERT INTO map_layers
+                    (layer_id, owner_uuid, name, type, metadata, bounds, source_map_id,
+                     remote_url, created_on, last_edited)
+                    VALUES ($1, $2::uuid, $3, 'raster', $4::jsonb, $5, $6, $7,
+                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    layer_id,
+                    user_uuid,
+                    layer_name,
+                    json.dumps(metadata),
+                    validated_bounds,
+                    map_id,
+                    validated_url,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO layer_styles
+                    (style_id, layer_id, style_json, created_by, created_on)
+                    VALUES ($1, $2, '[]'::jsonb, $3::uuid, CURRENT_TIMESTAMP)
+                    """,
+                    style_id,
+                    layer_id,
+                    user_uuid,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO map_layer_styles (map_id, layer_id, style_id)
+                    VALUES ($1, $2, $3)
+                    """,
+                    map_id,
+                    layer_id,
+                    style_id,
+                )
+
+            original_layers = list(map_row["layers"] or [])
+            current_layers: list[str] = []
+            layer_already_listed = False
+            for current_layer_id in original_layers:
+                if current_layer_id == layer_id:
+                    if layer_already_listed:
+                        continue
+                    layer_already_listed = True
+                current_layers.append(current_layer_id)
+            if not layer_already_listed:
+                current_layers.append(layer_id)
+            if current_layers != original_layers:
+                await conn.execute(
+                    """
+                    UPDATE user_mundiai_maps
+                    SET layers = $1, last_edited = CURRENT_TIMESTAMP
+                    WHERE id = $2
+                    """,
+                    current_layers,
+                    map_id,
+                )
 
     metadata_for_render = metadata
     source_id, source, _ = build_remote_cog_maplibre_layer(
-        layer_id, metadata_for_render, bounds
+        layer_id, metadata_for_render, validated_bounds
     )
     return PersistedRemoteCogLayer(
         layer_id=layer_id,

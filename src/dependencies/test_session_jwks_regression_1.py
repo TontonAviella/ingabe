@@ -38,12 +38,32 @@ def test_jwks_uses_bounded_memory_cache_when_refresh_times_out(tmp_path, monkeyp
     _reset_jwks_state(monkeypatch, tmp_path / "missing.json")
     payload = {"keys": [{"kid": "known-key"}]}
     monkeypatch.setattr(session, "_jwks_cache", payload)
-    monkeypatch.setattr(session, "_jwks_fetched_at", 0.0)
+    monkeypatch.setattr(
+        session,
+        "_jwks_fetched_at",
+        time.time() - session._JWKS_TTL - 1,
+    )
 
     with patch("requests.get", side_effect=requests.ReadTimeout("temporary")):
         assert session._fetch_jwks() == payload
 
     assert session._jwks_refresh_retry_at > time.time()
+
+
+def test_jwks_rejects_memory_cache_older_than_stale_limit(tmp_path, monkeypatch) -> None:
+    _reset_jwks_state(monkeypatch, tmp_path / "missing.json")
+    monkeypatch.setattr(session, "_jwks_cache", {"keys": [{"kid": "revoked-key"}]})
+    monkeypatch.setattr(
+        session,
+        "_jwks_fetched_at",
+        time.time() - session._JWKS_STALE_MAX_AGE - 1,
+    )
+
+    with patch("requests.get", side_effect=requests.ReadTimeout("temporary")):
+        with pytest.raises(session.ClerkJWKSUnavailableError):
+            session._fetch_jwks()
+
+    assert session._jwks_cache is None
 
 
 def test_jwks_without_any_cache_reports_service_unavailable(tmp_path, monkeypatch) -> None:
