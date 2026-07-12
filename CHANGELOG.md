@@ -4,6 +4,25 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+## [0.5.5.1] - 2026-07-12
+
+### Added
+- Add a local runtime audit that proves FastSAM, GeoLibre, Life-Harness, Hermes gating, database delivery, and explicitly excluded engines instead of inferring readiness from installed packages.
+- Add ordered procedural workflow evidence so raster analysis validates its source, executes the selected engine, validates outputs, persists artifacts, and verifies frontend delivery before reporting a visible result.
+
+### Changed
+- Run deterministic Rwanda boundary, FastSAM, and raster routes before optional Hermes reasoning; keep Hermes off by default and restrict its enabled tools to Ingabe-owned toolsets.
+- Align FastSAM's internal and chat timeouts with measured full-orthophoto runs, while enforcing the strict displayed building-confidence threshold above `0.65`.
+- Make Docker Compose the supported local runtime and GitHub the source/CI publication target; remove retired Hetzner, Sliplane, Render, nginx, and production-server deployment paths.
+
+### Removed
+- Remove the direct Forge3D runtime dependency and keep only its optional adapter contract; continue excluding HarnessX, bulk third-party skills, Clay, TerraMind, and SAMGeo from the operational path.
+
+### Fixed
+- Verify persisted raster layers can be retrieved from MinIO and the database before Sage claims users can see them, and return a truthful delivery failure otherwise.
+- Replace repeated full Brain table scans with bounded aggregate queries so health and statistics checks complete against the real local dataset.
+- Prevent local frontend authentication from redirecting project routes to an unavailable port by passing the correct Vite Clerk variables during image builds.
+
 ## [0.5.5.0] - 2026-07-11
 
 ### Added

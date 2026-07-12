@@ -1212,25 +1212,62 @@ class BrainService:
         pf = _PARTNER_FILTER.format(a="p.")
         row = await conn.fetchrow(
             f"""
+            WITH visible_pages AS MATERIALIZED (
+                SELECT p.id, p.type
+                FROM brain_pages p
+                WHERE true {pf}
+            ),
+            page_type_counts AS (
+                SELECT type, count(*)::int AS count
+                FROM visible_pages
+                GROUP BY type
+            ),
+            page_stats AS (
+                SELECT
+                    coalesce(sum(count), 0)::bigint AS page_count,
+                    coalesce(
+                        jsonb_object_agg(type, count) FILTER (WHERE type IS NOT NULL),
+                        '{{}}'::jsonb
+                    ) AS pages_by_type
+                FROM page_type_counts
+            ),
+            chunk_stats AS (
+                SELECT
+                    count(*)::bigint AS chunk_count,
+                    count(*) FILTER (WHERE cc.embedded_at IS NOT NULL)::bigint
+                        AS embedded_count
+                FROM brain_content_chunks cc
+                JOIN visible_pages p ON p.id = cc.page_id
+            ),
+            link_stats AS (
+                SELECT count(*)::bigint AS link_count
+                FROM brain_links l
+                JOIN visible_pages p ON p.id = l.from_page_id
+            ),
+            tag_stats AS (
+                SELECT count(DISTINCT t.tag)::bigint AS tag_count
+                FROM brain_tags t
+                JOIN visible_pages p ON p.id = t.page_id
+            ),
+            timeline_stats AS (
+                SELECT count(*)::bigint AS timeline_entry_count
+                FROM brain_timeline_entries te
+                JOIN visible_pages p ON p.id = te.page_id
+            )
             SELECT
-                (SELECT count(*) FROM brain_pages p WHERE true {pf}) as page_count,
-                (SELECT count(*) FROM brain_content_chunks cc
-                 JOIN brain_pages p ON p.id = cc.page_id WHERE true {pf}) as chunk_count,
-                (SELECT count(*) FROM brain_content_chunks cc
-                 JOIN brain_pages p ON p.id = cc.page_id
-                 WHERE cc.embedded_at IS NOT NULL {pf}) as embedded_count,
-                (SELECT count(*) FROM brain_links l
-                 JOIN brain_pages p ON p.id = l.from_page_id WHERE true {pf}) as link_count,
-                (SELECT count(DISTINCT t.tag) FROM brain_tags t
-                 JOIN brain_pages p ON p.id = t.page_id WHERE true {pf}) as tag_count,
-                (SELECT count(*) FROM brain_timeline_entries te
-                 JOIN brain_pages p ON p.id = te.page_id WHERE true {pf}) as timeline_entry_count
+                page_stats.page_count,
+                chunk_stats.chunk_count,
+                chunk_stats.embedded_count,
+                link_stats.link_count,
+                tag_stats.tag_count,
+                timeline_stats.timeline_entry_count,
+                page_stats.pages_by_type
+            FROM page_stats
+            CROSS JOIN chunk_stats
+            CROSS JOIN link_stats
+            CROSS JOIN tag_stats
+            CROSS JOIN timeline_stats
             """
-        )
-        types = await conn.fetch(
-            f"""SELECT p.type, count(*)::int as count
-                FROM brain_pages p WHERE true {pf}
-                GROUP BY p.type ORDER BY count DESC"""
         )
         return {
             "page_count": row["page_count"],
@@ -1239,34 +1276,54 @@ class BrainService:
             "link_count": row["link_count"],
             "tag_count": row["tag_count"],
             "timeline_entry_count": row["timeline_entry_count"],
-            "pages_by_type": {t["type"]: t["count"] for t in types},
+            "pages_by_type": (
+                json.loads(row["pages_by_type"])
+                if isinstance(row["pages_by_type"], str)
+                else dict(row["pages_by_type"])
+            ),
         }
 
     async def get_health(self, conn: asyncpg.Connection) -> dict:
         pf = _PARTNER_FILTER.format(a="p.")
         row = await conn.fetchrow(
             f"""
+            WITH visible_pages AS MATERIALIZED (
+                SELECT
+                    p.id,
+                    (p.compiled_truth != '' OR p.timeline != '') AS has_truth
+                FROM brain_pages p
+                WHERE true {pf}
+            ),
+            chunk_per_page AS MATERIALIZED (
+                SELECT
+                    cc.page_id,
+                    count(*)::bigint AS chunk_count,
+                    count(*) FILTER (WHERE cc.embedded_at IS NOT NULL)::bigint
+                        AS embedded_count
+                FROM brain_content_chunks cc
+                JOIN visible_pages p ON p.id = cc.page_id
+                GROUP BY cc.page_id
+            ),
+            linked_pages AS MATERIALIZED (
+                SELECT l.from_page_id AS page_id FROM brain_links l
+                UNION
+                SELECT l.to_page_id AS page_id FROM brain_links l
+            )
             SELECT
-                (SELECT count(*) FROM brain_pages p WHERE true {pf}) as page_count,
-                (SELECT count(*) FROM brain_content_chunks cc
-                 JOIN brain_pages p ON p.id = cc.page_id
-                 WHERE cc.embedded_at IS NOT NULL {pf})::float /
-                    GREATEST((SELECT count(*) FROM brain_content_chunks cc
-                              JOIN brain_pages p ON p.id = cc.page_id
-                              WHERE true {pf}), 1)::float as embed_coverage,
-                (SELECT count(*) FROM brain_pages p
-                 WHERE (p.compiled_truth != '' OR p.timeline != '')
-                   AND NOT EXISTS (SELECT 1 FROM brain_content_chunks cc WHERE cc.page_id = p.id)
-                   {pf}
-                ) as stale_pages,
-                (SELECT count(*) FROM brain_pages p
-                 WHERE NOT EXISTS (SELECT 1 FROM brain_links l WHERE l.to_page_id = p.id)
-                   AND NOT EXISTS (SELECT 1 FROM brain_links l WHERE l.from_page_id = p.id)
-                   {pf}
-                ) as orphan_pages,
-                (SELECT count(*) FROM brain_content_chunks cc
-                 JOIN brain_pages p ON p.id = cc.page_id
-                 WHERE cc.embedded_at IS NULL {pf}) as missing_embeddings
+                count(*)::bigint AS page_count,
+                coalesce(sum(c.embedded_count), 0)::float /
+                    greatest(coalesce(sum(c.chunk_count), 0), 1)::float
+                    AS embed_coverage,
+                count(*) FILTER (WHERE p.has_truth AND c.page_id IS NULL)::bigint
+                    AS stale_pages,
+                count(*) FILTER (WHERE l.page_id IS NULL)::bigint AS orphan_pages,
+                (
+                    coalesce(sum(c.chunk_count), 0)
+                    - coalesce(sum(c.embedded_count), 0)
+                )::bigint AS missing_embeddings
+            FROM visible_pages p
+            LEFT JOIN chunk_per_page c ON c.page_id = p.id
+            LEFT JOIN linked_pages l ON l.page_id = p.id
             """
         )
         return dict(row)

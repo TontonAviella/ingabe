@@ -15,17 +15,17 @@ R2_ACCESS_KEY="${R2_ACCESS_KEY:?Error: Set R2_ACCESS_KEY (R2 access key)}"
 R2_SECRET_KEY="${R2_SECRET_KEY:?Error: Set R2_SECRET_KEY (R2 secret key)}"
 R2_BUCKET="${R2_BUCKET:-noza}"
 
-# Read MinIO credentials from .env.prod
-if [ -f .env.prod ]; then
-  S3_ACCESS_KEY_ID=$(grep -E '^S3_ACCESS_KEY_ID=' .env.prod | cut -d= -f2)
-  S3_SECRET_ACCESS_KEY=$(grep -E '^S3_SECRET_ACCESS_KEY=' .env.prod | cut -d= -f2)
-  S3_BUCKET=$(grep -E '^S3_BUCKET=' .env.prod | cut -d= -f2)
+# Read MinIO credentials from the local .env when present.
+if [ -f .env ]; then
+  S3_ACCESS_KEY_ID=$(grep -E '^S3_ACCESS_KEY_ID=' .env | cut -d= -f2)
+  S3_SECRET_ACCESS_KEY=$(grep -E '^S3_SECRET_ACCESS_KEY=' .env | cut -d= -f2)
+  S3_BUCKET=$(grep -E '^S3_BUCKET=' .env | cut -d= -f2)
 fi
 S3_ACCESS_KEY_ID="${S3_ACCESS_KEY_ID:-s3user}"
 S3_SECRET_ACCESS_KEY="${S3_SECRET_ACCESS_KEY:-changeme}"
 LOCAL_BUCKET="${S3_BUCKET:-noza}"
 
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod"
+COMPOSE="docker compose"
 
 echo "=== [1/3] Ensure MinIO is running ==="
 $COMPOSE up -d minio mc

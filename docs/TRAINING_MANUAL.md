@@ -55,7 +55,7 @@ Ingabe is a web-based Geographic Information System (GIS) designed for agricultu
 | **Researchers** | Access multi-source geospatial data, run spatial analysis |
 | **Government** | District-level agricultural monitoring, food security dashboards |
 
-**Access Ingabe at:** [https://gis.nozalabs.rw](https://gis.nozalabs.rw)
+**Access Ingabe locally at:** [http://localhost:8000](http://localhost:8000)
 
 ---
 
@@ -63,7 +63,7 @@ Ingabe is a web-based Geographic Information System (GIS) designed for agricultu
 
 ### Creating an Account
 
-1. Open your web browser and navigate to [https://gis.nozalabs.rw](https://gis.nozalabs.rw)
+1. Open your web browser and navigate to [http://localhost:8000](http://localhost:8000)
 2. Click **Sign Up** and create your account
 3. Once logged in, you will see the **Home Screen** with your projects
 

@@ -88,15 +88,16 @@ test.describe('Health & Monitoring', () => {
 
 test.describe('Project View (unauthenticated)', () => {
   test('project route renders without crashing', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+
     // ProjectView uses OptionalAuth, so it should render even without auth
     await page.goto('/project/PXXXXXXXXXX');
     // Should show either the project view or a not-found/error message, not a white screen
     await page.waitForTimeout(3000);
+    expect(page.url()).not.toContain('chrome-error://');
     const bodyText = await page.textContent('body');
     expect(bodyText).toBeTruthy();
-    // Verify no uncaught JS errors
-    const consoleErrors: string[] = [];
-    page.on('pageerror', (error) => consoleErrors.push(error.message));
-    expect(consoleErrors.filter((e) => e.includes('Uncaught'))).toHaveLength(0);
+    expect(pageErrors).toHaveLength(0);
   });
 });

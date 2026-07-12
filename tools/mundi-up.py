@@ -7,7 +7,7 @@ file. For 2-5 GB drone orthos from a marginal connection, this is the right
 tool.
 
 Usage:
-    export MUNDI_BASE_URL=https://gis.nozalabs.rw
+    export MUNDI_BASE_URL=http://localhost:8000
     export MUNDI_JWT=eyJhbGc...   # paste a fresh Clerk JWT from devtools
 
     # plain upload
@@ -209,7 +209,11 @@ def main():
     p.add_argument("path", help="Path to .tif (or other geofile) to upload")
     p.add_argument("--project", required=True, help="Project ID (e.g., PYGUU8vW42CU)")
     p.add_argument("--cog", action="store_true", help="Run gdal_translate -of COG before upload")
-    p.add_argument("--base-url", default=os.environ.get("MUNDI_BASE_URL", "https://gis.nozalabs.rw"))
+    p.add_argument(
+        "--base-url",
+        default=os.environ.get("MUNDI_BASE_URL", "http://localhost:8000"),
+        help="Local Ingabe API URL (default: http://localhost:8000)",
+    )
     p.add_argument("--jwt", default=os.environ.get("MUNDI_JWT"), help="Clerk JWT (or set MUNDI_JWT)")
     args = p.parse_args()
 

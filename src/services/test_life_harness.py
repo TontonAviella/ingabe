@@ -126,6 +126,10 @@ def test_h5_retrieves_task_relevant_skills():
     assert "Drone raster workflow" in titles
     assert "Admin plus H3 workflow" in titles
 
+    drone = next(skill for skill in skills if skill["title"] == "Drone raster workflow")
+    assert "inspect its CRS" in drone["tip"]
+    assert "verify the browser can read it" in drone["tip"]
+
 
 def test_h5_retrieves_spatial_evidence_workflow():
     skills = retrieve_life_harness_skills(

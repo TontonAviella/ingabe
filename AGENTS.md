@@ -48,6 +48,13 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 - When a repeated Sage/Hermes/Codex workflow appears, read `.claude/skills/sage-harness-upgrade/SKILL.md`.
 - Push judgment into skills, execution into deterministic tools/tests/telemetry, and user-facing Sage language into outcomes plus evidence.
 
+## Local-only operations
+
+- Ingabe runs on the local Docker Compose stack. Do not use SSH, rsync, VPS hosts, remote deployment targets, or production Compose overrides.
+- `scripts/deploy.sh` is the canonical local build/start/verification command. `scripts/deploy.sh --check-only` verifies the running stack without rebuilding it.
+- The packaged local application is `http://localhost:8000`; Vite development is `http://localhost:5173` when started separately from `frontendts`.
+- A geospatial workflow is not complete when an algorithm returns. It is complete only after source resolution, data-shape inspection, deterministic planning, execution, output validation, artifact persistence, local delivery verification, and an evidence-backed response.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. The

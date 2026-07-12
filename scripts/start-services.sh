@@ -23,9 +23,7 @@ echo "[start-services] Running alembic migrations..."
 alembic upgrade head
 
 # --- Hermes plugin install (idempotent, see scripts/install-hermes-plugin.sh) ----
-# This wiring is also called from docker-compose.prod.yml directly because
-# prod's `command:` override skips this start-services.sh entirely (prod
-# does not run the satellite APIs below). Single source of truth.
+# The local Docker app always reaches this path through docker-compose.yml.
 bash /app/scripts/install-hermes-plugin.sh
 
 echo "[start-services] Starting field monitor API on :8001..."

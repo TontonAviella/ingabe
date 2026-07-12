@@ -36,6 +36,7 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
         {
             "status": "success",
             "layer_id": "Lobjects123",
+            "delivery": {"status": "verified", "verified": True},
             "summary": {
                 "candidate_count": 500,
                 "candidate_building_count": 500,
@@ -58,6 +59,32 @@ def test_raster_object_reply_discloses_candidate_cap() -> None:
     assert "Object Candidates" not in reply
     assert "500 houses" not in reply
     assert "top 500 likely matches" not in reply
+
+
+def test_raster_object_reply_does_not_claim_unverified_layer_is_visible() -> None:
+    reply = _raster_object_fast_reply(
+        {
+            "status": "success",
+            "layer_id": "Lobjects123",
+            "delivery": {
+                "status": "unverified",
+                "verified": False,
+                "error": "PMTiles object was not readable",
+            },
+            "summary": {
+                "candidate_count": 4,
+                "candidate_building_count": 4,
+                "class_counts": {"building": 4},
+            },
+        },
+        "Cyampirita_Orthophoto",
+        requested_building_count=True,
+    )
+
+    assert "could not verify" in reply
+    assert "not claiming that it is visible" in reply
+    assert "Turn on the layer" not in reply
+    assert "I added them" not in reply
 
 
 def test_raster_object_reply_keeps_generic_candidate_language() -> None:

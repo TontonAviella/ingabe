@@ -8,11 +8,11 @@ AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and poi
 
 **Multi-partner platform.** Mundi.ai serves N partner organizations (BK Insurance is the first active pilot). Every architecture decision must pass the "what if Partner #2 shows up next month" test. Per-partner isolation via Clerk org + Postgres RLS on `app.partner_id` GUC. Sage's identity stays "Sage" to every partner; per-partner skills/prompts/context are composed on top of a base persona.
 
-## Production reality (verified 2026-05-14)
+## Local runtime reality (verified 2026-07-11)
 
-- **Image**: `mundi-public:local` built on prod host (Hetzner CPX42 178.104.18.44, `/home/deploy/mundi.ai`). No registry push. Deploy = SCP source or pull migrations + `docker compose -f docker-compose.yml -f docker-compose.prod.yml build app && up -d app`.
+- **Runtime**: local only. Build and verify with `scripts/deploy.sh`; the application is served at `http://localhost:8000`. Never deploy this repository with SSH, rsync, or a remote Compose override.
 - **Sage LLM**: openai SDK 2.36 → OpenRouter (`https://openrouter.ai/api/v1`) → `nvidia/nemotron-3-super-120b-a12b:free` primary, `openai/gpt-4o-mini` then local `ollama:qwen2.5:7b-64k` as fallbacks.
-- **Turn loop**: `process_chat_interaction_task` in `src/routes/message_routes.py:1109` (6500-line file). Hand-rolled. Hermes Agent is declared in `pyproject.toml` but NOT YET installed in prod and NOT YET powering Sage. Cutover planned (see "Hermes Phase 2" below).
+- **Turn loop**: deterministic administrative, raster-context, and FastSAM routes run first in `process_chat_interaction_task`. Hermes Agent is installed locally but remains flag-gated for complex fallthrough turns while callback readiness and cold-start latency are verified (see "Hermes Phase 2" below).
 - **DB roles**: `mundiuser` (app, `rolsuper=False`, `rolbypassrls=False`); RLS is FULLY ENFORCED on brain/maps/layers tables since ~Apr 22, 2026. NO superuser/admin role exists right now — if RLS locks the app out, recovery is shell-into-container with image-bootstrap creds only. A `mundi_admin` safety net is on the to-do list.
 - **PostHog observability**: traces exist for `$ai_generation` events. Current p50 latency ~26s, p95 ~60s. Input tokens 124k-136k/turn (system prompt + tools dominates). 0 errors over the last 7 days. `traceName` / `partner_id` not yet attached to traces — observability work pending.
 

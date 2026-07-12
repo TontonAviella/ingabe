@@ -18,4 +18,7 @@ def test_spatial_engine_capabilities_reports_geolibre_status_without_canceled_mo
     assert "geolibre_wasm" in status
     assert status["geolibre_wasm"]["note"]
     assert "installed" in status["geolibre_wasm"]
-    assert set(status) == {"sphere", "forge3d_python", "map_runtime", "geolibre_wasm"}
+    assert "fastsam" in status
+    assert "ready" in status["fastsam"]
+    assert status["segment_geospatial"]["active_for"] == []
+    assert "deliberately excluded" in status["segment_geospatial"]["decision"]

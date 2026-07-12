@@ -30,7 +30,7 @@ const IS_DEV_BYPASS =
 // real Ingabe domain.
 const INGABE_URL = IS_DEV_BYPASS
   ? "http://localhost:5173"
-  : (process.env.NEXT_PUBLIC_INGABE_URL || "https://gis.nozalabs.rw");
+  : (process.env.NEXT_PUBLIC_INGABE_URL || "http://localhost:8000");
 
 export default function Home() {
   return (

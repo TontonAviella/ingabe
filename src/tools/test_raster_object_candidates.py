@@ -12,6 +12,7 @@ from src.tools.raster_object_candidates import (
     AnalyzeRasterObjectCandidatesArgs,
     _exception_message,
     _timeout_result,
+    _validate_candidate_result,
     analyze_raster_object_candidates,
 )
 
@@ -44,6 +45,41 @@ def test_raster_timeout_result_does_not_render_blank() -> None:
     assert result["summary"]["candidate_count"] == 0
     assert result["summary"]["screening_model"] == "timeout_before_result"
     assert result["engines"]["selection"]["used"] == "timeout_before_result"
+
+
+def test_output_validation_requires_building_confidence_over_point_65() -> None:
+    args = AnalyzeRasterObjectCandidatesArgs(
+        layer_id="Lsource",
+        target_classes=["building"],
+        max_candidates=100,
+        max_sample_pixels=100_000,
+        min_area_m2=8,
+        max_area_m2=1_500,
+        confidence_threshold=0.65,
+        engine_preference="fastsam",
+        render_map=True,
+    )
+    result = {
+        "status": "success",
+        "summary": {"candidate_count": 1},
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": []},
+                    "properties": {
+                        "candidate_class": "building",
+                        "confidence": 0.65,
+                    },
+                }
+            ],
+        },
+    }
+
+    errors = _validate_candidate_result(result, args)
+
+    assert errors == ["building feature 0 confidence 0.65 is not over 0.65"]
 
 
 @pytest.mark.anyio
@@ -113,3 +149,16 @@ async def test_live_timeout_skips_persistence_and_rendering(monkeypatch) -> None
     assert result["status"] == "error"
     assert result["summary"]["count_semantics"] == "not_available_timeout"
     assert persistence_called is False
+    assert result["workflow"]["status"] == "partial"
+    execute = next(
+        step
+        for step in result["workflow"]["steps"]
+        if step["step_id"] == "execute_analysis"
+    )
+    assert execute["status"] == "failed"
+
+
+def test_fastsam_timeout_covers_measured_full_orthophoto_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("MUNDI_RASTER_OBJECT_TIMEOUT_SECONDS", raising=False)
+
+    assert raster_tool._timeout_seconds_for_engine("fastsam") == 480.0

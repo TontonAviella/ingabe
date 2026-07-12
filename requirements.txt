@@ -207,8 +207,6 @@ firecrawl-py==4.30.1
     # via hermes-agent
 fonttools==4.63.0
     # via matplotlib
-forge3d==1.26.0
-    # via mundi-ai
 frozenlist==1.8.0
     # via
     #   aiohttp
@@ -375,7 +373,6 @@ numpy==2.2.6
     #   color-operations
     #   contourpy
     #   exactextract
-    #   forge3d
     #   geopandas
     #   laspy
     #   matplotlib

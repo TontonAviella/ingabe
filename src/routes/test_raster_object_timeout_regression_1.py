@@ -9,10 +9,10 @@ from src.routes.message_routes import _fast_raster_object_turn_timeout_seconds
 def test_full_orthophoto_chat_budget_exceeds_fastsam_tool_budget(monkeypatch) -> None:
     monkeypatch.delenv("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", raising=False)
 
-    assert _fast_raster_object_turn_timeout_seconds() == 300.0
+    assert _fast_raster_object_turn_timeout_seconds() == 600.0
 
 
 def test_invalid_full_orthophoto_timeout_uses_safe_default(monkeypatch) -> None:
     monkeypatch.setenv("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "not-a-number")
 
-    assert _fast_raster_object_turn_timeout_seconds() == 300.0
+    assert _fast_raster_object_turn_timeout_seconds() == 600.0

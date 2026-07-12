@@ -14,7 +14,9 @@ import pytest
 
 from src.services.hermes_runtime import (
     CANCEL_POLL_INTERVAL_SECONDS,
+    HERMES_INGABE_TOOLSETS,
     hermes_is_enabled,
+    select_hermes_toolsets,
 )
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -53,3 +55,20 @@ def test_hermes_is_enabled_falsy_values(monkeypatch):
 def test_cancel_poll_interval_under_2s():
     """User-facing cancel button should feel responsive."""
     assert CANCEL_POLL_INTERVAL_SECONDS <= 2.0
+
+
+def test_hermes_toolsets_exclude_general_host_capabilities():
+    configured = [
+        "terminal",
+        "file",
+        "browser",
+        "web",
+        "skills",
+        "ingabe-sage-proxied",
+        "ingabe-sage",
+    ]
+
+    selected = select_hermes_toolsets(configured)
+
+    assert selected == list(HERMES_INGABE_TOOLSETS)
+    assert not {"terminal", "file", "browser", "web", "skills"} & set(selected)
