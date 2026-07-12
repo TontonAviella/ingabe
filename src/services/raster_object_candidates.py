@@ -530,6 +530,7 @@ def _features_from_mask(
             continue
 
         confidence = _confidence(target, area_m2, aspect, source_geom.length)
+        reported_confidence = round(confidence, 3)
         if (
             target == "building"
             and extra_properties
@@ -540,7 +541,12 @@ def _features_from_mask(
         effective_confidence_threshold = _effective_confidence_threshold(
             target, confidence_threshold
         )
-        if confidence < effective_confidence_threshold:
+        if (
+            target == "building"
+            and reported_confidence <= effective_confidence_threshold
+        ):
+            continue
+        if target != "building" and confidence < effective_confidence_threshold:
             continue
 
         try:
@@ -551,7 +557,7 @@ def _features_from_mask(
         properties = {
             "candidate_class": target,
             "candidate_label": _label_for_target(target),
-            "confidence": round(confidence, 3),
+            "confidence": reported_confidence,
             "area_m2": round(area_m2, 2),
             "aspect_ratio": round(aspect, 2),
             "rectangularity": round(rectangularity, 3),

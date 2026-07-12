@@ -1919,17 +1919,34 @@ def _raster_object_fast_reply(
     if not rendered_layer_id:
         render_engine = engines.get("render") if isinstance(engines.get("render"), dict) else {}
         rendered_layer_id = render_engine.get("layer_id")
+    delivery = result.get("delivery") if isinstance(result.get("delivery"), dict) else {}
+    delivery_status = str(delivery.get("status") or "unverified")
+    delivery_verified = delivery_status == "verified" and bool(
+        delivery.get("verified")
+    )
     visible_layer_name = (
         f"House/Roof Masks - {layer_name}"
         if requested_building_count
         else f"Feature Masks - {layer_name}"
     )
+    if delivery_verified and rendered_layer_id:
+        delivery_sentence = "I added them as a colored mask layer."
+    elif delivery_status == "preview_only":
+        delivery_sentence = (
+            "I prepared a colored preview, but I could not verify a persistent "
+            "map layer, so I am not claiming that it is visible yet."
+        )
+    else:
+        delivery_sentence = (
+            "The analysis finished, but I could not verify that its colored mask "
+            "layer reached the map, so I am not claiming that it is visible yet."
+        )
     layer_hint = (
         f" Turn on the layer `{visible_layer_name}`"
         f" to see the colored polygons on the orthophoto"
         f"{f' (layer {rendered_layer_id})' if rendered_layer_id else ''}."
-        if rendered_layer_id
-        else " I added the colored polygons on top of the orthophoto."
+        if delivery_verified and rendered_layer_id
+        else ""
     )
     is_capped = bool(summary.get("candidate_count_capped"))
     plain_performance_note = _plain_raster_object_performance_note(performance_note)
@@ -1956,7 +1973,7 @@ def _raster_object_fast_reply(
             max_candidates = int(summary.get("max_candidates") or candidate_count)
             return (
                 f"I found {candidate_count} possible roof/house shapes in {layer_name} "
-                f"and added them as a colored mask layer. The live layer is capped at "
+                f"from the image. {delivery_sentence} The analysis result is capped at "
                 f"{max_candidates}, so this is not the final house count."
                 f"{layer_hint} Some roofs may still be missing or mixed with trees, "
                 "shadows, and bare ground."
@@ -1964,7 +1981,7 @@ def _raster_object_fast_reply(
             )
         return (
             f"I found {building_candidates} possible roof/house shapes in {layer_name} "
-            "and added them as a colored mask layer."
+            f"from the image. {delivery_sentence}"
             f"{layer_hint} Treat this as a map overlay to review, not a final house count yet. "
             "Spot-check the important areas, "
             "especially where roofs touch trees, shadows, or roads."
@@ -1972,7 +1989,7 @@ def _raster_object_fast_reply(
         )
     return (
         f"I found {candidate_count} possible features in {layer_name} ({class_text}) "
-        "and added them as a colored mask layer."
+        f"from the image. {delivery_sentence}"
         f"{layer_hint} Review the overlay against the image before treating the counts as final."
         f"{engine_note}{suffix}"
     )
@@ -1988,11 +2005,11 @@ def _plain_raster_object_performance_note(note: object) -> str:
 
 
 def _fast_raster_object_turn_timeout_seconds() -> float:
-    raw = os.environ.get("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "300")
+    raw = os.environ.get("SAGE_FAST_RASTER_OBJECTS_TIMEOUT_SECONDS", "600")
     try:
         return max(15.0, float(raw))
     except (TypeError, ValueError):
-        return 300.0
+        return 600.0
 
 
 async def _maybe_run_fast_raster_object_turn(
@@ -2321,6 +2338,44 @@ async def _maybe_run_fast_raster_fact_turn(
     return True
 
 
+async def _maybe_run_deterministic_turn_before_hermes(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+) -> bool:
+    """Run proven single-purpose paths before constructing a general agent.
+
+    These routes are faster and more reliable than asking Hermes to rediscover
+    the same plan. Complex or genuinely multi-step requests still fall through
+    to Hermes when it is enabled.
+    """
+
+    rows = await get_all_conversation_messages(conversation.id, session)
+    messages = [
+        row.message_json
+        for row in rows
+        if isinstance(getattr(row, "message_json", None), dict)
+    ]
+    handlers = (
+        _maybe_run_fast_admin_boundary_turn,
+        _maybe_run_fast_raster_object_turn,
+        _maybe_run_fast_raster_context_turn,
+        _maybe_run_fast_raster_fact_turn,
+    )
+    for handler in handlers:
+        if await handler(
+            map_id=map_id,
+            session=session,
+            user_id=user_id,
+            conversation=conversation,
+            openai_messages=messages,
+        ):
+            return True
+    return False
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -2335,12 +2390,18 @@ async def process_chat_interaction_task(
     client_turn_id: str | None = None,
     user_message_id: str | None = None,
 ):
-    # Phase 2 cutover fork: when MUNDI_USE_HERMES=1, hand the turn off to
-    # the Hermes Agent runtime. Default is OFF — the existing hand-rolled
-    # chat loop below runs as it did before. See src/services/hermes_runtime.py
-    # for the wiring contract and rollback procedure.
+    # Hermes handles complex requests only after deterministic fast paths have
+    # had the first chance to answer. This keeps admin lookups and raster/FastSAM
+    # work fast, bounded, and independent of agent planning quality.
     from src.services.hermes_runtime import hermes_is_enabled, run_sage_turn_via_hermes
     if hermes_is_enabled():
+        if await _maybe_run_deterministic_turn_before_hermes(
+            map_id=map_id,
+            session=session,
+            user_id=user_id,
+            conversation=conversation,
+        ):
+            return
         logger.info(
             "MUNDI_USE_HERMES=1 → routing chat turn through Hermes runtime "
             "(map=%s user=%s conversation=%s)",

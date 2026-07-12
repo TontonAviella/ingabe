@@ -4,9 +4,8 @@
 # Called from two places:
 #   - scripts/start-services.sh — the in-image CMD chain (any compose
 #     target that does NOT override `command:` inherits it)
-#   - docker-compose.prod.yml `command:` — prod overrides `command:` to
-#     skip the satellite APIs, so it calls this script directly before
-#     alembic + uvicorn.
+#   - docker-compose.yml `command:` — the local app container invokes
+#     start-services.sh, which calls this script before alembic + uvicorn.
 #
 # Behavior:
 #   - symlink at $HERMES_HOME/plugins/ingabe-sage is always refreshed

@@ -15,6 +15,25 @@ from src.services.raster_object_candidates import (
 )
 
 
+def test_building_threshold_applies_to_reported_confidence(monkeypatch) -> None:
+    mask = np.zeros((20, 20), dtype=bool)
+    mask[4:16, 4:16] = True
+    monkeypatch.setattr(raster_object_candidates, "_confidence", lambda *_args: 0.6504)
+
+    features = raster_object_candidates._features_from_mask(
+        mask,
+        target="building",
+        source_transform=from_origin(0, 20, 1, 1),
+        source_crs="EPSG:3857",
+        min_area_m2=8,
+        max_area_m2=500,
+        confidence_threshold=0.65,
+        max_candidates=10,
+    )
+
+    assert features == []
+
+
 def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -> None:
     path = tmp_path / "synthetic_ortho.tif"
     image = np.zeros((3, 120, 120), dtype=np.uint8)
@@ -705,7 +724,7 @@ def test_building_confidence_boundary_is_enforced_at_point_65(monkeypatch) -> No
     mask = np.zeros((20, 20), dtype=bool)
     mask[4:12, 5:13] = True
 
-    for confidence, expected_count in ((0.649, 0), (0.65, 1), (0.651, 1)):
+    for confidence, expected_count in ((0.649, 0), (0.65, 0), (0.651, 1)):
         monkeypatch.setattr(
             raster_object_candidates,
             "_confidence",

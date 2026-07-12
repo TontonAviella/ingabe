@@ -24,7 +24,7 @@ Design notes:
 
 What is NOT in this module:
 - The WhatsApp/Telegram inbound webhook itself. That lives behind the
-  Hetzner deploy gate; the webhook will call into `transcribe()` once
+  local deployment gate; the webhook will call into `transcribe()` once
   it's wired up.
 - A streaming pipe. WhatsApp voice notes are short (typically < 60s)
   and the batch API is good enough; streaming Whisper is overkill for

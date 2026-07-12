@@ -10,6 +10,7 @@ import httpx
 
 from src.services.forge3d_adapter import forge3d_available
 from src.services.geolibre_runner import geolibre_runner_status
+from src.services.raster_object_candidates import _fastsam_weights_status
 from src.services.sphere_flood import sphere_available
 from src.services.tessera_embeddings import tessera_embedding_status
 from src.services.whitebox_engine import whitebox_engine_status
@@ -41,6 +42,15 @@ async def get_spatial_engine_capabilities(
             "note": "Browser map extrusion remains MapLibre/deck.gl unless a Forge3D viewer/export path is selected.",
         },
         "geolibre_wasm": _geolibre_wasm_status(),
+        "fastsam": _fastsam_status(),
+        "segment_geospatial": {
+            **_python_package_status("samgeo", "segment-geospatial"),
+            "active_for": [],
+            "decision": (
+                "deliberately excluded: duplicates FastSAM and adds heavyweight "
+                "SAM runtimes without improving the current local CPU path"
+            ),
+        },
     }
     if include_whitebox:
         capabilities["whitebox_tools"] = whitebox_engine_status()
@@ -51,6 +61,23 @@ async def get_spatial_engine_capabilities(
     if include_geokernel:
         capabilities["geokernel"] = await _geokernel_status()
     return capabilities
+
+
+def _fastsam_status() -> dict[str, Any]:
+    package = _python_package_status("ultralytics", "ultralytics")
+    weights = _fastsam_weights_status()
+    ready = bool(package["installed"] and weights.get("available"))
+    return {
+        "installed": package["installed"],
+        "version": package["version"],
+        "weights": weights,
+        "ready": ready,
+        "active_for": (
+            ["orthophoto object masks with target-specific post-processing"]
+            if ready
+            else []
+        ),
+    }
 
 
 def _python_package_status(

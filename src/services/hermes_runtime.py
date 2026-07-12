@@ -55,6 +55,7 @@ from typing import Any
 # ~600 lines to find the sentinel/interval definitions).
 _SENTINEL_DONE = object()
 CANCEL_POLL_INTERVAL_SECONDS = 1.0
+HERMES_INGABE_TOOLSETS = ("ingabe-sage", "ingabe-sage-proxied")
 
 # Hermes upstream emits these substrings inside `result["final_response"]`
 # when an LLM call fails. Used to route the response to kue_notify_error
@@ -88,6 +89,19 @@ def hermes_is_enabled() -> bool:
     """
     val = os.environ.get("MUNDI_USE_HERMES", "0").strip().lower()
     return val in {"1", "true", "yes"}
+
+
+def select_hermes_toolsets(configured_toolsets: list[str]) -> list[str]:
+    """Keep the web Sage runtime on Ingabe's scoped tools only.
+
+    Hermes ships terminal, file, browser, web, delegation, and other general
+    agent toolsets. They add schema tokens and capabilities that this map UI
+    neither needs nor safely exposes. Ingabe's plugin already provides the
+    complete partner-scoped tool surface.
+    """
+
+    configured = set(configured_toolsets)
+    return [name for name in HERMES_INGABE_TOOLSETS if name in configured]
 
 
 # Plugins must be discovered ONCE per process. discover_and_load() walks
@@ -350,6 +364,12 @@ async def run_sage_turn_via_hermes(
     except Exception:
         logger.exception("system_prompt_provider failed; falling back to None")
         system_message = None
+    from src.services.life_harness import apply_life_harness_system_prompt
+
+    system_message = apply_life_harness_system_prompt(
+        system_message or "",
+        last_user_text,
+    )
 
     # --- 4. Resolve Hermes runtime + toolsets -----------------------------
     try:
@@ -372,7 +392,11 @@ async def run_sage_turn_via_hermes(
     runtime_kwargs = _resolve_runtime_agent_kwargs()
     model = _resolve_gateway_model()
     cfg = _load_gateway_config()
-    enabled_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
+    configured_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
+    enabled_toolsets = select_hermes_toolsets(configured_toolsets)
+    if set(enabled_toolsets) != set(HERMES_INGABE_TOOLSETS):
+        missing = sorted(set(HERMES_INGABE_TOOLSETS) - set(enabled_toolsets))
+        raise RuntimeError(f"Hermes is missing required Ingabe toolsets: {missing}")
     try:
         fallback_model = GatewayRunner._load_fallback_model()
     except Exception:
@@ -519,6 +543,10 @@ async def run_sage_turn_via_hermes(
             tool_complete_callback=_on_tool_complete,
             fallback_model=fallback_model,
             ephemeral_system_prompt=system_message,
+            tool_delay=0.0,
+            skip_context_files=True,
+            skip_memory=True,
+            load_soul_identity=False,
         )
 
     # --- 7. Cancellation watchdog -----------------------------------------

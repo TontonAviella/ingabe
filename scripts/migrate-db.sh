@@ -6,20 +6,20 @@
 #   RENDER_DB_URL="postgres://user:pass@host:5432/dbname" bash scripts/migrate-db.sh
 #
 # Prerequisites:
-#   - pg_dump installed on the VPS (apt install postgresql-client-15)
+#   - pg_dump installed locally
 #   - Local PostgreSQL container running
-#   - .env.prod filled in
+#   - Optional local .env file with PostgreSQL overrides
 # ------------------------------------------------------------------
 set -euo pipefail
 
 RENDER_DB_URL="${RENDER_DB_URL:?Error: Set RENDER_DB_URL to your Render external database URL}"
 DUMP_FILE="/tmp/render_dump_$(date -u +%Y%m%d_%H%M%S).sql"
-COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod"
+COMPOSE="docker compose"
 
 # Read local DB credentials
-if [ -f .env.prod ]; then
-  PGUSER=$(grep -E '^POSTGRES_USER=' .env.prod | cut -d= -f2)
-  PGDB=$(grep -E '^POSTGRES_DB=' .env.prod | cut -d= -f2)
+if [ -f .env ]; then
+  PGUSER=$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2)
+  PGDB=$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2)
 fi
 PGUSER="${PGUSER:-mundiuser}"
 PGDB="${PGDB:-mundidb}"

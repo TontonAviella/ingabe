@@ -5,7 +5,7 @@
 #   docker build -f Dockerfile.base -t ghcr.io/tontonaviella/mundi-base:latest .
 #   docker push ghcr.io/tontonaviella/mundi-base:latest
 
-# ── ARG for base image (override in render.yaml or CI) ──
+# ── ARG for base image (override from local builds or CI) ──
 ARG BASE_IMAGE=ghcr.io/tontonaviella/mundi-base:latest
 
 # ── Python dependencies ──

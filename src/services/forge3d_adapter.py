@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 from typing import Any
 
 import numpy as np
 
 
 def forge3d_available() -> tuple[bool, str | None, str | None]:
-    try:
-        import forge3d  # noqa: F401
-    except Exception as exc:
-        return False, None, str(exc)
+    if importlib.util.find_spec("forge3d") is None:
+        return False, None, "forge3d is not installed"
     try:
         version = importlib.metadata.version("forge3d")
-    except Exception:
+    except importlib.metadata.PackageNotFoundError:
         version = None
     return True, version, None
 

@@ -33,9 +33,11 @@ _H5_SKILLS: list[dict[str, str]] = [
         "title": "Drone raster workflow",
         "pattern": "drone raster tiff tif orthophoto ndvi ndre imagery upload field crop stress",
         "tip": (
-            "For uploaded drone imagery, inspect metadata/available bands before "
-            "interpreting. Prefer existing raster/query tools; do not invent crop "
-            "stress claims without a layer id or polygon/AOI."
+            "For uploaded drone imagery, resolve the owned layer, inspect its CRS, "
+            "bounds, bands, resolution, and storage shape, choose the smallest "
+            "deterministic plan, execute it, validate confidence and geometry, "
+            "persist the output, verify the browser can read it, then explain only "
+            "the evidence that completed. Do not invent crop stress or object claims."
         ),
     },
     {

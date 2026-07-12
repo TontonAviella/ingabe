@@ -9,8 +9,10 @@ services:
       args:
         - VITE_WEBSITE_DOMAIN=http://localhost:8000
         - VITE_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
-        - VITE_CLERK_SIGN_IN_URL=${CLERK_SIGN_IN_URL:-}
-        - VITE_CLERK_SIGN_UP_URL=${CLERK_SIGN_UP_URL:-}
+        # Frontend satellite mode is independent from backend Clerk JWT auth.
+        # Keep these blank locally unless a separate primary frontend is running.
+        - VITE_CLERK_SIGN_IN_URL=${VITE_CLERK_SIGN_IN_URL:-}
+        - VITE_CLERK_SIGN_UP_URL=${VITE_CLERK_SIGN_UP_URL:-}
       x-bake:
         tags:
           - "${APP_IMAGE:-mundi-public:local}"

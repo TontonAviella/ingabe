@@ -254,7 +254,7 @@ SOCIAL_RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
 
 # Semaphore for raster tile rendering — prevents event-loop starvation
 # when MapLibre fires 20-50 concurrent tile requests on zoom/pan.
-# 8 vCPU Hetzner → allow more concurrent reads (default was 6, too conservative).
+# Local workstation default: allow more concurrent reads than the old limit of 6.
 RASTER_TILE_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("RASTER_TILE_CONCURRENCY", "12")))
 RASTER_ENGINE_SEMAPHORE = asyncio.Semaphore(_get_raster_engine_concurrency())
 _RASTER_TILE_INFLIGHT_LOCKS: dict[str, asyncio.Lock] = {}
