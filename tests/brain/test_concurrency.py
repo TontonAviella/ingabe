@@ -18,6 +18,7 @@ from src.services.brain_ingestion.concurrency import (
     PER_SOURCE_DAILY_FRACTION,
     PerSourceCapExceeded,
     RateBucket,
+    _seconds_until_midnight_utc,
     estimate_cost_usd,
     ocr_semaphore,
     queue_depth_alert,
@@ -62,6 +63,29 @@ def test_queue_depth_alert_threshold():
     assert queue_depth_alert(1999) is False
     assert queue_depth_alert(2000) is True
     assert queue_depth_alert(10000) is True
+
+
+def test_seconds_until_midnight_utc_hits_exact_boundary(monkeypatch):
+    """Prior bug: `tomorrow.replace(day=tomorrow.day)` was a no-op, so the
+    fallback branch always fired and the TTL was wrong. Assert exact
+    seconds-to-next-midnight for three clock positions.
+    """
+    from datetime import datetime, timezone
+
+    import src.services.brain_ingestion.concurrency as mod
+
+    cases = [
+        (datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc), 86400),   # just past midnight
+        (datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc), 43200),  # midday
+        (datetime(2026, 1, 1, 23, 59, 30, tzinfo=timezone.utc), 30),   # 30s to midnight
+    ]
+    for fake_now, expected in cases:
+        class _FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fake_now
+        monkeypatch.setattr(mod, "datetime", _FakeDatetime)
+        assert mod._seconds_until_midnight_utc() == expected
 
 
 def test_rate_bucket_refills_over_time():

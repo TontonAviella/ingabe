@@ -29,7 +29,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +105,10 @@ def _day_key(prefix: str, source_id: str | None = None) -> str:
 
 def _seconds_until_midnight_utc() -> int:
     now = datetime.now(timezone.utc)
-    tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    tomorrow = tomorrow.replace(day=tomorrow.day)
-    # If now > midnight, add a day
-    if tomorrow <= now:
-        return int(((now.replace(hour=23, minute=59, second=59) - now).total_seconds())) + 1
-    return int((tomorrow - now).total_seconds())
+    tomorrow_midnight = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return int((tomorrow_midnight - now).total_seconds())
 
 
 async def reserve_ocr_budget(
