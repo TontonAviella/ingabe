@@ -4,6 +4,7 @@ import os
 
 import geopandas as gpd
 import numpy as np
+import pytest
 import rasterio
 from affine import Affine
 from rasterio.transform import from_origin
@@ -44,6 +45,53 @@ def test_target_shape_allows_four_megapixel_building_analysis(monkeypatch) -> No
     )
 
     assert 3_990_000 <= height * width <= 4_000_000
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_cap"),
+    [("1000000", 1_000_000), ("99000000", 4_000_000), ("5", 10_000)],
+)
+def test_sample_cap_env_can_only_lower_the_default(monkeypatch, env, expected_cap) -> None:
+    monkeypatch.setenv("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", env)
+
+    height, width = raster_object_candidates._target_shape(48_008, 27_272, 99_000_000)
+
+    assert expected_cap * 0.99 <= height * width <= expected_cap
+
+
+def test_sample_cap_env_rejects_non_integer(monkeypatch) -> None:
+    monkeypatch.setenv("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", "4M")
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        raster_object_candidates._target_shape(1_000, 1_000, 4_000_000)
+
+
+def test_fastsam_reports_busy_instead_of_running_concurrently(monkeypatch) -> None:
+    monkeypatch.setattr(
+        raster_object_candidates,
+        "_fastsam_weights_status",
+        lambda: {"available": True, "path": "/tmp/FastSAM-s.pt"},
+    )
+    monkeypatch.setattr(raster_object_candidates, "_FASTSAM_LOCK_WAIT_SECONDS", 0.01)
+
+    assert raster_object_candidates._FASTSAM_INFERENCE_LOCK.acquire(timeout=1)
+    try:
+        result = raster_object_candidates._features_from_fastsam(
+            np.zeros((8, 8, 3), dtype=np.uint8),
+            target_masks={},
+            targets=["building"],
+            source_transform=None,
+            source_crs=None,
+            min_area_m2=8.0,
+            max_area_m2=800.0,
+            confidence_threshold=0.65,
+            max_candidates=10,
+        )
+    finally:
+        raster_object_candidates._FASTSAM_INFERENCE_LOCK.release()
+
+    assert result["status"] == "error"
+    assert "busy" in result["error"]
 
 
 def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -> None:

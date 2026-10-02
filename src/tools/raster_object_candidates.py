@@ -14,6 +14,8 @@ from src.services.raster_object_layer_persistence import (
     persist_raster_object_candidate_layer,
 )
 from src.services.raster_object_candidates import (
+    DEFAULT_MAX_SAMPLE_PIXELS,
+    MIN_SAMPLE_PIXELS,
     RasterObjectCandidateInput,
     analyze_raster_object_candidates as analyze_raster_object_candidates_service,
 )
@@ -45,10 +47,12 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
     max_sample_pixels: int = Field(
         ...,
+        ge=MIN_SAMPLE_PIXELS,
+        le=DEFAULT_MAX_SAMPLE_PIXELS,
         description=(
-            "Maximum pixels sampled from the raster before segmentation. Use 4000000 "
-            "for building masks so small roofs remain visible; lower values are faster "
-            "but reduce recall."
+            f"Maximum pixels sampled from the raster before segmentation. Use "
+            f"{DEFAULT_MAX_SAMPLE_PIXELS} (the maximum) for building masks so small "
+            "roofs remain visible; lower values are faster but reduce recall."
         ),
     )
     min_area_m2: float = Field(

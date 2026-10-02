@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -10,6 +11,19 @@ from pathlib import Path
 from typing import Any
 
 from shapely.geometry import shape
+
+# Sample cap measured in docs/FASTSAM_HERMES_EVALUATION.md (building F1 0.646
+# at 2 MP -> 0.729 at 4 MP on Cyampirita). MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS
+# may only LOWER it: a larger sample is unmeasured memory and latency.
+DEFAULT_MAX_SAMPLE_PIXELS = 4_000_000
+MIN_SAMPLE_PIXELS = 10_000
+
+# Ultralytics model objects are not safe to call from several threads, and the
+# model is shared via _load_fastsam_model's cache; one 4 MP run is ~40 s of
+# CPU. Inference is serialized; a request that cannot start within this wait
+# (half the tool's 480 s FastSAM timeout) reports busy instead of queueing on.
+_FASTSAM_INFERENCE_LOCK = threading.Lock()
+_FASTSAM_LOCK_WAIT_SECONDS = 240.0
 
 _SUPPORTED_TARGETS = {
     "building",
@@ -271,8 +285,8 @@ def analyze_raster_object_candidates(
 def _validate_payload(payload: RasterObjectCandidateInput) -> None:
     if payload.max_candidates < 1:
         raise ValueError("max_candidates must be at least 1")
-    if payload.max_sample_pixels < 10_000:
-        raise ValueError("max_sample_pixels must be at least 10000")
+    if payload.max_sample_pixels < MIN_SAMPLE_PIXELS:
+        raise ValueError(f"max_sample_pixels must be at least {MIN_SAMPLE_PIXELS}")
     if payload.min_area_m2 <= 0:
         raise ValueError("min_area_m2 must be positive")
     if payload.max_area_m2 <= payload.min_area_m2:
@@ -281,15 +295,22 @@ def _validate_payload(payload: RasterObjectCandidateInput) -> None:
         raise ValueError("confidence_threshold must be between 0 and 1")
 
 
+def _runtime_sample_cap() -> int:
+    raw = os.environ.get("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", "").strip()
+    if not raw:
+        return DEFAULT_MAX_SAMPLE_PIXELS
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS must be an integer, got {raw!r}"
+        ) from exc
+    return max(MIN_SAMPLE_PIXELS, min(value, DEFAULT_MAX_SAMPLE_PIXELS))
+
+
 def _target_shape(width: int, height: int, max_sample_pixels: int) -> tuple[int, int]:
     total = max(1, width * height)
-    try:
-        runtime_cap = int(
-            os.environ.get("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", "4000000")
-        )
-    except ValueError:
-        runtime_cap = 4_000_000
-    cap = min(max_sample_pixels, max(10_000, runtime_cap))
+    cap = min(max_sample_pixels, _runtime_sample_cap())
     if total <= cap:
         return height, width
     scale = math.sqrt(cap / total)
@@ -819,11 +840,47 @@ def _features_from_fastsam(
     confidence_threshold: float,
     max_candidates: int,
 ) -> dict[str, Any]:
-    import numpy as np
-
     status = _fastsam_weights_status()
     if not status["available"]:
         return {"status": "unavailable", "error": status["reason"], "weights": status}
+
+    if not _FASTSAM_INFERENCE_LOCK.acquire(timeout=_FASTSAM_LOCK_WAIT_SECONDS):
+        return {
+            "status": "error",
+            "error": "FastSAM is busy with another analysis; try again shortly.",
+            "weights": status,
+        }
+    try:
+        return _run_fastsam_locked(
+            status,
+            rgb_uint8,
+            target_masks=target_masks,
+            targets=targets,
+            source_transform=source_transform,
+            source_crs=source_crs,
+            min_area_m2=min_area_m2,
+            max_area_m2=max_area_m2,
+            confidence_threshold=confidence_threshold,
+            max_candidates=max_candidates,
+        )
+    finally:
+        _FASTSAM_INFERENCE_LOCK.release()
+
+
+def _run_fastsam_locked(
+    status: dict[str, Any],
+    rgb_uint8: Any,
+    *,
+    target_masks: Any,
+    targets: list[str],
+    source_transform: Any,
+    source_crs: Any,
+    min_area_m2: float,
+    max_area_m2: float,
+    confidence_threshold: float,
+    max_candidates: int,
+) -> dict[str, Any]:
+    import numpy as np  # lazy: heavy numeric dependency, loaded only for FastSAM runs
 
     try:
         model = _load_fastsam_model(status["path"])

@@ -70,7 +70,7 @@ services:
       # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
       - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
       - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
-      - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-4000000}
+      - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
       - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
       - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
