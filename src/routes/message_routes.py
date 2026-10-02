@@ -2358,6 +2358,35 @@ async def _maybe_run_fast_raster_fact_turn(
     return True
 
 
+async def _run_first_fast_path(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> str | None:
+    """Run the proven single-purpose paths in order; the name of the one
+    that answered the turn, or None when the model has to plan it."""
+    # Built at call time so tests can patch individual handlers.
+    handlers = (
+        ("admin_boundary", _maybe_run_fast_admin_boundary_turn),
+        ("raster_object", _maybe_run_fast_raster_object_turn),
+        ("raster_context", _maybe_run_fast_raster_context_turn),
+        ("raster_fact", _maybe_run_fast_raster_fact_turn),
+    )
+    for name, handler in handlers:
+        if await handler(
+            map_id=map_id,
+            session=session,
+            user_id=user_id,
+            conversation=conversation,
+            openai_messages=openai_messages,
+        ):
+            return name
+    return None
+
+
 async def _maybe_run_deterministic_turn_before_hermes(
     *,
     map_id: str,
@@ -2378,22 +2407,13 @@ async def _maybe_run_deterministic_turn_before_hermes(
         for row in rows
         if isinstance(getattr(row, "message_json", None), dict)
     ]
-    handlers = (
-        _maybe_run_fast_admin_boundary_turn,
-        _maybe_run_fast_raster_object_turn,
-        _maybe_run_fast_raster_context_turn,
-        _maybe_run_fast_raster_fact_turn,
-    )
-    for handler in handlers:
-        if await handler(
-            map_id=map_id,
-            session=session,
-            user_id=user_id,
-            conversation=conversation,
-            openai_messages=messages,
-        ):
-            return True
-    return False
+    return await _run_first_fast_path(
+        map_id=map_id,
+        session=session,
+        user_id=user_id,
+        conversation=conversation,
+        openai_messages=messages,
+    ) is not None
 
 
 async def process_chat_interaction_task(
@@ -2597,40 +2617,14 @@ async def process_chat_interaction_task(
                         m["content"] = ""
                 openai_messages.append(m)
 
-            if await _maybe_run_fast_admin_boundary_turn(
+            _fast_path = await _run_first_fast_path(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,
                 conversation=conversation,
                 openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_object_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_context_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_fact_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
+            )
+            if _fast_path is not None:
                 return
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
