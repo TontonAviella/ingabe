@@ -4,6 +4,9 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+### Removed
+- WhatsApp and Telegram integrations: the two sender services, the inbound `/internal/inbox` route, the Kinyarwanda voice-note service, the proactive alert cron (`sage_alerts`, `cron_expr`) and the `render_map_snapshot` tool, which only delivered through them. A migration drops `user_channel_bindings`, `channel_bind_codes` and `alert_subscriptions` (downgrade restores the empty tables).
+
 ### Changed
 - Use 4-million-pixel direct FastSAM masks for building review and remove the low-precision color-only roof supplement; label candidate confidence as a heuristic screening score rather than a model probability.
 - Enable Hermes behind the Sage name for complex local planning when model credentials are available, while keeping deterministic Rwanda boundary and FastSAM workflows first.

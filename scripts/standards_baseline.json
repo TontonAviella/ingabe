@@ -1,7 +1,7 @@
 {
   "_comment": "Debt that existed when CODING_STANDARDS.md was adopted. A ratchet: delete entries as you fix them; never add new ones. Regenerating this file to admit new debt is a standards violation.",
   "totals": {
-    "dup-body": 16,
+    "dup-body": 14,
     "lazy-import": 138,
     "private-import": 60,
     "render-threshold": 26,
@@ -16,8 +16,6 @@
     "dup-body|src/routes/rwanda_routes.py|ndvi_vector_tiles.stream_full": 1,
     "dup-body|src/routes/rwanda_routes.py|ndvi_vector_tiles.stream_range": 1,
     "dup-body|src/routes/worldcover_router.py|_transparent_tile": 1,
-    "dup-body|src/senders/telegram_sender.py|_download_png": 1,
-    "dup-body|src/senders/whatsapp_sender.py|_download_png": 1,
     "dup-body|src/services/forecast_noaa_fallback.py|_has_data_fallback": 1,
     "dup-body|src/services/forecast_openmeteo.py|_has_data": 1,
     "dup-body|src/services/h3_spatial_insight.py|_risk_level": 1,

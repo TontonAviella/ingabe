@@ -97,11 +97,11 @@ async def test_fetch_none_when_zero_rows():
 @pytest.mark.asyncio
 async def test_fetch_returns_set_from_rows():
     conn = _FakeConn(rows=[
-        {"skill_name": "render_map_snapshot"},
+        {"skill_name": "compute_spectral_index"},
         {"skill_name": "get_field_health"},
     ])
     out = await fetch_allowed_skills(conn, "partner-1")
-    assert out == {"render_map_snapshot", "get_field_health"}
+    assert out == {"compute_spectral_index", "get_field_health"}
 
 
 # ---------------------------------------------------------------------------
@@ -124,20 +124,20 @@ async def test_grant_fetch_revoke_roundtrip():
         assert await fetch_allowed_skills(c, partner_id) is None
 
         # Grant two skills
-        await grant_skill(c, partner_id, "render_map_snapshot", note="initial")
+        await grant_skill(c, partner_id, "compute_spectral_index", note="initial")
         await grant_skill(c, partner_id, "get_field_health")
         allowed = await fetch_allowed_skills(c, partner_id)
-        assert allowed == {"render_map_snapshot", "get_field_health"}
+        assert allowed == {"compute_spectral_index", "get_field_health"}
 
         # Idempotent re-grant: still 2 rows, note preserved when not provided
-        await grant_skill(c, partner_id, "render_map_snapshot")
+        await grant_skill(c, partner_id, "compute_spectral_index")
         allowed = await fetch_allowed_skills(c, partner_id)
-        assert allowed == {"render_map_snapshot", "get_field_health"}
+        assert allowed == {"compute_spectral_index", "get_field_health"}
 
         # Revoke one: soft-disable, row stays for audit, not returned
         await revoke_skill(c, partner_id, "get_field_health")
         allowed = await fetch_allowed_skills(c, partner_id)
-        assert allowed == {"render_map_snapshot"}
+        assert allowed == {"compute_spectral_index"}
 
         # Row count check: revoked row was disabled, not deleted
         row_count = await c.fetchval(
@@ -149,7 +149,7 @@ async def test_grant_fetch_revoke_roundtrip():
         # Re-grant the revoked skill: it flips back to enabled
         await grant_skill(c, partner_id, "get_field_health", note="re-enabled")
         allowed = await fetch_allowed_skills(c, partner_id)
-        assert allowed == {"render_map_snapshot", "get_field_health"}
+        assert allowed == {"compute_spectral_index", "get_field_health"}
     finally:
         await c.execute(
             "DELETE FROM partner_skills WHERE partner_id = $1", partner_id

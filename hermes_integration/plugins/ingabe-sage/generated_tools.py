@@ -405,12 +405,8 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
         'description': 'Read the per-band raw pixel value at a specific lon/lat location in a user-uploaded raster. Validates the point falls inside the layer\'s bounds first — if the user clicks at Rwanda coordinates against a Florida-georeferenced raster, returns a clear "outside bounds" error instead of silently returning NoData. Use this when the user clicks a specific spot on the map and asks "what\'s the value here?". For statistics over an area, use compute_zonal_stats. For a verdict on the whole field, use interpret_raster_health or analyze_rgb_field.',
         'parameters': {'type': 'object', 'properties': {'layer_id': {'description': 'The layer_id of the user-uploaded raster.', 'title': 'Layer Id', 'type': 'string'}, 'longitude': {'description': 'Longitude in WGS84 decimal degrees (e.g. 30.4245 for Rwanda).', 'title': 'Longitude', 'type': 'number'}, 'latitude': {'description': 'Latitude in WGS84 decimal degrees (e.g. -1.6970 for Rwanda).', 'title': 'Latitude', 'type': 'number'}}, 'required': ['layer_id', 'longitude', 'latitude']},
     },
-    # render_map_snapshot intentionally removed (2026-05-18, feat/hermes-gateway-api-server-pivot).
-    # The schema was orphaned — no handler exists in pydantic_tools.py, legacy_tool_shim.py,
-    # or anywhere else in src/. Advertising it to the LLM caused tool-call → 404 →
-    # "Sorry I can't" loops. When the snapshot delivery pipeline (MinIO upload +
-    # 'mundi:render_snapshot' Redis pubsub for the whatsapp/telegram senders) actually
-    # ships, re-add the schema in the SAME PR that adds the handler in legacy_tool_shim.
+    # render_map_snapshot: removed with the WhatsApp/Telegram channels it delivered to
+    # (2026-10-02). Do not re-add without a delivery path.
     'zoom_to_bounds': {
         'name': 'zoom_to_bounds',
         'description': "Zoom the map to a specific bounding box in WGS84 coordinates. This will save the user's current zoom location to history and navigate to the new bounds.",

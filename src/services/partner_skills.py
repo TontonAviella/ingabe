@@ -6,7 +6,7 @@ to those entries before being sent to the LLM. Partners with zero rows
 are unrestricted (legacy behaviour) — matches the historical default and
 avoids breaking unscoped/test conversations.
 
-Discoverability framing: a partner who only has 'render_map_snapshot',
+Discoverability framing: a partner who only has 'compute_spectral_index',
 'get_field_health', 'get_ndvi_stats' in their registry sees exactly those
 three tools described in Sage's tool list. That sharper menu is the whole
 point — it raises the chance the LLM picks the right tool and lowers the
