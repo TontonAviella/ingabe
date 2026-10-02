@@ -47,6 +47,10 @@ jobs:
       - uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           src: "."
+          # Pinned: unpinned, the action installs the latest ruff, and 0.16
+          # enabled new rules that flag 3,383 findings in existing code. Upgrade
+          # deliberately in its own PR.
+          version: "0.15.21"
 
   biome:
     runs-on: ubuntu-latest
