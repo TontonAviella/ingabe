@@ -4,6 +4,9 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+### Added
+- Per-turn tool shortlist for Sage (`SAGE_TOOL_SHORTLIST_K`, off by default): ranks the full tool catalog against each turn with keyword BM25 fused with local `nomic-embed-text` similarity and sends the top K. Offline on the routing eval it keeps an accepted tool for 98.5% of model-bound requests at K=15 (current routing: 89.7% with a median of 47 tools). Falls back to keywords, with a warning, when embeddings are unavailable.
+
 ### Changed
 - Use 4-million-pixel direct FastSAM masks for building review and remove the low-precision color-only roof supplement; label candidate confidence as a heuristic screening score rather than a model probability.
 - Enable Hermes behind the Sage name for complex local planning when model credentials are available, while keeping deterministic Rwanda boundary and FastSAM workflows first.

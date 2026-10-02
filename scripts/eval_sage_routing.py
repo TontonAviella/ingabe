@@ -24,6 +24,7 @@ import logging
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -78,7 +79,24 @@ def corpus_sha() -> str:
 # turn; chain follow-up steps always use the live "auto".
 # ---------------------------------------------------------------------------
 
-def _baseline_tool_choice(plan: Any) -> str | None:
+@dataclass(frozen=True)
+class Variant:
+    """``prepare`` may change the plan (e.g. the tool shortlist, using the live
+    apply_tool_shortlist); ``tool_choice`` sets the FIRST model call's
+    tool_choice. Chain follow-up steps keep the prepared tools and use "auto"."""
+
+    tool_choice: Callable[[Any], str | None]
+    shortlist_k: int = 0  # 0 = keep the live routing's tool list
+
+    async def prepare(self, plan: Any, text: str, history: list[dict], full_tools: list[dict]) -> Any:
+        if not self.shortlist_k:
+            return plan
+        from src.dependencies.sage_turn_request import apply_tool_shortlist
+
+        return await apply_tool_shortlist(plan, text, history, full_tools, k=self.shortlist_k)
+
+
+def _live_tool_choice(plan: Any) -> str | None:
     return plan.tool_choice
 
 
@@ -86,9 +104,12 @@ def _required_tool_choice(plan: Any) -> str | None:
     return "required" if plan.tools else None
 
 
-VARIANTS: dict[str, Callable[[Any], str | None]] = {
-    "baseline": _baseline_tool_choice,
-    "tool_choice_required": _required_tool_choice,
+VARIANTS: dict[str, Variant] = {
+    "baseline": Variant(_live_tool_choice),
+    "tool_choice_required": Variant(_required_tool_choice),
+    "shortlist_k10": Variant(_live_tool_choice, shortlist_k=10),
+    "shortlist_k15": Variant(_live_tool_choice, shortlist_k=15),
+    "shortlist_k20": Variant(_live_tool_choice, shortlist_k=20),
 }
 
 
@@ -314,7 +335,7 @@ async def run(args: argparse.Namespace) -> Path:
         out_path = Path(args.out) if args.out else RUNS_DIR / f"{stamp}-{args.variant}.json"
     done = {r["id"] for r in records}
 
-    choose = VARIANTS[args.variant]
+    variant = VARIANTS[args.variant]
     tools_payload = build_sage_tools_payload(get_pydantic_tool_calls(), {})
     prompt_provider = get_system_prompt_provider()
     map_provider = DefaultMapStateProvider()
@@ -333,11 +354,13 @@ async def run(args: argparse.Namespace) -> Path:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
                 return  # stopping; leave the case for --resume
             if fast_path_applies(fast, text, case):
-                source, model, tools_sent = "fast_path", None, 0
+                source, model, tools_sent, shortlist_method = "fast_path", None, 0, None
                 attempts = [fast_path_attempt(case, fast)] * args.repeats
             else:
                 plan = plan_sage_turn(text, history + [user_msg], tools_payload,
                                       prompt_provider.get_system_prompt)
+                plan = await variant.prepare(plan, text, history, tools_payload)
+                shortlist_method = plan.shortlist
                 client, model = get_chat_client_for_model(None, plan.model_override or default_model)
                 map_msgs = await map_provider.get_system_messages(
                     history + [user_msg], map_description(case), None, None)
@@ -346,7 +369,7 @@ async def run(args: argparse.Namespace) -> Path:
                 source, tools_sent, attempts = "model", len(plan.tools), []
                 for _ in range(args.repeats):
                     attempts.append(await run_attempt(
-                        case, plan, messages, client, model, choose(plan), args.retries))
+                        case, plan, messages, client, model, variant.tool_choice(plan), args.retries))
                     if args.pace:
                         await asyncio.sleep(args.pace)
         result = scoring.score_case(case, attempts)
@@ -360,7 +383,7 @@ async def run(args: argparse.Namespace) -> Path:
             return  # errored cases are not kept; --resume retries them
         progress["errored_streak"] = 0
         records.append({"id": case["id"], "source": source, "model": model,
-                        "tools_sent": tools_sent, "attempts": attempts,
+                        "tools_sent": tools_sent, "shortlist": shortlist_method, "attempts": attempts,
                         "outcomes": list(result.outcomes), "majority": result.majority})
         logger.info("[%3d/%d] %-10s args=%-5s chain=%-5s %-9s %-26s %s", progress["finished"],
                     len(todo), result.majority, result.full_correct, result.chain_ok, source,

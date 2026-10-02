@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from src.dependencies.pydantic_tools import get_pydantic_tool_calls
 from src.dependencies.sage_routing import FAST_PATH_TOOLS, SMALL_TALK_SYSTEM_PROMPT
@@ -20,6 +23,7 @@ def _eval_runner():
     path = Path(__file__).resolve().parents[2] / "scripts" / "eval_sage_routing.py"
     spec = importlib.util.spec_from_file_location("eval_sage_routing", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # @dataclass resolves its module via sys.modules
     spec.loader.exec_module(module)
     return module
 
@@ -62,3 +66,67 @@ def test_domain_turn_gets_full_prompt_and_auto_tool_choice() -> None:
     assert plan.system_prompt.startswith("FULL PROMPT")
     assert plan.tools and plan.tool_choice == "auto"
     assert set(_names(plan.tools)) <= set(_names(tools))
+
+
+# --- per-turn tool shortlist ------------------------------------------------
+
+def test_tool_shortlist_k_parses_strictly(monkeypatch) -> None:
+    from src.dependencies.sage_turn_request import tool_shortlist_k
+
+    monkeypatch.delenv("SAGE_TOOL_SHORTLIST_K", raising=False)
+    assert tool_shortlist_k() == 0
+    monkeypatch.setenv("SAGE_TOOL_SHORTLIST_K", "15")
+    assert tool_shortlist_k() == 15
+    for bad in ("ten", "-1"):
+        monkeypatch.setenv("SAGE_TOOL_SHORTLIST_K", bad)
+        with pytest.raises(ValueError):
+            tool_shortlist_k()
+
+
+@pytest.mark.asyncio
+async def test_apply_tool_shortlist_ranks_the_full_catalog_and_skips_small_talk() -> None:
+    from src.dependencies.sage_turn_request import apply_tool_shortlist
+
+    tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
+    text = "NDVI by sector in Huye"
+    plan = plan_sage_turn(text, [{"role": "user", "content": text}], tools, lambda: "P")
+    shortlisted = await apply_tool_shortlist(plan, text, [], tools, k=10, embed=None)
+    names = _names(shortlisted.tools)
+    assert len(names) == 10 and shortlisted.shortlist == "bm25"
+    # The category filter drops this tool for this request; the shortlist keeps it.
+    assert "get_cell_ndvi_stats" in names and "get_cell_ndvi_stats" not in _names(plan.tools)
+
+    small_talk = plan_sage_turn("hi", [{"role": "user", "content": "hi"}], tools, lambda: "P")
+    assert await apply_tool_shortlist(small_talk, "hi", [], tools, k=10, embed=None) is small_talk
+
+
+def test_bm25_shortlist_recall_on_eval_cases_stays_high() -> None:
+    """Regression floor, offline and deterministic (BM25 only, no embeddings):
+    for eval cases that reach the model, the top-15 shortlist must contain an
+    accepted first tool in >= 97% of them (99.5% when written)."""
+    from evals.sage_routing import scoring
+    from src.dependencies.sage_routing import FAST_PATH_TOOLS, build_fast_tool_call
+    from src.services.sage_tool_shortlist import shortlist_tools
+
+    eval_dir = Path(__file__).resolve().parents[2] / "evals" / "sage_routing"
+    catalog = json.loads((eval_dir / "tool_catalog.json").read_text())
+    tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
+    hits = total = 0
+    for path in sorted((eval_dir / "cases").glob("*.jsonl")):
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            case = scoring.effective_case(json.loads(line), catalog)
+            accepted = set(case["expect"].get("any_of") or [])
+            fast = build_fast_tool_call(case["text"])
+            if not accepted or (fast and fast.tool_name in FAST_PATH_TOOLS):
+                continue
+            history = case.get("history") or []
+            plan = plan_sage_turn(case["text"], history + [{"role": "user", "content": case["text"]}],
+                                  tools, lambda: "P")
+            if not plan.tools:
+                continue
+            total += 1
+            hits += bool(accepted & set(_names(shortlist_tools(case["text"], history, tools, k=15))))
+    assert total > 150
+    assert hits / total >= 0.97, f"{hits}/{total}"

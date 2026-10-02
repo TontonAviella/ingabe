@@ -1,0 +1,109 @@
+"""Sage tool shortlist: BM25 ranking, rank fusion, hybrid with fallback."""
+from __future__ import annotations
+
+import logging
+
+import pytest
+
+from src.services import sage_tool_shortlist as sl
+
+
+def _tool(name: str, description: str, *params: str) -> dict:
+    return {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "properties": {p: {"type": "string"} for p in params}},
+    }}
+
+
+TOOLS = [
+    _tool("get_forecast", "Get weather forecast for any location in Rwanda.", "district"),
+    _tool("get_weather_stats", "Read daily weather statistics: observed precipitation and temperature.", "district"),
+    _tool("native_buffer", "Buffers vector layers to a specified distance.", "INPUT", "DISTANCE"),
+    _tool("set_layer_style", "Creates a new style for a layer and applies it.", "layer_id"),
+    _tool("search_brain", "Search the knowledge brain for entities and information.", "query"),
+    _tool("get_drought_status", "Read drought status per district.", "district"),
+]
+
+
+def test_tokenize_splits_snake_case_stems_and_strips_accents() -> None:
+    assert sl.tokenize("get_cell_ndvi_stats") == ["cell", "ndvi", "stat"]
+    assert sl.tokenize("Prévision météo") == ["prevision", "meteo"]
+    assert sl.tokenize("show me the houses") == ["house"]
+
+
+@pytest.mark.parametrize(
+    ("text", "best"),
+    [
+        ("will it rain in Musanze tomorrow?", "get_forecast"),
+        ("how much rain fell last month?", "get_weather_stats"),
+        ("draw a zone around the schools layer", "native_buffer"),
+        ("colour the farms layer red", "set_layer_style"),
+        ("is Bugesera in drought?", "get_drought_status"),
+        ("Y a-t-il une sécheresse à Kirehe ?", "get_drought_status"),
+    ],
+)
+def test_rank_tools_puts_the_obvious_tool_first(text: str, best: str) -> None:
+    assert sl.rank_tools(text, [], TOOLS)[0][0] == best
+
+
+def test_recent_tool_stays_available_for_follow_ups() -> None:
+    history = [
+        {"role": "user", "content": "what do we know about Kabeza?"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "search_brain", "arguments": "{}"}}]},
+    ]
+    names = [n for n, _ in sl.rank_tools("and the other one?", history, TOOLS)]
+    assert names[0] == "search_brain"
+
+
+def test_shortlist_tools_keeps_k_in_catalog_order() -> None:
+    kept = sl.shortlist_tools("rain forecast for Huye", [], TOOLS, k=2)
+    assert [t["function"]["name"] for t in kept] == [
+        n for n in (t["function"]["name"] for t in TOOLS) if n in {"get_forecast", "get_weather_stats"}
+    ]
+
+
+def test_fuse_rankings_rewards_agreement() -> None:
+    fused = sl.fuse_rankings(["a", "b", "c"], ["b", "a", "d"])
+    assert fused[:2] in (["a", "b"], ["b", "a"])
+    assert set(fused) == {"a", "b", "c", "d"}
+
+
+def _fake_embedder(calls: list[list[str]]):
+    """Embeds by keyword: dimension 0 = 'forecast/weather', 1 = 'drought'."""
+    async def embed(texts: list[str]):
+        calls.append(list(texts))
+        vecs = []
+        for t in texts:
+            low = t.lower()
+            vecs.append([1.0 if ("forecast" in low or "weather" in low or "storm" in low) else 0.0,
+                         1.0 if ("drought" in low or "dry" in low) else 0.0, 0.1])
+        return vecs, "fake-embed"
+    return embed
+
+
+@pytest.mark.asyncio
+async def test_hybrid_uses_embeddings_and_caches_tool_vectors() -> None:
+    calls: list[list[str]] = []
+    cache = sl.ToolEmbeddingCache()
+    embed = _fake_embedder(calls)
+    # "storms" is not in any description: BM25 alone has no signal, embeddings do.
+    first = await sl.hybrid_shortlist("any storms coming?", [], TOOLS, k=1, embed=embed, cache=cache)
+    assert first.method == "hybrid"
+    assert [t["function"]["name"] for t in first.tools] == ["get_forecast"]
+    await sl.hybrid_shortlist("dry spell ahead?", [], TOOLS, k=1, embed=embed, cache=cache)
+    tool_batches = [c for c in calls if len(c) > 1]
+    assert len(tool_batches) == 1  # tool documents embedded once, then cached
+
+
+@pytest.mark.asyncio
+async def test_hybrid_falls_back_to_bm25_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
+    async def broken(texts: list[str]):
+        raise RuntimeError("ollama down")
+
+    with caplog.at_level(logging.WARNING, logger=sl.__name__):
+        result = await sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2,
+                                           embed=broken, cache=sl.ToolEmbeddingCache())
+    assert result.method == "bm25"
+    assert "get_drought_status" in [t["function"]["name"] for t in result.tools]
+    assert "embeddings unavailable" in caplog.text
