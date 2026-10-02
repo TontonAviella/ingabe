@@ -2407,22 +2407,17 @@ async def process_chat_interaction_task(
             "(map=%s user=%s conversation=%s)",
             map_id, user_id, conversation.id,
         )
-        try:
-            return await run_sage_turn_via_hermes(
-                request=request, map_id=map_id, session=session, user_id=user_id,
-                chat_args=chat_args, map_state=map_state, conversation=conversation,
-                system_prompt_provider=system_prompt_provider,
-                connection_manager=connection_manager,
-                pydantic_tool_calls=pydantic_tool_calls,
-            )
-        except Exception:
-            logger.exception(
-                "Scoped Hermes turn failed; falling back to the legacy Sage "
-                "planner (map=%s user=%s conversation=%s)",
-                map_id,
-                user_id,
-                conversation.id,
-            )
+        # No fallback to the legacy planner: by the time Hermes fails it may
+        # have streamed text or run tools with side effects, and a second
+        # planner would answer (and act) twice. The runtime already shows the
+        # error toast and ends the turn.
+        return await run_sage_turn_via_hermes(
+            request=request, map_id=map_id, session=session, user_id=user_id,
+            chat_args=chat_args, map_state=map_state, conversation=conversation,
+            system_prompt_provider=system_prompt_provider,
+            connection_manager=connection_manager,
+            pydantic_tool_calls=pydantic_tool_calls,
+        )
 
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)

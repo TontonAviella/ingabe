@@ -163,21 +163,17 @@ def hermes_result_failure_reason(
 def hermes_is_enabled() -> bool:
     """Whether `process_chat_interaction_task` routes complex turns to Hermes.
 
-    MUNDI_USE_HERMES: 1/true/yes forces it on; 'auto' (the default) turns it
-    on when OPENAI_API_KEY, OPENROUTER_API_KEY or an `ollama:` OPENAI_MODEL is
-    present; any other value keeps the hand-rolled chat loop.
+    MUNDI_USE_HERMES: 1/true/yes forces it on; 'auto' turns it on only when
+    OPENROUTER_API_KEY is set, because install-hermes-plugin.sh configures
+    Hermes with provider=openrouter and any other key would be sent there.
+    Unset or any other value (the default) keeps the hand-rolled chat loop.
     """
-    val = os.environ.get("MUNDI_USE_HERMES", "auto").strip().lower()
+    val = os.environ.get("MUNDI_USE_HERMES", "0").strip().lower()
     if val in {"1", "true", "yes"}:
         return True
     if val != "auto":
         return False
-    model = os.environ.get("OPENAI_MODEL", "").strip().lower()
-    return bool(
-        os.environ.get("OPENAI_API_KEY", "").strip()
-        or os.environ.get("OPENROUTER_API_KEY", "").strip()
-        or model.startswith("ollama:")
-    )
+    return bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
 
 
 def select_hermes_toolsets(
@@ -659,6 +655,8 @@ async def run_sage_turn_via_hermes(
         )
 
     # --- 7. Cancellation watchdog -----------------------------------------
+    user_cancelled = [False]
+
     async def _cancel_watchdog():
         from src.dependencies.redis_client import get_redis_client
         cancel_key = f"messages:{map_id}:cancelled"
@@ -668,6 +666,7 @@ async def run_sage_turn_via_hermes(
                 redis = get_redis_client()
                 if redis.get(cancel_key):
                     redis.delete(cancel_key)
+                    user_cancelled[0] = True
                     agent = agent_ref[0]
                     if agent is not None:
                         try:
@@ -725,6 +724,16 @@ async def run_sage_turn_via_hermes(
         sentinels_sent = True
         await asyncio.wait_for(drainer_task, timeout=2.0)
         await asyncio.wait_for(persist_task, timeout=5.0)  # DB writes are slower
+
+        if user_cancelled[0]:
+            # The user pressed stop: Hermes returns an "interrupted" result,
+            # which is the requested outcome, not a failure to toast.
+            logger.info("Hermes turn ended by user cancellation (conv=%s)", conversation.id)
+            try:
+                await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+            except Exception:
+                logger.debug("kue_stream_token done=True failed", exc_info=True)
+            return
 
         # Persist the assistant text + WS done signal
         assistant_text = "".join(accumulated).strip()

@@ -31,7 +31,7 @@ set -eo pipefail
 PLUGIN_NAME="${PLUGIN_NAME:-ingabe-sage}"
 PLUGIN_SRC="${PLUGIN_SRC:-/app/hermes_integration/plugins/${PLUGIN_NAME}}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-HERMES_FLAG="${MUNDI_USE_HERMES:-auto}"
+HERMES_FLAG="${MUNDI_USE_HERMES:-0}"
 
 if [ ! -d "$PLUGIN_SRC" ]; then
   # Only an explicit opt-in is fatal. 'auto' means "use Hermes if it is

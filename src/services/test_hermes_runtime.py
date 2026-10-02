@@ -28,17 +28,24 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 # ---------------------------------------------------------------------------
 
 
-def test_hermes_is_enabled_auto_without_model_credentials_is_off(monkeypatch):
+def test_hermes_is_enabled_defaults_off_even_with_credentials(monkeypatch):
     monkeypatch.delenv("MUNDI_USE_HERMES", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     assert hermes_is_enabled() is False
 
 
-def test_hermes_is_enabled_auto_with_model_credentials(monkeypatch):
+def test_hermes_is_enabled_auto_without_openrouter_key_is_off(monkeypatch):
     monkeypatch.setenv("MUNDI_USE_HERMES", "auto")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "ollama:gemma4")
+    assert hermes_is_enabled() is False
+
+
+def test_hermes_is_enabled_auto_with_openrouter_key(monkeypatch):
+    monkeypatch.setenv("MUNDI_USE_HERMES", "auto")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     assert hermes_is_enabled() is True
 
 
