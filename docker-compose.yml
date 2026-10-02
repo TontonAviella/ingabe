@@ -80,10 +80,10 @@ services:
       - YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR:-/cache/ultralytics}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
-      # One worker avoids multiplying the in-process schedulers and ML memory
-      # footprint on the supported local Mac runtime. Override deliberately on
-      # larger machines; individual background jobs still use advisory locks.
-      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
+      # Default stays 4 (main's value) so a deploy whose env does not set it
+      # keeps its capacity. The local Mac runtime sets UVICORN_WORKERS=1 in
+      # .env (see .env.example) to avoid multiplying schedulers and ML memory.
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
       - MUNDI_BACKGROUND_WORKERS_ENABLED=${MUNDI_BACKGROUND_WORKERS_ENABLED:-1}
       - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
       - DB_READ_POOL_MAX_SIZE=${DB_READ_POOL_MAX_SIZE:-10}

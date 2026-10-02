@@ -26,8 +26,9 @@ alembic upgrade head
 # private Ingabe cache volume when the operator has not supplied one. Reusing
 # it across worker processes and restarts keeps the proxy and callback verifier
 # in lockstep without committing a credential to the repository.
-case "${MUNDI_USE_HERMES:-0}" in
-  1|true|TRUE|yes|YES|auto)
+# Same values as hermes_runtime.hermes_is_enabled (case-insensitive).
+case "$(printf '%s' "${MUNDI_USE_HERMES:-0}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|auto)
     if [ -z "${HERMES_GATEWAY_SECRET:-}" ]; then
       HERMES_LOCAL_SECRET_FILE="${HERMES_LOCAL_SECRET_FILE:-/tmp/ingabe_cache/hermes_gateway_secret}"
       if [ ! -s "$HERMES_LOCAL_SECRET_FILE" ]; then

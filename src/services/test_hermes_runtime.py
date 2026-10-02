@@ -131,3 +131,19 @@ def test_hermes_result_accepts_completed_text():
         {"completed": True, "turn_exit_reason": "text_response"},
         "The map layer is ready.",
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("result", "text", "expected"),
+    [
+        ({"completed": True}, "API call failed after 3 retries: HTTP 402", "unusable_response"),
+        ({"completed": True}, "upstream HTTP 503", "unusable_response"),
+        ({"completed": True}, "tiles load in HTTP 5ms", None),
+        ({"completed": True}, "empty", None),
+        ({"completed": True}, "(empty)", "unusable_response"),
+        (None, "(empty)", "unusable_response"),
+        ({"completed": False}, "Partial", "unusable_response"),
+    ],
+)
+def test_hermes_result_failure_reason_table(result, text, expected):
+    assert hermes_result_failure_reason(result, text) == expected

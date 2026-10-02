@@ -99,6 +99,9 @@ _HERMES_ERROR_MARKERS = (
 # 5xx range is matched as a regex to avoid false positives like
 # "HTTP 5ms" or "HTTP 5xx series" appearing in a normal Sage reply.
 _HERMES_5XX_RE = re.compile(r"HTTP 5\d\d")
+# Hermes' placeholder when the model produced no content. A real one-word
+# reply such as "empty" is a valid answer, so it is not listed here.
+_HERMES_EMPTY_REPLIES = frozenset({"", "(empty)"})
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +116,7 @@ def hermes_result_failure_reason(
     looks_like_error = (
         any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
         or bool(_HERMES_5XX_RE.search(assistant_text))
-        or normalized in {"", "(empty)", "empty"}
+        or normalized in _HERMES_EMPTY_REPLIES
     )
     incomplete = isinstance(result, dict) and result.get("completed") is False
     if not looks_like_error and not incomplete:
