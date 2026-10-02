@@ -144,6 +144,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-02** The forecast outlook told users "the payout threshold is 300 mm"
+  while evaluation applied the 100 mm maize trigger from `insurance_triggers`. Rule
+  (H2): a threshold shown to users reads from the source evaluation uses. Gate: test.
 - **2026-10-02** `Dockerfile.postgres` builds on Debian 11 (EOL); apt.postgresql.org
   archived `bullseye-pgdg`, so CI failed on unchanged code. Rule: an image on an
   EOL distro points apt at the archive explicitly; plan the base upgrade. Gate: review only.

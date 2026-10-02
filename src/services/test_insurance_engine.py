@@ -1778,3 +1778,46 @@ class TestBrainServicePutPageParams:
         formatted = _PARTNER_FILTER.format(a="p.")
         assert "p.access_scope" in formatted
         assert "p.partner_id" in formatted
+
+
+# ---------------------------------------------------------------------------
+# Forecast outlook threshold = the evaluated full-season rainfall trigger
+# ---------------------------------------------------------------------------
+
+class TestForecastOutlookThreshold:
+    def test_uses_full_season_trigger_not_phase_trigger(self):
+        from src.services.insurance_engine import _season_rainfall_threshold
+        defs = [
+            {"phase": "flowering", "signal": "rainfall_cumulative", "direction": "below", "threshold": 40.0},
+            {"phase": "full_season", "signal": "rainfall_cumulative", "direction": "below", "threshold": 80.0},
+        ]
+        assert _season_rainfall_threshold(defs) == (80.0, "insurance_triggers")
+
+    def test_falls_back_to_declared_default_trigger(self):
+        from src.services.insurance_engine import _season_rainfall_threshold
+        default = next(t for t in _default_triggers("full_season") if t["signal"] == "rainfall_cumulative")
+        assert _season_rainfall_threshold([]) == (default["threshold"], "default_trigger")
+
+    def test_outlook_reports_the_threshold_it_was_given(self):
+        from src.services.insurance_engine import _compute_forecast_outlook
+        planting = date(2026, 9, 15)
+        today = date(2026, 10, 15)
+        forecast = {"daily": [
+            {"date": f"2026-10-{d:02d}", "precipitation_mm": {"mean": 2.0, "p10": 1.0, "p90": 3.0}}
+            for d in range(16, 26)
+        ]}
+        outlook = _compute_forecast_outlook(
+            forecast, 60.0, planting, 120, today, "A",
+            rainfall_threshold=100.0, rainfall_threshold_source="insurance_triggers",
+        )
+        assert outlook["rainfall_trigger_threshold_mm"] == 100.0
+        assert outlook["rainfall_trigger_threshold_source"] == "insurance_triggers"
+        # 60 mm so far + ~180 mm projected mean clears a 100 mm trigger; the old
+        # hard-coded 300 mm Season A threshold reported this as a likely payout.
+        assert outlook["rainfall_trigger_risk"] == "LOW"
+
+    def test_load_triggers_selects_phase(self):
+        conn = AsyncMock()
+        conn.fetch.return_value = []
+        _run(_load_triggers(conn, "maize", "A", "flowering", None))
+        assert "phase, signal, direction" in conn.fetch.call_args[0][0]
