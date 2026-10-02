@@ -615,3 +615,31 @@ def test_neutral_request_threshold() -> None:
     long = " ".join(f"word{i}" for i in range(n))
     assert profiles.select_profiles(short) == {profiles.CORE_TOOLSET}
     assert profiles.select_profiles(long) == {profiles.CORE_TOOLSET, profiles.MAP_VIEW_TOOLSET}
+
+
+def test_catalog_descriptions_win_over_runtime_docstrings() -> None:
+    """Hand-tuned catalog descriptions must reach the model unchanged."""
+    from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
+
+    ctx = _FakeCtx()
+    _load_plugin_module().register(ctx)
+    by_name = {t["name"]: t["schema"] for t in ctx.tools}
+    changed = sorted(
+        name
+        for name, schema in GENERATED_SCHEMAS.items()
+        if name in by_name
+        and name not in {"search_location", "ingabe_whoami"}  # native schemas
+        and by_name[name] is not schema
+    )
+    assert changed == []
+
+
+def test_standalone_gateway_falls_back_to_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    plugin = _load_plugin_module()
+    real_find_spec = plugin.importlib.util.find_spec
+    monkeypatch.setattr(
+        plugin.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: None if name == "src" else real_find_spec(name, *a, **k),
+    )
+    assert plugin._runtime_pydantic_schemas() == {}

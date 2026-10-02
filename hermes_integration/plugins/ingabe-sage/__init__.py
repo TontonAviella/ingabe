@@ -13,6 +13,9 @@ Two tiers of tools:
 """
 from __future__ import annotations
 
+import importlib.util
+import logging
+
 from .generated_tools import GENERATED_SCHEMAS
 from .hidden_tools import HIDDEN_SCHEMAS
 from .profiles import toolset_for_tool
@@ -23,6 +26,8 @@ from .tools import (
     _handle_search_location,
     _handle_whoami,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def register(ctx) -> None:
@@ -69,12 +74,15 @@ def register(ctx) -> None:
     # in tools.json or Pydantic, generated tools are). The test
     # test_hidden_tools_disjoint_from_generated guards against accidental
     # overlap. If a name ever appears in both, GENERATED_SCHEMAS wins (it's
-    # second in the dict merge below).
+    # last in the dict merge below). Runtime registry schemas only ADD tools
+    # the checked-in catalog lacks: the catalog carries hand-tuned
+    # WHEN TO USE / WHEN NOT descriptions that a handler docstring must not
+    # replace.
     NATIVE = {"search_location", "ingabe_whoami"}
     merged_schemas: dict = {
+        **_runtime_pydantic_schemas(),
         **HIDDEN_SCHEMAS,
         **GENERATED_SCHEMAS,
-        **_runtime_pydantic_schemas(),
     }
     for name, schema in merged_schemas.items():
         if name in NATIVE:
@@ -97,23 +105,23 @@ def _runtime_pydantic_schemas() -> dict:
     Hermes until a manual code-generation pass happens.
     """
 
-    try:
-        from src.dependencies.pydantic_tools import get_pydantic_tool_calls
-    except ImportError:
+    if importlib.util.find_spec("src") is None:
+        logger.warning(
+            "ingabe-sage: app package not importable (standalone gateway); "
+            "using the checked-in tool catalog only"
+        )
         return {}
+    # In-process: an ImportError here is a real bug in the app's tool modules,
+    # so let it propagate instead of silently dropping every newer tool.
+    from src.dependencies.pydantic_tools import get_pydantic_tool_calls  # lazy: app package exists only in-process
 
     schemas: dict = {}
     for name, (handler, argument_model, _meta_model) in get_pydantic_tool_calls().items():
         parameters = argument_model.model_json_schema()
         parameters.pop("title", None)
-        fallback_description = GENERATED_SCHEMAS.get(name, {}).get("description", "")
         schemas[name] = {
             "name": name,
-            "description": (
-                (handler.__doc__ or "").strip()
-                or fallback_description
-                or f"Run the Ingabe {name} tool."
-            ),
+            "description": (handler.__doc__ or "").strip() or f"Run the Ingabe {name} tool.",
             "parameters": parameters,
         }
     return schemas
