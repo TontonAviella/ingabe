@@ -133,8 +133,8 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-_RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
-_INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
+INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
     {
         "rwanda_province_boundaries",
         "rwanda_district_boundaries",
@@ -189,7 +189,7 @@ def _validate_internal_rwanda_query(query: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Internal Rwanda queries must reference an allowed Rwanda table",
         )
-    disallowed = sorted(referenced - _INTERNAL_RWANDA_ALLOWED_TABLES)
+    disallowed = sorted(referenced - INTERNAL_RWANDA_ALLOWED_TABLES)
     if disallowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -207,7 +207,7 @@ def _is_internal_rwanda_connection(
 ) -> bool:
     return (
         connection_id == _rwanda_internal_conn_id(project_id)
-        and connection_name == _RWANDA_INTERNAL_CONNECTION_NAME
+        and connection_name == RWANDA_INTERNAL_CONNECTION_NAME
     )
 
 
@@ -288,7 +288,7 @@ async def _ensure_rwanda_postgis_connection(
                 project_id,
                 user_id,
                 uri,
-                _RWANDA_INTERNAL_CONNECTION_NAME,
+                RWANDA_INTERNAL_CONNECTION_NAME,
             )
             logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
                          connection_id, project_id)
