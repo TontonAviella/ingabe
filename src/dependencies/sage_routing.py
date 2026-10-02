@@ -1123,6 +1123,31 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
     return hits / len(name_tokens)
 
 
+
+def select_fast_raster_layer(question: str, rows: list) -> dict | None:
+    """The raster a deterministic fast path should use, or None to fall back.
+
+    ``rows`` are the raster layers on the map (mappings with a ``name``).
+    Used by message_routes' fast-path handlers and the routing eval.
+    """
+    if not rows:
+        return None
+
+    scored: list[tuple[float, object]] = []
+    for row in rows:
+        scored.append((raster_layer_match_score(question, str(row["name"] or "")), row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score, top_row = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    if top_score >= 0.75 or (top_score >= 0.5 and top_score > second_score):
+        return dict(top_row)
+
+    # "this raster/orthophoto" is safe only when the map has exactly one raster.
+    if len(rows) == 1:
+        return dict(rows[0])
+    return None
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     decision = choose_geospatial_evidence_path(text)
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":

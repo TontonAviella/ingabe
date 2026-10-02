@@ -102,7 +102,7 @@ from src.dependencies.sage_routing import (
     build_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
-    raster_layer_match_score,
+    select_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
     build_sage_tools_payload,
@@ -1732,26 +1732,6 @@ def _raster_context_fast_reply(
     return reply
 
 
-def _select_fast_raster_layer(question: str, rows: list) -> dict | None:
-    if not rows:
-        return None
-
-    scored: list[tuple[float, object]] = []
-    for row in rows:
-        scored.append((raster_layer_match_score(question, str(row["name"] or "")), row))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    top_score, top_row = scored[0]
-    second_score = scored[1][0] if len(scored) > 1 else 0.0
-
-    if top_score >= 0.75 or (top_score >= 0.5 and top_score > second_score):
-        return dict(top_row)
-
-    # "this raster/orthophoto" is safe only when the map has exactly one raster.
-    if len(rows) == 1:
-        return dict(rows[0])
-    return None
-
-
 async def _maybe_run_fast_raster_context_turn(
     *,
     map_id: str,
@@ -1801,7 +1781,7 @@ async def _maybe_run_fast_raster_context_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2064,7 +2044,7 @@ async def _maybe_run_fast_raster_object_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2288,7 +2268,7 @@ async def _maybe_run_fast_raster_fact_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
