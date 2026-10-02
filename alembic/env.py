@@ -16,7 +16,6 @@ config = context.config
 #
 # disable_existing_loggers=False is critical: fileConfig defaults to True,
 # which would disable every logger created before run_migrations() fires —
-# notably mundi.cron.sage_alerts, mundi.senders.telegram, mundi.senders.whatsapp
 # whose caplog-asserting tests then see empty caplog.records under combined
 # pytest invocations (any test that calls run_migrations() before them).
 if config.config_file_name is not None:

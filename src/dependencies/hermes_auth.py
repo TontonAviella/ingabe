@@ -1,11 +1,10 @@
 """HMAC verification for /internal/* endpoints called by the Hermes gateway.
 
-Two endpoints share this verification:
+Used by:
 
-  - POST /internal/inbox      — inbound channel messages (WhatsApp/Telegram/etc)
   - POST /internal/tool-call  — Hermes calling back to dispatch a Sage tool
 
-Both endpoints accept a `X-Hermes-Signature` header containing the lowercase
+The endpoint accepts a `X-Hermes-Signature` header containing the lowercase
 hex digest of `HMAC-SHA256(HERMES_GATEWAY_SECRET, raw_request_body)`.
 
 ## Canonical payload
@@ -35,10 +34,8 @@ clock-skew bugs nobody wants to debug.
 
 ## Why a separate module
 
-Both endpoints need this. Putting it here avoids a circular import that
-would otherwise happen if `tool_call_routes.py` imported `inbox_routes.py`
-just to share the helper. Tests import this module directly, so the
-verification logic is unit-tested independent of the route handlers.
+Kept in its own module so tests import it directly: the verification logic
+is unit-tested independent of the route handler.
 """
 from __future__ import annotations
 
