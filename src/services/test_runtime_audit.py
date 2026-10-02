@@ -24,6 +24,9 @@ def test_runtime_audit_distinguishes_installed_enabled_and_ready(monkeypatch) ->
     )
     monkeypatch.setattr(runtime_audit.Path, "is_dir", lambda _self: True)
     monkeypatch.delenv("MUNDI_USE_HERMES", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("MUNDI_TOOL_CALL_ENABLED", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SECRET", raising=False)
 

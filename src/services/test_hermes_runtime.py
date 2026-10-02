@@ -16,6 +16,7 @@ from src.services.hermes_runtime import (
     CANCEL_POLL_INTERVAL_SECONDS,
     HERMES_INGABE_TOOLSETS,
     hermes_is_enabled,
+    hermes_result_failure_reason,
     select_hermes_toolsets,
 )
 
@@ -27,10 +28,18 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 # ---------------------------------------------------------------------------
 
 
-def test_hermes_is_enabled_default_off(monkeypatch):
-    """Unset env defaults to OFF — Sage stays on the hand-rolled loop."""
+def test_hermes_is_enabled_auto_without_model_credentials_is_off(monkeypatch):
     monkeypatch.delenv("MUNDI_USE_HERMES", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
     assert hermes_is_enabled() is False
+
+
+def test_hermes_is_enabled_auto_with_model_credentials(monkeypatch):
+    monkeypatch.setenv("MUNDI_USE_HERMES", "auto")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    assert hermes_is_enabled() is True
 
 
 def test_hermes_is_enabled_truthy_values(monkeypatch):
@@ -64,11 +73,54 @@ def test_hermes_toolsets_exclude_general_host_capabilities():
         "browser",
         "web",
         "skills",
-        "ingabe-sage-proxied",
-        "ingabe-sage",
+        *HERMES_INGABE_TOOLSETS,
     ]
 
-    selected = select_hermes_toolsets(configured)
+    selected = select_hermes_toolsets(
+        configured,
+        "analyze this drone orthophoto and add the result to the map",
+    )
 
-    assert selected == list(HERMES_INGABE_TOOLSETS)
+    assert selected == [
+        "ingabe-sage-core",
+        "ingabe-sage-map-view",
+        "ingabe-sage-raster-vision",
+    ]
     assert not {"terminal", "file", "browser", "web", "skills"} & set(selected)
+
+
+def test_hermes_toolsets_keep_small_talk_on_core_only():
+    selected = select_hermes_toolsets(list(HERMES_INGABE_TOOLSETS), "hello Sage")
+
+    assert selected == ["ingabe-sage-core"]
+
+
+def test_hermes_toolsets_route_spatial_engine_probe_to_raster():
+    selected = select_hermes_toolsets(
+        list(HERMES_INGABE_TOOLSETS),
+        "Show the spatial engine capabilities; do not answer from memory.",
+    )
+
+    assert selected == [
+        "ingabe-sage-core",
+        "ingabe-sage-map-view",
+        "ingabe-sage-raster-engine",
+    ]
+
+
+def test_hermes_result_rejects_empty_and_incomplete_turns():
+    assert hermes_result_failure_reason(
+        {"completed": False, "turn_exit_reason": "empty_response_exhausted"},
+        "(empty)",
+    ) == "empty_response_exhausted"
+    assert hermes_result_failure_reason(
+        {"completed": False, "turn_exit_reason": "iteration_limit"},
+        "Partial answer",
+    ) == "iteration_limit"
+
+
+def test_hermes_result_accepts_completed_text():
+    assert hermes_result_failure_reason(
+        {"completed": True, "turn_exit_reason": "text_response"},
+        "The map layer is ready.",
+    ) is None

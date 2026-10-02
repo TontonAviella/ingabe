@@ -46,8 +46,9 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     max_sample_pixels: int = Field(
         ...,
         description=(
-            "Maximum pixels sampled from the raster before segmentation. Use 300000-1200000 live; "
-            "higher detects smaller objects but is slower."
+            "Maximum pixels sampled from the raster before segmentation. Use 4000000 "
+            "for building masks so small roofs remain visible; lower values are faster "
+            "but reduce recall."
         ),
     )
     min_area_m2: float = Field(
@@ -60,7 +61,10 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
     confidence_threshold: float = Field(
         ...,
-        description="Minimum candidate confidence from 0 to 1. Use 0.35 for broad recall, 0.55+ for stricter screening.",
+        description=(
+            "Minimum heuristic screening score from 0 to 1. This is based on "
+            "shape and raster evidence, not a learned FastSAM class probability."
+        ),
     )
     engine_preference: str = Field(
         ...,

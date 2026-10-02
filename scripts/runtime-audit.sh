@@ -9,4 +9,4 @@ docker inspect mundi-app >/dev/null 2>&1 || {
   exit 1
 }
 
-exec docker exec mundi-app python -m src.services.runtime_audit "$@"
+exec docker exec mundi-app /app/.venv/bin/python -m src.services.runtime_audit "$@"

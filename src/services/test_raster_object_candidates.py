@@ -34,6 +34,18 @@ def test_building_threshold_applies_to_reported_confidence(monkeypatch) -> None:
     assert features == []
 
 
+def test_target_shape_allows_four_megapixel_building_analysis(monkeypatch) -> None:
+    monkeypatch.delenv("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", raising=False)
+
+    height, width = raster_object_candidates._target_shape(
+        48_008,
+        27_272,
+        4_000_000,
+    )
+
+    assert 3_990_000 <= height * width <= 4_000_000
+
+
 def test_analyze_raster_object_candidates_extracts_compact_buildings(tmp_path) -> None:
     path = tmp_path / "synthetic_ortho.tif"
     image = np.zeros((3, 120, 120), dtype=np.uint8)
@@ -450,9 +462,9 @@ def test_analyze_raster_object_candidates_adds_small_roof_recall_after_fastsam(
         feature["properties"].get("fastsam_geometry_source")
         for feature in result["geojson"]["features"]
     }
-    assert "fastsam_object_mask" in sources
-    assert "roof_evidence_component_after_fastsam" in sources
-    assert result["summary"]["class_counts"]["building"] >= 2
+    assert sources == {"fastsam_object_mask"}
+    assert result["summary"]["class_counts"]["building"] == 1
+    assert result["summary"]["building_mask_policy"] == "direct_fastsam_objects_only"
 
 
 def test_analyze_raster_object_candidates_requires_fastsam_when_requested(
@@ -521,7 +533,6 @@ def test_fastsam_tiles_keep_masks_local_and_accumulate_one_coverage_mask(
     building_mask = np.ones((height, width), dtype=bool)
     source_transform = from_origin(100, 1_000, 2, 3)
     extractor_calls: list[dict[str, object]] = []
-    supplemental_calls: list[np.ndarray] = []
 
     class _FakeMasks:
         def __init__(self, data: np.ndarray) -> None:
@@ -569,21 +580,12 @@ def test_fastsam_tiles_keep_masks_local_and_accumulate_one_coverage_mask(
             }
         ]
 
-    def _fake_supplemental(*, accepted_coverage_mask, **_kwargs):
-        supplemental_calls.append(accepted_coverage_mask)
-        return []
-
     monkeypatch.setenv("MUNDI_FASTSAM_TILE_SIZE", str(tile_size))
     monkeypatch.setenv("MUNDI_FASTSAM_TILE_STRIDE", str(stride))
     monkeypatch.setattr(
         raster_object_candidates,
         "_features_from_fastsam_object_mask",
         _fake_object_features,
-    )
-    monkeypatch.setattr(
-        raster_object_candidates,
-        "_fastsam_supplemental_roof_evidence_features",
-        _fake_supplemental,
     )
 
     features, mask_count = raster_object_candidates._features_from_fastsam_tiles(
@@ -616,12 +618,6 @@ def test_fastsam_tiles_keep_masks_local_and_accumulate_one_coverage_mask(
     }
     assert {call["target_pixels"] for call in extractor_calls} == {height * width}
     assert {call["image_pixels"] for call in extractor_calls} == {height * width}
-    assert len(supplemental_calls) == 1
-    coverage_mask = supplemental_calls[0]
-    assert isinstance(coverage_mask, np.ndarray)
-    assert coverage_mask.shape == (height, width)
-    assert coverage_mask.dtype == np.bool_
-    assert np.all(coverage_mask)
 
 
 def _candidate_feature(

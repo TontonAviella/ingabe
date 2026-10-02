@@ -55,7 +55,15 @@ def _load_plugin_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules["ingabe_sage"] = module
     # Load submodules too so __init__.py's `from .tools import ...` works
-    for sub in ("context", "tools", "generated_tools", "hidden_tools", "async_bridge", "proxy"):
+    for sub in (
+        "context",
+        "tools",
+        "generated_tools",
+        "hidden_tools",
+        "profiles",
+        "async_bridge",
+        "proxy",
+    ):
         sub_spec = importlib.util.spec_from_file_location(
             f"ingabe_sage.{sub}", _PLUGIN_ROOT / f"{sub}.py"
         )
@@ -130,7 +138,9 @@ def test_manifest_provides_tools_matches_register() -> None:
 
     ctx = _FakeCtx()
     register(ctx)
-    tier1_actual = {t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage"}
+    tier1_actual = {
+        t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage-core"
+    }
 
     assert declared == tier1_actual, (
         f"manifest provides_tools {declared} doesn't match Tier 1 registrations "
@@ -152,37 +162,58 @@ def test_register_is_callable_with_fake_ctx() -> None:
     assert len(ctx.tools) > 0, "register() registered zero tools"
 
 
-def test_register_emits_both_toolsets() -> None:
-    """Plugin registers two toolsets:
-        ingabe-sage          — Tier 1 native, runs in-process in the gateway
-        ingabe-sage-proxied  — Tier 2 HMAC-proxy to mundi-app /internal/tool-call
-    """
+def test_register_emits_task_scoped_toolsets() -> None:
     register = _load_plugin_module().register
     ctx = _FakeCtx()
     register(ctx)
     toolsets = {t["toolset"] for t in ctx.tools}
-    assert "ingabe-sage" in toolsets
-    assert "ingabe-sage-proxied" in toolsets
+    assert {
+        "ingabe-sage-core",
+        "ingabe-sage-map-view",
+        "ingabe-sage-map-data",
+        "ingabe-sage-map-process",
+        "ingabe-sage-raster-engine",
+        "ingabe-sage-raster-vision",
+        "ingabe-sage-raster-analysis",
+        "ingabe-sage-raster-sensor",
+        "ingabe-sage-agri-field",
+        "ingabe-sage-agri-weather",
+        "ingabe-sage-agri-risk",
+        "ingabe-sage-brain",
+    } <= toolsets
+
+
+def test_task_scoped_profiles_remain_prompt_bounded() -> None:
+    register = _load_plugin_module().register
+    ctx = _FakeCtx()
+    register(ctx)
+    counts: dict[str, int] = {}
+    for tool in ctx.tools:
+        counts[tool["toolset"]] = counts.get(tool["toolset"], 0) + 1
+
+    assert max(counts.values()) <= 20, counts
 
 
 def test_register_tier1_has_at_least_search_and_whoami() -> None:
     register = _load_plugin_module().register
     ctx = _FakeCtx()
     register(ctx)
-    tier1_names = {t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage"}
+    tier1_names = {
+        t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage-core"
+    }
     assert "search_location" in tier1_names
     assert "ingabe_whoami" in tier1_names
 
 
-def test_register_tier2_has_expected_tool_count() -> None:
-    """Tier 2 (proxied) should have many tools (60+ from tools.json plus
-    Pydantic-derived). Loose assertion to allow codegen to evolve."""
+def test_register_profiles_cover_expected_tool_count() -> None:
     register = _load_plugin_module().register
     ctx = _FakeCtx()
     register(ctx)
-    tier2_count = sum(1 for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied")
-    assert tier2_count >= 50, (
-        f"Tier 2 should have many tools; got {tier2_count}. "
+    proxied_count = sum(
+        1 for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
+    )
+    assert proxied_count >= 50, (
+        f"Profiled proxy surface should have many tools; got {proxied_count}. "
         "Did generated_tools.py get regenerated? Or import broken?"
     )
 
@@ -259,7 +290,7 @@ def test_proxy_handler_reports_config_error_when_secret_unset(
     ctx = _FakeCtx()
     register(ctx)
     handler = next(
-        t for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+        t for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     )["handler"]
     result = handler({"some": "args"}, task_id="cfg-test")
     assert isinstance(result, str), f"proxy handler returned {type(result)} not str"
@@ -283,7 +314,7 @@ def test_proxy_handler_reports_context_missing_when_no_partner(
     ctx = _FakeCtx()
     register(ctx)
     handler = next(
-        t for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+        t for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     )["handler"]
     result = handler({"layer_id": "L1"}, task_id="ctx-test")
     parsed = json.loads(result)
@@ -411,38 +442,36 @@ def test_hidden_tools_disjoint_from_generated() -> None:
     )
 
 
-def test_hidden_tools_register_to_proxied_toolset_after_register() -> None:
-    """After register(), each hidden tool must appear in toolset
-    'ingabe-sage-proxied' with a callable handler. This is what makes them
-    visible to the LLM when Hermes advertises tools at chat-completion time."""
+def test_hidden_tools_register_to_scoped_profiles_after_register() -> None:
+    """Each hidden tool remains available in one non-core profile."""
     register = _load_plugin_module().register
     ctx = _FakeCtx()
     register(ctx)
     proxied_names = {
-        t["name"] for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+        t["name"] for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     }
     missing = _EXPECTED_HIDDEN_TOOLS - proxied_names
     assert missing == set(), (
-        f"After register(), these hidden tools are MISSING from "
-        f"toolset='ingabe-sage-proxied': {missing}. "
+        f"After register(), these hidden tools are missing from the "
+        f"task-scoped profiles: {missing}. "
         f"The Hermes path won't advertise them to the LLM, which means "
         f"Sage can't render layers via Hermes."
     )
 
 
-def test_hidden_tools_total_count_is_82() -> None:
-    """The total proxied tool surface should be exactly:
-        len(GENERATED_SCHEMAS) - 0 overlap + len(HIDDEN_SCHEMAS) = 75 + 7 = 82
-    Native handlers (search_location, ingabe_whoami) live in toolset
-    'ingabe-sage' and are NOT counted here. If this number changes, somebody
-    added or removed a hidden tool and forgot to update this assertion."""
+def test_scoped_proxy_surface_contains_static_catalog() -> None:
+    """The scoped proxy profiles contain at least the checked-in catalog.
+
+    The live Pydantic registry can add newer schemas, so an exact count would
+    incorrectly fail whenever the application gains a tool.
+    """
     register = _load_plugin_module().register
     from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
     from ingabe_sage.hidden_tools import HIDDEN_SCHEMAS  # type: ignore
     ctx = _FakeCtx()
     register(ctx)
     proxied_count = sum(
-        1 for t in ctx.tools if t["toolset"] == "ingabe-sage-proxied"
+        1 for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     )
     # Generated may include native names; subtract them since those land in
     # the 'ingabe-sage' toolset, not 'ingabe-sage-proxied'.
@@ -450,8 +479,8 @@ def test_hidden_tools_total_count_is_82() -> None:
         1 for n in ("search_location", "ingabe_whoami") if n in GENERATED_SCHEMAS
     )
     expected = (len(GENERATED_SCHEMAS) - natives_in_generated) + len(HIDDEN_SCHEMAS)
-    assert proxied_count == expected, (
-        f"Proxied tool count is {proxied_count}, expected {expected} "
+    assert proxied_count >= expected, (
+        f"Scoped proxy tool count is {proxied_count}, expected at least {expected} "
         f"(generated={len(GENERATED_SCHEMAS)} - native_overlap="
         f"{natives_in_generated} + hidden={len(HIDDEN_SCHEMAS)})"
     )

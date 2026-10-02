@@ -203,6 +203,7 @@ def analyze_raster_object_candidates(
         "sample_shape": f"{out_w}x{out_h}",
         "sampled_mask_pixels": sampled_masks,
         "confidence_threshold": payload.confidence_threshold,
+        "confidence_type": "heuristic_screening_score_not_model_probability",
         "min_area_m2": payload.min_area_m2,
         "max_area_m2": payload.max_area_m2,
         "elapsed_ms": elapsed_ms,
@@ -223,6 +224,7 @@ def analyze_raster_object_candidates(
         "confirmed_building_count": None,
         "candidate_building_count": None,
         "screening_model": used_engine,
+        "building_mask_policy": "direct_fastsam_objects_only",
         "analysis_plan": _analysis_plan_for_request(payload.engine_preference),
     }
     if fastsam_attempt:
@@ -281,7 +283,13 @@ def _validate_payload(payload: RasterObjectCandidateInput) -> None:
 
 def _target_shape(width: int, height: int, max_sample_pixels: int) -> tuple[int, int]:
     total = max(1, width * height)
-    cap = min(max_sample_pixels, 2_000_000)
+    try:
+        runtime_cap = int(
+            os.environ.get("MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS", "4000000")
+        )
+    except ValueError:
+        runtime_cap = 4_000_000
+    cap = min(max_sample_pixels, max(10_000, runtime_cap))
     if total <= cap:
         return height, width
     scale = math.sqrt(cap / total)
@@ -502,7 +510,7 @@ def _features_from_mask(
         source_geom = shape(geom)
         if source_geom.is_empty or not source_geom.is_valid:
             source_geom = source_geom.buffer(0)
-        if source_geom.is_empty:
+        if source_geom.is_empty or source_geom.area <= 0:
             continue
         min_rect = source_geom.minimum_rotated_rectangle
         rectangularity_area = float(getattr(min_rect, "area", 0.0) or 0.0)
@@ -531,13 +539,6 @@ def _features_from_mask(
 
         confidence = _confidence(target, area_m2, aspect, source_geom.length)
         reported_confidence = round(confidence, 3)
-        if (
-            target == "building"
-            and extra_properties
-            and extra_properties.get("fastsam_support") == "supplemental_roof_recall"
-            and (rectangularity < 0.42 or aspect > 3.6)
-        ):
-            continue
         effective_confidence_threshold = _effective_confidence_threshold(
             target, confidence_threshold
         )
@@ -558,6 +559,7 @@ def _features_from_mask(
             "candidate_class": target,
             "candidate_label": _label_for_target(target),
             "confidence": reported_confidence,
+            "confidence_type": "heuristic_screening_score",
             "area_m2": round(area_m2, 2),
             "aspect_ratio": round(aspect, 2),
             "rectangularity": round(rectangularity, 3),
@@ -566,6 +568,7 @@ def _features_from_mask(
             "recommended_action": _recommended_action_for_target(target),
             "screening_model": screening_model,
             "confidence_threshold_used": round(effective_confidence_threshold, 3),
+            "score_basis": "area_shape_compactness_plus_target_evidence",
         }
         if extra_properties:
             properties.update(extra_properties)
@@ -914,7 +917,6 @@ def _features_from_fastsam_mask_stack(
     import numpy as np
 
     features: list[dict[str, Any]] = []
-    accepted_coverage_masks: dict[str, Any] = {}
     height, width = rgb_shape
     for mask_index, raw_mask in enumerate(mask_stack):
         object_mask = _resize_bool_mask(raw_mask > 0.5, width=width, height=height)
@@ -966,30 +968,10 @@ def _features_from_fastsam_mask_stack(
                 },
             )
             features.extend(feature_batch)
-            if feature_batch:
-                coverage_mask = accepted_coverage_masks.get(target)
-                if coverage_mask is None:
-                    coverage_mask = np.zeros((height, width), dtype=bool)
-                    accepted_coverage_masks[target] = coverage_mask
-                coverage_mask |= geometry_mask
             if len(features) >= max_candidates * 4:
                 break
         if len(features) >= max_candidates * 4:
             break
-
-    if "building" in targets and len(features) < max_candidates:
-        features.extend(
-            _fastsam_supplemental_roof_evidence_features(
-                target_masks=target_masks,
-                accepted_coverage_mask=accepted_coverage_masks.get("building"),
-                source_transform=source_transform,
-                source_crs=source_crs,
-                min_area_m2=min_area_m2,
-                max_area_m2=max_area_m2,
-                confidence_threshold=confidence_threshold,
-                max_candidates=max_candidates - len(features),
-            )
-        )
 
     return sorted(
         _dedupe_candidate_features(features),
@@ -1018,7 +1000,6 @@ def _features_from_fastsam_tiles(
     tile_size = _fastsam_tile_size()
     stride = _fastsam_tile_stride()
     features: list[dict[str, Any]] = []
-    accepted_coverage_masks: dict[str, Any] = {}
     target_pixel_counts = {
         target: int(np.count_nonzero(mask)) for target, mask in target_masks.items()
     }
@@ -1082,39 +1063,12 @@ def _features_from_fastsam_tiles(
                     image_pixels=height * width,
                 )
                 features.extend(feature_batch)
-                accepted_targets = {
-                    str(feature.get("properties", {}).get("candidate_class") or "")
-                    for feature in feature_batch
-                }
-                for target in accepted_targets.intersection(targets):
-                    coverage_mask = accepted_coverage_masks.get(target)
-                    if coverage_mask is None:
-                        coverage_mask = np.zeros((height, width), dtype=bool)
-                        accepted_coverage_masks[target] = coverage_mask
-                    coverage_mask[
-                        y0 : y0 + tile.shape[0],
-                        x0 : x0 + tile.shape[1],
-                    ] |= local_mask
                 if len(features) >= max_candidates * 4:
                     break
             if len(features) >= max_candidates * 4:
                 break
         if len(features) >= max_candidates * 4:
             break
-
-    if "building" in targets and len(features) < max_candidates:
-        features.extend(
-            _fastsam_supplemental_roof_evidence_features(
-                target_masks=target_masks,
-                accepted_coverage_mask=accepted_coverage_masks.get("building"),
-                source_transform=source_transform,
-                source_crs=source_crs,
-                min_area_m2=min_area_m2,
-                max_area_m2=max_area_m2,
-                confidence_threshold=confidence_threshold,
-                max_candidates=max_candidates - len(features),
-            )
-        )
 
     return (
         sorted(
@@ -1200,81 +1154,6 @@ def _features_from_fastsam_object_mask(
             )
         )
     return features
-
-
-def _fastsam_supplemental_roof_evidence_features(
-    *,
-    target_masks: dict[str, Any],
-    accepted_coverage_mask: Any | None,
-    source_transform: Any,
-    source_crs: Any,
-    min_area_m2: float,
-    max_area_m2: float,
-    confidence_threshold: float,
-    max_candidates: int,
-) -> list[dict[str, Any]]:
-    if max_candidates <= 0:
-        return []
-
-    import numpy as np
-
-    roof_mask = target_masks.get("building")
-    if roof_mask is None:
-        return []
-
-    available_mask = roof_mask.copy()
-    context_mask = None
-    if accepted_coverage_mask is not None:
-        covered = accepted_coverage_mask.astype(bool, copy=False)
-        context_mask = _dilated_context_mask(
-            covered,
-            radius=max(30, int(min(available_mask.shape[:2]) * 0.08)),
-        )
-        available_mask &= ~covered
-    if context_mask is None:
-        return []
-    available_mask &= context_mask
-
-    if int(np.count_nonzero(available_mask)) == 0:
-        return []
-
-    # Roofs that become too small after whole-image downsampling may not get
-    # their own FastSAM object. Add only compact roof-evidence components so we
-    # recover recall without returning the huge blocky color-mask layer again.
-    return _features_from_mask(
-        available_mask,
-        target="building",
-        source_transform=source_transform,
-        source_crs=source_crs,
-        min_area_m2=min_area_m2,
-        max_area_m2=min(max_area_m2, 420.0),
-        confidence_threshold=max(0.58, confidence_threshold + 0.06),
-        max_candidates=max_candidates,
-        screening_model="fastsam_s_candidate_masks_v1",
-        extra_properties={
-            "fastsam_geometry_source": "roof_evidence_component_after_fastsam",
-            "fastsam_support": "supplemental_roof_recall",
-        },
-    )
-
-
-def _dilated_context_mask(mask: Any, *, radius: int) -> Any:
-    import numpy as np
-
-    if radius <= 0:
-        return mask.astype(bool)
-    try:
-        from scipy import ndimage
-
-        return ndimage.binary_dilation(
-            mask.astype(bool),
-            structure=np.ones((3, 3), dtype=bool),
-            iterations=radius,
-        )
-    except Exception:
-        # If scipy is unavailable, keep the path conservative instead of adding
-        # broad color-only recall away from FastSAM-supported roof masks.
-        return mask.astype(bool)
 
 
 def _fastsam_target_evidence_is_strong_enough(

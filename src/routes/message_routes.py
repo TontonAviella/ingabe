@@ -2403,17 +2403,26 @@ async def process_chat_interaction_task(
         ):
             return
         logger.info(
-            "MUNDI_USE_HERMES=1 → routing chat turn through Hermes runtime "
+            "Routing complex Sage turn through scoped Hermes runtime "
             "(map=%s user=%s conversation=%s)",
             map_id, user_id, conversation.id,
         )
-        return await run_sage_turn_via_hermes(
-            request=request, map_id=map_id, session=session, user_id=user_id,
-            chat_args=chat_args, map_state=map_state, conversation=conversation,
-            system_prompt_provider=system_prompt_provider,
-            connection_manager=connection_manager,
-            pydantic_tool_calls=pydantic_tool_calls,
-        )
+        try:
+            return await run_sage_turn_via_hermes(
+                request=request, map_id=map_id, session=session, user_id=user_id,
+                chat_args=chat_args, map_state=map_state, conversation=conversation,
+                system_prompt_provider=system_prompt_provider,
+                connection_manager=connection_manager,
+                pydantic_tool_calls=pydantic_tool_calls,
+            )
+        except Exception:
+            logger.exception(
+                "Scoped Hermes turn failed; falling back to the legacy Sage "
+                "planner (map=%s user=%s conversation=%s)",
+                map_id,
+                user_id,
+                conversation.id,
+            )
 
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)

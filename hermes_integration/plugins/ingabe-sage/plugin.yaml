@@ -2,21 +2,18 @@ name: ingabe-sage
 version: 0.2.0
 description: >
   Ingabe Sage plugin for Hermes Agent. Exposes the full Sage tool surface
-  to the LLM via two tiers: (1) native handlers (search_location,
-  ingabe_whoami) that run in-process inside the hermes-gateway container,
-  and (2) proxied handlers that sign an HMAC request to mundi-app's
-  /internal/tool-call endpoint so the actual dispatch runs with
-  partner-scoped RLS-bound DB access. System prompt is configured at the
-  Hermes profile level (`default`, `bk-insurance`), not in this plugin.
+  to the LLM through task-scoped core, map, raster, agriculture, and brain
+  profiles. Native handlers run in-process; proxied handlers sign an HMAC
+  request to mundi-app's /internal/tool-call endpoint so dispatch runs with
+  partner-scoped RLS-bound DB access.
 author: Ingabe (TontonAviella)
 kind: standalone
 platforms:
   - linux
   - macos
 # provides_tools lists only the NATIVE (Tier 1) tools. The proxied tools
-# in toolset `ingabe-sage-proxied` are auto-registered from
-# generated_tools.py:GENERATED_SCHEMAS and are not enumerated here — that
-# list is auto-generated and changes when the upstream tool surface evolves.
+# in the task-scoped profile toolsets are auto-registered from the generated
+# and live Pydantic schemas, so they are not enumerated here.
 provides_tools:
   - search_location
   - ingabe_whoami

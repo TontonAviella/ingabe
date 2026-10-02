@@ -14,6 +14,7 @@ from src.services.geolibre_runner import (
 )
 from src.services.life_harness import life_harness_enabled
 from src.services.raster_object_candidates import _fastsam_weights_status
+from src.services.hermes_runtime import hermes_is_enabled
 
 
 def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
@@ -24,9 +25,18 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
     )
 
     hermes_package = _package_status("hermes_cli", "hermes-agent")
-    hermes_enabled = _truthy_env("MUNDI_USE_HERMES")
+    hermes_enabled = hermes_is_enabled()
     hermes_tool_route = _truthy_env("MUNDI_TOOL_CALL_ENABLED")
-    hermes_secret = bool(os.environ.get("HERMES_GATEWAY_SECRET", "").strip())
+    hermes_secret_file = Path(
+        os.environ.get(
+            "HERMES_LOCAL_SECRET_FILE",
+            "/tmp/ingabe_cache/hermes_gateway_secret",
+        )
+    )
+    hermes_secret = bool(
+        os.environ.get("HERMES_GATEWAY_SECRET", "").strip()
+        or (hermes_secret_file.is_file() and hermes_secret_file.stat().st_size > 0)
+    )
     plugin_path = Path(
         os.environ.get(
             "MUNDI_HERMES_PLUGIN_PATH",
@@ -62,11 +72,13 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
             "enabled": hermes_enabled,
             "tool_route_enabled": hermes_tool_route,
             "gateway_secret_configured": hermes_secret,
+            "local_secret_file_present": hermes_secret_file.is_file(),
             "plugin_present": plugin_path.is_dir(),
             "ready": hermes_ready,
             "decision": (
-                "gated: keep installed for complex planning, but do not make it "
-                "the default until its local callback and latency gates pass"
+                "keep as Sage's scoped complex planner; deterministic admin and "
+                "vision paths remain first, and only task-relevant tool profiles "
+                "are exposed to the model"
             ),
         },
         "life_harness": {

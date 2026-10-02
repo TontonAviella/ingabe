@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from .generated_tools import GENERATED_SCHEMAS
 from .hidden_tools import HIDDEN_SCHEMAS
+from .profiles import toolset_for_tool
 from .proxy import make_proxy_handler
 from .tools import (
     SEARCH_LOCATION_SCHEMA,
@@ -28,7 +29,7 @@ def register(ctx) -> None:
     # --- Tier 1: native handlers, no proxy hop required -------------------
     ctx.register_tool(
         name="search_location",
-        toolset="ingabe-sage",
+        toolset=toolset_for_tool("search_location"),
         schema=SEARCH_LOCATION_SCHEMA,
         handler=lambda args, **kw: _handle_search_location(
             query=args.get("query", ""),
@@ -38,7 +39,7 @@ def register(ctx) -> None:
     )
     ctx.register_tool(
         name="ingabe_whoami",
-        toolset="ingabe-sage",
+        toolset=toolset_for_tool("ingabe_whoami"),
         schema=WHOAMI_SCHEMA,
         handler=lambda args, **kw: _handle_whoami(task_id=kw.get("task_id")),
         emoji="🪪",
@@ -70,14 +71,49 @@ def register(ctx) -> None:
     # overlap. If a name ever appears in both, GENERATED_SCHEMAS wins (it's
     # second in the dict merge below).
     NATIVE = {"search_location", "ingabe_whoami"}
-    merged_schemas: dict = {**HIDDEN_SCHEMAS, **GENERATED_SCHEMAS}
+    merged_schemas: dict = {
+        **HIDDEN_SCHEMAS,
+        **GENERATED_SCHEMAS,
+        **_runtime_pydantic_schemas(),
+    }
     for name, schema in merged_schemas.items():
         if name in NATIVE:
             continue  # don't shadow our native handlers
         ctx.register_tool(
             name=name,
-            toolset="ingabe-sage-proxied",
+            toolset=toolset_for_tool(name),
             schema=schema,
             handler=make_proxy_handler(name),
             emoji="🧰",
         )
+
+
+def _runtime_pydantic_schemas() -> dict:
+    """Add the app's current tool schemas when the plugin runs in-process.
+
+    The checked-in generated catalog remains the standalone fallback. The
+    in-process Sage runtime can read the authoritative registry directly,
+    which prevents newly added Ingabe tools from silently disappearing from
+    Hermes until a manual code-generation pass happens.
+    """
+
+    try:
+        from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+    except ImportError:
+        return {}
+
+    schemas: dict = {}
+    for name, (handler, argument_model, _meta_model) in get_pydantic_tool_calls().items():
+        parameters = argument_model.model_json_schema()
+        parameters.pop("title", None)
+        fallback_description = GENERATED_SCHEMAS.get(name, {}).get("description", "")
+        schemas[name] = {
+            "name": name,
+            "description": (
+                (handler.__doc__ or "").strip()
+                or fallback_description
+                or f"Run the Ingabe {name} tool."
+            ),
+            "parameters": parameters,
+        }
+    return schemas

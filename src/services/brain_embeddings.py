@@ -501,7 +501,13 @@ async def embed_page(
             )
         )
 
-    await brain.upsert_chunks(conn, slug, chunk_inputs)
+    try:
+        await brain.upsert_chunks(conn, slug, chunk_inputs)
+    except ValueError as exc:
+        if str(exc) != f"Page not found: {slug}":
+            raise
+        logger.info("Embedding result discarded because page '%s' was deleted", slug)
+        return 0
     logger.info("Embedded page '%s': %d chunks", slug, len(chunk_inputs))
     return len(chunk_inputs)
 

@@ -55,7 +55,66 @@ from typing import Any
 # ~600 lines to find the sentinel/interval definitions).
 _SENTINEL_DONE = object()
 CANCEL_POLL_INTERVAL_SECONDS = 1.0
-HERMES_INGABE_TOOLSETS = ("ingabe-sage", "ingabe-sage-proxied")
+HERMES_INGABE_TOOLSETS = (
+    "ingabe-sage-core",
+    "ingabe-sage-map-view",
+    "ingabe-sage-map-data",
+    "ingabe-sage-map-process",
+    "ingabe-sage-raster-engine",
+    "ingabe-sage-raster-vision",
+    "ingabe-sage-raster-analysis",
+    "ingabe-sage-raster-sensor",
+    "ingabe-sage-agri-field",
+    "ingabe-sage-agri-weather",
+    "ingabe-sage-agri-risk",
+    "ingabe-sage-brain",
+)
+
+_HERMES_PROFILE_KEYWORDS = {
+    "ingabe-sage-map-view": {
+        "map", "layer", "show", "display", "zoom", "style", "render",
+        "boundary", "geojson", "location",
+    },
+    "ingabe-sage-map-data": {
+        "database", "postgis", "duckdb", "sql", "query", "table",
+    },
+    "ingabe-sage-map-process": {
+        "buffer", "clip", "intersect", "intersection", "dissolve",
+        "reproject", "aggregate", "join", "grid", "geometry", "calculate",
+    },
+    "ingabe-sage-raster-engine": {
+        "spatial", "engine", "capability", "capabilities", "geolibre",
+        "geoprocessing", "whitebox", "wasi", "wasm",
+    },
+    "ingabe-sage-raster-vision": {
+        "raster", "orthophoto", "drone", "pixel", "image", "imagery",
+        "building", "roof", "road", "tree", "water", "flood", "object",
+        "mask", "segment", "fastsam",
+    },
+    "ingabe-sage-raster-analysis": {
+        "raster", "pixel", "spectral", "geotiff", "cog", "dem", "terrain",
+        "hydrology", "lidar", "zonal", "statistics", "compare", "health",
+    },
+    "ingabe-sage-raster-sensor": {
+        "alos", "cygnss", "sar", "radar", "soil", "moisture",
+    },
+    "ingabe-sage-agri-field": {
+        "crop", "field", "farm", "soil", "ndvi", "vegetation", "satellite",
+        "sentinel", "landsat", "agriculture", "parcel", "management", "zone",
+    },
+    "ingabe-sage-agri-weather": {
+        "weather", "rain", "forecast", "temperature", "evapotranspiration",
+        "dry", "spell",
+    },
+    "ingabe-sage-agri-risk": {
+        "risk", "yield", "drought", "insurance", "anomaly", "stress",
+        "food", "security", "emission", "exposure", "trigger",
+    },
+    "ingabe-sage-brain": {
+        "remember", "brain", "previous", "history", "entity",
+        "observation", "trajectory",
+    },
+}
 
 # Hermes upstream emits these substrings inside `result["final_response"]`
 # when an LLM call fails. Used to route the response to kue_notify_error
@@ -77,6 +136,26 @@ _HERMES_5XX_RE = re.compile(r"HTTP 5\d\d")
 logger = logging.getLogger(__name__)
 
 
+def hermes_result_failure_reason(
+    result: Any,
+    assistant_text: str,
+) -> str | None:
+    """Return a stable failure reason when Hermes did not finish a real turn."""
+
+    normalized = assistant_text.strip().lower()
+    looks_like_error = (
+        any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
+        or bool(_HERMES_5XX_RE.search(assistant_text))
+        or normalized in {"", "(empty)", "empty"}
+    )
+    incomplete = isinstance(result, dict) and result.get("completed") is False
+    if not looks_like_error and not incomplete:
+        return None
+    if isinstance(result, dict):
+        return str(result.get("turn_exit_reason") or "unusable_response")
+    return "unusable_response"
+
+
 # ---------------------------------------------------------------------------
 # Flag + cache
 # ---------------------------------------------------------------------------
@@ -87,12 +166,24 @@ def hermes_is_enabled() -> bool:
     Used by `process_chat_interaction_task` to fork dispatch. Default
     behavior (env unset or '0') is the existing hand-rolled chat loop.
     """
-    val = os.environ.get("MUNDI_USE_HERMES", "0").strip().lower()
-    return val in {"1", "true", "yes"}
+    val = os.environ.get("MUNDI_USE_HERMES", "auto").strip().lower()
+    if val in {"1", "true", "yes"}:
+        return True
+    if val != "auto":
+        return False
+    model = os.environ.get("OPENAI_MODEL", "").strip().lower()
+    return bool(
+        os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("OPENROUTER_API_KEY", "").strip()
+        or model.startswith("ollama:")
+    )
 
 
-def select_hermes_toolsets(configured_toolsets: list[str]) -> list[str]:
-    """Keep the web Sage runtime on Ingabe's scoped tools only.
+def select_hermes_toolsets(
+    configured_toolsets: list[str],
+    user_text: str = "",
+) -> list[str]:
+    """Expose only task-relevant Ingabe profiles to the Sage planner.
 
     Hermes ships terminal, file, browser, web, delegation, and other general
     agent toolsets. They add schema tokens and capabilities that this map UI
@@ -101,7 +192,25 @@ def select_hermes_toolsets(configured_toolsets: list[str]) -> list[str]:
     """
 
     configured = set(configured_toolsets)
-    return [name for name in HERMES_INGABE_TOOLSETS if name in configured]
+    selected = {"ingabe-sage-core"}
+    # Treat snake_case tool names like natural-language phrases so explicit
+    # requests such as `get_spatial_engine_capabilities` activate the same
+    # profile as "spatial engine capabilities".
+    tokens = set(re.findall(r"[a-z0-9]+", user_text.lower()))
+    for toolset, keywords in _HERMES_PROFILE_KEYWORDS.items():
+        if tokens & keywords:
+            selected.add(toolset)
+
+    # A complex but domain-neutral request still benefits from map operations;
+    # core-only remains appropriate for small talk and session questions.
+    if len(selected) == 1 and len(tokens) >= 8:
+        selected.add("ingabe-sage-map-view")
+
+    return [
+        name
+        for name in HERMES_INGABE_TOOLSETS
+        if name in configured and name in selected
+    ]
 
 
 # Plugins must be discovered ONCE per process. discover_and_load() walks
@@ -273,8 +382,8 @@ async def run_sage_turn_via_hermes(
       1. Lazy-load Hermes plugins (once per process).
       2. Set IngabeContext ContextVar for this request.
       3. Pull conversation history from DB; extract the last user message.
-      4. Construct AIAgent(platform="api_server", ...) with our plugin
-         toolsets activated (`ingabe-sage`, `ingabe-sage-proxied`).
+      4. Construct AIAgent(platform="api_server", ...) with only the Ingabe
+         tool profiles relevant to this request.
       5. Stream tokens out via stream_delta_callback → kue_stream_token.
       6. Run agent.run_conversation in an executor (it's sync).
       7. Persist the final assistant text. Emit WS done=True.
@@ -393,10 +502,9 @@ async def run_sage_turn_via_hermes(
     model = _resolve_gateway_model()
     cfg = _load_gateway_config()
     configured_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
-    enabled_toolsets = select_hermes_toolsets(configured_toolsets)
-    if set(enabled_toolsets) != set(HERMES_INGABE_TOOLSETS):
-        missing = sorted(set(HERMES_INGABE_TOOLSETS) - set(enabled_toolsets))
-        raise RuntimeError(f"Hermes is missing required Ingabe toolsets: {missing}")
+    enabled_toolsets = select_hermes_toolsets(configured_toolsets, last_user_text)
+    if "ingabe-sage-core" not in enabled_toolsets:
+        raise RuntimeError("Hermes is missing the required Ingabe core toolset")
     try:
         fallback_model = GatewayRunner._load_fallback_model()
     except Exception:
@@ -641,19 +749,11 @@ async def run_sage_turn_via_hermes(
             # Marker list lives at module top (_HERMES_ERROR_MARKERS) — change
             # it there to avoid drift. 5xx uses a regex so "HTTP 5ms" or
             # "HTTP 5xx series" in a normal reply doesn't false-positive.
-            _looks_like_error = (
-                any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
-                or bool(_HERMES_5XX_RE.search(assistant_text))
-            )
-            if _looks_like_error:
-                try:
-                    await kue_notify_error(
-                        conversation.id,
-                        # First line — keep it short; the toast UI truncates.
-                        assistant_text.split("\n", 1)[0][:240],
-                    )
-                except Exception:
-                    logger.debug("kue_notify_error push failed", exc_info=True)
+            failure_reason = hermes_result_failure_reason(result, assistant_text)
+            if failure_reason:
+                raise RuntimeError(
+                    f"Hermes returned an unusable result ({failure_reason})"
+                )
             try:
                 await _persist_assistant_message(
                     map_id, user_id, conversation.id, assistant_text,
@@ -668,15 +768,7 @@ async def run_sage_turn_via_hermes(
                 "Hermes returned empty response for conv=%s — nothing to persist; result=%r",
                 conversation.id, (str(result)[:200] if result else None),
             )
-            # Even with no recoverable text, give the user *some* signal so
-            # the disappearing-chip-with-no-response UX never happens again.
-            try:
-                await kue_notify_error(
-                    conversation.id,
-                    "Sage finished with no response. Check server logs or retry the request.",
-                )
-            except Exception:
-                logger.debug("kue_notify_error fallback push failed", exc_info=True)
+            raise RuntimeError("Hermes returned no usable assistant response")
 
         try:
             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)

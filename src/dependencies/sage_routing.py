@@ -1129,7 +1129,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             {
                 "target_classes": targets,
                 "max_candidates": 1_500,
-                "max_sample_pixels": 2_000_000,
+                "max_sample_pixels": 4_000_000,
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
                 "confidence_threshold": 0.65 if building_only else 0.42,

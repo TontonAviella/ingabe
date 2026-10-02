@@ -67,9 +67,10 @@ services:
       - OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434/v1}
       - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b-it-qat}
-      # Hermes Phase 2 — in-process AIAgent runtime (default OFF)
-      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
-      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
+      # Hermes is the Sage planner when model credentials are available.
+      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-auto}
+      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-1}
+      - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-4000000}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
       - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
       - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
@@ -79,7 +80,11 @@ services:
       - YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR:-/cache/ultralytics}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
       - HERMES_ACCEPT_HOOKS=1
-      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+      # One worker avoids multiplying the in-process schedulers and ML memory
+      # footprint on the supported local Mac runtime. Override deliberately on
+      # larger machines; individual background jobs still use advisory locks.
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-1}
+      - MUNDI_BACKGROUND_WORKERS_ENABLED=${MUNDI_BACKGROUND_WORKERS_ENABLED:-1}
       - DB_POOL_MAX_SIZE=${DB_POOL_MAX_SIZE:-10}
       - DB_READ_POOL_MAX_SIZE=${DB_READ_POOL_MAX_SIZE:-10}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgresdb}
@@ -136,6 +141,7 @@ services:
       - ./FastSAM-s.pt:/app/FastSAM-s.pt:ro
       - ./docs:/app/docs
       - ./scripts:/app/scripts
+      - ./hermes_integration:/app/hermes_integration
       - ./services/api_monitor.py:/app/api_monitor.py
       - ./services/api_insurance.py:/app/api_insurance.py
       - ./services/monitor_field_v3.py:/app/monitor_field_v3.py
