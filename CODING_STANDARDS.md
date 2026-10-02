@@ -144,6 +144,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-02** CI passed `pytest -n 6`, bypassing the 4-worker cap in `conftest.py`;
+  all workers died together (`node down`, likely OOM). Rule (H2): a setting lives in
+  one place; callers use it (`-n auto`), never restate it. Gate: review only.
 - **2026-10-02** The forecast outlook told users "the payout threshold is 300 mm"
   while evaluation applied the 100 mm maize trigger from `insurance_triggers`. Rule
   (H2): a threshold shown to users reads from the source evaluation uses. Gate: test.

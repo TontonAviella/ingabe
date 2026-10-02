@@ -36,10 +36,16 @@ jobs:
           haskell: true
           large-packages: true
           docker-images: true
-          swap-storage: true
+          # Keep swap: the root disk has >100 GB free after the cleanup above,
+          # and swap is the margin that turns a memory spike into slowness
+          # instead of an OOM-killed pytest worker.
+          swap-storage: false
 
-      - name: Report disk space
-        run: df -h /
+      - name: Report runner resources
+        run: |
+          df -h /
+          nproc
+          free -m
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -62,19 +68,22 @@ jobs:
         timeout-minutes: 45
 
       - name: Run tests
-        # -n 6 instead of -n auto: the Depot runner reports 16+ cores so
-        # `auto` spawns 16+ xdist workers. Each worker independently imports
-        # the full FastAPI app (~200 MB resident), so 16 × 200 MB ≈ 3.2 GB
-        # just for the app object graph. Tests that use a per-test
-        # `TestClient(app)` re-run the lifespan (brain scheduler, PG
-        # listeners, WS subscriber) on top of that, and the runner's free
-        # RAM gets tight enough that the OOM killer SIGKILLs random workers
-        # — surfacing as `[gwN] node down: Not properly terminated` and
-        # whichever test the worker happened to be running gets reported
-        # as FAILED. The cascade hit 16+ workers and aborted the run on
-        # PR #57 twice in a row even though the tests pass in isolation.
-        # Capping at -n 6 keeps wall-clock under the 25 min timeout and
-        # eliminates the memory contention.
+        # -n auto: conftest.py's pytest_xdist_auto_num_workers owns the worker
+        # cap (min(4, cpus)); passing a number here bypassed it. The CI value
+        # was 6. Each xdist worker imports the full FastAPI
+        # app (~333 MB resident, ~7 s, measured 2026-10-02) and tests that
+        # build a `TestClient(app)` re-run the lifespan on top of that, while
+        # eight compose services share the same host. When memory runs out
+        # the kernel SIGKILLs workers, which surfaces as
+        # `[gwN] node down: Not properly terminated` with whatever test the
+        # worker was running reported as FAILED (PR #57; PRs #77 and #78 on
+        # 2026-10-02, all workers dying together right after startup).
+        # The job runs on `ubuntu-latest` (4 vCPUs), so 6 workers only added
+        # contention; the old comment's 16-core Depot runner is gone. The
+        # step takes ~6 min of its 25 min budget, so 4 workers fit easily.
+        # Never pass a number to -n here; change the cap in conftest.py.
+        # If it recurs, the "Diagnose test-worker crashes" step below prints
+        # the kernel's OOM/segfault lines for the run.
         #
         # --dist=loadfile: keep all tests in a single FILE on the same
         # worker. Several test files (tests/brain/test_org_context.py,
@@ -91,12 +100,21 @@ jobs:
         # author's intended same-worker test ordering inside each file.
         run: >
           python3 scripts/posthog_check_event.py --stage backend --check backend_pytest --
-          docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
+          docker compose run app pytest -vs -n auto --dist=loadfile --ignore=src/test_worldcover.py
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
           POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 25
+
+      - name: Diagnose test-worker crashes
+        # Evidence for `node down: Not properly terminated`: distinguishes an
+        # OOM kill from a native crash (segfault) without guessing.
+        if: failure()
+        run: |
+          free -m
+          docker stats --no-stream || true
+          sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process|segfault|general protection" || echo "no OOM/segfault lines in dmesg"
 
       - name: Start services for E2E
         run: |
