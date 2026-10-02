@@ -144,6 +144,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-02** CI workers all died at 60 s (`node down`). I first blamed OOM; the
+  evidence said pytest-timeout killed them while an autouse fixture ran migrations.
+  Rule: capture the evidence (dmesg, timings) before fixing a crash. Gate: CI diagnose step.
 - **2026-10-02** The forecast outlook told users "the payout threshold is 300 mm"
   while evaluation applied the 100 mm maize trigger from `insurance_triggers`. Rule
   (H2): a threshold shown to users reads from the source evaluation uses. Gate: test.

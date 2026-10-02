@@ -62,19 +62,19 @@ jobs:
         timeout-minutes: 45
 
       - name: Run tests
-        # -n 6 instead of -n auto: the Depot runner reports 16+ cores so
-        # `auto` spawns 16+ xdist workers. Each worker independently imports
-        # the full FastAPI app (~200 MB resident), so 16 × 200 MB ≈ 3.2 GB
-        # just for the app object graph. Tests that use a per-test
-        # `TestClient(app)` re-run the lifespan (brain scheduler, PG
-        # listeners, WS subscriber) on top of that, and the runner's free
-        # RAM gets tight enough that the OOM killer SIGKILLs random workers
-        # — surfacing as `[gwN] node down: Not properly terminated` and
-        # whichever test the worker happened to be running gets reported
-        # as FAILED. The cascade hit 16+ workers and aborted the run on
-        # PR #57 twice in a row even though the tests pass in isolation.
-        # Capping at -n 6 keeps wall-clock under the 25 min timeout and
-        # eliminates the memory contention.
+        # -n auto: conftest.py's pytest_xdist_auto_num_workers owns the worker
+        # cap (min(4, cpus)); passing a number here bypassed it. The CI value
+        # was 6 on a 4-vCPU `ubuntu-latest` runner (the 16-core Depot runner
+        # the old comment described is gone). The step takes ~6 min of its
+        # 25 min budget. Never pass a number to -n here; change the cap in
+        # conftest.py.
+        #
+        # `[gwN] node down: Not properly terminated` on every worker's first
+        # test at exactly 60 s (PRs #77-#79, 2026-10-02) was NOT memory (the
+        # diagnose step showed 13.8 GB free and no OOM in dmesg). It was
+        # pytest-timeout (60 s, thread method => os._exit) firing while an
+        # autouse fixture ran the migrations; conftest.py now migrates in
+        # pytest_sessionstart, outside the per-test timeout.
         #
         # --dist=loadfile: keep all tests in a single FILE on the same
         # worker. Several test files (tests/brain/test_org_context.py,
@@ -91,12 +91,22 @@ jobs:
         # author's intended same-worker test ordering inside each file.
         run: >
           python3 scripts/posthog_check_event.py --stage backend --check backend_pytest --
-          docker compose run app pytest -vs -n 6 --dist=loadfile --ignore=src/test_worldcover.py
+          docker compose run app pytest -vs -n auto --dist=loadfile --ignore=src/test_worldcover.py
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
           POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 25
+
+      - name: Diagnose test-worker crashes
+        # Evidence for a failed test run: memory, container usage, and any
+        # kernel OOM/segfault lines, so a worker crash is diagnosed from
+        # facts. (This step is what ruled out OOM on 2026-10-02.)
+        if: failure()
+        run: |
+          free -m
+          docker stats --no-stream || true
+          sudo dmesg -T | grep -iE "out of memory|oom-kill|killed process|segfault|general protection" || echo "no OOM/segfault lines in dmesg"
 
       - name: Start services for E2E
         run: |
