@@ -79,6 +79,18 @@ class GeospatialEvidenceDecision:
 
 
 RASTER_OBJECT_CANDIDATES_TOOL = "analyze_raster_object_candidates"
+ADMIN_BOUNDARY_TOOL = "show_admin_boundary"
+RASTER_H3_CONTEXT_TOOL = "create_raster_h3_context_layer"
+RASTER_FACT_TOOL = "describe_user_raster"
+
+# Tools that build_fast_tool_call can return and that message_routes runs
+# deterministically, without a model call, when the map state allows it.
+FAST_PATH_TOOLS = frozenset({
+    ADMIN_BOUNDARY_TOOL,
+    RASTER_H3_CONTEXT_TOOL,
+    RASTER_OBJECT_CANDIDATES_TOOL,
+    RASTER_FACT_TOOL,
+})
 
 # Map tool name -> category. Tools not in this dict are treated as
 # "uncategorized" and included whenever we cannot rule them out (i.e.
@@ -1116,9 +1128,9 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
         args = build_admin_boundary_tool_args(text)
         if args:
-            return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+            return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
-        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
+        return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
     if (
         decision.should_fast_route
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
@@ -1142,7 +1154,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
     raster_context_args = build_raster_context_tool_args(text)
     if raster_context_args:
         return FastToolCall(
-            "create_raster_h3_context_layer",
+            RASTER_H3_CONTEXT_TOOL,
             raster_context_args,
             "fast:raster_context",
         )

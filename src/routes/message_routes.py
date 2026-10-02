@@ -63,8 +63,6 @@ from src.services.map_service import (
     InternalLayerUploadResponse,
 )
 from src.services.life_harness import (
-    apply_life_harness_system_prompt,
-    apply_life_harness_tool_contracts,
     life_harness_tool_signature,
     repeated_life_harness_tool_error,
     validate_life_harness_tool_args,
@@ -97,13 +95,18 @@ from src.dependencies.system_prompt import (
     get_system_prompt_provider,
 )
 from src.dependencies.sage_routing import (
-    SMALL_TALK_SYSTEM_PROMPT,
+    ADMIN_BOUNDARY_TOOL,
+    RASTER_FACT_TOOL,
+    RASTER_H3_CONTEXT_TOOL,
+    RASTER_OBJECT_CANDIDATES_TOOL,
     build_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
-    filter_tools_by_categories,
     raster_layer_match_score,
-    route_chat,
+)
+from src.dependencies.sage_turn_request import (
+    build_sage_tools_payload,
+    plan_sage_turn,
 )
 from src.dependencies.session import (
     verify_session_required,
@@ -120,7 +123,6 @@ from src.database.models import (
     Conversation,
 )
 from src.routes.websocket import kue_ephemeral_action, kue_notify_error, kue_stream_token
-from src.tools.pyd import tool_from as tool_from_pyd
 from src.dependencies.pydantic_tools import (
     get_pydantic_tool_calls,
     PydanticToolRegistry,
@@ -1485,7 +1487,7 @@ async def _maybe_run_fast_admin_boundary_turn(
         return False
 
     fast_call = build_fast_tool_call(extract_last_user_text(openai_messages))
-    if not fast_call or fast_call.tool_name != "show_admin_boundary":
+    if not fast_call or fast_call.tool_name != ADMIN_BOUNDARY_TOOL:
         return False
 
     started = asyncio.get_running_loop().time()
@@ -1765,7 +1767,7 @@ async def _maybe_run_fast_raster_context_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "create_raster_h3_context_layer":
+    if not fast_call or fast_call.tool_name != RASTER_H3_CONTEXT_TOOL:
         return False
 
     requested_building_count = detect_raster_building_count_question(user_text)
@@ -2027,7 +2029,7 @@ async def _maybe_run_fast_raster_object_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "analyze_raster_object_candidates":
+    if not fast_call or fast_call.tool_name != RASTER_OBJECT_CANDIDATES_TOOL:
         return False
 
     requested_building_count = detect_raster_building_count_question(user_text)
@@ -2253,7 +2255,7 @@ async def _maybe_run_fast_raster_fact_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "describe_user_raster":
+    if not fast_call or fast_call.tool_name != RASTER_FACT_TOOL:
         return False
 
     started = asyncio.get_running_loop().time()
@@ -2642,218 +2644,10 @@ async def process_chat_interaction_task(
 
             client = get_openai_client(request)
 
-            tools_payload = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "new_layer_from_postgis",
-                        "strict": True,
-                        "description": "Creates a new layer, given a PostGIS connection and query, and adds it to the map so the user can see it. Layer will automatically pull data from PostGIS. Modify style using the set_layer_style tool.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "postgis_connection_id": {
-                                    "type": "string",
-                                    "description": "Unique PostGIS connection ID used as source",
-                                },
-                                "query": {
-                                    "type": "string",
-                                    "description": "SQL query to execute against PostGIS database for this layer, should list fetched columns for attributes that might be used for symbology (+ shape geometry). This query MUST alias the geometry column as 'geom' AND have a unique numeric id aliased as 'id'. Include newlines+spaces at ~55 column wrap",
-                                },
-                                "layer_name": {
-                                    "type": "string",
-                                    "description": "Sets a human-readable name for this layer. This name will appear in the layer list/legend for the user.",
-                                },
-                            },
-                            "required": [
-                                "postgis_connection_id",
-                                "query",
-                                "layer_name",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "add_layer_to_map",
-                        "strict": True,
-                        "description": "Shows a newly created or existing unattached layer on the user's current map and layer list. Use this after a geoprocessing step that creates a layer, or if the user asks to see an existing layer that isn't currently on their map.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "layer_id": {
-                                    "type": "string",
-                                    "description": "The ID of the layer to add to the map. Choose from available unattached layers.",
-                                    "enum": list(layer_enum.keys())
-                                    if layer_enum
-                                    else ["NO_UNATTACHED_LAYERS"],
-                                },
-                                "new_name": {
-                                    "type": "string",
-                                    "description": "Sets a new human-readable name for this layer. This name will appear in the layer list/legend for the user.",
-                                },
-                            },
-                            "required": ["layer_id", "new_name"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "set_layer_style",
-                        "strict": True,
-                        "description": "Creates a new style for a layer with MapLibre JSON layers and immediately applies it as the active style",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "layer_id": {
-                                    "type": "string",
-                                    "description": "The ID of the layer to create and apply a style for",
-                                },
-                                "maplibre_json_layers_str": {
-                                    "type": "string",
-                                    "description": 'JSON string of MapLibre layer objects. Example: [{"id": "LZJ5RmuZr6qN-line", "type": "line", "source": "LZJ5RmuZr6qN", "paint": {"line-color": "#1E90FF"}}]',
-                                },
-                            },
-                            "required": ["layer_id", "maplibre_json_layers_str"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "query_duckdb_sql",
-                        "strict": True,
-                        "description": "Execute a SQL query against vector layer data using DuckDB. Use query_postgis_database for layers created from PostGIS connections instead.",
-                        "parameters": {
-                            "type": "object",
-                            "required": ["layer_ids", "sql_query", "head_n_rows"],
-                            "properties": {
-                                "layer_ids": {
-                                    "type": "array",
-                                    "description": "Load these vector layer IDs as tables",
-                                    "items": {"type": "string"},
-                                },
-                                "sql_query": {
-                                    "type": "string",
-                                    "description": "DuckDB-flavored SELECT ... SQL query. Include newlines+spaces at ~55 column wrap for readability e.g. SELECT name_en,county\n    FROM LCH6Na2SBvJr\n    ORDER BY id",
-                                },
-                                "head_n_rows": {
-                                    "type": "number",
-                                    "description": "Truncate result to n rows (increase gingerly, MUST specify returned columns), n=20 is good",
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "query_postgis_database",
-                        "strict": True,
-                        "description": "Execute SQL queries on connected PostgreSQL/PostGIS databases. Use for data analysis, spatial queries, and exploring database tables. The query MUST include a LIMIT clause with a value less than 1000.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "postgis_connection_id": {
-                                    "type": "string",
-                                    "description": "User's PostGIS connection ID to query against",
-                                },
-                                "sql_query": {
-                                    "type": "string",
-                                    "description": "SQL query to execute. Use newlines+spaces at ~55 column wrap. Examples: 'SELECT COUNT(*) FROM table_name', 'SELECT * FROM spatial_table LIMIT 10', 'SELECT column_name FROM information_schema.columns WHERE table_name = \"my_table\"'. Use standard SQL syntax.",
-                                },
-                            },
-                            "required": ["postgis_connection_id", "sql_query"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "zonal_statistics",
-                        "strict": True,
-                        "description": "Calculates zonal statistics (mean, sum, min, max, count, stdev) for raster values within polygon boundaries. Uses exact pixel-polygon coverage calculations for accurate results.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "raster_layer_id": {
-                                    "type": "string",
-                                    "description": "The layer ID of the raster dataset to analyze",
-                                },
-                                "zones_layer_id": {
-                                    "type": "string",
-                                    "description": "The layer ID of the vector polygon dataset defining the zones",
-                                },
-                                "stats": {
-                                    "type": "array",
-                                    "description": "List of statistics to compute. Defaults to: mean, sum, min, max, count, stdev, variance. Other options: median, mode, majority, minority, variety, coefficient_of_variation, weighted_mean, weighted_sum.",
-                                    "items": {"type": "string"},
-                                },
-                            },
-                            "required": ["raster_layer_id", "zones_layer_id"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "reverse_geocode_coordinates",
-                        "strict": True,
-                        "description": "Given latitude and longitude, returns the Rwanda administrative divisions (province, district, sector, cell, village) that contain that point. Use this whenever the user provides coordinates and asks what location they correspond to.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "lat": {
-                                    "type": "number",
-                                    "description": "Latitude (e.g. -1.9403)",
-                                },
-                                "lon": {
-                                    "type": "number",
-                                    "description": "Longitude (e.g. 29.8739)",
-                                },
-                            },
-                            "required": ["lat", "lon"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-            ]
-
-            all_tools = get_tools()
-            geoprocessing_names = {
-                tool["function"]["name"] for tool in all_tools
-            }
-            # Generate schemas from Pydantic models only for tools NOT already
-            # defined in tools.json (avoids duplicates and allows tools.json
-            # tools to use Optional fields that strict schema generation rejects).
-            for name, (fn, arg_model, _mundi_model) in pydantic_tool_calls.items():
-                if name not in geoprocessing_names:
-                    tools_payload.append(tool_from_pyd(fn, arg_model))
-
-            tools_payload.extend(all_tools)
+            tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
             geoprocessing_function_names = [
-                tool["function"]["name"] for tool in all_tools
+                tool["function"]["name"] for tool in get_tools()
             ]
-
-            if not layer_enum:
-                add_layer_tool = next(
-                    tool
-                    for tool in tools_payload
-                    if tool["function"]["name"] == "add_layer_to_map"
-                )
-                add_layer_tool["function"]["parameters"]["properties"][
-                    "layer_id"
-                ].pop("enum", None)
-
-            tools_payload = apply_life_harness_tool_contracts(tools_payload)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -2871,64 +2665,27 @@ async def process_chat_interaction_task(
             #     plus an always-on display set.
             #   - uncertain -> fall through to current behavior (full list).
             _last_user_text = extract_last_user_text(openai_messages)
-            _routing = route_chat(_last_user_text, history=openai_messages)
-
+            _turn_plan = plan_sage_turn(
+                _last_user_text,
+                openai_messages,
+                tools_payload,
+                system_prompt_provider.get_system_prompt,
+            )
+            _routing = _turn_plan.routing
+            _system_prompt_content = _turn_plan.system_prompt
+            tools_payload = _turn_plan.tools
+            if _turn_plan.model_override:
+                chat_completions_args = {
+                    **chat_completions_args,
+                    "model": _turn_plan.model_override,
+                }
             if _routing.is_small_talk:
-                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
-                tools_payload = []
-                if _routing.primary_model_override:
-                    chat_completions_args = {
-                        **chat_completions_args,
-                        "model": _routing.primary_model_override,
-                    }
                 logger.info(
                     "sage_routing: small-talk fast-path engaged (model=%s, "
                     "msg_len=%d)",
                     chat_completions_args.get("model"),
                     len(_last_user_text),
                 )
-            else:
-                _system_prompt_content = apply_life_harness_system_prompt(
-                    system_prompt_provider.get_system_prompt(),
-                    _last_user_text,
-                )
-                if _routing.selected_categories:
-                    _before = len(tools_payload)
-                    tools_payload = filter_tools_by_categories(
-                        tools_payload,
-                        _routing.selected_categories,
-                        excluded_tool_names=_routing.excluded_tool_names,
-                    )
-                    logger.info(
-                        "sage_routing: filtered tools by %s (%d -> %d, excluded=%s)",
-                        _routing.reason,
-                        _before,
-                        len(tools_payload),
-                        ",".join(sorted(_routing.excluded_tool_names)) or "-",
-                    )
-                elif _routing.excluded_tool_names:
-                    _before = len(tools_payload)
-                    _excluded = set(_routing.excluded_tool_names)
-                    tools_payload = [
-                        tool
-                        for tool in tools_payload
-                        if tool.get("function", {}).get("name", "") not in _excluded
-                    ]
-                    logger.info(
-                        "sage_routing: excluded tools by evidence decision (%d -> %d, excluded=%s)",
-                        _before,
-                        len(tools_payload),
-                        ",".join(sorted(_routing.excluded_tool_names)),
-                    )
-                else:
-                    # Always log the default-path decision so we can spot
-                    # small-talk that's slipping through the regex. Truncate
-                    # to 60 chars to avoid leaking long user input to logs.
-                    _preview = _last_user_text[:60].replace("\n", " ")
-                    logger.info(
-                        "sage_routing: default path (reason=%s, msg_len=%d, preview=%r)",
-                        _routing.reason, len(_last_user_text), _preview,
-                    )
 
             _llm_messages = [
                 {
@@ -3015,7 +2772,7 @@ async def process_chat_interaction_task(
                 **chat_completions_args,
                 messages=_llm_messages,
                 tools=tools_payload if tools_payload else None,
-                tool_choice="auto" if tools_payload else None,
+                tool_choice=_turn_plan.tool_choice,
                 max_tokens=_max_tokens,
             )
 
