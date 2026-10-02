@@ -7,7 +7,8 @@ model request with the same code instead of a copy that drifts (H2).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
 from src.dependencies.sage_routing import (
@@ -17,10 +18,12 @@ from src.dependencies.sage_routing import (
     route_chat,
 )
 from src.geoprocessing.dispatch import get_tools
+from src.services.brain_embeddings import embed_texts
 from src.services.life_harness import (
     apply_life_harness_system_prompt,
     apply_life_harness_tool_contracts,
 )
+from src.services.sage_tool_shortlist import Embedder, ToolEmbeddingCache, hybrid_shortlist
 from src.tools.pyd import tool_from as tool_from_pyd
 
 logger = logging.getLogger(__name__)
@@ -254,6 +257,8 @@ class SageTurnPlan:
     system_prompt: str
     tools: list[dict]
     model_override: str | None
+    # How the tool list was shortlisted ("hybrid" / "bm25"), None if it wasn't.
+    shortlist: str | None = None
 
     @property
     def tool_choice(self) -> str | None:
@@ -328,3 +333,44 @@ def plan_sage_turn(
         tools=tools,
         model_override=None,
     )
+
+
+# Tool-description embeddings, shared across turns in this process.
+_TOOL_EMBEDDINGS = ToolEmbeddingCache()
+
+
+def tool_shortlist_k() -> int:
+    """SAGE_TOOL_SHORTLIST_K: tools kept per turn; 0 (default) keeps routing as-is."""
+    raw = os.environ.get("SAGE_TOOL_SHORTLIST_K", "0").strip() or "0"
+    try:
+        k = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"SAGE_TOOL_SHORTLIST_K must be an integer, got {raw!r}") from exc
+    if k < 0:
+        raise ValueError("SAGE_TOOL_SHORTLIST_K must be >= 0")
+    return k
+
+
+async def apply_tool_shortlist(
+    plan: SageTurnPlan,
+    last_user_text: str,
+    history: list[dict],
+    full_tools: list[dict],
+    *,
+    k: int,
+    embed: Embedder | None = embed_texts,
+) -> SageTurnPlan:
+    """Replace the plan's tools with the ``k`` most relevant from the FULL
+    catalog (the category filter can drop the right tool). Small-talk plans,
+    which carry no tools, are returned unchanged."""
+    if not plan.tools or k <= 0:
+        return plan
+    shortlist = await hybrid_shortlist(
+        last_user_text, history, full_tools, k=k, embed=embed, cache=_TOOL_EMBEDDINGS,
+    )
+    logger.info(
+        "sage_routing: tool shortlist %s (%d -> %d): %s",
+        shortlist.method, len(full_tools), len(shortlist.tools),
+        ",".join(t["function"]["name"] for t in shortlist.tools),
+    )
+    return replace(plan, tools=shortlist.tools, shortlist=shortlist.method)

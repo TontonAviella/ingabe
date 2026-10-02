@@ -105,8 +105,10 @@ from src.dependencies.sage_routing import (
     select_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
+    apply_tool_shortlist,
     build_sage_tools_payload,
     plan_sage_turn,
+    tool_shortlist_k,
 )
 from src.dependencies.session import (
     verify_session_required,
@@ -2645,12 +2647,22 @@ async def process_chat_interaction_task(
             #     plus an always-on display set.
             #   - uncertain -> fall through to current behavior (full list).
             _last_user_text = extract_last_user_text(openai_messages)
+            _full_tools_payload = tools_payload
             _turn_plan = plan_sage_turn(
                 _last_user_text,
                 openai_messages,
                 tools_payload,
                 system_prompt_provider.get_system_prompt,
             )
+            _shortlist_k = tool_shortlist_k()
+            if _shortlist_k:
+                _turn_plan = await apply_tool_shortlist(
+                    _turn_plan,
+                    _last_user_text,
+                    openai_messages[:-1],
+                    _full_tools_payload,
+                    k=_shortlist_k,
+                )
             _routing = _turn_plan.routing
             _system_prompt_content = _turn_plan.system_prompt
             tools_payload = _turn_plan.tools

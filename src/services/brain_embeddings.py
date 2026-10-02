@@ -312,6 +312,16 @@ def _ollama_embed_one(base_url: str, model: str, text: str, timeout: int = 60) -
     return [float(x) for x in emb]
 
 
+async def embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
+    """Embeddings for a batch of texts with the configured provider.
+
+    The public entry point for other modules (e.g. the Sage tool shortlist).
+    Returns (embeddings, resolved_model_name); raises RuntimeError when
+    embeddings are disabled or the provider fails.
+    """
+    return await _get_embeddings(texts)
+
+
 async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
     """Generate embeddings for a batch of texts.
 
