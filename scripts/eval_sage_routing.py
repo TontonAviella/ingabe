@@ -295,6 +295,7 @@ async def run(args: argparse.Namespace) -> Path:
 
     meta = {
         "variant": args.variant, "repeats": args.repeats, "model_only": args.model_only,
+        "concurrency": args.concurrency,
         "model": os.environ.get("OPENAI_MODEL", ""), "corpus_sha": corpus_sha(),
         "git_sha": _git_sha(), "started_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -318,47 +319,58 @@ async def run(args: argparse.Namespace) -> Path:
     prompt_provider = get_system_prompt_provider()
     map_provider = DefaultMapStateProvider()
     default_model = os.environ.get("OPENAI_MODEL", "")
-    errored_streak = 0
 
     todo = [c for c in cases if c["id"] not in done]
-    for i, case in enumerate(todo, 1):
+    slots = asyncio.Semaphore(max(1, args.concurrency))
+    progress = {"finished": 0, "errored_streak": 0}
+
+    async def run_case(case: dict[str, Any]) -> None:
         text = case["text"]
         history = case.get("history") or []
         user_msg = {"role": "user", "content": text}
         fast = None if args.model_only else build_fast_tool_call(text)
-        if fast_path_applies(fast, text, case):
-            source, model, tools_sent = "fast_path", None, 0
-            attempts = [fast_path_attempt(case, fast)] * args.repeats
-        else:
-            plan = plan_sage_turn(text, history + [user_msg], tools_payload,
-                                  prompt_provider.get_system_prompt)
-            client, model = get_chat_client_for_model(None, plan.model_override or default_model)
-            map_msgs = await map_provider.get_system_messages(
-                history + [user_msg], map_description(case), None, None)
-            messages = [{"role": "system", "content": plan.system_prompt}, *history,
-                        *map_msgs, user_msg]
-            source, tools_sent, attempts = "model", len(plan.tools), []
-            for _ in range(args.repeats):
-                attempts.append(await run_attempt(
-                    case, plan, messages, client, model, choose(plan), args.retries))
-                if args.pace:
-                    await asyncio.sleep(args.pace)
+        async with slots:
+            if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
+                return  # stopping; leave the case for --resume
+            if fast_path_applies(fast, text, case):
+                source, model, tools_sent = "fast_path", None, 0
+                attempts = [fast_path_attempt(case, fast)] * args.repeats
+            else:
+                plan = plan_sage_turn(text, history + [user_msg], tools_payload,
+                                      prompt_provider.get_system_prompt)
+                client, model = get_chat_client_for_model(None, plan.model_override or default_model)
+                map_msgs = await map_provider.get_system_messages(
+                    history + [user_msg], map_description(case), None, None)
+                messages = [{"role": "system", "content": plan.system_prompt}, *history,
+                            *map_msgs, user_msg]
+                source, tools_sent, attempts = "model", len(plan.tools), []
+                for _ in range(args.repeats):
+                    attempts.append(await run_attempt(
+                        case, plan, messages, client, model, choose(plan), args.retries))
+                    if args.pace:
+                        await asyncio.sleep(args.pace)
         result = scoring.score_case(case, attempts)
+        progress["finished"] += 1
+        if result.majority == scoring.ERROR:
+            progress["errored_streak"] += 1
+            if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
+                logger.error("%d consecutive cases failed (likely the provider's daily cap); "
+                             "stopping. Resume later with: run --resume %s",
+                             progress["errored_streak"], out_path)
+            return  # errored cases are not kept; --resume retries them
+        progress["errored_streak"] = 0
         records.append({"id": case["id"], "source": source, "model": model,
                         "tools_sent": tools_sent, "attempts": attempts,
                         "outcomes": list(result.outcomes), "majority": result.majority})
-        logger.info("[%3d/%d] %-10s args=%-5s chain=%-5s %-9s %-26s %s", i, len(todo),
-                    result.majority, result.full_correct, result.chain_ok, source,
+        logger.info("[%3d/%d] %-10s args=%-5s chain=%-5s %-9s %-26s %s", progress["finished"],
+                    len(todo), result.majority, result.full_correct, result.chain_ok, source,
                     ",".join(sorted({a["first_tool"] for a in attempts}))[:26], case["id"])
-        _write(out_path, meta, cases, records)
-        errored_streak = errored_streak + 1 if result.majority == scoring.ERROR else 0
-        if errored_streak >= MAX_CONSECUTIVE_ERRORED_CASES:
-            logger.error("%d consecutive cases failed (likely the provider's daily cap); "
-                         "stopping. Resume later with: run --resume %s", errored_streak, out_path)
-            for _ in range(errored_streak):  # don't keep the errored rows; resume retries them
-                records.pop()
-            _write(out_path, meta, cases, records)
-            raise ProviderUnavailable(str(out_path))
+        _write(out_path, meta, cases, records)  # sync: no interleaving between tasks
+
+    await asyncio.gather(*(run_case(case) for case in todo))
+    _write(out_path, meta, cases, records)
+    if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES or len(records) < len(cases):
+        raise ProviderUnavailable(str(out_path))
     return out_path
 
 
@@ -457,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--variant", choices=sorted(VARIANTS), default="baseline")
     p_run.add_argument("--repeats", type=int, default=3)
     p_run.add_argument("--pace", type=float, default=2.0, help="seconds between model calls")
+    p_run.add_argument("--concurrency", type=int, default=4,
+                       help="cases run in parallel (keep under the provider's rate limit)")
     p_run.add_argument("--retries", type=int, default=6)
     p_run.add_argument("--model-only", action="store_true",
                        help="skip deterministic fast paths; measure the model on every case")
