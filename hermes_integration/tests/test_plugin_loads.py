@@ -561,3 +561,57 @@ def test_hidden_tools_descriptions_discourage_tool_invention() -> None:
         "set_layer_style description should mention add_layer_to_map so "
         "the LLM knows the layer must be on the map first"
     )
+
+
+# ---------------------------------------------------------------------------
+# Profile selection contract (profiles.py owns names, membership and words)
+# ---------------------------------------------------------------------------
+
+
+def _profiles() -> ModuleType:
+    _load_plugin_module()
+    return sys.modules["ingabe_sage.profiles"]
+
+
+def test_runtime_uses_the_plugin_profile_names() -> None:
+    from src.services.hermes_runtime import HERMES_CORE_TOOLSET, HERMES_INGABE_TOOLSETS
+
+    profiles = _profiles()
+    assert HERMES_INGABE_TOOLSETS == profiles.ALL_TOOLSETS
+    assert HERMES_CORE_TOOLSET == profiles.CORE_TOOLSET
+
+
+def test_every_registered_tool_is_reachable_by_naming_it() -> None:
+    """A request that names a tool must open the profile that holds it."""
+    profiles = _profiles()
+    ctx = _FakeCtx()
+    _load_plugin_module().register(ctx)
+    unreachable = sorted(
+        f"{t['name']} -> {t['toolset']}"
+        for t in ctx.tools
+        if t["toolset"] not in profiles.select_profiles(t["name"].replace("_", " "))
+    )
+    assert unreachable == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("show the fields with drought stress", "ingabe-sage-agri-field"),
+        ("what are the emissions in Huye", "ingabe-sage-agri-risk"),
+        ("how many buildings are in this orthophoto", "ingabe-sage-raster-vision"),
+        ("list my layers", "ingabe-sage-map-view"),
+        ("what are the capabilities of the engine", "ingabe-sage-raster-engine"),
+    ],
+)
+def test_plural_requests_open_the_owning_profile(text: str, expected: str) -> None:
+    assert expected in _profiles().select_profiles(text)
+
+
+def test_neutral_request_threshold() -> None:
+    profiles = _profiles()
+    n = profiles.NEUTRAL_REQUEST_MIN_TOKENS
+    short = " ".join(f"word{i}" for i in range(n - 1))
+    long = " ".join(f"word{i}" for i in range(n))
+    assert profiles.select_profiles(short) == {profiles.CORE_TOOLSET}
+    assert profiles.select_profiles(long) == {profiles.CORE_TOOLSET, profiles.MAP_VIEW_TOOLSET}

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import importlib.util
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ import queue as _q
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 # Module-level constants used by run_sage_turn_via_hermes and its
@@ -55,66 +57,31 @@ from typing import Any
 # ~600 lines to find the sentinel/interval definitions).
 _SENTINEL_DONE = object()
 CANCEL_POLL_INTERVAL_SECONDS = 1.0
-HERMES_INGABE_TOOLSETS = (
-    "ingabe-sage-core",
-    "ingabe-sage-map-view",
-    "ingabe-sage-map-data",
-    "ingabe-sage-map-process",
-    "ingabe-sage-raster-engine",
-    "ingabe-sage-raster-vision",
-    "ingabe-sage-raster-analysis",
-    "ingabe-sage-raster-sensor",
-    "ingabe-sage-agri-field",
-    "ingabe-sage-agri-weather",
-    "ingabe-sage-agri-risk",
-    "ingabe-sage-brain",
-)
+def _load_profiles() -> Any:
+    """Load the plugin's profiles.py, the one owner of Sage tool profiles.
 
-_HERMES_PROFILE_KEYWORDS = {
-    "ingabe-sage-map-view": {
-        "map", "layer", "show", "display", "zoom", "style", "render",
-        "boundary", "geojson", "location",
-    },
-    "ingabe-sage-map-data": {
-        "database", "postgis", "duckdb", "sql", "query", "table",
-    },
-    "ingabe-sage-map-process": {
-        "buffer", "clip", "intersect", "intersection", "dissolve",
-        "reproject", "aggregate", "join", "grid", "geometry", "calculate",
-    },
-    "ingabe-sage-raster-engine": {
-        "spatial", "engine", "capability", "capabilities", "geolibre",
-        "geoprocessing", "whitebox", "wasi", "wasm",
-    },
-    "ingabe-sage-raster-vision": {
-        "raster", "orthophoto", "drone", "pixel", "image", "imagery",
-        "building", "roof", "road", "tree", "water", "flood", "object",
-        "mask", "segment", "fastsam",
-    },
-    "ingabe-sage-raster-analysis": {
-        "raster", "pixel", "spectral", "geotiff", "cog", "dem", "terrain",
-        "hydrology", "lidar", "zonal", "statistics", "compare", "health",
-    },
-    "ingabe-sage-raster-sensor": {
-        "alos", "cygnss", "sar", "radar", "soil", "moisture",
-    },
-    "ingabe-sage-agri-field": {
-        "crop", "field", "farm", "soil", "ndvi", "vegetation", "satellite",
-        "sentinel", "landsat", "agriculture", "parcel", "management", "zone",
-    },
-    "ingabe-sage-agri-weather": {
-        "weather", "rain", "forecast", "temperature", "evapotranspiration",
-        "dry", "spell",
-    },
-    "ingabe-sage-agri-risk": {
-        "risk", "yield", "drought", "insurance", "anomaly", "stress",
-        "food", "security", "emission", "exposure", "trigger",
-    },
-    "ingabe-sage-brain": {
-        "remember", "brain", "previous", "history", "entity",
-        "observation", "trajectory",
-    },
-}
+    The plugin directory is not an importable package name (it has a
+    hyphen) and is copied into ~/.hermes/plugins at boot, so it is loaded
+    by path. It is stdlib-only. Missing file = broken image: fail at import.
+    """
+    path = Path(
+        os.environ.get(
+            "HERMES_PLUGIN_PROFILES_PATH",
+            Path(__file__).resolve().parents[2]
+            / "hermes_integration" / "plugins" / "ingabe-sage" / "profiles.py",
+        )
+    )
+    spec = importlib.util.spec_from_file_location("ingabe_sage_profiles", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Ingabe Sage profiles not found at {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_PROFILES = _load_profiles()
+HERMES_INGABE_TOOLSETS: tuple[str, ...] = _PROFILES.ALL_TOOLSETS
+HERMES_CORE_TOOLSET: str = _PROFILES.CORE_TOOLSET
 
 # Hermes upstream emits these substrings inside `result["final_response"]`
 # when an LLM call fails. A match makes the turn raise so the caller falls
@@ -189,20 +156,8 @@ def select_hermes_toolsets(
     """
 
     configured = set(configured_toolsets)
-    selected = {"ingabe-sage-core"}
-    # Treat snake_case tool names like natural-language phrases so explicit
-    # requests such as `get_spatial_engine_capabilities` activate the same
-    # profile as "spatial engine capabilities".
-    tokens = set(re.findall(r"[a-z0-9]+", user_text.lower()))
-    for toolset, keywords in _HERMES_PROFILE_KEYWORDS.items():
-        if tokens & keywords:
-            selected.add(toolset)
-
-    # A complex but domain-neutral request still benefits from map operations;
-    # core-only remains appropriate for small talk and session questions.
-    if len(selected) == 1 and len(tokens) >= 8:
-        selected.add("ingabe-sage-map-view")
-
+    # The plugin's profiles.py owns which words open which profile.
+    selected = _PROFILES.select_profiles(user_text)
     return [
         name
         for name in HERMES_INGABE_TOOLSETS
@@ -500,7 +455,7 @@ async def run_sage_turn_via_hermes(
     cfg = _load_gateway_config()
     configured_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
     enabled_toolsets = select_hermes_toolsets(configured_toolsets, last_user_text)
-    if "ingabe-sage-core" not in enabled_toolsets:
+    if HERMES_CORE_TOOLSET not in enabled_toolsets:
         raise RuntimeError("Hermes is missing the required Ingabe core toolset")
     try:
         fallback_model = GatewayRunner._load_fallback_model()

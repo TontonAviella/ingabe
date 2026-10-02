@@ -7,6 +7,8 @@ only exposing the tools relevant to the current task.
 """
 from __future__ import annotations
 
+import re
+
 CORE_TOOLSET = "ingabe-sage-core"
 MAP_VIEW_TOOLSET = "ingabe-sage-map-view"
 MAP_DATA_TOOLSET = "ingabe-sage-map-data"
@@ -41,7 +43,7 @@ _CORE_TOOLS = {
 }
 
 _BRAIN_MARKERS = ("brain", "entity", "observation", "trajectory")
-_RASTER_ENGINE_MARKERS = ("spatial_engine", "geolibre")
+_RASTER_ENGINE_MARKERS = ("spatial_engine", "geolibre", "pipeline_evidence")
 _RASTER_SENSOR_MARKERS = (
     "alos",
     "cygnss",
@@ -60,6 +62,7 @@ _RASTER_ANALYSIS_MARKERS = (
     "pixel",
     "spectral",
     "zonal",
+    "value_distribution",
 )
 _MAP_DATA_MARKERS = (
     "postgis",
@@ -101,7 +104,115 @@ _AGRI_RISK_MARKERS = (
     "food_security",
     "emission",
     "expected_rain",
+    "exposure",
 )
+
+
+# Words in a user request that open a profile. Each profile's tool-name
+# markers above are added automatically (split on "_"), so a request that
+# names a tool always opens the profile that tool lives in.
+_EXTRA_SELECTION_WORDS = {
+    MAP_VIEW_TOOLSET: {"show", "style", "boundary", "location"},
+    MAP_DATA_TOOLSET: {"sql", "query", "table"},
+    MAP_PROCESS_TOOLSET: {
+        "intersect", "join", "grid", "geometry", "calculate",
+        # toolset_for_tool's prefix rule: native_/qgis_/gdal_ algorithms.
+        "native", "qgis", "gdal",
+    },
+    RASTER_ENGINE_TOOLSET: {
+        "spatial", "engine", "capability", "geoprocessing", "whitebox", "wasi", "wasm",
+        "fresh", "freshness", "dagster",
+    },
+    RASTER_VISION_TOOLSET: {
+        "raster", "orthophoto", "drone", "pixel", "image", "imagery", "building",
+        "roof", "road", "tree", "object", "mask", "segment", "fastsam", "house",
+    },
+    RASTER_ANALYSIS_TOOLSET: {
+        "geotiff", "cog", "dem", "terrain", "hydrology", "lidar", "statistic",
+        "compare", "health", "value", "distribution",
+    },
+    RASTER_SENSOR_TOOLSET: {"sar", "radar", "soil", "moisture"},
+    AGRI_FIELD_TOOLSET: {
+        "crop", "field", "farm", "soil", "ndvi", "vegetation", "satellite",
+        "sentinel", "landsat", "agriculture", "parcel", "management", "zone",
+        "stress", "worldcover", "imagery", "agri", "index", "indices",
+    },
+    AGRI_WEATHER_TOOLSET: {"rain", "rainfall", "temperature", "dry", "spell"},
+    AGRI_RISK_TOOLSET: {"yield", "stress", "trigger", "exposure", "payout"},
+    BRAIN_TOOLSET: {"remember", "previous", "history"},
+}
+
+_MARKERS_BY_TOOLSET = {
+    BRAIN_TOOLSET: _BRAIN_MARKERS,
+    RASTER_ENGINE_TOOLSET: _RASTER_ENGINE_MARKERS,
+    RASTER_SENSOR_TOOLSET: _RASTER_SENSOR_MARKERS,
+    RASTER_VISION_TOOLSET: _RASTER_VISION_MARKERS,
+    RASTER_ANALYSIS_TOOLSET: _RASTER_ANALYSIS_MARKERS,
+    MAP_DATA_TOOLSET: _MAP_DATA_MARKERS,
+    MAP_PROCESS_TOOLSET: _MAP_PROCESS_MARKERS,
+    MAP_VIEW_TOOLSET: _MAP_VIEW_MARKERS,
+    AGRI_WEATHER_TOOLSET: _AGRI_WEATHER_MARKERS,
+    AGRI_RISK_TOOLSET: _AGRI_RISK_MARKERS,
+}
+
+SELECTION_WORDS: dict[str, frozenset[str]] = {
+    toolset: frozenset(
+        words
+        | {
+            part
+            for marker in _MARKERS_BY_TOOLSET.get(toolset, ())
+            for part in marker.split("_")
+            if len(part) > 2
+        }
+    )
+    for toolset, words in _EXTRA_SELECTION_WORDS.items()
+}
+
+# A domain-neutral request this long still gets map tools; shorter ones
+# (small talk, "who am I") stay on the core profile.
+NEUTRAL_REQUEST_MIN_TOKENS = 8
+
+# Shorter markers ("map", "rgb") would match inside unrelated words.
+_SUBSTRING_MARKER_MIN_LEN = 5
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def request_tokens(text: str) -> set[str]:
+    """Lower-case word tokens plus naive singulars ("fields" -> "field")."""
+    tokens = _words(text)
+    singulars = set()
+    for token in tokens:
+        if len(token) > 4 and token.endswith("ies"):
+            singulars.add(token[:-3] + "y")
+        elif len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+            singulars.add(token[:-1])
+    return tokens | singulars
+
+
+def select_profiles(user_text: str) -> set[str]:
+    """Profiles a request should expose; always includes the core profile."""
+    tokens = request_tokens(user_text)
+    selected = {CORE_TOOLSET}
+    for toolset, words in SELECTION_WORDS.items():
+        if tokens & words:
+            selected.add(toolset)
+    # QGIS-style names run words together ("zonalstatisticsfb"), so also
+    # match each profile's longer single-word markers inside a token, the
+    # same substring rule toolset_for_tool uses.
+    for toolset, markers in _MARKERS_BY_TOOLSET.items():
+        if any(
+            marker in token
+            for marker in markers
+            if "_" not in marker and len(marker) >= _SUBSTRING_MARKER_MIN_LEN
+            for token in tokens
+        ):
+            selected.add(toolset)
+    if len(selected) == 1 and len(_words(user_text)) >= NEUTRAL_REQUEST_MIN_TOKENS:
+        selected.add(MAP_VIEW_TOOLSET)
+    return selected
 
 
 def toolset_for_tool(name: str) -> str:
