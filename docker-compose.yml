@@ -141,6 +141,7 @@ services:
       - ./FastSAM-s.pt:/app/FastSAM-s.pt:ro
       - ./docs:/app/docs
       - ./scripts:/app/scripts
+      - ./evals:/app/evals
       - ./hermes_integration:/app/hermes_integration
       - ./services/api_monitor.py:/app/api_monitor.py
       - ./services/api_insurance.py:/app/api_insurance.py
