@@ -68,12 +68,21 @@ def run_alembic_operation():
     return _run_alembic_operation
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_migrations_run():
-    """Run Alembic migrations once per pytest session/worker before any
-    test executes.
+def pytest_sessionstart(session):
+    """Run Alembic migrations once per pytest process before any test
+    executes.
 
-    Why this needs to exist: many tests connect to PostgreSQL directly
+    This is a hook, not an autouse session fixture, on purpose. A fixture's
+    setup runs inside the first test's pytest-timeout budget (pytest.ini:
+    timeout = 60, method = thread). A fresh database runs the whole
+    migration chain, including the Rwanda boundary re-seed that downloads
+    from geoboundaries.org, while every other xdist worker waits on the
+    advisory lock. When that took over 60 s, pytest-timeout `os._exit()`-ed
+    every worker at once (`[gwN] node down: Not properly terminated` on each
+    worker's first test; PRs #77, #78, #79 on 2026-10-02). Hooks run outside
+    the per-test timeout.
+
+    Why migrations must run up front: many tests connect to PostgreSQL directly
     via `asyncpg.connect(_build_postgres_url())` and expect cache tables
     (weather_daily_cache, ndvi_district_cache, etc.) to exist. Previously
     they got lucky — the `client` session fixture would call
@@ -86,13 +95,12 @@ def _ensure_migrations_run():
 
     `run_migrations` already uses a Postgres advisory lock so multiple
     workers calling it concurrently is safe — only one actually applies
-    the upgrade, the others wait then no-op. Making this autouse forces
-    every session to wait on that lock before tests start.
+    the upgrade, the others wait then no-op. Running it here forces every
+    session to wait on that lock before tests start.
     """
     from src.database.migrate import run_migrations
 
     asyncio.run(run_migrations())
-    yield
 
 
 @pytest.fixture(scope="session")
