@@ -144,6 +144,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-02** `Dockerfile.postgres` builds on Debian 11 (EOL); apt.postgresql.org
+  archived `bullseye-pgdg`, so CI failed on unchanged code. Rule: an image on an
+  EOL distro points apt at the archive explicitly; plan the base upgrade. Gate: review only.
 - **2026-10-02** The ruff CI action was unpinned, so it silently moved from
   0.15.21 to 0.16.10 and failed on 3,383 findings in unchanged code. Rule:
   pin every CI tool version; upgrade it in its own PR. Gate: review only.
