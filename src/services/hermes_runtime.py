@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import importlib.util
 import json
 import logging
 import os
@@ -47,6 +48,7 @@ import queue as _q
 import re
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 # Module-level constants used by run_sage_turn_via_hermes and its
@@ -55,11 +57,35 @@ from typing import Any
 # ~600 lines to find the sentinel/interval definitions).
 _SENTINEL_DONE = object()
 CANCEL_POLL_INTERVAL_SECONDS = 1.0
-HERMES_INGABE_TOOLSETS = ("ingabe-sage", "ingabe-sage-proxied")
+def _load_profiles() -> Any:
+    """Load the plugin's profiles.py, the one owner of Sage tool profiles.
+
+    The plugin directory is not an importable package name (it has a
+    hyphen) and is copied into ~/.hermes/plugins at boot, so it is loaded
+    by path. It is stdlib-only. Missing file = broken image: fail at import.
+    """
+    path = Path(
+        os.environ.get(
+            "HERMES_PLUGIN_PROFILES_PATH",
+            Path(__file__).resolve().parents[2]
+            / "hermes_integration" / "plugins" / "ingabe-sage" / "profiles.py",
+        )
+    )
+    spec = importlib.util.spec_from_file_location("ingabe_sage_profiles", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Ingabe Sage profiles not found at {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_PROFILES = _load_profiles()
+HERMES_INGABE_TOOLSETS: tuple[str, ...] = _PROFILES.ALL_TOOLSETS
+HERMES_CORE_TOOLSET: str = _PROFILES.CORE_TOOLSET
 
 # Hermes upstream emits these substrings inside `result["final_response"]`
-# when an LLM call fails. Used to route the response to kue_notify_error
-# (red toast) instead of the normal chat bubble. Brittle by design —
+# when an LLM call fails. A match makes the turn raise so the caller falls
+# back to the legacy planner instead of persisting it. Brittle by design —
 # pinned against hermes-agent v2026.5.7 emission strings. If a future
 # Hermes bump changes the wording, this list MUST be updated or errors
 # will silently show as normal Sage replies.
@@ -73,8 +99,31 @@ _HERMES_ERROR_MARKERS = (
 # 5xx range is matched as a regex to avoid false positives like
 # "HTTP 5ms" or "HTTP 5xx series" appearing in a normal Sage reply.
 _HERMES_5XX_RE = re.compile(r"HTTP 5\d\d")
+# Hermes' placeholder when the model produced no content. A real one-word
+# reply such as "empty" is a valid answer, so it is not listed here.
+_HERMES_EMPTY_REPLIES = frozenset({"", "(empty)"})
 
 logger = logging.getLogger(__name__)
+
+
+def hermes_result_failure_reason(
+    result: Any,
+    assistant_text: str,
+) -> str | None:
+    """Return a stable failure reason when Hermes did not finish a real turn."""
+
+    normalized = assistant_text.strip().lower()
+    looks_like_error = (
+        any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
+        or bool(_HERMES_5XX_RE.search(assistant_text))
+        or normalized in _HERMES_EMPTY_REPLIES
+    )
+    incomplete = isinstance(result, dict) and result.get("completed") is False
+    if not looks_like_error and not incomplete:
+        return None
+    if isinstance(result, dict):
+        return str(result.get("turn_exit_reason") or "unusable_response")
+    return "unusable_response"
 
 
 # ---------------------------------------------------------------------------
@@ -82,17 +131,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def hermes_is_enabled() -> bool:
-    """True iff MUNDI_USE_HERMES env var is set to a truthy value.
+    """Whether `process_chat_interaction_task` routes complex turns to Hermes.
 
-    Used by `process_chat_interaction_task` to fork dispatch. Default
-    behavior (env unset or '0') is the existing hand-rolled chat loop.
+    MUNDI_USE_HERMES: 1/true/yes forces it on; 'auto' turns it on only when
+    OPENROUTER_API_KEY is set, because install-hermes-plugin.sh configures
+    Hermes with provider=openrouter and any other key would be sent there.
+    Unset or any other value (the default) keeps the hand-rolled chat loop.
     """
     val = os.environ.get("MUNDI_USE_HERMES", "0").strip().lower()
-    return val in {"1", "true", "yes"}
+    if val in {"1", "true", "yes"}:
+        return True
+    if val != "auto":
+        return False
+    return bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
 
 
-def select_hermes_toolsets(configured_toolsets: list[str]) -> list[str]:
-    """Keep the web Sage runtime on Ingabe's scoped tools only.
+def select_hermes_toolsets(
+    configured_toolsets: list[str],
+    user_text: str = "",
+) -> list[str]:
+    """Expose only task-relevant Ingabe profiles to the Sage planner.
 
     Hermes ships terminal, file, browser, web, delegation, and other general
     agent toolsets. They add schema tokens and capabilities that this map UI
@@ -101,7 +159,13 @@ def select_hermes_toolsets(configured_toolsets: list[str]) -> list[str]:
     """
 
     configured = set(configured_toolsets)
-    return [name for name in HERMES_INGABE_TOOLSETS if name in configured]
+    # The plugin's profiles.py owns which words open which profile.
+    selected = _PROFILES.select_profiles(user_text)
+    return [
+        name
+        for name in HERMES_INGABE_TOOLSETS
+        if name in configured and name in selected
+    ]
 
 
 # Plugins must be discovered ONCE per process. discover_and_load() walks
@@ -273,8 +337,8 @@ async def run_sage_turn_via_hermes(
       1. Lazy-load Hermes plugins (once per process).
       2. Set IngabeContext ContextVar for this request.
       3. Pull conversation history from DB; extract the last user message.
-      4. Construct AIAgent(platform="api_server", ...) with our plugin
-         toolsets activated (`ingabe-sage`, `ingabe-sage-proxied`).
+      4. Construct AIAgent(platform="api_server", ...) with only the Ingabe
+         tool profiles relevant to this request.
       5. Stream tokens out via stream_delta_callback → kue_stream_token.
       6. Run agent.run_conversation in an executor (it's sync).
       7. Persist the final assistant text. Emit WS done=True.
@@ -393,10 +457,9 @@ async def run_sage_turn_via_hermes(
     model = _resolve_gateway_model()
     cfg = _load_gateway_config()
     configured_toolsets = sorted(_get_platform_tools(cfg, "api_server"))
-    enabled_toolsets = select_hermes_toolsets(configured_toolsets)
-    if set(enabled_toolsets) != set(HERMES_INGABE_TOOLSETS):
-        missing = sorted(set(HERMES_INGABE_TOOLSETS) - set(enabled_toolsets))
-        raise RuntimeError(f"Hermes is missing required Ingabe toolsets: {missing}")
+    enabled_toolsets = select_hermes_toolsets(configured_toolsets, last_user_text)
+    if HERMES_CORE_TOOLSET not in enabled_toolsets:
+        raise RuntimeError("Hermes is missing the required Ingabe core toolset")
     try:
         fallback_model = GatewayRunner._load_fallback_model()
     except Exception:
@@ -550,6 +613,8 @@ async def run_sage_turn_via_hermes(
         )
 
     # --- 7. Cancellation watchdog -----------------------------------------
+    user_cancelled = [False]
+
     async def _cancel_watchdog():
         from src.dependencies.redis_client import get_redis_client
         cancel_key = f"messages:{map_id}:cancelled"
@@ -559,6 +624,7 @@ async def run_sage_turn_via_hermes(
                 redis = get_redis_client()
                 if redis.get(cancel_key):
                     redis.delete(cancel_key)
+                    user_cancelled[0] = True
                     agent = agent_ref[0]
                     if agent is not None:
                         try:
@@ -576,6 +642,7 @@ async def run_sage_turn_via_hermes(
     drainer_task: asyncio.Task | None = None
     persist_task: asyncio.Task | None = None
     cancel_task: asyncio.Task | None = None
+    sentinels_sent = False
     try:
         loop = asyncio.get_running_loop()
         drainer_task = asyncio.create_task(_drain_to_websocket())
@@ -612,8 +679,19 @@ async def run_sage_turn_via_hermes(
         # it's also the sentinel _on_delta drops; use a private object.
         delta_queue.put(_SENTINEL_DONE)
         persist_queue.put(_SENTINEL_DONE)
+        sentinels_sent = True
         await asyncio.wait_for(drainer_task, timeout=2.0)
         await asyncio.wait_for(persist_task, timeout=5.0)  # DB writes are slower
+
+        if user_cancelled[0]:
+            # The user pressed stop: Hermes returns an "interrupted" result,
+            # which is the requested outcome, not a failure to toast.
+            logger.info("Hermes turn ended by user cancellation (conv=%s)", conversation.id)
+            try:
+                await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
+            except Exception:
+                logger.debug("kue_stream_token done=True failed", exc_info=True)
+            return
 
         # Persist the assistant text + WS done signal
         assistant_text = "".join(accumulated).strip()
@@ -634,26 +712,17 @@ async def run_sage_turn_via_hermes(
                         break
 
         if assistant_text:
-            # Heuristic: if the text looks like a Hermes-side API error, push
-            # it to the error toast channel (red bar) so the user can react —
-            # don't pretend it's a normal assistant reply. Persist it as an
-            # assistant message anyway so the chat reload still shows the trail.
-            # Marker list lives at module top (_HERMES_ERROR_MARKERS) — change
-            # it there to avoid drift. 5xx uses a regex so "HTTP 5ms" or
-            # "HTTP 5xx series" in a normal reply doesn't false-positive.
-            _looks_like_error = (
-                any(marker in assistant_text for marker in _HERMES_ERROR_MARKERS)
-                or bool(_HERMES_5XX_RE.search(assistant_text))
-            )
-            if _looks_like_error:
-                try:
-                    await kue_notify_error(
-                        conversation.id,
-                        # First line — keep it short; the toast UI truncates.
-                        assistant_text.split("\n", 1)[0][:240],
-                    )
-                except Exception:
-                    logger.debug("kue_notify_error push failed", exc_info=True)
+            # Heuristic: if the text looks like a Hermes-side API error or the
+            # turn did not complete, raise instead of persisting it so the
+            # caller can fall back to the legacy planner. Marker list lives at
+            # module top (_HERMES_ERROR_MARKERS) — change it there to avoid
+            # drift. 5xx uses a regex so "HTTP 5ms" or "HTTP 5xx series" in a
+            # normal reply doesn't false-positive.
+            failure_reason = hermes_result_failure_reason(result, assistant_text)
+            if failure_reason:
+                raise RuntimeError(
+                    f"Hermes returned an unusable result ({failure_reason})"
+                )
             try:
                 await _persist_assistant_message(
                     map_id, user_id, conversation.id, assistant_text,
@@ -668,15 +737,7 @@ async def run_sage_turn_via_hermes(
                 "Hermes returned empty response for conv=%s — nothing to persist; result=%r",
                 conversation.id, (str(result)[:200] if result else None),
             )
-            # Even with no recoverable text, give the user *some* signal so
-            # the disappearing-chip-with-no-response UX never happens again.
-            try:
-                await kue_notify_error(
-                    conversation.id,
-                    "Sage finished with no response. Check server logs or retry the request.",
-                )
-            except Exception:
-                logger.debug("kue_notify_error fallback push failed", exc_info=True)
+            raise RuntimeError("Hermes returned no usable assistant response")
 
         try:
             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
@@ -698,6 +759,12 @@ async def run_sage_turn_via_hermes(
             pass
         raise
     finally:
+        # The drainers block an executor thread in queue.get(); cancelling the
+        # asyncio task does not release that thread, so a failed turn must
+        # still send the sentinels or it leaks two threads per failure.
+        if not sentinels_sent:
+            delta_queue.put(_SENTINEL_DONE)
+            persist_queue.put(_SENTINEL_DONE)
         for t in (drainer_task, persist_task, cancel_task):
             if t and not t.done():
                 t.cancel()

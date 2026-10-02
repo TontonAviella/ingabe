@@ -4,6 +4,15 @@ All notable changes to mundi.ai will be documented in this file.
 
 ## Unreleased
 
+### Changed
+- Use 4-million-pixel direct FastSAM masks for building review and remove the low-precision color-only roof supplement; label candidate confidence as a heuristic screening score rather than a model probability.
+- Enable Hermes behind the Sage name for complex local planning when model credentials are available, while keeping deterministic Rwanda boundary and FastSAM workflows first.
+- Split Sage's 95 Hermes tools into bounded procedural profiles so each request exposes only relevant map, raster, agriculture, or memory schemas.
+
+### Fixed
+- Fall back to the established Sage planner when Hermes fails, returns an incomplete turn, or emits an empty response instead of presenting provider output as a valid answer.
+- Mount the live Hermes plugin into local Compose, persist its generated HMAC key with owner-only permissions, and make runtime/deploy audits use the container virtual environment.
+
 ## [0.5.5.1] - 2026-07-12
 
 ### Added

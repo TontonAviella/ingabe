@@ -124,6 +124,10 @@ class ChunkInput:
     token_count: Optional[int] = None
 
 
+class BrainPageNotFoundError(ValueError):
+    """The page slug does not exist (or was deleted mid-operation)."""
+
+
 @dataclass
 class GraphNode:
     slug: str
@@ -824,13 +828,23 @@ class BrainService:
     async def upsert_chunks(
         self, conn: asyncpg.Connection, slug: str, chunks: list[ChunkInput]
     ) -> None:
-        page = await conn.fetchrow(
-            "SELECT id FROM brain_pages WHERE slug = $1", slug
-        )
-        if not page:
-            raise ValueError(f"Page not found: {slug}")
-        page_id = page["id"]
+        # Embedding generation can take seconds. A user may delete the page
+        # after embed_page() reads it but before these chunks are persisted.
+        # Hold a key-share lock for the complete replacement so a concurrent
+        # DELETE waits instead of producing a foreign-key violation mid-write.
+        async with conn.transaction():
+            page = await conn.fetchrow(
+                "SELECT id FROM brain_pages WHERE slug = $1 FOR KEY SHARE", slug
+            )
+            if not page:
+                raise BrainPageNotFoundError(f"Page not found: {slug}")
+            page_id = page["id"]
 
+            await self._replace_chunks(conn, page_id, chunks)
+
+    async def _replace_chunks(
+        self, conn: asyncpg.Connection, page_id: int, chunks: list[ChunkInput]
+    ) -> None:
         if not chunks:
             await conn.execute(
                 "DELETE FROM brain_content_chunks WHERE page_id = $1", page_id

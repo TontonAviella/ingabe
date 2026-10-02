@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
 
 # ---------------------------------------------------------------------------
 # Tool category map
@@ -1129,7 +1130,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             {
                 "target_classes": targets,
                 "max_candidates": 1_500,
-                "max_sample_pixels": 2_000_000,
+                "max_sample_pixels": DEFAULT_MAX_SAMPLE_PIXELS,
                 "min_area_m2": 8.0,
                 "max_area_m2": _raster_object_max_area_m2(targets),
                 "confidence_threshold": 0.65 if building_only else 0.42,

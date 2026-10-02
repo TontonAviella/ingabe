@@ -31,10 +31,14 @@ set -eo pipefail
 PLUGIN_NAME="${PLUGIN_NAME:-ingabe-sage}"
 PLUGIN_SRC="${PLUGIN_SRC:-/app/hermes_integration/plugins/${PLUGIN_NAME}}"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-HERMES_FLAG="${MUNDI_USE_HERMES:-0}"
+HERMES_FLAG="$(printf '%s' "${MUNDI_USE_HERMES:-0}" | tr '[:upper:]' '[:lower:]')"
 
 if [ ! -d "$PLUGIN_SRC" ]; then
-  if [ "$HERMES_FLAG" = "1" ] || [ "$HERMES_FLAG" = "true" ]; then
+  # Only an explicit opt-in is fatal. 'auto' means "use Hermes if it is
+  # available", so a missing plugin degrades to the legacy planner instead of
+  # crash-looping the container.
+  # Same explicit-on values as hermes_runtime.hermes_is_enabled.
+  if [ "$HERMES_FLAG" = "1" ] || [ "$HERMES_FLAG" = "true" ] || [ "$HERMES_FLAG" = "yes" ]; then
     echo "[install-hermes-plugin] FATAL: MUNDI_USE_HERMES=$HERMES_FLAG but $PLUGIN_SRC missing" >&2
     echo "[install-hermes-plugin] The image was built without the plugin baked in." >&2
     exit 1
@@ -74,10 +78,8 @@ fi
 
 # Atomic rewrite: write to .tmp, mv into place. Survives ENOSPC mid-write
 # (the partial .tmp is discarded) and propagates env changes on every boot.
-# Ships the full Hermes default toolset (browser, terminal, code_execution,
-# cronjob, delegation, file, image_gen, memory, session_search, skills,
-# todo, vision, web) alongside our plugin. See memory:
-# project_hermes_tool_surface_trim for the opt-in trim.
+# Hermes may know about general host toolsets, but the web runtime enables only
+# Ingabe's task-scoped profiles for each Sage turn.
 # Auxiliary model: Hermes uses this cheaper model for context
 # compression, summarization, and tool-routing decisions. Without it,
 # the primary Nemotron Super 3 handles those operations too — costing

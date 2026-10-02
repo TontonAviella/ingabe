@@ -14,6 +14,8 @@ from src.services.raster_object_layer_persistence import (
     persist_raster_object_candidate_layer,
 )
 from src.services.raster_object_candidates import (
+    DEFAULT_MAX_SAMPLE_PIXELS,
+    MIN_SAMPLE_PIXELS,
     RasterObjectCandidateInput,
     analyze_raster_object_candidates as analyze_raster_object_candidates_service,
 )
@@ -45,9 +47,12 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
     max_sample_pixels: int = Field(
         ...,
+        ge=MIN_SAMPLE_PIXELS,
+        le=DEFAULT_MAX_SAMPLE_PIXELS,
         description=(
-            "Maximum pixels sampled from the raster before segmentation. Use 300000-1200000 live; "
-            "higher detects smaller objects but is slower."
+            f"Maximum pixels sampled from the raster before segmentation. Use "
+            f"{DEFAULT_MAX_SAMPLE_PIXELS} (the maximum) for building masks so small "
+            "roofs remain visible; lower values are faster but reduce recall."
         ),
     )
     min_area_m2: float = Field(
@@ -60,7 +65,10 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
     confidence_threshold: float = Field(
         ...,
-        description="Minimum candidate confidence from 0 to 1. Use 0.35 for broad recall, 0.55+ for stricter screening.",
+        description=(
+            "Minimum heuristic screening score from 0 to 1. This is based on "
+            "shape and raster evidence, not a learned FastSAM class probability."
+        ),
     )
     engine_preference: str = Field(
         ...,

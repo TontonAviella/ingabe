@@ -2403,10 +2403,14 @@ async def process_chat_interaction_task(
         ):
             return
         logger.info(
-            "MUNDI_USE_HERMES=1 → routing chat turn through Hermes runtime "
+            "Routing complex Sage turn through scoped Hermes runtime "
             "(map=%s user=%s conversation=%s)",
             map_id, user_id, conversation.id,
         )
+        # No fallback to the legacy planner: by the time Hermes fails it may
+        # have streamed text or run tools with side effects, and a second
+        # planner would answer (and act) twice. The runtime already shows the
+        # error toast and ends the turn.
         return await run_sage_turn_via_hermes(
             request=request, map_id=map_id, session=session, user_id=user_id,
             chat_args=chat_args, map_state=map_state, conversation=conversation,

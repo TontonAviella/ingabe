@@ -105,7 +105,7 @@ curl --silent --show-error --fail --max-time 5 http://127.0.0.1:8000/ \
 curl --silent --show-error --fail --max-time 5 \
   http://127.0.0.1:9000/minio/health/live >/dev/null \
   || fail "local MinIO is not healthy"
-docker exec mundi-app python -m src.services.runtime_audit >/dev/null \
+docker exec mundi-app /app/.venv/bin/python -m src.services.runtime_audit >/dev/null \
   || fail "local runtime capability audit failed"
 
 log "API, frontend, FastSAM, Dagster, Postgres, Redis, QGIS, and MinIO are healthy"

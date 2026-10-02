@@ -31,7 +31,7 @@ from src.llm_defaults import (
     DEFAULT_CHAT_MODEL,
     resolve_chat_endpoint,
 )
-from src.services.brain_service import BrainService, ChunkInput
+from src.services.brain_service import BrainPageNotFoundError, BrainService, ChunkInput
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +501,11 @@ async def embed_page(
             )
         )
 
-    await brain.upsert_chunks(conn, slug, chunk_inputs)
+    try:
+        await brain.upsert_chunks(conn, slug, chunk_inputs)
+    except BrainPageNotFoundError:
+        logger.info("Embedding result discarded because page '%s' was deleted", slug)
+        return 0
     logger.info("Embedded page '%s': %d chunks", slug, len(chunk_inputs))
     return len(chunk_inputs)
 
