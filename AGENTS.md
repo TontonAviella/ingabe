@@ -42,6 +42,13 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 
 <!-- gitnexus:end -->
 
+## Coding standards
+
+`CODING_STANDARDS.md` is the single source of rules for how code is written here: layers, design principles, the hard invariants H1–H3, and the Lessons log. Read it before editing code; do not copy its rules into this file or any prompt.
+
+- The gate `python scripts/check_standards.py` runs in CI (`lint.yml`, job `standards`) and as a Claude Code Stop hook. Debt that predates the rules is in `scripts/standards_baseline.json`, which may only shrink.
+- When a mistake is found or fixed, run the `standards-retro` skill (`.claude/skills/standards-retro/SKILL.md`) so it becomes a Lessons log entry and, where possible, a gate.
+
 ## Harness Discipline
 
 - Keep agent instructions as pointers, not long prompt dumps.

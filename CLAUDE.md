@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Coding standards (read first)
+
+`CODING_STANDARDS.md` is the single source of rules for how code is written in this repo: layers, design principles, hard invariants H1–H3, and the Lessons log. It overrides any conflicting habit or older note in this file. Do not copy its rules here or into prompts — point to it.
+
+- Gate: `python scripts/check_standards.py` (CI job `standards` in `lint.yml`, and a Stop hook in `.claude/settings.json`). New violations fail; fixed debt must be deleted from `scripts/standards_baseline.json` in the same commit; never use `--write-baseline` to admit new debt.
+- After any real mistake, run the `standards-retro` skill to log the lesson and gate it where possible.
+
 ## What is Mundi.ai
 
 AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and point cloud data. Connects to PostGIS databases and uses LLMs (OpenAI function calling) to invoke geoprocessing algorithms and edit symbology.
@@ -112,7 +119,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 ## CI/CD
 
 - **cicd.yml**: Docker build via Depot → run tests → push to GCP Artifact Registry
-- **lint.yml**: Ruff + basedpyright + Biome (runs on push to main and PRs)
+- **lint.yml**: coding-standards gate (`standards` job, see `CODING_STANDARDS.md`) + Ruff + basedpyright + Biome (runs on push to main and PRs)
 
 ## Key Environment Variables
 
