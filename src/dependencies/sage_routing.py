@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
 
 # ---------------------------------------------------------------------------
@@ -441,9 +442,58 @@ _ADMIN_DISPLAY_REQUEST_RE = (
 )
 
 
+_DISTRICTS_LOWER = {d.lower() for d in RWANDA_DISTRICTS}
+_ADMIN_UNITS_RE = r"(?:villages|cells|sectors)"
+
+# Rewrites into the English display phrasing the parser below understands.
+# Order matters: language translations first, then request shapes. Names are
+# kept verbatim. Kinyarwanda and French terms need native-speaker review.
+_ADMIN_PROMPT_REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # French: "Montre-moi les secteurs de Huye sur la carte"
+    (re.compile(r"(?i)\b(?:montre[sz]?|affiche[sz]?)(?:[-\s]moi)?\b"), "show me"),
+    (re.compile(r"(?i)\bsur\s+la\s+carte\b"), "on the map"),
+    (re.compile(r"(?i)\b(?:les\s+)?secteurs\s+(?:de|du|d')\s*"), "the sectors of "),
+    (re.compile(r"(?i)\b(?:les\s+)?cellules\s+(?:de|du|d')\s*"), "the cells of "),
+    (re.compile(r"(?i)\b(?:les\s+)?villages\s+(?:de|du|d')\s*"), "the villages of "),
+    (re.compile(r"(?i)\b(?:le\s+)?district\s+(?:de|du|d')\s*([A-Za-z'-]+)"), r"\1 district"),
+    # Kinyarwanda: "Nyereka akarere ka Nyanza ku ikarita"
+    (re.compile(r"(?i)\b(?:nyereka|twereka|erekana)\b"), "show me"),
+    (re.compile(r"(?i)\bku\s+ikarita\b"), "on the map"),
+    (re.compile(r"(?i)\bakarere\s+ka\s+([A-Za-z'-]+)"), r"\1 district"),
+    (re.compile(r"(?i)\bumurenge\s+wa\s+([A-Za-z'-]+)"), r"\1 sector"),
+    (re.compile(r"(?i)\bakagari\s+ka\s+([A-Za-z'-]+)"), r"\1 cell"),
+    (re.compile(r"(?i)\bumudugudu\s+wa\s+([A-Za-z'-]+)"), r"\1 village"),
+    # "Nyagatare district with its cells" -> "the cells of Nyagatare district"
+    (re.compile(rf"(?i)\b([A-Za-z'-]+)\s+district\s+with\s+(?:its|the|all)\s+(?:the\s+)?({_ADMIN_UNITS_RE})\b"),
+     r"the \2 of \1 district"),
+    # "take me to Kirehe"
+    (re.compile(r"(?i)^(?:please\s+)?(?:take|bring)\s+(?:me|us)\s+to\s+"), "show me "),
+    # Listing or counting units is answered by displaying them:
+    # "list the sectors in X", "which sectors are in X district",
+    # "how many sectors does X have", "tell me the sectors of X".
+    (re.compile(rf"(?i)^(?:please\s+)?(?:list|name|tell\s+(?:me|us)|give\s+(?:me|us)|"
+                rf"what\s+are|which|how\s+many)\s+(?:all\s+)?(?:the\s+)?({_ADMIN_UNITS_RE})\s+"
+                rf"(?:are\s+(?:there\s+)?in|does|do|in|of|within)\s+"), r"show the \1 in "),
+    (re.compile(r"(?i)\s+(?:have|has|contain|contains)\s*([?.!]*)$"), r"\1"),
+    # A bare "cells of X"
+    (re.compile(rf"(?i)^(?:the\s+)?({_ADMIN_UNITS_RE})\s+(of|in)\s+"), r"show the \1 \2 "),
+)
+
+
+def _normalize_admin_prompt(text: str) -> str:
+    prompt = " ".join(str(text or "").strip().split())
+    for pattern, replacement in _ADMIN_PROMPT_REWRITES:
+        prompt = pattern.sub(replacement, prompt)
+    # "Karushuga, Nyagatare": a place name followed by a known district.
+    place_in_district = re.match(r"^([A-Za-z][A-Za-z' -]{1,40}?)\s*,\s*([A-Za-z'-]+)\s*[?.!]*$", prompt)
+    if place_in_district and place_in_district.group(2).lower() in _DISTRICTS_LOWER:
+        prompt = f"show me {place_in_district.group(1)} in {place_in_district.group(2)}"
+    return " ".join(prompt.split())
+
+
 def detect_admin_boundary_display(text: str) -> bool:
     """True for pure Rwanda admin boundary/location display requests."""
-    stripped = " ".join(str(text or "").strip().split())
+    stripped = _normalize_admin_prompt(text)
     if not stripped or _ADMIN_ANALYSIS_BLOCKERS.search(stripped):
         return False
 
@@ -513,7 +563,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
         return None
-    prompt = " ".join(str(text or "").strip().split())
+    prompt = _normalize_admin_prompt(text)
 
     child_match = re.search(
         rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
@@ -543,11 +593,10 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     if implicit_child_match:
         child_level = implicit_child_match.group(1).lower().rstrip("s")
         parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
-        parent_level = {
-            "sector": "district",
-            "cell": "sector",
-            "village": "cell",
-        }.get(child_level)
+        parent_level = (
+            "district" if parent_name.lower() in _DISTRICTS_LOWER
+            else {"sector": "district", "cell": "sector", "village": "cell"}.get(child_level)
+        )
         if parent_level and not _is_admin_boundary_placeholder_name(parent_name):
             args = {"admin_level": child_level, "name": "*"}
             args[parent_level] = parent_name
@@ -574,6 +623,11 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     )
     if simple:
         name = _clean_admin_boundary_candidate(simple.group(1))
+        # "Busasamana in Nyanza": the tool matches names exactly, so pass the
+        # district as a filter instead of inside the name.
+        within = re.match(r"(?i)^(.+?)\s+(?:in|,)\s+([A-Za-z'-]+)$", name)
+        if within and within.group(2).lower() in _DISTRICTS_LOWER:
+            return {"admin_level": "auto", "name": within.group(1).strip(), "district": within.group(2)}
         if name and not _is_admin_boundary_placeholder_name(name):
             return {"admin_level": "auto", "name": name}
 
@@ -593,7 +647,7 @@ _RASTER_AREA_KEYWORDS = re.compile(
 )
 
 _RASTER_OBJECT_KEYWORDS = re.compile(
-    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|image|cog|"
+    r"\b(raster|drone|ortho(?:photo|mosaic)?\d*|orthophoto\d*|image|cog|"
     r"tiff|geotiff|layer|file|upload(?:ed)?|field)\b",
     re.IGNORECASE,
 )
@@ -601,7 +655,7 @@ _RASTER_OBJECT_KEYWORDS = re.compile(
 # An explicit reference to imagery. Generic words ("layer", "field", "file")
 # are not enough: "buffer the roads layer" is not a raster question.
 _RASTER_REFERENCE_KEYWORDS = re.compile(
-    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|images?|imagery|photo|"
+    r"\b(raster|drone|ortho(?:photo|mosaic)?\d*|orthophoto\d*|images?|imagery|photo|"
     r"cog|tiff|geotiff|mosaic)\b",
     re.IGNORECASE,
 )
@@ -622,7 +676,8 @@ _RASTER_CONTEXT_KEYWORDS = re.compile(
     r"\b(analy[sz]e|analysis|where|most|many|cluster|concentrat(?:e|ed|ion)?|"
     r"visible|happening|seeing|inspect|attention|priority|zone|zones|"
     r"risk|damage|problem|issue|context|summary|summari[sz]e|density|"
-    r"densities|hotspot|hotspots|areas?|built[-\s]?up|builtup)\b",
+    r"densities|hotspot|hotspots|areas?|built[-\s]?up|builtup|"
+    r"something|describe|overview|about)\b",
     re.IGNORECASE,
 )
 
@@ -670,7 +725,7 @@ _RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 _RASTER_BUILDING_ASSET_KEYWORDS = re.compile(
     r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
-    r"settlement|settlements)\b",
+    r"settlement|settlements|amazu|inzu)\b",
     re.IGNORECASE,
 )
 
@@ -679,7 +734,7 @@ _RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "building",
         re.compile(
             r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
-            r"settlement|settlements)\b",
+            r"settlement|settlements|amazu|inzu)\b",
             re.IGNORECASE,
         ),
     ),
@@ -750,7 +805,7 @@ _RASTER_SURFACE_ANALYSIS_KEYWORDS = re.compile(
 
 _RASTER_EXACT_COUNT_KEYWORDS = re.compile(
     r"\b(how\s+many|count|counts|counted|number\s+of|total|exact|"
-    r"confirmed|enumerate|quantity)\b",
+    r"confirmed|enumerate|quantity|bara)\b",
     re.IGNORECASE,
 )
 

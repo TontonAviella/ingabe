@@ -905,3 +905,56 @@ def test_fast_paths_never_misfire_on_routing_eval_cases() -> None:
             if fast and fast.tool_name in FAST_PATH_TOOLS and fast.tool_name not in accepted:
                 misfires.append(f"{case['id']}: {fast.tool_name} for {case['text']!r}")
     assert misfires == []
+
+
+# Requests the deterministic admin/raster fast paths missed before, with the
+# arguments they must produce (Kinyarwanda / French need native review).
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ("take me to Kirehe", {"admin_level": "auto", "name": "Kirehe"}),
+        ("list the sectors in Kicukiro", {"admin_level": "sector", "name": "*", "district": "Kicukiro"}),
+        ("how many sectors does Nyagatare have?", {"admin_level": "sector", "name": "*", "district": "Nyagatare"}),
+        ("which sectors are in Burera district?", {"admin_level": "sector", "name": "*", "district": "Burera"}),
+        ("tell me the sectors of nyanza ?", {"admin_level": "sector", "name": "*", "district": "nyanza"}),
+        ("cells of nyagatare ?", {"admin_level": "cell", "name": "*", "district": "nyagatare"}),
+        ("show me the cells in Nyagatare ?", {"admin_level": "cell", "name": "*", "district": "Nyagatare"}),
+        ("show me nyagatare district with its cells on the map",
+         {"admin_level": "cell", "name": "*", "district": "nyagatare"}),
+        ("show me busasamana in nyanza ?", {"admin_level": "auto", "name": "busasamana", "district": "nyanza"}),
+        ("karushuga , Nyagatare", {"admin_level": "auto", "name": "karushuga", "district": "Nyagatare"}),
+        ("Nyereka akarere ka Nyanza ku ikarita", {"admin_level": "district", "name": "Nyanza"}),
+        ("Montre-moi les secteurs de Huye sur la carte", {"admin_level": "sector", "name": "*", "district": "Huye"}),
+    ],
+)
+def test_admin_fast_path_new_phrasings(msg: str, expected: dict) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == "show_admin_boundary"
+    assert fast.arguments == expected
+
+
+@pytest.mark.parametrize(
+    ("msg", "tool"),
+    [
+        ("show where there is houses in Farm_C_Orthophoto3?", "analyze_raster_object_candidates"),
+        ("Bara amazu ari muri Farm_A_Orthophoto", "analyze_raster_object_candidates"),
+        ("tell us something about this Farm_A_Orthophoto ?", "create_raster_h3_context_layer"),
+    ],
+)
+def test_raster_fast_path_new_phrasings(msg: str, tool: str) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == tool
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "ok, thanks",          # not "<place>, <district>"
+        "hello, Sage",
+        "how many hectares are in Nyagatare district?",  # area, not a unit listing
+        "tell me about soil in Huye district",
+    ],
+)
+def test_admin_fast_path_still_ignores_non_displays(msg: str) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is None or fast.tool_name != "show_admin_boundary"
