@@ -65,8 +65,9 @@ def load_cases() -> list[dict[str, Any]]:
 
 
 def corpus_sha() -> str:
+    """Cases plus the tool snapshot (the labelling rules read it)."""
     digest = hashlib.sha256()
-    for path in case_files():
+    for path in [*case_files(), CATALOG_PATH]:
         digest.update(path.name.encode() + b"\0" + path.read_bytes())
     return digest.hexdigest()[:12]
 
@@ -91,17 +92,40 @@ VARIANTS: dict[str, Callable[[Any], str | None]] = {
 }
 
 
+# Parameter names that mean "a place on the map" in tool schemas; used to
+# derive the labelling rules in scoring.effective_case.
+POINT_PARAMS = {"bbox", "bounds", "latitude", "longitude", "lat", "lon", "EXTENT"}
+GEOMETRY_PARAMS = {"geometry", "polygon_geojson", "geojson"}
+PLACE_PARAMS = {"district", "name", "location", "place", "query", "sector", "region"}
+
+
 def live_tool_catalog() -> dict[str, Any]:
-    """Every tool name the live loop can offer, plus the fast-path-only tools."""
+    """Tool names the live loop can offer, the fast-path-only tools, and which
+    tools need coordinates or a geometry instead of a place name."""
     from src.dependencies.pydantic_tools import get_pydantic_tool_calls
     from src.dependencies.sage_routing import FAST_PATH_TOOLS
     from src.dependencies.sage_turn_request import build_sage_tools_payload
 
     tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
+    point, geometry = [], []
+    for tool in tools:
+        params = tool["function"].get("parameters") or {}
+        required = set(params.get("required") or [])
+        props = set((params.get("properties") or {}).keys())
+        if required & GEOMETRY_PARAMS:
+            geometry.append(tool["function"]["name"])
+        elif required & POINT_PARAMS and not props & PLACE_PARAMS:
+            point.append(tool["function"]["name"])
     return {
         "model_tools": sorted(t["function"]["name"] for t in tools),
         "fast_path_tools": sorted(FAST_PATH_TOOLS),
+        "bbox_or_point_tools": sorted(point),
+        "geometry_tools": sorted(geometry),
     }
+
+
+def snapshot_catalog() -> dict[str, Any]:
+    return json.loads(CATALOG_PATH.read_text())
 
 
 def known_tools(catalog: dict[str, Any]) -> set[str]:
@@ -256,9 +280,12 @@ async def run(args: argparse.Namespace) -> Path:
     from src.dependencies.system_prompt import get_system_prompt_provider
     from src.utils import get_chat_client_for_model
 
-    cases = load_cases()
-    catalog = live_tool_catalog()
-    scoring.validate_corpus(cases, known_tools(catalog))
+    catalog = snapshot_catalog()
+    if catalog != live_tool_catalog():
+        raise SystemExit("tool catalog drifted from tool_catalog.json; run `catalog` for details")
+    raw = load_cases()
+    scoring.validate_corpus(raw, known_tools(catalog))
+    cases = [scoring.effective_case(c, catalog) for c in raw]
     if args.case:
         cases = [c for c in cases if c["id"] in set(args.case)]
     if args.kind:

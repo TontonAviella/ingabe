@@ -229,3 +229,40 @@ def test_clustered_bootstrap_widens_the_interval_for_paraphrases() -> None:
     width = lambda c: c["diff_ci95"][1] - c["diff_ci95"][0]  # noqa: E731
     assert clustered["clusters"] == 31
     assert width(clustered) > width(independent)
+
+
+# --- labelling rules derived from tool schemas ---------------------------
+
+CAT = {"bbox_or_point_tools": ["display_satellite_layer", "get_soil_properties"],
+       "geometry_tools": ["create_management_zones"]}
+
+
+def test_place_name_for_a_bbox_tool_allows_geocoding_first_then_requires_the_tool() -> None:
+    case = {**BASE, "text": "show satellite imagery of Musanze", "expect": {"any_of": ["display_satellite_layer"]}}
+    eff = scoring.effective_case(case, CAT)
+    assert eff["expect"]["any_of"] == ["display_satellite_layer", "search_location"]
+    assert eff["chain"]["must_call"] == [["display_satellite_layer"]]
+    geocode_only = {"first_tool": "search_location", "tools_called": ["search_location"]}
+    geocode_then_tool = {"first_tool": "search_location", "tools_called": ["search_location", "display_satellite_layer"]}
+    assert scoring.score_case(eff, [geocode_then_tool] * 3).chain_ok is True
+    assert scoring.score_case(eff, [geocode_only] * 3).chain_ok is False
+    assert scoring.score_case(eff, [geocode_only] * 3).correct  # first step itself is fine
+
+
+def test_coordinates_in_the_request_keep_the_strict_label() -> None:
+    case = {**BASE, "text": "soil at -2.5, 29.7", "expect": {"any_of": ["get_soil_properties"]}}
+    assert scoring.effective_case(case, CAT) == case
+
+
+def test_missing_geometry_accepts_a_clarifying_question() -> None:
+    case = {**BASE, "text": "create management zones for this field", "expect": {"any_of": ["create_management_zones"]}}
+    eff = scoring.effective_case(case, CAT)
+    assert scoring.score_case(eff, [scoring.TEXT_ONLY]).correct
+    assert not scoring.score_case(case, [scoring.TEXT_ONLY]).correct
+
+
+def test_chain_step_with_alternatives() -> None:
+    case = _case(any_of=("a", "b", "c"), chain={"must_call": ["a", ["b", "c"]], "max_steps": 3, "stubs": {}})
+    scoring.validate_case({**BASE, **{k: case[k] for k in ("expect", "chain")}}, {"a", "b", "c"})
+    assert scoring.score_case(case, [{"first_tool": "a", "tools_called": ["a", "c"]}]).chain_ok is True
+    assert scoring.score_case(case, [{"first_tool": "a", "tools_called": ["a"]}]).chain_ok is False

@@ -98,5 +98,43 @@
     "create_raster_h3_context_layer",
     "describe_user_raster",
     "show_admin_boundary"
+  ],
+  "bbox_or_point_tools": [
+    "analyze_expected_rain_impact",
+    "analyze_open_buildings_exposure",
+    "analyze_sphere_flood_impact",
+    "compute_spectral_index",
+    "create_h3_spatial_insight_layer",
+    "create_point_layer",
+    "detect_flood_extent",
+    "detect_water_bodies",
+    "display_layer",
+    "display_satellite_layer",
+    "get_alos_l_band_stats",
+    "get_alos_temporal_variation",
+    "get_cygnss_soil_moisture",
+    "get_cygnss_watermask",
+    "get_evapotranspiration",
+    "get_soil_moisture",
+    "get_soil_properties",
+    "native_creategrid",
+    "predict_ndvi_from_sar",
+    "read_pixel_at",
+    "render_map_snapshot",
+    "reverse_geocode_coordinates",
+    "zoom_to_bounds"
+  ],
+  "geometry_tools": [
+    "analyze_rgb_field",
+    "compute_zonal_stats",
+    "create_management_zones",
+    "create_prescription_map",
+    "create_soil_sampling_plan",
+    "display_geojson_layer",
+    "evaluate_insurance_trigger",
+    "get_field_health",
+    "get_value_distribution",
+    "identify_parcel_crop",
+    "interpret_raster_health"
   ]
 }

@@ -112,8 +112,23 @@ every non-small-talk turn) is the first one.
 - The repo is public: never commit raw user messages, names, phone numbers
   or private field names.
 
-Runs record `corpus_sha` (all case files); compare only runs on the same
-corpus. Add cases in their own commit and re-run the baseline.
+### Labelling rules from tool schemas
+
+Applied when cases are loaded (`scoring.effective_case`), using the groups in
+`tool_catalog.json` that `catalog --write` derives from the live schemas:
+
+- **Geocode first.** If every expected tool requires a bbox or point and takes
+  no place name (`bbox_or_point_tools`), and the request has no coordinates,
+  `search_location` is an accepted first step and the case becomes a chain
+  that must still reach one of the expected tools. (This is lenient for
+  "this map"-style requests: a wasted geocoding step is not penalized, but the
+  chain must finish.)
+- **Clarify geometry.** If every expected tool requires a field or polygon
+  geometry (`geometry_tools`) the request does not give, a clarifying
+  question in plain text also counts as correct.
+
+Runs record `corpus_sha` (all case files plus the tool snapshot); compare
+only runs on the same corpus. Add cases in their own commit and re-run the baseline.
 
 `tool_catalog.json` is the tool-name snapshot the labels are written against.
 `src/dependencies/test_sage_turn_request.py` fails when the live tool list

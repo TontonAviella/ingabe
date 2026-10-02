@@ -1,6 +1,7 @@
 """Sage's per-turn request: tool catalog snapshot and routing plan."""
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -15,16 +16,23 @@ def _names(tools: list[dict]) -> list[str]:
     return [t["function"]["name"] for t in tools]
 
 
-def test_tool_catalog_matches_eval_snapshot() -> None:
-    """The routing eval's labels are written against this snapshot.
+def _eval_runner():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "eval_sage_routing.py"
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    If this fails, a tool was added, renamed or removed: update the labels in
-    evals/sage_routing/corpus.jsonl, then run
-    `python scripts/eval_sage_routing.py catalog --write`.
+
+def test_tool_catalog_matches_eval_snapshot() -> None:
+    """The routing eval's labels and labelling rules use this snapshot.
+
+    If this fails, a tool was added, renamed, removed, or its coordinate /
+    geometry parameters changed: update the labels in evals/sage_routing/cases,
+    then run `python scripts/eval_sage_routing.py catalog --write`.
     """
     snapshot = json.loads(CATALOG.read_text())
-    live = sorted(_names(build_sage_tools_payload(get_pydantic_tool_calls(), {})))
-    assert live == snapshot["model_tools"]
+    assert _eval_runner().live_tool_catalog() == snapshot
     assert sorted(FAST_PATH_TOOLS) == snapshot["fast_path_tools"]
 
 

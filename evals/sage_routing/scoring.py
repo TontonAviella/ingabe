@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -100,12 +101,57 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
 
     chain = case.get("chain")
     if chain is not None:
-        check_tools(chain.get("must_call"), "chain.must_call")
-        if not isinstance(chain.get("max_steps"), int) or chain["max_steps"] < len(chain["must_call"]):
+        groups = chain.get("must_call")
+        if not isinstance(groups, list) or not groups:
+            raise CorpusError(f"{cid}: chain.must_call must be a non-empty list")
+        for group in groups:  # a step is one tool, or a list of alternatives
+            check_tools(group if isinstance(group, list) else [group], "chain.must_call")
+        if not isinstance(chain.get("max_steps"), int) or chain["max_steps"] < len(groups):
             raise CorpusError(f"{cid}: chain.max_steps must be an int >= len(must_call)")
         stubs = chain.get("stubs") or {}
         if known_tools is not None and set(stubs) - known_tools:
             raise CorpusError(f"{cid}: chain.stubs names unknown tools {sorted(set(stubs) - known_tools)}")
+
+
+# Coordinates in the request text ("-2.35, 30.10" or "29.74"), which make a
+# geocoding step unnecessary.
+_COORD_RE = re.compile(r"-?\d{1,3}\.\d+")
+GEOCODE_TOOL = "search_location"
+GEOCODE_STUB = {"status": "success", "name": "requested place",
+                "bbox": [29.6, -2.1, 29.9, -1.8], "center": {"lat": -1.95, "lon": 29.75}}
+
+
+def effective_case(case: dict[str, Any], catalog: dict[str, Any]) -> dict[str, Any]:
+    """Apply the labelling rules that follow from tool schemas.
+
+    ``catalog`` is tool_catalog.json. Its ``bbox_or_point_tools`` require a
+    bbox / lat-lon and take no place name; ``geometry_tools`` require a field
+    or polygon geometry.
+
+    - Every expected tool needs a bbox or point, and the request gives no
+      coordinates: geocoding first is correct. ``search_location`` joins the
+      accepted first steps and the case becomes a chain that must still reach
+      one of the expected tools.
+    - Every expected tool needs a geometry the request does not give: asking
+      the user for it (plain text) is also correct.
+    """
+    expect = case["expect"]
+    any_of = expect.get("any_of")
+    if not any_of or case.get("chain"):
+        return case
+    needs_point = set(catalog.get("bbox_or_point_tools", ()))
+    needs_geometry = set(catalog.get("geometry_tools", ()))
+    if set(any_of) <= needs_point and not _COORD_RE.search(case["text"]):
+        return {
+            **case,
+            "expect": {**expect, "any_of": sorted(set(any_of) | {GEOCODE_TOOL})},
+            "chain": {"must_call": [list(any_of)], "max_steps": 3,
+                      "stubs": {GEOCODE_TOOL: GEOCODE_STUB}},
+            "rules": ["geocode_first"],
+        }
+    if set(any_of) <= needs_geometry:
+        return {**case, "expect": {**expect, "allow_clarify": True}, "rules": ["clarify_geometry"]}
+    return case
 
 
 def validate_corpus(cases: list[dict[str, Any]], known_tools: set[str] | None = None) -> None:
@@ -212,7 +258,8 @@ def classify_attempt(expect: dict[str, Any], first_tool: str) -> str:
     if expect.get("no_tool"):
         return CORRECT if first_tool == TEXT_ONLY else FALSE_TOOL
     if first_tool == TEXT_ONLY:
-        return ABDICATED
+        # A clarifying question is right when the request lacks what the tool needs.
+        return CORRECT if expect.get("allow_clarify") else ABDICATED
     return CORRECT if first_tool in expect["any_of"] else WRONG_TOOL
 
 
@@ -257,8 +304,8 @@ def score_case(case: dict[str, Any], attempts: Iterable["Attempt | str | dict[st
     chain = case.get("chain")
     chain_ok = None
     if chain and valid:
-        must = set(chain["must_call"])
-        chain_ok = _majority([must <= set(a.tools_called) for _, a in valid])
+        groups = [set(g) if isinstance(g, list) else {g} for g in chain["must_call"]]
+        chain_ok = _majority([all(g & set(a.tools_called) for g in groups) for _, a in valid])
     return CaseResult(
         case_id=case["id"],
         intent=case.get("intent", case["id"]),
