@@ -3,6 +3,7 @@ __pycache__
 test_output
 .env
 .env.prod
+.env.bak*
 data
 src/conftest.py
 *.aux.xml

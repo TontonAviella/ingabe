@@ -218,15 +218,27 @@ def _schema(tools: list[dict], name: str) -> dict[str, Any] | None:
     return None
 
 
+def _calls_output(message: Any) -> dict[str, Any]:
+    calls = getattr(message, "tool_calls", None) or []
+    return {"content": getattr(message, "content", None),
+            "tool_calls": [{"name": c.function.name, "arguments": c.function.arguments} for c in calls]}
+
+
 async def run_attempt(
     case: dict[str, Any], plan: Any, messages: list[dict], client: Any, model: str,
     first_choice: str | None, retries: int, guard: dict[str, Any] | None = None,
+    *, turn: Any = None, attempt: int = 0,
 ) -> dict[str, Any]:
     """One attempt: the first model call, and for chain cases the full loop.
 
     ``guard`` ({text, history, full_tools}) enables the live abdication guard:
     a first-step prose answer that is_abdication flags is retried once with a
-    forced tool call over guard_tools."""
+    forced tool call over guard_tools. ``turn`` (a flight-recorder TurnTrace)
+    records every model call and guard retry."""
+    if turn is None:
+        from src.services.sage_flight_recorder import TurnTrace
+
+        turn = TurnTrace(None, name="noop", session_id=None, user_id=None)
     chain = case.get("chain")
     steps = chain["max_steps"] if chain else 1
     stubs = (chain or {}).get("stubs") or {}
@@ -239,14 +251,21 @@ async def run_attempt(
         if plan.tools:
             kwargs.update(tools=plan.tools, parallel_tool_calls=False,
                           tool_choice=first_choice if step == 0 else plan.tool_choice)
+        generation = turn.generation(
+            model=model, messages=convo, tools=kwargs.get("tools"), step=step, attempt=attempt,
+            parameters={"tool_choice": kwargs.get("tool_choice"), "max_tokens": MAX_TOKENS},
+        )
         try:
             resp = await _complete(client, kwargs, retries)
         except Exception as exc:
             marker = f"{scoring.ERROR_PREFIX}{type(exc).__name__}:{getattr(exc, 'status_code', None)}>"
+            generation.end(level="ERROR", status=f"{type(exc).__name__}: {exc}")
+            turn.flag("llm_error")
             if step == 0:
                 return {"first_tool": marker, "args_ok": None, "args_problems": [], "tools_called": []}
             break  # a later-step failure ends the chain; what ran still counts
         message = resp.choices[0].message
+        generation.end(output=_calls_output(message))
         calls = getattr(message, "tool_calls", None) or []
         step_tools = plan.tools
         if not calls and step == 0 and guard is not None:
@@ -254,14 +273,21 @@ async def run_attempt(
 
             if is_abdication(plan, guard["text"], message.content, False):
                 guard_fired = True
+                turn.flag("guard_fired")
                 step_tools = await guard_tools(guard["text"], guard["history"], guard["full_tools"])
+                guard_step = turn.observe("abdication_guard", kind="guardrail",
+                                          input={"held_back_reply": message.content})
                 try:
                     retry = await _complete(client, {**kwargs, "tools": step_tools,
                                                      "tool_choice": "required"}, retries)
                     retry_calls = getattr(retry.choices[0].message, "tool_calls", None) or []
+                    guard_step.end(output=_calls_output(retry.choices[0].message),
+                                   level=None if retry_calls else "WARNING")
                     if retry_calls:
+                        turn.flag("guard_recovered")
                         message, calls, guard_recovered = retry.choices[0].message, retry_calls, True
-                except Exception:
+                except Exception as exc:
+                    guard_step.end(level="ERROR", status=f"{type(exc).__name__}: {exc}")
                     logger.warning("guard retry failed for %s", case["id"], exc_info=True)
         if not calls:
             if step == 0:
@@ -322,6 +348,7 @@ async def run(args: argparse.Namespace) -> Path:
     from src.dependencies.sage_routing import build_fast_tool_call
     from src.dependencies.sage_turn_request import build_sage_tools_payload, plan_sage_turn
     from src.dependencies.system_prompt import get_system_prompt_provider
+    from src.services.sage_flight_recorder import flush, sage_turn_trace
     from src.utils import get_chat_client_for_model
 
     catalog = snapshot_catalog()
@@ -369,9 +396,23 @@ async def run(args: argparse.Namespace) -> Path:
     progress = {"finished": 0, "errored_streak": 0}
 
     async def run_case(case: dict[str, Any]) -> None:
+        # One flight-recorder trace per case, grouped per run as a Langfuse
+        # session, tagged with the outcome so failures are one filter away.
+        if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
+            return  # stopping; no empty trace for a case left to --resume
+        with sage_turn_trace(
+            name="sage.eval_case", session_id=out_path.stem, user_id=None, environment="eval",
+            tags=[f"variant:{args.variant}", f"kind:{scoring.case_kind(case)}"],
+            metadata={"case_id": case["id"], "variant": args.variant, "repeats": args.repeats,
+                      "expected": ",".join(case["expect"].get("any_of") or []) or "text"},
+        ) as turn:
+            await _run_case_traced(case, turn)
+
+    async def _run_case_traced(case: dict[str, Any], turn: Any) -> None:
         text = case["text"]
         history = case.get("history") or []
         user_msg = {"role": "user", "content": text}
+        turn.set_input(text)
         fast = None if args.model_only else build_fast_tool_call(text)
         async with slots:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
@@ -379,25 +420,34 @@ async def run(args: argparse.Namespace) -> Path:
             if fast_path_applies(fast, text, case):
                 source, model, tools_sent, shortlist_method = "fast_path", None, 0, None
                 attempts = [fast_path_attempt(case, fast)] * args.repeats
+                turn.fast_path(fast.tool_name)
             else:
                 plan = plan_sage_turn(text, history + [user_msg], tools_payload,
                                       prompt_provider.get_system_prompt)
                 plan = await variant.prepare(plan, text, history, tools_payload)
                 shortlist_method = plan.shortlist
                 client, model = get_chat_client_for_model(None, plan.model_override or default_model)
+                turn.routing(user_text=text, reason=plan.routing.reason,
+                             categories=list(plan.routing.selected_categories),
+                             small_talk=plan.routing.is_small_talk, tools=plan.tools,
+                             shortlist=shortlist_method, model=model)
                 map_msgs = await map_provider.get_system_messages(
                     history + [user_msg], map_description(case), None, None)
                 messages = [{"role": "system", "content": plan.system_prompt}, *history,
                             *map_msgs, user_msg]
                 source, tools_sent, attempts = "model", len(plan.tools), []
-                for _ in range(args.repeats):
+                for attempt in range(args.repeats):
                     attempts.append(await run_attempt(
                         case, plan, messages, client, model, variant.tool_choice(plan), args.retries,
                         guard={"text": text, "history": history, "full_tools": tools_payload}
-                        if variant.guard else None))
+                        if variant.guard else None, turn=turn, attempt=attempt))
                     if args.pace:
                         await asyncio.sleep(args.pace)
         result = scoring.score_case(case, attempts)
+        turn.flag(f"outcome:{result.majority}", f"source:{source}")
+        turn.set_output({"majority": result.majority, "outcomes": list(result.outcomes),
+                         "first_tools": [a["first_tool"] for a in attempts],
+                         "expected": case["expect"]})
         progress["finished"] += 1
         if result.majority == scoring.ERROR:
             progress["errored_streak"] += 1
@@ -416,6 +466,7 @@ async def run(args: argparse.Namespace) -> Path:
         _write(out_path, meta, cases, records)  # sync: no interleaving between tasks
 
     await asyncio.gather(*(run_case(case) for case in todo))
+    flush()
     _write(out_path, meta, cases, records)
     if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES or len(records) < len(cases):
         raise ProviderUnavailable(str(out_path))

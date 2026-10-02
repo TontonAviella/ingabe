@@ -77,6 +77,13 @@ wordings of one request move together, so paraphrases are not counted as
 independent evidence), plus an exact McNemar test. A change is an improvement
 only when that interval excludes zero and p < 0.05.
 
+**Seeing why a case failed.** With Langfuse running (see `.env.example`), each
+case is a trace in the `eval` environment: the routing decision, the tools the
+model was offered, every model call and guard retry. A run is one Langfuse
+session (named after the run file); filter by tags such as
+`outcome:wrong_tool`, `outcome:abdicated`, `variant:shortlist_k15` or
+`guard_recovered`.
+
 Try a change before building it into Sage by adding an entry to `VARIANTS` in
 `scripts/eval_sage_routing.py`; `tool_choice_required` (force a tool call on
 every non-small-talk turn) is the first one.
