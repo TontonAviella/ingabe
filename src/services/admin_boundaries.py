@@ -12,6 +12,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Rwanda's 30 districts (official names).
+RWANDA_DISTRICTS = [
+    "Bugesera", "Gatsibo", "Kayonza", "Kirehe", "Ngoma", "Nyagatare",
+    "Rwamagana", "Gasabo", "Kicukiro", "Nyarugenge", "Burera", "Gakenke",
+    "Gicumbi", "Musanze", "Rulindo", "Gisagara", "Huye", "Kamonyi",
+    "Muhanga", "Nyamagabe", "Nyanza", "Nyaruguru", "Ruhango",
+    "Karongi", "Ngororero", "Nyabihu", "Nyamasheke", "Rubavu",
+    "Rutsiro", "Rusizi",
+]
+
 # Admin level → (table_name, column_name)
 _ADMIN_LEVELS = {
     "village": ("rwanda_village_boundaries", "village_name"),

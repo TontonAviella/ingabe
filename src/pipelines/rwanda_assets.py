@@ -38,6 +38,7 @@ from dagster import AssetExecutionContext, asset
 
 from src.pipelines.resources import DuckDBResource, PostgresResource, S3Resource
 from src.pipelines.posthog_observability import observed_dagster_asset
+from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
 logger = logging.getLogger(__name__)
@@ -544,15 +545,8 @@ def rwanda_crop_classification(context: AssetExecutionContext) -> dict[str, Any]
 
 # ─── Pre-compute assets (scheduled, results cached in PostgreSQL) ────────────
 
-# Rwanda admin districts for systematic field NDVI scanning
-RWANDA_DISTRICTS = [
-    "Bugesera", "Gatsibo", "Kayonza", "Kirehe", "Ngoma", "Nyagatare",
-    "Rwamagana", "Gasabo", "Kicukiro", "Nyarugenge", "Burera", "Gakenke",
-    "Gicumbi", "Musanze", "Rulindo", "Gisagara", "Huye", "Kamonyi",
-    "Muhanga", "Nyamagabe", "Nyanza", "Nyaruguru", "Ruhango",
-    "Karongi", "Ngororero", "Nyabihu", "Nyamasheke", "Rubavu",
-    "Rutsiro", "Rusizi",
-]
+# Rwanda admin districts for systematic field NDVI scanning (owned by
+# src/services/admin_boundaries.py).
 
 
 
