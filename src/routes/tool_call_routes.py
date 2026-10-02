@@ -57,9 +57,12 @@ from src.dependencies.hermes_auth import (
     get_gateway_secret,
     verify_hermes_signature,
 )
+from src.dependencies.postgres_connection import PostgresConnectionManager
 from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+from src.dependencies.sage_routing import ADMIN_BOUNDARY_TOOL
 from src.dependencies.session import ServiceUserContext
 from src.routes.websocket import kue_ephemeral_action
+from src.services.sage_result_checks import apply_result_checks
 
 logger = logging.getLogger(__name__)
 
@@ -319,6 +322,23 @@ async def tool_call(
                 "status": "error",
                 "error": f"{payload.tool_name} failed: {e}",
             }
+
+    # A known failure gets the facts to fix it before Hermes hands it back to
+    # the model (same checks as the in-process chat loop).
+    checked = await apply_result_checks(
+        payload.tool_name,
+        payload.arguments or {},
+        tool_result,
+        open_conn=lambda: async_conn(
+            "tool-call.result_check", user_id=payload.user_id, partner_id=payload.partner_id
+        ),
+        project_id=project_id,
+        user_id=payload.user_id,
+        connection_manager=PostgresConnectionManager(),
+        admin_boundary_tool=ADMIN_BOUNDARY_TOOL,
+    )
+    if checked is not None:
+        tool_result = checked
 
     # Confirm the result is JSON-serializable before returning — FastAPI
     # will otherwise emit a confusing 500. Round-tripping catches any

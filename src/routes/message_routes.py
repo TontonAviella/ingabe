@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import JSONResponse
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel, Field
 import asyncpg
@@ -75,6 +75,7 @@ from src.services.sage_tool_observability import (
     capture_sage_tool_result_message,
 )
 from src.services.sage_flight_recorder import sage_turn_trace
+from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -2466,6 +2467,8 @@ async def process_chat_interaction_task(
 
     _lock_key = f"chat_lock:{conversation.id}"
     _tool_observability_contexts: dict[str, dict] = {}
+    # tool_call_id -> (tool name, arguments), for result checks.
+    _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
     async def add_chat_completion_message(
         message: Union[ChatCompletionMessage, ChatCompletionMessageParam],
@@ -2473,6 +2476,24 @@ async def process_chat_interaction_task(
         message_dict = (
             message.model_dump() if isinstance(message, BaseModel) else message
         )
+        if isinstance(message_dict, dict) and message_dict.get("role") == "tool":
+            # A known failure gets the facts to fix it before the model sees it.
+            _call_name, _call_args = _tool_calls_by_id.get(
+                str(message_dict.get("tool_call_id") or ""), ("", {})
+            )
+            _checked = await apply_result_checks(
+                _call_name,
+                _call_args,
+                message_dict.get("content"),
+                open_conn=lambda: async_conn("tool_result_check"),
+                project_id=current_project_id,
+                user_id=user_id,
+                connection_manager=connection_manager,
+                admin_boundary_tool=ADMIN_BOUNDARY_TOOL,
+            )
+            if _checked is not None:
+                turn_trace.flag(f"result_checked:{_checked['error_kind']}")
+                message_dict = {**message_dict, "content": json.dumps(_checked)}
 
         async with async_conn("add_chat_message") as msg_conn:
             await msg_conn.execute(
@@ -3194,6 +3215,7 @@ async def process_chat_interaction_task(
                         )
                     )
                     turn_trace.tool_started(tool_call.id, function_name, tool_args)
+                    _tool_calls_by_id[tool_call.id] = (function_name, tool_args)
                     _tool_observability_contexts[tool_call.id] = build_sage_tool_context(
                         tool_name=function_name,
                         tool_args=tool_args,
