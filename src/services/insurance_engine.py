@@ -598,7 +598,7 @@ async def _load_triggers(
     try:
         rows = await conn.fetch(
             "SELECT DISTINCT ON (phase, signal) "
-            "signal, direction, threshold, weight, description "
+            "phase, signal, direction, threshold, weight, description "
             "FROM insurance_triggers "
             "WHERE crop = $1 AND season = $2 AND (phase = $3 OR phase = 'full_season') "
             "AND enabled = true "
@@ -631,6 +631,28 @@ def _default_triggers(phase: str) -> list[dict]:
     ]
     return triggers
 
+
+def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
+    """The full-season cumulative-rainfall trigger that evaluation uses.
+
+    Returns (threshold_mm, source). Phase-scoped rainfall triggers (e.g. the
+    flowering minimum) are excluded: the forecast outlook projects the season
+    total at harvest. Falls back to the engine's declared default trigger when
+    no row exists for this crop/season (e.g. crop "general").
+    """
+    for source, defs in (
+        ("insurance_triggers", trigger_defs),
+        ("default_trigger", _default_triggers("full_season")),
+    ):
+        for trig in defs:
+            if (
+                trig["signal"] == "rainfall_cumulative"
+                and trig.get("phase", "full_season") == "full_season"
+            ):
+                return float(trig["threshold"]), source
+    raise ValueError("no full-season rainfall_cumulative trigger defined")
+
+
 def _compute_forecast_outlook(
     forecast_data: Optional[dict],
     season_rainfall_so_far: float,
@@ -639,6 +661,9 @@ def _compute_forecast_outlook(
     today: "date",
     season: str,
     district: Optional[str] = None,
+    *,
+    rainfall_threshold: float,
+    rainfall_threshold_source: str,
 ) -> Optional[dict]:
     """Project rainfall triggers forward using bias-corrected multi-model forecasts.
 
@@ -697,10 +722,9 @@ def _compute_forecast_outlook(
     projected_season_p10 = season_rainfall_so_far + projected_p10
     projected_season_p90 = season_rainfall_so_far + projected_p90
 
-    # Season minimum rainfall threshold (mm) — generic for Rwanda's growing seasons.
-    # Season A (Sep-Jan, 135 days) needs more rain than Season B (Feb-Jun, 120 days).
-    # Parametric insurance typically triggers at 60-70% of average seasonal rainfall.
-    rainfall_threshold = 300.0 if season == "A" else 250.0
+    # rainfall_threshold is the same full-season trigger that evaluation uses
+    # (see _season_rainfall_threshold); a separate constant here told users a
+    # payout threshold the engine never applies.
 
     # Estimate trigger probability from p10/p90 spread
     # If p10 (pessimistic) is below threshold → high probability of trigger
@@ -757,6 +781,7 @@ def _compute_forecast_outlook(
         "projected_season_p10_mm": round(projected_season_p10, 1),
         "projected_season_p90_mm": round(projected_season_p90, 1),
         "rainfall_trigger_threshold_mm": rainfall_threshold,
+        "rainfall_trigger_threshold_source": rainfall_threshold_source,
         "rainfall_trigger_probability": round(trigger_probability, 2),
         "rainfall_trigger_risk": trigger_risk,
         "model_agreement": model_agreement,
@@ -1765,9 +1790,12 @@ async def compute_insurance_intelligence(
         }
 
     # --- FORECAST OUTLOOK ---
+    season_threshold_mm, season_threshold_source = _season_rainfall_threshold(trigger_defs)
     forecast_outlook = _compute_forecast_outlook(
         forecast_result, season_rainfall, planting_date, harvest_dap,
         today, season, district,
+        rainfall_threshold=season_threshold_mm,
+        rainfall_threshold_source=season_threshold_source,
     )
     if forecast_outlook:
         logger.info("forecast outlook: risk=%s prob=%.2f projected=%.0fmm threshold=%.0fmm",
