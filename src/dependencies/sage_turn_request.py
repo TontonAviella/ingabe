@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
@@ -374,3 +375,51 @@ async def apply_tool_shortlist(
         ",".join(t["function"]["name"] for t in shortlist.tools),
     )
     return replace(plan, tools=shortlist.tools, shortlist=shortlist.method)
+
+
+# --- Abdication guard ---------------------------------------------------------
+# On the first model call of a turn, a prose-only answer when tools were sent
+# is often "abdication": the model describes what it would do instead of
+# calling the tool. The guard retries once with a forced tool call over a
+# narrowed list. It never fires on small talk, clarifying questions or
+# explanation requests, where prose is the right answer.
+
+GUARD_TOOL_COUNT = 5
+# A clarifying question asks the user for missing input; keep it.
+_CLARIFY_MAX_CHARS = 400
+_EXPLAIN_REQUEST_RE = re.compile(
+    r"(?i)^\s*(?:what\s+(?:is|are|does|do)\b|what'?s\s+(?:a|an|the)\b|explain\b|define\b|why\b|"
+    r"how\s+does\b|meaning\s+of\b|difference\s+between\b|tell\s+me\s+about\s+(?:your|you)\b)"
+)
+
+
+def abdication_guard_enabled() -> bool:
+    """SAGE_ABDICATION_GUARD: 1/true/yes turns the guard on (default off)."""
+    return os.environ.get("SAGE_ABDICATION_GUARD", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def is_abdication(plan: SageTurnPlan, last_user_text: str, content: str | None, has_tool_calls: bool) -> bool:
+    """True when a first-step answer is prose although the turn needs a tool."""
+    if has_tool_calls or not plan.tools or plan.routing.is_small_talk:
+        return False
+    if _EXPLAIN_REQUEST_RE.search(last_user_text or ""):
+        return False
+    text = (content or "").strip()
+    if text.endswith("?") and len(text) <= _CLARIFY_MAX_CHARS:
+        return False
+    return True
+
+
+async def guard_tools(
+    last_user_text: str,
+    history: list[dict],
+    full_tools: list[dict],
+    *,
+    k: int = GUARD_TOOL_COUNT,
+    embed: Embedder | None = embed_texts,
+) -> list[dict]:
+    """The ``k`` best-ranked tools from the full catalog for the forced retry."""
+    shortlist = await hybrid_shortlist(
+        last_user_text, history, full_tools, k=k, embed=embed, cache=_TOOL_EMBEDDINGS,
+    )
+    return shortlist.tools

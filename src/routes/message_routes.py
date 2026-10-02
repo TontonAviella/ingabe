@@ -105,8 +105,11 @@ from src.dependencies.sage_routing import (
     select_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
+    abdication_guard_enabled,
     apply_tool_shortlist,
     build_sage_tools_payload,
+    guard_tools,
+    is_abdication,
     plan_sage_turn,
     tool_shortlist_k,
 )
@@ -1475,6 +1478,39 @@ def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
+async def _run_abdication_guard(
+    client,
+    attempt_kwargs: dict,
+    last_user_text: str,
+    history: list[dict],
+    full_tools: list[dict],
+) -> dict[int, dict]:
+    """One forced-tool retry over the guard tools. Returns tool calls in the
+    loop's accumulator shape, or {} when the retry produced none (logged)."""
+    tools = copy.deepcopy(await guard_tools(last_user_text, history, full_tools))
+    if not supports_strict_tool_schema(str(attempt_kwargs.get("model") or "")):
+        for tool in tools:
+            tool.get("function", {}).pop("strict", None)
+    try:
+        response = await client.chat.completions.create(
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+        )
+    except Exception:
+        logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
+        return {}
+    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    logger.info(
+        "sage_routing: abdication guard fired (tools=%s) -> %s",
+        ",".join(t["function"]["name"] for t in tools),
+        ",".join(c.function.name for c in calls) or "no tool call",
+    )
+    return {
+        i: {"id": c.id, "type": "function",
+            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+        for i, c in enumerate(calls)
+    }
+
+
 async def _maybe_run_fast_admin_boundary_turn(
     *,
     map_id: str,
@@ -2798,6 +2834,15 @@ async def process_chat_interaction_task(
 
                     content_parts: list[str] = []
                     tool_calls_acc: dict[int, dict] = {}
+                    # Abdication guard: on the first model call of a turn, hold
+                    # streamed prose back until we know the model called no
+                    # tool; a guarded retry may replace it with a tool call.
+                    _guard_armed = (
+                        abdication_guard_enabled()
+                        and bool(tools_payload)
+                        and bool(openai_messages)
+                        and openai_messages[-1].get("role") == "user"
+                    )
 
                     for _model_idx, _model_name in enumerate(_model_chain):
                         # Reset accumulators for each attempt
@@ -2845,7 +2890,8 @@ async def process_chat_interaction_task(
                                     _safe = _xml_scrub.feed(delta.content)
                                     if _safe:
                                         content_parts.append(_safe)
-                                        await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
+                                        if not _guard_armed:
+                                            await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
                                         idx = tc.index
@@ -2868,7 +2914,8 @@ async def process_chat_interaction_task(
                             _tail = _xml_scrub.flush()
                             if _tail:
                                 content_parts.append(_tail)
-                                await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
+                                if not _guard_armed:
+                                    await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
                             # Success
                             _last_err = None
                             break
@@ -2925,6 +2972,20 @@ async def process_chat_interaction_task(
                     try:
                         if _last_err is not None:
                             raise _last_err
+                        if _guard_armed:
+                            if is_abdication(
+                                _turn_plan, _last_user_text, "".join(content_parts), bool(tool_calls_acc)
+                            ):
+                                _guard_calls = await _run_abdication_guard(
+                                    _attempt_client, _attempt_kwargs, _last_user_text,
+                                    openai_messages[:-1], _full_tools_payload,
+                                )
+                                if _guard_calls:
+                                    tool_calls_acc = _guard_calls
+                                    content_parts = []
+                            if content_parts:
+                                # Release the held-back prose in one piece.
+                                await kue_stream_token(conversation.id, "".join(content_parts), turn_id=turn_id)
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None

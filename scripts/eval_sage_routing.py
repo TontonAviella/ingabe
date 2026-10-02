@@ -87,6 +87,7 @@ class Variant:
 
     tool_choice: Callable[[Any], str | None]
     shortlist_k: int = 0  # 0 = keep the live routing's tool list
+    guard: bool = False  # live abdication guard on the first step
 
     async def prepare(self, plan: Any, text: str, history: list[dict], full_tools: list[dict]) -> Any:
         if not self.shortlist_k:
@@ -110,6 +111,8 @@ VARIANTS: dict[str, Variant] = {
     "shortlist_k10": Variant(_live_tool_choice, shortlist_k=10),
     "shortlist_k15": Variant(_live_tool_choice, shortlist_k=15),
     "shortlist_k20": Variant(_live_tool_choice, shortlist_k=20),
+    "guard": Variant(_live_tool_choice, guard=True),
+    "shortlist_k15_guard": Variant(_live_tool_choice, shortlist_k=15, guard=True),
 }
 
 
@@ -217,15 +220,20 @@ def _schema(tools: list[dict], name: str) -> dict[str, Any] | None:
 
 async def run_attempt(
     case: dict[str, Any], plan: Any, messages: list[dict], client: Any, model: str,
-    first_choice: str | None, retries: int,
+    first_choice: str | None, retries: int, guard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One attempt: the first model call, and for chain cases the full loop."""
+    """One attempt: the first model call, and for chain cases the full loop.
+
+    ``guard`` ({text, history, full_tools}) enables the live abdication guard:
+    a first-step prose answer that is_abdication flags is retried once with a
+    forced tool call over guard_tools."""
     chain = case.get("chain")
     steps = chain["max_steps"] if chain else 1
     stubs = (chain or {}).get("stubs") or {}
     convo = list(messages)
     called: list[str] = []
     first_tool, args_ok, problems = None, None, []
+    guard_fired = guard_recovered = False
     for step in range(steps):
         kwargs: dict[str, Any] = {"model": model, "messages": convo, "max_tokens": MAX_TOKENS}
         if plan.tools:
@@ -240,6 +248,21 @@ async def run_attempt(
             break  # a later-step failure ends the chain; what ran still counts
         message = resp.choices[0].message
         calls = getattr(message, "tool_calls", None) or []
+        step_tools = plan.tools
+        if not calls and step == 0 and guard is not None:
+            from src.dependencies.sage_turn_request import guard_tools, is_abdication
+
+            if is_abdication(plan, guard["text"], message.content, False):
+                guard_fired = True
+                step_tools = await guard_tools(guard["text"], guard["history"], guard["full_tools"])
+                try:
+                    retry = await _complete(client, {**kwargs, "tools": step_tools,
+                                                     "tool_choice": "required"}, retries)
+                    retry_calls = getattr(retry.choices[0].message, "tool_calls", None) or []
+                    if retry_calls:
+                        message, calls, guard_recovered = retry.choices[0].message, retry_calls, True
+                except Exception:
+                    logger.warning("guard retry failed for %s", case["id"], exc_info=True)
         if not calls:
             if step == 0:
                 first_tool = scoring.TEXT_ONLY
@@ -250,7 +273,7 @@ async def run_attempt(
             first_tool = call.function.name
             if first_tool in (case["expect"].get("any_of") or []):
                 problems = scoring.check_arguments(
-                    _schema(plan.tools, first_tool), call.function.arguments,
+                    _schema(step_tools, first_tool), call.function.arguments,
                     (case["expect"].get("args") or {}).get(first_tool),
                 )
                 args_ok = not problems
@@ -263,7 +286,7 @@ async def run_attempt(
         convo.append({"role": "tool", "tool_call_id": call.id,
                       "content": json.dumps(stubs.get(call.function.name, DEFAULT_STUB))})
     return {"first_tool": first_tool, "args_ok": args_ok, "args_problems": problems,
-            "tools_called": called}
+            "tools_called": called, "guard_fired": guard_fired, "guard_recovered": guard_recovered}
 
 
 def fast_path_attempt(case: dict[str, Any], fast: Any) -> dict[str, Any]:
@@ -369,7 +392,9 @@ async def run(args: argparse.Namespace) -> Path:
                 source, tools_sent, attempts = "model", len(plan.tools), []
                 for _ in range(args.repeats):
                     attempts.append(await run_attempt(
-                        case, plan, messages, client, model, variant.tool_choice(plan), args.retries))
+                        case, plan, messages, client, model, variant.tool_choice(plan), args.retries,
+                        guard={"text": text, "history": history, "full_tools": tools_payload}
+                        if variant.guard else None))
                     if args.pace:
                         await asyncio.sleep(args.pace)
         result = scoring.score_case(case, attempts)
@@ -412,7 +437,11 @@ def _results(cases: list[dict], records: list[dict]) -> list[scoring.CaseResult]
 
 def _write(path: Path, meta: dict, cases: list[dict], records: list[dict]) -> None:
     meta = {**meta, "written_at": datetime.now(timezone.utc).isoformat(),
-            "fast_path_cases": sum(r["source"] == "fast_path" for r in records)}
+            "fast_path_cases": sum(r["source"] == "fast_path" for r in records),
+            "guard": {
+                "fired": sum(a.get("guard_fired", False) for r in records for a in r["attempts"]),
+                "recovered": sum(a.get("guard_recovered", False) for r in records for a in r["attempts"]),
+            }}
     payload = {"meta": meta, "summary": scoring.summarize(_results(cases, records)), "cases": records}
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
 
@@ -432,6 +461,9 @@ def report(path: Path) -> None:
           f"corpus={meta['corpus_sha']}  git={meta['git_sha']}  fast_path={meta.get('fast_path_cases')}")
     print(f"cases     {s['cases']}  intents={s.get('intents')}  errored={s['errored_cases']}  "
           f"unstable={s['unstable_cases']}")
+    guard = meta.get("guard") or {}
+    if guard.get("fired"):
+        print(f"guard     fired on {guard['fired']} attempts, produced a tool call on {guard['recovered']}")
     for key in ("accuracy", "tool_accuracy", "tool_and_args_accuracy", "abdication_rate",
                 "wrong_tool_rate", "no_tool_accuracy", "chain_completion"):
         if key in s:

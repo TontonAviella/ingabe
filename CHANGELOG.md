@@ -5,6 +5,7 @@ All notable changes to mundi.ai will be documented in this file.
 ## Unreleased
 
 ### Added
+- Abdication guard for Sage (`SAGE_ABDICATION_GUARD`, off by default): on the first model call of a turn, a prose answer to a request that needs a tool is retried once with a forced tool call over the 5 best-ranked tools; streamed prose is held back until that is decided. Small talk, explanation requests and short clarifying questions are left alone.
 - Per-turn tool shortlist for Sage (`SAGE_TOOL_SHORTLIST_K`, off by default): ranks the full tool catalog against each turn with keyword BM25 fused with local `nomic-embed-text` similarity and sends the top K. Offline on the routing eval it keeps an accepted tool for 98.5% of model-bound requests at K=15 (current routing: 89.7% with a median of 47 tools). Falls back to keywords, with a warning, when embeddings are unavailable.
 
 ### Changed

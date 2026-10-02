@@ -130,3 +130,47 @@ def test_bm25_shortlist_recall_on_eval_cases_stays_high() -> None:
             hits += bool(accepted & set(_names(shortlist_tools(case["text"], history, tools, k=15))))
     assert total > 150
     assert hits / total >= 0.97, f"{hits}/{total}"
+
+
+# --- abdication guard ------------------------------------------------------
+
+def _plan_for(text: str):
+    tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
+    return plan_sage_turn(text, [{"role": "user", "content": text}], tools, lambda: "P")
+
+
+@pytest.mark.parametrize(
+    ("text", "reply", "has_tools", "expected"),
+    [
+        ("will it rain in Musanze next week?", "I can check the forecast for Musanze for you.", False, True),
+        ("will it rain in Musanze next week?", "", False, True),
+        ("will it rain in Musanze next week?", "Calling the forecast.", True, False),   # tool called
+        ("hi", "Hello! How can I help?", False, False),                                # small talk
+        ("what is NDVI?", "NDVI is a vegetation index...", False, False),              # explanation
+        ("explain the payout trigger", "A payout trigger is ...", False, False),
+        ("create management zones for this field", "Which field should I use?", False, False),  # clarify
+    ],
+)
+def test_is_abdication(text: str, reply: str, has_tools: bool, expected: bool) -> None:
+    from src.dependencies.sage_turn_request import is_abdication
+
+    assert is_abdication(_plan_for(text), text, reply, has_tools) is expected
+
+
+def test_abdication_guard_flag(monkeypatch) -> None:
+    from src.dependencies.sage_turn_request import abdication_guard_enabled
+
+    monkeypatch.delenv("SAGE_ABDICATION_GUARD", raising=False)
+    assert abdication_guard_enabled() is False
+    monkeypatch.setenv("SAGE_ABDICATION_GUARD", "1")
+    assert abdication_guard_enabled() is True
+
+
+@pytest.mark.asyncio
+async def test_guard_tools_are_a_short_ranked_list() -> None:
+    from src.dependencies.sage_turn_request import GUARD_TOOL_COUNT, guard_tools
+
+    tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
+    picked = await guard_tools("will it rain in Musanze next week?", [], tools, embed=None)
+    assert len(picked) == GUARD_TOOL_COUNT
+    assert "get_forecast" in _names(picked)
