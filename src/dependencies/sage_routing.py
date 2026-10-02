@@ -417,9 +417,14 @@ def classify_intent(text: str) -> frozenset[str]:
 _ADMIN_ANALYSIS_BLOCKERS = re.compile(
     r"\b("
     r"ndvi|ndwi|nbr|evi|savi|ndre|ndbi|index|indices|satellite|sentinel|"
-    r"weather|forecast|rain|rainfall|temperature|drought|flood|soil|crop|"
+    r"weather|forecast|rain|rainfall|temperature|drought|flood\w*|soil|crop|"
     r"yield|harvest|insurance|risk|analy[sz]e|analysis|statistics?|stats|"
-    r"zonal|land\s*cover|worldcover|emissions?|food\s+security"
+    r"zonal|land\s*cover|worldcover|emissions?|food\s+security|"
+    # Data, imagery and asset requests about a place are not boundary displays.
+    r"imagery|images?|optical|photos?|ortho\w*|raster|radar|sar|layers?|"
+    r"exposure|buildings?|houses?|ponds?|reservoirs?|water\w*|"
+    # Natural features are not admin units; geocode them (search_location).
+    r"lakes?|parks?|forests?|rivers?|wetlands?|mountains?|volcano\w*|national"
     r")\b",
     re.IGNORECASE,
 )
@@ -590,6 +595,26 @@ _RASTER_AREA_KEYWORDS = re.compile(
 _RASTER_OBJECT_KEYWORDS = re.compile(
     r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|image|cog|"
     r"tiff|geotiff|layer|file|upload(?:ed)?|field)\b",
+    re.IGNORECASE,
+)
+
+# An explicit reference to imagery. Generic words ("layer", "field", "file")
+# are not enough: "buffer the roads layer" is not a raster question.
+_RASTER_REFERENCE_KEYWORDS = re.compile(
+    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|images?|imagery|photo|"
+    r"cog|tiff|geotiff|mosaic)\b",
+    re.IGNORECASE,
+)
+
+# Requests that belong to another tool even when they mention a raster: NDVI
+# rasters (stress zones, change), RGB greenness, vector operations and styling,
+# grids and H3 layers, precision-ag outputs, insurance, land cover, attribute
+# queries and brain notes.
+_RASTER_FAST_PATH_BLOCKERS = re.compile(
+    r"\b(ndvi|ndwi|grvi|green(?:ness)?|buffer|clip|dissolve|reproject|style|"
+    r"colou?r|paint|grid|hexagons?|h3|management\s+zones?|prescription|sampling|"
+    r"insurance|trigger|payout|land\s*cover|worldcover|features?|parcels?|"
+    r"observation|visit|log|note|record)\b",
     re.IGNORECASE,
 )
 
@@ -1022,6 +1047,8 @@ def detect_raster_area_question(text: str) -> bool:
     normalized_prompt = _normalize_raster_name(prompt)
     if not _RASTER_AREA_KEYWORDS.search(normalized_prompt):
         return False
+    if _RASTER_FAST_PATH_BLOCKERS.search(normalized_prompt):
+        return False
     return bool(_RASTER_OBJECT_KEYWORDS.search(normalized_prompt))
 
 
@@ -1046,7 +1073,9 @@ def detect_raster_context_question(text: str) -> bool:
     if not prompt:
         return False
     normalized_prompt = _normalize_raster_name(prompt)
-    if not _RASTER_OBJECT_KEYWORDS.search(normalized_prompt):
+    if not _RASTER_REFERENCE_KEYWORDS.search(normalized_prompt):
+        return False
+    if _RASTER_FAST_PATH_BLOCKERS.search(normalized_prompt):
         return False
     if _RASTER_CONTEXT_KEYWORDS.search(prompt):
         return True
