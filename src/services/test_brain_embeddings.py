@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.services import brain_embeddings
+from src.services.brain_service import BrainPageNotFoundError
 
 
 class _DeletedPageBrain:
@@ -13,7 +14,7 @@ class _DeletedPageBrain:
         return []
 
     async def upsert_chunks(self, conn, slug, chunks):
-        raise ValueError(f"Page not found: {slug}")
+        raise BrainPageNotFoundError(f"Page not found: {slug}")
 
 
 @pytest.mark.asyncio

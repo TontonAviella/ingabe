@@ -34,7 +34,10 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 HERMES_FLAG="${MUNDI_USE_HERMES:-auto}"
 
 if [ ! -d "$PLUGIN_SRC" ]; then
-  if [ "$HERMES_FLAG" = "1" ] || [ "$HERMES_FLAG" = "true" ] || [ "$HERMES_FLAG" = "auto" ]; then
+  # Only an explicit opt-in is fatal. 'auto' means "use Hermes if it is
+  # available", so a missing plugin degrades to the legacy planner instead of
+  # crash-looping the container.
+  if [ "$HERMES_FLAG" = "1" ] || [ "$HERMES_FLAG" = "true" ]; then
     echo "[install-hermes-plugin] FATAL: MUNDI_USE_HERMES=$HERMES_FLAG but $PLUGIN_SRC missing" >&2
     echo "[install-hermes-plugin] The image was built without the plugin baked in." >&2
     exit 1

@@ -31,9 +31,11 @@ case "${MUNDI_USE_HERMES:-auto}" in
     if [ -z "${HERMES_GATEWAY_SECRET:-}" ]; then
       HERMES_LOCAL_SECRET_FILE="${HERMES_LOCAL_SECRET_FILE:-/tmp/ingabe_cache/hermes_gateway_secret}"
       if [ ! -s "$HERMES_LOCAL_SECRET_FILE" ]; then
-        umask 077
-        python -c 'import secrets; print(secrets.token_hex(32))' \
-          > "${HERMES_LOCAL_SECRET_FILE}.tmp"
+        # Subshell: the restrictive umask must not leak into the services
+        # started below, or their files differ between first and later boots.
+        ( umask 077
+          python -c 'import secrets; print(secrets.token_hex(32))' \
+            > "${HERMES_LOCAL_SECRET_FILE}.tmp" )
         mv -f "${HERMES_LOCAL_SECRET_FILE}.tmp" "$HERMES_LOCAL_SECRET_FILE"
         echo "[start-services] Generated a private local Hermes tool secret"
       fi

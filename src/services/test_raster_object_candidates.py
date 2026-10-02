@@ -378,7 +378,7 @@ def test_analyze_raster_object_candidates_uses_fastsam_masks_when_requested(
     )
 
 
-def test_analyze_raster_object_candidates_adds_small_roof_recall_after_fastsam(
+def test_analyze_raster_object_candidates_uses_direct_fastsam_masks_only(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -523,7 +523,7 @@ def test_analyze_raster_object_candidates_requires_fastsam_when_requested(
     assert result["summary"]["count_semantics"] == "not_available_fastsam_required"
 
 
-def test_fastsam_tiles_keep_masks_local_and_accumulate_one_coverage_mask(
+def test_fastsam_tiles_keep_masks_local(
     monkeypatch,
 ) -> None:
     height = width = 500

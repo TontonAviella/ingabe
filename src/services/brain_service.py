@@ -124,6 +124,10 @@ class ChunkInput:
     token_count: Optional[int] = None
 
 
+class BrainPageNotFoundError(ValueError):
+    """The page slug does not exist (or was deleted mid-operation)."""
+
+
 @dataclass
 class GraphNode:
     slug: str
@@ -833,7 +837,7 @@ class BrainService:
                 "SELECT id FROM brain_pages WHERE slug = $1 FOR KEY SHARE", slug
             )
             if not page:
-                raise ValueError(f"Page not found: {slug}")
+                raise BrainPageNotFoundError(f"Page not found: {slug}")
             page_id = page["id"]
 
             await self._replace_chunks(conn, page_id, chunks)

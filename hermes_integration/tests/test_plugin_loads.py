@@ -474,7 +474,7 @@ def test_scoped_proxy_surface_contains_static_catalog() -> None:
         1 for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     )
     # Generated may include native names; subtract them since those land in
-    # the 'ingabe-sage' toolset, not 'ingabe-sage-proxied'.
+    # 'ingabe-sage-core', not in the scoped proxy profiles counted above.
     natives_in_generated = sum(
         1 for n in ("search_location", "ingabe_whoami") if n in GENERATED_SCHEMAS
     )

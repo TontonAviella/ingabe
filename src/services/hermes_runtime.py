@@ -117,8 +117,8 @@ _HERMES_PROFILE_KEYWORDS = {
 }
 
 # Hermes upstream emits these substrings inside `result["final_response"]`
-# when an LLM call fails. Used to route the response to kue_notify_error
-# (red toast) instead of the normal chat bubble. Brittle by design —
+# when an LLM call fails. A match makes the turn raise so the caller falls
+# back to the legacy planner instead of persisting it. Brittle by design —
 # pinned against hermes-agent v2026.5.7 emission strings. If a future
 # Hermes bump changes the wording, this list MUST be updated or errors
 # will silently show as normal Sage replies.
@@ -161,10 +161,11 @@ def hermes_result_failure_reason(
 # ---------------------------------------------------------------------------
 
 def hermes_is_enabled() -> bool:
-    """True iff MUNDI_USE_HERMES env var is set to a truthy value.
+    """Whether `process_chat_interaction_task` routes complex turns to Hermes.
 
-    Used by `process_chat_interaction_task` to fork dispatch. Default
-    behavior (env unset or '0') is the existing hand-rolled chat loop.
+    MUNDI_USE_HERMES: 1/true/yes forces it on; 'auto' (the default) turns it
+    on when OPENAI_API_KEY, OPENROUTER_API_KEY or an `ollama:` OPENAI_MODEL is
+    present; any other value keeps the hand-rolled chat loop.
     """
     val = os.environ.get("MUNDI_USE_HERMES", "auto").strip().lower()
     if val in {"1", "true", "yes"}:
@@ -684,6 +685,7 @@ async def run_sage_turn_via_hermes(
     drainer_task: asyncio.Task | None = None
     persist_task: asyncio.Task | None = None
     cancel_task: asyncio.Task | None = None
+    sentinels_sent = False
     try:
         loop = asyncio.get_running_loop()
         drainer_task = asyncio.create_task(_drain_to_websocket())
@@ -720,6 +722,7 @@ async def run_sage_turn_via_hermes(
         # it's also the sentinel _on_delta drops; use a private object.
         delta_queue.put(_SENTINEL_DONE)
         persist_queue.put(_SENTINEL_DONE)
+        sentinels_sent = True
         await asyncio.wait_for(drainer_task, timeout=2.0)
         await asyncio.wait_for(persist_task, timeout=5.0)  # DB writes are slower
 
@@ -742,13 +745,12 @@ async def run_sage_turn_via_hermes(
                         break
 
         if assistant_text:
-            # Heuristic: if the text looks like a Hermes-side API error, push
-            # it to the error toast channel (red bar) so the user can react —
-            # don't pretend it's a normal assistant reply. Persist it as an
-            # assistant message anyway so the chat reload still shows the trail.
-            # Marker list lives at module top (_HERMES_ERROR_MARKERS) — change
-            # it there to avoid drift. 5xx uses a regex so "HTTP 5ms" or
-            # "HTTP 5xx series" in a normal reply doesn't false-positive.
+            # Heuristic: if the text looks like a Hermes-side API error or the
+            # turn did not complete, raise instead of persisting it so the
+            # caller can fall back to the legacy planner. Marker list lives at
+            # module top (_HERMES_ERROR_MARKERS) — change it there to avoid
+            # drift. 5xx uses a regex so "HTTP 5ms" or "HTTP 5xx series" in a
+            # normal reply doesn't false-positive.
             failure_reason = hermes_result_failure_reason(result, assistant_text)
             if failure_reason:
                 raise RuntimeError(
@@ -790,6 +792,12 @@ async def run_sage_turn_via_hermes(
             pass
         raise
     finally:
+        # The drainers block an executor thread in queue.get(); cancelling the
+        # asyncio task does not release that thread, so a failed turn must
+        # still send the sentinels or it leaks two threads per failure.
+        if not sentinels_sent:
+            delta_queue.put(_SENTINEL_DONE)
+            persist_queue.put(_SENTINEL_DONE)
         for t in (drainer_task, persist_task, cancel_task):
             if t and not t.done():
                 t.cancel()
