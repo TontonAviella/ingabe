@@ -148,6 +148,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-03** I checked a new index's plan as the superuser (RLS bypassed); under the
+  app role's RLS the planner switched to a nested-loop anti-join that ran 33+ minutes.
+  Rule: time and EXPLAIN queries as the app role. Gate: review only (plans need a live DB).
 - **2026-10-03** Adding self-hosted Langfuse (~2.5 GB) to the 7.7 GB Docker VM filled
   swap; Postgres background workers exited with code 2 and the DB looped through crash
   recovery. Rule: every opt-in compose service sets `mem_limit`. Gate: `compose-mem-limit`.
