@@ -17,6 +17,7 @@ from src.dependencies.sage_routing import (
     tool_category_for_name,
 )
 from src.services.posthog_analytics import capture_for_session
+from src.services.sage_flight_recorder import keys_csv, summarize_tool_result
 
 SAGE_ROUTING_DECISION_EVENT = "backend_sage_routing_decision"
 SAGE_TOOL_COMPLETED_EVENT = "backend_sage_tool_call_completed"
@@ -27,11 +28,6 @@ def csv_for_values(values: Iterable[Any], *, empty: str = "") -> str:
     return ",".join(strings) if strings else empty
 
 
-def keys_csv(value: Any, *, limit: int = 20) -> str:
-    if not isinstance(value, Mapping):
-        return ""
-    keys = sorted(str(key) for key in value.keys())
-    return ",".join(keys[:limit])
 
 
 def build_sage_tool_context(
@@ -66,55 +62,6 @@ def build_sage_tool_context(
     }
 
 
-def summarize_tool_result(result: Any) -> dict[str, Any]:
-    if isinstance(result, str):
-        try:
-            result = json.loads(result)
-        except Exception:
-            return {
-                "tool_status": "text",
-                "tool_success": False,
-                "tool_has_error": True,
-                "result_key_count": 0,
-                "result_keys_csv": "",
-                "result_size_chars": len(result),
-            }
-
-    if not isinstance(result, Mapping):
-        return {
-            "tool_status": "unknown",
-            "tool_success": False,
-            "tool_has_error": True,
-            "result_key_count": 0,
-            "result_keys_csv": "",
-            "result_size_chars": 0,
-        }
-
-    raw_status = result.get("status")
-    has_error = "error" in result or str(raw_status or "").lower() in {
-        "error",
-        "failed",
-        "failure",
-    }
-    status = str(raw_status or ("error" if has_error else "success"))[:64]
-    status_lower = status.lower()
-    success = status_lower in {"success", "ok", "completed"} or (
-        not has_error and status_lower not in {"not_found", "missing"}
-    )
-
-    try:
-        result_size_chars = len(json.dumps(result, default=str))
-    except Exception:
-        result_size_chars = 0
-
-    return {
-        "tool_status": status,
-        "tool_success": bool(success),
-        "tool_has_error": bool(has_error),
-        "result_key_count": len(result),
-        "result_keys_csv": keys_csv(result),
-        "result_size_chars": result_size_chars,
-    }
 
 
 def capture_sage_routing_decision(

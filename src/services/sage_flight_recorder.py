@@ -31,7 +31,6 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
-from src.services.sage_tool_observability import summarize_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +138,64 @@ def _attribute_value(value: Any) -> Any:
     if isinstance(value, (str, bool, int, float)):
         return value
     return _json(value)
+
+
+def keys_csv(value: Any, *, limit: int = 20) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    keys = sorted(str(key) for key in value.keys())
+    return ",".join(keys[:limit])
+
+
+def summarize_tool_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            return {
+                "tool_status": "text",
+                "tool_success": False,
+                "tool_has_error": True,
+                "result_key_count": 0,
+                "result_keys_csv": "",
+                "result_size_chars": len(result),
+            }
+
+    if not isinstance(result, Mapping):
+        return {
+            "tool_status": "unknown",
+            "tool_success": False,
+            "tool_has_error": True,
+            "result_key_count": 0,
+            "result_keys_csv": "",
+            "result_size_chars": 0,
+        }
+
+    raw_status = result.get("status")
+    has_error = "error" in result or str(raw_status or "").lower() in {
+        "error",
+        "failed",
+        "failure",
+    }
+    status = str(raw_status or ("error" if has_error else "success"))[:64]
+    status_lower = status.lower()
+    success = status_lower in {"success", "ok", "completed"} or (
+        not has_error and status_lower not in {"not_found", "missing"}
+    )
+
+    try:
+        result_size_chars = len(json.dumps(result, default=str))
+    except Exception:
+        result_size_chars = 0
+
+    return {
+        "tool_status": status,
+        "tool_success": bool(success),
+        "tool_has_error": bool(has_error),
+        "result_key_count": len(result),
+        "result_keys_csv": keys_csv(result),
+        "result_size_chars": result_size_chars,
+    }
 
 
 class Observation:
