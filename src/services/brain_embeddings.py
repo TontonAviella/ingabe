@@ -534,26 +534,32 @@ async def embed_all_stale(
     # loop). The maintenance + hook-processor connections run with empty
     # app.partner_id, so this excludes partner_internal rows from them and
     # leaves those rows for embedding inside the partner's own session.
-    rows = await conn.fetch(
-        """
-        SELECT p.slug FROM brain_pages p
-        WHERE (p.compiled_truth != '' OR p.timeline != '')
-          AND (
-              p.access_scope IS NULL
-              OR p.access_scope = 'public'
-              OR (p.access_scope = 'partner_internal'
-                  AND p.partner_id IS NOT NULL
-                  AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM brain_content_chunks cc
-              WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
-          )
-        ORDER BY p.updated_at DESC
-        LIMIT $1
-        """,
-        limit,
-    )
+    # Force a hash anti-join. Under the Brain RLS policies (app role) the
+    # planner otherwise walks pages newest-first in a nested loop, expecting
+    # LIMIT to stop it early; with nothing stale it compares every page with
+    # every chunk (ran 33+ min on 431k pages, 2026-10-03). Hash: ~5 s.
+    async with conn.transaction():
+        await conn.execute("SET LOCAL enable_nestloop = off")
+        rows = await conn.fetch(
+            """
+            SELECT p.slug FROM brain_pages p
+            WHERE (p.compiled_truth != '' OR p.timeline != '')
+              AND (
+                  p.access_scope IS NULL
+                  OR p.access_scope = 'public'
+                  OR (p.access_scope = 'partner_internal'
+                      AND p.partner_id IS NOT NULL
+                      AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM brain_content_chunks cc
+                  WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
+              )
+            ORDER BY p.updated_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
 
     embedded = 0
     skipped = 0
