@@ -82,7 +82,6 @@
     "query_rwanda_zonal_stats",
     "query_worldcover_stats",
     "read_pixel_at",
-    "render_map_snapshot",
     "reverse_geocode_coordinates",
     "run_geolibre_smoke_suite_tool",
     "run_geolibre_tool",
@@ -120,7 +119,6 @@
     "native_creategrid",
     "predict_ndvi_from_sar",
     "read_pixel_at",
-    "render_map_snapshot",
     "reverse_geocode_coordinates",
     "zoom_to_bounds"
   ],

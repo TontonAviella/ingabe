@@ -108,7 +108,8 @@ INTENTS: list[tuple] = [
      ["colour the sectors layer by NDVI", "make the farms layer red", "style the districts by rainfall"]),
     ("p-zoom-place", "map_ops", ["search_location", "zoom_to_bounds"], None, None,
      ["zoom to Volcanoes National Park", "fly to Nyungwe forest", "go to Akagera park"]),
-    ("p-snapshot", "map_ops", ["render_map_snapshot"], None, None,
+    # No snapshot tool since #82 removed render_map_snapshot: Sage answers in text.
+    ("p-snapshot", "map_ops", [], None, None,
      ["send me a picture of this map", "export the current map as an image", "share a snapshot of the map"]),
     ("p-brain-search", "brain", ["search_brain"], None, None,
      ["what do we know about farmer cooperatives in {d}?", "search our notes on {d} maize growers", "any records about {d} irrigation?"]),

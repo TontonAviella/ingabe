@@ -106,9 +106,9 @@
 {"id": "p-zoom-place-1", "intent": "p-zoom-place", "text": "zoom to Volcanoes National Park", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_location", "zoom_to_bounds"]}}
 {"id": "p-zoom-place-2", "intent": "p-zoom-place", "text": "fly to Nyungwe forest", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_location", "zoom_to_bounds"]}}
 {"id": "p-zoom-place-3", "intent": "p-zoom-place", "text": "go to Akagera park", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_location", "zoom_to_bounds"]}}
-{"id": "p-snapshot-1", "intent": "p-snapshot", "text": "send me a picture of this map", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["render_map_snapshot"]}}
-{"id": "p-snapshot-2", "intent": "p-snapshot", "text": "export the current map as an image", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["render_map_snapshot"]}}
-{"id": "p-snapshot-3", "intent": "p-snapshot", "text": "share a snapshot of the map", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["render_map_snapshot"]}}
+{"id": "p-snapshot-1", "intent": "p-snapshot", "text": "send me a picture of this map", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
+{"id": "p-snapshot-2", "intent": "p-snapshot", "text": "export the current map as an image", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
+{"id": "p-snapshot-3", "intent": "p-snapshot", "text": "share a snapshot of the map", "category": "map_ops", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
 {"id": "p-brain-search-1", "intent": "p-brain-search", "text": "what do we know about farmer cooperatives in Nyagatare?", "category": "brain", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_brain"]}}
 {"id": "p-brain-search-2", "intent": "p-brain-search", "text": "search our notes on Ruhango maize growers", "category": "brain", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_brain"]}}
 {"id": "p-brain-search-3", "intent": "p-brain-search", "text": "any records about Rutsiro irrigation?", "category": "brain", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["search_brain"]}}
