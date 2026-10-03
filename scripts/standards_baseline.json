@@ -2,7 +2,7 @@
   "_comment": "Debt that existed when CODING_STANDARDS.md was adopted. A ratchet: delete entries as you fix them; never add new ones. Regenerating this file to admit new debt is a standards violation.",
   "totals": {
     "dup-body": 14,
-    "lazy-import": 138,
+    "lazy-import": 137,
     "private-import": 60,
     "render-threshold": 26,
     "web-import": 50
@@ -28,7 +28,6 @@
     "lazy-import|src/services/brain_hook_processor.py|_process_partner_url_hook->src.routes.partner_routes": 1,
     "lazy-import|src/services/brain_hook_processor.py|_process_partner_url_hook->src.services.brain_service": 1,
     "lazy-import|src/services/brain_hook_processor.py|run_hook_processor_once->src.database.pool": 1,
-    "lazy-import|src/services/brain_hook_processor.py|run_hook_processor_once->src.services.brain_embeddings": 1,
     "lazy-import|src/services/brain_ingestion/scheduler.py|_open_admin_conn->src.database.pool": 1,
     "lazy-import|src/services/brain_ingestion/scheduler.py|_run_maintenance_cycle->src.services.brain_embeddings": 1,
     "lazy-import|src/services/brain_ingestion/scheduler.py|_run_maintenance_cycle->src.services.brain_service": 1,
