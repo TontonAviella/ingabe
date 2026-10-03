@@ -27,7 +27,7 @@ Keep the harness thin, make skills explicit, and push heavy execution into deter
 5. Codify the repeated part:
    - Skill file for procedure and judgment.
    - Pydantic/FastAPI/Rust tool for deterministic execution.
-   - Resolver pointer in `CLAUDE.md`, `AGENTS.md`, or runtime prompt only when it helps selection.
+   - Resolver pointer in `AGENTS.md` (CLAUDE.md imports it) or the runtime prompt only when it helps selection.
    - Dagster job or cron only when the workflow must run automatically.
 6. Add evidence gates so Sage/Hermes cannot claim success without data.
 7. Add telemetry for success, latency, inputs, and failure reason where the workflow affects the user experience.
