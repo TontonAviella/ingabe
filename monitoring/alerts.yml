@@ -1,0 +1,38 @@
+# Alert rules for the local stack (visible at http://localhost:9090/alerts
+# and in Grafana). Added after 2026-10-03, when Postgres looped through
+# crash recovery under Docker-VM memory pressure with nothing showing it.
+groups:
+  - name: database
+    rules:
+      - alert: PostgresUnavailable
+        # Crash recovery refuses connections for 20-40 s; a 10 s scrape sees it.
+        expr: pg_up == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Postgres is not accepting connections (down or in crash recovery)
+      - alert: PostgresRecoveredRecently
+        # Any unavailability in the last 15 minutes, so a crash between
+        # dashboard glances is not missed.
+        expr: min_over_time(pg_up[15m]) == 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Postgres was unavailable at least once in the last 15 minutes
+
+  - name: docker-vm
+    rules:
+      - alert: DockerVMMemoryLow
+        expr: node_memory_MemAvailable_bytes < 1e9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Docker VM has under 1 GB available; Postgres workers start dying near here
+      - alert: DockerVMSwapNearlyFull
+        expr: (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Docker VM swap over 85% used (it was 96% when Postgres crash-looped)
