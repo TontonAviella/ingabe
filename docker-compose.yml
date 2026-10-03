@@ -658,11 +658,14 @@ services:
   # machine. Off by default; set up and start with:
   #   python scripts/setup_langfuse.py      # writes secrets + keys to .env
   #   docker compose --profile langfuse up -d
-  # UI: http://localhost:3100. Adapted from Langfuse's official v4 compose,
+  # UI: http://localhost:3100. Memory is capped per service (~4.4 GB total):
+  # on a 7.7 GB Docker VM, uncapped Langfuse filled swap and Postgres'
+  # background workers started dying (2026-10-03). Adapted from Langfuse's official v4 compose,
   # with its own Postgres/Redis/ClickHouse/MinIO and only the UI exposed.
   langfuse-worker:
     image: docker.langfuse.com/langfuse/langfuse-worker:4
     container_name: mundi-langfuse-worker
+    mem_limit: 1g
     profiles: ["langfuse"]
     restart: unless-stopped
     depends_on: &langfuse-depends-on
@@ -680,6 +683,7 @@ services:
       SALT: ${LANGFUSE_SALT:-}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
       TELEMETRY_ENABLED: "false"
+      NODE_OPTIONS: --max-old-space-size=768
       CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
       CLICKHOUSE_URL: http://langfuse-clickhouse:8123
       CLICKHOUSE_USER: clickhouse
@@ -706,6 +710,7 @@ services:
   langfuse-web:
     image: docker.langfuse.com/langfuse/langfuse:4
     container_name: mundi-langfuse-web
+    mem_limit: 1g
     profiles: ["langfuse"]
     restart: unless-stopped
     depends_on: *langfuse-depends-on
@@ -729,6 +734,7 @@ services:
   langfuse-clickhouse:
     image: docker.io/clickhouse/clickhouse-server:25.12
     container_name: mundi-langfuse-clickhouse
+    mem_limit: 1536m
     profiles: ["langfuse"]
     restart: unless-stopped
     user: "101:101"
@@ -749,6 +755,7 @@ services:
   langfuse-minio:
     image: cgr.dev/chainguard/minio
     container_name: mundi-langfuse-minio
+    mem_limit: 256m
     profiles: ["langfuse"]
     restart: unless-stopped
     entrypoint: sh
@@ -769,6 +776,7 @@ services:
   langfuse-redis:
     image: docker.io/redis:7
     container_name: mundi-langfuse-redis
+    mem_limit: 256m
     profiles: ["langfuse"]
     restart: unless-stopped
     # Langfuse queues live here; eviction would silently drop traces.
@@ -788,6 +796,7 @@ services:
   langfuse-postgres:
     image: docker.io/postgres:17
     container_name: mundi-langfuse-postgres
+    mem_limit: 384m
     profiles: ["langfuse"]
     restart: unless-stopped
     healthcheck:
