@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
@@ -390,6 +391,54 @@ async def apply_tool_shortlist(
 # calling the tool. The guard retries once with a forced tool call over a
 # narrowed list. It never fires on small talk, clarifying questions or
 # explanation requests, where prose is the right answer.
+
+# Per-minute provider rate limits (OpenRouter free models: 20 requests a
+# minute) are worth waiting out; a daily cap is not.
+RATE_LIMIT_RETRIES = 2
+_RATE_LIMIT_DEFAULT_WAIT_S = 5.0
+_RATE_LIMIT_MAX_WAIT_S = 15.0
+
+
+def _header(headers: Any, name: str) -> str | None:
+    if not headers:
+        return None
+    for key, value in dict(headers).items():
+        if str(key).lower() == name:
+            return str(value)
+    return None
+
+
+def rate_limit_retry_after(error: Exception) -> float | None:
+    """Seconds to wait before retrying a call that hit a per-minute rate
+    limit, or None when the error is not one (other errors, daily caps)."""
+    if getattr(error, "status_code", None) != 429:
+        return None
+    text = str(error).lower()
+    if "per-day" in text or "per_day" in text or "daily" in text:
+        return None
+    body = getattr(error, "body", None)
+    body_headers = None
+    if isinstance(body, Mapping):
+        meta = body.get("metadata") or (body.get("error") or {}).get("metadata") or {}
+        body_headers = meta.get("headers") if isinstance(meta, Mapping) else None
+    response_headers = getattr(getattr(error, "response", None), "headers", None)
+    wait: float | None = None
+    for headers in (response_headers, body_headers):
+        retry_after = _header(headers, "retry-after")
+        reset_ms = _header(headers, "x-ratelimit-reset")
+        try:
+            if retry_after:
+                wait = float(retry_after)
+            elif reset_ms:
+                wait = float(reset_ms) / 1000 - time.time()
+        except ValueError:
+            wait = None
+        if wait is not None:
+            break
+    if wait is None:
+        wait = _RATE_LIMIT_DEFAULT_WAIT_S
+    return max(1.0, min(wait, _RATE_LIMIT_MAX_WAIT_S))
+
 
 GUARD_TOOL_COUNT = 5
 # A clarifying question asks the user for missing input; keep it.

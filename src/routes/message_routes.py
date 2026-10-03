@@ -111,8 +111,10 @@ from src.dependencies.sage_turn_request import (
     apply_tool_shortlist,
     build_sage_tools_payload,
     guard_tools,
+    RATE_LIMIT_RETRIES,
     is_abdication,
     plan_sage_turn,
+    rate_limit_retry_after,
     tool_shortlist_k,
 )
 from src.dependencies.session import (
@@ -2873,6 +2875,7 @@ async def process_chat_interaction_task(
 
                     _last_err: Optional[APIError] = None
                     _attempted_models: list[str] = []
+                    _rate_limit_retries = 0
 
                     content_parts: list[str] = []
                     tool_calls_acc: dict[int, dict] = {}
@@ -2976,7 +2979,7 @@ async def process_chat_interaction_task(
                                 "content": "".join(content_parts) or None,
                                 "tool_calls": [tool_calls_acc[k] for k in sorted(tool_calls_acc)],
                             })
-                            if _model_idx > 0:
+                            if _model_name != _primary_model:
                                 turn_trace.flag("fallback_model")
                             _last_err = None
                             break
@@ -3014,6 +3017,25 @@ async def process_chat_interaction_task(
                                     or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) == 400)
                                 )
                             )
+                            # A per-minute rate limit (free models: 20/min) is
+                            # waited out and the same model retried, as long as
+                            # nothing has streamed; a daily cap is not.
+                            _rl_wait = rate_limit_retry_after(_api_err)
+                            if (
+                                _rl_wait is not None
+                                and _rate_limit_retries < RATE_LIMIT_RETRIES
+                                and not content_parts
+                                and not tool_calls_acc
+                            ):
+                                _rate_limit_retries += 1
+                                turn_trace.flag("rate_limited")
+                                logger.warning(
+                                    "LLM model %s rate-limited; retrying in %.1fs (%d/%d)",
+                                    _model_name, _rl_wait, _rate_limit_retries, RATE_LIMIT_RETRIES,
+                                )
+                                await asyncio.sleep(_rl_wait)
+                                _model_chain.insert(_model_idx + 1, _model_name)
+                                continue
                             _has_more_in_chain = _model_idx + 1 < len(_model_chain)
                             _can_retry = (
                                 _has_more_in_chain

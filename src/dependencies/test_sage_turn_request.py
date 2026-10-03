@@ -11,6 +11,7 @@ import pytest
 from src.dependencies.pydantic_tools import get_pydantic_tool_calls
 from src.dependencies.sage_routing import FAST_PATH_TOOLS, SMALL_TALK_SYSTEM_PROMPT
 from src.dependencies.sage_turn_request import build_sage_tools_payload, plan_sage_turn
+from src.dependencies import sage_turn_request
 
 CATALOG = Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "tool_catalog.json"
 
@@ -174,3 +175,38 @@ async def test_guard_tools_are_a_short_ranked_list() -> None:
     picked = await guard_tools("will it rain in Musanze next week?", [], tools, embed=None)
     assert len(picked) == GUARD_TOOL_COUNT
     assert "get_forecast" in _names(picked)
+
+
+class _RateLimitError(Exception):
+    def __init__(self, message: str, *, status: int = 429, body=None, headers=None) -> None:
+        super().__init__(message)
+        self.status_code = status
+        self.body = body
+        self.response = type("R", (), {"headers": headers or {}})()
+
+
+def test_rate_limit_retry_after_reads_openrouter_reset_from_the_body() -> None:
+    import time as _time
+
+    reset_ms = str(int((_time.time() + 4) * 1000))
+    err = _RateLimitError(
+        "Rate limit exceeded: free-models-per-min.",
+        body={"metadata": {"headers": {"X-RateLimit-Limit": "20", "X-RateLimit-Reset": reset_ms}}},
+    )
+    wait = sage_turn_request.rate_limit_retry_after(err)
+    assert wait is not None and 2.5 <= wait <= 4.5
+
+
+def test_rate_limit_retry_after_prefers_retry_after_and_caps_it() -> None:
+    assert sage_turn_request.rate_limit_retry_after(
+        _RateLimitError("too many", headers={"Retry-After": "3"})) == 3.0
+    assert sage_turn_request.rate_limit_retry_after(
+        _RateLimitError("too many", headers={"retry-after": "600"})) == 15.0
+    assert sage_turn_request.rate_limit_retry_after(_RateLimitError("too many")) == 5.0
+
+
+def test_rate_limit_retry_after_ignores_daily_caps_and_other_errors() -> None:
+    assert sage_turn_request.rate_limit_retry_after(
+        _RateLimitError("Rate limit exceeded: free-models-per-day.")) is None
+    assert sage_turn_request.rate_limit_retry_after(_RateLimitError("boom", status=500)) is None
+    assert sage_turn_request.rate_limit_retry_after(ValueError("nope")) is None
