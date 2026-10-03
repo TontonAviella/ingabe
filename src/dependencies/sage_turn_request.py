@@ -440,6 +440,22 @@ def rate_limit_retry_after(error: Exception) -> float | None:
     return max(1.0, min(wait, _RATE_LIMIT_MAX_WAIT_S))
 
 
+def rate_limit_user_message(error: Exception) -> str | None:
+    """What to tell the user when a rate limit ends the turn, or None.
+
+    A daily cap does not clear by retrying or by starting a new chat, so
+    the generic connection-error advice would mislead."""
+    if getattr(error, "status_code", None) != 429:
+        return None
+    text = str(error).lower()
+    if "per-day" in text or "per_day" in text or "daily" in text:
+        return (
+            "Sage has used today's AI quota. It resets at 02:00 Kigali time "
+            "(00:00 UTC); please try again after that."
+        )
+    return "Sage is receiving too many requests right now. Please try again in a minute."
+
+
 GUARD_TOOL_COUNT = 5
 # A clarifying question asks the user for missing input; keep it.
 _CLARIFY_MAX_CHARS = 400

@@ -115,6 +115,7 @@ from src.dependencies.sage_turn_request import (
     is_abdication,
     plan_sage_turn,
     rate_limit_retry_after,
+    rate_limit_user_message,
     tool_shortlist_k,
 )
 from src.dependencies.session import (
@@ -3158,7 +3159,11 @@ async def process_chat_interaction_task(
                             or "context length" in str(e).lower()
                             or "maximum context" in str(e).lower()
                         )
-                        if _is_context_overflow:
+                        _quota_message = rate_limit_user_message(e)
+                        if _quota_message:
+                            turn_trace.flag("rate_limited")
+                            await kue_notify_error(conversation.id, _quota_message)
+                        elif _is_context_overflow:
                             await kue_notify_error(
                                 conversation.id,
                                 "Maximum context length for LLM has been reached. Please create a new chat to continue using the chat feature.",

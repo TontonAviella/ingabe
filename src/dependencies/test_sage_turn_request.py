@@ -210,3 +210,13 @@ def test_rate_limit_retry_after_ignores_daily_caps_and_other_errors() -> None:
         _RateLimitError("Rate limit exceeded: free-models-per-day.")) is None
     assert sage_turn_request.rate_limit_retry_after(_RateLimitError("boom", status=500)) is None
     assert sage_turn_request.rate_limit_retry_after(ValueError("nope")) is None
+
+
+def test_rate_limit_user_message_explains_daily_and_minute_limits() -> None:
+    daily = sage_turn_request.rate_limit_user_message(
+        _RateLimitError("Rate limit exceeded: free-models-per-day-high-balance."))
+    assert daily and "02:00 Kigali" in daily
+    minute = sage_turn_request.rate_limit_user_message(
+        _RateLimitError("Rate limit exceeded: free-models-per-min."))
+    assert minute and "in a minute" in minute
+    assert sage_turn_request.rate_limit_user_message(_RateLimitError("boom", status=500)) is None
