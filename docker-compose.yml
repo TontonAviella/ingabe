@@ -66,6 +66,11 @@ services:
       - LLM_CONTEXT_LIMIT=${LLM_CONTEXT_LIMIT:-131072}
       - OPENROUTER_FALLBACK_MODELS=${OPENROUTER_FALLBACK_MODELS:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434/v1}
+      # Brain + Sage tool-shortlist embeddings (nomic-embed-text). Empty =
+      # OLLAMA_BASE_URL. On a Mac, http://host.docker.internal:11434 uses the
+      # native Ollama (GPU): ~30 ms per query vs ~3 s on the CPU container.
+      - BRAIN_EMBEDDINGS_BASE_URL=${BRAIN_EMBEDDINGS_BASE_URL:-}
+      - BRAIN_EMBEDDINGS_KEEP_ALIVE=${BRAIN_EMBEDDINGS_KEEP_ALIVE:-24h}
       - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b-it-qat}
       # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
       - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
