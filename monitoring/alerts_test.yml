@@ -1,0 +1,41 @@
+# promtool test rules monitoring/alerts_test.yml
+# Replays the 2026-10-03 incident: Postgres in crash recovery for ~30 s,
+# Docker VM swap at 96% and under 1 GB available.
+rule_files:
+  - alerts.yml
+evaluation_interval: 10s
+tests:
+  - interval: 10s
+    input_series:
+      - series: 'pg_up{job="postgres"}'
+        values: '1 1 1 0 0 0 1 1 1 1 1 1'
+      - series: 'node_memory_MemAvailable_bytes{job="docker-vm"}'
+        values: '2e8x60'
+      - series: 'node_memory_SwapTotal_bytes{job="docker-vm"}'
+        values: '1073741824x60'
+      - series: 'node_memory_SwapFree_bytes{job="docker-vm"}'
+        values: '42949672x60'
+    alert_rule_test:
+      - eval_time: 40s
+        alertname: PostgresUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, job: postgres}
+            exp_annotations: {summary: "Postgres is not accepting connections (down or in crash recovery)"}
+      - eval_time: 100s
+        alertname: PostgresUnavailable
+        exp_alerts: []
+      - eval_time: 100s
+        alertname: PostgresRecoveredRecently
+        exp_alerts:
+          - exp_labels: {severity: warning, job: postgres}
+            exp_annotations: {summary: "Postgres was unavailable at least once in the last 15 minutes"}
+      - eval_time: 6m
+        alertname: DockerVMMemoryLow
+        exp_alerts:
+          - exp_labels: {severity: warning, job: docker-vm}
+            exp_annotations: {summary: "Docker VM has under 1 GB available; Postgres workers start dying near here"}
+      - eval_time: 6m
+        alertname: DockerVMSwapNearlyFull
+        exp_alerts:
+          - exp_labels: {severity: warning, job: docker-vm}
+            exp_annotations: {summary: "Docker VM swap over 85% used (it was 96% when Postgres crash-looped)"}

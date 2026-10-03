@@ -469,10 +469,46 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+
+  # Database and Docker-VM health for Prometheus/Grafana. On 2026-10-03
+  # Postgres looped through crash recovery for ~30 min under VM memory
+  # pressure and nothing showed it; pg_up and MemAvailable/swap now do.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: mundi-postgres-exporter
+    mem_limit: 64m
+    environment:
+      - DATA_SOURCE_URI=${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mundidb}?sslmode=disable
+      - DATA_SOURCE_USER=${POSTGRES_USER:-mundiuser}
+      - DATA_SOURCE_PASS=${POSTGRES_PASSWORD:-changeme}
+    depends_on:
+      - postgresdb
+    restart: unless-stopped
+
+  # Reads the Docker VM's own /proc (the VM is the memory budget every
+  # container shares), not the Mac host's.
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.8.2
+    container_name: mundi-node-exporter
+    mem_limit: 64m
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.disable-defaults"
+      - "--collector.meminfo"
+      - "--collector.pressure"
+      - "--collector.loadavg"
+      - "--collector.cpu"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
     restart: unless-stopped
 
   grafana:
