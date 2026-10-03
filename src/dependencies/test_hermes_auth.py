@@ -1,6 +1,6 @@
 """Tests for the shared Hermes gateway HMAC verifier.
 
-This is the security boundary for /internal/inbox and /internal/tool-call.
+This is the security boundary for /internal/tool-call.
 A bug here lets anyone on the docker network dispatch tool calls with any
 (partner_id, user_id) they want, bypassing application-layer multi-tenant
 isolation (RLS still holds at the DB layer, but the GUC would be set

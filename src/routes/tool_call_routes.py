@@ -1,8 +1,6 @@
 """Internal tool-call endpoint — Hermes plugin callback into mundi-app.
 
-This is the reverse direction of the Hermes wiring. /internal/inbox
-flows messages INTO mundi-app from channels. /internal/tool-call lets
-Hermes (running our Sage tools as plugin functions) call BACK to
+/internal/tool-call lets Hermes (running our Sage tools as plugin functions) call BACK to
 mundi-app to actually execute a tool against partner-scoped data.
 
 ## Flow
@@ -85,8 +83,7 @@ class ToolCallPayload(BaseModel):
 def tool_call_is_enabled() -> bool:
     """True iff MUNDI_TOOL_CALL_ENABLED env var is set to a truthy value.
 
-    Same flag-gating pattern as MUNDI_INBOX_ENABLED. Even after the
-    dispatch wiring lands, ops opens this per-deploy.
+    Off by default; ops opens it per deploy.
     """
     val = os.environ.get("MUNDI_TOOL_CALL_ENABLED", "0").strip().lower()
     return val in {"1", "true", "yes"}

@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from datetime import datetime
 from typing import Optional
 
 import asyncpg
@@ -547,26 +548,32 @@ async def embed_all_stale(
     # loop). The maintenance + hook-processor connections run with empty
     # app.partner_id, so this excludes partner_internal rows from them and
     # leaves those rows for embedding inside the partner's own session.
-    rows = await conn.fetch(
-        """
-        SELECT p.slug FROM brain_pages p
-        WHERE (p.compiled_truth != '' OR p.timeline != '')
-          AND (
-              p.access_scope IS NULL
-              OR p.access_scope = 'public'
-              OR (p.access_scope = 'partner_internal'
-                  AND p.partner_id IS NOT NULL
-                  AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM brain_content_chunks cc
-              WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
-          )
-        ORDER BY p.updated_at DESC
-        LIMIT $1
-        """,
-        limit,
-    )
+    # Force a hash anti-join. Under the Brain RLS policies (app role) the
+    # planner otherwise walks pages newest-first in a nested loop, expecting
+    # LIMIT to stop it early; with nothing stale it compares every page with
+    # every chunk (ran 33+ min on 431k pages, 2026-10-03). Hash: ~5 s.
+    async with conn.transaction():
+        await conn.execute("SET LOCAL enable_nestloop = off")
+        rows = await conn.fetch(
+            """
+            SELECT p.slug FROM brain_pages p
+            WHERE (p.compiled_truth != '' OR p.timeline != '')
+              AND (
+                  p.access_scope IS NULL
+                  OR p.access_scope = 'public'
+                  OR (p.access_scope = 'partner_internal'
+                      AND p.partner_id IS NOT NULL
+                      AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM brain_content_chunks cc
+                  WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL
+              )
+            ORDER BY p.updated_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
 
     embedded = 0
     skipped = 0
@@ -586,3 +593,38 @@ async def embed_all_stale(
             errors += 1
 
     return {"embedded": embedded, "skipped": skipped, "errors": errors}
+
+
+# Newest brain_pages.updated_at a completed stale-embedding scan has covered
+# (per process). The scan reads every page (6.7 s on 432k pages, measured
+# 2026-10-03) and almost always finds nothing, so callers that tick often
+# use embed_stale_if_pages_changed; max(updated_at) is an index lookup.
+_stale_scan_covered_through: datetime | None = None
+
+
+async def embed_stale_if_pages_changed(
+    conn: asyncpg.Connection,
+    brain: BrainService,
+    *,
+    limit: int,
+    hooks_processed: int = 0,
+) -> dict:
+    """embed_all_stale, but only when a Brain page changed since the last
+    scan that caught up (or ``hooks_processed`` says this tick wrote pages)."""
+    global _stale_scan_covered_through
+    # Read before scanning: a page written during the scan is newer than
+    # this mark, so the next tick still scans.
+    latest = await conn.fetchval("SELECT max(updated_at) FROM brain_pages")
+    unchanged = (
+        not hooks_processed
+        and _stale_scan_covered_through is not None
+        and (latest is None or latest <= _stale_scan_covered_through)
+    )
+    if unchanged:
+        return {"embedded": 0, "skipped": 0, "errors": 0, "unchanged": True}
+    result = await embed_all_stale(conn, brain, limit=limit)
+    found = result.get("embedded", 0) + result.get("skipped", 0) + max(result.get("errors", 0), 0)
+    # A full batch may leave more stale pages; keep scanning until one is short.
+    if found < limit:
+        _stale_scan_covered_through = latest
+    return result

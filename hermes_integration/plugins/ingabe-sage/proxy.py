@@ -18,7 +18,7 @@ the HMAC-verified (partner_id, user_id) and dispatches the named tool.
 
 ## Auth model
 
-Identical to /internal/inbox:
+HMAC over the raw body (src/dependencies/hermes_auth.py):
 
   signature = HMAC-SHA256(HERMES_GATEWAY_SECRET, raw_body).hexdigest()
   POST /internal/tool-call

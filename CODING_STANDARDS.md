@@ -133,6 +133,10 @@ another module's private names, 26 business-threshold comparisons in routes,
 Sage tool handlers and React components, 16 duplicated function bodies.
 `python scripts/check_standards.py --list` prints every entry with its line.
 
+Two hygiene checks (added 2026-10-03, no baseline debt): `caplog` (a test
+takes pytest's `caplog` fixture) and `compose-mem-limit` (an opt-in compose
+service without `mem_limit`).
+
 What the gate cannot see, so review and `standards-retro` must: duplicated
 expressions inside larger functions (H2 only matches whole function bodies),
 domain rules on terms outside its keyword list (H3), and the judgment
@@ -144,6 +148,15 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-03** I checked a new index's plan as the superuser (RLS bypassed); under the
+  app role's RLS the planner switched to a nested-loop anti-join that ran 33+ minutes.
+  Rule: time and EXPLAIN queries as the app role. Gate: review only (plans need a live DB).
+- **2026-10-03** Adding self-hosted Langfuse (~2.5 GB) to the 7.7 GB Docker VM filled
+  swap; Postgres background workers exited with code 2 and the DB looped through crash
+  recovery. Rule: every opt-in compose service sets `mem_limit`. Gate: `compose-mem-limit`.
+- **2026-10-03** A test asserted a warning through `caplog`; it passed alone and failed in
+  CI, because once lifespan runs, `src` loggers stop propagating to caplog's handler.
+  Rule: assert on a module's logs by patching its logger. Gate: `caplog`.
 - **2026-10-02** Sage's deterministic fast paths matched generic words ("layer",
   "field", "zoom to X"): 25 of 279 eval requests took the wrong tool with no model
   call. Rule: a deterministic route needs negative cases too. Gate: eval-corpus test.

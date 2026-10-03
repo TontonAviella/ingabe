@@ -13,6 +13,11 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         in a rendering layer (routes, Sage tool handlers,
                         renderer, React components)
   dup-body          H2  function bodies that are identical after normalisation
+  caplog            HW  a test takes pytest's `caplog` fixture; `src` loggers stop
+                        propagating once the app's lifespan has run, so caplog
+                        sees nothing and the test passes or fails by test order
+  compose-mem-limit HW  an opt-in (profiled) docker-compose service without
+                        mem_limit; the local Docker VM has fixed memory
 
 Existing debt is listed in scripts/standards_baseline.json. The baseline is a
 ratchet:
@@ -74,6 +79,9 @@ TRIVIAL_LITERALS = {0, 1, -1}
 
 # Function bodies smaller than this are too generic to call duplicates.
 DUP_MIN_STATEMENTS = 4
+
+TEST_DIRS = ("src", "tests")
+COMPOSE_FILE = "docker-compose.yml"
 
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv", "dist", "build"}
 
@@ -435,6 +443,79 @@ def check_duplicate_bodies() -> list[Violation]:
     return found
 
 
+# --------------------------------------------------------------------------- #
+# Test and runtime hygiene (HW, "How to work")
+# --------------------------------------------------------------------------- #
+
+def check_caplog_fixture() -> list[Violation]:
+    """Tests must not rely on caplog: the app's logging config sets the "src"
+    logger to propagate=False, so once any test in the worker runs lifespan,
+    caplog's root handler sees no src.* records."""
+    out: list[Violation] = []
+    for d in TEST_DIRS:
+        base = ROOT / d
+        if not base.exists():
+            continue
+        for p in sorted(base.rglob("test_*.py")):
+            if SKIP_DIR_PARTS.intersection(p.relative_to(ROOT).parts):
+                continue
+            tree = _parse(p)
+            if tree is None:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                    a.arg == "caplog" for a in node.args.args + node.args.kwonlyargs
+                ):
+                    out.append(Violation(
+                        "caplog", _rel(p), node.lineno, node.name,
+                        f"`{node.name}` uses caplog; src.* loggers do not propagate after lifespan, "
+                        "so assert by patching the module's logger (monkeypatch.setattr(mod.logger, ...))",
+                    ))
+    return out
+
+
+def check_compose_mem_limits() -> list[Violation]:
+    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+    path = ROOT / COMPOSE_FILE
+    if not path.exists():
+        return []
+    out: list[Violation] = []
+    in_services = False
+    current: str | None = None
+    start = 0
+    has_profile = has_limit = False
+
+    def flush() -> None:
+        if current and has_profile and not has_limit:
+            out.append(Violation(
+                "compose-mem-limit", COMPOSE_FILE, start, current,
+                f"opt-in service `{current}` has no mem_limit; cap it so it cannot starve "
+                "Postgres on the fixed-memory Docker VM",
+            ))
+
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            flush()
+            current = None
+            in_services = line.rstrip() == "services:"
+            continue
+        if not in_services:
+            continue
+        m = re.match(r"^  ([A-Za-z0-9_.-]+):\s*$", line)
+        if m:
+            flush()
+            current, start, has_profile, has_limit = m.group(1), lineno, False, False
+            continue
+        if current and re.match(r"^    profiles:", line):
+            has_profile = True
+        if current and re.match(r"^    mem_limit:", line):
+            has_limit = True
+    flush()
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -442,6 +523,8 @@ def collect() -> list[Violation]:
         + check_render_thresholds_py()
         + check_render_thresholds_ts()
         + check_duplicate_bodies()
+        + check_caplog_fixture()
+        + check_compose_mem_limits()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 

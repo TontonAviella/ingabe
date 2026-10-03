@@ -101,10 +101,6 @@ from src.tools.rgb_visual import (
     analyze_rgb_field,
     AnalyzeRgbFieldArgs,
 )
-from src.tools.render_snapshot import (
-    render_map_snapshot,
-    RenderMapSnapshotArgs,
-)
 from src.tools.rain_impact import (
     analyze_expected_rain_impact,
     AnalyzeExpectedRainImpactArgs,
@@ -293,11 +289,6 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "evaluate_insurance_trigger": (
             evaluate_insurance_trigger,
             EvaluateInsuranceTriggerArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "render_map_snapshot": (
-            render_map_snapshot,
-            RenderMapSnapshotArgs,
             IngabeToolCallMetaArgs,
         ),
         "analyze_expected_rain_impact": (

@@ -21,6 +21,7 @@ from typing import Optional
 
 import asyncpg
 
+from src.services.brain_embeddings import embed_stale_if_pages_changed
 from src.services.brain_service import BrainService, PageInput, TimelineInput, _validate_slug
 
 logger = logging.getLogger(__name__)
@@ -670,7 +671,6 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
     multi-container scale-out.
     """
     from src.database.pool import _build_postgres_url
-    from src.services.brain_embeddings import embed_all_stale
 
     url = _build_postgres_url()
     conn = await asyncpg.connect(url)
@@ -692,7 +692,9 @@ async def run_hook_processor_once(limit: int = 10) -> dict:
         # Embedding backfill. Separate try/except so a single bad page
         # doesn't stall the hook loop.
         try:
-            embed_result = await embed_all_stale(conn, brain, limit=limit)
+            embed_result = await embed_stale_if_pages_changed(
+                conn, brain, limit=limit, hooks_processed=hook_result.get("processed", 0),
+            )
         except Exception:
             logger.exception("embed_all_stale failed in hook loop")
             embed_result = {"embedded": 0, "skipped": 0, "errors": -1}

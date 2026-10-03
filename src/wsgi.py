@@ -30,7 +30,6 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
-from src.routes.inbox_routes import router as inbox_router
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
@@ -164,9 +163,9 @@ def _configure_app_logging():
     # dictConfig can disable pre-existing loggers even with
     # disable_existing_loggers=False.  Force-enable all src.* and mundi.*
     # loggers that were created during module import (before lifespan ran).
-    # mundi.* covers cron workers and channel senders (sage_alerts, telegram,
-    # whatsapp) whose caplog-asserting tests otherwise see empty records once
-    # any test in the same pytest invocation triggers lifespan.
+    # mundi.* covers loggers named outside the src.* tree, whose
+    # caplog-asserting tests otherwise see empty records once any test in the
+    # same pytest invocation triggers lifespan.
     for name, lgr in logging.Logger.manager.loggerDict.items():
         if isinstance(lgr, logging.Logger) and (
             name.startswith("src") or name.startswith("mundi")
@@ -635,16 +634,9 @@ app.include_router(
     prefix="/api",
     tags=["Conversations"],
 )
-# Internal inbox: Hermes gateway → mundi-app handoff for inbound channel messages
-# (WhatsApp, Telegram, Slack, ...). Route is HMAC-gated. Default off via
-# MUNDI_INBOX_ENABLED=0. See src/routes/inbox_routes.py for the seam.
-app.include_router(
-    inbox_router,
-    tags=["Internal/Inbox"],
-)
 # Internal tool-call: Hermes-side ingabe-sage plugin → mundi-app callback for
-# dispatching Sage tools against partner-scoped data. Same HMAC scheme as
-# /inbox. Default off via MUNDI_TOOL_CALL_ENABLED=0. See
+# dispatching Sage tools against partner-scoped data. HMAC-gated
+# (src/dependencies/hermes_auth.py). Default off via MUNDI_TOOL_CALL_ENABLED=0. See
 # src/routes/tool_call_routes.py for the security boundary docs.
 app.include_router(
     tool_call_router,
@@ -731,9 +723,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def spa_server(request: Request, exc: StarletteHTTPException):
     # Don't handle API 404s - let them bubble up as real 404s.
     #
-    # /internal/* is the Hermes plugin callback surface (inbox + tool-call). PR #50
-    # added /internal/inbox but only tested the auth helper, not the HTTP route — so
-    # the omission of `/internal/` here went unnoticed until PR #55 wrote the first
+    # /internal/* is the Hermes plugin callback surface (tool-call). The first
+    # /internal/ route was only tested at the auth-helper level, so the omission of `/internal/` here went unnoticed until PR #55 wrote the first
     # HTTP-level tests for /internal/tool-call. Symptom: any raise HTTPException
     # from /internal/* routes was rewritten as 200 + SPA index.html because this
     # fallback served HTML instead of bubbling the status. Add `/internal/` to the

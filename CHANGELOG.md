@@ -10,13 +10,16 @@ All notable changes to mundi.ai will be documented in this file.
 - Abdication guard for Sage (`SAGE_ABDICATION_GUARD`, off by default): on the first model call of a turn, a prose answer to a request that needs a tool is retried once with a forced tool call over the 5 best-ranked tools; streamed prose is held back until that is decided. Small talk, explanation requests and short clarifying questions are left alone.
 - Per-turn tool shortlist for Sage (`SAGE_TOOL_SHORTLIST_K`, off by default): ranks the full tool catalog against each turn with keyword BM25 fused with local `nomic-embed-text` similarity and sends the top K. Offline on the routing eval it keeps an accepted tool for 98.5% of model-bound requests at K=15 (current routing: 89.7% with a median of 47 tools). Falls back to keywords, with a warning, when embeddings are unavailable.
 
+### Removed
+- WhatsApp and Telegram integrations: the two sender services, the inbound `/internal/inbox` route, the Kinyarwanda voice-note service, the proactive alert cron (`sage_alerts`, `cron_expr`) and the `render_map_snapshot` tool, which only delivered through them. A migration drops `user_channel_bindings`, `channel_bind_codes` and `alert_subscriptions` (downgrade restores the empty tables).
+
 ### Changed
 - Use 4-million-pixel direct FastSAM masks for building review and remove the low-precision color-only roof supplement; label candidate confidence as a heuristic screening score rather than a model probability.
-- Enable Hermes behind the Sage name for complex local planning when model credentials are available, while keeping deterministic Rwanda boundary and FastSAM workflows first.
+- Hermes can plan complex Sage turns behind the Sage name. It is off by default (`MUNDI_USE_HERMES=0`); `auto` enables it only when `OPENROUTER_API_KEY` is set. Deterministic Rwanda boundary and FastSAM workflows still run first.
 - Split Sage's 95 Hermes tools into bounded procedural profiles so each request exposes only relevant map, raster, agriculture, or memory schemas.
 
 ### Fixed
-- Fall back to the established Sage planner when Hermes fails, returns an incomplete turn, or emits an empty response instead of presenting provider output as a valid answer.
+- When Hermes fails, returns an incomplete turn or an empty response, the turn ends with an error instead of presenting provider output as an answer. There is no fallback to the legacy planner (a second planner could repeat tool side effects); a user cancel ends the turn quietly.
 - Mount the live Hermes plugin into local Compose, persist its generated HMAC key with owner-only permissions, and make runtime/deploy audits use the container virtual environment.
 
 ## [0.5.5.1] - 2026-07-12

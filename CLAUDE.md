@@ -29,7 +29,7 @@ Goal: replace the hand-rolled chat loop in `process_chat_interaction_task` with 
 
 Cutover is **flag-gated**: `MUNDI_USE_HERMES=0` keeps the existing path; `=1` routes through `src/services/hermes_runtime.py` (the runtime module). Default OFF until verified. Rollback = set flag to 0 and restart.
 
-Hermes does NOT ship a WhatsApp adapter (only Telegram, Discord, Slack, Matrix, DingTalk, Feishu). BK WhatsApp inbound is a separate native track, not gated on Phase 2.
+Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert cron, `render_map_snapshot`) were removed on 2026-10-02; Sage runs in the web app only.
 
 ## Build & Run Commands
 
