@@ -78,3 +78,38 @@ async def test_a_full_batch_keeps_scanning_until_the_backlog_drains(scans) -> No
     await _tick(conn, limit=10)
     await _tick(conn, limit=10)
     assert len(calls) == 3
+
+
+class RecordingConn:
+    """Records statements; transaction() nests them like asyncpg would."""
+
+    def __init__(self) -> None:
+        self.log: list[str] = []
+
+    def transaction(self):
+        conn = self
+
+        class _Tx:
+            async def __aenter__(self):
+                conn.log.append("BEGIN")
+
+            async def __aexit__(self, *exc):
+                conn.log.append("COMMIT")
+
+        return _Tx()
+
+    async def execute(self, query: str, *args):
+        self.log.append(query)
+
+    async def fetch(self, query: str, *args):
+        self.log.append("FETCH " + ("stale" if "NOT EXISTS" in query else "other"))
+        return []
+
+
+@pytest.mark.asyncio
+async def test_stale_scan_runs_as_a_hash_join_in_its_own_transaction(monkeypatch) -> None:
+    monkeypatch.delenv("BRAIN_EMBEDDINGS_DISABLED", raising=False)
+    conn = RecordingConn()
+    result = await be.embed_all_stale(conn, None, limit=10)
+    assert result == {"embedded": 0, "skipped": 0, "errors": 0}
+    assert conn.log == ["BEGIN", "SET LOCAL enable_nestloop = off", "FETCH stale", "COMMIT"]
