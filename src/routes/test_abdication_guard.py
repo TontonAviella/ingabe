@@ -57,10 +57,15 @@ async def test_guard_retry_without_tool_call_keeps_the_prose(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_guard_retry_failure_is_logged_not_raised(monkeypatch, caplog) -> None:
+async def test_guard_retry_failure_is_logged_not_raised(monkeypatch) -> None:
     monkeypatch.setenv("BRAIN_EMBEDDINGS_DISABLED", "1")
+    # Recorded on the module logger itself: once the app's logging config is
+    # loaded (full suite), "src" loggers stop propagating to caplog's handler.
+    warnings: list[str] = []
+    monkeypatch.setattr(message_routes.logger, "warning",
+                        lambda msg, *args, **kwargs: warnings.append(msg % args if args else msg))
     calls = await message_routes._run_abdication_guard(
         _client(_FakeCompletions(error=RuntimeError("provider down"))), {"model": "m", "messages": []},
         TEXT, [], TOOLS)
     assert calls == {}
-    assert "abdication guard retry failed" in caplog.text
+    assert any("abdication guard retry failed" in w for w in warnings)
