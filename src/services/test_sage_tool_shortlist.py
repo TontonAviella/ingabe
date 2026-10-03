@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
@@ -138,15 +137,19 @@ async def test_a_slow_query_embedding_falls_back_to_bm25(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
-async def test_hybrid_falls_back_to_bm25_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
+async def test_hybrid_falls_back_to_bm25_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
     async def broken(texts: list[str]):
         raise RuntimeError("ollama down")
 
+    # Patch the module logger: src.* loggers stop propagating to caplog
+    # once the app's logging config is loaded (CODING_STANDARDS: caplog).
+    warnings: list[str] = []
+    monkeypatch.setattr(sl.logger, "warning",
+                        lambda msg, *args, **kwargs: warnings.append(msg % args if args else msg))
     cache = sl.ToolEmbeddingCache()
     await cache.vectors(TOOLS, _fake_embedder([]))
-    with caplog.at_level(logging.WARNING, logger=sl.__name__):
-        result = await sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2,
-                                           embed=broken, cache=cache)
+    result = await sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2,
+                                       embed=broken, cache=cache)
     assert result.method == "bm25"
     assert "get_drought_status" in [t["function"]["name"] for t in result.tools]
-    assert "embeddings unavailable" in caplog.text
+    assert any("embeddings unavailable" in w for w in warnings)
