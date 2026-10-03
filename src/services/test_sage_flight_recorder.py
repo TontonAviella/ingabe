@@ -65,7 +65,8 @@ def test_a_turn_records_routing_model_call_tool_and_problem_tags(recorded) -> No
     assert root.attributes["langfuse.session.id"] == "42"
     assert root.attributes["langfuse.trace.metadata.map_id"] == "M1"
     assert root.attributes["langfuse.observation.input"] == "rain in Huye?"
-    assert set(root.attributes["langfuse.trace.tags"]) == {"tool_error", "shortlist_bm25_fallback"}
+    assert set(root.attributes["langfuse.trace.tags"]) == {
+        "tool_error", "shortlist_bm25_fallback", "shortlist:bm25"}
     assert root.attributes["langfuse.observation.level"] == "WARNING"
 
     assert gen_span.attributes["langfuse.observation.type"] == "generation"

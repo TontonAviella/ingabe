@@ -16,6 +16,7 @@ embedding function is passed in, so this module does no I/O of its own.
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import unicodedata
@@ -236,11 +237,23 @@ def _tool_document(tool: dict) -> str:
     return f"{_DOC_PREFIX}{name}. {str(fn.get('description', ''))[:_DOC_DESCRIPTION_CHARS]}"
 
 
+def _doc_key(tool: dict) -> str:
+    return hashlib.sha1(_tool_document(tool).encode()).hexdigest()
+
+
 class ToolEmbeddingCache:
-    """Tool-description embeddings, computed once per (model, description)."""
+    """Tool-description embeddings, computed once per description.
+
+    Embedding the whole catalog takes seconds (minutes on a cold Ollama), so
+    a turn never waits for it: ``warm`` fills the cache in the background
+    and turns use BM25 until ``ready``."""
 
     def __init__(self) -> None:
         self._vectors: dict[str, list[float]] = {}
+        self._warming: asyncio.Task | None = None
+
+    def ready(self, tools: list[dict]) -> bool:
+        return all(_doc_key(tool) in self._vectors for tool in tools)
 
     async def vectors(self, tools: list[dict], embed: Embedder) -> list[list[float]]:
         docs = [_tool_document(tool) for tool in tools]
@@ -252,13 +265,33 @@ class ToolEmbeddingCache:
                 self._vectors[keys[i]] = vec
         return [self._vectors[key] for key in keys]
 
+    def warm(self, tools: list[dict], embed: Embedder) -> None:
+        """Start embedding the catalog in the background, once at a time."""
+        if self._warming is not None and not self._warming.done():
+            return
+
+        async def run() -> None:
+            try:
+                await self.vectors(tools, embed)
+            except Exception:
+                logger.warning("tool shortlist: warming tool embeddings failed", exc_info=True)
+
+        self._warming = asyncio.get_running_loop().create_task(run())
+
 
 @dataclass(frozen=True)
 class Shortlist:
     tools: list[dict]
     ranking: list[str]
-    # "hybrid" normally; "bm25" when embeddings were unavailable.
+    # "hybrid" normally. BM25 alone, and why: "bm25_warming" (tool embeddings
+    # still being computed), "bm25_timeout" (query embedding too slow),
+    # "bm25" (embeddings unavailable).
     method: str
+
+
+# A turn waits at most this long for its query embedding (a warm local
+# nomic-embed-text answers in ~50 ms); past it the turn uses BM25.
+QUERY_EMBED_TIMEOUT_S = 1.0
 
 
 async def hybrid_shortlist(
@@ -273,16 +306,22 @@ async def hybrid_shortlist(
     """Fuse BM25 and embedding rankings and keep the top ``k`` tools."""
     bm25 = [name for name, _ in rank_tools(user_text, history, tools)]
     ranking, method = bm25, "bm25"
-    if embed is not None:
+    if embed is not None and not cache.ready(tools):
+        cache.warm(tools, embed)
+        method = "bm25_warming"
+    elif embed is not None:
         try:
             tool_vectors = await cache.vectors(tools, embed)
             previous = [m.get("content") or "" for m in history if m.get("role") == "user"]
             query = f"{_QUERY_PREFIX}{previous[-1] if previous else ''} {user_text}".strip()
-            (query_vector,), _model = await embed([query])
+            (query_vector,), _model = await asyncio.wait_for(embed([query]), QUERY_EMBED_TIMEOUT_S)
             names = [tool.get("function", tool).get("name") for tool in tools]
             sims = [_cosine(query_vector, vec) for vec in tool_vectors]
             by_similarity = [names[i] for i in sorted(range(len(names)), key=lambda i: -sims[i])]
             ranking, method = fuse_rankings(bm25, by_similarity), "hybrid"
+        except asyncio.TimeoutError:
+            logger.warning("tool shortlist: query embedding over %.1fs, using BM25 only", QUERY_EMBED_TIMEOUT_S)
+            method = "bm25_timeout"
         except Exception:
             logger.warning("tool shortlist: embeddings unavailable, using BM25 only", exc_info=True)
     keep = set(ranking[:k])

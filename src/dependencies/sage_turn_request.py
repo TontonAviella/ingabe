@@ -352,6 +352,13 @@ def tool_shortlist_k() -> int:
     return k
 
 
+async def warm_tool_shortlist(full_tools: list[dict], *, embed: Embedder = embed_texts) -> None:
+    """Embed the tool catalog now and wait for it. Live turns warm it in the
+    background instead; batch jobs (the routing eval) call this first so
+    their early cases are not scored on BM25 alone."""
+    await _TOOL_EMBEDDINGS.vectors(full_tools, embed)
+
+
 async def apply_tool_shortlist(
     plan: SageTurnPlan,
     last_user_text: str,

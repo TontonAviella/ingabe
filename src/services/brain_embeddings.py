@@ -297,7 +297,11 @@ def _ollama_embed_one(base_url: str, model: str, text: str, timeout: int = 60) -
     """Call Ollama /api/embeddings for a single string. Synchronous: Ollama
     serializes inference per model anyway, so async wouldn't buy throughput.
     """
-    payload = json.dumps({"model": model, "prompt": text}).encode()
+    # Keep the model loaded between calls: after Ollama's default 5 idle
+    # minutes it unloads, and reloading took ~60 s locally (measured
+    # 2026-10-03), which every Brain search and Sage turn would then wait on.
+    keep_alive = os.environ.get("BRAIN_EMBEDDINGS_KEEP_ALIVE", "24h")
+    payload = json.dumps({"model": model, "prompt": text, "keep_alive": keep_alive}).encode()
     req = urllib.request.Request(
         f"{base_url}/api/embeddings",
         data=payload,

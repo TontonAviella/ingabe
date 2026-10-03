@@ -1,6 +1,7 @@
 """Sage tool shortlist: BM25 ranking, rank fusion, hybrid with fallback."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -87,6 +88,7 @@ async def test_hybrid_uses_embeddings_and_caches_tool_vectors() -> None:
     calls: list[list[str]] = []
     cache = sl.ToolEmbeddingCache()
     embed = _fake_embedder(calls)
+    await cache.vectors(TOOLS, embed)
     # "storms" is not in any description: BM25 alone has no signal, embeddings do.
     first = await sl.hybrid_shortlist("any storms coming?", [], TOOLS, k=1, embed=embed, cache=cache)
     assert first.method == "hybrid"
@@ -97,13 +99,54 @@ async def test_hybrid_uses_embeddings_and_caches_tool_vectors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_cold_cache_never_blocks_the_turn() -> None:
+    release = asyncio.Event()
+    calls: list[list[str]] = []
+    fast = _fake_embedder(calls)
+
+    async def slow_embed(texts: list[str]):
+        await release.wait()  # a cold Ollama loading the model
+        return await fast(texts)
+
+    cache = sl.ToolEmbeddingCache()
+    turn = await asyncio.wait_for(
+        sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2, embed=slow_embed, cache=cache), 1.0)
+    assert turn.method == "bm25_warming"
+    assert "get_drought_status" in [t["function"]["name"] for t in turn.tools]
+    release.set()
+    await cache._warming
+    assert cache.ready(TOOLS)
+    warm = await sl.hybrid_shortlist("any storms coming?", [], TOOLS, k=1, embed=fast, cache=cache)
+    assert warm.method == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_query_embedding_falls_back_to_bm25(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    fast = _fake_embedder(calls)
+    cache = sl.ToolEmbeddingCache()
+    await cache.vectors(TOOLS, fast)
+
+    async def stalled(texts: list[str]):
+        await asyncio.sleep(5)
+        return await fast(texts)
+
+    monkeypatch.setattr(sl, "QUERY_EMBED_TIMEOUT_S", 0.05)
+    turn = await sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2, embed=stalled, cache=cache)
+    assert turn.method == "bm25_timeout"
+    assert "get_drought_status" in [t["function"]["name"] for t in turn.tools]
+
+
+@pytest.mark.asyncio
 async def test_hybrid_falls_back_to_bm25_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
     async def broken(texts: list[str]):
         raise RuntimeError("ollama down")
 
+    cache = sl.ToolEmbeddingCache()
+    await cache.vectors(TOOLS, _fake_embedder([]))
     with caplog.at_level(logging.WARNING, logger=sl.__name__):
         result = await sl.hybrid_shortlist("is Bugesera in drought?", [], TOOLS, k=2,
-                                           embed=broken, cache=sl.ToolEmbeddingCache())
+                                           embed=broken, cache=cache)
     assert result.method == "bm25"
     assert "get_drought_status" in [t["function"]["name"] for t in result.tools]
     assert "embeddings unavailable" in caplog.text

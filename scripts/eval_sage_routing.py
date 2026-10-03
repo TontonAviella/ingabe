@@ -390,6 +390,12 @@ async def run(args: argparse.Namespace) -> Path:
     prompt_provider = get_system_prompt_provider()
     map_provider = DefaultMapStateProvider()
     default_model = os.environ.get("OPENAI_MODEL", "")
+    if variant.shortlist_k or variant.guard:
+        from src.dependencies.sage_turn_request import warm_tool_shortlist
+
+        # Live turns warm tool embeddings in the background and use BM25
+        # meanwhile; the eval scores the warmed shortlist from case one.
+        await warm_tool_shortlist(tools_payload)
 
     todo = [c for c in cases if c["id"] not in done]
     slots = asyncio.Semaphore(max(1, args.concurrency))

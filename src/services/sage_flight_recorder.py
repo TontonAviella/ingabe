@@ -313,9 +313,10 @@ class TurnTrace:
         names = _tool_names(tools)
         if small_talk:
             self.flag("small_talk")
-        if shortlist == "bm25":
-            # The embedding half of the shortlist failed; recall drops.
-            self.flag("shortlist_bm25_fallback")
+        fallback = bool(shortlist and shortlist.startswith("bm25"))
+        if fallback:
+            # The embedding half of the shortlist was not used; recall drops.
+            self.flag("shortlist_bm25_fallback", f"shortlist:{shortlist}")
         self.event(
             "routing",
             input=user_text,
@@ -327,7 +328,7 @@ class TurnTrace:
                 "tool_count": len(names),
                 "tools": names,
             },
-            level="WARNING" if shortlist == "bm25" else None,
+            level="WARNING" if fallback else None,
             metadata={"routing_reason": reason, "tool_count": len(names), "model": model},
         )
 
