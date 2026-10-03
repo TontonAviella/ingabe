@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
+from datetime import datetime
 from typing import Optional
 
 import asyncpg
@@ -572,3 +573,38 @@ async def embed_all_stale(
             errors += 1
 
     return {"embedded": embedded, "skipped": skipped, "errors": errors}
+
+
+# Newest brain_pages.updated_at a completed stale-embedding scan has covered
+# (per process). The scan reads every page (6.7 s on 432k pages, measured
+# 2026-10-03) and almost always finds nothing, so callers that tick often
+# use embed_stale_if_pages_changed; max(updated_at) is an index lookup.
+_stale_scan_covered_through: datetime | None = None
+
+
+async def embed_stale_if_pages_changed(
+    conn: asyncpg.Connection,
+    brain: BrainService,
+    *,
+    limit: int,
+    hooks_processed: int = 0,
+) -> dict:
+    """embed_all_stale, but only when a Brain page changed since the last
+    scan that caught up (or ``hooks_processed`` says this tick wrote pages)."""
+    global _stale_scan_covered_through
+    # Read before scanning: a page written during the scan is newer than
+    # this mark, so the next tick still scans.
+    latest = await conn.fetchval("SELECT max(updated_at) FROM brain_pages")
+    unchanged = (
+        not hooks_processed
+        and _stale_scan_covered_through is not None
+        and (latest is None or latest <= _stale_scan_covered_through)
+    )
+    if unchanged:
+        return {"embedded": 0, "skipped": 0, "errors": 0, "unchanged": True}
+    result = await embed_all_stale(conn, brain, limit=limit)
+    found = result.get("embedded", 0) + result.get("skipped", 0) + max(result.get("errors", 0), 0)
+    # A full batch may leave more stale pages; keep scanning until one is short.
+    if found < limit:
+        _stale_scan_covered_through = latest
+    return result

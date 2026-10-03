@@ -170,3 +170,36 @@ def test_write_baseline_then_gate_passes(repo):
     repo("src/services/a.py", "from fastapi import Request\n")
     assert cs.main(["--write-baseline"]) == 0
     assert cs.main([]) == 0
+
+
+def test_caplog_fixture_is_flagged_in_tests(repo):
+    repo("src/services/test_thing.py", """
+        def test_bad(caplog):
+            assert "x" in caplog.text
+
+        async def test_good(monkeypatch):
+            pass
+    """)
+    found = cs.check_caplog_fixture()
+    assert [(v.rule, v.detail) for v in found] == [("caplog", "test_bad")]
+
+
+def test_profiled_compose_service_needs_mem_limit(repo):
+    repo("docker-compose.yml", """
+        services:
+          app:
+            image: app
+          extra-capped:
+            image: x
+            profiles: ["extra"]
+            mem_limit: 512m
+          extra-uncapped:
+            image: y
+            profiles: ["extra"]
+            environment:
+              A: "1"
+        volumes:
+          data:
+    """)
+    found = cs.check_compose_mem_limits()
+    assert [(v.rule, v.detail) for v in found] == [("compose-mem-limit", "extra-uncapped")]
