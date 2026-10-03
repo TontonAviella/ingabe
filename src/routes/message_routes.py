@@ -74,6 +74,7 @@ from src.services.sage_tool_observability import (
     capture_sage_routing_decision,
     capture_sage_tool_result_message,
 )
+from src.services.sage_flight_recorder import sage_turn_trace
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -105,8 +106,11 @@ from src.dependencies.sage_routing import (
     select_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
+    abdication_guard_enabled,
     apply_tool_shortlist,
     build_sage_tools_payload,
+    guard_tools,
+    is_abdication,
     plan_sage_turn,
     tool_shortlist_k,
 )
@@ -1475,6 +1479,39 @@ def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
+async def _run_abdication_guard(
+    client,
+    attempt_kwargs: dict,
+    last_user_text: str,
+    history: list[dict],
+    full_tools: list[dict],
+) -> dict[int, dict]:
+    """One forced-tool retry over the guard tools. Returns tool calls in the
+    loop's accumulator shape, or {} when the retry produced none (logged)."""
+    tools = copy.deepcopy(await guard_tools(last_user_text, history, full_tools))
+    if not supports_strict_tool_schema(str(attempt_kwargs.get("model") or "")):
+        for tool in tools:
+            tool.get("function", {}).pop("strict", None)
+    try:
+        response = await client.chat.completions.create(
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+        )
+    except Exception:
+        logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
+        return {}
+    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    logger.info(
+        "sage_routing: abdication guard fired (tools=%s) -> %s",
+        ",".join(t["function"]["name"] for t in tools),
+        ",".join(c.function.name for c in calls) or "no tool call",
+    )
+    return {
+        i: {"id": c.id, "type": "function",
+            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+        for i, c in enumerate(calls)
+    }
+
+
 async def _maybe_run_fast_admin_boundary_turn(
     *,
     map_id: str,
@@ -2322,6 +2359,35 @@ async def _maybe_run_fast_raster_fact_turn(
     return True
 
 
+async def _run_first_fast_path(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> str | None:
+    """Run the proven single-purpose paths in order; the name of the one
+    that answered the turn, or None when the model has to plan it."""
+    # Built at call time so tests can patch individual handlers.
+    handlers = (
+        ("admin_boundary", _maybe_run_fast_admin_boundary_turn),
+        ("raster_object", _maybe_run_fast_raster_object_turn),
+        ("raster_context", _maybe_run_fast_raster_context_turn),
+        ("raster_fact", _maybe_run_fast_raster_fact_turn),
+    )
+    for name, handler in handlers:
+        if await handler(
+            map_id=map_id,
+            session=session,
+            user_id=user_id,
+            conversation=conversation,
+            openai_messages=openai_messages,
+        ):
+            return name
+    return None
+
+
 async def _maybe_run_deterministic_turn_before_hermes(
     *,
     map_id: str,
@@ -2342,22 +2408,13 @@ async def _maybe_run_deterministic_turn_before_hermes(
         for row in rows
         if isinstance(getattr(row, "message_json", None), dict)
     ]
-    handlers = (
-        _maybe_run_fast_admin_boundary_turn,
-        _maybe_run_fast_raster_object_turn,
-        _maybe_run_fast_raster_context_turn,
-        _maybe_run_fast_raster_fact_turn,
-    )
-    for handler in handlers:
-        if await handler(
-            map_id=map_id,
-            session=session,
-            user_id=user_id,
-            conversation=conversation,
-            openai_messages=messages,
-        ):
-            return True
-    return False
+    return await _run_first_fast_path(
+        map_id=map_id,
+        session=session,
+        user_id=user_id,
+        conversation=conversation,
+        openai_messages=messages,
+    ) is not None
 
 
 async def process_chat_interaction_task(
@@ -2430,6 +2487,9 @@ async def process_chat_interaction_task(
                 conversation.id,
             )
         if isinstance(message_dict, dict) and message_dict.get("role") == "tool":
+            turn_trace.tool_finished(
+                str(message_dict.get("tool_call_id") or ""), message_dict.get("content")
+            )
             try:
                 capture_sage_tool_result_message(
                     message=message_dict,
@@ -2439,7 +2499,16 @@ async def process_chat_interaction_task(
             except Exception:
                 logger.debug("Sage tool observability capture failed", exc_info=True)
 
-    with tracer.start_as_current_span("app.process_chat_interaction") as span:
+    with tracer.start_as_current_span("app.process_chat_interaction") as span, sage_turn_trace(
+        session_id=str(conversation.id),
+        user_id=user_id,
+        metadata={
+            "map_id": map_id,
+            "partner_id": partner_id,
+            "client_turn_id": client_turn_id,
+            "message_id": user_message_id,
+        },
+    ) as turn_trace:
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
         _recent_tool_signatures: list[str] = []
@@ -2450,10 +2519,13 @@ async def process_chat_interaction_task(
         turn_id: str | None = None
 
         for i in range(25):
+            if i == 24:
+                turn_trace.flag("step_limit")
             # Check if the message processing has been cancelled
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    turn_trace.flag("cancelled")
                     # Emit a WS done=True so the frontend clears the loading
                     # state and finalises whatever partial message it has.
                     # Without this, the cancel button "succeeds" on the server
@@ -2561,40 +2633,15 @@ async def process_chat_interaction_task(
                         m["content"] = ""
                 openai_messages.append(m)
 
-            if await _maybe_run_fast_admin_boundary_turn(
+            _fast_path = await _run_first_fast_path(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,
                 conversation=conversation,
                 openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_object_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_context_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_fact_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
+            )
+            if _fast_path is not None:
+                turn_trace.fast_path(_fast_path, user_text=extract_last_user_text(openai_messages))
                 return
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
@@ -2671,6 +2718,16 @@ async def process_chat_interaction_task(
                     **chat_completions_args,
                     "model": _turn_plan.model_override,
                 }
+            if i == 0:
+                turn_trace.routing(
+                    user_text=_last_user_text,
+                    reason=_routing.reason,
+                    categories=list(_routing.selected_categories),
+                    small_talk=_routing.is_small_talk,
+                    tools=tools_payload,
+                    shortlist=_turn_plan.shortlist,
+                    model=str(chat_completions_args.get("model") or ""),
+                )
             if _routing.is_small_talk:
                 logger.info(
                     "sage_routing: small-talk fast-path engaged (model=%s, "
@@ -2798,6 +2855,15 @@ async def process_chat_interaction_task(
 
                     content_parts: list[str] = []
                     tool_calls_acc: dict[int, dict] = {}
+                    # Abdication guard: on the first model call of a turn, hold
+                    # streamed prose back until we know the model called no
+                    # tool; a guarded retry may replace it with a tool call.
+                    _guard_armed = (
+                        abdication_guard_enabled()
+                        and bool(tools_payload)
+                        and bool(openai_messages)
+                        and openai_messages[-1].get("role") == "user"
+                    )
 
                     for _model_idx, _model_name in enumerate(_model_chain):
                         # Reset accumulators for each attempt
@@ -2829,6 +2895,18 @@ async def process_chat_interaction_task(
                             )
                         else:
                             _attempt_client = client
+                        _generation = turn_trace.generation(
+                            model=_model_name,
+                            messages=_llm_messages,
+                            tools=_attempt_tools,
+                            step=i,
+                            attempt=_model_idx,
+                            parameters={
+                                "max_tokens": _max_tokens,
+                                "tool_choice": _attempt_kwargs["tool_choice"],
+                                "input_tokens_estimate": _input_est,
+                            },
+                        )
                         try:
                             # Per-attempt scrubber so Nemotron's
                             # `<tool_call>...</tool_call>` text emissions don't
@@ -2840,12 +2918,14 @@ async def process_chat_interaction_task(
                             async for chunk in stream:
                                 if not chunk.choices:
                                     continue
+                                _generation.first_token()
                                 delta = chunk.choices[0].delta
                                 if delta.content:
                                     _safe = _xml_scrub.feed(delta.content)
                                     if _safe:
                                         content_parts.append(_safe)
-                                        await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
+                                        if not _guard_armed:
+                                            await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
                                         idx = tc.index
@@ -2868,13 +2948,21 @@ async def process_chat_interaction_task(
                             _tail = _xml_scrub.flush()
                             if _tail:
                                 content_parts.append(_tail)
-                                await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
+                                if not _guard_armed:
+                                    await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
                             # Success
+                            _generation.end(output={
+                                "content": "".join(content_parts) or None,
+                                "tool_calls": [tool_calls_acc[k] for k in sorted(tool_calls_acc)],
+                            })
+                            if _model_idx > 0:
+                                turn_trace.flag("fallback_model")
                             _last_err = None
                             break
                         except APIError as _api_err:
                             _last_err = _api_err
                             _err_str = str(_api_err)
+                            _generation.end(level="ERROR", status=_err_str)
                             _is_upstream_5xx = (
                                 "Provider returned error" in _err_str
                                 or " 500" in _err_str or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
@@ -2925,6 +3013,41 @@ async def process_chat_interaction_task(
                     try:
                         if _last_err is not None:
                             raise _last_err
+                        # Recorded whether or not the guard is on, so the
+                        # flight recorder shows the abdication rate either way.
+                        _abdicated = (
+                            bool(openai_messages)
+                            and openai_messages[-1].get("role") == "user"
+                            and is_abdication(
+                                _turn_plan, _last_user_text, "".join(content_parts), bool(tool_calls_acc)
+                            )
+                        )
+                        if _abdicated:
+                            turn_trace.flag("abdication")
+                        if _guard_armed:
+                            if _abdicated:
+                                turn_trace.flag("guard_fired")
+                                _guard_step = turn_trace.observe(
+                                    "abdication_guard",
+                                    kind="guardrail",
+                                    input={"held_back_reply": "".join(content_parts)},
+                                )
+                                _guard_calls = await _run_abdication_guard(
+                                    _attempt_client, _attempt_kwargs, _last_user_text,
+                                    openai_messages[:-1], _full_tools_payload,
+                                )
+                                _guard_step.end(
+                                    output={"tool_calls": [_guard_calls[k] for k in sorted(_guard_calls)]},
+                                    level=None if _guard_calls else "WARNING",
+                                    status=None if _guard_calls else "retry made no tool call; prose kept",
+                                )
+                                if _guard_calls:
+                                    turn_trace.flag("guard_recovered")
+                                    tool_calls_acc = _guard_calls
+                                    content_parts = []
+                            if content_parts:
+                                # Release the held-back prose in one piece.
+                                await kue_stream_token(conversation.id, "".join(content_parts), turn_id=turn_id)
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
@@ -2983,6 +3106,7 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
+                        turn_trace.flag("llm_error")
                         _is_context_overflow = (
                             e.code == "context_length_exceeded"
                             or "context length" in str(e).lower()
@@ -3009,6 +3133,7 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM unexpected error: %s", e, exc_info=True)
+                        turn_trace.flag("llm_error")
                         await kue_notify_error(
                             conversation.id,
                             "Error connecting to LLM. This is probably a bug with Mundi, please open a new issue on GitHub.",
@@ -3025,6 +3150,7 @@ async def process_chat_interaction_task(
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    turn_trace.flag("cancelled")
                     # Same WS done=True signal as the pre-LLM cancel branch,
                     # so the frontend clears its spinner.
                     try:
@@ -3039,6 +3165,7 @@ async def process_chat_interaction_task(
             await add_chat_completion_message(assistant_message)
 
             if not assistant_message.tool_calls:
+                turn_trace.set_output(assistant_message.content)
                 break
 
             # Fetch project_id for this map once for all tool calls
@@ -3066,6 +3193,7 @@ async def process_chat_interaction_task(
                             else "hardcoded"
                         )
                     )
+                    turn_trace.tool_started(tool_call.id, function_name, tool_args)
                     _tool_observability_contexts[tool_call.id] = build_sage_tool_context(
                         tool_name=function_name,
                         tool_args=tool_args,
