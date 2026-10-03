@@ -3037,9 +3037,12 @@ async def process_chat_interaction_task(
                                 _model_chain.insert(_model_idx + 1, _model_name)
                                 continue
                             _has_more_in_chain = _model_idx + 1 < len(_model_chain)
+                            # A rate limit that waiting cannot fix (a daily
+                            # cap) moves on to the next model in the chain.
+                            _is_rate_limited = getattr(_api_err, "status_code", None) == 429
                             _can_retry = (
                                 _has_more_in_chain
-                                and (_is_upstream_5xx or _is_payload_400)
+                                and (_is_upstream_5xx or _is_payload_400 or _is_rate_limited)
                                 and len(content_parts) == 0
                                 and len(tool_calls_acc) == 0
                             )
