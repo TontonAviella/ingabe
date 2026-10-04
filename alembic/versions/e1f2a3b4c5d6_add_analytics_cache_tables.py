@@ -20,6 +20,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from src.database.geoboundaries import rwanda_boundary_features
+
 revision: str = "e1f2a3b4c5d6"
 down_revision: Union[str, None] = "c2d3e4f5a6b7"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -218,8 +220,6 @@ def _seed_rwanda_districts() -> None:
     import json
     import logging
 
-    import requests
-
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
 
@@ -257,20 +257,8 @@ def _seed_rwanda_districts() -> None:
         return
 
     # Fetch from geoBoundaries API
-    api_url = (
-        "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM2/"
-    )
     try:
-        api_resp = requests.get(api_url, timeout=30)
-        api_resp.raise_for_status()
-        geojson_url = api_resp.json().get("gjDownloadURL")
-        if not geojson_url:
-            logger.warning("No gjDownloadURL in geoBoundaries API response")
-            return
-
-        geojson_resp = requests.get(geojson_url, timeout=120)
-        geojson_resp.raise_for_status()
-        features = geojson_resp.json().get("features", [])
+        features = rwanda_boundary_features("ADM2")
     except Exception as exc:
         logger.warning(
             "Failed to fetch geoBoundaries data (non-fatal): %s", exc,
