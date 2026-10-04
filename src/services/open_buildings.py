@@ -14,6 +14,8 @@ from shapely.geometry import Point, mapping, shape
 from shapely.geometry.base import BaseGeometry
 from shapely import wkt
 
+from src.services.h3_risk_classes import risk_level
+
 from src.services.h3_spatial_insight import (
     H3SpatialInsightInput,
     create_h3_spatial_insight,
@@ -402,6 +404,7 @@ def _merge_cell_stats(geojson: dict[str, Any], cell_stats: dict[str, dict[str, A
             min(100.0, float(props.get("risk_score") or 0.0) + min(building_count, 10) * 1.8),
             1,
         )
+        props["risk_level"] = risk_level(props["risk_score"])  # the label must match the raised score's colour
 
 
 def _validate_payload(payload: OpenBuildingsExposureInput) -> None:

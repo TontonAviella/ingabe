@@ -39,6 +39,7 @@ async def persist_h3_spatial_insight_layer(
     project_id: str,
     layer_name: str,
     render_3d: bool,
+    analysis_kind: str = "h3_spatial_insight",
 ) -> PersistedH3Layer:
     """Persist an H3 analysis as a real map layer.
 
@@ -88,8 +89,8 @@ async def persist_h3_spatial_insight_layer(
     metadata = processed.metadata.model_dump(exclude_none=True)
     metadata.update(
         {
-            "source": "sage_h3_spatial_insight",
-            "analysis_kind": "h3_spatial_insight",
+            "source": f"sage_{analysis_kind}",
+            "analysis_kind": analysis_kind,
             "screening_model": result.get("screening_model", "h3_spatial_insight_v1"),
             "source_layer_id": summary.get("source_layer_id"),
             "browser_transport": "pmtiles",

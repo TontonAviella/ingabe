@@ -190,3 +190,13 @@ def test_select_open_buildings_tiles_for_bbox_uses_public_metadata(monkeypatch):
             "size_mb": 12.3,
         }
     ]
+
+
+def test_raised_cell_scores_keep_a_matching_risk_label():
+    from src.services.h3_risk_classes import risk_level
+    from src.services.open_buildings import _merge_cell_stats
+
+    geojson = {"features": [{"properties": {"h3_index": "c1", "risk_score": 55.0, "risk_level": "moderate"}}]}
+    _merge_cell_stats(geojson, {"c1": {"building_count": 10, "building_area_m2": 900.0, "mean_confidence": 0.8}})
+    props = geojson["features"][0]["properties"]
+    assert props["risk_score"] == 73.0 and props["risk_level"] == risk_level(73.0) == "high"

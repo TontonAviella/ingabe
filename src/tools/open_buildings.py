@@ -12,6 +12,7 @@ from src.services.open_buildings import (
 )
 from src.services.rain_impact import parse_bbox
 from src.tools.geojson_transport import geojson_layer_update
+from src.tools.h3_layer_render import compact_h3_geojson, render_h3_risk_layer
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 
@@ -105,47 +106,22 @@ async def analyze_open_buildings_exposure(
         )
     )
 
-    if args.render_map and result.get("status") == "success":
-        source_id = f"sage-open-buildings-h3-{uuid.uuid4().hex[:8]}"
-        style = {
-            "color_property": "risk_score",
-            "stops": [
-                {"max": 40, "color": "#16a34a"},
-                {"max": 60, "color": "#eab308"},
-                {"max": 80, "color": "#f97316"},
-                {"max": 101, "color": "#dc2626"},
-            ],
-            "fill_opacity": 0.6,
-            "stroke_color": "#111827",
-            "stroke_width": 1.2,
-            "extrude_3d": args.render_3d,
-            "extrusion_property": "risk_score",
-            "extrusion_scale": 45,
-        }
-        async with kue_ephemeral_action(
-            meta.conversation_id,
-            f"Rendering Open Buildings exposure: {args.location_label}",
-            bounds=bbox,
-        ) as payload:
-            payload.updates["add_geojson_layer"] = geojson_layer_update(
-                source_id=source_id,
-                geojson=result["geojson"],
-                name=f"Building Exposure - {args.location_label}",
-                bounds=bbox,
-                style_hint="open_buildings_h3_exposure",
-                style=style,
-            )
-            await asyncio.sleep(0.2)
-        result["engines"]["render"]["source_id"] = source_id
-        result["engines"]["render"]["rendered"] = True
-    elif result.get("status") == "success":
-        result["engines"]["render"]["rendered"] = False
-
     if result.get("status") == "success":
-        geojson = result["geojson"]
-        building_geojson = result["building_exposure_geojson"]
-        result["geojson"] = json.dumps(geojson)
-        result["building_exposure_geojson"] = json.dumps(building_geojson)
-        result["geojson_feature_count"] = len(geojson.get("features", []))
+        persisted_layer = None
+        if args.render_map:
+            persisted_layer = await render_h3_risk_layer(
+                result,
+                meta=meta,
+                layer_name=f"Building Exposure - {args.location_label}",
+                render_3d=args.render_3d,
+                bounds=bbox,
+                analysis_kind="open_buildings_h3_exposure",
+                extrusion_scale=45,
+                style_hint="open_buildings_h3_exposure",
+            )
+        else:
+            result["engines"]["render"]["rendered"] = False
+        compact_h3_geojson(result, persisted_layer)
+        result["building_exposure_geojson"] = json.dumps(result["building_exposure_geojson"])
 
     return result
