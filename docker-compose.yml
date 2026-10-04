@@ -382,6 +382,12 @@ services:
     image: "${APP_IMAGE:-mundi-public:local}"
     container_name: mundi-dagster-daemon
     command: dagster-daemon run -w /app/dagster_home/workspace.yaml
+    # Runs execute as subprocesses inside this container, so this cap bounds
+    # the daemon plus its runs: an over-budget run is killed here instead of
+    # pushing the Docker VM into swap and crashing Postgres (2026-10-03).
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    restart: unless-stopped
     depends_on:
       postgresdb:
         condition: service_healthy
