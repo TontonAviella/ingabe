@@ -151,7 +151,7 @@ lines; promote a lesson that recurs into the sections above.
 
 - **2026-10-04** The Dagster daemon (no restart policy, no mem_limit) stopped running schedules on
   2026-08-12 and exited on 2026-10-02; nobody noticed, so Sage answered from 7 weeks of missing weather/NDVI.
-  Rule: long-running compose services set `restart:` and `mem_limit`. Gate: review only (no Dagster alert yet).
+  Rule: long-running compose services set `restart:` and `mem_limit`. Gate: alert `DataPipelineStale` (cache age).
 - **2026-10-03** I checked a new index's plan as the superuser (RLS bypassed); under the
   app role's RLS the planner switched to a nested-loop anti-join that ran 33+ minutes.
   Rule: time and EXPLAIN queries as the app role. Gate: review only (plans need a live DB).

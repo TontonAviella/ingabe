@@ -39,3 +39,22 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, job: docker-vm}
             exp_annotations: {summary: "Docker VM swap over 85% used (it was 96% when Postgres crash-looped)"}
+
+  - interval: 1m
+    input_series:
+      - series: 'pipeline_cache_age_seconds{job="postgres",cache="agri_indices_cache",cadence="daily"}'
+        values: '3600x60'
+      - series: 'pipeline_cache_age_seconds{job="postgres",cache="weather_daily_cache",cadence="daily"}'
+        values: '1.79e9x60'
+      - series: 'pipeline_cache_age_seconds{job="postgres",cache="drought_cache",cadence="weekly"}'
+        values: '691200x60'
+      - series: 'pipeline_cache_age_seconds{job="postgres",cache="ndvi_cell_cache",cadence="weekly"}'
+        values: '864000x60'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: DataPipelineStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: postgres, cache: weather_daily_cache, cadence: daily}
+            exp_annotations: {summary: "weather_daily_cache has not been refreshed by Dagster on schedule (daily)"}
+          - exp_labels: {severity: warning, job: postgres, cache: ndvi_cell_cache, cadence: weekly}
+            exp_annotations: {summary: "ndvi_cell_cache has not been refreshed by Dagster on schedule (weekly)"}
