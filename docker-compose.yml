@@ -381,7 +381,9 @@ services:
   dagster-daemon:
     image: "${APP_IMAGE:-mundi-public:local}"
     container_name: mundi-dagster-daemon
-    command: dagster-daemon run -w /app/dagster_home/workspace.yaml
+    # Fail runs orphaned by the previous container first: they would otherwise
+    # hold the single run slot (dagster.yaml max_concurrent_runs) forever.
+    command: sh -c "python -m src.pipelines.fail_orphaned_runs && exec dagster-daemon run -w /app/dagster_home/workspace.yaml"
     # Runs execute as subprocesses inside this container, so this cap bounds
     # the daemon plus its runs: an over-budget run is killed here instead of
     # pushing the Docker VM into swap and crashing Postgres (2026-10-03).
