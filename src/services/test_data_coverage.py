@@ -80,3 +80,20 @@ def test_point_sample_says_where_the_value_comes_from():
     )
     village = point_sample_note("chirps", "Gasharu", "village")
     assert "about 18 neighbouring villages share these figures" in village
+
+
+def test_map_levels_point_finer_levels_at_the_finest_with_values():
+    levels = {x["level"]: x for x in data_coverage.map_levels(("district",))}
+    assert levels["district"] == {"level": "district", "has_values": True, "values_from": "district"}
+    assert levels["village"] == {"level": "village", "has_values": False, "values_from": "district"}
+
+
+def test_map_levels_use_their_own_values_where_they_have_them():
+    levels = {x["level"]: x for x in data_coverage.map_levels(("district", "cell"))}
+    assert levels["sector"]["values_from"] == "district"
+    assert levels["village"]["values_from"] == "cell"
+
+
+def test_shared_value_note_names_the_unit_and_count():
+    note = data_coverage.shared_value_note("district", "Huye", "village", 509)
+    assert note == "One value for the whole Huye district: all 509 villages in it share it."
