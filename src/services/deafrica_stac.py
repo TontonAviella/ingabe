@@ -53,6 +53,13 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "af-south-1")
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
 os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.TIF,.tiff")
 
+# Windows larger than this (about 20 x 20 km at 10 m) are read from the COG
+# overviews with nearest-neighbour sampling, keeping the pixel distribution
+# (mean and std) while bounding memory. A district-wide window at full
+# resolution is ~30M pixels per band, and the nightly district NDVI job was
+# OOM-killed at 1.5 GB on 2026-10-04. Field- and sector-sized reads are unaffected.
+MAX_WINDOW_PIXELS = 4_000_000
+
 _STAC_ROOT = "https://explorer.digitalearth.africa/stac"
 _STAC_SEARCH = f"{_STAC_ROOT}/search"
 
@@ -164,6 +171,7 @@ def _read_window(
 ) -> Optional[Tuple[np.ndarray, Any]]:
     """Open a COG from s3://... and read the window covering geom_bounds_lonlat."""
     import rasterio
+    from rasterio.enums import Resampling
     from rasterio.warp import transform_bounds
     from rasterio.windows import from_bounds
 
@@ -171,11 +179,27 @@ def _read_window(
         with rasterio.open(s3_href) as src:
             proj = transform_bounds("EPSG:4326", src.crs, *geom_bounds_lonlat)
             win = from_bounds(*proj, transform=src.transform)
-            arr = src.read(1, window=win, boundless=True, fill_value=0)
-            return arr, src.window_transform(win)
+            transform = src.window_transform(win)
+            out_shape = _capped_shape(win.height, win.width)
+            if out_shape is None:
+                arr = src.read(1, window=win, boundless=True, fill_value=0)
+                return arr, transform
+            arr = src.read(1, window=win, boundless=True, fill_value=0,
+                           out_shape=out_shape, resampling=Resampling.nearest)
+            return arr, transform * transform.scale(win.width / out_shape[1],
+                                                    win.height / out_shape[0])
     except Exception as e:
         logger.warning("DE Africa COG read failed for %s: %s", s3_href, e)
         return None
+
+
+def _capped_shape(height: float, width: float) -> Optional[Tuple[int, int]]:
+    """Output (rows, cols) for a window over MAX_WINDOW_PIXELS, else None."""
+    pixels = height * width
+    if pixels <= MAX_WINDOW_PIXELS:
+        return None
+    factor = math.sqrt(pixels / MAX_WINDOW_PIXELS)
+    return max(1, int(height / factor)), max(1, int(width / factor))
 
 
 def _stats_from_array(arr: np.ndarray, valid: np.ndarray) -> Dict[str, float]:
