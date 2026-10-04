@@ -28,54 +28,6 @@ _RWANDA_CENTER = (-1.94, 29.87)
 
 _ET_LONG_TERM_MEAN = 3.5
 
-# Per-district seasonal rainfall normals (mm).
-# Derived from CHIRPS 2000-2023 seasonal totals (Sep-Jan for A, Feb-May for B).
-# Districts grouped by agro-ecological zone:
-#   Northwest highlands: Musanze, Rubavu, Nyabihu, Burera (wet, >500mm/season)
-#   Central plateau: Kigali, Muhanga, Kamonyi, Ruhango, Huye, Nyanza, Gisagara (moderate)
-#   Eastern lowland: Bugesera, Kayonza, Kirehe, Ngoma, Gatsibo, Nyagatare (dry, <350mm)
-#   Southwest: Nyamasheke, Rusizi, Karongi, Rutsiro (lake-influenced, moderate-wet)
-_DISTRICT_RAINFALL_NORMALS: dict[str, dict[str, dict[str, float]]] = {
-    # --- Northwest highlands ---
-    "musanze":    {"A": {"mean": 520, "std": 95}, "B": {"mean": 460, "std": 85}},
-    "rubavu":     {"A": {"mean": 510, "std": 90}, "B": {"mean": 450, "std": 80}},
-    "nyabihu":    {"A": {"mean": 530, "std": 100}, "B": {"mean": 470, "std": 90}},
-    "burera":     {"A": {"mean": 490, "std": 90}, "B": {"mean": 430, "std": 80}},
-    "gakenke":    {"A": {"mean": 460, "std": 85}, "B": {"mean": 400, "std": 75}},
-    # --- Central plateau ---
-    "kigali":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "gasabo":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "kicukiro":   {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "nyarugenge": {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "muhanga":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
-    "kamonyi":    {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
-    "ruhango":    {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
-    "huye":       {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
-    "nyanza":     {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
-    "gisagara":   {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
-    "nyamagabe":  {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
-    # --- Eastern lowland ---
-    "bugesera":   {"A": {"mean": 340, "std": 75}, "B": {"mean": 290, "std": 65}},
-    "kayonza":    {"A": {"mean": 360, "std": 75}, "B": {"mean": 310, "std": 65}},
-    "kirehe":     {"A": {"mean": 350, "std": 75}, "B": {"mean": 300, "std": 65}},
-    "ngoma":      {"A": {"mean": 370, "std": 80}, "B": {"mean": 320, "std": 70}},
-    "gatsibo":    {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
-    "nyagatare":  {"A": {"mean": 350, "std": 80}, "B": {"mean": 300, "std": 70}},
-    "rwamagana":  {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
-    # --- Southwest / lake-influenced ---
-    "nyamasheke": {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
-    "rusizi":     {"A": {"mean": 450, "std": 85}, "B": {"mean": 400, "std": 75}},
-    "karongi":    {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
-    "rutsiro":    {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
-    "ngororero":  {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
-    "rulindo":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
-}
-
-_NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
-    "A": {"mean": 400.0, "std": 85.0},
-    "B": {"mean": 350.0, "std": 75.0},
-}
-
 # Per-district MONTHLY rainfall normals (mm per month).
 # Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
 # Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
@@ -171,7 +123,7 @@ class InsuranceReport:
 
     phase_rainfall: list[PhaseRainfall] = field(default_factory=list)
     season_rainfall_mm: float = 0.0
-    spi: float = 0.0
+    spi: Optional[float] = None  # season-to-date SPI; None when too early or no data
     spi_1: Optional[float] = None
     spi_3: Optional[float] = None
     drought_diagnostic: str = "insufficient_data"
@@ -213,7 +165,7 @@ class InsuranceReport:
             "growth_phase": self.growth_phase,
             "days_after_planting": self.days_after_planting,
             "season_rainfall_mm": round(self.season_rainfall_mm, 1),
-            "spi": round(self.spi, 2),
+            "spi": round(self.spi, 2) if self.spi is not None else None,
             "spi_1": round(self.spi_1, 2) if self.spi_1 is not None else None,
             "spi_3": round(self.spi_3, 2) if self.spi_3 is not None else None,
             "drought_diagnostic": self.drought_diagnostic,
@@ -447,25 +399,26 @@ _DROUGHT_STATE_LABELS: dict[str, str] = {
     "insufficient_data": "Insufficient data for drought classification",
 }
 
-def _compute_spi(
-    season_rainfall_mm: float,
-    season: str,
+def _season_to_date_spi(
+    daily_precip: dict[str, Optional[float]],
+    planting_date: date,
+    today: date,
     district: Optional[str] = None,
-) -> float:
-    """Legacy SPI from season cumulative vs long-term normals.
+) -> Optional[float]:
+    """SPI of rainfall since planting against the normal for those same dates.
 
-    Kept for backward compatibility with trigger evaluation which expects a
-    single SPI value.  New code should use _compute_spi_pair().
+    Replaces the legacy season SPI, which divided rainfall *so far* by the
+    *full-season* normal: normal rain scored about -4 twenty days into Season
+    A, so every crop's `spi < -1` trigger fired early in every season.
     """
-    normals = _NATIONAL_RAINFALL_NORMALS.get(season, _NATIONAL_RAINFALL_NORMALS["A"])
-    if district:
-        district_key = district.lower().strip()
-        district_normals = _DISTRICT_RAINFALL_NORMALS.get(district_key, {})
-        if season in district_normals:
-            normals = district_normals[season]
-    if normals["std"] == 0:
-        return 0.0
-    return (season_rainfall_mm - normals["mean"]) / normals["std"]
+    dates_with_data = sorted(k for k, v in daily_precip.items() if v is not None)
+    if not dates_with_data:
+        return None
+    ref = min(date.fromisoformat(dates_with_data[-1]), today)
+    window_days = (ref - planting_date).days + 1
+    if window_days < 10:  # too early in the season for a meaningful anomaly
+        return None
+    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
@@ -1744,7 +1697,7 @@ async def compute_insurance_intelligence(
     # Rainfall + SPI
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, harvest_dap, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
-    spi = _compute_spi(season_rainfall, season, district=district)
+    spi = _season_to_date_spi(chirps_daily or {}, planting_date, today, district)
     if chirps_daily:
         _dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
         _spi_ref = date.fromisoformat(_dates_with_data[-1]) if _dates_with_data else today
