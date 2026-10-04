@@ -1785,8 +1785,16 @@ class TestProjectToHarvest:
         from src.services.insurance_engine import _project_to_harvest
         dry = self._days(date(2026, 10, 4), 0.5)
         mean, p10, p90, method = _project_to_harvest(dry, 116, "bugesera")
-        # Old method: 0.5 mm x 116 days = 58 mm. Normals for Oct-Jan add ~250 mm.
-        assert 200 < mean < 320
+        # Old method: 0.5 mm x 116 days = 58 mm. Now the 100 days after the
+        # forecast get the district's normal for each day.
+        import calendar
+        from src.services.insurance_engine import _get_monthly_normals
+        normals = sum(
+            _get_monthly_normals(d.month, "bugesera")["mean"] / calendar.monthrange(d.year, d.month)[1]
+            for d in (date(2026, 10, 20) + timedelta(days=i) for i in range(100))
+        )
+        assert mean == pytest.approx(16 * 0.5 + normals)
+        assert normals > 200
         assert p10 < mean < p90
         assert method == "16-day forecast + 100-day Bugesera monthly normals"
 

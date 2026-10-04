@@ -1,0 +1,34 @@
+Monthly rainfall normals: old hand-entered table vs CHIRPS v2.0 2000-2023 district polygon means
+(Season A = Sep-Jan, Season B = Feb-May, sums of monthly normals; mm)
+
+district     A old A chirps  B old B chirps annual old annual chirps
+bugesera       310      477    273      455        608           968
+burera         456      580    390      536        895          1206
+gakenke        431      549    370      547        845          1169
+gasabo         368      500    328      500        729          1050
+gatsibo        349      503    308      479        687          1038
+gicumbi        383      533    336      530        755          1130  (old: no entry, national fallback)
+gisagara       386      613    338      554        759          1210
+huye           407      599    354      561        799          1210
+kamonyi        386      499    338      497        759          1044
+karongi        426      588    376      514        843          1186
+kayonza        328      479    287      478        643           994
+kicukiro       368      483    328      478        729          1009
+kirehe         315      492    278      482        618          1002
+muhanga        398      540    347      527        783          1125
+musanze        495      680    425      613        973          1414
+ngoma          338      499    300      479        668          1014
+ngororero      401      577    354      558        793          1215
+nyabihu        518      628    445      588       1023          1322
+nyagatare      315      491    278      432        618           983
+nyamagabe      425      675    374      603        843          1346
+nyamasheke     438      691    384      570        866          1352
+nyanza         375      554    331      520        739          1119
+nyarugenge     368      492    328      495        729          1039
+nyaruguru      383      720    336      630        755          1412  (old: no entry, national fallback)
+rubavu         470      575    405      499        920          1188
+ruhango        375      521    331      498        739          1069
+rulindo        398      536    347      548        783          1148
+rusizi         415      736    366      601        820          1418
+rutsiro        438      562    384      501        866          1165
+rwamagana      339      474    301      479        670           991
