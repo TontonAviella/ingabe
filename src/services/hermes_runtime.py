@@ -50,6 +50,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from src.services import workos_auth
 
 # Module-level constants used by run_sage_turn_via_hermes and its
 # inner closures. Defined here so they appear before the function that
@@ -371,7 +372,7 @@ async def run_sage_turn_via_hermes(
             # collapse onto the same synthetic partner UUID, breaking
             # partner isolation. Fail closed instead — the upstream
             # caller will surface the error to the user.
-            _clerk_on = bool(os.environ.get("CLERK_SECRET_KEY", "").strip())
+            _clerk_on = bool(os.environ.get("CLERK_SECRET_KEY", "").strip()) or workos_auth.enabled()
             _legacy_allowed = os.environ.get(
                 "CLERK_ALLOW_LEGACY_FALLBACK", ""
             ).strip().lower() in {"1", "true", "yes"}
