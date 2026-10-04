@@ -18,6 +18,9 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         sees nothing and the test passes or fails by test order
   compose-mem-limit HW  an opt-in (profiled) docker-compose service without
                         mem_limit; the local Docker VM has fixed memory
+  compose-restart   HW  a long-running docker-compose service without `restart:`
+                        (one-shot init services are exempt); it stays down after
+                        a Docker restart
   agents-md-sync    HW  CLAUDE.md does not just import AGENTS.md (`@AGENTS.md`):
                         agent guidance has one source so Claude Code and Codex
                         never drift apart
@@ -479,46 +482,66 @@ def check_caplog_fixture() -> list[Violation]:
     return out
 
 
-def check_compose_mem_limits() -> list[Violation]:
-    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+def _compose_services() -> list[tuple[str, int, set[str]]]:
+    """(name, line, top-level keys) for each service in the compose file."""
     path = ROOT / COMPOSE_FILE
     if not path.exists():
         return []
-    out: list[Violation] = []
+    services: list[tuple[str, int, set[str]]] = []
     in_services = False
-    current: str | None = None
-    start = 0
-    has_profile = has_limit = False
-
-    def flush() -> None:
-        if current and has_profile and not has_limit:
-            out.append(Violation(
-                "compose-mem-limit", COMPOSE_FILE, start, current,
-                f"opt-in service `{current}` has no mem_limit; cap it so it cannot starve "
-                "Postgres on the fixed-memory Docker VM",
-            ))
-
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith(" "):
-            flush()
-            current = None
             in_services = line.rstrip() == "services:"
             continue
         if not in_services:
             continue
         m = re.match(r"^  ([A-Za-z0-9_.-]+):\s*$", line)
         if m:
-            flush()
-            current, start, has_profile, has_limit = m.group(1), lineno, False, False
+            services.append((m.group(1), lineno, set()))
             continue
-        if current and re.match(r"^    profiles:", line):
-            has_profile = True
-        if current and re.match(r"^    mem_limit:", line):
-            has_limit = True
-    flush()
-    return out
+        key = re.match(r"^    ([A-Za-z_]+):", line)
+        if key and services:
+            services[-1][2].add(key.group(1))
+    return services
+
+
+def check_compose_mem_limits() -> list[Violation]:
+    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+    return [
+        Violation(
+            "compose-mem-limit", COMPOSE_FILE, start, name,
+            f"opt-in service `{name}` has no mem_limit; cap it so it cannot starve "
+            "Postgres on the fixed-memory Docker VM",
+        )
+        for name, start, keys in _compose_services()
+        if "profiles" in keys and "mem_limit" not in keys
+    ]
+
+
+def check_compose_restart_policies() -> list[Violation]:
+    """Long-running compose services must set `restart:`.
+
+    One-shot init services (another service waits on them with
+    `condition: service_completed_successfully`) are exempt.
+    """
+    path = ROOT / COMPOSE_FILE
+    if not path.exists():
+        return []
+    one_shots = set(re.findall(
+        r"^\s+([A-Za-z0-9_.-]+):\s*\n\s+condition:\s*service_completed_successfully",
+        path.read_text(encoding="utf-8"), re.MULTILINE,
+    ))
+    return [
+        Violation(
+            "compose-restart", COMPOSE_FILE, start, name,
+            f"service `{name}` has no restart policy; after a Docker restart it stays down "
+            "(Postgres and the app did on 2026-10-04)",
+        )
+        for name, start, keys in _compose_services()
+        if "restart" not in keys and name not in one_shots
+    ]
 
 
 def check_agents_md_sync() -> list[Violation]:
@@ -554,6 +577,7 @@ def collect() -> list[Violation]:
         + check_duplicate_bodies()
         + check_caplog_fixture()
         + check_compose_mem_limits()
+        + check_compose_restart_policies()
         + check_agents_md_sync()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
