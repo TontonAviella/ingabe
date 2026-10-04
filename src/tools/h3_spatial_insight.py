@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from src.services.h3_risk_classes import inline_style_stops, legend
 from src.routes.websocket import kue_ephemeral_action
 from src.services.h3_spatial_insight import (
     H3SpatialInsightInput,
@@ -30,7 +31,11 @@ class CreateH3SpatialInsightLayerArgs(BaseModel):
     )
     h3_resolution: int = Field(
         ...,
-        description="H3 resolution. Use 8 for town/city overview, 9 for local neighborhood/farm/drone overview, 10+ only for small areas.",
+        description=(
+            "Requested H3 resolution (8 town, 9 neighbourhood/farm, 10 small area). The tool uses the size "
+            "the evidence supports: 7 (~5 km2) when only area-wide risk factors are given, 8-10 when "
+            "buildings, roads, farms or assets are counted per hexagon."
+        ),
     )
     domain: str = Field(
         ...,
@@ -146,12 +151,8 @@ async def create_h3_spatial_insight_layer(
             source_id = f"sage-h3-insight-{uuid.uuid4().hex[:8]}"
             style = {
                 "color_property": "risk_score",
-                "stops": [
-                    {"max": 40, "color": "#22c55e"},
-                    {"max": 60, "color": "#facc15"},
-                    {"max": 80, "color": "#f97316"},
-                    {"max": 101, "color": "#dc2626"},
-                ],
+                "stops": inline_style_stops(),
+                "legend": legend(),
                 "fill_opacity": 0.58,
                 "stroke_color": "#111827",
                 "stroke_width": 1.2,

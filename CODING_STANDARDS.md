@@ -145,7 +145,8 @@ Sage tool handlers and React components, 16 duplicated function bodies.
 
 Hygiene checks (no baseline debt): `caplog` (a test takes pytest's `caplog`
 fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`),
-`compose-restart` (a long-running compose service without `restart:`) and
+`compose-restart` (a long-running compose service without `restart:`),
+`zero-as-missing` (a number tested for truth before rounding) and
 `agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
 of agent guidance).
 
@@ -160,6 +161,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** 63 places formatted numbers with `round(x, n) if x else None`, so a real 0 became "missing":
+  NDVI 0.0, z-score 0 and VCI 0 (the most extreme drought) vanished from results. Rule: only None is missing
+  (`src.services.numbers.round_or_none`). Gate: `zero-as-missing`.
 - **2026-10-04** I ran `git worktree remove --force` on a worktree holding uncommitted scripts and lost them
   (rebuilt from the session). Rule: commit (or push a WIP commit) before removing a worktree; never `--force`
   without `git status` first. Gate: review only.

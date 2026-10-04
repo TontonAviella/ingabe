@@ -1,216 +1,183 @@
 import { Layer, Map as MapGL, type MapRef, NavigationControl, ScaleControl, Source } from '@vis.gl/react-maplibre';
-import type { MapGeoJSONFeature } from 'maplibre-gl';
-import { useMemo, useRef, useState } from 'react';
-import { useH3Grid } from '@/hooks/useRwandaApi';
+import type { ExpressionSpecification, MapGeoJSONFeature } from 'maplibre-gl';
+import { useRef, useState } from 'react';
+import { useDistrictNdviMap } from '@/hooks/useRwandaApi';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 interface RwandaMapProps {
-  resolution?: number;
-  bounds?: string;
   selectedDistrict?: string;
 }
 
-const RWANDA_CENTER: [number, number] = [29.87, -1.94];
-const RWANDA_ZOOM = 8;
+const RWANDA_BOUNDS: [[number, number], [number, number]] = [
+  [28.86, -2.84],
+  [30.9, -1.05],
+];
 const BASEMAP_URL = 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json';
+const NO_DATA_COLOR = '#cccccc';
 
-// Simplified Rwanda boundary (approximate polygon with ~10 coordinate pairs)
-const RWANDA_BOUNDARY: GeoJSON.Feature<GeoJSON.Polygon> = {
-  type: 'Feature',
-  geometry: {
-    type: 'Polygon',
-    coordinates: [
-      [
-        [28.86, -1.04],
-        [29.44, -1.04],
-        [30.42, -1.13],
-        [30.9, -1.69],
-        [30.86, -2.31],
-        [30.42, -2.84],
-        [29.57, -2.74],
-        [29.02, -2.55],
-        [28.86, -2.22],
-        [28.86, -1.04],
-      ],
-    ],
-  },
-  properties: {},
-};
+// Colours, labels and legend come from the API (src/services/ndvi_classes.py),
+// the same scale Sage uses when it describes NDVI.
+const NDVI_FILL: ExpressionSpecification = ['coalesce', ['get', 'color'], NO_DATA_COLOR];
 
-// NDVI color scale
-function getNdviColor(ndvi?: number): string {
-  if (ndvi === undefined || ndvi === null) return '#cccccc'; // Gray for no data
-  if (ndvi < 0.2) return '#d73027'; // Red - bare soil
-  if (ndvi < 0.4) return '#fc8d59'; // Orange - sparse
-  if (ndvi < 0.6) return '#fee08b'; // Yellow - moderate
-  if (ndvi < 0.8) return '#91cf60'; // Green - healthy
-  return '#1a9850'; // Dark green - very healthy
+function formatWeek(weekStart?: string | null): string | null {
+  if (!weekStart) return null;
+  const d = new Date(`${weekStart}T00:00:00Z`);
+  return Number.isNaN(d.getTime())
+    ? weekStart
+    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
-export function RwandaMap({ resolution = 7, bounds, selectedDistrict: _selectedDistrict }: RwandaMapProps) {
+export function RwandaMap({ selectedDistrict }: RwandaMapProps) {
   const mapRef = useRef<MapRef>(null);
-  const [hoveredFeature, setHoveredFeature] = useState<MapGeoJSONFeature | null>(null);
-  const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null);
+  const [hovered, setHovered] = useState<MapGeoJSONFeature | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const { data, isLoading, isError } = useDistrictNdviMap();
+  // Collapsed by default on narrow screens, where the legend would cover the map.
+  const [legendOpen, setLegendOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 640);
+  const [noteOpen, setNoteOpen] = useState(false);
 
-  // Fetch H3 grid data
-  const { data: h3GridData, isLoading } = useH3Grid(resolution, bounds || '28.86,-2.84,30.90,-1.04');
-
-  // Create GeoJSON with NDVI-based colors
-  const h3GeoJSON = useMemo(() => {
-    if (!h3GridData) return null;
-
-    return {
-      ...h3GridData,
-      features: h3GridData.features.map((feature) => ({
-        ...feature,
-        properties: {
-          ...feature.properties,
-          color: getNdviColor(feature.properties.mean_ndvi),
-        },
-      })),
-    };
-  }, [h3GridData]);
+  const latestWeek = formatWeek(data?.features.find((f) => f.properties.week_start)?.properties.week_start);
 
   const handleMouseMove = (event: maplibregl.MapMouseEvent) => {
     const map = mapRef.current?.getMap();
     if (!map) return;
-
-    const features = map.queryRenderedFeatures(event.point, {
-      layers: ['h3-fill-layer'],
-    });
-
-    if (features.length > 0) {
-      setHoveredFeature(features[0] as MapGeoJSONFeature);
-      setCursorPosition({ x: event.point.x, y: event.point.y });
-    } else {
-      setHoveredFeature(null);
-      setCursorPosition(null);
-    }
+    const features = map.queryRenderedFeatures(event.point, { layers: ['district-ndvi-fill'] });
+    setHovered(features.length > 0 ? (features[0] as MapGeoJSONFeature) : null);
+    setCursor(features.length > 0 ? { x: event.point.x, y: event.point.y } : null);
   };
 
-  const handleMouseLeave = () => {
-    setHoveredFeature(null);
-    setCursorPosition(null);
-  };
+  const hoveredNdvi = hovered?.properties?.mean_ndvi;
+  const hasNdvi = typeof hoveredNdvi === 'number';
 
   return (
     <div className="relative w-full h-full">
       <MapGL
         ref={mapRef}
-        initialViewState={{
-          longitude: RWANDA_CENTER[0],
-          latitude: RWANDA_CENTER[1],
-          zoom: RWANDA_ZOOM,
-        }}
-        mapStyle={BASEMAP_URL}
+        initialViewState={{ bounds: RWANDA_BOUNDS, fitBoundsOptions: { padding: 16 } }}
         style={{ width: '100%', height: '100%' }}
+        mapStyle={BASEMAP_URL}
+        attributionControl={{ compact: true }}
         onMouseMove={handleMouseMove}
-        onMouseLeave={handleMouseLeave}
-        attributionControl={false}
+        onMouseLeave={() => {
+          setHovered(null);
+          setCursor(null);
+        }}
+        interactiveLayerIds={['district-ndvi-fill']}
       >
         <NavigationControl position="top-right" />
         <ScaleControl position="bottom-left" />
 
-        {/* Rwanda boundary outline */}
-        <Source
-          id="rwanda-boundary"
-          type="geojson"
-          data={{
-            type: 'FeatureCollection',
-            features: [RWANDA_BOUNDARY],
-          }}
-        >
-          <Layer
-            id="rwanda-boundary-line"
-            type="line"
-            paint={{
-              'line-color': '#333333',
-              'line-width': 2,
-            }}
-          />
-        </Source>
-
-        {/* H3 Grid with NDVI colors */}
-        {h3GeoJSON && (
-          <Source id="h3-grid" type="geojson" data={h3GeoJSON}>
+        {data && (
+          <Source id="district-ndvi" type="geojson" data={data}>
+            <Layer id="district-ndvi-fill" type="fill" paint={{ 'fill-color': NDVI_FILL, 'fill-opacity': 0.72 }} />
+            <Layer id="district-ndvi-line" type="line" paint={{ 'line-color': '#ffffff', 'line-width': 1 }} />
             <Layer
-              id="h3-fill-layer"
-              type="fill"
-              paint={{
-                'fill-color': ['get', 'color'],
-                'fill-opacity': 0.7,
-              }}
-            />
-            <Layer
-              id="h3-line-layer"
+              id="district-ndvi-selected"
               type="line"
-              paint={{
-                'line-color': '#ffffff',
-                'line-width': 0.5,
-                'line-opacity': 0.3,
-              }}
+              filter={['==', ['downcase', ['get', 'district']], (selectedDistrict ?? '').toLowerCase()]}
+              paint={{ 'line-color': '#111827', 'line-width': 3 }}
             />
           </Source>
         )}
       </MapGL>
 
-      {/* Loading indicator */}
       {isLoading && (
-        <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-md text-sm">Loading H3 grid...</div>
+        <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-md text-sm">
+          Loading district vegetation…
+        </div>
+      )}
+      {isError && (
+        <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-md text-sm text-red-600">
+          Could not load district vegetation data.
+        </div>
       )}
 
-      {/* Hover popup */}
-      {hoveredFeature && cursorPosition && (
+      {hovered && cursor && (
         <div
-          className="absolute bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-lg text-xs pointer-events-none z-10"
-          style={{
-            left: cursorPosition.x + 10,
-            top: cursorPosition.y + 10,
-          }}
+          className="absolute bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-lg text-xs pointer-events-none z-10 max-w-64"
+          style={{ left: cursor.x + 10, top: cursor.y + 10 }}
         >
-          <div className="font-semibold mb-1">H3 Cell</div>
-          <div>
-            <span className="text-gray-600 dark:text-gray-400">Index:</span>{' '}
-            <span className="font-mono">{hoveredFeature.properties?.h3_index}</span>
-          </div>
-          <div>
-            <span className="text-gray-600 dark:text-gray-400">Resolution:</span> {resolution}
-          </div>
-          {hoveredFeature.properties?.mean_ndvi !== undefined && (
-            <div>
-              <span className="text-gray-600 dark:text-gray-400">NDVI:</span>{' '}
-              <span className="font-semibold">{hoveredFeature.properties.mean_ndvi.toFixed(3)}</span>
-            </div>
+          <div className="font-semibold mb-1">{hovered.properties?.district} district</div>
+          {hasNdvi ? (
+            <>
+              <div>
+                Vegetation index (NDVI): <span className="font-semibold">{hoveredNdvi.toFixed(2)}</span> — {hovered?.properties?.ndvi_label}
+              </div>
+              {hovered.properties?.week_start && (
+                <div className="text-gray-600 dark:text-gray-400">Week of {formatWeek(hovered.properties.week_start)}</div>
+              )}
+            </>
+          ) : (
+            <div className="text-gray-600 dark:text-gray-400">No vegetation data yet</div>
           )}
         </div>
       )}
 
-      {/* NDVI Legend */}
-      <div className="absolute bottom-4 right-4 bg-white dark:bg-gray-800 px-4 py-3 rounded-md shadow-lg text-xs">
-        <div className="font-semibold mb-2">NDVI Scale</div>
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#d73027' }} />
-            <span>&lt; 0.2 (Bare soil)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#fc8d59' }} />
-            <span>0.2-0.4 (Sparse)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#fee08b' }} />
-            <span>0.4-0.6 (Moderate)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#91cf60' }} />
-            <span>0.6-0.8 (Healthy)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded" style={{ backgroundColor: '#1a9850' }} />
-            <span>&gt; 0.8 (Very healthy)</span>
+      {/* Caption and legend stack at the top left, clear of the attribution. */}
+      <div className="absolute top-2 left-2 flex max-w-[calc(100%-4rem)] flex-col items-start gap-1">
+        {data && !isLoading && (
+          <button
+            type="button"
+            className="bg-white/95 dark:bg-gray-800/95 px-2 py-1 rounded-md shadow text-[11px] text-left"
+            aria-expanded={noteOpen}
+            onClick={() => setNoteOpen((open) => !open)}
+            title={data.data_coverage.note}
+          >
+            <span className="font-semibold">One value per district</span>
+            {' · Sentinel-2'}
+            {latestWeek ? ` · week of ${latestWeek}` : ''} <span aria-hidden>ⓘ</span>
+            {noteOpen && <span className="mt-1 block text-gray-600 dark:text-gray-400">{data.data_coverage.note}</span>}
+          </button>
+        )}
+        <LegendBox
+          title={data?.legend.title ?? 'Vegetation (NDVI)'}
+          items={data?.legend.items ?? []}
+          open={legendOpen}
+          onToggle={() => setLegendOpen((open) => !open)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function LegendBox({
+  title,
+  items,
+  open,
+  onToggle,
+}: {
+  title: string;
+  items: Array<{ key: string; label: string; range: string; color: string }>;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 px-2 py-1.5 rounded-md shadow-lg text-[11px]">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 font-semibold"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <span>{title}</span>
+        <span aria-hidden>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="mt-1 space-y-0.5">
+          {items.map((item) => (
+            <div key={item.key} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+              <span>
+                {item.range}: {item.label}
+              </span>
+            </div>
+          ))}
+          <div className="flex items-center gap-1.5">
+            <div className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: NO_DATA_COLOR }} />
+            <span>No data yet</span>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -35,6 +35,7 @@ Endpoints:
   GET  /rwanda/ndvi/parcels         - Parcel-level NDVI stats (user-uploaded)
 """
 
+import json
 import asyncio
 import logging
 import os
@@ -47,6 +48,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.services.numbers import round_or_none
+from src.services import data_coverage, ndvi_classes
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
@@ -1215,7 +1218,7 @@ async def get_anomaly_alerts(
                 "anomaly_date": str(r[3]) if r[3] else None,
                 "observed_ndvi": r[4],
                 "expected_ndvi": r[5],
-                "z_score": round(r[6], 3) if r[6] else None,
+                "z_score": round_or_none(r[6], 3),
                 "severity": r[7],
                 "computed_at": str(r[8]) if r[8] else None,
             }
@@ -1292,11 +1295,11 @@ async def get_yield_risk_latest(
                 "district": r[0],
                 "risk_level": r[1],
                 "risk_description": r[2],
-                "trend_slope": round(r[3], 6) if r[3] else None,
-                "kendall_tau": round(r[4], 4) if r[4] else None,
-                "latest_ndvi": round(r[5], 4) if r[5] else None,
-                "mean_ndvi": round(r[6], 4) if r[6] else None,
-                "seasonal_deviation": round(r[7], 4) if r[7] else None,
+                "trend_slope": round_or_none(r[3], 6),
+                "kendall_tau": round_or_none(r[4], 4),
+                "latest_ndvi": round_or_none(r[5], 4),
+                "mean_ndvi": round_or_none(r[6], 4),
+                "seasonal_deviation": round_or_none(r[7], 4),
                 "observations": r[8],
                 "computed_at": str(r[9]) if r[9] else None,
             }
@@ -1380,9 +1383,9 @@ async def get_drought_status(
             {
                 "district": r[0],
                 "drought_status": r[1],
-                "current_vci": round(r[2], 2) if r[2] else None,
-                "latest_ndvi": round(r[3], 4) if r[3] else None,
-                "latest_ndwi": round(r[4], 4) if r[4] else None,
+                "current_vci": round_or_none(r[2], 2),
+                "latest_ndvi": round_or_none(r[3], 4),
+                "latest_ndwi": round_or_none(r[4], 4),
                 "drought_period_count": r[5],
                 "description": r[6],
                 "computed_at": str(r[7]) if r[7] else None,
@@ -1467,7 +1470,7 @@ async def get_phenology_stages(
             {
                 "district": r[0],
                 "current_stage": r[1],
-                "peak_ndvi": round(r[2], 4) if r[2] else None,
+                "peak_ndvi": round_or_none(r[2], 4),
                 "peak_date": str(r[3]) if r[3] else None,
                 "green_up_start": str(r[4]) if r[4] else None,
                 "senescence_start": str(r[5]) if r[5] else None,
@@ -1571,11 +1574,11 @@ async def get_weather_daily(
             {
                 "district": r[0],
                 "date": str(r[1]) if r[1] else None,
-                "temperature_mean_c": round(r[2], 1) if r[2] else None,
-                "temperature_max_c": round(r[3], 1) if r[3] else None,
-                "temperature_min_c": round(r[4], 1) if r[4] else None,
-                "precipitation_mm_day": round(r[5], 1) if r[5] else None,
-                "solar_radiation_mj_m2_day": round(r[6], 2) if r[6] else None,
+                "temperature_mean_c": round_or_none(r[2], 1),
+                "temperature_max_c": round_or_none(r[3], 1),
+                "temperature_min_c": round_or_none(r[4], 1),
+                "precipitation_mm_day": round_or_none(r[5], 1),
+                "solar_radiation_mj_m2_day": round_or_none(r[6], 2),
                 "computed_at": str(r[7]) if r[7] else None,
             }
             for r in rows
@@ -1692,7 +1695,7 @@ async def get_emissions_annual(
                 "emission_type": r[2],
                 "sector": r[3],
                 "sector_label": r[4],
-                "total_tonnes": round(r[5], 2) if r[5] else None,
+                "total_tonnes": round_or_none(r[5], 2),
                 "mean_flux_kg_m2_s": r[6],
                 "grid_cells": r[7],
                 "source_version": r[8],
@@ -1719,6 +1722,65 @@ async def get_emissions_annual(
 
 
 # ─── Cell-level and parcel-level NDVI endpoints ──────────────────────────
+
+
+@rwanda_router.get("/rwanda/ndvi/districts")
+async def get_district_ndvi_map(
+    session: UserContext = Depends(verify_session_required),
+):
+    """District outlines with each district's latest NDVI, for the dashboard map.
+
+    NDVI is computed per district (Sentinel-2 10 m pixels averaged over the
+    district), so the map colours whole districts rather than hexagons that
+    would all repeat their district's value.
+    """
+    from src.structures import get_async_db_connection
+
+    async with get_async_db_connection() as pg_conn:
+        rows = await pg_conn.fetch(
+            """
+            SELECT b.district,
+                   ST_AsGeoJSON(ST_SimplifyPreserveTopology(b.geom, 0.002), 5) AS geometry,
+                   n.ndvi_mean, n.week_start, n.computed_at
+            FROM rwanda_district_boundaries b
+            LEFT JOIN LATERAL (
+                SELECT ndvi_mean, week_start, computed_at
+                FROM agri_indices_cache a
+                WHERE a.admin_level = 'district' AND lower(a.admin_name) = lower(b.district)
+                ORDER BY a.week_start DESC, a.computed_at DESC
+                LIMIT 1
+            ) n ON true
+            ORDER BY b.district
+            """
+        )
+    features = [
+        {
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": _district_ndvi_properties(r),
+        }
+        for r in rows
+    ]
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "legend": ndvi_classes.legend(),
+        "data_coverage": data_coverage.describe("sentinel2", "district"),
+    }
+
+
+def _district_ndvi_properties(r: Any) -> dict[str, Any]:
+    ndvi = None if r["ndvi_mean"] is None else round(float(r["ndvi_mean"]), 3)
+    cls = ndvi_classes.ndvi_class(ndvi)
+    return {
+        "district": r["district"],
+        "mean_ndvi": ndvi,
+        "ndvi_class": cls.key if cls else None,
+        "ndvi_label": cls.label if cls else None,
+        "color": cls.color if cls else None,
+        "week_start": str(r["week_start"]) if r["week_start"] else None,
+        "computed_at": r["computed_at"].isoformat() if r["computed_at"] else None,
+    }
 
 
 @rwanda_router.get(
@@ -1783,10 +1845,10 @@ async def get_cell_ndvi_stats(
                 "cell_name": r[0],
                 "district_name": r[1],
                 "week_start": str(r[2]) if r[2] else None,
-                "mean_ndvi": round(r[3], 4) if r[3] else None,
-                "std_ndvi": round(r[4], 4) if r[4] else None,
-                "min_ndvi": round(r[5], 4) if r[5] else None,
-                "max_ndvi": round(r[6], 4) if r[6] else None,
+                "mean_ndvi": round_or_none(r[3], 4),
+                "std_ndvi": round_or_none(r[4], 4),
+                "min_ndvi": round_or_none(r[5], 4),
+                "max_ndvi": round_or_none(r[6], 4),
                 "valid_pixels": r[7],
                 "computed_at": str(r[8]) if r[8] else None,
             }
@@ -1875,10 +1937,10 @@ async def get_parcel_ndvi_stats(
                 "parcel_name": r[1],
                 "layer_id": r[2],
                 "week_start": str(r[3]) if r[3] else None,
-                "mean_ndvi": round(r[4], 4) if r[4] else None,
-                "std_ndvi": round(r[5], 4) if r[5] else None,
-                "min_ndvi": round(r[6], 4) if r[6] else None,
-                "max_ndvi": round(r[7], 4) if r[7] else None,
+                "mean_ndvi": round_or_none(r[4], 4),
+                "std_ndvi": round_or_none(r[5], 4),
+                "min_ndvi": round_or_none(r[6], 4),
+                "max_ndvi": round_or_none(r[7], 4),
                 "valid_pixels": r[8],
                 "area_ha": r[9],
                 "computed_at": str(r[10]) if r[10] else None,

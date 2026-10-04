@@ -5,8 +5,6 @@ import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLa
 import { StyleBridge } from '../lib/StyleBridge';
 import { BasemapControl } from './BasemapControl';
 
-const HIDDEN_SELECTED_FEATURE_FIELDS = new Set(['h3_index', 'h3_resolution', 'screening_model', 'analysis_goal', 'domain']);
-
 function renderTree(tree: RenderElement | null): JSX.Element | null {
   if (!tree) return null;
   return React.createElement(tree.element, tree.attributes, tree.children?.map(renderTree));
@@ -143,10 +141,12 @@ import { toast } from 'sonner';
 import AttributeTable from '@/components/AttributeTable';
 import { BufferPieOverlay, type PieChartData } from '@/components/BufferPieOverlay';
 import LayerList from '@/components/LayerList';
+import { MapLegends } from '@/components/MapLegends';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
+import { featureFieldRows } from '@/lib/featureFields';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import type {
@@ -1930,6 +1930,7 @@ export default function MapLibreMap({
     <>
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
+        <MapLegends key={mapInstanceId} map={mapRef.current} />
 
         {/* Sentinel-2 scene info badge with mosaic toggle */}
         {isSentinel2Active && sceneInfo?.scene_date && (
@@ -2098,39 +2099,12 @@ export default function MapLibreMap({
                   </thead>
                   <tbody>
                     {selectedFeature.properties &&
-                      Object.entries(selectedFeature.properties)
-                        .filter(([key]) => {
-                          // Hide auto-enriched metric columns added by the
-                          // (now removed) enrichment API. These are computed
-                          // values, not original layer attributes.
-                          if (HIDDEN_SELECTED_FEATURE_FIELDS.has(key)) return false;
-                          const enrichedPrefixes = [
-                            'soil_',
-                            'ndvi_',
-                            'evi_',
-                            'ndwi_',
-                            'savi_',
-                            'ndre_',
-                            'ndbi_',
-                            'temp_',
-                            'rainfall_',
-                            'wind_',
-                            'ch4_',
-                            'n2o_',
-                            'co2_',
-                            'cropland_',
-                            'forest_',
-                            'built_',
-                            'rangeland_',
-                          ];
-                          return !enrichedPrefixes.some((p) => key.startsWith(p));
-                        })
-                        .map(([key, value]) => (
-                          <tr key={key} className="border-b border-gray-100 dark:border-gray-700" title={`Type: ${typeof value}`}>
-                            <td className="py-1 pr-2 font-mono text-gray-600 dark:text-gray-400 break-all">{key}</td>
-                            <td className="py-1 font-mono break-all">{String(value)}</td>
-                          </tr>
-                        ))}
+                      featureFieldRows(selectedFeature.properties).map((row) => (
+                        <tr key={row.key} className="border-b border-gray-100 dark:border-gray-700" title={row.key}>
+                          <td className="py-1 pr-2 text-gray-600 dark:text-gray-400 break-words">{row.label}</td>
+                          <td className="py-1 break-all">{row.value}</td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>

@@ -496,6 +496,11 @@ class TestFormatForAudience:
         text = format_for_audience(report, "farmer")
         assert "1 trigger(s) activated" in text
 
+    @pytest.mark.parametrize("audience", ["farmer", "insurance", "agronomist"])
+    def test_rainfall_says_what_it_covers(self, report, audience):
+        text = format_for_audience(report, audience)
+        assert "at the centre of Musanze, not an average over the whole district" in text
+
     def test_insurance_format_has_table(self, report):
         text = format_for_audience(report, "insurance")
         assert "TRIGGER ASSESSMENT" in text

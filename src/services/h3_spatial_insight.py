@@ -9,6 +9,7 @@ import h3
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
+from src.services.h3_risk_classes import risk_level
 from src.services.whitebox_engine import whitebox_engine_status
 
 _EVIDENCE_FACTOR_KEYS = {
@@ -78,13 +79,14 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                 "forecast rain, flood depth, wetness, slope, runoff, or drone-derived measurements",
             ],
         }
-    cells = sorted(h3.geo_to_cells(_bbox_polygon(payload.bbox), res=payload.h3_resolution))
+    resolution, resolution_reason = effective_resolution(payload.h3_resolution, bool(exposure_geoms))
+    cells = sorted(h3.geo_to_cells(_bbox_polygon(payload.bbox), res=resolution))
     if len(cells) > payload.max_hexes:
         return {
             "status": "error",
             "error": (
-                f"H3 resolution {payload.h3_resolution} generated {len(cells)} cells, "
-                f"above max_hexes={payload.max_hexes}. Use a coarser resolution or smaller bbox."
+                f"H3 resolution {resolution} generated {len(cells)} cells, "
+                f"above max_hexes={payload.max_hexes}. Use a smaller bbox."
             ),
         }
 
@@ -112,11 +114,11 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                 "geometry": geometry,
                 "properties": {
                     "h3_index": h3_index,
-                    "h3_resolution": payload.h3_resolution,
+                    "h3_resolution": resolution,
                     "domain": _normalize_domain(payload.domain),
                     "analysis_goal": payload.analysis_goal,
                     "risk_score": round(risk_score, 1),
-                    "risk_level": _risk_level(risk_score),
+                    "risk_level": risk_level(risk_score),
                     "likely_issue": issue,
                     "recommended_action": _recommended_action(payload.domain, risk_score, issue),
                     "exposure_count": exposure_count,
@@ -152,7 +154,9 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
             "location": payload.location_label,
             "domain": _normalize_domain(payload.domain),
             "analysis_goal": payload.analysis_goal,
-            "h3_resolution": payload.h3_resolution,
+            "h3_resolution": resolution,
+            "requested_h3_resolution": payload.h3_resolution,
+            "resolution_reason": resolution_reason,
             "cell_count": len(features),
             "exposed_cell_count": exposed_cells,
             "max_risk_score": round(max(scores), 1),
@@ -199,6 +203,28 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
             },
         },
     }
+
+
+# Hexagon size follows the data, not the request. The risk factors are one
+# value for the whole area, so they cannot vary between hexagons; only the
+# counted exposure geometry (buildings, roads, farms, assets) does.
+AREA_WIDE_RESOLUTION = 7  # ~5 km2 hexagons: one area-wide value, drawn coarsely
+EXPOSURE_RESOLUTIONS = (8, 10)  # ~0.7 km2 to ~0.015 km2: building/asset counts
+
+
+def effective_resolution(requested: int, has_exposure: bool) -> tuple[int, str]:
+    """(H3 resolution to use, plain reason) for this evidence."""
+    if not has_exposure:
+        return AREA_WIDE_RESOLUTION, (
+            "The risk factors are one value for the whole area, so every hexagon has the "
+            "same score; drawn as large (~5 km2) hexagons to avoid suggesting detail."
+        )
+    low, high = EXPOSURE_RESOLUTIONS
+    resolution = min(max(requested, low), high)
+    return resolution, (
+        "Hexagons differ only by the number of counted buildings or assets inside them; "
+        "the risk factors are one value for the whole area."
+    )
 
 
 def h3_cell_geojson_geometry(h3_index: str) -> dict[str, Any]:
@@ -468,16 +494,6 @@ def _normalize_domain(value: str) -> str:
     if normalized in {"housing", "infrastructure", "environment", "drone", "agriculture", "mixed"}:
         return normalized
     return "mixed"
-
-
-def _risk_level(score: float) -> str:
-    if score >= 80:
-        return "severe"
-    if score >= 60:
-        return "high"
-    if score >= 40:
-        return "moderate"
-    return "low"
 
 
 def _likely_issue(domain: str, score: float, factors: dict[str, Any]) -> str:

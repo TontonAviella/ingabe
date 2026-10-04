@@ -19,6 +19,7 @@ from boto3.s3.transfer import TransferConfig
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
+from src.services.h3_risk_classes import legend, maplibre_color_expression
 from src.structures import get_async_db_connection, async_conn
 from src.utils import (
     get_async_s3_client,
@@ -39,19 +40,7 @@ tracer = trace.get_tracer(__name__)
 
 one_shot_config = TransferConfig(multipart_threshold=5 * 1024**3)  # 5 GiB
 LEGACY_MVT_SOURCE_LAYER_NAMES = ("reprojected",)
-VISIBLE_H3_RISK_COLOR = [
-    "step",
-    ["coalesce", ["get", "risk_score"], 0],
-    "#06b6d4",
-    40,
-    "#facc15",
-    60,
-    "#f97316",
-    80,
-    "#dc2626",
-    90,
-    "#e879f9",
-]
+VISIBLE_H3_RISK_COLOR = maplibre_color_expression()
 VISIBLE_H3_RISK_OPACITY = [
     "interpolate",
     ["linear"],
@@ -113,14 +102,22 @@ def _normalize_runtime_h3_attention_style(layer: dict) -> dict:
     if not isinstance(layer_id, str):
         return normalized_layer
 
-    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")):
+    # Only rewrite an existing filter: writing `"filter": None` onto a layer
+    # without one makes MapLibre reject the whole style ("filter: array
+    # expected, null found"), so no layer of the map draws.
+    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")) and "filter" in normalized_layer:
         normalized_layer["filter"] = _normalize_h3_resolution_filter(
-            normalized_layer.get("filter")
+            normalized_layer["filter"]
         )
 
     paint = normalized_layer.setdefault("paint", {})
     if not isinstance(paint, dict):
         return normalized_layer
+
+    if layer_id.startswith(("h3-risk-fill-", "h3-risk-extrusion-")):
+        metadata = normalized_layer.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata["mundi:legend"] = legend()
 
     if layer_id.startswith("h3-risk-fill-") and layer_type == "fill":
         paint["fill-color"] = VISIBLE_H3_RISK_COLOR

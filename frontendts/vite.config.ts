@@ -58,6 +58,12 @@ export default defineConfig(({ mode }) => ({
     },
   },
   build: {
+    // ES2022 keeps class fields native. Lower targets compile them into an
+    // esbuild `__publicField` helper that MapLibre's worker (built from its
+    // own source text) does not have, so maps using that worker failed with
+    // "__publicField is not defined" (minified "yr is not defined") and drew
+    // nothing (the /rwanda dashboard map, 2026-10-04).
+    target: 'es2022',
     sourcemap: mode === 'development',
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
@@ -73,6 +79,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   optimizeDeps: {
+    esbuildOptions: { target: 'es2022' }, // same reason as build.target
     entries: ['index.html'],
     include: ['react-router-dom', '@duckdb/duckdb-wasm'],
   },
