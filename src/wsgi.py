@@ -30,6 +30,7 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes.profile_routes import router as profile_router
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
@@ -659,6 +660,10 @@ app.include_router(
 app.include_router(
     satellite_router,
     tags=["Satellite"],
+)
+app.include_router(
+    profile_router,
+    prefix="/api/user",
 )
 app.include_router(
     partner_router,

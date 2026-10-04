@@ -1331,7 +1331,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
     from datetime import date as _date_cls
 
     try:
-        from src.services.insurance_engine import compute_insurance_intelligence
+        from src.services.insurance_engine import compute_insurance_intelligence, resolve_audience
 
         compare_level = ctx.arguments.get("compare_level")
         result = await compute_insurance_intelligence(
@@ -1342,7 +1342,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             sector=ctx.arguments.get("sector"),
             cell=ctx.arguments.get("cell"),
             village=ctx.arguments.get("village"),
-            audience=ctx.arguments.get("audience"),
+            audience=await resolve_audience(ctx.conn, ctx.arguments.get("audience"), ctx.user_id, ctx.partner_id),
             compare_level=compare_level,
         )
 
