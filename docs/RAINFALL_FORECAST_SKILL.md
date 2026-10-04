@@ -44,3 +44,28 @@ Between 28% and 43% of forecast rain days stayed dry (false alarm ratio, all-dis
 - The forecasts are point forecasts at the district's centre, compared with district averages.
 - The live app's own bias correction (`forecast_fusion.py`) is not replayed here. The cross-validated linear correction above stands in for it.
 - 16 months is a short record. Results by season (A vs B) need a longer one.
+
+## Seasonal outlook: Copernicus SEAS5, October–December (measured 2026-10-04)
+
+Measured with `scripts/seasonal_skill.py`.
+- **Forecast:** ECMWF SEAS5 total precipitation as issued on 1 October, for lead months 1–3 (October–December). It is averaged over the 16 points of the 1° grid around Rwanda.
+- **Model versions:** SEAS5.1 for the 1993–2016 hindcasts and from 2023; SEAS5 for the October 2017–2022 runs, which that version issued.
+- **Compared with:** CHIRPS v2.0 October–December totals, averaged over Rwanda's 30 districts, for 1993–2025 (33 seasons).
+
+| Measure | Result |
+|---|---|
+| Correlation of the ensemble mean with what fell | **0.20** |
+| Tercile hit rate (below / near / above normal, leave-one-out) | **30%**; chance is 33% |
+| "Dry season" calls that were right | 5 of 11 |
+| "Wet season" calls that were right | 4 of 11 |
+| Mean seasonal total, model vs CHIRPS | ~640 mm vs ~390 mm (the model is too wet; terciles remove this) |
+
+**What this means:**
+- At Rwanda's scale, the 1 October seasonal forecast shows **no usable skill** for October–December rainfall. Its tercile calls do no better than chance.
+- It must not drive payouts or trigger probabilities. At most, it can be mentioned as the large-scale outlook (for example, the ENSO/IOD state), with this skill stated alongside it.
+- The insurance projection beyond day 16 already uses the CHIRPS normal (#99). These results support keeping it that way.
+- Caveats:
+  - 33 seasons is a small sample.
+  - The model's 1° box includes parts of Lake Kivu and neighbouring countries.
+  - A calibrated, downscaled product (for example ICPAC's regional outlook) could do better and is worth checking separately.
+- The 2026 forecast could not be retrieved on 4 October: ECMWF publishes the October run on the 5th.
