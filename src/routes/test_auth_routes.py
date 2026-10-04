@@ -12,6 +12,14 @@ from src.routes import auth_routes
 from src.services import workos_auth
 
 
+@pytest.fixture(autouse=True)
+def fresh_cookies(client):
+    """The client is shared by the whole session: start and end every test with an empty cookie jar."""
+    client.cookies.clear()
+    yield
+    client.cookies.clear()
+
+
 @pytest.fixture
 def workos_on(monkeypatch):
     for k, v in {"AUTH_PROVIDER": "workos", "WORKOS_API_KEY": "sk_test", "WORKOS_CLIENT_ID": "client_x",

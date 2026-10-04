@@ -6869,7 +6869,7 @@ async def process_chat_interaction_task(
                                     sector=tool_args.get("sector"),
                                     cell=tool_args.get("cell"),
                                     village=tool_args.get("village"),
-                                    audience=tool_args.get("audience", "agronomist"),
+                                    audience=tool_args.get("audience"),
                                     compare_level=_ins_compare,
                                 )
                                 if tool_result.get("mode") == "comparison" and tool_result.get("status") == "ok":
