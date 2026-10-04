@@ -192,3 +192,37 @@ def test_sensor_observer_summarizes_run_requests(monkeypatch):
     assert props["sensor_name"] == "s3_upload_sensor"
     assert props["run_request_count"] == 2
     assert props["success"] is True
+
+
+def _observed(result):
+    @observability.observed_dagster_asset(
+        asset_name="weekly_drought_scan",
+        pipeline_family="drought",
+        source_category="satellite",
+    )
+    def asset_fn(context):
+        return result
+
+    return asset_fn
+
+
+@pytest.mark.parametrize("status", ["error", "failed", "timeout"])
+def test_asset_returning_failure_status_fails_the_step(monkeypatch, status):
+    from dagster import Failure
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        observability, "capture_backend_event",
+        lambda event, **kwargs: captured.append(event) or True,
+    )
+
+    with pytest.raises(Failure, match=f"weekly_drought_scan returned status={status}: boom"):
+        _observed({"status": status, "error": "boom"})(_FakeContext())
+    assert "dagster_asset_completed" in captured  # telemetry still records the result
+
+
+@pytest.mark.parametrize("result", [{"status": "ok"}, {"status": "skipped", "reason": "no_parcels"}, None])
+def test_asset_returning_success_or_skip_does_not_raise(monkeypatch, result):
+    monkeypatch.setattr(observability, "capture_backend_event", lambda event, **kwargs: True)
+
+    assert _observed(result)(_FakeContext()) == result
