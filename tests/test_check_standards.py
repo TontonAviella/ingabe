@@ -203,3 +203,14 @@ def test_profiled_compose_service_needs_mem_limit(repo):
     """)
     found = cs.check_compose_mem_limits()
     assert [(v.rule, v.detail) for v in found] == [("compose-mem-limit", "extra-uncapped")]
+
+
+def test_claude_md_must_only_import_agents_md(repo):
+    repo("AGENTS.md", "# AGENTS.md\n\n## Build\n")
+    repo("CLAUDE.md", "# CLAUDE.md\n\n@AGENTS.md\n")
+    assert cs.check_agents_md_sync() == []
+    repo("CLAUDE.md", "# CLAUDE.md\n\n## Build\n\n<!-- gitnexus:start -->\n")
+    found = cs.check_agents_md_sync()
+    assert [v.rule for v in found] == ["agents-md-sync"] * 3
+    assert found[0].detail == "missing @AGENTS.md import"
+

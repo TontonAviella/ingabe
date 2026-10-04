@@ -133,9 +133,10 @@ another module's private names, 26 business-threshold comparisons in routes,
 Sage tool handlers and React components, 16 duplicated function bodies.
 `python scripts/check_standards.py --list` prints every entry with its line.
 
-Two hygiene checks (added 2026-10-03, no baseline debt): `caplog` (a test
-takes pytest's `caplog` fixture) and `compose-mem-limit` (an opt-in compose
-service without `mem_limit`).
+Hygiene checks (no baseline debt): `caplog` (a test takes pytest's `caplog`
+fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`)
+and `agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
+of agent guidance).
 
 What the gate cannot see, so review and `standards-retro` must: duplicated
 expressions inside larger functions (H2 only matches whole function bodies),
