@@ -479,46 +479,42 @@ def check_caplog_fixture() -> list[Violation]:
     return out
 
 
-def check_compose_mem_limits() -> list[Violation]:
-    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+def _compose_services() -> list[tuple[str, int, set[str]]]:
+    """(name, line, top-level keys) for each service in the compose file."""
     path = ROOT / COMPOSE_FILE
     if not path.exists():
         return []
-    out: list[Violation] = []
+    services: list[tuple[str, int, set[str]]] = []
     in_services = False
-    current: str | None = None
-    start = 0
-    has_profile = has_limit = False
-
-    def flush() -> None:
-        if current and has_profile and not has_limit:
-            out.append(Violation(
-                "compose-mem-limit", COMPOSE_FILE, start, current,
-                f"opt-in service `{current}` has no mem_limit; cap it so it cannot starve "
-                "Postgres on the fixed-memory Docker VM",
-            ))
-
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith(" "):
-            flush()
-            current = None
             in_services = line.rstrip() == "services:"
             continue
         if not in_services:
             continue
         m = re.match(r"^  ([A-Za-z0-9_.-]+):\s*$", line)
         if m:
-            flush()
-            current, start, has_profile, has_limit = m.group(1), lineno, False, False
+            services.append((m.group(1), lineno, set()))
             continue
-        if current and re.match(r"^    profiles:", line):
-            has_profile = True
-        if current and re.match(r"^    mem_limit:", line):
-            has_limit = True
-    flush()
-    return out
+        key = re.match(r"^    ([A-Za-z_]+):", line)
+        if key and services:
+            services[-1][2].add(key.group(1))
+    return services
+
+
+def check_compose_mem_limits() -> list[Violation]:
+    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+    return [
+        Violation(
+            "compose-mem-limit", COMPOSE_FILE, start, name,
+            f"opt-in service `{name}` has no mem_limit; cap it so it cannot starve "
+            "Postgres on the fixed-memory Docker VM",
+        )
+        for name, start, keys in _compose_services()
+        if "profiles" in keys and "mem_limit" not in keys
+    ]
 
 
 def check_agents_md_sync() -> list[Violation]:
