@@ -715,35 +715,34 @@ def _trigger_probability(
     projected_season_p90: float,
     rainfall_threshold: float,
 ) -> tuple[float, str]:
-    """Probability and risk label that the season total ends below the threshold."""
-    # Estimate trigger probability from p10/p90 spread
-    # If p10 (pessimistic) is below threshold → high probability of trigger
-    # If p90 (optimistic) is below threshold → near-certain trigger
-    # If mean is above threshold → low probability
-    if projected_season_p90 < rainfall_threshold:
-        trigger_probability = 0.90
-        trigger_risk = "VERY HIGH"
-    elif projected_season_mean < rainfall_threshold:
-        # Mean below but p90 above — moderate-high probability
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.1, min(0.9, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.70
-        trigger_risk = "HIGH" if trigger_probability > 0.5 else "MODERATE"
-    elif projected_season_p10 < rainfall_threshold:
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.05, min(0.5, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.25
-        trigger_risk = "MODERATE" if trigger_probability > 0.25 else "LOW"
+    """Probability and risk label that the season total ends below the threshold.
+
+    Reads the projected distribution as p10 -> 10%, mean -> 50%, p90 -> 90%,
+    linear in between. (Until 2026-10-04 this used 1 - fraction_below, the
+    chance of ending ABOVE the threshold, so a season just clearing its
+    threshold was reported as a 50% payout and a wet outlook as riskier than
+    a dry one.)
+    """
+    p10, mean, p90 = projected_season_p10, projected_season_mean, projected_season_p90
+    t = rainfall_threshold
+    if t >= p90:
+        probability = 0.90
+    elif t <= p10:
+        probability = 0.05
+    elif t <= mean:
+        probability = 0.10 + 0.40 * ((t - p10) / (mean - p10) if mean > p10 else 1.0)
     else:
-        trigger_probability = 0.05
-        trigger_risk = "LOW"
-    return trigger_probability, trigger_risk
+        probability = 0.50 + 0.40 * ((t - mean) / (p90 - mean) if p90 > mean else 0.0)
+
+    if probability >= 0.90:
+        risk = "VERY HIGH"
+    elif probability > 0.50:
+        risk = "HIGH"
+    elif probability > 0.25:
+        risk = "MODERATE"
+    else:
+        risk = "LOW"
+    return probability, risk
 
 
 def _compute_forecast_outlook(

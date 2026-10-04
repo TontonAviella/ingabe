@@ -1853,3 +1853,27 @@ class TestProjectToHarvest:
         mean, p10, p90, method = _project_to_harvest(days, 10, "musanze")
         assert (mean, p10, p90) == (20.0, 20.0, 20.0)
         assert method == "10-day forecast (full coverage)"
+
+
+class TestTriggerProbability:
+    """The payout probability is the chance the season ends BELOW the threshold."""
+
+    def test_drier_outlook_means_higher_payout_probability(self):
+        from src.services.insurance_engine import _trigger_probability
+        threshold = 300.0
+        dry = _trigger_probability(189, 257, 327, threshold)[0]
+        normal = _trigger_probability(208, 305, 413, threshold)[0]
+        wet = _trigger_probability(243, 393, 572, threshold)[0]
+        assert dry > normal > wet
+
+    def test_threshold_just_above_p10_is_unlikely_not_fifty_fifty(self):
+        from src.services.insurance_engine import _trigger_probability
+        probability, risk = _trigger_probability(290, 381, 474, 300.0)
+        assert probability < 0.2
+        assert risk == "LOW"
+
+    def test_quantile_anchors(self):
+        from src.services.insurance_engine import _trigger_probability
+        assert _trigger_probability(100, 200, 300, 200.0) == (0.5, "MODERATE")
+        assert _trigger_probability(100, 200, 300, 350.0) == (0.9, "VERY HIGH")
+        assert _trigger_probability(100, 200, 300, 50.0) == (0.05, "LOW")
