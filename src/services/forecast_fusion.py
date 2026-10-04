@@ -55,6 +55,7 @@ from __future__ import annotations
 import gzip
 import io
 import logging
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -63,9 +64,15 @@ logger = logging.getLogger(__name__)
 
 _ARCHIVE_API = "https://archive-api.open-meteo.com/v1/archive"
 
-# CHIRPS v2.0 Africa daily (0.05° ≈ 5km, satellite+gauge blend)
+# CHIRPS v2.0 Africa daily (0.05° ≈ 5km, satellite+gauge blend). The final
+# product lags by weeks (e.g. on 2026-10-04 it ended on 2026-08-31); the
+# preliminary global daily product (fewer gauges) lags by about 5 days and is
+# used for days the final product does not have yet.
 _CHIRPS_BASE = (
     "https://data.chc.ucsb.edu/products/CHIRPS-2.0/africa_daily/tifs/p05"
+)
+_CHIRPS_PRELIM_BASE = (
+    "https://data.chc.ucsb.edu/products/CHIRPS-2.0/prelim/global_daily/tifs/p05"
 )
 
 # Variables we correct — mapped to their archive API names
@@ -76,59 +83,77 @@ _CORRECTABLE_VARS = {
 }
 
 
-def _fetch_chirps_one(
-    lat: float, lon: float, date_str: str,
-) -> tuple[str, Optional[float]]:
-    """Fetch a single CHIRPS daily GeoTIFF and extract the pixel value."""
+def _chirps_pixel(url: str, lat: float, lon: float) -> Optional[float]:
+    """The pixel value at (lat, lon) of one gzipped CHIRPS GeoTIFF; HTTPError propagates."""
     import rasterio  # type: ignore[import-untyped]
 
+    req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        gz_bytes = resp.read()
+    with rasterio.open(io.BytesIO(gzip.decompress(gz_bytes))) as src:
+        row, col = src.index(lon, lat)
+        val = float(src.read(1)[row, col])
+    return None if val < -9000 else round(max(0.0, val), 1)
+
+
+def _fetch_chirps_one(
+    lat: float, lon: float, date_str: str,
+) -> tuple[str, Optional[float], bool]:
+    """(date, mm, preliminary) for one day: the final product, else the preliminary one."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     fname = f"chirps-v2.0.{dt.strftime('%Y.%m.%d')}.tif.gz"
-    url = f"{_CHIRPS_BASE}/{dt.year}/{fname}"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            gz_bytes = resp.read()
-        tif_bytes = gzip.decompress(gz_bytes)
-        with rasterio.open(io.BytesIO(tif_bytes)) as src:
-            row, col = src.index(lon, lat)
-            val = float(src.read(1)[row, col])
-            if val < -9000:
-                return date_str, None
-            return date_str, round(max(0.0, val), 1)
+        return date_str, _chirps_pixel(f"{_CHIRPS_BASE}/{dt.year}/{fname}", lat, lon), False
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return date_str, None, False
     except Exception:
-        return date_str, None
+        return date_str, None, False
+    try:
+        return date_str, _chirps_pixel(f"{_CHIRPS_PRELIM_BASE}/{dt.year}/{fname}", lat, lon), True
+    except Exception:
+        return date_str, None, False
 
 
-def _fetch_chirps_precip(
+def fetch_chirps_daily(
     lat: float, lon: float, dates: List[str],
-) -> Dict[str, Optional[float]]:
-    """Extract daily precipitation from CHIRPS GeoTIFFs for given dates.
+) -> tuple[Dict[str, Optional[float]], set[str]]:
+    """Daily CHIRPS rainfall at (lat, lon) for ``dates``, and which days are preliminary.
 
-    Downloads gzipped Africa-wide GeoTIFFs (~800KB each), extracts the
-    single pixel value at (lat, lon).  Returns {date_str: mm_value}.
-
-    Uses a thread pool (10 workers) so 90 days completes in ~12s instead of ~120s.
+    Returns ({date_str: mm or None}, {dates read from the preliminary product}).
+    A day neither product has yet is None, never 0. Uses a thread pool
+    (10 workers) so 90 days completes in ~12s instead of ~120s.
     """
     try:
         import rasterio  # type: ignore[import-untyped]  # noqa: F401
     except ImportError:
         logger.info("rasterio not available — skipping CHIRPS")
-        return {}
+        return {}, set()
 
     from concurrent.futures import ThreadPoolExecutor
 
     result: Dict[str, Optional[float]] = {}
+    prelim: set[str] = set()
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_fetch_chirps_one, lat, lon, d) for d in dates]
         for f in futures:
-            date_str, val = f.result()
+            date_str, val, is_prelim = f.result()
             result[date_str] = val
+            if is_prelim and val is not None:
+                prelim.add(date_str)
 
     fetched = sum(1 for v in result.values() if v is not None)
     if fetched:
-        logger.info("CHIRPS: got %d/%d days of precip data", fetched, len(dates))
-    return result
+        logger.info("CHIRPS: got %d/%d days of precip data (%d preliminary)",
+                    fetched, len(dates), len(prelim))
+    return result, prelim
+
+
+def _fetch_chirps_precip(
+    lat: float, lon: float, dates: List[str],
+) -> Dict[str, Optional[float]]:
+    """Daily CHIRPS rainfall {date_str: mm or None}; see fetch_chirps_daily."""
+    return fetch_chirps_daily(lat, lon, dates)[0]
 
 
 def _fetch_observed(

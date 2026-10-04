@@ -20,6 +20,8 @@ from src.services.insurance_engine import (
     _centroid_from_geojson,
     _compute_confidence,
     _compute_phase_rainfall,
+    _chirps_dates_to_fetch,
+    _season_rainfall,
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
@@ -295,12 +297,27 @@ class TestComputePhaseRainfall:
         assert planting_phase.daily_avg_mm == pytest.approx(10.0)
         assert planting_phase.cumulative_mm == pytest.approx(planting_phase.daily_avg_mm * planting_phase.day_count)
 
-    def test_no_data_returns_zero(self):
+    def test_no_data_is_unknown_not_dry(self):
         planting = date(2025, 9, 15)
         today = date(2025, 10, 5)
         results = _compute_phase_rainfall({}, planting, self.SEASON_DURATION, today)
         assert len(results) >= 1
-        assert results[0].cumulative_mm == 0.0
+        assert results[0].complete is False
+        assert _season_rainfall(results) is None
+
+    def test_full_season_total_is_known(self):
+        planting = date(2025, 9, 15)
+        today = date(2025, 10, 5)
+        daily = {(planting + timedelta(days=i)).isoformat(): 4.0 for i in range(20)}
+        assert _season_rainfall(_compute_phase_rainfall(daily, planting, self.SEASON_DURATION, today)) == pytest.approx(80.0)
+
+    def test_an_early_phase_without_data_makes_the_total_unknown(self):
+        planting = date(2025, 9, 15)
+        today = date(2025, 12, 1)  # 77 days in: early phase over, mid phase running
+        daily = {(today - timedelta(days=i)).isoformat(): 4.0 for i in range(1, 30)}
+        phases = _compute_phase_rainfall(daily, planting, self.SEASON_DURATION, today)
+        assert [p.complete for p in phases] == [False, True]
+        assert _season_rainfall(phases) is None
 
     def test_future_phases_excluded(self):
         planting = date(2025, 9, 15)
@@ -881,7 +898,7 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=None))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value={}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
         svc = MagicMock()
@@ -1003,7 +1020,7 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         # SAR services — cloud-penetrating fallback
@@ -1074,17 +1091,26 @@ class TestComputeInsuranceIntelligence:
 
     def test_chirps_data_flows_to_rainfall(self):
         conn = self._mock_conn()
-        chirps_data = {
-            "2025-10-01": 5.0, "2025-10-02": 3.0, "2025-10-03": 0.0,
-            "2025-10-15": 8.0, "2025-10-20": 12.0,
-            "2025-11-01": 6.0, "2025-11-10": 4.0,
-        }
+        chirps_data = {(date(2025, 9, 1) + timedelta(days=i)).isoformat(): 3.0 for i in range(75)}
         with self._patches(chirps=chirps_data):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
         assert result["data"]["season_rainfall_mm"] > 0
+
+    def test_missing_rainfall_is_unknown_and_does_not_fire_the_trigger(self):
+        conn = self._mock_conn()
+        sparse = {"2025-10-01": 5.0, "2025-10-20": 12.0, "2025-11-10": 4.0}
+        for chirps in ({}, sparse):
+            with self._patches(chirps=chirps):
+                result = _run(compute_insurance_intelligence(
+                    conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15), audience="farmer",
+                ))
+            assert result["status"] == "ok"
+            assert result["data"]["season_rainfall_mm"] is None
+            assert "rainfall_cumulative" not in [t["signal"] for t in result["data"]["triggers"]]
+            assert "do not cover the season yet" in result["report"]
 
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
@@ -1369,7 +1395,7 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         sar_svc = MagicMock()
@@ -1840,3 +1866,19 @@ class TestTriggerProbability:
         assert _trigger_probability(100, 200, 300, 200.0) == (0.5, "MODERATE")
         assert _trigger_probability(100, 200, 300, 350.0) == (0.9, "VERY HIGH")
         assert _trigger_probability(100, 200, 300, 50.0) == (0.05, "LOW")
+
+
+# ---------------------------------------------------------------------------
+# CHIRPS download plan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("season_days", [19, 60, 150, 200])
+def test_chirps_download_plan_covers_the_season_within_budget(season_days):
+    today = date(2026, 10, 4)
+    planting = today - timedelta(days=season_days)
+    dates = _chirps_dates_to_fetch(planting, today)
+    assert len(dates) <= 90 and dates == sorted(set(dates))
+    assert all((today - timedelta(days=i)).isoformat() in dates for i in range(30))  # SPI-1 window in full
+    early = [d for d in dates if d < (planting + timedelta(days=40)).isoformat() and d >= planting.isoformat()]
+    if season_days >= 40:
+        assert len(early) >= 0.3 * 40  # enough for a season third to count (30%)

@@ -66,6 +66,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
+from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
 
@@ -1292,7 +1293,7 @@ def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
 
     briefing_parts = [
         f"Location: {loc}, Season {season}, currently in {phase} (day {dap}). Overall status: {status_} (confidence {confidence}/100).",
-        f"Rainfall this season: {rain}mm so far. {spi_str}.",
+        f"{season_rainfall_sentence(data.get('season_rainfall_mm'))} {spi_str}.",
     ]
     if ndvi_str:
         briefing_parts.append(ndvi_str + ".")
