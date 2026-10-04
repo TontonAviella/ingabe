@@ -10,9 +10,13 @@ run_launcher:
   module: dagster.core.launcher
   class: DefaultRunLauncher
 
+# Queue runs and execute one at a time: after downtime every schedule fires at
+# once, and parallel runs exceed the daemon's mem_limit (docker-compose.yml).
 run_coordinator:
   module: dagster.core.run_coordinator
-  class: DefaultRunCoordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 1
 
 telemetry:
   enabled: false
