@@ -1,0 +1,31 @@
+{
+ "after_season_to_date_spi": {
+  "bugesera/day120/half": -2.5,
+  "bugesera/day120/normal": -0.0,
+  "bugesera/day20/half": -1.41,
+  "bugesera/day20/normal": 0.0,
+  "bugesera/day60/half": -2.03,
+  "bugesera/day60/normal": -0.0,
+  "musanze/day120/half": -2.92,
+  "musanze/day120/normal": -0.0,
+  "musanze/day20/half": -1.59,
+  "musanze/day20/normal": 0.0,
+  "musanze/day60/half": -2.37,
+  "musanze/day60/normal": 0.0
+ },
+ "before_legacy_spi": {
+  "bugesera/day120/half": -2.73,
+  "bugesera/day120/normal": -0.93,
+  "bugesera/day20/half": -4.3,
+  "bugesera/day20/normal": -4.07,
+  "bugesera/day60/half": -3.53,
+  "bugesera/day60/normal": -2.53,
+  "musanze/day120/half": -3.23,
+  "musanze/day120/normal": -0.99,
+  "musanze/day20/half": -5.17,
+  "musanze/day20/normal": -4.88,
+  "musanze/day60/half": -4.25,
+  "musanze/day60/normal": -3.02
+ },
+ "scenario": "Season A planted 2026-09-15; rain = district monthly normal (normal) or half of it (half), as of day N"
+}

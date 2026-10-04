@@ -11,10 +11,12 @@ Called by Sage via `get_insurance_intelligence` tool.
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
@@ -27,101 +29,21 @@ _RWANDA_CENTER = (-1.94, 29.87)
 
 _ET_LONG_TERM_MEAN = 3.5
 
-# Per-district seasonal rainfall normals (mm).
-# Derived from CHIRPS 2000-2023 seasonal totals (Sep-Jan for A, Feb-May for B).
-# Districts grouped by agro-ecological zone:
-#   Northwest highlands: Musanze, Rubavu, Nyabihu, Burera (wet, >500mm/season)
-#   Central plateau: Kigali, Muhanga, Kamonyi, Ruhango, Huye, Nyanza, Gisagara (moderate)
-#   Eastern lowland: Bugesera, Kayonza, Kirehe, Ngoma, Gatsibo, Nyagatare (dry, <350mm)
-#   Southwest: Nyamasheke, Rusizi, Karongi, Rutsiro (lake-influenced, moderate-wet)
-_DISTRICT_RAINFALL_NORMALS: dict[str, dict[str, dict[str, float]]] = {
-    # --- Northwest highlands ---
-    "musanze":    {"A": {"mean": 520, "std": 95}, "B": {"mean": 460, "std": 85}},
-    "rubavu":     {"A": {"mean": 510, "std": 90}, "B": {"mean": 450, "std": 80}},
-    "nyabihu":    {"A": {"mean": 530, "std": 100}, "B": {"mean": 470, "std": 90}},
-    "burera":     {"A": {"mean": 490, "std": 90}, "B": {"mean": 430, "std": 80}},
-    "gakenke":    {"A": {"mean": 460, "std": 85}, "B": {"mean": 400, "std": 75}},
-    # --- Central plateau ---
-    "kigali":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "gasabo":     {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "kicukiro":   {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "nyarugenge": {"A": {"mean": 400, "std": 80}, "B": {"mean": 350, "std": 70}},
-    "muhanga":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
-    "kamonyi":    {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
-    "ruhango":    {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
-    "huye":       {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
-    "nyanza":     {"A": {"mean": 410, "std": 80}, "B": {"mean": 360, "std": 70}},
-    "gisagara":   {"A": {"mean": 420, "std": 80}, "B": {"mean": 370, "std": 70}},
-    "nyamagabe":  {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
-    # --- Eastern lowland ---
-    "bugesera":   {"A": {"mean": 340, "std": 75}, "B": {"mean": 290, "std": 65}},
-    "kayonza":    {"A": {"mean": 360, "std": 75}, "B": {"mean": 310, "std": 65}},
-    "kirehe":     {"A": {"mean": 350, "std": 75}, "B": {"mean": 300, "std": 65}},
-    "ngoma":      {"A": {"mean": 370, "std": 80}, "B": {"mean": 320, "std": 70}},
-    "gatsibo":    {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
-    "nyagatare":  {"A": {"mean": 350, "std": 80}, "B": {"mean": 300, "std": 70}},
-    "rwamagana":  {"A": {"mean": 380, "std": 80}, "B": {"mean": 330, "std": 70}},
-    # --- Southwest / lake-influenced ---
-    "nyamasheke": {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
-    "rusizi":     {"A": {"mean": 450, "std": 85}, "B": {"mean": 400, "std": 75}},
-    "karongi":    {"A": {"mean": 460, "std": 90}, "B": {"mean": 410, "std": 80}},
-    "rutsiro":    {"A": {"mean": 470, "std": 90}, "B": {"mean": 420, "std": 80}},
-    "ngororero":  {"A": {"mean": 440, "std": 85}, "B": {"mean": 390, "std": 75}},
-    "rulindo":    {"A": {"mean": 430, "std": 85}, "B": {"mean": 380, "std": 75}},
-}
-
-_NATIONAL_RAINFALL_NORMALS: dict[str, dict[str, float]] = {
-    "A": {"mean": 400.0, "std": 85.0},
-    "B": {"mean": 350.0, "std": 75.0},
-}
-
-# Per-district MONTHLY rainfall normals (mm per month).
-# Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
-# Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
+# Per-district and national MONTHLY rainfall normals (mm per month), loaded
+# from monthly_rainfall_normals.json beside this module (see "source", "years").
 # Structure: district -> month (1-12) -> {"mean": mm, "std": mm}
-_MONTHLY_RAINFALL_NORMALS: dict[str, dict[int, dict[str, float]]] = {
-    # --- Northwest highlands (wet, orographic enhancement) ---
-    "musanze":    {1: {"mean": 55, "std": 28}, 2: {"mean": 80, "std": 32}, 3: {"mean": 120, "std": 40}, 4: {"mean": 140, "std": 42}, 5: {"mean": 85, "std": 35}, 6: {"mean": 18, "std": 14}, 7: {"mean": 10, "std": 10}, 8: {"mean": 25, "std": 16}, 9: {"mean": 75, "std": 32}, 10: {"mean": 130, "std": 42}, 11: {"mean": 145, "std": 44}, 12: {"mean": 90, "std": 35}},
-    "rubavu":     {1: {"mean": 50, "std": 26}, 2: {"mean": 75, "std": 30}, 3: {"mean": 115, "std": 38}, 4: {"mean": 135, "std": 40}, 5: {"mean": 80, "std": 33}, 6: {"mean": 15, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 70, "std": 30}, 10: {"mean": 125, "std": 40}, 11: {"mean": 140, "std": 42}, 12: {"mean": 85, "std": 33}},
-    "nyabihu":    {1: {"mean": 58, "std": 30}, 2: {"mean": 85, "std": 34}, 3: {"mean": 125, "std": 42}, 4: {"mean": 145, "std": 44}, 5: {"mean": 90, "std": 36}, 6: {"mean": 20, "std": 15}, 7: {"mean": 12, "std": 11}, 8: {"mean": 28, "std": 18}, 9: {"mean": 80, "std": 34}, 10: {"mean": 135, "std": 44}, 11: {"mean": 150, "std": 46}, 12: {"mean": 95, "std": 36}},
-    "burera":     {1: {"mean": 50, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 78, "std": 32}, 6: {"mean": 16, "std": 13}, 7: {"mean": 9, "std": 9}, 8: {"mean": 24, "std": 16}, 9: {"mean": 68, "std": 30}, 10: {"mean": 120, "std": 40}, 11: {"mean": 135, "std": 42}, 12: {"mean": 83, "std": 33}},
-    "gakenke":    {1: {"mean": 45, "std": 24}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    # --- Central plateau (moderate) ---
-    "kigali":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "gasabo":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "kicukiro":   {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "nyarugenge": {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "muhanga":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
-    "kamonyi":    {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
-    "ruhango":    {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
-    "huye":       {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 62, "std": 28}, 10: {"mean": 110, "std": 37}, 11: {"mean": 120, "std": 38}, 12: {"mean": 72, "std": 30}},
-    "nyanza":     {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
-    "gisagara":   {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
-    "nyamagabe":  {1: {"mean": 45, "std": 25}, 2: {"mean": 70, "std": 30}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 40}, 5: {"mean": 68, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 29}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 40}, 12: {"mean": 75, "std": 31}},
-    # --- Eastern lowland (dry, continental) ---
-    "bugesera":   {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 80, "std": 30}, 4: {"mean": 95, "std": 32}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 45, "std": 22}, 10: {"mean": 85, "std": 32}, 11: {"mean": 95, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "kayonza":    {1: {"mean": 32, "std": 20}, 2: {"mean": 52, "std": 24}, 3: {"mean": 85, "std": 32}, 4: {"mean": 100, "std": 34}, 5: {"mean": 50, "std": 24}, 6: {"mean": 9, "std": 9}, 7: {"mean": 4, "std": 5}, 8: {"mean": 15, "std": 12}, 9: {"mean": 48, "std": 23}, 10: {"mean": 90, "std": 33}, 11: {"mean": 100, "std": 34}, 12: {"mean": 58, "std": 26}},
-    "kirehe":     {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "ngoma":      {1: {"mean": 34, "std": 21}, 2: {"mean": 55, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
-    "gatsibo":    {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 90, "std": 33}, 4: {"mean": 108, "std": 35}, 5: {"mean": 54, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 52, "std": 24}, 10: {"mean": 95, "std": 34}, 11: {"mean": 105, "std": 35}, 12: {"mean": 62, "std": 27}},
-    "nyagatare":  {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "rwamagana":  {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
-    # --- Southwest / lake-influenced (moderate-wet) ---
-    "nyamasheke": {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    "rusizi":     {1: {"mean": 45, "std": 25}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 68, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 62, "std": 27}, 10: {"mean": 112, "std": 37}, 11: {"mean": 122, "std": 38}, 12: {"mean": 74, "std": 31}},
-    "karongi":    {1: {"mean": 46, "std": 25}, 2: {"mean": 70, "std": 29}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 39}, 5: {"mean": 70, "std": 29}, 6: {"mean": 13, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 21, "std": 15}, 9: {"mean": 64, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 39}, 12: {"mean": 76, "std": 31}},
-    "rutsiro":    {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    "ngororero":  {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 60, "std": 27}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 72, "std": 30}},
-    "rulindo":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
-}
+def _load_monthly_normals() -> tuple[dict[str, dict[int, dict[str, float]]], dict[int, dict[str, float]]]:
+    path = Path(__file__).parent / "monthly_rainfall_normals.json"
+    data = json.loads(path.read_text())
+    districts = {
+        name: {int(m): v for m, v in entry["monthly"].items()}
+        for name, entry in data["districts"].items()
+    }
+    national = {int(m): v for m, v in data["national"]["monthly"].items()}
+    return districts, national
 
-# National monthly fallback (average across all districts)
-_NATIONAL_MONTHLY_NORMALS: dict[int, dict[str, float]] = {
-    1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34},
-    4: {"mean": 116, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10},
-    7: {"mean": 6, "std": 7}, 8: {"mean": 19, "std": 14}, 9: {"mean": 57, "std": 26},
-    10: {"mean": 104, "std": 35}, 11: {"mean": 114, "std": 37}, 12: {"mean": 68, "std": 29},
-}
+
+_MONTHLY_RAINFALL_NORMALS, _NATIONAL_MONTHLY_NORMALS = _load_monthly_normals()
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -170,7 +92,7 @@ class InsuranceReport:
 
     phase_rainfall: list[PhaseRainfall] = field(default_factory=list)
     season_rainfall_mm: float = 0.0
-    spi: float = 0.0
+    spi: Optional[float] = None  # season-to-date SPI; None when too early or no data
     spi_1: Optional[float] = None
     spi_3: Optional[float] = None
     drought_diagnostic: str = "insufficient_data"
@@ -212,7 +134,7 @@ class InsuranceReport:
             "growth_phase": self.growth_phase,
             "days_after_planting": self.days_after_planting,
             "season_rainfall_mm": round(self.season_rainfall_mm, 1),
-            "spi": round(self.spi, 2),
+            "spi": round(self.spi, 2) if self.spi is not None else None,
             "spi_1": round(self.spi_1, 2) if self.spi_1 is not None else None,
             "spi_3": round(self.spi_3, 2) if self.spi_3 is not None else None,
             "drought_diagnostic": self.drought_diagnostic,
@@ -446,25 +368,26 @@ _DROUGHT_STATE_LABELS: dict[str, str] = {
     "insufficient_data": "Insufficient data for drought classification",
 }
 
-def _compute_spi(
-    season_rainfall_mm: float,
-    season: str,
+def _season_to_date_spi(
+    daily_precip: dict[str, Optional[float]],
+    planting_date: date,
+    today: date,
     district: Optional[str] = None,
-) -> float:
-    """Legacy SPI from season cumulative vs long-term normals.
+) -> Optional[float]:
+    """SPI of rainfall since planting against the normal for those same dates.
 
-    Kept for backward compatibility with trigger evaluation which expects a
-    single SPI value.  New code should use _compute_spi_pair().
+    Replaces the legacy season SPI, which divided rainfall *so far* by the
+    *full-season* normal: normal rain scored about -4 twenty days into Season
+    A, so every crop's `spi < -1` trigger fired early in every season.
     """
-    normals = _NATIONAL_RAINFALL_NORMALS.get(season, _NATIONAL_RAINFALL_NORMALS["A"])
-    if district:
-        district_key = district.lower().strip()
-        district_normals = _DISTRICT_RAINFALL_NORMALS.get(district_key, {})
-        if season in district_normals:
-            normals = district_normals[season]
-    if normals["std"] == 0:
-        return 0.0
-    return (season_rainfall_mm - normals["mean"]) / normals["std"]
+    dates_with_data = sorted(k for k, v in daily_precip.items() if v is not None)
+    if not dates_with_data:
+        return None
+    ref = min(date.fromisoformat(dates_with_data[-1]), today)
+    window_days = (ref - planting_date).days + 1
+    if window_days < 10:  # too early in the season for a meaningful anomaly
+        return None
+    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
@@ -653,6 +576,97 @@ def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
     raise ValueError("no full-season rainfall_cumulative trigger defined")
 
 
+def _climatology_rainfall(
+    start: date, n_days: int, district: Optional[str],
+) -> tuple[float, float]:
+    """Normal rainfall (mean, std) over n_days from start, from monthly normals.
+
+    Each day gets its month's normal divided by the month's length. The
+    variance is prorated the same way and summed across months, assuming
+    days are independent within a month and months independent of each other.
+    """
+    mean = 0.0
+    var = 0.0
+    for i in range(n_days):
+        d = start + timedelta(days=i)
+        days_in_month = calendar.monthrange(d.year, d.month)[1]
+        normal = _get_monthly_normals(d.month, district)
+        mean += normal["mean"] / days_in_month
+        var += normal["std"] ** 2 / days_in_month
+    return mean, var ** 0.5
+
+
+# z-score of the 10th/90th percentile of a normal distribution
+_Z_P90 = 1.2816
+
+
+def _project_to_harvest(
+    forecast_precip_days: list[dict],
+    days_remaining: int,
+    district: Optional[str] = None,
+) -> tuple[float, float, float, str]:
+    """Rainfall (mean, p10, p90, method) from today to harvest.
+
+    Days the forecast covers use the forecast. Later days use the district's
+    monthly rainfall normals: a forecast says nothing about weeks 3+, so
+    repeating its average (the old method) turned one dry or wet fortnight
+    into a whole dry or wet season.
+    """
+    covered = forecast_precip_days[:days_remaining]
+    mean = sum(d["mean"] for d in covered)
+    p10 = sum(d["p10"] for d in covered)
+    p90 = sum(d["p90"] for d in covered)
+    clim_days = days_remaining - len(covered)
+    if clim_days <= 0:
+        return mean, p10, p90, f"{days_remaining}-day forecast (full coverage)"
+
+    clim_start = date.fromisoformat(covered[-1]["date"]) + timedelta(days=1)
+    clim_mean, clim_std = _climatology_rainfall(clim_start, clim_days, district)
+    where = district.strip().title() if district else "Rwanda"
+    return (
+        mean + clim_mean,
+        p10 + max(0.0, clim_mean - _Z_P90 * clim_std),
+        p90 + clim_mean + _Z_P90 * clim_std,
+        f"{len(covered)}-day forecast + {clim_days}-day {where} monthly normals",
+    )
+
+
+def _trigger_probability(
+    projected_season_p10: float,
+    projected_season_mean: float,
+    projected_season_p90: float,
+    rainfall_threshold: float,
+) -> tuple[float, str]:
+    """Probability and risk label that the season total ends below the threshold.
+
+    Reads the projected distribution as p10 -> 10%, mean -> 50%, p90 -> 90%,
+    linear in between. (Until 2026-10-04 this used 1 - fraction_below, the
+    chance of ending ABOVE the threshold, so a season just clearing its
+    threshold was reported as a 50% payout and a wet outlook as riskier than
+    a dry one.)
+    """
+    p10, mean, p90 = projected_season_p10, projected_season_mean, projected_season_p90
+    t = rainfall_threshold
+    if t >= p90:
+        probability = 0.90
+    elif t <= p10:
+        probability = 0.05
+    elif t <= mean:
+        probability = 0.10 + 0.40 * ((t - p10) / (mean - p10) if mean > p10 else 1.0)
+    else:
+        probability = 0.50 + 0.40 * ((t - mean) / (p90 - mean) if p90 > mean else 0.0)
+
+    if probability >= 0.90:
+        risk = "VERY HIGH"
+    elif probability > 0.50:
+        risk = "HIGH"
+    elif probability > 0.25:
+        risk = "MODERATE"
+    else:
+        risk = "LOW"
+    return probability, risk
+
+
 def _compute_forecast_outlook(
     forecast_data: Optional[dict],
     season_rainfall_so_far: float,
@@ -697,25 +711,9 @@ def _compute_forecast_outlook(
         return None
 
     forecast_days_available = len(forecast_precip_days)
-    forecast_total_mean = sum(d["mean"] for d in forecast_precip_days)
-    forecast_total_p10 = sum(d["p10"] for d in forecast_precip_days)
-    forecast_total_p90 = sum(d["p90"] for d in forecast_precip_days)
-
-    # Project to harvest: scale forecast if it doesn't cover remaining days
-    if forecast_days_available < days_remaining:
-        daily_avg_mean = forecast_total_mean / forecast_days_available
-        daily_avg_p10 = forecast_total_p10 / forecast_days_available
-        daily_avg_p90 = forecast_total_p90 / forecast_days_available
-        projected_mean = daily_avg_mean * days_remaining
-        projected_p10 = daily_avg_p10 * days_remaining
-        projected_p90 = daily_avg_p90 * days_remaining
-        projection_method = f"{forecast_days_available}-day forecast extrapolated to {days_remaining} days"
-    else:
-        # Forecast covers remaining season — sum only needed days
-        projected_mean = sum(d["mean"] for d in forecast_precip_days[:days_remaining])
-        projected_p10 = sum(d["p10"] for d in forecast_precip_days[:days_remaining])
-        projected_p90 = sum(d["p90"] for d in forecast_precip_days[:days_remaining])
-        projection_method = f"{days_remaining}-day forecast (full coverage)"
+    projected_mean, projected_p10, projected_p90, projection_method = _project_to_harvest(
+        forecast_precip_days, days_remaining, district,
+    )
 
     # Projected season totals at harvest
     projected_season_mean = season_rainfall_so_far + projected_mean
@@ -726,33 +724,9 @@ def _compute_forecast_outlook(
     # (see _season_rainfall_threshold); a separate constant here told users a
     # payout threshold the engine never applies.
 
-    # Estimate trigger probability from p10/p90 spread
-    # If p10 (pessimistic) is below threshold → high probability of trigger
-    # If p90 (optimistic) is below threshold → near-certain trigger
-    # If mean is above threshold → low probability
-    if projected_season_p90 < rainfall_threshold:
-        trigger_probability = 0.90
-        trigger_risk = "VERY HIGH"
-    elif projected_season_mean < rainfall_threshold:
-        # Mean below but p90 above — moderate-high probability
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.1, min(0.9, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.70
-        trigger_risk = "HIGH" if trigger_probability > 0.5 else "MODERATE"
-    elif projected_season_p10 < rainfall_threshold:
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.05, min(0.5, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.25
-        trigger_risk = "MODERATE" if trigger_probability > 0.25 else "LOW"
-    else:
-        trigger_probability = 0.05
-        trigger_risk = "LOW"
+    trigger_probability, trigger_risk = _trigger_probability(
+        projected_season_p10, projected_season_mean, projected_season_p90, rainfall_threshold,
+    )
 
     # Model agreement — confidence in forecast
     model_agreement = "HIGH"
@@ -1692,7 +1666,7 @@ async def compute_insurance_intelligence(
     # Rainfall + SPI
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, harvest_dap, today)
     season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
-    spi = _compute_spi(season_rainfall, season, district=district)
+    spi = _season_to_date_spi(chirps_daily or {}, planting_date, today, district)
     if chirps_daily:
         _dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
         _spi_ref = date.fromisoformat(_dates_with_data[-1]) if _dates_with_data else today

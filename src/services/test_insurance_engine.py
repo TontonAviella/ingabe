@@ -20,7 +20,6 @@ from src.services.insurance_engine import (
     _centroid_from_geojson,
     _compute_confidence,
     _compute_phase_rainfall,
-    _compute_spi,
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
@@ -29,8 +28,7 @@ from src.services.insurance_engine import (
     _generate_recommendation,
     _load_triggers,
     _resolve_location_name,
-    _NATIONAL_RAINFALL_NORMALS,
-    _DISTRICT_RAINFALL_NORMALS,
+    _season_to_date_spi,
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
     _VALID_AUDIENCES,
@@ -41,38 +39,38 @@ from src.services.insurance_engine import (
 
 
 # ---------------------------------------------------------------------------
-# _compute_spi
+# _season_to_date_spi
 # ---------------------------------------------------------------------------
 
-class TestComputeSPI:
-    def test_normal_rainfall_returns_zero(self):
-        spi = _compute_spi(400.0, "A")
-        assert spi == pytest.approx(0.0)
+def _normal_rain(district, planting, days, factor=1.0):
+    import calendar
+    from src.services.insurance_engine import _get_monthly_normals
+    out = {}
+    for i in range(days):
+        d = planting + timedelta(days=i)
+        normal = _get_monthly_normals(d.month, district)["mean"]
+        out[d.isoformat()] = factor * normal / calendar.monthrange(d.year, d.month)[1]
+    return out
 
-    def test_below_normal_returns_negative(self):
-        spi = _compute_spi(315.0, "A")
-        assert spi == pytest.approx(-1.0)
 
-    def test_above_normal_returns_positive(self):
-        spi = _compute_spi(485.0, "A")
-        assert spi == pytest.approx(1.0)
+class TestSeasonToDateSPI:
+    PLANTING = date(2026, 9, 15)
 
-    def test_season_b_uses_b_normals(self):
-        spi = _compute_spi(350.0, "B")
-        assert spi == pytest.approx(0.0)
+    @pytest.mark.parametrize("days", [20, 60, 120])
+    def test_normal_rain_scores_zero_at_any_point_in_the_season(self, days):
+        rain = _normal_rain("bugesera", self.PLANTING, days)
+        today = self.PLANTING + timedelta(days=days - 1)
+        assert _season_to_date_spi(rain, self.PLANTING, today, "bugesera") == pytest.approx(0.0, abs=0.01)
 
-    def test_unknown_season_falls_back_to_A(self):
-        spi = _compute_spi(400.0, "C")
-        assert spi == pytest.approx(0.0)
+    def test_half_normal_rain_is_a_drought_signal(self):
+        rain = _normal_rain("musanze", self.PLANTING, 60, factor=0.5)
+        spi = _season_to_date_spi(rain, self.PLANTING, self.PLANTING + timedelta(days=59), "musanze")
+        assert spi < -1.0
 
-    def test_severe_drought(self):
-        spi = _compute_spi(230.0, "A")
-        assert spi == pytest.approx(-2.0)
-
-    def test_zero_rainfall(self):
-        spi = _compute_spi(0.0, "A")
-        expected = -400.0 / 85.0
-        assert spi == pytest.approx(expected)
+    def test_too_early_or_no_data_is_none(self):
+        rain = _normal_rain("musanze", self.PLANTING, 5)
+        assert _season_to_date_spi(rain, self.PLANTING, self.PLANTING + timedelta(days=4), "musanze") is None
+        assert _season_to_date_spi({}, self.PLANTING, self.PLANTING + timedelta(days=40), "musanze") is None
 
 
 # ---------------------------------------------------------------------------
@@ -628,29 +626,6 @@ class TestConstants:
 
     def test_et_long_term_mean_is_positive(self):
         assert _ET_LONG_TERM_MEAN > 0
-
-    def test_national_rainfall_normals_has_both_seasons(self):
-        assert "A" in _NATIONAL_RAINFALL_NORMALS
-        assert "B" in _NATIONAL_RAINFALL_NORMALS
-        for season in ("A", "B"):
-            assert "mean" in _NATIONAL_RAINFALL_NORMALS[season]
-            assert "std" in _NATIONAL_RAINFALL_NORMALS[season]
-            assert _NATIONAL_RAINFALL_NORMALS[season]["std"] > 0
-
-    def test_district_rainfall_normals_cover_30_districts(self):
-        assert len(_DISTRICT_RAINFALL_NORMALS) >= 28
-        for dist, seasons in _DISTRICT_RAINFALL_NORMALS.items():
-            assert "A" in seasons, f"{dist} missing season A"
-            assert "B" in seasons, f"{dist} missing season B"
-            for s in ("A", "B"):
-                assert seasons[s]["std"] > 0, f"{dist} season {s} has zero std"
-
-    def test_district_spi_differs_across_districts(self):
-        rainfall = 250.0
-        spi_bugesera = _compute_spi(rainfall, "B", district="bugesera")
-        spi_musanze = _compute_spi(rainfall, "B", district="musanze")
-        assert spi_bugesera != spi_musanze, "SPI should differ for different districts"
-        assert spi_bugesera > spi_musanze, "250mm is closer to normal for dry Bugesera"
 
 
 # ---------------------------------------------------------------------------
@@ -1241,31 +1216,6 @@ class TestMigrationIntegrity:
 
 
 # ---------------------------------------------------------------------------
-# _compute_spi: std == 0 branch
-# ---------------------------------------------------------------------------
-
-class TestComputeSPIEdgeCases:
-    def test_std_zero_returns_zero(self):
-        """When std is 0, _compute_spi should return 0.0 to avoid division by zero."""
-        with patch.dict(
-            "src.services.insurance_engine._NATIONAL_RAINFALL_NORMALS",
-            {"A": {"mean": 400.0, "std": 0}, "B": {"mean": 350.0, "std": 75.0}},
-        ):
-            spi = _compute_spi(500.0, "A")
-            assert spi == 0.0
-
-    def test_district_normals_used_when_available(self):
-        spi_with_district = _compute_spi(300.0, "B", district="bugesera")
-        spi_without_district = _compute_spi(300.0, "B")
-        assert spi_with_district != spi_without_district
-
-    def test_unknown_district_falls_back_to_national(self):
-        spi_unknown = _compute_spi(300.0, "B", district="nonexistent")
-        spi_national = _compute_spi(300.0, "B")
-        assert spi_unknown == spi_national
-
-
-# ---------------------------------------------------------------------------
 # _format_farmer: edge case branches
 # ---------------------------------------------------------------------------
 
@@ -1821,3 +1771,67 @@ class TestForecastOutlookThreshold:
         conn.fetch.return_value = []
         _run(_load_triggers(conn, "maize", "A", "flowering", None))
         assert "phase, signal, direction" in conn.fetch.call_args[0][0]
+
+
+class TestProjectToHarvest:
+    """Rainfall beyond the forecast comes from district normals, not the forecast's average."""
+
+    @staticmethod
+    def _days(start: date, mm: float, n: int = 16) -> list[dict]:
+        return [{"date": (start + timedelta(days=i)).isoformat(), "mean": mm, "p10": mm, "p90": mm}
+                for i in range(n)]
+
+    def test_a_dry_fortnight_does_not_make_a_dry_season(self):
+        from src.services.insurance_engine import _project_to_harvest
+        dry = self._days(date(2026, 10, 4), 0.5)
+        mean, p10, p90, method = _project_to_harvest(dry, 116, "bugesera")
+        # Old method: 0.5 mm x 116 days = 58 mm. Now the 100 days after the
+        # forecast get the district's normal for each day.
+        import calendar
+        from src.services.insurance_engine import _get_monthly_normals
+        normals = sum(
+            _get_monthly_normals(d.month, "bugesera")["mean"] / calendar.monthrange(d.year, d.month)[1]
+            for d in (date(2026, 10, 20) + timedelta(days=i) for i in range(100))
+        )
+        assert mean == pytest.approx(16 * 0.5 + normals)
+        assert normals > 200
+        assert p10 < mean < p90
+        assert method == "16-day forecast + 100-day Bugesera monthly normals"
+
+    def test_district_normals_change_the_projection(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 10, 4), 3.0)
+        wet_north = _project_to_harvest(days, 116, "musanze")[0]
+        dry_east = _project_to_harvest(days, 116, "bugesera")[0]
+        assert wet_north > dry_east
+
+    def test_forecast_covering_the_rest_of_the_season_is_used_alone(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 12, 20), 2.0)
+        mean, p10, p90, method = _project_to_harvest(days, 10, "musanze")
+        assert (mean, p10, p90) == (20.0, 20.0, 20.0)
+        assert method == "10-day forecast (full coverage)"
+
+
+class TestTriggerProbability:
+    """The payout probability is the chance the season ends BELOW the threshold."""
+
+    def test_drier_outlook_means_higher_payout_probability(self):
+        from src.services.insurance_engine import _trigger_probability
+        threshold = 300.0
+        dry = _trigger_probability(189, 257, 327, threshold)[0]
+        normal = _trigger_probability(208, 305, 413, threshold)[0]
+        wet = _trigger_probability(243, 393, 572, threshold)[0]
+        assert dry > normal > wet
+
+    def test_threshold_just_above_p10_is_unlikely_not_fifty_fifty(self):
+        from src.services.insurance_engine import _trigger_probability
+        probability, risk = _trigger_probability(290, 381, 474, 300.0)
+        assert probability < 0.2
+        assert risk == "LOW"
+
+    def test_quantile_anchors(self):
+        from src.services.insurance_engine import _trigger_probability
+        assert _trigger_probability(100, 200, 300, 200.0) == (0.5, "MODERATE")
+        assert _trigger_probability(100, 200, 300, 350.0) == (0.9, "VERY HIGH")
+        assert _trigger_probability(100, 200, 300, 50.0) == (0.05, "LOW")
