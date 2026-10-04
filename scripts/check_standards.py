@@ -18,6 +18,9 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         sees nothing and the test passes or fails by test order
   compose-mem-limit HW  an opt-in (profiled) docker-compose service without
                         mem_limit; the local Docker VM has fixed memory
+  agents-md-sync    HW  CLAUDE.md does not just import AGENTS.md (`@AGENTS.md`):
+                        agent guidance has one source so Claude Code and Codex
+                        never drift apart
 
 Existing debt is listed in scripts/standards_baseline.json. The baseline is a
 ratchet:
@@ -82,6 +85,8 @@ DUP_MIN_STATEMENTS = 4
 
 TEST_DIRS = ("src", "tests")
 COMPOSE_FILE = "docker-compose.yml"
+AGENTS_FILE = "AGENTS.md"
+CLAUDE_FILE = "CLAUDE.md"
 
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv", "dist", "build"}
 
@@ -516,6 +521,30 @@ def check_compose_mem_limits() -> list[Violation]:
     return out
 
 
+def check_agents_md_sync() -> list[Violation]:
+    """CLAUDE.md only imports AGENTS.md; guidance lives in AGENTS.md alone.
+
+    Tools that write into CLAUDE.md (e.g. the GitNexus indexer re-adding its
+    block) or a hand edit there would otherwise let the two files drift."""
+    claude = ROOT / CLAUDE_FILE
+    if not claude.exists() or not (ROOT / AGENTS_FILE).exists():
+        return []
+    text = claude.read_text(encoding="utf-8")
+    out: list[Violation] = []
+    if not re.search(r"^@AGENTS\.md\s*$", text, re.MULTILINE):
+        out.append(Violation(
+            "agents-md-sync", CLAUDE_FILE, 1, "missing @AGENTS.md import",
+            "CLAUDE.md must import AGENTS.md with a line `@AGENTS.md`",
+        ))
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.startswith("## ") or "gitnexus:start" in line:
+            out.append(Violation(
+                "agents-md-sync", CLAUDE_FILE, lineno, line.strip()[:60],
+                "guidance belongs in AGENTS.md (the single source); CLAUDE.md only imports it",
+            ))
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -525,6 +554,7 @@ def collect() -> list[Violation]:
         + check_duplicate_bodies()
         + check_caplog_fixture()
         + check_compose_mem_limits()
+        + check_agents_md_sync()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 
