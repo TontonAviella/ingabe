@@ -16,6 +16,7 @@
 """Integration tests for Rwanda agriculture lakehouse endpoints."""
 
 import json
+import uuid
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -525,3 +526,45 @@ async def test_superset_dashboards_endpoint_unreachable(auth_client):
         response = await auth_client.get("/api/rwanda/superset/dashboards")
 
     assert response.status_code == 502
+
+
+H3_ADMIN_RUN_TAG = uuid.uuid4().hex[:8]
+
+
+@pytest.mark.anyio
+async def test_h3_admin_endpoints_reject_bad_input(auth_client):
+    assert (await auth_client.get("/api/rwanda/h3/not-a-cell/admin")).status_code == 400
+    assert (await auth_client.get("/api/rwanda/h3/836ad8fffffffff/admin")).status_code == 400  # resolution 3
+    assert (await auth_client.get("/api/rwanda/admin/country/x/hexagons")).status_code == 400
+
+
+@pytest.mark.anyio
+async def test_h3_admin_endpoints_round_trip(auth_client):
+    """A hexagon finds its village, the village finds its hexagons, and a coarser parent finds both."""
+    import h3
+    from src.structures import get_async_db_connection
+
+    hexes = list(h3.cell_to_children(h3.latlng_to_cell(-1.9441, 30.0605, 8), 9))[:2]
+    village = f"test-{H3_ADMIN_RUN_TAG}"
+    rows = [(hx, "village", village, "Test village", 0.05, 0.5, 0.5) for hx in hexes]
+    async with get_async_db_connection() as conn:
+        await conn.executemany(
+            "INSERT INTO h3_admin_overlap (h3_index, admin_level, unit_id, unit_name, overlap_km2,"
+            " hex_fraction, unit_fraction) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            rows,
+        )
+    try:
+        units = (await auth_client.get(f"/api/rwanda/h3/{hexes[0]}/admin")).json()["units"]
+        assert village in [u["id"] for u in units["village"]]
+
+        parent = h3.cell_to_parent(hexes[0], 8)
+        parent_units = (await auth_client.get(f"/api/rwanda/h3/{parent}/admin")).json()["units"]
+        mine = [u for u in parent_units["village"] if u["id"] == village]
+        assert mine and mine[0]["shared_km2"] == pytest.approx(0.1)
+
+        body = (await auth_client.get(f"/api/rwanda/admin/village/{village}/hexagons")).json()
+        assert body["count"] == 2
+        assert sum(h["unit_fraction"] for h in body["hexagons"]) == pytest.approx(1.0)
+    finally:
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM h3_admin_overlap WHERE unit_id = $1", village)
