@@ -6859,7 +6859,7 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_insurance_intelligence":
                             try:
-                                from src.services.insurance_engine import compute_insurance_intelligence
+                                from src.services.insurance_engine import compute_insurance_intelligence, season_rainfall_sentence
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
@@ -6969,7 +6969,7 @@ async def process_chat_interaction_task(
                                     # Assemble briefing
                                     _briefing_parts = [
                                         f"Location: {_loc}, Season {_season}, currently in {_phase} (day {_dap}). Overall status: {_status} (confidence {_confidence}/100).",
-                                        f"Rainfall this season: {_rain}mm so far. {_spi_str}.",
+                                        f"{season_rainfall_sentence(_ins_d.get('season_rainfall_mm'))} {_spi_str}.",
                                     ]
                                     if _ndvi_str:
                                         _briefing_parts.append(_ndvi_str + ".")
