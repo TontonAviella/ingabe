@@ -115,6 +115,15 @@ or a hook. When you add a rule here, add or extend its gate in
 `scripts/check_standards.py` or a test, or write in the rule why it cannot be
 checked mechanically.
 
+**The Docker VM is a shared memory budget.** The local stack runs in one
+7.7 GB Docker VM with 1 GB of swap, and Postgres is the first thing to fail
+when it runs short (backends exit with code 2, then crash recovery). Before
+starting a service or a heavy job, check swap as well as available memory:
+if `DockerVMSwapNearlyFull` is firing, do not start more load, whatever
+`free -m` says. Every long-running service sets `mem_limit`. Gate: the
+`compose-mem-limit` check and the `DockerVMSwapNearlyFull` /
+`PostgresRecoveredRecently` alerts; starting load is a judgement call.
+
 ### The standards gate
 
 - `python scripts/check_standards.py` runs in CI (`lint.yml`, job
@@ -149,6 +158,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** I restarted Dagster and ran test jobs while swap was 100% full (2.3 GB "available");
+  Postgres crashed twice (02:13, 04:14 UTC). Second time after 2026-10-03: promoted to
+  "The Docker VM is a shared memory budget" under How to work. Gate: alerts, plus judgement.
 - **2026-10-04** The Dagster daemon (no restart policy, no mem_limit) stopped running schedules on
   2026-08-12 and exited on 2026-10-02; nobody noticed, so Sage answered from 7 weeks of missing weather/NDVI.
   Rule: long-running compose services set `restart:` and `mem_limit`. Gate: alert `DataPipelineStale` (cache age).
