@@ -1122,8 +1122,8 @@ async def get_latest_classifications(
         if not rows:
             return {
                 "source": "postgres_cache",
-                "status": "awaiting_dagster_population",
-                "message": "Classification cache will be populated by weekly Dagster schedule",
+                "status": "not_produced",
+                "message": "No crop classification is produced: no labelled crop classifier runs yet.",
                 "district_filter": district,
                 "results": [],
             }

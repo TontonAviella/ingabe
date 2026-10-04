@@ -533,8 +533,7 @@ def rwanda_crop_classification(context: AssetExecutionContext) -> dict[str, Any]
     """Classify crops using latest NDVI data from Iceberg tables.
 
     Uses spectral threshold classification (baseline) or KMeans clustering
-    when scikit-learn is available.  For server-side classification see
-    the weekly_crop_classification asset which uses openEO.
+    when scikit-learn is available.
     """
     from src.services.ml_inference import get_ml_service
 
@@ -841,25 +840,17 @@ def nightly_ndvi_vector_tiles(
                 """)
                 cell_rows = cur.fetchall()
 
-                # Crop classification (latest)
-                cur.execute("""
-                    SELECT district, class_label, area_ha, pixel_count, confidence
-                    FROM crop_classification_cache
-                    WHERE computed_at = (SELECT MAX(computed_at) FROM crop_classification_cache)
-                """)
-                crop_rows = cur.fetchall()
-
     except Exception as e:
         context.log.warning("PostgreSQL read failed: %s", e)
-        district_rows, cell_rows, crop_rows = [], [], []
+        district_rows, cell_rows = [], []
 
     if not district_rows and not cell_rows:
         context.log.info("No NDVI cache data — skipping vector tile generation")
         return {"status": "no_data", "features": 0}
 
     context.log.info(
-        "Building vector tiles: %d districts, %d cells, %d crop classes",
-        len(district_rows), len(cell_rows), len(crop_rows),
+        "Building vector tiles: %d districts, %d cells",
+        len(district_rows), len(cell_rows),
     )
 
     # Get admin boundary centroids for H3 gridding
@@ -1227,263 +1218,6 @@ def nightly_parcel_ndvi(
         "errors": errors[:10],
         "date_range": f"{date_from}/{date_to}",
     }
-
-
-@asset(
-    group_name="rwanda_precompute",
-    description="Weekly: run openEO crop classification → PostgreSQL + S3 cache",
-)
-@observed_dagster_asset(
-    asset_name="weekly_crop_classification",
-    pipeline_family="satellite_crop_classification",
-    source_category="satellite",
-    analysis_domain="agriculture",
-    evidence_kind="crop_classification_cache",
-)
-def weekly_crop_classification(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-    s3: S3Resource,
-) -> dict[str, Any]:
-    """Submit openEO batch classification job and cache results in PostgreSQL.
-
-    Runs Sunday 3 AM UTC.  Submits a server-side Random Forest classification
-    job on CDSE using 4-month Sentinel-2 composites.  When the job finishes,
-    downloads the GeoTIFF result, uploads to S3, and writes per-district
-    classification summaries to the PostgreSQL crop_classification_cache table.
-
-    Note: openEO batch jobs take 5-30 minutes.  This asset polls until
-    completion or timeout (max 45 minutes).
-    """
-    import time
-
-    from src.services.openeo_service import get_openeo_service
-
-    openeo_svc = get_openeo_service()
-    if openeo_svc is None:
-        context.log.warning("openEO not available — skipping weekly classification")
-        return {"status": "skipped", "reason": "openeo_unavailable"}
-
-    now = datetime.utcnow()
-    # Use a 4-month growing season window ending now
-    date_to = now.strftime("%Y-%m-%d")
-    date_from = (now - timedelta(days=120)).strftime("%Y-%m-%d")
-
-    try:
-        # Submit batch job
-        job_result = openeo_svc.run_crop_classification(
-            date_from=date_from,
-            date_to=date_to,
-            n_classes=5,
-        )
-        job_id = job_result.get("job_id")
-        context.log.info("openEO classification job submitted: %s", job_id)
-
-        if not job_id:
-            return {"status": "error", "error": "No job_id returned from openEO"}
-
-        # Poll for completion (max 45 minutes)
-        max_wait = 45 * 60  # seconds
-        poll_interval = 60  # seconds
-        waited = 0
-
-        while waited < max_wait:
-            status_info = openeo_svc.check_job_status(job_id)
-            job_status = status_info.get("status", "unknown")
-            context.log.info(
-                "Job %s status: %s (waited %d/%ds)",
-                job_id, job_status, waited, max_wait,
-            )
-
-            if job_status == "finished":
-                break
-            elif job_status in ("error", "canceled"):
-                return {
-                    "status": "error",
-                    "job_id": job_id,
-                    "job_status": job_status,
-                    "error": f"openEO job {job_status}",
-                }
-
-            time.sleep(poll_interval)
-            waited += poll_interval
-
-        if waited >= max_wait:
-            context.log.warning("Job %s timed out after %ds", job_id, max_wait)
-            return {"status": "timeout", "job_id": job_id, "waited_sec": waited}
-
-        # Download result
-        download_result = openeo_svc.download_result(job_id)
-        files = download_result.get("files", [])
-        context.log.info("Downloaded %d files from job %s", len(files), job_id)
-
-        # Upload GeoTIFFs to S3
-        uploaded_keys = []
-        for fpath in files:
-            if fpath.endswith(".tif") or fpath.endswith(".tiff"):
-                import os
-
-                fname = os.path.basename(fpath)
-                s3_key = f"rwanda/classifications/{now.strftime('%Y%m%d')}/{fname}"
-                with s3.get_client() as client:
-                    client.upload_file(fpath, s3.bucket_name, s3_key)
-                uploaded_keys.append(s3_key)
-                context.log.info("Uploaded %s → s3://%s/%s", fname, s3.bucket_name, s3_key)
-
-        # Apply local KMeans classification on the downloaded feature stack
-        import numpy as np
-
-        from src.services.ml_inference import get_ml_service
-
-        ml = get_ml_service()
-        classification_rows = []
-
-        for fpath in files:
-            if not (fpath.endswith(".tif") or fpath.endswith(".tiff")):
-                continue
-
-            try:
-                from osgeo import gdal
-
-                ds = gdal.Open(fpath)
-                if ds is None:
-                    context.log.warning("Could not open %s with GDAL", fpath)
-                    continue
-
-                n_bands = ds.RasterCount
-                if n_bands < 3:
-                    context.log.warning(
-                        "%s has only %d bands, need ≥3 (NDVI, NDWI, BSI)", fpath, n_bands
-                    )
-                    ds = None
-                    continue
-
-                # Read bands: band 1=NDVI, band 2=NDWI, band 3=BSI
-                # The openEO feature stack already has computed indices,
-                # so we run KMeans directly on them.
-                band_data = []
-                for i in range(1, min(n_bands + 1, 4)):
-                    arr = ds.GetRasterBand(i).ReadAsArray().astype(np.float32)
-                    band_data.append(arr)
-
-                ds = None  # close dataset
-
-                # Stack into (rows*cols, n_bands) for KMeans
-                h, w = band_data[0].shape
-                stacked = np.column_stack([b.ravel() for b in band_data])
-
-                # Filter out nodata (NaN or zero)
-                valid_mask = np.all(np.isfinite(stacked), axis=1) & np.any(stacked != 0, axis=1)
-                valid_pixels = stacked[valid_mask]
-
-                if len(valid_pixels) < 100:
-                    context.log.warning("Too few valid pixels in %s", fpath)
-                    continue
-
-                try:
-                    from sklearn.cluster import KMeans
-
-                    n_classes = 5
-                    kmeans = KMeans(n_clusters=n_classes, random_state=42, n_init=10)
-                    labels = kmeans.fit_predict(valid_pixels)
-
-                    # Map cluster centers to land cover labels based on index values
-                    # Band 0 = NDVI: high → vegetation, low → bare
-                    # Band 1 = NDWI: high → water
-                    # Band 2 = BSI: high → bare soil
-                    label_map = {}
-                    for ci in range(n_classes):
-                        center = kmeans.cluster_centers_[ci]
-                        ndvi_val, ndwi_val, bsi_val = center[0], center[1], center[2]
-
-                        if ndwi_val > 0.3:
-                            label_map[ci] = "water"
-                        elif ndvi_val > 0.6:
-                            label_map[ci] = "dense_vegetation"
-                        elif ndvi_val > 0.3:
-                            label_map[ci] = "cropland"
-                        elif bsi_val > 0.2:
-                            label_map[ci] = "bare_soil"
-                        else:
-                            label_map[ci] = "sparse_vegetation"
-
-                    # Count pixels per class and estimate area
-                    # Sentinel-2 at 10m resolution: ~0.01 ha per pixel
-                    ha_per_pixel = 0.01
-                    for ci in range(n_classes):
-                        count = int(np.sum(labels == ci))
-                        classification_rows.append({
-                            "district": "all_rwanda",
-                            "class_label": label_map[ci],
-                            "area_ha": round(count * ha_per_pixel, 2),
-                            "pixel_count": count,
-                            "confidence": round(float(1.0 - kmeans.inertia_ / (len(valid_pixels) * n_classes)), 4),
-                            "job_id": job_id,
-                        })
-
-                    context.log.info(
-                        "KMeans classified %d pixels into %d classes from %s",
-                        len(valid_pixels), n_classes, fpath,
-                    )
-                except ImportError:
-                    context.log.warning("scikit-learn not available — writing placeholder")
-                    classification_rows.append({
-                        "district": "all_rwanda",
-                        "class_label": "unclassified",
-                        "area_ha": 0.0,
-                        "pixel_count": int(np.sum(valid_mask)),
-                        "confidence": 0.0,
-                        "job_id": job_id,
-                    })
-
-            except Exception as e:
-                context.log.warning("Failed to classify %s: %s", fpath, e)
-
-        # Fallback if no classification succeeded
-        if not classification_rows:
-            classification_rows.append({
-                "district": "all_rwanda",
-                "class_label": "composite",
-                "area_ha": 0.0,
-                "pixel_count": 0,
-                "confidence": 0.0,
-                "job_id": job_id,
-            })
-
-        # Write classification results to PostgreSQL cache
-        with postgres.get_sync_connection() as pg_conn:
-            with pg_conn.cursor() as cur:
-                # Clear old results before inserting new ones
-                cur.execute("DELETE FROM crop_classification_cache WHERE job_id = %s", (job_id,))
-
-                for row in classification_rows:
-                    cur.execute(
-                        """
-                        INSERT INTO crop_classification_cache
-                            (district, class_label, area_ha, pixel_count, confidence, job_id)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (row["district"], row["class_label"], row["area_ha"],
-                         row["pixel_count"], row["confidence"], row["job_id"]),
-                    )
-            pg_conn.commit()
-
-        context.log.info(
-            "Wrote %d classification rows to PostgreSQL cache", len(classification_rows)
-        )
-
-        return {
-            "status": "ok",
-            "job_id": job_id,
-            "date_range": f"{date_from}/{date_to}",
-            "files_uploaded": uploaded_keys,
-            "classification_rows": len(classification_rows),
-            "s3_prefix": f"rwanda/classifications/{now.strftime('%Y%m%d')}/",
-        }
-
-    except Exception as e:
-        context.log.exception("Weekly classification failed: %s", e)
-        return {"status": "error", "error": str(e)}
 
 
 @asset(
