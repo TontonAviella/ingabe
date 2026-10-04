@@ -58,7 +58,7 @@ Measured with `scripts/seasonal_skill.py`.
 | Tercile hit rate (below / near / above normal, leave-one-out) | **30%**; chance is 33% |
 | "Dry season" calls that were right | 5 of 11 |
 | "Wet season" calls that were right | 4 of 11 |
-| Mean seasonal total, model vs CHIRPS | ~640 mm vs ~390 mm (the model is too wet; terciles remove this) |
+| Mean seasonal total, model vs CHIRPS | 634 mm vs 384 mm (the model is too wet; terciles remove this) |
 
 **What this means:**
 - At Rwanda's scale, the 1 October seasonal forecast shows **no usable skill** for October–December rainfall. Its tercile calls do no better than chance.
