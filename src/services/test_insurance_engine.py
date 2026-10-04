@@ -36,9 +36,13 @@ from src.services.insurance_engine import (
     _RWANDA_CENTER,
     _ET_LONG_TERM_MEAN,
     _VALID_AUDIENCES,
+    _season_vs_normal,
+    DEFAULT_AUDIENCE,
     compute_insurance_intelligence,
     compute_insurance_accuracy_safe,
     format_for_audience,
+    normalize_audience,
+    rainfall_vs_usual,
 )
 
 
@@ -70,6 +74,15 @@ class TestSeasonToDateSPI:
         rain = _normal_rain("musanze", self.PLANTING, 60, factor=0.5)
         spi = _season_to_date_spi(rain, self.PLANTING, self.PLANTING + timedelta(days=59), "musanze")
         assert spi < -1.0
+
+    def test_season_vs_normal_uses_the_same_days_as_the_trigger(self):
+        today = self.PLANTING + timedelta(days=60)
+        normal = sum(_normal_rain("musanze", self.PLANTING, 60).values())
+        normal_mm, pct = _season_vs_normal(0.7 * normal, self.PLANTING, today, 135, "musanze")
+        assert normal_mm == pytest.approx(normal, rel=1e-6)
+        assert pct == pytest.approx(70.0, abs=0.01)
+        assert _season_vs_normal(None, self.PLANTING, today, 135, "musanze") == (None, None)  # unknown rain
+        assert _season_vs_normal(50.0, self.PLANTING, self.PLANTING + timedelta(days=5), 135, "musanze") == (None, None)
 
     def test_too_early_or_no_data_is_none(self):
         rain = _normal_rain("musanze", self.PLANTING, 5)
@@ -548,6 +561,21 @@ class TestFormatForAudience:
         text = format_for_audience(report, "unknown_audience")
         assert "TRIGGER ASSESSMENT" in text
 
+    def test_farmer_hears_rain_compared_with_usual(self, report):
+        report.season_normal_mm, report.season_pct_of_normal = 254.0, 70.1
+        text = format_for_audience(report, "farmer")
+        assert "Rain since planting: 178mm, about 30% less than usual for this time of year (usual by now: about 254mm)." in text
+
+    def test_farmer_without_a_normal_keeps_the_plain_total(self, report):
+        assert "Rain this season: 178mm" in format_for_audience(report, "farmer")
+
+    def test_insurer_and_agronomist_get_the_percentage(self, report):
+        report.season_normal_mm, report.season_pct_of_normal = 254.0, 70.1
+        assert "178mm = 70% of normal for these dates (normal 254mm, CHIRPS 2000-2023)" in format_for_audience(report, "insurance")
+        assert "Normal for these dates: 254mm (70% of normal)" in format_for_audience(report, "agronomist")
+        data = json.loads(format_for_audience(report, "scientist"))
+        assert data["season_pct_of_normal"] == 70.0 and "season_vs_normal" in data["methodology"]
+
     def test_farmer_format_with_stressed_ndvi(self, report):
         report.ndvi_z_score = -1.8
         text = format_for_audience(report, "farmer")
@@ -916,7 +944,7 @@ class TestValidAudiences:
                 audience="hacker_injection", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
-        assert result["audience"] == "farmer"
+        assert result["audience"] == DEFAULT_AUDIENCE
 
 
 # ---------------------------------------------------------------------------
@@ -1043,7 +1071,7 @@ class TestComputeInsuranceIntelligence:
         assert result["status"] == "ok"
         assert "report" in result
         assert "data" in result
-        assert result["audience"] == "farmer"
+        assert result["audience"] == DEFAULT_AUDIENCE
 
     def test_error_without_location(self):
         conn = self._mock_conn()
@@ -1921,3 +1949,27 @@ def test_above_normal_rain_early_in_the_season_does_not_trigger():
     assert not result.triggered
     [dry] = _evaluate_triggers(defs, {"rainfall_cumulative": 0.1 * normal_so_far})
     assert dry.triggered and dry.full_season_threshold == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Audience names and plain rainfall words
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("given, expected", [
+    ("farmer", "farmer"), ("Farmer", "farmer"), ("underwriter", "insurance"),
+    ("insurer", "insurance"), ("extension officer", "agronomist"), ("researcher", "scientist"),
+    (None, DEFAULT_AUDIENCE), ("", DEFAULT_AUDIENCE), ("hacker_injection", DEFAULT_AUDIENCE),
+])
+def test_normalize_audience(given, expected):
+    assert normalize_audience(given) == expected
+
+
+@pytest.mark.parametrize("pct, words", [
+    (70.1, "about 30% less than usual for this time of year"),
+    (95.0, "about the usual amount for this time of year"),
+    (108.0, "about the usual amount for this time of year"),
+    (128.0, "about 30% more than usual for this time of year"),
+    (None, None),
+])
+def test_rainfall_vs_usual(pct, words):
+    assert rainfall_vs_usual(pct) == words
