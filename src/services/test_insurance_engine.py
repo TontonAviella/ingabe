@@ -22,6 +22,8 @@ from src.services.insurance_engine import (
     _compute_phase_rainfall,
     _chirps_dates_to_fetch,
     _season_rainfall,
+    _prorate_season_rainfall_triggers,
+    _climatology_rainfall,
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
@@ -1882,3 +1884,40 @@ def test_chirps_download_plan_covers_the_season_within_budget(season_days):
     early = [d for d in dates if d < (planting + timedelta(days=40)).isoformat() and d >= planting.isoformat()]
     if season_days >= 40:
         assert len(early) >= 0.3 * 40  # enough for a season third to count (30%)
+
+
+# ---------------------------------------------------------------------------
+# Full-season rainfall triggers prorated to date (decided 2026-10-04)
+# ---------------------------------------------------------------------------
+
+_SEASON_TRIGGERS = [
+    {"signal": "rainfall_cumulative", "phase": "full_season", "direction": "below", "threshold": 100.0, "weight": 1.0},
+    {"signal": "rainfall_cumulative", "phase": "flowering", "direction": "below", "threshold": 30.0, "weight": 1.0},
+    {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8},
+]
+
+
+def test_season_minimum_is_prorated_to_the_normal_rain_due_by_today():
+    planting, today = date(2026, 9, 15), date(2026, 10, 4)
+    out = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS, planting, today, 135, "rulindo")
+    share = _climatology_rainfall(planting, 19, "rulindo")[0] / _climatology_rainfall(planting, 135, "rulindo")[0]
+    assert out[0]["threshold"] == pytest.approx(100.0 * share, abs=0.05)
+    assert out[0]["full_season_threshold"] == 100.0
+    assert out[1] == _SEASON_TRIGGERS[1] and out[2] == _SEASON_TRIGGERS[2]  # phase and other signals untouched
+
+
+def test_at_season_end_the_full_threshold_applies():
+    planting = date(2026, 9, 15)
+    out = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS, planting, planting + timedelta(days=140), 135, "rulindo")
+    assert out == _SEASON_TRIGGERS
+
+
+def test_above_normal_rain_early_in_the_season_does_not_trigger():
+    from src.services.insurance_engine import _evaluate_triggers
+    planting, today = date(2026, 9, 15), date(2026, 10, 4)
+    defs = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS[:1], planting, today, 135, "rulindo")
+    normal_so_far = _climatology_rainfall(planting, 19, "rulindo")[0]
+    [result] = _evaluate_triggers(defs, {"rainfall_cumulative": 1.8 * normal_so_far})
+    assert not result.triggered
+    [dry] = _evaluate_triggers(defs, {"rainfall_cumulative": 0.1 * normal_so_far})
+    assert dry.triggered and dry.full_season_threshold == 100.0

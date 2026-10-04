@@ -74,12 +74,15 @@ class TriggerResult:
     margin_pct: float
     weight: float
     description: str
+    # Set when `threshold` is a full-season threshold prorated to date.
+    full_season_threshold: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
             "signal": self.signal,
             "current_value": round(self.current_value, 2),
             "threshold": self.threshold,
+            "full_season_threshold": self.full_season_threshold,
             "direction": self.direction,
             "triggered": self.triggered,
             "margin_pct": round(self.margin_pct, 1),
@@ -676,6 +679,44 @@ def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
     raise ValueError("no full-season rainfall_cumulative trigger defined")
 
 
+def _prorate_season_rainfall_triggers(
+    trigger_defs: list[dict],
+    planting_date: date,
+    today: date,
+    season_days: int,
+    district: Optional[str],
+) -> list[dict]:
+    """Full-season rainfall triggers scaled to the rain normally due by today.
+
+    A full-season minimum (e.g. 100 mm for maize) compared with rain so far
+    fired early in every season, even when rain was above normal. Until the
+    season ends the threshold is scaled by the share of the season's normal
+    rainfall that falls between planting and yesterday (the days the observed
+    total covers). Decided by Roger, 2026-10-04.
+    """
+    elapsed = max(0, min((today - planting_date).days, season_days))
+    if elapsed >= season_days:
+        return trigger_defs
+    season_normal, _ = _climatology_rainfall(planting_date, season_days, district)
+    to_date_normal, _ = _climatology_rainfall(planting_date, elapsed, district)
+    if season_normal <= 0:
+        return trigger_defs
+    share = to_date_normal / season_normal
+    out = []
+    for trig in trigger_defs:
+        if trig["signal"] == "rainfall_cumulative" and trig.get("phase", "full_season") == "full_season":
+            full = float(trig["threshold"])
+            trig = {
+                **trig,
+                "threshold": round(full * share, 1),
+                "full_season_threshold": full,
+                "description": (f"Rain so far below {full * share:.0f}mm: the {full:.0f}mm season minimum "
+                                f"prorated to the {share:.0%} of normal season rain due by now"),
+            }
+        out.append(trig)
+    return out
+
+
 def _climatology_rainfall(
     start: date, n_days: int, district: Optional[str],
 ) -> tuple[float, float]:
@@ -897,6 +938,7 @@ def _evaluate_triggers(
             margin_pct=margin,
             weight=weight,
             description=trig.get("description", signal),
+            full_season_threshold=trig.get("full_season_threshold"),
         ))
 
     return results
@@ -1066,7 +1108,10 @@ def _format_insurance(r: InsuranceReport) -> str:
     sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
     phase_info = f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})"
 
-    sections = [header, status_line, "", table, ""]
+    prorated = [f"  Note: {t.signal} uses the {t.full_season_threshold:.0f}mm season minimum prorated to "
+                f"{t.threshold:.0f}mm, the share of normal season rain due by now."
+                for t in r.triggers if t.full_season_threshold is not None]
+    sections = [header, status_line, "", table, *prorated, ""]
 
     if r.forecast_outlook:
         fo = r.forecast_outlook
@@ -1787,7 +1832,10 @@ async def compute_insurance_intelligence(
         "soil_moisture": soil_moisture,
     }
 
-    trigger_results = _evaluate_triggers(trigger_defs, current_values)
+    trigger_results = _evaluate_triggers(
+        _prorate_season_rainfall_triggers(trigger_defs, planting_date, today, harvest_dap, district),
+        current_values,
+    )
     triggers_activated = sum(1 for t in trigger_results if t.triggered)
     confidence_score, overall_status = _compute_confidence(
         trigger_results, expected_signals=len(trigger_defs),
