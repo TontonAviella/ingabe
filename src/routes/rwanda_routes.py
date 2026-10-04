@@ -49,7 +49,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.services.numbers import round_or_none
-from src.services import data_coverage, ndvi_classes
+from src.services import data_coverage, h3_admin_index, ndvi_classes
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
@@ -1722,6 +1722,66 @@ async def get_emissions_annual(
 
 
 # ─── Cell-level and parcel-level NDVI endpoints ──────────────────────────
+
+
+@rwanda_router.get("/rwanda/h3/{h3_index}/admin")
+async def get_hexagon_admin_units(
+    h3_index: str,
+    session: UserContext = Depends(verify_session_required),
+):
+    """Every province, district, sector, cell and village a hexagon shares area with.
+
+    From the precomputed H3 admin index (resolution 9); coarser hexagons
+    (resolution 5-8) are answered through their resolution-9 children.
+    """
+    from src.structures import get_async_db_connection
+
+    if not h3.is_valid_cell(h3_index):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not a valid H3 cell")
+    try:
+        async with get_async_db_connection() as conn:
+            return await h3_admin_index.admin_units_for_hexagon(conn, h3_index)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@rwanda_router.get("/rwanda/admin/{level}/{unit_id}/hexagons")
+async def get_admin_unit_hexagons(
+    level: str,
+    unit_id: str,
+    geojson: bool = Query(False, description="Return hexagon outlines as a GeoJSON FeatureCollection"),
+    session: UserContext = Depends(verify_session_required),
+):
+    """The resolution-9 hexagons sharing area with one admin unit, with the shares.
+
+    unit_id: province or district name; sector_id, cell_id or village_id.
+    """
+    from src.structures import get_async_db_connection
+
+    try:
+        async with get_async_db_connection() as conn:
+            hexagons = await h3_admin_index.hexagons_for_unit(conn, level, unit_id)
+            if not geojson:
+                return {"level": level, "unit_id": unit_id, "count": len(hexagons), "hexagons": hexagons}
+            outlines = {
+                r["h3_index"]: json.loads(r["geometry"])
+                for r in await conn.fetch(
+                    "SELECT h3_index, ST_AsGeoJSON(geom, 6) AS geometry FROM h3_admin_cells "
+                    "WHERE h3_index = ANY($1::text[])",
+                    [h["h3_index"] for h in hexagons],
+                )
+            }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return {
+        "type": "FeatureCollection",
+        "level": level,
+        "unit_id": unit_id,
+        "features": [
+            {"type": "Feature", "geometry": outlines[h["h3_index"]], "properties": h}
+            for h in hexagons if h["h3_index"] in outlines
+        ],
+    }
 
 
 @rwanda_router.get("/rwanda/ndvi/districts")

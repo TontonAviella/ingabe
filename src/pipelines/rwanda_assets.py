@@ -27,6 +27,7 @@ are stored in PostgreSQL for shared multi-session access. DuckDB is still
 used for analytical workloads (worldcover_admin_stats, H3 aggregation).
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -2462,3 +2463,19 @@ def worldcover_zonal_stats(
         "total_sectors": sum(1 for r in all_stats_rows if r[0] == "sector"),
         "total_cells": sum(1 for r in all_stats_rows if r[0] == "cell"),
     }
+
+
+@asset(
+    group_name="rwanda_admin_index",
+    description=(
+        "H3 admin index: every resolution-9 hexagon matched to province, district, "
+        "sector, cell and village by shared area (h3_admin_overlap, h3_admin_cells). "
+        "Run after boundaries change."
+    ),
+)
+def rwanda_h3_admin_index(context: AssetExecutionContext) -> dict[str, Any]:
+    from src.services.h3_admin_index import build_from_env
+
+    summary = asyncio.run(build_from_env())
+    context.log.info("H3 admin index: %s", summary)
+    return summary

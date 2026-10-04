@@ -119,6 +119,13 @@ if HAS_DAGSTER:
         tags={"category": "cache"},
     )
 
+    h3_admin_index_job = define_asset_job(
+        name="h3_admin_index_job",
+        description="Rebuild the H3 admin index (hexagon <-> village/cell/sector/district/province)",
+        selection=AssetSelection.assets(rwanda_assets.rwanda_h3_admin_index),
+        tags={"category": "rwanda"},
+    )
+
     rwanda_bootstrap_job = define_asset_job(
         name="rwanda_bootstrap_job",
         description="Bootstrap Rwanda Iceberg tables",
@@ -245,6 +252,7 @@ if HAS_DAGSTER:
         table_optimization_job,
         cache_warmup_job,
         rwanda_bootstrap_job,
+        h3_admin_index_job,
         rwanda_ingestion_job,
         rwanda_ndvi_job,
         rwanda_ml_job,
@@ -299,7 +307,7 @@ if HAS_DAGSTER:
 
     logger.info("Dagster definitions loaded successfully")
     logger.info("Assets: %d", len(all_assets))
-    logger.info("Jobs: 19, Sensors: 3, Schedules: 15")
+    logger.info("Jobs: 20, Sensors: 3, Schedules: 15")
 
 # Export for workspace.yaml reference
 __all__ = ["defs", "HAS_DAGSTER"]
