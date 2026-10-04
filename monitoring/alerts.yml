@@ -36,3 +36,18 @@ groups:
           severity: warning
         annotations:
           summary: Docker VM swap over 85% used (it was 96% when Postgres crash-looped)
+
+  - name: data-pipelines
+    rules:
+      - alert: DataPipelineStale
+        # Caches Sage reads, filled by Dagster schedules (daily at 02:00/06:00
+        # UTC, weekly on Mondays). Thresholds allow one missed run plus slack.
+        # Added 2026-10-04 after the daemon was dead for 7 weeks unnoticed.
+        expr: |
+          (pipeline_cache_age_seconds{cadence="daily"} > 2 * 86400)
+          or (pipeline_cache_age_seconds{cadence="weekly"} > 9 * 86400)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.cache }} has not been refreshed by Dagster on schedule ({{ $labels.cadence }})"
