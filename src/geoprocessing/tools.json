@@ -805,7 +805,7 @@
     "type": "function",
     "function": {
       "name": "get_crop_classifications",
-      "description": "Read the latest pre-computed crop classification results from the DuckDB cache. These are generated weekly by Dagster. Returns classification labels, areas, and confidence for each district. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report \u2014 use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district \u2014 NEVER guess district names. WHEN TO USE: read the most recent weekly crop classification result for parcels from the cache. WHEN NOT TO USE: classify a parcel that has not been processed yet \u2014 use identify_parcel_crop.",
+      "description": "Read pre-computed crop classification results by district. None are produced at the moment (no labelled crop classifier runs yet), so this returns an empty list with a note saying so. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report \u2014 use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district \u2014 NEVER guess district names. WHEN TO USE: read the most recent weekly crop classification result for parcels from the cache. WHEN NOT TO USE: classify a parcel that has not been processed yet \u2014 use identify_parcel_crop.",
       "strict": false,
       "parameters": {
         "type": "object",

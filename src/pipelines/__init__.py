@@ -162,13 +162,6 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
-    weekly_crop_classification_job = define_asset_job(
-        name="weekly_crop_classification_job",
-        description="Weekly openEO crop classification → DuckDB + S3",
-        selection=AssetSelection.assets(rwanda_assets.weekly_crop_classification),
-        tags={"category": "rwanda", "precompute": "true"},
-    )
-
     weekly_anomaly_scan_job = define_asset_job(
         name="weekly_anomaly_scan_job",
         description="Weekly NDVI anomaly detection → DuckDB alerts",
@@ -257,7 +250,6 @@ if HAS_DAGSTER:
         rwanda_ndvi_job,
         rwanda_ml_job,
         nightly_field_ndvi_job,
-        weekly_crop_classification_job,
         weekly_anomaly_scan_job,
         weekly_yield_risk_job,
         weekly_drought_scan_job,
@@ -288,7 +280,6 @@ if HAS_DAGSTER:
             schedules.weekly_ndvi_aggregation,
             schedules.daily_parcel_sync,
             schedules.nightly_field_ndvi_schedule,
-            schedules.weekly_classification_schedule,
             schedules.weekly_anomaly_schedule,
             schedules.weekly_yield_risk_schedule,
             schedules.weekly_drought_schedule,
@@ -307,7 +298,7 @@ if HAS_DAGSTER:
 
     logger.info("Dagster definitions loaded successfully")
     logger.info("Assets: %d", len(all_assets))
-    logger.info("Jobs: 20, Sensors: 3, Schedules: 15")
+    logger.info("Jobs: 19, Sensors: 3, Schedules: 14")
 
 # Export for workspace.yaml reference
 __all__ = ["defs", "HAS_DAGSTER"]
