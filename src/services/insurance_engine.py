@@ -325,21 +325,24 @@ def _get_monthly_normals(month: int, district: Optional[str] = None) -> dict[str
             return district_months[month]
     return _NATIONAL_MONTHLY_NORMALS.get(month, {"mean": 60, "std": 25})
 
-def _compute_spi_from_daily(
+@dataclass(frozen=True)
+class WindowRainfall:
+    """Rainfall over a window of days and the normal for those same dates."""
+
+    observed_mm: float  # observed total, scaled up for missing days
+    normal_mm: float  # mean rainfall for those calendar dates
+    normal_std_mm: float
+
+
+def _window_rainfall(
     daily_precip: dict[str, Optional[float]],
     ref_date: date,
     window_days: int,
     district: Optional[str] = None,
-) -> Optional[float]:
-    """Compute SPI for a specific window ending at ref_date.
+) -> Optional[WindowRainfall]:
+    """Observed and normal rainfall for the window ending at ref_date.
 
-    Sums observed daily rainfall over the window, then compares against the
-    expected normal for those calendar months.  For SPI-1 (30 days) we use
-    the single month's normals.  For SPI-3 (90 days) we sum the normals
-    for the 3 months covered.  This is a simplified z-score SPI — proper
-    gamma-distribution fitting needs 30+ years of monthly totals which we
-    don't have per-pixel.  The z-score approach is standard for operational
-    approximation when gamma fit isn't available.
+    None when fewer than 40% of the days have data.
     """
     window_start = ref_date - timedelta(days=window_days - 1)
 
@@ -374,10 +377,31 @@ def _compute_spi_from_daily(
         expected_mean += normals["mean"] * fraction
         expected_var += (normals["std"] * fraction) ** 2
 
-    expected_std = expected_var ** 0.5
-    if expected_std < 1.0:
+    return WindowRainfall(observed, expected_mean, expected_var ** 0.5)
+
+
+def _compute_spi_from_daily(
+    daily_precip: dict[str, Optional[float]],
+    ref_date: date,
+    window_days: int,
+    district: Optional[str] = None,
+) -> Optional[float]:
+    """Compute SPI for a specific window ending at ref_date.
+
+    Sums observed daily rainfall over the window, then compares against the
+    expected normal for those calendar months.  For SPI-1 (30 days) we use
+    the single month's normals.  For SPI-3 (90 days) we sum the normals
+    for the 3 months covered.  This is a simplified z-score SPI — proper
+    gamma-distribution fitting needs 30+ years of monthly totals which we
+    don't have per-pixel.  The z-score approach is standard for operational
+    approximation when gamma fit isn't available.
+    """
+    window = _window_rainfall(daily_precip, ref_date, window_days, district)
+    if window is None:
+        return None
+    if window.normal_std_mm < 1.0:
         return 0.0
-    return (observed - expected_mean) / expected_std
+    return (window.observed_mm - window.normal_mm) / window.normal_std_mm
 
 def _compute_spi_pair(
     daily_precip: dict[str, Optional[float]],
@@ -443,6 +467,19 @@ def _season_to_date_spi(
     *full-season* normal: normal rain scored about -4 twenty days into Season
     A, so every crop's `spi < -1` trigger fired early in every season.
     """
+    window = _season_to_date_window(daily_precip, planting_date, today)
+    if window is None:
+        return None
+    ref, window_days = window
+    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
+
+
+def _season_to_date_window(
+    daily_precip: dict[str, Optional[float]],
+    planting_date: date,
+    today: date,
+) -> Optional[tuple[date, int]]:
+    """(last day with data, days since planting) — None when under 10 days."""
     dates_with_data = sorted(k for k, v in daily_precip.items() if v is not None)
     if not dates_with_data:
         return None
@@ -450,7 +487,7 @@ def _season_to_date_spi(
     window_days = (ref - planting_date).days + 1
     if window_days < 10:  # too early in the season for a meaningful anomaly
         return None
-    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
+    return ref, window_days
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
