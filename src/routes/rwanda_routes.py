@@ -49,7 +49,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.services.numbers import round_or_none
-from src.services import data_coverage, h3_admin_index, ndvi_classes
+from src.services import admin_boundaries, data_coverage, h3_admin_index, ndvi_classes
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
@@ -1813,11 +1813,19 @@ async def get_district_ndvi_map(
             ORDER BY b.district
             """
         )
+        counts = await admin_boundaries.units_per_district(pg_conn)
     features = [
         {
             "type": "Feature",
             "geometry": json.loads(r["geometry"]),
-            "properties": _district_ndvi_properties(r),
+            "properties": {
+                **_district_ndvi_properties(r),
+                **{
+                    f"shared_note_{level}": data_coverage.shared_value_note(
+                        "district", r["district"], level, n)
+                    for level, n in counts.get(r["district"].lower(), {}).items()
+                },
+            },
         }
         for r in rows
     ]
@@ -1825,8 +1833,32 @@ async def get_district_ndvi_map(
         "type": "FeatureCollection",
         "features": features,
         "legend": ndvi_classes.legend(),
+        "levels": data_coverage.map_levels(("district",)),
         "data_coverage": data_coverage.describe("sentinel2", "district"),
     }
+
+
+@rwanda_router.get("/rwanda/admin/{level}/outlines")
+async def get_admin_outlines(
+    level: str,
+    bbox: Optional[str] = Query(None, description="west,south,east,north; required below district"),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Outlines of the district, sector, cell or village units in view, for the map."""
+    from src.structures import get_async_db_connection
+
+    box = None
+    if bbox:
+        try:
+            west, south, east, north = (float(v) for v in bbox.split(","))
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="bbox is west,south,east,north")
+        box = (west, south, east, north)
+    try:
+        async with get_async_db_connection() as conn:
+            return await admin_boundaries.admin_outlines(conn, level, box)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 def _district_ndvi_properties(r: Any) -> dict[str, Any]:
