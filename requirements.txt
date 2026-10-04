@@ -954,6 +954,8 @@ websockets==16.0
     #   uvicorn
 whitebox==2.3.6
     # via mundi-ai
+workos==10.1.0
+    # via mundi-ai
 wrapt==1.17.3
     # via
     #   aiobotocore

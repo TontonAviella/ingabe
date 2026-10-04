@@ -30,6 +30,8 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes import auth_routes
+from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
@@ -468,6 +470,8 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(CacheControlMiddleware)
+# Outermost: verifies the WorkOS session cookie for everything below (no-op unless AUTH_PROVIDER=workos)
+app.add_middleware(WorkOSSessionMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +664,8 @@ app.include_router(
     satellite_router,
     tags=["Satellite"],
 )
+app.include_router(auth_routes.pages, tags=["Auth"])
+app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
 app.include_router(
     partner_router,
     prefix="/api/partner",
@@ -733,6 +739,7 @@ async def spa_server(request: Request, exc: StarletteHTTPException):
         request.url.path.startswith("/api/")
         or request.url.path.startswith("/internal/")
         or request.url.path.startswith("/supertokens/")
+        or request.url.path.startswith("/auth/")
         or request.url.path.startswith("/mcp")
     ):
         # Return standard JSON status response for API/internal/MCP routes.
