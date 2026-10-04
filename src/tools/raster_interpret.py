@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
 
+from src.services.crop_stages import stage_from_dap
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.tools.raster_query import (
     describe_user_raster,
@@ -74,29 +75,6 @@ NDVI_HEALTH_RANGES: Dict[str, Dict[str, Tuple[float, float]]] = {
         "_any": (0.40, 0.70),
     },
 }
-
-
-def _stage_from_dap(dap: int, total_dap: int, crop: str) -> str:
-    """Days-after-planting → growth-stage label, by fraction of total cycle.
-
-    Generic 5-bucket model. Beans use 'pod_fill', everything else uses
-    'grain_fill'. If the date is before planting or well past harvest, returns
-    '_any' so the threshold lookup falls back to the crop's vegetative range.
-    """
-    if total_dap <= 0 or dap < 0 or dap > total_dap + 30:
-        return "_any"
-
-    pct = dap / total_dap
-    boundaries = [0.125, 0.375, 0.625, 0.875, 1.0]
-    if crop == "beans":
-        labels = ["planting", "vegetative", "flowering", "pod_fill", "maturity"]
-    else:
-        labels = ["planting", "vegetative", "flowering", "grain_fill", "maturity"]
-
-    for i, b in enumerate(boundaries):
-        if pct <= b:
-            return labels[i]
-    return labels[-1]
 
 
 def _verdict_from_ndvi(
@@ -305,7 +283,7 @@ async def interpret_raster_health(
                 dap_calc = (ref_date - planting_dt).days
                 if 0 <= dap_calc <= harvest_dap + 30:
                     dap = dap_calc
-                    stage = _stage_from_dap(dap, harvest_dap, args.crop)
+                    stage = stage_from_dap(dap, harvest_dap, args.crop)
             except Exception:
                 logger.exception("DAP calculation failed for %s", args.crop)
 
@@ -989,8 +967,8 @@ async def compare_rasters(
                     planting_dt = datetime(t2_date.year - 1, pm, pd, tzinfo=t2_date.tzinfo)
                 dap_t1 = max(0, (t1_date - planting_dt).days)
                 dap_t2 = max(0, (t2_date - planting_dt).days)
-                stage_t1 = _stage_from_dap(dap_t1, harvest_dap, args.crop)
-                stage_t2 = _stage_from_dap(dap_t2, harvest_dap, args.crop)
+                stage_t1 = stage_from_dap(dap_t1, harvest_dap, args.crop)
+                stage_t2 = stage_from_dap(dap_t2, harvest_dap, args.crop)
                 ndvi_at_t1 = _stage_midpoint_ndvi(args.crop, stage_t1)
                 ndvi_at_t2 = _stage_midpoint_ndvi(args.crop, stage_t2)
                 expected_delta = round(ndvi_at_t2 - ndvi_at_t1, 3)
