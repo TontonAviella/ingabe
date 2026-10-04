@@ -16,6 +16,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
@@ -28,53 +29,21 @@ _RWANDA_CENTER = (-1.94, 29.87)
 
 _ET_LONG_TERM_MEAN = 3.5
 
-# Per-district MONTHLY rainfall normals (mm per month).
-# Derived from CHIRPS v2.0 2000-2023 monthly totals for Rwanda.
-# Rwanda bimodal pattern: Sep-Dec (Season A), Feb-May (Season B), dry Jun-Aug and Jan.
+# Per-district and national MONTHLY rainfall normals (mm per month), loaded
+# from monthly_rainfall_normals.json beside this module (see "source", "years").
 # Structure: district -> month (1-12) -> {"mean": mm, "std": mm}
-_MONTHLY_RAINFALL_NORMALS: dict[str, dict[int, dict[str, float]]] = {
-    # --- Northwest highlands (wet, orographic enhancement) ---
-    "musanze":    {1: {"mean": 55, "std": 28}, 2: {"mean": 80, "std": 32}, 3: {"mean": 120, "std": 40}, 4: {"mean": 140, "std": 42}, 5: {"mean": 85, "std": 35}, 6: {"mean": 18, "std": 14}, 7: {"mean": 10, "std": 10}, 8: {"mean": 25, "std": 16}, 9: {"mean": 75, "std": 32}, 10: {"mean": 130, "std": 42}, 11: {"mean": 145, "std": 44}, 12: {"mean": 90, "std": 35}},
-    "rubavu":     {1: {"mean": 50, "std": 26}, 2: {"mean": 75, "std": 30}, 3: {"mean": 115, "std": 38}, 4: {"mean": 135, "std": 40}, 5: {"mean": 80, "std": 33}, 6: {"mean": 15, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 70, "std": 30}, 10: {"mean": 125, "std": 40}, 11: {"mean": 140, "std": 42}, 12: {"mean": 85, "std": 33}},
-    "nyabihu":    {1: {"mean": 58, "std": 30}, 2: {"mean": 85, "std": 34}, 3: {"mean": 125, "std": 42}, 4: {"mean": 145, "std": 44}, 5: {"mean": 90, "std": 36}, 6: {"mean": 20, "std": 15}, 7: {"mean": 12, "std": 11}, 8: {"mean": 28, "std": 18}, 9: {"mean": 80, "std": 34}, 10: {"mean": 135, "std": 44}, 11: {"mean": 150, "std": 46}, 12: {"mean": 95, "std": 36}},
-    "burera":     {1: {"mean": 50, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 78, "std": 32}, 6: {"mean": 16, "std": 13}, 7: {"mean": 9, "std": 9}, 8: {"mean": 24, "std": 16}, 9: {"mean": 68, "std": 30}, 10: {"mean": 120, "std": 40}, 11: {"mean": 135, "std": 42}, 12: {"mean": 83, "std": 33}},
-    "gakenke":    {1: {"mean": 45, "std": 24}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    # --- Central plateau (moderate) ---
-    "kigali":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "gasabo":     {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "kicukiro":   {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "nyarugenge": {1: {"mean": 38, "std": 22}, 2: {"mean": 60, "std": 26}, 3: {"mean": 95, "std": 34}, 4: {"mean": 115, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 55, "std": 26}, 10: {"mean": 100, "std": 35}, 11: {"mean": 110, "std": 36}, 12: {"mean": 65, "std": 28}},
-    "muhanga":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
-    "kamonyi":    {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
-    "ruhango":    {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
-    "huye":       {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 62, "std": 28}, 10: {"mean": 110, "std": 37}, 11: {"mean": 120, "std": 38}, 12: {"mean": 72, "std": 30}},
-    "nyanza":     {1: {"mean": 39, "std": 22}, 2: {"mean": 61, "std": 26}, 3: {"mean": 96, "std": 34}, 4: {"mean": 116, "std": 36}, 5: {"mean": 58, "std": 26}, 6: {"mean": 10, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 18, "std": 14}, 9: {"mean": 56, "std": 26}, 10: {"mean": 102, "std": 35}, 11: {"mean": 112, "std": 36}, 12: {"mean": 66, "std": 28}},
-    "gisagara":   {1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34}, 4: {"mean": 118, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10}, 7: {"mean": 5, "std": 6}, 8: {"mean": 19, "std": 14}, 9: {"mean": 58, "std": 27}, 10: {"mean": 105, "std": 36}, 11: {"mean": 115, "std": 37}, 12: {"mean": 68, "std": 29}},
-    "nyamagabe":  {1: {"mean": 45, "std": 25}, 2: {"mean": 70, "std": 30}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 40}, 5: {"mean": 68, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 65, "std": 29}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 40}, 12: {"mean": 75, "std": 31}},
-    # --- Eastern lowland (dry, continental) ---
-    "bugesera":   {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 80, "std": 30}, 4: {"mean": 95, "std": 32}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 45, "std": 22}, 10: {"mean": 85, "std": 32}, 11: {"mean": 95, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "kayonza":    {1: {"mean": 32, "std": 20}, 2: {"mean": 52, "std": 24}, 3: {"mean": 85, "std": 32}, 4: {"mean": 100, "std": 34}, 5: {"mean": 50, "std": 24}, 6: {"mean": 9, "std": 9}, 7: {"mean": 4, "std": 5}, 8: {"mean": 15, "std": 12}, 9: {"mean": 48, "std": 23}, 10: {"mean": 90, "std": 33}, 11: {"mean": 100, "std": 34}, 12: {"mean": 58, "std": 26}},
-    "kirehe":     {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "ngoma":      {1: {"mean": 34, "std": 21}, 2: {"mean": 55, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
-    "gatsibo":    {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 90, "std": 33}, 4: {"mean": 108, "std": 35}, 5: {"mean": 54, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 52, "std": 24}, 10: {"mean": 95, "std": 34}, 11: {"mean": 105, "std": 35}, 12: {"mean": 62, "std": 27}},
-    "nyagatare":  {1: {"mean": 30, "std": 20}, 2: {"mean": 50, "std": 24}, 3: {"mean": 82, "std": 31}, 4: {"mean": 98, "std": 33}, 5: {"mean": 48, "std": 23}, 6: {"mean": 8, "std": 8}, 7: {"mean": 3, "std": 4}, 8: {"mean": 14, "std": 12}, 9: {"mean": 46, "std": 22}, 10: {"mean": 88, "std": 32}, 11: {"mean": 96, "std": 33}, 12: {"mean": 55, "std": 25}},
-    "rwamagana":  {1: {"mean": 35, "std": 22}, 2: {"mean": 56, "std": 25}, 3: {"mean": 88, "std": 32}, 4: {"mean": 105, "std": 35}, 5: {"mean": 52, "std": 25}, 6: {"mean": 10, "std": 10}, 7: {"mean": 4, "std": 5}, 8: {"mean": 16, "std": 13}, 9: {"mean": 50, "std": 24}, 10: {"mean": 92, "std": 33}, 11: {"mean": 102, "std": 35}, 12: {"mean": 60, "std": 27}},
-    # --- Southwest / lake-influenced (moderate-wet) ---
-    "nyamasheke": {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    "rusizi":     {1: {"mean": 45, "std": 25}, 2: {"mean": 68, "std": 28}, 3: {"mean": 105, "std": 36}, 4: {"mean": 125, "std": 38}, 5: {"mean": 68, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 62, "std": 27}, 10: {"mean": 112, "std": 37}, 11: {"mean": 122, "std": 38}, 12: {"mean": 74, "std": 31}},
-    "karongi":    {1: {"mean": 46, "std": 25}, 2: {"mean": 70, "std": 29}, 3: {"mean": 108, "std": 37}, 4: {"mean": 128, "std": 39}, 5: {"mean": 70, "std": 29}, 6: {"mean": 13, "std": 11}, 7: {"mean": 7, "std": 7}, 8: {"mean": 21, "std": 15}, 9: {"mean": 64, "std": 28}, 10: {"mean": 115, "std": 38}, 11: {"mean": 125, "std": 39}, 12: {"mean": 76, "std": 31}},
-    "rutsiro":    {1: {"mean": 48, "std": 26}, 2: {"mean": 72, "std": 30}, 3: {"mean": 110, "std": 38}, 4: {"mean": 130, "std": 40}, 5: {"mean": 72, "std": 30}, 6: {"mean": 14, "std": 12}, 7: {"mean": 8, "std": 8}, 8: {"mean": 22, "std": 15}, 9: {"mean": 66, "std": 28}, 10: {"mean": 118, "std": 38}, 11: {"mean": 128, "std": 40}, 12: {"mean": 78, "std": 32}},
-    "ngororero":  {1: {"mean": 43, "std": 24}, 2: {"mean": 66, "std": 28}, 3: {"mean": 102, "std": 36}, 4: {"mean": 122, "std": 38}, 5: {"mean": 64, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 14}, 9: {"mean": 60, "std": 27}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 72, "std": 30}},
-    "rulindo":    {1: {"mean": 42, "std": 24}, 2: {"mean": 65, "std": 28}, 3: {"mean": 100, "std": 35}, 4: {"mean": 120, "std": 38}, 5: {"mean": 62, "std": 28}, 6: {"mean": 12, "std": 11}, 7: {"mean": 6, "std": 7}, 8: {"mean": 20, "std": 15}, 9: {"mean": 60, "std": 28}, 10: {"mean": 108, "std": 36}, 11: {"mean": 118, "std": 38}, 12: {"mean": 70, "std": 30}},
-}
+def _load_monthly_normals() -> tuple[dict[str, dict[int, dict[str, float]]], dict[int, dict[str, float]]]:
+    path = Path(__file__).parent / "monthly_rainfall_normals.json"
+    data = json.loads(path.read_text())
+    districts = {
+        name: {int(m): v for m, v in entry["monthly"].items()}
+        for name, entry in data["districts"].items()
+    }
+    national = {int(m): v for m, v in data["national"]["monthly"].items()}
+    return districts, national
 
-# National monthly fallback (average across all districts)
-_NATIONAL_MONTHLY_NORMALS: dict[int, dict[str, float]] = {
-    1: {"mean": 40, "std": 23}, 2: {"mean": 62, "std": 27}, 3: {"mean": 98, "std": 34},
-    4: {"mean": 116, "std": 37}, 5: {"mean": 60, "std": 27}, 6: {"mean": 11, "std": 10},
-    7: {"mean": 6, "std": 7}, 8: {"mean": 19, "std": 14}, 9: {"mean": 57, "std": 26},
-    10: {"mean": 104, "std": 35}, 11: {"mean": 114, "std": 37}, 12: {"mean": 68, "std": 29},
-}
+
+_MONTHLY_RAINFALL_NORMALS, _NATIONAL_MONTHLY_NORMALS = _load_monthly_normals()
 
 # ---------------------------------------------------------------------------
 # Data classes
