@@ -35,6 +35,9 @@ os.environ["MUNDI_BACKGROUND_WORKERS_ENABLED"] = "0"
 # lets tests fall through to the legacy edit-mode bypass without weakening
 # production auth.
 os.environ["CLERK_ALLOW_LEGACY_FALLBACK"] = "true"
+# The local .env sets AUTH_PROVIDER=workos for the running app; tests that need
+# WorkOS turn it on themselves (monkeypatch), so the suite matches CI locally.
+os.environ.pop("AUTH_PROVIDER", None)
 from httpx_ws.transport import ASGIWebSocketTransport
 from httpx import AsyncClient
 from pathlib import Path
