@@ -28,6 +28,20 @@ from src.services.numbers import round_or_none
 logger = logging.getLogger(__name__)
 
 _VALID_AUDIENCES = {"farmer", "insurance", "agronomist", "scientist"}
+# Other names the model or a user uses for the same readers.
+_AUDIENCE_ALIASES = {
+    "underwriter": "insurance", "insurer": "insurance", "insurance_officer": "insurance",
+    "claims": "insurance", "extension_officer": "agronomist", "extension": "agronomist",
+    "researcher": "scientist",
+}
+DEFAULT_AUDIENCE = "agronomist"
+
+
+def normalize_audience(audience: Optional[str]) -> str:
+    """The report audience for a requested name; DEFAULT_AUDIENCE when unknown or unset."""
+    key = (audience or "").strip().lower().replace(" ", "_")
+    key = _AUDIENCE_ALIASES.get(key, key)
+    return key if key in _VALID_AUDIENCES else DEFAULT_AUDIENCE
 
 _RWANDA_CENTER = (-1.94, 29.87)
 
@@ -101,6 +115,8 @@ class InsuranceReport:
 
     phase_rainfall: list[PhaseRainfall] = field(default_factory=list)
     season_rainfall_mm: Optional[float] = None  # None until satellite rainfall covers the season
+    season_normal_mm: Optional[float] = None  # normal rainfall for the same days since planting
+    season_pct_of_normal: Optional[float] = None
     spi: Optional[float] = None  # season-to-date SPI; None when too early or no data
     spi_1: Optional[float] = None
     spi_3: Optional[float] = None
@@ -143,6 +159,9 @@ class InsuranceReport:
             "growth_phase": self.growth_phase,
             "days_after_planting": self.days_after_planting,
             "season_rainfall_mm": round_or_none(self.season_rainfall_mm, 1),
+            "season_normal_mm": round_or_none(self.season_normal_mm, 1),
+            "season_pct_of_normal": round_or_none(self.season_pct_of_normal, 0),
+            "season_vs_usual": rainfall_vs_usual(self.season_pct_of_normal),
             "spi": round(self.spi, 2) if self.spi is not None else None,
             "spi_1": round(self.spi_1, 2) if self.spi_1 is not None else None,
             "spi_3": round(self.spi_3, 2) if self.spi_3 is not None else None,
@@ -507,6 +526,44 @@ def _season_to_date_window(
     if window_days < 10:  # too early in the season for a meaningful anomaly
         return None
     return ref, window_days
+
+
+def _season_vs_normal(
+    season_rainfall_mm: Optional[float],
+    planting_date: date,
+    today: date,
+    season_days: int,
+    district: Optional[str] = None,
+) -> tuple[Optional[float], Optional[float]]:
+    """(normal mm for the days since planting, rain since planting as % of it).
+
+    The same days and normals as the prorated rainfall trigger, so the
+    percentage, the millimetres and the trigger agree. None while the rain
+    total is unknown or the season is under 10 days old.
+    """
+    elapsed = min((today - planting_date).days, season_days)
+    if season_rainfall_mm is None or elapsed < 10:
+        return None, None
+    normal_mm, _ = _climatology_rainfall(planting_date, elapsed, district)
+    if normal_mm < 1.0:
+        return None, None
+    return normal_mm, 100.0 * season_rainfall_mm / normal_mm
+
+
+def rainfall_vs_usual(pct_of_normal: Optional[float]) -> Optional[str]:
+    """Plain words for rainfall as a % of normal, rounded to 5% for reading aloud.
+
+    Within 10% of normal reads as "about the usual amount": year-to-year
+    variation is larger than that, and a farmer cannot act on it.
+    """
+    if pct_of_normal is None:
+        return None
+    if abs(pct_of_normal - 100) < 10:
+        return "about the usual amount for this time of year"
+    diff = int(5 * round(abs(pct_of_normal - 100) / 5))
+    if pct_of_normal < 100:
+        return f"about {diff}% less than usual for this time of year"
+    return f"about {diff}% more than usual for this time of year"
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
@@ -1053,8 +1110,8 @@ def _format_farmer(r: InsuranceReport) -> str:
     }.get(r.overall_status, "UNKNOWN")
 
     lines = [
-        f"{status_emoji} {r.location_name} is {status_word}.",
-        season_rainfall_sentence(r.season_rainfall_mm),
+        f"{status_emoji} {r.location_name}: {status_word}.",
+        _farmer_rain_line(r),
         f"({point_sample_note('chirps', r.location_name, r.admin_level)})",
     ]
     if r.max_dry_spell_days > 0:
@@ -1087,6 +1144,21 @@ def _format_farmer(r: InsuranceReport) -> str:
 
     lines.append(f"Season progress: {r.growth_phase} (day {r.days_after_planting})")
     return "\n".join(lines)
+
+def _farmer_rain_line(r: InsuranceReport) -> str:
+    usual = rainfall_vs_usual(r.season_pct_of_normal)
+    if usual is None or r.season_normal_mm is None or r.season_rainfall_mm is None:
+        return season_rainfall_sentence(r.season_rainfall_mm)
+    return (f"Rain since planting: {r.season_rainfall_mm:.0f}mm, {usual} "
+            f"(usual by now: about {r.season_normal_mm:.0f}mm).")
+
+
+def _season_vs_normal_line(r: InsuranceReport) -> Optional[str]:
+    if r.season_pct_of_normal is None or r.season_normal_mm is None or r.season_rainfall_mm is None:
+        return None
+    return (f"Rain since planting: {r.season_rainfall_mm:.0f}mm = {r.season_pct_of_normal:.0f}% of normal "
+            f"for these dates (normal {r.season_normal_mm:.0f}mm, CHIRPS 2000-2023)")
+
 
 def _format_insurance(r: InsuranceReport) -> str:
     """Trigger assessment table for insurance workers."""
@@ -1127,7 +1199,8 @@ def _format_insurance(r: InsuranceReport) -> str:
     prorated = [f"  Note: {t.signal} uses the {t.full_season_threshold:.0f}mm season minimum prorated to "
                 f"{t.threshold:.0f}mm, the share of normal season rain due by now."
                 for t in r.triggers if t.full_season_threshold is not None]
-    sections = [header, status_line, "", table, *prorated, ""]
+    vs_normal = _season_vs_normal_line(r)
+    sections = [header, status_line, *([vs_normal] if vs_normal else []), "", table, *prorated, ""]
 
     if r.forecast_outlook:
         fo = r.forecast_outlook
@@ -1157,6 +1230,8 @@ def _format_agronomist(r: InsuranceReport) -> str:
         "RAINFALL:",
         f"  {point_sample_note('chirps', r.location_name, r.admin_level)}",
         f"  {season_rainfall_sentence(r.season_rainfall_mm)}",
+        *([f"  Normal for these dates: {r.season_normal_mm:.0f}mm ({r.season_pct_of_normal:.0f}% of normal)"]
+          if r.season_pct_of_normal is not None and r.season_normal_mm is not None else []),
         f"  SPI-1 (30-day): {r.spi_1:.2f}" if r.spi_1 is not None else "  SPI-1: n/a",
         f"  SPI-3 (90-day): {r.spi_3:.2f}" if r.spi_3 is not None else "  SPI-3: n/a",
     ]
@@ -1208,6 +1283,7 @@ def _format_scientist(r: InsuranceReport) -> str:
     data = r.to_dict()
     data["methodology"] = {
         "rainfall": "CHIRPS v2.0 daily precipitation, 0.05° resolution",
+        "season_vs_normal": "Observed CHIRPS rainfall since planting (scaled up for missing days, as for the season SPI) over the sum of per-district monthly CHIRPS normals (2000-2023) prorated to the same calendar dates.",
         "spi": "SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS against per-district monthly normals (CHIRPS 2000-2023). Z-score approximation; gamma fit deferred.",
         "drought_diagnostic": "SPI-SM divergence classification: consistent_drought (SPI<-1, SM<35%), flash_drought (SPI normal, SM<35%), carryover_storage (SPI<-1, SM>=35%), runoff_dominated (SPI>1, SM<35%)",
         "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
@@ -1597,7 +1673,7 @@ async def compute_insurance_intelligence(
     sector: Optional[str] = None,
     cell: Optional[str] = None,
     village: Optional[str] = None,
-    audience: str = "farmer",
+    audience: Optional[str] = None,
     ref_date: Optional[date] = None,
     compare_level: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -1625,8 +1701,7 @@ async def compute_insurance_intelligence(
 
     today = ref_date or date.today()
     crop = crop.lower().strip() if crop else ""
-    if audience not in _VALID_AUDIENCES:
-        audience = "farmer"
+    audience = normalize_audience(audience)
 
     if season is None:
         # Simple season detection from date — no crop needed
@@ -1794,6 +1869,9 @@ async def compute_insurance_intelligence(
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, harvest_dap, today)
     season_rainfall = _season_rainfall(phase_rainfall)
     spi = _season_to_date_spi(chirps_daily or {}, planting_date, today, district)
+    season_normal_mm, season_pct_of_normal = _season_vs_normal(
+        season_rainfall, planting_date, today, harvest_dap, district,
+    )
     if chirps_daily:
         _dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
         _spi_ref = date.fromisoformat(_dates_with_data[-1]) if _dates_with_data else today
@@ -1915,6 +1993,8 @@ async def compute_insurance_intelligence(
         days_after_planting=dap,
         phase_rainfall=phase_rainfall,
         season_rainfall_mm=season_rainfall,
+        season_normal_mm=season_normal_mm,
+        season_pct_of_normal=season_pct_of_normal,
         spi=spi,
         spi_1=spi_1,
         spi_3=spi_3,
