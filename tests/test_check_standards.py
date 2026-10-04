@@ -234,3 +234,19 @@ def test_claude_md_must_only_import_agents_md(repo):
     assert [v.rule for v in found] == ["agents-md-sync"] * 3
     assert found[0].detail == "missing @AGENTS.md import"
 
+
+
+def test_number_tested_for_truth_before_rounding_is_flagged(repo):
+    repo("src/routes/r.py", """
+        def row(r, x):
+            a = round(r[3], 4) if r[3] else None
+            b = float(x) if x else None
+            c = round(float(x), 2) if x else None
+            ok1 = round(r[3], 4) if r[3] is not None else None
+            ok2 = round(r[4], 4) if r[3] else None
+            return a, b, c, ok1, ok2
+    """)
+    found = cs.check_zero_as_missing()
+    assert [(v.rule, v.line) for v in found] == [
+        ("zero-as-missing", 3), ("zero-as-missing", 4), ("zero-as-missing", 5),
+    ]

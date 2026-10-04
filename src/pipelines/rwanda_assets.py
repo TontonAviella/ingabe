@@ -36,6 +36,7 @@ import numpy as np
 import requests
 from dagster import AssetExecutionContext, asset
 
+from src.services.numbers import round_or_none
 from src.pipelines.resources import DuckDBResource, PostgresResource, S3Resource
 from src.pipelines.posthog_observability import observed_dagster_asset
 from src.services.admin_boundaries import RWANDA_DISTRICTS
@@ -924,8 +925,8 @@ def nightly_ndvi_vector_tiles(
                     "h3": h3_id,
                     "res": 7,
                     "district": district,
-                    "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
-                    "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
+                    "ndvi": round_or_none(mean_ndvi, 4),
+                    "ndvi_std": round_or_none(std_ndvi, 4),
                     "date": str(week_start) if week_start else None,
                     "level": "district",
                     "pixels": valid_pixels,
@@ -952,8 +953,8 @@ def nightly_ndvi_vector_tiles(
                 "res": 9,
                 "district": district_name or centroid.get("district"),
                 "cell": cell_name,
-                "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
-                "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
+                "ndvi": round_or_none(mean_ndvi, 4),
+                "ndvi_std": round_or_none(std_ndvi, 4),
                 "date": str(week_start) if week_start else None,
                 "level": "cell",
                 "pixels": valid_pixels,

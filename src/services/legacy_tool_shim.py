@@ -66,6 +66,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
+from src.services.numbers import round_or_none
 from src.services import ndvi_classes
 
 
@@ -1596,10 +1597,10 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
                     "parcel_name": r["parcel_name"],
                     "layer_id": r["layer_id"],
                     "week_start": str(r["week_start"]) if r["week_start"] else None,
-                    "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                    "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                    "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                    "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                    "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                    "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                    "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                    "max_ndvi": round_or_none(r["max_ndvi"], 4),
                     "valid_pixels": r["valid_pixels"],
                     "area_ha": r["area_ha"],
                 }
@@ -1678,10 +1679,10 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             ndvi_stats.append({
                 "district": r["district"],
                 "week_start": str(r["week_start"]) if r["week_start"] else None,
-                "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                "max_ndvi": round_or_none(r["max_ndvi"], 4),
                 "valid_pixels": r["valid_pixels"],
                 "source": "deafrica_cache",
             })
@@ -1934,10 +1935,10 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "sector_name": r["sector_name"],
                         "district_name": r["district_name"],
                         "week_start": str(r["week_start"]) if r["week_start"] else None,
-                        "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                        "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                        "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                        "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                        "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                        "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                        "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                        "max_ndvi": round_or_none(r["max_ndvi"], 4),
                         "valid_pixels": r["valid_pixels"],
                     }
                     for r in rows
@@ -2776,7 +2777,7 @@ async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "alerts": [
                     {"district": r["district"], "date": str(r["anomaly_date"]) if r["anomaly_date"] else None,
                      "observed_ndvi": r["observed_ndvi"], "expected_ndvi": r["expected_ndvi"],
-                     "z_score": round(r["z_score"], 3) if r["z_score"] else None, "severity": r["severity"]}
+                     "z_score": round_or_none(r["z_score"], 3), "severity": r["severity"]}
                     for r in _rows
                 ],
             }
@@ -3394,10 +3395,10 @@ async def _handle_get_forecast_accuracy(ctx: LegacyToolContext) -> Dict[str, Any
         for r in _obs_rows:
             key = (r["district"], str(r["observation_date"]))
             _obs_lookup[key] = {
-                "temp_mean": float(r["temperature_mean"]) if r["temperature_mean"] else None,
-                "temp_max": float(r["temperature_max"]) if r["temperature_max"] else None,
-                "temp_min": float(r["temperature_min"]) if r["temperature_min"] else None,
-                "precip": float(r["precipitation"]) if r["precipitation"] else None,
+                "temp_mean": round_or_none(r["temperature_mean"]),
+                "temp_max": round_or_none(r["temperature_max"]),
+                "temp_min": round_or_none(r["temperature_min"]),
+                "precip": round_or_none(r["precipitation"]),
             }
 
         _model_errors: Dict[str, list] = {"temp_errors": [], "precip_errors": [], "comparisons": []}
@@ -3556,7 +3557,7 @@ async def _handle_get_emissions_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "emission_type": r["emission_type"],
                 "sector": r["sector"],
                 "sector_label": r["sector_label"],
-                "total_tonnes": round(r["total_tonnes"], 2) if r["total_tonnes"] else None,
+                "total_tonnes": round_or_none(r["total_tonnes"], 2),
                 "grid_cells": r["grid_cells"],
             })
 

@@ -13,6 +13,8 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         in a rendering layer (routes, Sage tool handlers,
                         renderer, React components)
   dup-body          H2  function bodies that are identical after normalisation
+  zero-as-missing   HW  `round(x, n) if x else None` (or float): a real 0 becomes
+                        None; use src.services.numbers.round_or_none
   caplog            HW  a test takes pytest's `caplog` fixture; `src` loggers stop
                         propagating once the app's lifespan has run, so caplog
                         sees nothing and the test passes or fails by test order
@@ -455,6 +457,40 @@ def check_duplicate_bodies() -> list[Violation]:
 # Test and runtime hygiene (HW, "How to work")
 # --------------------------------------------------------------------------- #
 
+def _zero_as_missing(node: ast.IfExp) -> bool:
+    """`round(x, n) if x else None` / `float(x) if x else None` (also round(float(x), n))."""
+    if not (isinstance(node.orelse, ast.Constant) and node.orelse.value is None):
+        return False
+    body = node.body
+    if not (isinstance(body, ast.Call) and isinstance(body.func, ast.Name)
+            and body.func.id in {"round", "float"} and body.args):
+        return False
+    arg = body.args[0]
+    if (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)
+            and arg.func.id == "float" and arg.args):
+        arg = arg.args[0]
+    return ast.dump(arg) == ast.dump(node.test)
+
+
+def check_zero_as_missing() -> list[Violation]:
+    """A number tested for truth before rounding turns a real 0 into None."""
+    out: list[Violation] = []
+    for p in _iter_files(("src",), (".py",)):
+        if p.name.startswith("test_"):
+            continue
+        tree = _parse(p)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.IfExp) and _zero_as_missing(node):
+                out.append(Violation(
+                    "zero-as-missing", _rel(p), node.lineno, ast.unparse(node.test),
+                    f"`{ast.unparse(node)}` turns a real 0 into None (NDVI 0.0, VCI 0 = extreme "
+                    "drought); use src.services.numbers.round_or_none",
+                ))
+    return out
+
+
 def check_caplog_fixture() -> list[Violation]:
     """Tests must not rely on caplog: the app's logging config sets the "src"
     logger to propagate=False, so once any test in the worker runs lifespan,
@@ -576,6 +612,7 @@ def collect() -> list[Violation]:
         + check_render_thresholds_ts()
         + check_duplicate_bodies()
         + check_caplog_fixture()
+        + check_zero_as_missing()
         + check_compose_mem_limits()
         + check_compose_restart_policies()
         + check_agents_md_sync()
