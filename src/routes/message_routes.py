@@ -6872,15 +6872,8 @@ async def process_chat_interaction_task(
                                     audience=tool_args.get("audience"),
                                     compare_level=_ins_compare,
                                 )
-                                if tool_result.get("mode") == "comparison" and tool_result.get("status") == "ok":
-                                    tool_result["instruction"] = (
-                                        "Present the comparison naturally. Highlight which areas stand out "
-                                        "(wettest, driest, best NDVI, worst soil moisture, etc). "
-                                        "Use a short table if >3 areas, otherwise describe in sentences. "
-                                        "Mention the most interesting contrasts — don't list every number for every area. "
-                                        "End with sources in parentheses."
-                                    )
-                                elif tool_result.get("status") == "ok":
+                                # A comparison carries its own presentation instruction.
+                                if tool_result.get("status") == "ok" and tool_result.get("mode") != "comparison":
                                     tool_result["_report_for_brain"] = tool_result.pop("report", "")
                                     _ins_d = tool_result.get("data", {})
                                     _ins_triggers = _ins_d.get("triggers", [])

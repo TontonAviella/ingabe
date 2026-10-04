@@ -1346,15 +1346,8 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             compare_level=compare_level,
         )
 
-        # Comparison mode: light formatting hint for the LLM and we're done.
+        # Comparison mode carries its own presentation instruction; we're done.
         if result.get("mode") == "comparison" and result.get("status") == "ok":
-            result["instruction"] = (
-                "Present the comparison naturally. Highlight which areas stand out "
-                "(wettest, driest, best NDVI, worst soil moisture, etc). "
-                "Use a short table if >3 areas, otherwise describe in sentences. "
-                "Mention the most interesting contrasts — don't list every number for every area. "
-                "End with sources in parentheses."
-            )
             result.pop("geometry", None)
             return result
 
