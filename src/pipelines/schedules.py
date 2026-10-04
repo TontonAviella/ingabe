@@ -88,15 +88,6 @@ nightly_field_ndvi_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-weekly_classification_schedule = ScheduleDefinition(
-    name="weekly_crop_classification",
-    cron_schedule="0 3 * * 0",  # Every Sunday at 3 AM UTC
-    job_name="weekly_crop_classification_job",
-    execution_timezone="UTC",
-    description="Weekly openEO crop classification → DuckDB + S3 cache",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
 weekly_anomaly_schedule = ScheduleDefinition(
     name="weekly_anomaly_scan",
     cron_schedule="0 1 * * 1",  # Every Monday at 1 AM UTC
