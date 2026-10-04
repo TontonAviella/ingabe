@@ -77,3 +77,10 @@ async def test_middleware_sends_back_a_refreshed_cookie(client, workos_on, monke
     r = await client.get("/auth/login", follow_redirects=False)
     client.cookies.delete("wos_session")
     assert any("wos_session=fresh" in v for v in r.headers.get_list("set-cookie"))
+
+
+@pytest.mark.anyio
+async def test_the_app_page_is_revalidated_after_deploys(client):
+    r = await client.get("/project/anything")  # served by the SPA fallback
+    if r.headers.get("content-type", "").startswith("text/html"):
+        assert r.headers["cache-control"] == "no-cache"

@@ -465,6 +465,10 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         # API responses — no cache by default
         if path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        # The SPA's index.html: revalidate every time, so a deploy is picked up
+        # on the next load (without this, browsers kept the previous build).
+        elif response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault("Cache-Control", "no-cache")
 
         return response
 
