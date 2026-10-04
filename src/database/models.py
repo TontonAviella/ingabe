@@ -48,12 +48,13 @@ LAYER_TYPE_POINT_CLOUD = "point_cloud"
 
 
 class User(Base):
-    """Clerk-provisioned user mapping Clerk ID → internal UUID."""
+    """Signed-in user: internal UUID plus the sign-in provider's user id (WorkOS, or legacy Clerk)."""
 
     __tablename__ = "users"
 
     internal_uuid = Column(String(36), primary_key=True)  # UUID5 from clerk_id
-    clerk_id = Column(String(255), unique=True, nullable=False, index=True)
+    clerk_id = Column(String(255), unique=True, nullable=True, index=True)  # legacy Clerk sign-in
+    workos_user_id = Column(Text, unique=True)
     email = Column(String(255))
     created_at = Column(
         TIMESTAMP(timezone=True), server_default=func.current_timestamp()
@@ -68,6 +69,7 @@ class Organization(Base):
     slug = Column(Text, nullable=False, unique=True)
     tier = Column(Text, nullable=False, server_default="partner")
     clerk_org_id = Column(Text, unique=True)
+    workos_org_id = Column(Text, unique=True)
     metadata_json = Column("metadata", JSONB, nullable=False, server_default="{}")
     created_at = Column(
         TIMESTAMP(timezone=True), server_default=func.current_timestamp()
