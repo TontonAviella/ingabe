@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.services import et_normals
 from src.services.data_coverage import point_sample_note
 
 logger = logging.getLogger(__name__)
@@ -1108,8 +1109,12 @@ async def _fetch_area_signals(
     today: date,
     season: str,
     district: Optional[str],
+    et_normals_by_cell: Optional[dict[str, dict[int, float]]] = None,
 ) -> dict[str, Any]:
-    """Fetch all signals for a single centroid. Lightweight — no DB, no triggers."""
+    """Fetch all signals for a single centroid. Lightweight — no DB, no triggers.
+
+    ET normals are looked up by the caller for every area in one query.
+    """
     signals: dict[str, Any] = {}
 
     async def _chirps():
@@ -1154,7 +1159,7 @@ async def _fetch_area_signals(
     async def _wapor_et():
         try:
             from src.services.wapor_service import query_et
-            return await asyncio.to_thread(query_et, lat, lon, planting_date, today, include_normals=True)
+            return await asyncio.to_thread(query_et, lat, lon, planting_date, today)
         except Exception:
             return None
 
@@ -1217,6 +1222,7 @@ async def _fetch_area_signals(
             signals["max_dry_spell_days"] = max_dry
 
     # ET anomaly
+    et_normals.attach(et_result, (et_normals_by_cell or {}).get(et_normals.cell_for(lat, lon), {}))
     et_anomaly = _et_anomaly_pct(et_result)
     if et_anomaly is not None:
         signals["et_anomaly_pct"] = round(et_anomaly, 1)
@@ -1401,6 +1407,16 @@ async def _compare_areas(
     except Exception:
         logger.debug("NDVI cache lookup for comparison failed", exc_info=True)
 
+    # ET normals for every area in one query (the areas then fetch in parallel)
+    try:
+        normals_by_cell = await et_normals.normals_by_cell(
+            conn, [et_normals.cell_for(float(r["lat"]), float(r["lon"])) for r in rows],
+            et_normals.dekads_between(planting_date, today),
+        )
+    except Exception:
+        logger.warning("ET normals lookup failed; ET anomaly unavailable for this comparison", exc_info=True)
+        normals_by_cell = {}
+
     # Fetch all signals in parallel for each area
     async def _fetch_one(row: asyncpg.Record) -> dict[str, Any]:
         lat = float(row["lat"])
@@ -1409,6 +1425,7 @@ async def _compare_areas(
         d_name = row["district_name"] if "district_name" in row.keys() else district
         signals = await _fetch_area_signals(
             lat, lon, planting_date, today, season, district=d_name,
+            et_normals_by_cell=normals_by_cell,
         )
         # Merge cached NDVI
         ndvi = ndvi_by_area.get(name.lower())
@@ -1588,7 +1605,7 @@ async def compute_insurance_intelligence(
         try:
             from src.services.wapor_service import query_et
             return await asyncio.to_thread(
-                query_et, lat, lon, planting_date, today, include_normals=True,
+                query_et, lat, lon, planting_date, today,
             )
         except Exception:
             logger.debug("wapor ET fetch failed", exc_info=True)
@@ -1643,6 +1660,13 @@ async def compute_insurance_intelligence(
                      forecast_result.get("models_used", []))
 
     # DB-dependent fetches: sequential on the shared connection
+    if et_result and et_result.get("status") == "success":
+        try:
+            cell = et_normals.cell_for(lat, lon)
+            normals = await et_normals.normals_by_cell(conn, [cell], et_normals.dekads_between(planting_date, today))
+            et_normals.attach(et_result, normals.get(cell, {}))
+        except Exception:
+            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
     try:
         accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
     except Exception:
