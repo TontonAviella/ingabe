@@ -2732,7 +2732,7 @@ async def _handle_get_crop_classifications(ctx: LegacyToolContext) -> Dict[str, 
             "status": "success",
             "source": "postgres_cache",
             "classifications": [],
-            "message": "No classification data yet — Dagster weekly schedule populates this cache",
+            "message": "No crop classification is produced: no labelled crop classifier runs yet, so there are no crop classes to report. To identify the crop on one field, use identify_parcel_crop.",
         }
     except Exception as e:
         logger.exception("get_crop_classifications tool failed")
