@@ -188,3 +188,79 @@ def user_organizations(user_id: str) -> list[dict[str, Any]]:
             "role": getattr(role, "slug", role) if role is not None else None,
         })
     return out
+
+
+# ── Organization members (free WorkOS user management) ────────────────────
+
+ASSIGNABLE_ROLES = ("admin", "member")  # WorkOS default roles
+
+
+def _membership_dict(m: Any) -> dict[str, Any]:
+    user = getattr(m, "user", None)
+    user = _user_dict(user) if user is not None else {}
+    role = getattr(m, "role", None)
+    name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+    return {
+        "id": m.id, "user_id": m.user_id, "email": user.get("email"), "name": name,
+        "picture": user.get("profile_picture_url"), "role": getattr(role, "slug", role),
+        "status": _value(getattr(m, "status", None)),
+    }
+
+
+def organization_members(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().organization_membership.list_organization_memberships(
+        organization_id=organization_id, limit=100)
+    members = [_membership_dict(m) for m in getattr(page, "data", page)]
+    for m in members:  # the list may not include the user object
+        if not m["email"]:
+            user = _user_dict(_client().user_management.get_user(m["user_id"]))
+            m["email"] = user.get("email")
+            m["name"] = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+            m["picture"] = user.get("profile_picture_url")
+    return members
+
+
+def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().user_management.list_invitations(organization_id=organization_id, limit=100)
+    return [
+        {"id": i.id, "email": i.email, "role": i.role_slug, "expires_at": str(i.expires_at)}
+        for i in getattr(page, "data", page) if _value(i.state) == "pending"
+    ]
+
+
+def invite(organization_id: str, email: str, role: str, inviter_user_id: str) -> dict[str, Any]:
+    """Email an invitation to join the organization (WorkOS sends the email)."""
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    inv = _client().user_management.send_invitation(
+        email=email, organization_id=organization_id, role_slug=role, inviter_user_id=inviter_user_id)
+    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at)}
+
+
+def _membership_in(membership_id: str, organization_id: str) -> Any:
+    m = _client().organization_membership.get_organization_membership(membership_id)
+    if m.organization_id != organization_id:
+        raise PermissionError("membership belongs to another organization")
+    return m
+
+
+def set_member_role(membership_id: str, organization_id: str, role: str) -> dict[str, Any]:
+    from workos.organization_membership import RoleSingle  # lazy: WorkOS SDK
+
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    _membership_in(membership_id, organization_id)
+    updated = _client().organization_membership.update_organization_membership(
+        membership_id, role=RoleSingle(role_slug=role))
+    return _membership_dict(updated)
+
+
+def remove_member(membership_id: str, organization_id: str) -> None:
+    _membership_in(membership_id, organization_id)
+    _client().organization_membership.delete_organization_membership(membership_id)
+
+
+def revoke_invitation(invitation_id: str, organization_id: str) -> None:
+    if not any(i["id"] == invitation_id for i in pending_invitations(organization_id)):
+        raise PermissionError("invitation belongs to another organization or is no longer pending")
+    _client().user_management.revoke_invitation(invitation_id)
