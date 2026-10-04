@@ -111,3 +111,15 @@ def test_a_crash_marks_the_turn_error_and_closes_open_steps(recorded) -> None:
 def test_long_outputs_are_clipped() -> None:
     clipped = fr._clip("a" * 10_000, 100)
     assert clipped.startswith("a" * 100) and clipped.endswith("[+9900 chars]")
+
+
+def test_summarize_tool_result_keeps_status_and_keys_not_values() -> None:
+    summary = fr.summarize_tool_result(
+        {"status": "success", "layer_id": "Lsecret", "pmtiles_key": "pmtiles/private.pmtiles"}
+    )
+    assert summary["tool_status"] == "success"
+    assert summary["tool_success"] is True
+    assert summary["tool_has_error"] is False
+    assert summary["result_keys_csv"] == "layer_id,pmtiles_key,status"
+    assert "Lsecret" not in str(summary)
+    assert fr.summarize_tool_result('{"error": "boom"}')["tool_has_error"] is True

@@ -69,11 +69,6 @@ from src.services.life_harness import (
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
-from src.services.sage_tool_observability import (
-    build_sage_tool_context,
-    capture_sage_routing_decision,
-    capture_sage_tool_result_message,
-)
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
@@ -2469,7 +2464,6 @@ async def process_chat_interaction_task(
     partner_id = session.get_org_id()
 
     _lock_key = f"chat_lock:{conversation.id}"
-    _tool_observability_contexts: dict[str, dict] = {}
     # tool_call_id -> (tool name, arguments), for result checks.
     _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
@@ -2514,14 +2508,6 @@ async def process_chat_interaction_task(
             turn_trace.tool_finished(
                 str(message_dict.get("tool_call_id") or ""), message_dict.get("content")
             )
-            try:
-                capture_sage_tool_result_message(
-                    message=message_dict,
-                    context_by_tool_call_id=_tool_observability_contexts,
-                    session=session,
-                )
-            except Exception:
-                logger.debug("Sage tool observability capture failed", exc_info=True)
 
     with tracer.start_as_current_span("app.process_chat_interaction") as span, sage_turn_trace(
         session_id=str(conversation.id),
@@ -2779,21 +2765,6 @@ async def process_chat_interaction_task(
             _TOOLS_TOKEN_ESTIMATE = (
                 len(json.dumps(tools_payload)) // 3
                 if tools_payload else 0
-            )
-            capture_sage_routing_decision(
-                session=session,
-                map_id=map_id,
-                project_id=None,
-                conversation_id=conversation.id,
-                routing_reason=_routing.reason,
-                selected_categories=_routing.selected_categories,
-                is_small_talk=_routing.is_small_talk,
-                model=str(chat_completions_args.get("model") or ""),
-                tool_count=len(tools_payload),
-                user_message_length=len(_last_user_text),
-                tool_payload_bytes=len(json.dumps(tools_payload)) if tools_payload else 0,
-                client_turn_id=client_turn_id,
-                message_id=user_message_id,
             )
 
             def _estimate_tokens_for_messages(msgs: list) -> int:
@@ -3235,29 +3206,8 @@ async def process_chat_interaction_task(
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
                     tool_args = _clean_tool_args(tool_call.function.arguments or "{}")
-                    tool_registry = (
-                        "pydantic"
-                        if function_name in pydantic_tool_calls
-                        else (
-                            "geoprocessing"
-                            if function_name in geoprocessing_function_names
-                            else "hardcoded"
-                        )
-                    )
                     turn_trace.tool_started(tool_call.id, function_name, tool_args)
                     _tool_calls_by_id[tool_call.id] = (function_name, tool_args)
-                    _tool_observability_contexts[tool_call.id] = build_sage_tool_context(
-                        tool_name=function_name,
-                        tool_args=tool_args,
-                        routing_reason=_routing.reason,
-                        selected_categories=_routing.selected_categories,
-                        tool_registry=tool_registry,
-                        map_id=map_id,
-                        project_id=current_project_id,
-                        conversation_id=conversation.id,
-                        client_turn_id=client_turn_id,
-                        message_id=user_message_id,
-                    )
                     tool_result = {}
 
                     _recent_tool_signatures.append(
