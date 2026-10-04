@@ -244,6 +244,7 @@ export default function ProjectView() {
             id: `${gl.source_id}-fill`,
             type: 'fill',
             source: gl.source_id,
+            metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
             paint: { 'fill-color': fillColorExpr, 'fill-opacity': fillOpacity },
           });
           map.addLayer({
@@ -702,6 +703,7 @@ export default function ProjectView() {
                   id: `${gl.source_id}-extrusion`,
                   type: 'fill-extrusion',
                   source: gl.source_id,
+                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
                   paint: {
                     'fill-extrusion-color': fillColorExpr,
                     'fill-extrusion-opacity': Math.min(fillOpacity + 0.08, 0.9),
@@ -714,6 +716,7 @@ export default function ProjectView() {
                   id: `${gl.source_id}-fill`,
                   type: 'fill',
                   source: gl.source_id,
+                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
                   paint: {
                     'fill-color': fillColorExpr,
                     'fill-opacity': fillOpacity,

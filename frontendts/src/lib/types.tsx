@@ -97,6 +97,8 @@ export interface GeoJsonLayerStyle {
   extrude_3d?: boolean;
   extrusion_property?: string;
   extrusion_scale?: number;
+  // Shown by MapLegends (backend: src/services/h3_risk_classes.legend()).
+  legend?: { title: string; items: Array<{ label: string; range?: string; color: string }> };
 }
 
 export interface GeoJsonLayerUpdate {
