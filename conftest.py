@@ -49,6 +49,17 @@ import asyncpg
 from src.wsgi import app
 from src.database.pool import _build_postgres_url
 
+# The OpenAI SDK closes a garbage-collected AsyncOpenAI client by scheduling
+# aclose() on whatever event loop is running at that moment. Tests run each
+# coroutine on its own loop, so a client leaked by one test was closed on a later
+# test's loop; closing its TLS socket touched the first, already-closed loop and
+# raised "Event loop is closed" inside an unrelated fixture (seen as random
+# "ERROR at setup" of test_mbgl_idaho / test_view_map_with_bounds in CI).
+# In tests a leaked client is simply dropped; production runs on one loop.
+import openai._base_client as _openai_base_client
+
+_openai_base_client.AsyncHttpxClientWrapper.__del__ = lambda self: None
+
 
 @pytest.fixture
 def run_alembic_operation():
