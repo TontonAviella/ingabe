@@ -5,7 +5,7 @@
     "lazy-import": 137,
     "private-import": 60,
     "render-threshold": 26,
-    "web-import": 50
+    "web-import": 49
   },
   "violations": {
     "dup-body|src/routes/cog_tile_router.py|_ensure_rio_tiler": 1,
@@ -270,7 +270,6 @@
     "web-import|src/services/legacy_tool_shim.py|_make_qgis_handler._handler->src.routes": 1,
     "web-import|src/services/map_service.py|<module>->fastapi": 2,
     "web-import|src/services/map_service.py|<module>->src.dependencies": 1,
-    "web-import|src/services/rwanda_lakehouse.py|<module>->fastapi": 1,
-    "web-import|src/services/sage_tool_observability.py|<module>->src.dependencies": 1
+    "web-import|src/services/rwanda_lakehouse.py|<module>->fastapi": 1
   }
 }
