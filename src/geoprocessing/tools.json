@@ -1417,7 +1417,7 @@
               "agronomist",
               "scientist"
             ],
-            "description": "Who is reading this report: farmer (plain words, rain compared with usual), insurance (trigger table with evidence), agronomist (indices and recommendations), scientist (all numbers and methods). Set it ONLY when the user asks for a particular view (e.g. 'explain it for a farmer'); otherwise omit it and the user's saved role is used"
+            "description": "Who is reading this report: farmer (plain words, rain compared with usual), insurance (trigger table with evidence), agronomist (indices and recommendations), scientist (all numbers and methods). Set it ONLY when the user asks for a particular view (for example: explain it for a farmer); otherwise omit it and the saved role of the user is used"
           },
           "compare_level": {
             "type": "string",
