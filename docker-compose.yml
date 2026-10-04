@@ -520,6 +520,10 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
     container_name: mundi-postgres-exporter
     mem_limit: 64m
+    # Custom metrics (pipeline cache freshness); see the file's header.
+    command: ["--extend.query-path=/etc/postgres_exporter/queries.yaml"]
+    volumes:
+      - ./monitoring/postgres_exporter_queries.yaml:/etc/postgres_exporter/queries.yaml:ro
     environment:
       - DATA_SOURCE_URI=${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-mundidb}?sslmode=disable
       - DATA_SOURCE_USER=${POSTGRES_USER:-mundiuser}

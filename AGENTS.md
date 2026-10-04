@@ -115,7 +115,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
 - **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through OpenRouter; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
 - **Life-Harness runtime guard** (`src/services/life_harness.py` + `external/life-harness` submodule): production adaptation of the pinned upstream Life-Harness benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 task-relevant agriculture procedure retrieval around the frozen brain model.
-- **Monitoring**: Prometheus (`:9090`) and Grafana (`:3000`, "Mundi.ai Overview") scrape the app, `postgres-exporter` (`pg_up`) and `node-exporter` (Docker-VM memory and swap); alert rules live in `monitoring/alerts.yml` and are tested by `promtool test rules monitoring/alerts_test.yml`.
+- **Monitoring**: Prometheus (`:9090`) and Grafana (`:3000`, "Mundi.ai Overview") scrape the app, `postgres-exporter` (`pg_up`, and `pipeline_cache_age_seconds` for the Dagster-filled caches Sage reads) and `node-exporter` (Docker-VM memory and swap); alert rules live in `monitoring/alerts.yml` and are tested by `promtool test rules monitoring/alerts_test.yml`.
 - **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)

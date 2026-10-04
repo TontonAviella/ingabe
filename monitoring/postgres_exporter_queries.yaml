@@ -1,0 +1,33 @@
+# Custom postgres-exporter metrics (mounted via --extend.query-path).
+#
+# pipeline_cache_age_seconds: time since each Dagster-filled cache that Sage
+# reads was last written. Added 2026-10-04: the Dagster daemon stopped on
+# 2026-08-12 and nothing noticed for 7 weeks. An empty cache reports its age
+# since the epoch, so it alerts too.
+pipeline_cache:
+  query: |
+    SELECT 'agri_indices_cache' AS cache, 'daily' AS cadence,
+           EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at)::timestamptz, 'epoch')) AS age_seconds
+      FROM agri_indices_cache
+    UNION ALL
+    SELECT 'weather_daily_cache', 'daily',
+           EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at)::timestamptz, 'epoch'))
+      FROM weather_daily_cache
+    UNION ALL
+    SELECT 'drought_cache', 'weekly',
+           EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at)::timestamptz, 'epoch'))
+      FROM drought_cache
+    UNION ALL
+    SELECT 'ndvi_cell_cache', 'weekly',
+           EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at)::timestamptz, 'epoch'))
+      FROM ndvi_cell_cache
+  metrics:
+    - cache:
+        usage: LABEL
+        description: Cache table name
+    - cadence:
+        usage: LABEL
+        description: How often the Dagster schedule should refresh it (daily or weekly)
+    - age_seconds:
+        usage: GAUGE
+        description: Seconds since the cache was last written (since the epoch when empty)
