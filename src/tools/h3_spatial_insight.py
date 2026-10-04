@@ -30,7 +30,11 @@ class CreateH3SpatialInsightLayerArgs(BaseModel):
     )
     h3_resolution: int = Field(
         ...,
-        description="H3 resolution. Use 8 for town/city overview, 9 for local neighborhood/farm/drone overview, 10+ only for small areas.",
+        description=(
+            "Requested H3 resolution (8 town, 9 neighbourhood/farm, 10 small area). The tool uses the size "
+            "the evidence supports: 7 (~5 km2) when only area-wide risk factors are given, 8-10 when "
+            "buildings, roads, farms or assets are counted per hexagon."
+        ),
     )
     domain: str = Field(
         ...,

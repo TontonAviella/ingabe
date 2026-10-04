@@ -84,3 +84,17 @@ def test_create_h3_spatial_insight_does_not_invent_spatial_variation_from_area_f
     }
     assert len(scores) == 1
     assert result["summary"]["confidence"] == "low"
+
+
+def test_area_wide_factors_get_large_hexagons_whatever_was_requested():
+    from src.services.h3_spatial_insight import AREA_WIDE_RESOLUTION, effective_resolution
+    resolution, reason = effective_resolution(10, has_exposure=False)
+    assert resolution == AREA_WIDE_RESOLUTION
+    assert "one value for the whole area" in reason
+
+
+def test_counted_exposure_keeps_building_scale_hexagons():
+    from src.services.h3_spatial_insight import effective_resolution
+    assert effective_resolution(9, has_exposure=True)[0] == 9
+    assert effective_resolution(12, has_exposure=True)[0] == 10
+    assert effective_resolution(6, has_exposure=True)[0] == 8
