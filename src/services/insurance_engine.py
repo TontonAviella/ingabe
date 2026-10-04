@@ -653,6 +653,36 @@ def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
     raise ValueError("no full-season rainfall_cumulative trigger defined")
 
 
+def _project_to_harvest(
+    forecast_precip_days: list[dict],
+    days_remaining: int,
+) -> tuple[float, float, float, str]:
+    """Rainfall (mean, p10, p90, method) from today to harvest."""
+    forecast_days_available = len(forecast_precip_days)
+    forecast_total_mean = sum(d["mean"] for d in forecast_precip_days)
+    forecast_total_p10 = sum(d["p10"] for d in forecast_precip_days)
+    forecast_total_p90 = sum(d["p90"] for d in forecast_precip_days)
+
+    # Project to harvest: scale forecast if it doesn't cover remaining days
+    if forecast_days_available < days_remaining:
+        daily_avg_mean = forecast_total_mean / forecast_days_available
+        daily_avg_p10 = forecast_total_p10 / forecast_days_available
+        daily_avg_p90 = forecast_total_p90 / forecast_days_available
+        return (
+            daily_avg_mean * days_remaining,
+            daily_avg_p10 * days_remaining,
+            daily_avg_p90 * days_remaining,
+            f"{forecast_days_available}-day forecast extrapolated to {days_remaining} days",
+        )
+    # Forecast covers remaining season — sum only needed days
+    return (
+        sum(d["mean"] for d in forecast_precip_days[:days_remaining]),
+        sum(d["p10"] for d in forecast_precip_days[:days_remaining]),
+        sum(d["p90"] for d in forecast_precip_days[:days_remaining]),
+        f"{days_remaining}-day forecast (full coverage)",
+    )
+
+
 def _compute_forecast_outlook(
     forecast_data: Optional[dict],
     season_rainfall_so_far: float,
@@ -697,25 +727,9 @@ def _compute_forecast_outlook(
         return None
 
     forecast_days_available = len(forecast_precip_days)
-    forecast_total_mean = sum(d["mean"] for d in forecast_precip_days)
-    forecast_total_p10 = sum(d["p10"] for d in forecast_precip_days)
-    forecast_total_p90 = sum(d["p90"] for d in forecast_precip_days)
-
-    # Project to harvest: scale forecast if it doesn't cover remaining days
-    if forecast_days_available < days_remaining:
-        daily_avg_mean = forecast_total_mean / forecast_days_available
-        daily_avg_p10 = forecast_total_p10 / forecast_days_available
-        daily_avg_p90 = forecast_total_p90 / forecast_days_available
-        projected_mean = daily_avg_mean * days_remaining
-        projected_p10 = daily_avg_p10 * days_remaining
-        projected_p90 = daily_avg_p90 * days_remaining
-        projection_method = f"{forecast_days_available}-day forecast extrapolated to {days_remaining} days"
-    else:
-        # Forecast covers remaining season — sum only needed days
-        projected_mean = sum(d["mean"] for d in forecast_precip_days[:days_remaining])
-        projected_p10 = sum(d["p10"] for d in forecast_precip_days[:days_remaining])
-        projected_p90 = sum(d["p90"] for d in forecast_precip_days[:days_remaining])
-        projection_method = f"{days_remaining}-day forecast (full coverage)"
+    projected_mean, projected_p10, projected_p90, projection_method = _project_to_harvest(
+        forecast_precip_days, days_remaining,
+    )
 
     # Projected season totals at harvest
     projected_season_mean = season_rainfall_so_far + projected_mean
