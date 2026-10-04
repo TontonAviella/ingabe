@@ -66,6 +66,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
+from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
 
@@ -1292,7 +1293,7 @@ def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
 
     briefing_parts = [
         f"Location: {loc}, Season {season}, currently in {phase} (day {dap}). Overall status: {status_} (confidence {confidence}/100).",
-        f"Rainfall this season: {rain}mm so far. {spi_str}.",
+        f"{season_rainfall_sentence(data.get('season_rainfall_mm'))} {spi_str}.",
     ]
     if ndvi_str:
         briefing_parts.append(ndvi_str + ".")
@@ -2731,7 +2732,7 @@ async def _handle_get_crop_classifications(ctx: LegacyToolContext) -> Dict[str, 
             "status": "success",
             "source": "postgres_cache",
             "classifications": [],
-            "message": "No classification data yet — Dagster weekly schedule populates this cache",
+            "message": "No crop classification is produced: no labelled crop classifier runs yet, so there are no crop classes to report. To identify the crop on one field, use identify_parcel_crop.",
         }
     except Exception as e:
         logger.exception("get_crop_classifications tool failed")

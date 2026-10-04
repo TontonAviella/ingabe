@@ -6070,7 +6070,7 @@ async def process_chat_interaction_task(
                                         "status": "success",
                                         "source": "postgres_cache",
                                         "classifications": [],
-                                        "message": "No classification data yet — Dagster weekly schedule populates this cache",
+                                        "message": "No crop classification is produced: no labelled crop classifier runs yet, so there are no crop classes to report. To identify the crop on one field, use identify_parcel_crop.",
                                     }
                             except Exception as e:
                                 logger.exception("get_crop_classifications tool failed")
@@ -6859,7 +6859,7 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_insurance_intelligence":
                             try:
-                                from src.services.insurance_engine import compute_insurance_intelligence
+                                from src.services.insurance_engine import compute_insurance_intelligence, season_rainfall_sentence
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
@@ -6969,7 +6969,7 @@ async def process_chat_interaction_task(
                                     # Assemble briefing
                                     _briefing_parts = [
                                         f"Location: {_loc}, Season {_season}, currently in {_phase} (day {_dap}). Overall status: {_status} (confidence {_confidence}/100).",
-                                        f"Rainfall this season: {_rain}mm so far. {_spi_str}.",
+                                        f"{season_rainfall_sentence(_ins_d.get('season_rainfall_mm'))} {_spi_str}.",
                                     ]
                                     if _ndvi_str:
                                         _briefing_parts.append(_ndvi_str + ".")

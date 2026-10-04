@@ -52,6 +52,10 @@ message. H1–H3 below are the hard, CI-enforced form of these.
 - **Fail fast.** Validate at the edges (tool arguments, uploads, external API
   responses). Never swallow an exception; a `except Exception: pass` or a
   silent default on a data fetch is a bug (see Lessons log).
+- **Missing is not zero, and zero is not missing.** Only None means "no
+  data". A total over days, pixels or areas with gaps is unknown below its
+  coverage threshold, never the sum of what arrived; a real 0 is a value.
+  Both mistakes are in the Lessons log (2026-10-04).
 - **Optimise for deletion.** Prefer code that is easy to remove over code
   that is easy to extend.
 - **Boring tech.** Reuse the stack already in the repo before adding a
@@ -161,6 +165,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** Insurance season rainfall summed only the CHIRPS days it downloaded: with the final product weeks behind,
+  every Season A report read 0 mm and fired the rainfall trigger, and late in a season the unfetched early weeks undercounted.
+  Rule: "Missing is not zero" (Design principles). Gate: review only (needs the data's coverage); tests in `test_insurance_engine.py`.
 - **2026-10-04** 63 places formatted numbers with `round(x, n) if x else None`, so a real 0 became "missing":
   NDVI 0.0, z-score 0 and VCI 0 (the most extreme drought) vanished from results. Rule: only None is missing
   (`src.services.numbers.round_or_none`). Gate: `zero-as-missing`.
