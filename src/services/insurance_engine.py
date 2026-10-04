@@ -22,6 +22,7 @@ from typing import Any, Optional
 import asyncpg
 
 from src.services.data_coverage import point_sample_note
+from src.services.numbers import round_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class PhaseRainfall:
     daily_avg_mm: float
     date_from: str
     date_to: str
+    # False when under 30% of the phase's elapsed days have data: then
+    # cumulative_mm covers only those days and the phase total is unknown.
+    complete: bool = True
 
 @dataclass
 class TriggerResult:
@@ -70,12 +74,15 @@ class TriggerResult:
     margin_pct: float
     weight: float
     description: str
+    # Set when `threshold` is a full-season threshold prorated to date.
+    full_season_threshold: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
             "signal": self.signal,
             "current_value": round(self.current_value, 2),
             "threshold": self.threshold,
+            "full_season_threshold": self.full_season_threshold,
             "direction": self.direction,
             "triggered": self.triggered,
             "margin_pct": round(self.margin_pct, 1),
@@ -93,7 +100,7 @@ class InsuranceReport:
     days_after_planting: int
 
     phase_rainfall: list[PhaseRainfall] = field(default_factory=list)
-    season_rainfall_mm: float = 0.0
+    season_rainfall_mm: Optional[float] = None  # None until satellite rainfall covers the season
     spi: Optional[float] = None  # season-to-date SPI; None when too early or no data
     spi_1: Optional[float] = None
     spi_3: Optional[float] = None
@@ -135,7 +142,7 @@ class InsuranceReport:
             "season": self.season,
             "growth_phase": self.growth_phase,
             "days_after_planting": self.days_after_planting,
-            "season_rainfall_mm": round(self.season_rainfall_mm, 1),
+            "season_rainfall_mm": round_or_none(self.season_rainfall_mm, 1),
             "spi": round(self.spi, 2) if self.spi is not None else None,
             "spi_1": round(self.spi_1, 2) if self.spi_1 is not None else None,
             "spi_3": round(self.spi_3, 2) if self.spi_3 is not None else None,
@@ -233,6 +240,7 @@ def _compute_phase_rainfall(
             d += timedelta(days=1)
 
         min_coverage = 0.3
+        complete = total_days == 0 or (day_count / total_days) >= min_coverage
         if day_count > 0 and total_days > 0 and (day_count / total_days) >= min_coverage:
             daily_avg = total_mm / day_count
             estimated_cumulative = daily_avg * total_days
@@ -247,9 +255,65 @@ def _compute_phase_rainfall(
             daily_avg_mm=daily_avg,
             date_from=phase_start.strftime("%Y-%m-%d"),
             date_to=phase_end.strftime("%Y-%m-%d"),
+            complete=complete,
         ))
 
     return results
+
+
+def _season_rainfall(phases: list[PhaseRainfall]) -> Optional[float]:
+    """Rainfall since planting, or None when any elapsed phase lacks the data.
+
+    Missing satellite days are unknown, not dry: summing only the days that
+    were downloaded made a season with no data yet read as 0 mm and fired the
+    rainfall trigger.
+    """
+    if not phases or not all(p.complete for p in phases):
+        return None
+    return sum(p.cumulative_mm for p in phases)
+
+
+_CHIRPS_FETCH_BUDGET = 90  # daily files per report (~2-3 MB each)
+_CHIRPS_RECENT_DAYS = 30  # always fetched in full: SPI-1 and the current phase
+
+
+def _chirps_dates_to_fetch(planting_date: date, today: date) -> list[str]:
+    """Days to download for a report: the season since planting and the 90-day
+    SPI-3 window. The last 30 days in full, the rest sampled evenly: seasons
+    up to 200 days keep over a third of every phase's days (a phase counts
+    from 30%) and over half of the SPI-3 window's days (SPI needs 40%)."""
+    start = min(planting_date, today - timedelta(days=89))
+    days = [start + timedelta(days=i) for i in range((today - start).days + 1)]
+    recent, earlier = days[-_CHIRPS_RECENT_DAYS:], days[:-_CHIRPS_RECENT_DAYS]
+    budget = _CHIRPS_FETCH_BUDGET - len(recent)
+    if len(earlier) > budget:
+        step = len(earlier) / budget
+        earlier = [earlier[int(i * step)] for i in range(budget)]
+    return [d.strftime("%Y-%m-%d") for d in earlier + recent]
+
+
+async def _fetch_season_chirps(
+    lat: float, lon: float, planting_date: date, today: date,
+) -> tuple[dict[str, Optional[float]], set[str]]:
+    """Daily CHIRPS for a report's dates, and the days read from the preliminary product."""
+    from src.services.forecast_fusion import fetch_chirps_daily  # lazy: rasterio/GDAL stack
+
+    return await asyncio.to_thread(
+        fetch_chirps_daily, lat, lon, _chirps_dates_to_fetch(planting_date, today),
+    )
+
+
+def season_rainfall_sentence(mm: Optional[float]) -> str:
+    """One line for rainfall since planting; says plainly when it is not known yet."""
+    if mm is None:
+        return "Rain this season: satellite rainfall estimates do not cover the season yet."
+    return f"Rain this season: {mm:.0f}mm"
+
+
+def _chirps_source_label(prelim_days: set[str]) -> str:
+    if not prelim_days:
+        return "CHIRPS v2.0"
+    return f"CHIRPS v2.0 (preliminary product for the {len(prelim_days)} most recent days)"
 
 # ---------------------------------------------------------------------------
 # 2. SPI-1 and SPI-3 from monthly CHIRPS windows
@@ -264,21 +328,24 @@ def _get_monthly_normals(month: int, district: Optional[str] = None) -> dict[str
             return district_months[month]
     return _NATIONAL_MONTHLY_NORMALS.get(month, {"mean": 60, "std": 25})
 
-def _compute_spi_from_daily(
+@dataclass(frozen=True)
+class WindowRainfall:
+    """Rainfall over a window of days and the normal for those same dates."""
+
+    observed_mm: float  # observed total, scaled up for missing days
+    normal_mm: float  # mean rainfall for those calendar dates
+    normal_std_mm: float
+
+
+def _window_rainfall(
     daily_precip: dict[str, Optional[float]],
     ref_date: date,
     window_days: int,
     district: Optional[str] = None,
-) -> Optional[float]:
-    """Compute SPI for a specific window ending at ref_date.
+) -> Optional[WindowRainfall]:
+    """Observed and normal rainfall for the window ending at ref_date.
 
-    Sums observed daily rainfall over the window, then compares against the
-    expected normal for those calendar months.  For SPI-1 (30 days) we use
-    the single month's normals.  For SPI-3 (90 days) we sum the normals
-    for the 3 months covered.  This is a simplified z-score SPI — proper
-    gamma-distribution fitting needs 30+ years of monthly totals which we
-    don't have per-pixel.  The z-score approach is standard for operational
-    approximation when gamma fit isn't available.
+    None when fewer than 40% of the days have data.
     """
     window_start = ref_date - timedelta(days=window_days - 1)
 
@@ -313,10 +380,31 @@ def _compute_spi_from_daily(
         expected_mean += normals["mean"] * fraction
         expected_var += (normals["std"] * fraction) ** 2
 
-    expected_std = expected_var ** 0.5
-    if expected_std < 1.0:
+    return WindowRainfall(observed, expected_mean, expected_var ** 0.5)
+
+
+def _compute_spi_from_daily(
+    daily_precip: dict[str, Optional[float]],
+    ref_date: date,
+    window_days: int,
+    district: Optional[str] = None,
+) -> Optional[float]:
+    """Compute SPI for a specific window ending at ref_date.
+
+    Sums observed daily rainfall over the window, then compares against the
+    expected normal for those calendar months.  For SPI-1 (30 days) we use
+    the single month's normals.  For SPI-3 (90 days) we sum the normals
+    for the 3 months covered.  This is a simplified z-score SPI — proper
+    gamma-distribution fitting needs 30+ years of monthly totals which we
+    don't have per-pixel.  The z-score approach is standard for operational
+    approximation when gamma fit isn't available.
+    """
+    window = _window_rainfall(daily_precip, ref_date, window_days, district)
+    if window is None:
+        return None
+    if window.normal_std_mm < 1.0:
         return 0.0
-    return (observed - expected_mean) / expected_std
+    return (window.observed_mm - window.normal_mm) / window.normal_std_mm
 
 def _compute_spi_pair(
     daily_precip: dict[str, Optional[float]],
@@ -382,6 +470,19 @@ def _season_to_date_spi(
     *full-season* normal: normal rain scored about -4 twenty days into Season
     A, so every crop's `spi < -1` trigger fired early in every season.
     """
+    window = _season_to_date_window(daily_precip, planting_date, today)
+    if window is None:
+        return None
+    ref, window_days = window
+    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
+
+
+def _season_to_date_window(
+    daily_precip: dict[str, Optional[float]],
+    planting_date: date,
+    today: date,
+) -> Optional[tuple[date, int]]:
+    """(last day with data, days since planting) — None when under 10 days."""
     dates_with_data = sorted(k for k, v in daily_precip.items() if v is not None)
     if not dates_with_data:
         return None
@@ -389,7 +490,7 @@ def _season_to_date_spi(
     window_days = (ref - planting_date).days + 1
     if window_days < 10:  # too early in the season for a meaningful anomaly
         return None
-    return _compute_spi_from_daily(daily_precip, ref, window_days, district)
+    return ref, window_days
 
 # ---------------------------------------------------------------------------
 # 3. NDVI anomaly from database cache
@@ -576,6 +677,44 @@ def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
             ):
                 return float(trig["threshold"]), source
     raise ValueError("no full-season rainfall_cumulative trigger defined")
+
+
+def _prorate_season_rainfall_triggers(
+    trigger_defs: list[dict],
+    planting_date: date,
+    today: date,
+    season_days: int,
+    district: Optional[str],
+) -> list[dict]:
+    """Full-season rainfall triggers scaled to the rain normally due by today.
+
+    A full-season minimum (e.g. 100 mm for maize) compared with rain so far
+    fired early in every season, even when rain was above normal. Until the
+    season ends the threshold is scaled by the share of the season's normal
+    rainfall that falls between planting and yesterday (the days the observed
+    total covers). Decided by Roger, 2026-10-04.
+    """
+    elapsed = max(0, min((today - planting_date).days, season_days))
+    if elapsed >= season_days:
+        return trigger_defs
+    season_normal, _ = _climatology_rainfall(planting_date, season_days, district)
+    to_date_normal, _ = _climatology_rainfall(planting_date, elapsed, district)
+    if season_normal <= 0:
+        return trigger_defs
+    share = to_date_normal / season_normal
+    out = []
+    for trig in trigger_defs:
+        if trig["signal"] == "rainfall_cumulative" and trig.get("phase", "full_season") == "full_season":
+            full = float(trig["threshold"])
+            trig = {
+                **trig,
+                "threshold": round(full * share, 1),
+                "full_season_threshold": full,
+                "description": (f"Rain so far below {full * share:.0f}mm: the {full:.0f}mm season minimum "
+                                f"prorated to the {share:.0%} of normal season rain due by now"),
+            }
+        out.append(trig)
+    return out
 
 
 def _climatology_rainfall(
@@ -799,6 +938,7 @@ def _evaluate_triggers(
             margin_pct=margin,
             weight=weight,
             description=trig.get("description", signal),
+            full_season_threshold=trig.get("full_season_threshold"),
         ))
 
     return results
@@ -898,7 +1038,7 @@ def _format_farmer(r: InsuranceReport) -> str:
 
     lines = [
         f"{status_emoji} {r.location_name} is {status_word}.",
-        f"Rain this season: {r.season_rainfall_mm:.0f}mm",
+        season_rainfall_sentence(r.season_rainfall_mm),
         f"({point_sample_note('chirps', r.location_name, r.admin_level)})",
     ]
     if r.max_dry_spell_days > 0:
@@ -968,7 +1108,10 @@ def _format_insurance(r: InsuranceReport) -> str:
     sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
     phase_info = f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})"
 
-    sections = [header, status_line, "", table, ""]
+    prorated = [f"  Note: {t.signal} uses the {t.full_season_threshold:.0f}mm season minimum prorated to "
+                f"{t.threshold:.0f}mm, the share of normal season rain due by now."
+                for t in r.triggers if t.full_season_threshold is not None]
+    sections = [header, status_line, "", table, *prorated, ""]
 
     if r.forecast_outlook:
         fo = r.forecast_outlook
@@ -997,7 +1140,7 @@ def _format_agronomist(r: InsuranceReport) -> str:
         "",
         "RAINFALL:",
         f"  {point_sample_note('chirps', r.location_name, r.admin_level)}",
-        f"  Season cumulative: {r.season_rainfall_mm:.0f}mm",
+        f"  {season_rainfall_sentence(r.season_rainfall_mm)}",
         f"  SPI-1 (30-day): {r.spi_1:.2f}" if r.spi_1 is not None else "  SPI-1: n/a",
         f"  SPI-3 (90-day): {r.spi_3:.2f}" if r.spi_3 is not None else "  SPI-3: n/a",
     ]
@@ -1098,43 +1241,10 @@ async def _fetch_area_signals(
     signals: dict[str, Any] = {}
 
     async def _chirps():
-        """Fetch CHIRPS daily precip for the last 90 days (for SPI-3) plus
-        sparse season samples (for cumulative totals).  Prioritizes the most
-        recent 90 days to support accurate SPI-1 and SPI-3 computation."""
         try:
-            from src.services.forecast_fusion import _fetch_chirps_precip
-            spi_window_start = today - timedelta(days=89)
-            fetch_start = min(planting_date, spi_window_start)
-
-            all_dates: list[str] = []
-            d = fetch_start
-            while d <= today:
-                all_dates.append(d.strftime("%Y-%m-%d"))
-                d += timedelta(days=1)
-            if not all_dates:
-                return {}
-
-            # The last 90 days all get fetched (SPI-1 and SPI-3 need them).
-            # CHIRPS 404s on dates within its ~30-day lag are fast/free.
-            # Earlier season days get sparse sampling for cumulative totals.
-            spi_start_str = spi_window_start.strftime("%Y-%m-%d")
-            recent = [d for d in all_dates if d >= spi_start_str]
-            earlier = [d for d in all_dates if d < spi_start_str]
-
-            max_total = 90
-            recent_budget = min(len(recent), max_total)
-            earlier_budget = max(0, max_total - recent_budget)
-
-            dates_to_fetch = list(recent)
-            if earlier and earlier_budget > 0:
-                step = max(1, len(earlier) / earlier_budget)
-                for i in range(min(earlier_budget, len(earlier))):
-                    dates_to_fetch.append(earlier[int(i * step)])
-
-            dates_to_fetch.sort()
-            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates_to_fetch)
+            return await _fetch_season_chirps(lat, lon, planting_date, today)
         except Exception:
-            return {}
+            return {}, set()
 
     async def _wapor_et():
         try:
@@ -1172,7 +1282,7 @@ async def _fetch_area_signals(
             return_exceptions=True,
         )
 
-    chirps_daily = results[0] if not isinstance(results[0], BaseException) else {}
+    chirps_daily, _ = results[0] if not isinstance(results[0], BaseException) else ({}, set())
     et_result = results[1] if not isinstance(results[1], BaseException) else None
     soil_result = results[2] if not isinstance(results[2], BaseException) else None
     sar_result = results[3] if not isinstance(results[3], BaseException) else None
@@ -1180,8 +1290,11 @@ async def _fetch_area_signals(
 
     # Rainfall + SPI-1 + SPI-3
     if chirps_daily:
-        season_rain = sum(v for v in chirps_daily.values() if v is not None)
-        signals["rainfall_mm"] = round(season_rain, 1)
+        season_rain = _season_rainfall(_compute_phase_rainfall(
+            chirps_daily, planting_date, _get_season_duration(season), today,
+        ))
+        if season_rain is not None:
+            signals["rainfall_mm"] = round(season_rain, 1)
         dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
         spi_ref = date.fromisoformat(dates_with_data[-1]) if dates_with_data else today
         spi_pair = _compute_spi_pair(chirps_daily, spi_ref, district)
@@ -1537,40 +1650,11 @@ async def compute_insurance_intelligence(
         )
 
     async def fetch_chirps():
-        """Fetch CHIRPS daily precip covering the last 90 days (for SPI-3)
-        plus sparse season samples for cumulative totals."""
         try:
-            from src.services.forecast_fusion import _fetch_chirps_precip
-            spi_window_start = today - timedelta(days=89)
-            fetch_start = min(planting_date, spi_window_start)
-
-            all_dates: list[str] = []
-            d = fetch_start
-            while d <= today:
-                all_dates.append(d.strftime("%Y-%m-%d"))
-                d += timedelta(days=1)
-            if not all_dates:
-                return {}
-
-            spi_start_str = spi_window_start.strftime("%Y-%m-%d")
-            recent = [d for d in all_dates if d >= spi_start_str]
-            earlier = [d for d in all_dates if d < spi_start_str]
-
-            max_total = 90
-            recent_budget = min(len(recent), max_total)
-            earlier_budget = max(0, max_total - recent_budget)
-
-            dates_to_fetch = list(recent[:recent_budget])
-            if earlier and earlier_budget > 0:
-                step = max(1, len(earlier) / earlier_budget)
-                for i in range(min(earlier_budget, len(earlier))):
-                    dates_to_fetch.append(earlier[int(i * step)])
-
-            dates_to_fetch.sort()
-            return await asyncio.to_thread(_fetch_chirps_precip, lat, lon, dates_to_fetch)
+            return await _fetch_season_chirps(lat, lon, planting_date, today)
         except Exception:
             logger.debug("chirps fetch failed", exc_info=True)
-            return {}
+            return {}, set()
 
     async def fetch_wapor_et():
         try:
@@ -1617,7 +1701,9 @@ async def compute_insurance_intelligence(
         return_exceptions=True,
     )
     sar_result = network_results[0] if not isinstance(network_results[0], BaseException) else None
-    chirps_daily = network_results[1] if not isinstance(network_results[1], BaseException) else {}
+    chirps_daily, chirps_prelim_days = (
+        network_results[1] if not isinstance(network_results[1], BaseException) else ({}, set())
+    )
     et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
     soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
     forecast_result = network_results[4] if not isinstance(network_results[4], BaseException) else None
@@ -1670,7 +1756,7 @@ async def compute_insurance_intelligence(
 
     # Rainfall + SPI
     phase_rainfall = _compute_phase_rainfall(chirps_daily, planting_date, harvest_dap, today)
-    season_rainfall = sum(p.cumulative_mm for p in phase_rainfall)
+    season_rainfall = _season_rainfall(phase_rainfall)
     spi = _season_to_date_spi(chirps_daily or {}, planting_date, today, district)
     if chirps_daily:
         _dates_with_data = sorted(k for k, v in chirps_daily.items() if v is not None)
@@ -1681,7 +1767,7 @@ async def compute_insurance_intelligence(
     spi_1 = spi_pair["spi_1"]
     spi_3 = spi_pair["spi_3"]
     if chirps_daily:
-        sources.append("CHIRPS v2.0")
+        sources.append(_chirps_source_label(chirps_prelim_days))
 
     # Dry spells
     max_dry_spell = 0
@@ -1746,7 +1832,10 @@ async def compute_insurance_intelligence(
         "soil_moisture": soil_moisture,
     }
 
-    trigger_results = _evaluate_triggers(trigger_defs, current_values)
+    trigger_results = _evaluate_triggers(
+        _prorate_season_rainfall_triggers(trigger_defs, planting_date, today, harvest_dap, district),
+        current_values,
+    )
     triggers_activated = sum(1 for t in trigger_results if t.triggered)
     confidence_score, overall_status = _compute_confidence(
         trigger_results, expected_signals=len(trigger_defs),
@@ -1770,7 +1859,7 @@ async def compute_insurance_intelligence(
 
     # --- FORECAST OUTLOOK ---
     season_threshold_mm, season_threshold_source = _season_rainfall_threshold(trigger_defs)
-    forecast_outlook = _compute_forecast_outlook(
+    forecast_outlook = None if season_rainfall is None else _compute_forecast_outlook(
         forecast_result, season_rainfall, planting_date, harvest_dap,
         today, season, district,
         rainfall_threshold=season_threshold_mm,
