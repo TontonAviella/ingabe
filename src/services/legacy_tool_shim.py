@@ -1323,7 +1323,8 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 
     Args (from ctx.arguments):
       - crop, season, district, sector, cell, village: location/crop scope
-      - audience: 'agronomist' | 'underwriter' | 'farmer'
+      - audience: 'farmer' | 'insurance' | 'agronomist' | 'scientist' (aliases such as
+        'underwriter' accepted; unset -> insurance_engine.DEFAULT_AUDIENCE)
       - compare_level: if set, returns comparison mode across multiple areas
     """
     import json as _json
@@ -1341,7 +1342,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             sector=ctx.arguments.get("sector"),
             cell=ctx.arguments.get("cell"),
             village=ctx.arguments.get("village"),
-            audience=ctx.arguments.get("audience", "agronomist"),
+            audience=ctx.arguments.get("audience"),
             compare_level=compare_level,
         )
 
