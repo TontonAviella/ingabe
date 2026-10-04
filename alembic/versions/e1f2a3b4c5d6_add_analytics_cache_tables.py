@@ -7,7 +7,8 @@ cannot be shared.  Moving these tables to PostgreSQL solves the problem
 because both services already connect to the same database.
 
 This migration also seeds the ``rwanda_district_boundaries`` PostGIS table
-from the geoBoundaries API if it does not already exist.
+from the vendored geoBoundaries ADM2 file if it is not already populated
+(see src/database/geoboundaries.py).
 
 Revision ID: e1f2a3b4c5d6
 Revises: c2d3e4f5a6b7
@@ -208,12 +209,12 @@ def upgrade() -> None:
         ),
     )
 
-    # ── 2. Seed rwanda_district_boundaries from geoBoundaries API ───────
+    # ── 2. Seed rwanda_district_boundaries from geoBoundaries ───────────
     _seed_rwanda_districts()
 
 
 def _seed_rwanda_districts() -> None:
-    """Fetch Rwanda ADM2 boundaries from geoBoundaries and insert them.
+    """Load Rwanda ADM2 boundaries from geoBoundaries and insert them.
 
     Idempotent — skips if the table already has >= 30 rows.
     """
@@ -256,14 +257,7 @@ def _seed_rwanda_districts() -> None:
         )
         return
 
-    # Fetch from geoBoundaries API
-    try:
-        features = rwanda_boundary_features("ADM2")
-    except Exception as exc:
-        logger.warning(
-            "Failed to fetch geoBoundaries data (non-fatal): %s", exc,
-        )
-        return
+    features = rwanda_boundary_features("ADM2")
 
     # Clear any partial data and insert fresh
     conn.execute(sa.text("DELETE FROM rwanda_district_boundaries"))

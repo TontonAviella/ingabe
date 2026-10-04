@@ -1,6 +1,7 @@
 """seed rwanda sector, cell, and village boundaries from geoBoundaries
 
-Seeds three admin boundary tables from the geoBoundaries public API:
+Seeds three admin boundary tables from the vendored geoBoundaries files
+(see src/database/geoboundaries.py):
 - ``rwanda_sector_boundaries`` (~416 ADM3 features)
 - ``rwanda_cell_boundaries`` (~2,148 ADM4 features)
 - ``rwanda_village_boundaries`` (~14,815 ADM5 features — simplified geometry)
@@ -41,7 +42,7 @@ def upgrade() -> None:
 
 
 def _seed_rwanda_sectors() -> None:
-    """Fetch Rwanda ADM3 sector boundaries from geoBoundaries and insert."""
+    """Load Rwanda ADM3 sector boundaries from geoBoundaries and insert."""
     import json
     import logging
 
@@ -74,13 +75,8 @@ def _seed_rwanda_sectors() -> None:
         )
         return
 
-    try:
-        features = rwanda_boundary_features("ADM3")
-    except Exception as exc:
-        logger.warning("Failed to fetch ADM3 boundaries (non-fatal): %s", exc)
-        return
-
-    logger.info("Downloaded %d sector features", len(features))
+    features = rwanda_boundary_features("ADM3")
+    logger.info("Loaded %d sector features", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_sector_boundaries"))
 
@@ -149,7 +145,7 @@ def _seed_rwanda_sectors() -> None:
 
 
 def _seed_rwanda_cells() -> None:
-    """Fetch Rwanda ADM4 cell boundaries from geoBoundaries and insert."""
+    """Load Rwanda ADM4 cell boundaries from geoBoundaries and insert."""
     import json
     import logging
 
@@ -181,13 +177,8 @@ def _seed_rwanda_cells() -> None:
         )
         return
 
-    try:
-        features = rwanda_boundary_features("ADM4")
-    except Exception as exc:
-        logger.warning("Failed to fetch ADM4 boundaries (non-fatal): %s", exc)
-        return
-
-    logger.info("Downloaded %d cell features", len(features))
+    features = rwanda_boundary_features("ADM4")
+    logger.info("Loaded %d cell features", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_cell_boundaries"))
 
@@ -271,7 +262,7 @@ def _seed_rwanda_cells() -> None:
 
 
 def _seed_rwanda_villages() -> None:
-    """Fetch Rwanda ADM5 village boundaries from geoBoundaries and insert.
+    """Load Rwanda ADM5 village boundaries from geoBoundaries and insert.
 
     Uses the simplified GeoJSON (~11 MB) instead of the full version
     (~130 MB) to stay within the 512 MB container memory limit.
@@ -308,15 +299,8 @@ def _seed_rwanda_villages() -> None:
         )
         return
 
-    try:
-        features = rwanda_boundary_features("ADM5")
-    except Exception as exc:
-        logger.warning(
-            "Failed to fetch ADM5 simplified boundaries (non-fatal): %s", exc,
-        )
-        return
-
-    logger.info("Downloaded %d village features (simplified)", len(features))
+    features = rwanda_boundary_features("ADM5")
+    logger.info("Loaded %d village features (simplified)", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_village_boundaries"))
 

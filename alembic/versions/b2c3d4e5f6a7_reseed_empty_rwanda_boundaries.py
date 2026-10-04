@@ -9,8 +9,10 @@ Two issues fixed:
    does an unconditional spatial join to fix district_name for sectors.
 
 2. **Empty tables**: Previous seed migrations swallowed API download failures.
-   If any table is under-populated, this migration re-downloads from
+   If any table is under-populated, this migration re-seeds it from
    geoBoundaries and RAISES on failure so Alembic retries on next deploy.
+   The features now come from vendored files, not the network
+   (see src/database/geoboundaries.py).
 
 Revision ID: b2c3d4e5f6a7
 Revises: a1b2c3d4e5f6
@@ -73,7 +75,7 @@ def _reseed_districts() -> None:
 
     logger.info("rwanda_district_boundaries has %d rows — re-seeding", count or 0)
 
-    # RAISE on failure — migration stays unapplied and retries next deploy
+    # RAISE on failure — migration stays unapplied
     features = rwanda_boundary_features("ADM2")
     if not features:
         raise RuntimeError("geoBoundaries ADM2 returned 0 features")

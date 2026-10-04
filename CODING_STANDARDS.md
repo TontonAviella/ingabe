@@ -149,6 +149,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** Migration b2c3d4e5f6a7 downloaded Rwanda boundaries from geoboundaries.org and raised on
+  failure; the API timed out and CI failed on unchanged code. Rule: migrations read seed data from vendored
+  files, never the network. Gate: `tests/test_rwanda_boundary_seed_offline.py` (network blocked).
 - **2026-10-04** The Dagster daemon (no restart policy, no mem_limit) stopped running schedules on
   2026-08-12 and exited on 2026-10-02; nobody noticed, so Sage answered from 7 weeks of missing weather/NDVI.
   Rule: long-running compose services set `restart:` and `mem_limit`. Gate: alert `DataPipelineStale` (cache age).
