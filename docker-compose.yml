@@ -381,14 +381,31 @@ services:
   dagster-daemon:
     image: "${APP_IMAGE:-mundi-public:local}"
     container_name: mundi-dagster-daemon
-    # Fail runs orphaned by the previous container first: they would otherwise
-    # hold the single run slot (dagster.yaml max_concurrent_runs) forever.
-    command: sh -c "python -m src.pipelines.fail_orphaned_runs && exec dagster-daemon run -w /app/dagster_home/workspace.yaml"
+    # 1. Fail runs orphaned by the previous container: they would otherwise
+    #    hold the single run slot (dagster.yaml max_concurrent_runs) forever.
+    # 2. Start one code server (workspace.yaml) and the daemon. If either
+    #    exits, the container exits and `restart` brings both back, so the
+    #    daemon never runs against an unreachable code server (2026-08-12).
+    command:
+      - bash
+      - -c
+      - |
+        python -m src.pipelines.fail_orphaned_runs || exit 1
+        trap 'kill -TERM $$(jobs -p) 2>/dev/null; wait' TERM INT
+        dagster api grpc -m src.pipelines -a defs -d /app --host 127.0.0.1 --port 4266 &
+        dagster-daemon run -w /app/dagster_home/workspace.yaml &
+        wait -n
+        echo "dagster-daemon: a process exited; stopping the container so it restarts" >&2
+        kill -TERM $$(jobs -p) 2>/dev/null
+        exit 1
     # Runs execute as subprocesses inside this container, so this cap bounds
     # the daemon plus its runs: an over-budget run is killed here instead of
     # pushing the Docker VM into swap and crashing Postgres (2026-10-03).
-    mem_limit: 1536m
-    memswap_limit: 1536m
+    # Measured 2026-10-04: the daemon idles at ~0.95 GB (two gRPC code servers
+    # + daemon) and one run adds up to ~0.8 GB (field NDVI 764 MB, GeoLibre
+    # probe 697 MB), so 1.5 GB OOM-killed every real job.
+    mem_limit: 2048m
+    memswap_limit: 2048m
     restart: unless-stopped
     depends_on:
       postgresdb:
