@@ -25,6 +25,7 @@ Layers:
 - L2-RSM-D: Relative soil moisture (%), dekadal, 100m
 """
 
+import functools
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
@@ -99,12 +100,46 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
         return None
 
 
+# WaPOR v3 dekadal archive starts in 2018. A dekad's normal is the mean of
+# the same dekad in every earlier year, at the same pixel.
+ET_NORMAL_FIRST_YEAR = 2018
+ET_NORMAL_MIN_YEARS = 3
+
+
+@functools.lru_cache(maxsize=8192)
+def _et_point_value(dekad: str, lat_r: float, lon_r: float) -> float | None:
+    """Cached archived AETI (mm/day) for one past dekad at a rounded point."""
+    scale, offset, _, _ = LAYERS["L2-AETI-D"]
+    return _read_point(_raster_url("L2-AETI-D", dekad), lat_r, lon_r, scale, offset)
+
+
+def et_normals(lat: float, lon: float, dekads: list[str]) -> dict[str, float | None]:
+    """Normal AETI (mm/day) per dekad code "YYYY-MM-Dk" at the pixel at (lat, lon).
+
+    The mean of the same month and dekad in ET_NORMAL_FIRST_YEAR..YYYY-1;
+    None with fewer than ET_NORMAL_MIN_YEARS years of data. Seasonal: the
+    dry-season end (September) has far lower ET than April, so one yearly
+    constant read every early Season A as a deficit.
+    """
+    lat_r, lon_r = round(lat, 4), round(lon, 4)  # ~10 m, finer than the 100 m pixel
+    pairs = [(dk, f"{y}{dk[4:]}") for dk in dekads for y in range(ET_NORMAL_FIRST_YEAR, int(dk[:4]))]
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        values = list(pool.map(lambda p: _et_point_value(p[1], lat_r, lon_r), pairs))
+    by_dekad: dict[str, list[float]] = {dk: [] for dk in dekads}
+    for (dk, _), v in zip(pairs, values):
+        if v is not None:
+            by_dekad[dk].append(v)
+    return {dk: (float(np.mean(v)) if len(v) >= ET_NORMAL_MIN_YEARS else None)
+            for dk, v in by_dekad.items()}
+
+
 def query_et(
     lat: float,
     lon: float,
     date_from: date | None = None,
     date_to: date | None = None,
     include_components: bool = False,
+    include_normals: bool = False,
 ) -> dict[str, Any]:
     """Query evapotranspiration time series for a point.
 
@@ -114,6 +149,8 @@ def query_et(
         date_from: Start date (default: 3 dekads ago).
         date_to: End date (default: latest available).
         include_components: If True, also fetch transpiration and NPP.
+        include_normals: If True, each dekad also gets normal_et_mm_per_day
+            (see et_normals).
 
     Returns:
         Dict with status, time series, and metadata.
@@ -170,6 +207,12 @@ def query_et(
             npp_val = results.get("L2-NPP-D", {}).get(dk)
             entry["npp_gC_per_m2_per_day"] = round(npp_val, 4) if npp_val is not None else None
         time_series.append(entry)
+
+    if include_normals:
+        normals = et_normals(lat, lon, dekads)
+        for entry in time_series:
+            normal = normals.get(entry["dekad"])
+            entry["normal_et_mm_per_day"] = round(normal, 2) if normal is not None else None
 
     # Summary stats for ET
     et_values = [e["et_mm_per_day"] for e in time_series if e["et_mm_per_day"] is not None]

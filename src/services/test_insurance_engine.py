@@ -30,7 +30,7 @@ from src.services.insurance_engine import (
     _resolve_location_name,
     _season_to_date_spi,
     _RWANDA_CENTER,
-    _ET_LONG_TERM_MEAN,
+    _et_anomaly_pct,
     _VALID_AUDIENCES,
     compute_insurance_intelligence,
     compute_insurance_accuracy_safe,
@@ -629,8 +629,18 @@ class TestConstants:
         assert isinstance(_RWANDA_CENTER, tuple)
         assert len(_RWANDA_CENTER) == 2
 
-    def test_et_long_term_mean_is_positive(self):
-        assert _ET_LONG_TERM_MEAN > 0
+    def test_et_anomaly_is_against_each_dekads_seasonal_normal(self):
+        result = {"status": "success", "time_series": [
+            {"dekad": "2026-09-D2", "et_mm_per_day": 1.5, "normal_et_mm_per_day": 1.6},
+            {"dekad": "2026-09-D3", "et_mm_per_day": 1.9, "normal_et_mm_per_day": 2.0},
+            {"dekad": "2026-10-D1", "et_mm_per_day": None, "normal_et_mm_per_day": 2.4},  # not published yet
+        ]}
+        # 3.4 observed vs 3.6 normal on the two dekads with both: about -5.6%, not -51% vs a 3.5 constant
+        assert _et_anomaly_pct(result) == pytest.approx((3.4 - 3.6) / 3.6 * 100)
+
+    def test_et_anomaly_unknown_without_normals_or_data(self):
+        assert _et_anomaly_pct(None) is None
+        assert _et_anomaly_pct({"status": "success", "time_series": [{"et_mm_per_day": 3.0, "normal_et_mm_per_day": None}]}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1101,7 +1111,8 @@ class TestComputeInsuranceIntelligence:
         et_result = {
             "status": "success",
             "time_series": [
-                {"et_mm_per_day": 3.0}, {"et_mm_per_day": 4.0}, {"et_mm_per_day": 3.5},
+                {"et_mm_per_day": 3.0, "normal_et_mm_per_day": 3.2},
+                {"et_mm_per_day": 4.0, "normal_et_mm_per_day": 3.9},
             ],
         }
         with self._patches(et=et_result):
