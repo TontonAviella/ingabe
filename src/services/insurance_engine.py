@@ -709,6 +709,43 @@ def _project_to_harvest(
     )
 
 
+def _trigger_probability(
+    projected_season_p10: float,
+    projected_season_mean: float,
+    projected_season_p90: float,
+    rainfall_threshold: float,
+) -> tuple[float, str]:
+    """Probability and risk label that the season total ends below the threshold."""
+    # Estimate trigger probability from p10/p90 spread
+    # If p10 (pessimistic) is below threshold → high probability of trigger
+    # If p90 (optimistic) is below threshold → near-certain trigger
+    # If mean is above threshold → low probability
+    if projected_season_p90 < rainfall_threshold:
+        trigger_probability = 0.90
+        trigger_risk = "VERY HIGH"
+    elif projected_season_mean < rainfall_threshold:
+        # Mean below but p90 above — moderate-high probability
+        spread = projected_season_p90 - projected_season_p10
+        if spread > 0:
+            fraction_below = (rainfall_threshold - projected_season_p10) / spread
+            trigger_probability = max(0.1, min(0.9, 1.0 - fraction_below))
+        else:
+            trigger_probability = 0.70
+        trigger_risk = "HIGH" if trigger_probability > 0.5 else "MODERATE"
+    elif projected_season_p10 < rainfall_threshold:
+        spread = projected_season_p90 - projected_season_p10
+        if spread > 0:
+            fraction_below = (rainfall_threshold - projected_season_p10) / spread
+            trigger_probability = max(0.05, min(0.5, 1.0 - fraction_below))
+        else:
+            trigger_probability = 0.25
+        trigger_risk = "MODERATE" if trigger_probability > 0.25 else "LOW"
+    else:
+        trigger_probability = 0.05
+        trigger_risk = "LOW"
+    return trigger_probability, trigger_risk
+
+
 def _compute_forecast_outlook(
     forecast_data: Optional[dict],
     season_rainfall_so_far: float,
@@ -766,33 +803,9 @@ def _compute_forecast_outlook(
     # (see _season_rainfall_threshold); a separate constant here told users a
     # payout threshold the engine never applies.
 
-    # Estimate trigger probability from p10/p90 spread
-    # If p10 (pessimistic) is below threshold → high probability of trigger
-    # If p90 (optimistic) is below threshold → near-certain trigger
-    # If mean is above threshold → low probability
-    if projected_season_p90 < rainfall_threshold:
-        trigger_probability = 0.90
-        trigger_risk = "VERY HIGH"
-    elif projected_season_mean < rainfall_threshold:
-        # Mean below but p90 above — moderate-high probability
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.1, min(0.9, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.70
-        trigger_risk = "HIGH" if trigger_probability > 0.5 else "MODERATE"
-    elif projected_season_p10 < rainfall_threshold:
-        spread = projected_season_p90 - projected_season_p10
-        if spread > 0:
-            fraction_below = (rainfall_threshold - projected_season_p10) / spread
-            trigger_probability = max(0.05, min(0.5, 1.0 - fraction_below))
-        else:
-            trigger_probability = 0.25
-        trigger_risk = "MODERATE" if trigger_probability > 0.25 else "LOW"
-    else:
-        trigger_probability = 0.05
-        trigger_risk = "LOW"
+    trigger_probability, trigger_risk = _trigger_probability(
+        projected_season_p10, projected_season_mean, projected_season_p90, rainfall_threshold,
+    )
 
     # Model agreement — confidence in forecast
     model_agreement = "HIGH"
