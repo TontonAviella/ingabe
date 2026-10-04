@@ -4,7 +4,7 @@
     "dup-body": 12,
     "lazy-import": 137,
     "private-import": 60,
-    "render-threshold": 26,
+    "render-threshold": 22,
     "web-import": 49
   },
   "violations": {
@@ -208,10 +208,6 @@
     "render-threshold|frontendts/src/components/RwandaDashboard.tsx|ndvi<0.4": 1,
     "render-threshold|frontendts/src/components/RwandaDashboard.tsx|ndvi<0.6": 1,
     "render-threshold|frontendts/src/components/RwandaDashboard.tsx|ndvi<0.8": 1,
-    "render-threshold|frontendts/src/components/RwandaMap.tsx|ndvi<0.2": 1,
-    "render-threshold|frontendts/src/components/RwandaMap.tsx|ndvi<0.4": 1,
-    "render-threshold|frontendts/src/components/RwandaMap.tsx|ndvi<0.6": 1,
-    "render-threshold|frontendts/src/components/RwandaMap.tsx|ndvi<0.8": 1,
     "render-threshold|src/routes/message_routes.py|process_chat_interaction_task:_ndvi>=-0.5": 1,
     "render-threshold|src/routes/message_routes.py|process_chat_interaction_task:_ndvi>=0.3": 1,
     "render-threshold|src/routes/message_routes.py|process_chat_interaction_task:_spi<=-1.5": 1,

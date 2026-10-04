@@ -27,20 +27,30 @@ export interface NdviTimeseriesResponse {
   };
 }
 
-export interface H3GridResponse {
+export interface DataCoverage {
+  source: string;
+  measured_every: string;
+  value_covers: string;
+  note: string;
+}
+
+export interface DistrictNdviMap {
   type: 'FeatureCollection';
   features: Array<{
     type: 'Feature';
-    geometry: {
-      type: 'Polygon';
-      coordinates: number[][][];
-    };
+    geometry: GeoJSON.Geometry;
     properties: {
-      h3_index: string;
-      mean_ndvi?: number;
-      [key: string]: unknown;
+      district: string;
+      mean_ndvi: number | null;
+      ndvi_class: string | null;
+      ndvi_label: string | null;
+      color: string | null;
+      week_start: string | null;
+      computed_at: string | null;
     };
   }>;
+  legend: { title: string; items: Array<{ key: string; label: string; range: string; color: string }> };
+  data_coverage: DataCoverage;
 }
 
 export interface MLStatusResponse {
@@ -86,15 +96,12 @@ export function useNdviTimeseries(params?: { district?: string; h3_index?: strin
   });
 }
 
-export function useH3Grid(resolution = 7, bounds?: string) {
-  return useQuery<H3GridResponse>({
-    queryKey: ['rwanda', 'h3grid', resolution, bounds],
+export function useDistrictNdviMap() {
+  return useQuery<DistrictNdviMap>({
+    queryKey: ['rwanda', 'ndvi', 'districts'],
     queryFn: async () => {
-      const searchParams = new URLSearchParams({ resolution: String(resolution) });
-      if (bounds) searchParams.set('bounds', bounds);
-      else searchParams.set('bounds', '28.86,-2.84,30.90,-1.04'); // Rwanda default bounds
-      const res = await apiFetch(`${API_BASE}/grid/h3?${searchParams}`);
-      if (!res.ok) throw new Error('Failed to fetch H3 grid');
+      const res = await apiFetch(`${API_BASE}/ndvi/districts`);
+      if (!res.ok) throw new Error('Failed to fetch district NDVI');
       return res.json();
     },
   });

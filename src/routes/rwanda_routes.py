@@ -35,6 +35,7 @@ Endpoints:
   GET  /rwanda/ndvi/parcels         - Parcel-level NDVI stats (user-uploaded)
 """
 
+import json
 import asyncio
 import logging
 import os
@@ -47,6 +48,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.services import data_coverage, ndvi_classes
 from src.dependencies.session import UserContext, verify_session_required
 from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
@@ -1719,6 +1721,65 @@ async def get_emissions_annual(
 
 
 # ─── Cell-level and parcel-level NDVI endpoints ──────────────────────────
+
+
+@rwanda_router.get("/rwanda/ndvi/districts")
+async def get_district_ndvi_map(
+    session: UserContext = Depends(verify_session_required),
+):
+    """District outlines with each district's latest NDVI, for the dashboard map.
+
+    NDVI is computed per district (Sentinel-2 10 m pixels averaged over the
+    district), so the map colours whole districts rather than hexagons that
+    would all repeat their district's value.
+    """
+    from src.structures import get_async_db_connection
+
+    async with get_async_db_connection() as pg_conn:
+        rows = await pg_conn.fetch(
+            """
+            SELECT b.district,
+                   ST_AsGeoJSON(ST_SimplifyPreserveTopology(b.geom, 0.002), 5) AS geometry,
+                   n.ndvi_mean, n.week_start, n.computed_at
+            FROM rwanda_district_boundaries b
+            LEFT JOIN LATERAL (
+                SELECT ndvi_mean, week_start, computed_at
+                FROM agri_indices_cache a
+                WHERE a.admin_level = 'district' AND lower(a.admin_name) = lower(b.district)
+                ORDER BY a.week_start DESC, a.computed_at DESC
+                LIMIT 1
+            ) n ON true
+            ORDER BY b.district
+            """
+        )
+    features = [
+        {
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": _district_ndvi_properties(r),
+        }
+        for r in rows
+    ]
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "legend": ndvi_classes.legend(),
+        "data_coverage": data_coverage.describe("sentinel2", "district"),
+    }
+
+
+def _district_ndvi_properties(r: Any) -> dict[str, Any]:
+    ndvi = None if r["ndvi_mean"] is None else round(float(r["ndvi_mean"]), 3)
+    cls = ndvi_classes.ndvi_class(ndvi)
+    return {
+        "district": r["district"],
+        "mean_ndvi": ndvi,
+        "ndvi_class": cls.key if cls else None,
+        "ndvi_label": cls.label if cls else None,
+        "color": cls.color if cls else None,
+        "week_start": str(r["week_start"]) if r["week_start"] else None,
+        "computed_at": r["computed_at"].isoformat() if r["computed_at"] else None,
+    }
 
 
 @rwanda_router.get(

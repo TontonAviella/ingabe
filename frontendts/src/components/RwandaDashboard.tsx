@@ -70,7 +70,7 @@ export function RwandaDashboard() {
             <MapPin className="size-5" />
             Rwanda Agriculture Map
           </CardTitle>
-          <CardDescription>H3 hexagonal grid showing NDVI vegetation health across Rwanda</CardDescription>
+          <CardDescription>Latest vegetation health (NDVI) for each district, from Sentinel-2 satellite imagery</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <div className="h-[60vh] w-full">

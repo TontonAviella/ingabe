@@ -20,6 +20,7 @@ import csv
 import asyncio
 import traceback
 import uuid as _uuid
+from src.services import ndvi_classes
 from src.dependencies.dag import get_map
 from fastapi import UploadFile
 import httpx
@@ -4806,8 +4807,7 @@ async def process_chat_interaction_task(
                                         "cached_records": len(_ndvi_stats),
                                         "realtime_records": len(_realtime_stats),
                                         "note": (
-                                            "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
-                                            "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
+                                            f"{ndvi_classes.scale_text()} "
                                             "Negative values indicate heavy cloud cover during the observation period. "
                                             "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
                                             "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
@@ -4880,8 +4880,7 @@ async def process_chat_interaction_task(
                                             "realtime_records": len(_stac_stats),
                                             "note": (
                                                 "NDVI computed in real-time from Sentinel-2 COGs via STAC (free, no API key). "
-                                                "Values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
-                                                "0.1-0.3 = sparse vegetation, <0.1 = bare soil."
+                                                f"{ndvi_classes.scale_text()}"
                                             ),
                                             "ndvi_stats": _stac_stats,
                                         }

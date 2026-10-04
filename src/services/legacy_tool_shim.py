@@ -66,6 +66,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
+from src.services import ndvi_classes
+
 
 logger = logging.getLogger(__name__)
 
@@ -1775,8 +1777,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "cached_records": len(ndvi_stats),
                 "realtime_records": len(realtime_stats),
                 "note": (
-                    "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
-                    "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
+                    f"{ndvi_classes.scale_text()} "
                     "Negative values indicate heavy cloud cover during the observation period. "
                     "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
                     "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
@@ -1845,8 +1846,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "realtime_records": len(stac_stats),
                 "note": (
                     "NDVI computed in real-time from Sentinel-2 COGs via STAC "
-                    "(free, no API key). Values: 0.6-0.8 = dense vegetation, "
-                    "0.3-0.5 = cropland, 0.1-0.3 = sparse vegetation, <0.1 = bare soil."
+                    f"(free, no API key). {ndvi_classes.scale_text()}"
                 ),
                 "ndvi_stats": stac_stats,
             }
