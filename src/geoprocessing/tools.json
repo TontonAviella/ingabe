@@ -1417,7 +1417,7 @@
               "agronomist",
               "scientist"
             ],
-            "description": "Who is reading this report. Default: farmer"
+            "description": "Who is reading this report: farmer (plain words, rain compared with usual), insurance (trigger table with evidence), agronomist (indices and recommendations), scientist (all numbers and methods). Default: agronomist"
           },
           "compare_level": {
             "type": "string",
