@@ -9,6 +9,7 @@ import h3
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
+from src.services.h3_risk_classes import risk_level
 from src.services.whitebox_engine import whitebox_engine_status
 
 _EVIDENCE_FACTOR_KEYS = {
@@ -117,7 +118,7 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                     "domain": _normalize_domain(payload.domain),
                     "analysis_goal": payload.analysis_goal,
                     "risk_score": round(risk_score, 1),
-                    "risk_level": _risk_level(risk_score),
+                    "risk_level": risk_level(risk_score),
                     "likely_issue": issue,
                     "recommended_action": _recommended_action(payload.domain, risk_score, issue),
                     "exposure_count": exposure_count,
@@ -493,16 +494,6 @@ def _normalize_domain(value: str) -> str:
     if normalized in {"housing", "infrastructure", "environment", "drone", "agriculture", "mixed"}:
         return normalized
     return "mixed"
-
-
-def _risk_level(score: float) -> str:
-    if score >= 80:
-        return "severe"
-    if score >= 60:
-        return "high"
-    if score >= 40:
-        return "moderate"
-    return "low"
 
 
 def _likely_issue(domain: str, score: float, factors: dict[str, Any]) -> str:
