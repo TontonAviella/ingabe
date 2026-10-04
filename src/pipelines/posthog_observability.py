@@ -14,6 +14,8 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
+from dagster import Failure
+
 from src.services.posthog_analytics import capture_backend_event, elapsed_ms
 from src.services.pipeline_evidence import record_pipeline_evidence
 
@@ -120,11 +122,31 @@ def observed_dagster_asset(
                 result=result,
                 elapsed_ms_value=elapsed_ms(started_at),
             )
+            raise_if_failed(asset_name, result)
             return result
 
         return wrapper  # type: ignore[return-value]
 
     return decorator
+
+
+def raise_if_failed(asset_name: str, result: Any) -> None:
+    """Fail the Dagster step when an asset reports failure in its return value.
+
+    Assets that catch their own errors and return ``{"status": "error"}`` were
+    recorded by Dagster as successful runs, so a pipeline could fail every night
+    unnoticed (weather cache empty, drought cache stale since 2026-07-27).
+    """
+    status = _status_from_result(result)
+    if status not in _FAILURE_STATUSES:
+        return
+    detail = ""
+    if isinstance(result, Mapping):
+        detail = str(result.get("error") or result.get("reason") or "")[:500]
+    raise Failure(
+        description=f"{asset_name} returned status={status}" + (f": {detail}" if detail else ""),
+        metadata={"status": status, "detail": detail},
+    )
 
 
 def observed_dagster_sensor(

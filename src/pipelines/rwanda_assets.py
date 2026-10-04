@@ -1934,10 +1934,10 @@ def daily_weather_ingest(
 
     ws = get_weather_service()
     if ws is None or not ws.is_configured():
-        context.log.warning(
-            "CDS API not configured — set CDSAPI_KEY env var. Skipping weather ingest."
+        context.log.error(
+            "CDS API not configured — set CDSAPI_KEY env var. Weather cache not updated."
         )
-        return {"status": "skipped", "reason": "cds_api_not_configured"}
+        return {"status": "failed", "reason": "cds_api_not_configured: set CDSAPI_KEY"}
 
     # AgERA5 has ~5-8 day latency.  Build a date range from 30 days ago up to
     # 7 days ago (safe window).  On each run we skip dates that are already
