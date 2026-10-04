@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Any
 
+from src.services.h3_risk_classes import legend, maplibre_color_expression
 from src.database.models import LAYER_TYPE_VECTOR
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.structures import get_async_db_connection
@@ -225,19 +226,7 @@ def build_h3_risk_maplibre_layers(
     render_3d: bool,
     zoom_resolution_map: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    risk_color = [
-        "step",
-        ["coalesce", ["get", "risk_score"], 0],
-        "#06b6d4",
-        40,
-        "#facc15",
-        60,
-        "#f97316",
-        80,
-        "#dc2626",
-        90,
-        "#e879f9",
-    ]
+    risk_color = maplibre_color_expression()
     risk_opacity = [
         "interpolate",
         ["linear"],
@@ -357,6 +346,7 @@ def _h3_risk_fill_layer(
     suffix: str | None = None,
 ) -> dict[str, Any]:
     layer_suffix = f"-{suffix}" if suffix else ""
+    base = {**base, "metadata": {"mundi:legend": legend()}}
     if render_3d:
         return {
             **base,

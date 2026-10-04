@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from src.services.h3_risk_classes import inline_style_stops
+from src.services.h3_risk_classes import inline_style_stops, legend
 from src.routes.websocket import kue_ephemeral_action
 from src.services.h3_spatial_insight import (
     H3SpatialInsightInput,
@@ -152,6 +152,7 @@ async def create_h3_spatial_insight_layer(
             style = {
                 "color_property": "risk_score",
                 "stops": inline_style_stops(),
+                "legend": legend(),
                 "fill_opacity": 0.58,
                 "stroke_color": "#111827",
                 "stroke_width": 1.2,

@@ -32,8 +32,9 @@ class RiskClass:
     color: str
 
 
+# Low is cyan, not green: green hexagons vanish over vegetation in orthophotos.
 RISK_CLASSES: tuple[RiskClass, ...] = (
-    RiskClass("low", 0.0, "#22c55e"),
+    RiskClass("low", 0.0, "#06b6d4"),
     RiskClass("moderate", 40.0, "#facc15"),
     RiskClass("high", 60.0, "#f97316"),
     RiskClass("severe", 80.0, "#dc2626"),
@@ -53,3 +54,23 @@ def inline_style_stops() -> list[dict[str, Any]]:
     """Colour stops for layers sent inline over the websocket (`max` is exclusive)."""
     bounds = [cls.min_score for cls in RISK_CLASSES[1:]] + [101.0]
     return [{"max": int(upper), "color": cls.color} for cls, upper in zip(RISK_CLASSES, bounds)]
+
+
+def maplibre_color_expression() -> list[Any]:
+    """MapLibre `step` expression colouring `risk_score` by class."""
+    expr: list[Any] = ["step", ["coalesce", ["get", "risk_score"], 0], RISK_CLASSES[0].color]
+    for cls in RISK_CLASSES[1:]:
+        expr += [cls.min_score, cls.color]
+    return expr
+
+
+def legend() -> dict[str, Any]:
+    """Legend shown with every H3 risk layer (layer metadata "mundi:legend")."""
+    uppers = [cls.min_score for cls in RISK_CLASSES[1:]] + [100.0]
+    return {
+        "title": "Risk score (0-100)",
+        "items": [
+            {"label": cls.label.capitalize(), "range": f"{cls.min_score:g}-{upper:g}", "color": cls.color}
+            for cls, upper in zip(RISK_CLASSES, uppers)
+        ],
+    }

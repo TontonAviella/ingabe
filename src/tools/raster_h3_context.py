@@ -13,7 +13,7 @@ from typing import Any
 import h3
 from pydantic import BaseModel, Field
 
-from src.services.h3_risk_classes import inline_style_stops, risk_level
+from src.services.h3_risk_classes import inline_style_stops, legend, risk_level
 from src.routes.websocket import kue_ephemeral_action
 from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.h3_spatial_insight import h3_cell_geojson_geometry
@@ -740,6 +740,7 @@ def _inline_style(render_3d: bool) -> dict[str, Any]:
     return {
         "color_property": "risk_score",
         "stops": inline_style_stops(),
+        "legend": legend(),
         "fill_opacity": 0.58,
         "stroke_color": "#111827",
         "stroke_width": 1.2,

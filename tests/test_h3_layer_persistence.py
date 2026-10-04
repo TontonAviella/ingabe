@@ -87,6 +87,7 @@ def test_h3_attention_style_is_visible_over_orthophotos():
     fill = layers[0]
     outline = layers[1]
 
+    # Low risk is cyan, not green, so it stays visible over vegetation.
     assert fill["paint"]["fill-color"] == [
         "step",
         ["coalesce", ["get", "risk_score"], 0],
@@ -97,8 +98,6 @@ def test_h3_attention_style_is_visible_over_orthophotos():
         "#f97316",
         80,
         "#dc2626",
-        90,
-        "#e879f9",
     ]
     assert fill["paint"]["fill-opacity"] == [
         "interpolate",
