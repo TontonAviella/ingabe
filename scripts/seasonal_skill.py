@@ -41,11 +41,21 @@ COG = "https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_monthly/cogs/chirps-
 MONTHS = (10, 11, 12)
 
 
+def _system(year: int) -> str:
+    """The SEAS5 version that issued the 1 October run: 5.1 has hindcasts for
+    1993-2016 and real-time forecasts from November 2022; October 2017-2022
+    were issued by 5. Asking 5.1 for those years made the CDS job fail."""
+    return "5" if 2017 <= year <= 2022 else "51"
+
+
 def _retrieve(years: list[int], path: str) -> None:
+    systems = {_system(y) for y in years}
+    if len(systems) != 1:
+        raise ValueError(f"one SEAS5 system per request, got {sorted(systems)}")
     client = cdsapi.Client(url=os.environ.get("CDSAPI_URL", "https://cds.climate.copernicus.eu/api"),
                            key=os.environ["CDSAPI_KEY"], quiet=True)
     client.retrieve("seasonal-monthly-single-levels", {
-        "originating_centre": "ecmwf", "system": "51", "variable": ["total_precipitation"],
+        "originating_centre": "ecmwf", "system": systems.pop(), "variable": ["total_precipitation"],
         "product_type": ["monthly_mean"], "year": [str(y) for y in years], "month": ["10"],
         "leadtime_month": ["1", "2", "3"], "area": AREA, "data_format": "netcdf",
     }, path)
@@ -115,10 +125,13 @@ def main() -> None:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     tmp = tempfile.mkdtemp()
-    _retrieve(YEARS, f"{tmp}/hind.nc")
-    hind = _open(f"{tmp}/hind.nc")
-    lats, lons = hind["latitude"].values.tolist(), hind["longitude"].values.tolist()
-    model = _ond_totals_mm(hind)
+    model: dict[int, np.ndarray] = {}
+    for system in sorted({_system(y) for y in YEARS}):
+        group = [y for y in YEARS if _system(y) == system]
+        _retrieve(group, f"{tmp}/hind_{system}.nc")
+        hind = _open(f"{tmp}/hind_{system}.nc")
+        lats, lons = hind["latitude"].values.tolist(), hind["longitude"].values.tolist()
+        model.update(_ond_totals_mm(hind))
     unavailable = ""
     try:  # ECMWF publishes each month's forecast on the 5th
         _retrieve([FORECAST_YEAR], f"{tmp}/fc.nc")
@@ -146,7 +159,7 @@ def main() -> None:
     all_members = np.concatenate([model[y] for y in years])
     lo, hi = np.percentile(all_members, [100 / 3, 200 / 3])
     result = {
-        "system": "ECMWF SEAS5 (51), issued 1 October, Oct-Dec total", "years": f"{years[0]}-{years[-1]}",
+        "system": "ECMWF SEAS5 (system 51; system 5 for 2017-2022), issued 1 October, Oct-Dec total", "years": f"{years[0]}-{years[-1]}",
         "grid": {"resolution_deg": abs(lats[1] - lats[0]) if len(lats) > 1 else None,
                  "latitudes": lats, "longitudes": lons, "points_averaged": len(lats) * len(lons)},
         "skill": {
