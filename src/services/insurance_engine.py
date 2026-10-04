@@ -11,6 +11,7 @@ Called by Sage via `get_insurance_intelligence` tool.
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import logging
 from dataclasses import dataclass, field
@@ -653,33 +654,58 @@ def _season_rainfall_threshold(trigger_defs: list[dict]) -> tuple[float, str]:
     raise ValueError("no full-season rainfall_cumulative trigger defined")
 
 
+def _climatology_rainfall(
+    start: date, n_days: int, district: Optional[str],
+) -> tuple[float, float]:
+    """Normal rainfall (mean, std) over n_days from start, from monthly normals.
+
+    Each day gets its month's normal divided by the month's length. The
+    variance is prorated the same way and summed across months, assuming
+    days are independent within a month and months independent of each other.
+    """
+    mean = 0.0
+    var = 0.0
+    for i in range(n_days):
+        d = start + timedelta(days=i)
+        days_in_month = calendar.monthrange(d.year, d.month)[1]
+        normal = _get_monthly_normals(d.month, district)
+        mean += normal["mean"] / days_in_month
+        var += normal["std"] ** 2 / days_in_month
+    return mean, var ** 0.5
+
+
+# z-score of the 10th/90th percentile of a normal distribution
+_Z_P90 = 1.2816
+
+
 def _project_to_harvest(
     forecast_precip_days: list[dict],
     days_remaining: int,
+    district: Optional[str] = None,
 ) -> tuple[float, float, float, str]:
-    """Rainfall (mean, p10, p90, method) from today to harvest."""
-    forecast_days_available = len(forecast_precip_days)
-    forecast_total_mean = sum(d["mean"] for d in forecast_precip_days)
-    forecast_total_p10 = sum(d["p10"] for d in forecast_precip_days)
-    forecast_total_p90 = sum(d["p90"] for d in forecast_precip_days)
+    """Rainfall (mean, p10, p90, method) from today to harvest.
 
-    # Project to harvest: scale forecast if it doesn't cover remaining days
-    if forecast_days_available < days_remaining:
-        daily_avg_mean = forecast_total_mean / forecast_days_available
-        daily_avg_p10 = forecast_total_p10 / forecast_days_available
-        daily_avg_p90 = forecast_total_p90 / forecast_days_available
-        return (
-            daily_avg_mean * days_remaining,
-            daily_avg_p10 * days_remaining,
-            daily_avg_p90 * days_remaining,
-            f"{forecast_days_available}-day forecast extrapolated to {days_remaining} days",
-        )
-    # Forecast covers remaining season — sum only needed days
+    Days the forecast covers use the forecast. Later days use the district's
+    monthly rainfall normals: a forecast says nothing about weeks 3+, so
+    repeating its average (the old method) turned one dry or wet fortnight
+    into a whole dry or wet season.
+    """
+    covered = forecast_precip_days[:days_remaining]
+    mean = sum(d["mean"] for d in covered)
+    p10 = sum(d["p10"] for d in covered)
+    p90 = sum(d["p90"] for d in covered)
+    clim_days = days_remaining - len(covered)
+    if clim_days <= 0:
+        return mean, p10, p90, f"{days_remaining}-day forecast (full coverage)"
+
+    clim_start = date.fromisoformat(covered[-1]["date"]) + timedelta(days=1)
+    clim_mean, clim_std = _climatology_rainfall(clim_start, clim_days, district)
+    where = district.strip().title() if district else "Rwanda"
     return (
-        sum(d["mean"] for d in forecast_precip_days[:days_remaining]),
-        sum(d["p10"] for d in forecast_precip_days[:days_remaining]),
-        sum(d["p90"] for d in forecast_precip_days[:days_remaining]),
-        f"{days_remaining}-day forecast (full coverage)",
+        mean + clim_mean,
+        p10 + max(0.0, clim_mean - _Z_P90 * clim_std),
+        p90 + clim_mean + _Z_P90 * clim_std,
+        f"{len(covered)}-day forecast + {clim_days}-day {where} monthly normals",
     )
 
 
@@ -728,7 +754,7 @@ def _compute_forecast_outlook(
 
     forecast_days_available = len(forecast_precip_days)
     projected_mean, projected_p10, projected_p90, projection_method = _project_to_harvest(
-        forecast_precip_days, days_remaining,
+        forecast_precip_days, days_remaining, district,
     )
 
     # Projected season totals at harvest

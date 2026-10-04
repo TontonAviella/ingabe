@@ -1821,3 +1821,35 @@ class TestForecastOutlookThreshold:
         conn.fetch.return_value = []
         _run(_load_triggers(conn, "maize", "A", "flowering", None))
         assert "phase, signal, direction" in conn.fetch.call_args[0][0]
+
+
+class TestProjectToHarvest:
+    """Rainfall beyond the forecast comes from district normals, not the forecast's average."""
+
+    @staticmethod
+    def _days(start: date, mm: float, n: int = 16) -> list[dict]:
+        return [{"date": (start + timedelta(days=i)).isoformat(), "mean": mm, "p10": mm, "p90": mm}
+                for i in range(n)]
+
+    def test_a_dry_fortnight_does_not_make_a_dry_season(self):
+        from src.services.insurance_engine import _project_to_harvest
+        dry = self._days(date(2026, 10, 4), 0.5)
+        mean, p10, p90, method = _project_to_harvest(dry, 116, "bugesera")
+        # Old method: 0.5 mm x 116 days = 58 mm. Normals for Oct-Jan add ~250 mm.
+        assert 200 < mean < 320
+        assert p10 < mean < p90
+        assert method == "16-day forecast + 100-day Bugesera monthly normals"
+
+    def test_district_normals_change_the_projection(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 10, 4), 3.0)
+        wet_north = _project_to_harvest(days, 116, "musanze")[0]
+        dry_east = _project_to_harvest(days, 116, "bugesera")[0]
+        assert wet_north > dry_east
+
+    def test_forecast_covering_the_rest_of_the_season_is_used_alone(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 12, 20), 2.0)
+        mean, p10, p90, method = _project_to_harvest(days, 10, "musanze")
+        assert (mean, p10, p90) == (20.0, 20.0, 20.0)
+        assert method == "10-day forecast (full coverage)"
