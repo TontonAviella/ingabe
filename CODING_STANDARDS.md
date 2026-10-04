@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** I ran test jobs with `dagster job execute` against the shared Dagster instance: the
+  runs held the queue's single slot (one orphaned when I removed its container) and re-runs duplicated cache rows.
+  Rule: out-of-band runs use a throwaway `DAGSTER_HOME`. Gate: review only (operator action).
 - **2026-10-04** Applying new Docker Desktop resources restarted the engine; Postgres, the app, Redis
   and QGIS had no restart policy and stayed down until started by hand.
   Rule: every long-running compose service sets `restart:`. Gate: `compose-restart`.

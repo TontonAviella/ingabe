@@ -52,7 +52,13 @@ RWANDA_BBOX = {
 }
 
 # AgERA5 variable mapping
+# AgERA5 version 1_1 stopped updating on 2026-06-10; 2_0 is current, with
+# data about 8 days behind today (CDS constraints.json, checked 2026-10-04).
+AGERA5_VERSION = "2_0"
+
 # key = our internal name, value = CDS API variable name + statistic
+# (statistic None: the variable takes no statistic in version 2_0, and CDS
+# rejects the whole request if one is sent)
 AGERA5_VARIABLES = {
     "temperature_mean": {
         "variable": "2m_temperature",
@@ -77,14 +83,14 @@ AGERA5_VARIABLES = {
     },
     "precipitation": {
         "variable": "precipitation_flux",
-        "statistic": "24_hour_mean",
+        "statistic": None,
         "unit": "mm d-1",
         "display_unit": "mm/day",
         "convert": lambda mm: round(float(mm), 1),  # Already in mm/day
     },
     "solar_radiation": {
         "variable": "solar_radiation_flux",
-        "statistic": "24_hour_mean",
+        "statistic": None,
         "unit": "J m-2 day-1",
         "display_unit": "MJ/m2/day",
         "convert": lambda j: round(j / 1e6, 2),  # J -> MJ
@@ -139,7 +145,7 @@ class WeatherService:
         """Download AgERA5 data for a single day over Rwanda.
 
         Args:
-            target_date: Date to download (AgERA5 has ~5 day latency)
+            target_date: Date to download (AgERA5 2_0 is ~8 days behind)
             variables: List of variable keys from AGERA5_VARIABLES.
                        Defaults to all variables.
 
@@ -186,8 +192,7 @@ class WeatherService:
                         "year": [year],
                         "month": [month],
                         "day": [day],
-                        "statistic": [var_info["statistic"]],
-                        "version": ["1_1"],
+                        "version": [AGERA5_VERSION],
                         "area": [
                             RWANDA_BBOX["north"],
                             RWANDA_BBOX["west"],
@@ -195,6 +200,8 @@ class WeatherService:
                             RWANDA_BBOX["east"],
                         ],
                     }
+                    if var_info["statistic"]:
+                        request["statistic"] = [var_info["statistic"]]
 
                     logger.info(
                         "Downloading AgERA5 %s (%s) for %s",
@@ -235,9 +242,13 @@ class WeatherService:
     def _extract_and_read_netcdf(
         self, zip_path: str, var_key: str
     ) -> Optional[Dict[str, Any]]:
-        """Extract NetCDF from downloaded zip and read as numpy array."""
+        """Extract NetCDF from downloaded zip and read as numpy array.
+
+        Read through rasterio's GDAL (it has the netCDF driver); the image has
+        no netCDF4/h5netcdf, so xarray's default engines cannot open the file.
+        """
         try:
-            import xarray as xr
+            import rioxarray
 
             # AgERA5 downloads come as zip containing NetCDF
             extract_dir = tempfile.mkdtemp()
@@ -258,22 +269,24 @@ class WeatherService:
                 logger.warning("No NetCDF file found in download for %s", var_key)
                 return None
 
-            ds = xr.open_dataset(nc_path)
+            ds = rioxarray.open_rasterio(nc_path, mask_and_scale=True, decode_times=False)
+            if isinstance(ds, list):  # one entry per NetCDF subdataset
+                ds = ds[0]
+            if hasattr(ds, "data_vars"):  # a Dataset: take the first variable
+                data_vars = list(ds.data_vars)
+                if not data_vars:
+                    logger.warning("No data variables in NetCDF for %s", var_key)
+                    ds.close()
+                    return None
+                data_var = ds[data_vars[0]]
+            else:
+                data_var = ds
 
-            # Get the data variable (first non-coordinate variable)
-            data_vars = list(ds.data_vars)
-            if not data_vars:
-                logger.warning("No data variables in NetCDF for %s", var_key)
-                ds.close()
-                return None
+            # GDAL exposes the grid as y (latitude) / x (longitude)
+            lats = data_var.coords["y"].values
+            lons = data_var.coords["x"].values
 
-            data_var = ds[data_vars[0]]
-
-            # Extract lat/lon and values
-            lats = ds.coords["lat"].values if "lat" in ds.coords else ds.coords["latitude"].values
-            lons = ds.coords["lon"].values if "lon" in ds.coords else ds.coords["longitude"].values
-
-            # Squeeze time dimension if present
+            # Squeeze the band (time) dimension
             values = data_var.values
             if values.ndim == 3:
                 values = values[0]  # Take first time step

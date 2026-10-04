@@ -1939,11 +1939,12 @@ def daily_weather_ingest(
         )
         return {"status": "failed", "reason": "cds_api_not_configured: set CDSAPI_KEY"}
 
-    # AgERA5 has ~5-8 day latency.  Build a date range from 30 days ago up to
-    # 7 days ago (safe window).  On each run we skip dates that are already
-    # cached so only missing days are fetched.
+    # AgERA5 2_0 is about 8 days behind (2026-09-26 was the latest day on
+    # 2026-10-04).  Build a date range from 30 days ago up to 9 days ago so
+    # unpublished days are not requested.  On each run we skip dates that are
+    # already cached so only missing days are fetched.
     LOOKBACK_DAYS = 30
-    LATENCY_DAYS = 5
+    LATENCY_DAYS = 9
     today = datetime.utcnow().date()
     start_date = today - timedelta(days=LOOKBACK_DAYS)
     end_date = today - timedelta(days=LATENCY_DAYS)
