@@ -38,6 +38,7 @@ try:
         AssetSelection,
         Definitions,
         define_asset_job,
+        in_process_executor,
         load_assets_from_modules,
     )
 
@@ -290,6 +291,10 @@ if HAS_DAGSTER:
             schedules.geolibre_runtime_probe_schedule,
         ],
         resources=resource_defs,
+        # One process per run, not one per step: each step subprocess reloads
+        # all definitions (~430 MB), and runs execute one at a time under the
+        # daemon's 1.5 GB cap (dagster.yaml, docker-compose.yml).
+        executor=in_process_executor,
     )
 
     logger.info("Dagster definitions loaded successfully")
