@@ -1825,6 +1825,7 @@ dependencies = [
     { name = "uvicorn" },
     { name = "wasmtime" },
     { name = "whitebox" },
+    { name = "workos" },
     { name = "xarray" },
 ]
 
@@ -1904,6 +1905,7 @@ requires-dist = [
     { name = "uvicorn", specifier = "==0.49.0" },
     { name = "wasmtime", specifier = "==45.0.0" },
     { name = "whitebox", specifier = "==2.3.6" },
+    { name = "workos", specifier = "==10.1.0" },
     { name = "xarray", specifier = "==2024.11.0" },
 ]
 
@@ -4147,6 +4149,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/87/c628340efbf9f819a1e8b241967857b5cf69c197b998eae89a98c3c00dbd/whitebox-2.3.6.tar.gz", hash = "sha256:69571640a778253e27a05c63b08aed670457803798a0b8f233761eabcd39188b", size = 78177, upload-time = "2025-02-23T01:22:48.762Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1c/44/9bd2ca55e07ee3d63a0d3b46c77ca75e3089e38cc7260e46fc597a632a5a/whitebox-2.3.6-py2.py3-none-any.whl", hash = "sha256:16b780134cabb9b9d067078f42265da692963d466747cbe655f573fab0f3f60e", size = 74005, upload-time = "2025-02-23T01:22:46.745Z" },
+]
+
+[[package]]
+name = "workos"
+version = "10.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "pyjwt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/96/91/3732a6dd4aa9cdb9b1a82a98288fe233f5e40236962336144bd350d138d8/workos-10.1.0.tar.gz", hash = "sha256:64aa1650438ddab16d996bc043439ebe547a8c90ab3d7a5ef475344e9bca26f4", size = 230947, upload-time = "2026-07-30T22:18:24.089Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/12/3f/1f74352454bc9430272727ca734e22a88dd332de264ec5b7022ca6cfb4d2/workos-10.1.0-py3-none-any.whl", hash = "sha256:080215f82fc934e42099e7b8be36ff43ac51df5f4a3dbb87afc704ea79197e55", size = 671509, upload-time = "2026-07-30T22:18:22.829Z" },
 ]
 
 [[package]]

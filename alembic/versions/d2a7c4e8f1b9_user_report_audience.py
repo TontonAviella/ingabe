@@ -1,7 +1,7 @@
 """users.report_audience: which view of reports a user gets (farmer, insurance, agronomist, scientist)
 
 Revision ID: d2a7c4e8f1b9
-Revises: b8d4e0f2a3c5
+Revises: e4c9b2d7a1f3
 Create Date: 2026-10-04
 
 NULL = no choice: the partner's organizations.metadata.default_audience
@@ -13,7 +13,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "d2a7c4e8f1b9"
-down_revision: Union[str, None] = "b8d4e0f2a3c5"
+down_revision: Union[str, None] = "e4c9b2d7a1f3"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

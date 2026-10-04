@@ -5,6 +5,7 @@ import os
 from src.database.models import MundiMap, MundiProject, MapLayer
 from src.structures import async_conn, async_read_conn
 from src.dependencies.session import (
+    external_auth_enabled,
     UserContext,
     verify_session_required,
 )
@@ -221,10 +222,10 @@ async def get_project(
         return MundiProject(**dict(project_row))
 
 
-# Edit guards — Clerk-authenticated users can always edit; legacy mode checks MUNDI_AUTH_MODE
+# Edit guards — signed-in users (WorkOS or Clerk) can always edit; legacy mode checks MUNDI_AUTH_MODE
 def _editing_allowed() -> bool:
-    if os.environ.get("CLERK_SECRET_KEY"):
-        return True  # Clerk auth: user is authenticated, editing allowed
+    if external_auth_enabled():
+        return True  # real sign-in: user is authenticated, editing allowed
     return (os.environ.get("MUNDI_AUTH_MODE") or "edit").lower() == "edit"
 
 

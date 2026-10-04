@@ -52,7 +52,7 @@ class TestPipelineDefinitions:
         assert "rwanda_ndvi_job" in job_names
         assert "rwanda_ml_job" in job_names
         assert "nightly_field_ndvi_job" in job_names
-        assert "weekly_crop_classification_job" in job_names
+        assert "weekly_crop_classification_job" not in job_names  # removed: unlabelled KMeans, not crop ID
         assert "weekly_anomaly_scan_job" in job_names
         assert "weekly_yield_risk_job" in job_names
         assert "weekly_drought_scan_job" in job_names
@@ -78,7 +78,7 @@ class TestPipelineDefinitions:
         assert "weekly_rwanda_ndvi" in schedule_names
         assert "daily_rwanda_parcel_sync" in schedule_names
         assert "nightly_field_ndvi" in schedule_names
-        assert "weekly_crop_classification" in schedule_names
+        assert "weekly_crop_classification" not in schedule_names
         assert "weekly_anomaly_scan" in schedule_names
         assert "weekly_yield_risk" in schedule_names
         assert "weekly_drought_scan" in schedule_names
