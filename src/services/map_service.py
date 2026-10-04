@@ -102,9 +102,12 @@ def _normalize_runtime_h3_attention_style(layer: dict) -> dict:
     if not isinstance(layer_id, str):
         return normalized_layer
 
-    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")):
+    # Only rewrite an existing filter: writing `"filter": None` onto a layer
+    # without one makes MapLibre reject the whole style ("filter: array
+    # expected, null found"), so no layer of the map draws.
+    if layer_id.startswith(("h3-risk-fill-", "h3-risk-outline-")) and "filter" in normalized_layer:
         normalized_layer["filter"] = _normalize_h3_resolution_filter(
-            normalized_layer.get("filter")
+            normalized_layer["filter"]
         )
 
     paint = normalized_layer.setdefault("paint", {})
