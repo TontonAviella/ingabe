@@ -24,10 +24,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Test the gate
+      - name: Test the gate and the routing-eval corpus
         run: |
           python -m pip install --quiet pytest
-          python -m pytest tests/test_check_standards.py --noconftest -q -p no:cacheprovider
+          python -m pytest tests/test_check_standards.py tests/test_sage_routing_eval.py --noconftest -q -p no:cacheprovider
 
       - name: Check coding standards
         env:

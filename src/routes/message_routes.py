@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Request, Depends
 from fastapi.responses import JSONResponse
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 from collections import defaultdict
 from pydantic import BaseModel, Field
 import asyncpg
@@ -63,8 +63,6 @@ from src.services.map_service import (
     InternalLayerUploadResponse,
 )
 from src.services.life_harness import (
-    apply_life_harness_system_prompt,
-    apply_life_harness_tool_contracts,
     life_harness_tool_signature,
     repeated_life_harness_tool_error,
     validate_life_harness_tool_args,
@@ -76,6 +74,8 @@ from src.services.sage_tool_observability import (
     capture_sage_routing_decision,
     capture_sage_tool_result_message,
 )
+from src.services.sage_flight_recorder import sage_turn_trace
+from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
     InvalidInputFormatError,
@@ -97,13 +97,26 @@ from src.dependencies.system_prompt import (
     get_system_prompt_provider,
 )
 from src.dependencies.sage_routing import (
-    SMALL_TALK_SYSTEM_PROMPT,
+    ADMIN_BOUNDARY_TOOL,
+    RASTER_FACT_TOOL,
+    RASTER_H3_CONTEXT_TOOL,
+    RASTER_OBJECT_CANDIDATES_TOOL,
     build_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
-    filter_tools_by_categories,
-    raster_layer_match_score,
-    route_chat,
+    select_fast_raster_layer,
+)
+from src.dependencies.sage_turn_request import (
+    abdication_guard_enabled,
+    apply_tool_shortlist,
+    build_sage_tools_payload,
+    guard_tools,
+    RATE_LIMIT_RETRIES,
+    is_abdication,
+    plan_sage_turn,
+    rate_limit_retry_after,
+    rate_limit_user_message,
+    tool_shortlist_k,
 )
 from src.dependencies.session import (
     verify_session_required,
@@ -120,7 +133,6 @@ from src.database.models import (
     Conversation,
 )
 from src.routes.websocket import kue_ephemeral_action, kue_notify_error, kue_stream_token
-from src.tools.pyd import tool_from as tool_from_pyd
 from src.dependencies.pydantic_tools import (
     get_pydantic_tool_calls,
     PydanticToolRegistry,
@@ -131,8 +143,8 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-_RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
-_INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
+INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
     {
         "rwanda_province_boundaries",
         "rwanda_district_boundaries",
@@ -187,7 +199,7 @@ def _validate_internal_rwanda_query(query: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Internal Rwanda queries must reference an allowed Rwanda table",
         )
-    disallowed = sorted(referenced - _INTERNAL_RWANDA_ALLOWED_TABLES)
+    disallowed = sorted(referenced - INTERNAL_RWANDA_ALLOWED_TABLES)
     if disallowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -205,7 +217,7 @@ def _is_internal_rwanda_connection(
 ) -> bool:
     return (
         connection_id == _rwanda_internal_conn_id(project_id)
-        and connection_name == _RWANDA_INTERNAL_CONNECTION_NAME
+        and connection_name == RWANDA_INTERNAL_CONNECTION_NAME
     )
 
 
@@ -286,7 +298,7 @@ async def _ensure_rwanda_postgis_connection(
                 project_id,
                 user_id,
                 uri,
-                _RWANDA_INTERNAL_CONNECTION_NAME,
+                RWANDA_INTERNAL_CONNECTION_NAME,
             )
             logger.info("Auto-provisioned Rwanda PostGIS connection %s for project %s",
                          connection_id, project_id)
@@ -1471,6 +1483,39 @@ def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
+async def _run_abdication_guard(
+    client,
+    attempt_kwargs: dict,
+    last_user_text: str,
+    history: list[dict],
+    full_tools: list[dict],
+) -> dict[int, dict]:
+    """One forced-tool retry over the guard tools. Returns tool calls in the
+    loop's accumulator shape, or {} when the retry produced none (logged)."""
+    tools = copy.deepcopy(await guard_tools(last_user_text, history, full_tools))
+    if not supports_strict_tool_schema(str(attempt_kwargs.get("model") or "")):
+        for tool in tools:
+            tool.get("function", {}).pop("strict", None)
+    try:
+        response = await client.chat.completions.create(
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+        )
+    except Exception:
+        logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
+        return {}
+    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    logger.info(
+        "sage_routing: abdication guard fired (tools=%s) -> %s",
+        ",".join(t["function"]["name"] for t in tools),
+        ",".join(c.function.name for c in calls) or "no tool call",
+    )
+    return {
+        i: {"id": c.id, "type": "function",
+            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+        for i, c in enumerate(calls)
+    }
+
+
 async def _maybe_run_fast_admin_boundary_turn(
     *,
     map_id: str,
@@ -1485,7 +1530,7 @@ async def _maybe_run_fast_admin_boundary_turn(
         return False
 
     fast_call = build_fast_tool_call(extract_last_user_text(openai_messages))
-    if not fast_call or fast_call.tool_name != "show_admin_boundary":
+    if not fast_call or fast_call.tool_name != ADMIN_BOUNDARY_TOOL:
         return False
 
     started = asyncio.get_running_loop().time()
@@ -1730,26 +1775,6 @@ def _raster_context_fast_reply(
     return reply
 
 
-def _select_fast_raster_layer(question: str, rows: list) -> dict | None:
-    if not rows:
-        return None
-
-    scored: list[tuple[float, object]] = []
-    for row in rows:
-        scored.append((raster_layer_match_score(question, str(row["name"] or "")), row))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    top_score, top_row = scored[0]
-    second_score = scored[1][0] if len(scored) > 1 else 0.0
-
-    if top_score >= 0.75 or (top_score >= 0.5 and top_score > second_score):
-        return dict(top_row)
-
-    # "this raster/orthophoto" is safe only when the map has exactly one raster.
-    if len(rows) == 1:
-        return dict(rows[0])
-    return None
-
-
 async def _maybe_run_fast_raster_context_turn(
     *,
     map_id: str,
@@ -1765,7 +1790,7 @@ async def _maybe_run_fast_raster_context_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "create_raster_h3_context_layer":
+    if not fast_call or fast_call.tool_name != RASTER_H3_CONTEXT_TOOL:
         return False
 
     requested_building_count = detect_raster_building_count_question(user_text)
@@ -1799,7 +1824,7 @@ async def _maybe_run_fast_raster_context_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2027,7 +2052,7 @@ async def _maybe_run_fast_raster_object_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "analyze_raster_object_candidates":
+    if not fast_call or fast_call.tool_name != RASTER_OBJECT_CANDIDATES_TOOL:
         return False
 
     requested_building_count = detect_raster_building_count_question(user_text)
@@ -2062,7 +2087,7 @@ async def _maybe_run_fast_raster_object_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2253,7 +2278,7 @@ async def _maybe_run_fast_raster_fact_turn(
 
     user_text = extract_last_user_text(openai_messages)
     fast_call = build_fast_tool_call(user_text)
-    if not fast_call or fast_call.tool_name != "describe_user_raster":
+    if not fast_call or fast_call.tool_name != RASTER_FACT_TOOL:
         return False
 
     started = asyncio.get_running_loop().time()
@@ -2286,7 +2311,7 @@ async def _maybe_run_fast_raster_fact_turn(
             map_id,
         )
 
-    layer = _select_fast_raster_layer(user_text, rows)
+    layer = select_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2338,6 +2363,35 @@ async def _maybe_run_fast_raster_fact_turn(
     return True
 
 
+async def _run_first_fast_path(
+    *,
+    map_id: str,
+    session: UserContext,
+    user_id: str,
+    conversation: Conversation,
+    openai_messages: list[dict],
+) -> str | None:
+    """Run the proven single-purpose paths in order; the name of the one
+    that answered the turn, or None when the model has to plan it."""
+    # Built at call time so tests can patch individual handlers.
+    handlers = (
+        ("admin_boundary", _maybe_run_fast_admin_boundary_turn),
+        ("raster_object", _maybe_run_fast_raster_object_turn),
+        ("raster_context", _maybe_run_fast_raster_context_turn),
+        ("raster_fact", _maybe_run_fast_raster_fact_turn),
+    )
+    for name, handler in handlers:
+        if await handler(
+            map_id=map_id,
+            session=session,
+            user_id=user_id,
+            conversation=conversation,
+            openai_messages=openai_messages,
+        ):
+            return name
+    return None
+
+
 async def _maybe_run_deterministic_turn_before_hermes(
     *,
     map_id: str,
@@ -2358,22 +2412,13 @@ async def _maybe_run_deterministic_turn_before_hermes(
         for row in rows
         if isinstance(getattr(row, "message_json", None), dict)
     ]
-    handlers = (
-        _maybe_run_fast_admin_boundary_turn,
-        _maybe_run_fast_raster_object_turn,
-        _maybe_run_fast_raster_context_turn,
-        _maybe_run_fast_raster_fact_turn,
-    )
-    for handler in handlers:
-        if await handler(
-            map_id=map_id,
-            session=session,
-            user_id=user_id,
-            conversation=conversation,
-            openai_messages=messages,
-        ):
-            return True
-    return False
+    return await _run_first_fast_path(
+        map_id=map_id,
+        session=session,
+        user_id=user_id,
+        conversation=conversation,
+        openai_messages=messages,
+    ) is not None
 
 
 async def process_chat_interaction_task(
@@ -2425,6 +2470,8 @@ async def process_chat_interaction_task(
 
     _lock_key = f"chat_lock:{conversation.id}"
     _tool_observability_contexts: dict[str, dict] = {}
+    # tool_call_id -> (tool name, arguments), for result checks.
+    _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
     async def add_chat_completion_message(
         message: Union[ChatCompletionMessage, ChatCompletionMessageParam],
@@ -2432,6 +2479,24 @@ async def process_chat_interaction_task(
         message_dict = (
             message.model_dump() if isinstance(message, BaseModel) else message
         )
+        if isinstance(message_dict, dict) and message_dict.get("role") == "tool":
+            # A known failure gets the facts to fix it before the model sees it.
+            _call_name, _call_args = _tool_calls_by_id.get(
+                str(message_dict.get("tool_call_id") or ""), ("", {})
+            )
+            _checked = await apply_result_checks(
+                _call_name,
+                _call_args,
+                message_dict.get("content"),
+                open_conn=lambda: async_conn("tool_result_check"),
+                project_id=current_project_id,
+                user_id=user_id,
+                connection_manager=connection_manager,
+                admin_boundary_tool=ADMIN_BOUNDARY_TOOL,
+            )
+            if _checked is not None:
+                turn_trace.flag(f"result_checked:{_checked['error_kind']}")
+                message_dict = {**message_dict, "content": json.dumps(_checked)}
 
         async with async_conn("add_chat_message") as msg_conn:
             await msg_conn.execute(
@@ -2446,6 +2511,9 @@ async def process_chat_interaction_task(
                 conversation.id,
             )
         if isinstance(message_dict, dict) and message_dict.get("role") == "tool":
+            turn_trace.tool_finished(
+                str(message_dict.get("tool_call_id") or ""), message_dict.get("content")
+            )
             try:
                 capture_sage_tool_result_message(
                     message=message_dict,
@@ -2455,7 +2523,16 @@ async def process_chat_interaction_task(
             except Exception:
                 logger.debug("Sage tool observability capture failed", exc_info=True)
 
-    with tracer.start_as_current_span("app.process_chat_interaction") as span:
+    with tracer.start_as_current_span("app.process_chat_interaction") as span, sage_turn_trace(
+        session_id=str(conversation.id),
+        user_id=user_id,
+        metadata={
+            "map_id": map_id,
+            "partner_id": partner_id,
+            "client_turn_id": client_turn_id,
+            "message_id": user_message_id,
+        },
+    ) as turn_trace:
         _consecutive_tool_errors = 0
         _MAX_CONSECUTIVE_TOOL_ERRORS = 3
         _recent_tool_signatures: list[str] = []
@@ -2466,10 +2543,13 @@ async def process_chat_interaction_task(
         turn_id: str | None = None
 
         for i in range(25):
+            if i == 24:
+                turn_trace.flag("step_limit")
             # Check if the message processing has been cancelled
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    turn_trace.flag("cancelled")
                     # Emit a WS done=True so the frontend clears the loading
                     # state and finalises whatever partial message it has.
                     # Without this, the cancel button "succeeds" on the server
@@ -2577,40 +2657,15 @@ async def process_chat_interaction_task(
                         m["content"] = ""
                 openai_messages.append(m)
 
-            if await _maybe_run_fast_admin_boundary_turn(
+            _fast_path = await _run_first_fast_path(
                 map_id=map_id,
                 session=session,
                 user_id=user_id,
                 conversation=conversation,
                 openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_object_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_context_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
-                return
-
-            if await _maybe_run_fast_raster_fact_turn(
-                map_id=map_id,
-                session=session,
-                user_id=user_id,
-                conversation=conversation,
-                openai_messages=openai_messages,
-            ):
+            )
+            if _fast_path is not None:
+                turn_trace.fast_path(_fast_path, user_text=extract_last_user_text(openai_messages))
                 return
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
@@ -2642,218 +2697,10 @@ async def process_chat_interaction_task(
 
             client = get_openai_client(request)
 
-            tools_payload = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "new_layer_from_postgis",
-                        "strict": True,
-                        "description": "Creates a new layer, given a PostGIS connection and query, and adds it to the map so the user can see it. Layer will automatically pull data from PostGIS. Modify style using the set_layer_style tool.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "postgis_connection_id": {
-                                    "type": "string",
-                                    "description": "Unique PostGIS connection ID used as source",
-                                },
-                                "query": {
-                                    "type": "string",
-                                    "description": "SQL query to execute against PostGIS database for this layer, should list fetched columns for attributes that might be used for symbology (+ shape geometry). This query MUST alias the geometry column as 'geom' AND have a unique numeric id aliased as 'id'. Include newlines+spaces at ~55 column wrap",
-                                },
-                                "layer_name": {
-                                    "type": "string",
-                                    "description": "Sets a human-readable name for this layer. This name will appear in the layer list/legend for the user.",
-                                },
-                            },
-                            "required": [
-                                "postgis_connection_id",
-                                "query",
-                                "layer_name",
-                            ],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "add_layer_to_map",
-                        "strict": True,
-                        "description": "Shows a newly created or existing unattached layer on the user's current map and layer list. Use this after a geoprocessing step that creates a layer, or if the user asks to see an existing layer that isn't currently on their map.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "layer_id": {
-                                    "type": "string",
-                                    "description": "The ID of the layer to add to the map. Choose from available unattached layers.",
-                                    "enum": list(layer_enum.keys())
-                                    if layer_enum
-                                    else ["NO_UNATTACHED_LAYERS"],
-                                },
-                                "new_name": {
-                                    "type": "string",
-                                    "description": "Sets a new human-readable name for this layer. This name will appear in the layer list/legend for the user.",
-                                },
-                            },
-                            "required": ["layer_id", "new_name"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "set_layer_style",
-                        "strict": True,
-                        "description": "Creates a new style for a layer with MapLibre JSON layers and immediately applies it as the active style",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "layer_id": {
-                                    "type": "string",
-                                    "description": "The ID of the layer to create and apply a style for",
-                                },
-                                "maplibre_json_layers_str": {
-                                    "type": "string",
-                                    "description": 'JSON string of MapLibre layer objects. Example: [{"id": "LZJ5RmuZr6qN-line", "type": "line", "source": "LZJ5RmuZr6qN", "paint": {"line-color": "#1E90FF"}}]',
-                                },
-                            },
-                            "required": ["layer_id", "maplibre_json_layers_str"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "query_duckdb_sql",
-                        "strict": True,
-                        "description": "Execute a SQL query against vector layer data using DuckDB. Use query_postgis_database for layers created from PostGIS connections instead.",
-                        "parameters": {
-                            "type": "object",
-                            "required": ["layer_ids", "sql_query", "head_n_rows"],
-                            "properties": {
-                                "layer_ids": {
-                                    "type": "array",
-                                    "description": "Load these vector layer IDs as tables",
-                                    "items": {"type": "string"},
-                                },
-                                "sql_query": {
-                                    "type": "string",
-                                    "description": "DuckDB-flavored SELECT ... SQL query. Include newlines+spaces at ~55 column wrap for readability e.g. SELECT name_en,county\n    FROM LCH6Na2SBvJr\n    ORDER BY id",
-                                },
-                                "head_n_rows": {
-                                    "type": "number",
-                                    "description": "Truncate result to n rows (increase gingerly, MUST specify returned columns), n=20 is good",
-                                },
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "query_postgis_database",
-                        "strict": True,
-                        "description": "Execute SQL queries on connected PostgreSQL/PostGIS databases. Use for data analysis, spatial queries, and exploring database tables. The query MUST include a LIMIT clause with a value less than 1000.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "postgis_connection_id": {
-                                    "type": "string",
-                                    "description": "User's PostGIS connection ID to query against",
-                                },
-                                "sql_query": {
-                                    "type": "string",
-                                    "description": "SQL query to execute. Use newlines+spaces at ~55 column wrap. Examples: 'SELECT COUNT(*) FROM table_name', 'SELECT * FROM spatial_table LIMIT 10', 'SELECT column_name FROM information_schema.columns WHERE table_name = \"my_table\"'. Use standard SQL syntax.",
-                                },
-                            },
-                            "required": ["postgis_connection_id", "sql_query"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "zonal_statistics",
-                        "strict": True,
-                        "description": "Calculates zonal statistics (mean, sum, min, max, count, stdev) for raster values within polygon boundaries. Uses exact pixel-polygon coverage calculations for accurate results.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "raster_layer_id": {
-                                    "type": "string",
-                                    "description": "The layer ID of the raster dataset to analyze",
-                                },
-                                "zones_layer_id": {
-                                    "type": "string",
-                                    "description": "The layer ID of the vector polygon dataset defining the zones",
-                                },
-                                "stats": {
-                                    "type": "array",
-                                    "description": "List of statistics to compute. Defaults to: mean, sum, min, max, count, stdev, variance. Other options: median, mode, majority, minority, variety, coefficient_of_variation, weighted_mean, weighted_sum.",
-                                    "items": {"type": "string"},
-                                },
-                            },
-                            "required": ["raster_layer_id", "zones_layer_id"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "reverse_geocode_coordinates",
-                        "strict": True,
-                        "description": "Given latitude and longitude, returns the Rwanda administrative divisions (province, district, sector, cell, village) that contain that point. Use this whenever the user provides coordinates and asks what location they correspond to.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "lat": {
-                                    "type": "number",
-                                    "description": "Latitude (e.g. -1.9403)",
-                                },
-                                "lon": {
-                                    "type": "number",
-                                    "description": "Longitude (e.g. 29.8739)",
-                                },
-                            },
-                            "required": ["lat", "lon"],
-                            "additionalProperties": False,
-                        },
-                    },
-                },
-            ]
-
-            all_tools = get_tools()
-            geoprocessing_names = {
-                tool["function"]["name"] for tool in all_tools
-            }
-            # Generate schemas from Pydantic models only for tools NOT already
-            # defined in tools.json (avoids duplicates and allows tools.json
-            # tools to use Optional fields that strict schema generation rejects).
-            for name, (fn, arg_model, _mundi_model) in pydantic_tool_calls.items():
-                if name not in geoprocessing_names:
-                    tools_payload.append(tool_from_pyd(fn, arg_model))
-
-            tools_payload.extend(all_tools)
+            tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
             geoprocessing_function_names = [
-                tool["function"]["name"] for tool in all_tools
+                tool["function"]["name"] for tool in get_tools()
             ]
-
-            if not layer_enum:
-                add_layer_tool = next(
-                    tool
-                    for tool in tools_payload
-                    if tool["function"]["name"] == "add_layer_to_map"
-                )
-                add_layer_tool["function"]["parameters"]["properties"][
-                    "layer_id"
-                ].pop("enum", None)
-
-            tools_payload = apply_life_harness_tool_contracts(tools_payload)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -2871,64 +2718,47 @@ async def process_chat_interaction_task(
             #     plus an always-on display set.
             #   - uncertain -> fall through to current behavior (full list).
             _last_user_text = extract_last_user_text(openai_messages)
-            _routing = route_chat(_last_user_text, history=openai_messages)
-
+            _full_tools_payload = tools_payload
+            _turn_plan = plan_sage_turn(
+                _last_user_text,
+                openai_messages,
+                tools_payload,
+                system_prompt_provider.get_system_prompt,
+            )
+            _shortlist_k = tool_shortlist_k()
+            if _shortlist_k:
+                _turn_plan = await apply_tool_shortlist(
+                    _turn_plan,
+                    _last_user_text,
+                    openai_messages[:-1],
+                    _full_tools_payload,
+                    k=_shortlist_k,
+                )
+            _routing = _turn_plan.routing
+            _system_prompt_content = _turn_plan.system_prompt
+            tools_payload = _turn_plan.tools
+            if _turn_plan.model_override:
+                chat_completions_args = {
+                    **chat_completions_args,
+                    "model": _turn_plan.model_override,
+                }
+            if i == 0:
+                turn_trace.routing(
+                    user_text=_last_user_text,
+                    reason=_routing.reason,
+                    categories=list(_routing.selected_categories),
+                    small_talk=_routing.is_small_talk,
+                    tools=tools_payload,
+                    shortlist=_turn_plan.shortlist,
+                    model=str(chat_completions_args.get("model") or ""),
+                )
             if _routing.is_small_talk:
-                _system_prompt_content = SMALL_TALK_SYSTEM_PROMPT
-                tools_payload = []
-                if _routing.primary_model_override:
-                    chat_completions_args = {
-                        **chat_completions_args,
-                        "model": _routing.primary_model_override,
-                    }
                 logger.info(
                     "sage_routing: small-talk fast-path engaged (model=%s, "
                     "msg_len=%d)",
                     chat_completions_args.get("model"),
                     len(_last_user_text),
                 )
-            else:
-                _system_prompt_content = apply_life_harness_system_prompt(
-                    system_prompt_provider.get_system_prompt(),
-                    _last_user_text,
-                )
-                if _routing.selected_categories:
-                    _before = len(tools_payload)
-                    tools_payload = filter_tools_by_categories(
-                        tools_payload,
-                        _routing.selected_categories,
-                        excluded_tool_names=_routing.excluded_tool_names,
-                    )
-                    logger.info(
-                        "sage_routing: filtered tools by %s (%d -> %d, excluded=%s)",
-                        _routing.reason,
-                        _before,
-                        len(tools_payload),
-                        ",".join(sorted(_routing.excluded_tool_names)) or "-",
-                    )
-                elif _routing.excluded_tool_names:
-                    _before = len(tools_payload)
-                    _excluded = set(_routing.excluded_tool_names)
-                    tools_payload = [
-                        tool
-                        for tool in tools_payload
-                        if tool.get("function", {}).get("name", "") not in _excluded
-                    ]
-                    logger.info(
-                        "sage_routing: excluded tools by evidence decision (%d -> %d, excluded=%s)",
-                        _before,
-                        len(tools_payload),
-                        ",".join(sorted(_routing.excluded_tool_names)),
-                    )
-                else:
-                    # Always log the default-path decision so we can spot
-                    # small-talk that's slipping through the regex. Truncate
-                    # to 60 chars to avoid leaking long user input to logs.
-                    _preview = _last_user_text[:60].replace("\n", " ")
-                    logger.info(
-                        "sage_routing: default path (reason=%s, msg_len=%d, preview=%r)",
-                        _routing.reason, len(_last_user_text), _preview,
-                    )
 
             _llm_messages = [
                 {
@@ -3015,7 +2845,7 @@ async def process_chat_interaction_task(
                 **chat_completions_args,
                 messages=_llm_messages,
                 tools=tools_payload if tools_payload else None,
-                tool_choice="auto" if tools_payload else None,
+                tool_choice=_turn_plan.tool_choice,
                 max_tokens=_max_tokens,
             )
 
@@ -3046,9 +2876,19 @@ async def process_chat_interaction_task(
 
                     _last_err: Optional[APIError] = None
                     _attempted_models: list[str] = []
+                    _rate_limit_retries = 0
 
                     content_parts: list[str] = []
                     tool_calls_acc: dict[int, dict] = {}
+                    # Abdication guard: on the first model call of a turn, hold
+                    # streamed prose back until we know the model called no
+                    # tool; a guarded retry may replace it with a tool call.
+                    _guard_armed = (
+                        abdication_guard_enabled()
+                        and bool(tools_payload)
+                        and bool(openai_messages)
+                        and openai_messages[-1].get("role") == "user"
+                    )
 
                     for _model_idx, _model_name in enumerate(_model_chain):
                         # Reset accumulators for each attempt
@@ -3080,6 +2920,18 @@ async def process_chat_interaction_task(
                             )
                         else:
                             _attempt_client = client
+                        _generation = turn_trace.generation(
+                            model=_model_name,
+                            messages=_llm_messages,
+                            tools=_attempt_tools,
+                            step=i,
+                            attempt=_model_idx,
+                            parameters={
+                                "max_tokens": _max_tokens,
+                                "tool_choice": _attempt_kwargs["tool_choice"],
+                                "input_tokens_estimate": _input_est,
+                            },
+                        )
                         try:
                             # Per-attempt scrubber so Nemotron's
                             # `<tool_call>...</tool_call>` text emissions don't
@@ -3091,12 +2943,14 @@ async def process_chat_interaction_task(
                             async for chunk in stream:
                                 if not chunk.choices:
                                     continue
+                                _generation.first_token()
                                 delta = chunk.choices[0].delta
                                 if delta.content:
                                     _safe = _xml_scrub.feed(delta.content)
                                     if _safe:
                                         content_parts.append(_safe)
-                                        await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
+                                        if not _guard_armed:
+                                            await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
                                         idx = tc.index
@@ -3119,13 +2973,21 @@ async def process_chat_interaction_task(
                             _tail = _xml_scrub.flush()
                             if _tail:
                                 content_parts.append(_tail)
-                                await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
+                                if not _guard_armed:
+                                    await kue_stream_token(conversation.id, _tail, turn_id=turn_id)
                             # Success
+                            _generation.end(output={
+                                "content": "".join(content_parts) or None,
+                                "tool_calls": [tool_calls_acc[k] for k in sorted(tool_calls_acc)],
+                            })
+                            if _model_name != _primary_model:
+                                turn_trace.flag("fallback_model")
                             _last_err = None
                             break
                         except APIError as _api_err:
                             _last_err = _api_err
                             _err_str = str(_api_err)
+                            _generation.end(level="ERROR", status=_err_str)
                             _is_upstream_5xx = (
                                 "Provider returned error" in _err_str
                                 or " 500" in _err_str or " 502" in _err_str or " 503" in _err_str or " 504" in _err_str
@@ -3156,10 +3018,32 @@ async def process_chat_interaction_task(
                                     or (hasattr(_api_err, "status_code") and getattr(_api_err, "status_code", 0) == 400)
                                 )
                             )
+                            # A per-minute rate limit (free models: 20/min) is
+                            # waited out and the same model retried, as long as
+                            # nothing has streamed; a daily cap is not.
+                            _rl_wait = rate_limit_retry_after(_api_err)
+                            if (
+                                _rl_wait is not None
+                                and _rate_limit_retries < RATE_LIMIT_RETRIES
+                                and not content_parts
+                                and not tool_calls_acc
+                            ):
+                                _rate_limit_retries += 1
+                                turn_trace.flag("rate_limited")
+                                logger.warning(
+                                    "LLM model %s rate-limited; retrying in %.1fs (%d/%d)",
+                                    _model_name, _rl_wait, _rate_limit_retries, RATE_LIMIT_RETRIES,
+                                )
+                                await asyncio.sleep(_rl_wait)
+                                _model_chain.insert(_model_idx + 1, _model_name)
+                                continue
                             _has_more_in_chain = _model_idx + 1 < len(_model_chain)
+                            # A rate limit that waiting cannot fix (a daily
+                            # cap) moves on to the next model in the chain.
+                            _is_rate_limited = getattr(_api_err, "status_code", None) == 429
                             _can_retry = (
                                 _has_more_in_chain
-                                and (_is_upstream_5xx or _is_payload_400)
+                                and (_is_upstream_5xx or _is_payload_400 or _is_rate_limited)
                                 and len(content_parts) == 0
                                 and len(tool_calls_acc) == 0
                             )
@@ -3176,6 +3060,41 @@ async def process_chat_interaction_task(
                     try:
                         if _last_err is not None:
                             raise _last_err
+                        # Recorded whether or not the guard is on, so the
+                        # flight recorder shows the abdication rate either way.
+                        _abdicated = (
+                            bool(openai_messages)
+                            and openai_messages[-1].get("role") == "user"
+                            and is_abdication(
+                                _turn_plan, _last_user_text, "".join(content_parts), bool(tool_calls_acc)
+                            )
+                        )
+                        if _abdicated:
+                            turn_trace.flag("abdication")
+                        if _guard_armed:
+                            if _abdicated:
+                                turn_trace.flag("guard_fired")
+                                _guard_step = turn_trace.observe(
+                                    "abdication_guard",
+                                    kind="guardrail",
+                                    input={"held_back_reply": "".join(content_parts)},
+                                )
+                                _guard_calls = await _run_abdication_guard(
+                                    _attempt_client, _attempt_kwargs, _last_user_text,
+                                    openai_messages[:-1], _full_tools_payload,
+                                )
+                                _guard_step.end(
+                                    output={"tool_calls": [_guard_calls[k] for k in sorted(_guard_calls)]},
+                                    level=None if _guard_calls else "WARNING",
+                                    status=None if _guard_calls else "retry made no tool call; prose kept",
+                                )
+                                if _guard_calls:
+                                    turn_trace.flag("guard_recovered")
+                                    tool_calls_acc = _guard_calls
+                                    content_parts = []
+                            if content_parts:
+                                # Release the held-back prose in one piece.
+                                await kue_stream_token(conversation.id, "".join(content_parts), turn_id=turn_id)
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         full_content = "".join(content_parts) or None
@@ -3234,12 +3153,17 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
+                        turn_trace.flag("llm_error")
                         _is_context_overflow = (
                             e.code == "context_length_exceeded"
                             or "context length" in str(e).lower()
                             or "maximum context" in str(e).lower()
                         )
-                        if _is_context_overflow:
+                        _quota_message = rate_limit_user_message(e)
+                        if _quota_message:
+                            turn_trace.flag("rate_limited")
+                            await kue_notify_error(conversation.id, _quota_message)
+                        elif _is_context_overflow:
                             await kue_notify_error(
                                 conversation.id,
                                 "Maximum context length for LLM has been reached. Please create a new chat to continue using the chat feature.",
@@ -3260,6 +3184,7 @@ async def process_chat_interaction_task(
                         if content_parts:
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM unexpected error: %s", e, exc_info=True)
+                        turn_trace.flag("llm_error")
                         await kue_notify_error(
                             conversation.id,
                             "Error connecting to LLM. This is probably a bug with Mundi, please open a new issue on GitHub.",
@@ -3276,6 +3201,7 @@ async def process_chat_interaction_task(
             try:
                 if redis.get(f"messages:{map_id}:cancelled"):
                     redis.delete(f"messages:{map_id}:cancelled")
+                    turn_trace.flag("cancelled")
                     # Same WS done=True signal as the pre-LLM cancel branch,
                     # so the frontend clears its spinner.
                     try:
@@ -3290,6 +3216,7 @@ async def process_chat_interaction_task(
             await add_chat_completion_message(assistant_message)
 
             if not assistant_message.tool_calls:
+                turn_trace.set_output(assistant_message.content)
                 break
 
             # Fetch project_id for this map once for all tool calls
@@ -3317,6 +3244,8 @@ async def process_chat_interaction_task(
                             else "hardcoded"
                         )
                     )
+                    turn_trace.tool_started(tool_call.id, function_name, tool_args)
+                    _tool_calls_by_id[tool_call.id] = (function_name, tool_args)
                     _tool_observability_contexts[tool_call.id] = build_sage_tool_context(
                         tool_name=function_name,
                         tool_args=tool_args,

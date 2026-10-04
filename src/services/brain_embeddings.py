@@ -298,7 +298,11 @@ def _ollama_embed_one(base_url: str, model: str, text: str, timeout: int = 60) -
     """Call Ollama /api/embeddings for a single string. Synchronous: Ollama
     serializes inference per model anyway, so async wouldn't buy throughput.
     """
-    payload = json.dumps({"model": model, "prompt": text}).encode()
+    # Keep the model loaded between calls: after Ollama's default 5 idle
+    # minutes it unloads, and reloading took ~60 s locally (measured
+    # 2026-10-03), which every Brain search and Sage turn would then wait on.
+    keep_alive = os.environ.get("BRAIN_EMBEDDINGS_KEEP_ALIVE", "24h")
+    payload = json.dumps({"model": model, "prompt": text, "keep_alive": keep_alive}).encode()
     req = urllib.request.Request(
         f"{base_url}/api/embeddings",
         data=payload,
@@ -311,6 +315,16 @@ def _ollama_embed_one(base_url: str, model: str, text: str, timeout: int = 60) -
     if not isinstance(emb, list) or not emb:
         raise RuntimeError(f"Ollama returned no embedding (model={model}, body keys={list(body.keys())})")
     return [float(x) for x in emb]
+
+
+async def embed_texts(texts: list[str]) -> tuple[list[list[float]], str]:
+    """Embeddings for a batch of texts with the configured provider.
+
+    The public entry point for other modules (e.g. the Sage tool shortlist).
+    Returns (embeddings, resolved_model_name); raises RuntimeError when
+    embeddings are disabled or the provider fails.
+    """
+    return await _get_embeddings(texts)
 
 
 async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:

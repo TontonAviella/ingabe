@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,18 @@ class GeospatialEvidenceDecision:
 
 
 RASTER_OBJECT_CANDIDATES_TOOL = "analyze_raster_object_candidates"
+ADMIN_BOUNDARY_TOOL = "show_admin_boundary"
+RASTER_H3_CONTEXT_TOOL = "create_raster_h3_context_layer"
+RASTER_FACT_TOOL = "describe_user_raster"
+
+# Tools that build_fast_tool_call can return and that message_routes runs
+# deterministically, without a model call, when the map state allows it.
+FAST_PATH_TOOLS = frozenset({
+    ADMIN_BOUNDARY_TOOL,
+    RASTER_H3_CONTEXT_TOOL,
+    RASTER_OBJECT_CANDIDATES_TOOL,
+    RASTER_FACT_TOOL,
+})
 
 # Map tool name -> category. Tools not in this dict are treated as
 # "uncategorized" and included whenever we cannot rule them out (i.e.
@@ -405,9 +418,14 @@ def classify_intent(text: str) -> frozenset[str]:
 _ADMIN_ANALYSIS_BLOCKERS = re.compile(
     r"\b("
     r"ndvi|ndwi|nbr|evi|savi|ndre|ndbi|index|indices|satellite|sentinel|"
-    r"weather|forecast|rain|rainfall|temperature|drought|flood|soil|crop|"
+    r"weather|forecast|rain|rainfall|temperature|drought|flood\w*|soil|crop|"
     r"yield|harvest|insurance|risk|analy[sz]e|analysis|statistics?|stats|"
-    r"zonal|land\s*cover|worldcover|emissions?|food\s+security"
+    r"zonal|land\s*cover|worldcover|emissions?|food\s+security|"
+    # Data, imagery and asset requests about a place are not boundary displays.
+    r"imagery|images?|optical|photos?|ortho\w*|raster|radar|sar|layers?|"
+    r"exposure|buildings?|houses?|ponds?|reservoirs?|water\w*|"
+    # Natural features are not admin units; geocode them (search_location).
+    r"lakes?|parks?|forests?|rivers?|wetlands?|mountains?|volcano\w*|national"
     r")\b",
     re.IGNORECASE,
 )
@@ -424,9 +442,58 @@ _ADMIN_DISPLAY_REQUEST_RE = (
 )
 
 
+_DISTRICTS_LOWER = {d.lower() for d in RWANDA_DISTRICTS}
+_ADMIN_UNITS_RE = r"(?:villages|cells|sectors)"
+
+# Rewrites into the English display phrasing the parser below understands.
+# Order matters: language translations first, then request shapes. Names are
+# kept verbatim. Kinyarwanda and French terms need native-speaker review.
+_ADMIN_PROMPT_REWRITES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # French: "Montre-moi les secteurs de Huye sur la carte"
+    (re.compile(r"(?i)\b(?:montre[sz]?|affiche[sz]?)(?:[-\s]moi)?\b"), "show me"),
+    (re.compile(r"(?i)\bsur\s+la\s+carte\b"), "on the map"),
+    (re.compile(r"(?i)\b(?:les\s+)?secteurs\s+(?:de|du|d')\s*"), "the sectors of "),
+    (re.compile(r"(?i)\b(?:les\s+)?cellules\s+(?:de|du|d')\s*"), "the cells of "),
+    (re.compile(r"(?i)\b(?:les\s+)?villages\s+(?:de|du|d')\s*"), "the villages of "),
+    (re.compile(r"(?i)\b(?:le\s+)?district\s+(?:de|du|d')\s*([A-Za-z'-]+)"), r"\1 district"),
+    # Kinyarwanda: "Nyereka akarere ka Nyanza ku ikarita"
+    (re.compile(r"(?i)\b(?:nyereka|twereka|erekana)\b"), "show me"),
+    (re.compile(r"(?i)\bku\s+ikarita\b"), "on the map"),
+    (re.compile(r"(?i)\bakarere\s+ka\s+([A-Za-z'-]+)"), r"\1 district"),
+    (re.compile(r"(?i)\bumurenge\s+wa\s+([A-Za-z'-]+)"), r"\1 sector"),
+    (re.compile(r"(?i)\bakagari\s+ka\s+([A-Za-z'-]+)"), r"\1 cell"),
+    (re.compile(r"(?i)\bumudugudu\s+wa\s+([A-Za-z'-]+)"), r"\1 village"),
+    # "Nyagatare district with its cells" -> "the cells of Nyagatare district"
+    (re.compile(rf"(?i)\b([A-Za-z'-]+)\s+district\s+with\s+(?:its|the|all)\s+(?:the\s+)?({_ADMIN_UNITS_RE})\b"),
+     r"the \2 of \1 district"),
+    # "take me to Kirehe"
+    (re.compile(r"(?i)^(?:please\s+)?(?:take|bring)\s+(?:me|us)\s+to\s+"), "show me "),
+    # Listing or counting units is answered by displaying them:
+    # "list the sectors in X", "which sectors are in X district",
+    # "how many sectors does X have", "tell me the sectors of X".
+    (re.compile(rf"(?i)^(?:please\s+)?(?:list|name|tell\s+(?:me|us)|give\s+(?:me|us)|"
+                rf"what\s+are|which|how\s+many)\s+(?:all\s+)?(?:the\s+)?({_ADMIN_UNITS_RE})\s+"
+                rf"(?:are\s+(?:there\s+)?in|does|do|in|of|within)\s+"), r"show the \1 in "),
+    (re.compile(r"(?i)\s+(?:have|has|contain|contains)\s*([?.!]*)$"), r"\1"),
+    # A bare "cells of X"
+    (re.compile(rf"(?i)^(?:the\s+)?({_ADMIN_UNITS_RE})\s+(of|in)\s+"), r"show the \1 \2 "),
+)
+
+
+def _normalize_admin_prompt(text: str) -> str:
+    prompt = " ".join(str(text or "").strip().split())
+    for pattern, replacement in _ADMIN_PROMPT_REWRITES:
+        prompt = pattern.sub(replacement, prompt)
+    # "Karushuga, Nyagatare": a place name followed by a known district.
+    place_in_district = re.match(r"^([A-Za-z][A-Za-z' -]{1,40}?)\s*,\s*([A-Za-z'-]+)\s*[?.!]*$", prompt)
+    if place_in_district and place_in_district.group(2).lower() in _DISTRICTS_LOWER:
+        prompt = f"show me {place_in_district.group(1)} in {place_in_district.group(2)}"
+    return " ".join(prompt.split())
+
+
 def detect_admin_boundary_display(text: str) -> bool:
     """True for pure Rwanda admin boundary/location display requests."""
-    stripped = " ".join(str(text or "").strip().split())
+    stripped = _normalize_admin_prompt(text)
     if not stripped or _ADMIN_ANALYSIS_BLOCKERS.search(stripped):
         return False
 
@@ -496,7 +563,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
         return None
-    prompt = " ".join(str(text or "").strip().split())
+    prompt = _normalize_admin_prompt(text)
 
     child_match = re.search(
         rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
@@ -526,11 +593,10 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     if implicit_child_match:
         child_level = implicit_child_match.group(1).lower().rstrip("s")
         parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
-        parent_level = {
-            "sector": "district",
-            "cell": "sector",
-            "village": "cell",
-        }.get(child_level)
+        parent_level = (
+            "district" if parent_name.lower() in _DISTRICTS_LOWER
+            else {"sector": "district", "cell": "sector", "village": "cell"}.get(child_level)
+        )
         if parent_level and not _is_admin_boundary_placeholder_name(parent_name):
             args = {"admin_level": child_level, "name": "*"}
             args[parent_level] = parent_name
@@ -557,6 +623,11 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     )
     if simple:
         name = _clean_admin_boundary_candidate(simple.group(1))
+        # "Busasamana in Nyanza": the tool matches names exactly, so pass the
+        # district as a filter instead of inside the name.
+        within = re.match(r"(?i)^(.+?)\s+(?:in|,)\s+([A-Za-z'-]+)$", name)
+        if within and within.group(2).lower() in _DISTRICTS_LOWER:
+            return {"admin_level": "auto", "name": within.group(1).strip(), "district": within.group(2)}
         if name and not _is_admin_boundary_placeholder_name(name):
             return {"admin_level": "auto", "name": name}
 
@@ -576,8 +647,28 @@ _RASTER_AREA_KEYWORDS = re.compile(
 )
 
 _RASTER_OBJECT_KEYWORDS = re.compile(
-    r"\b(raster|drone|ortho(?:photo|mosaic)?|orthophoto|image|cog|"
+    r"\b(raster|drone|ortho(?:photo|mosaic)?\d*|orthophoto\d*|image|cog|"
     r"tiff|geotiff|layer|file|upload(?:ed)?|field)\b",
+    re.IGNORECASE,
+)
+
+# An explicit reference to imagery. Generic words ("layer", "field", "file")
+# are not enough: "buffer the roads layer" is not a raster question.
+_RASTER_REFERENCE_KEYWORDS = re.compile(
+    r"\b(raster|drone|ortho(?:photo|mosaic)?\d*|orthophoto\d*|images?|imagery|photo|"
+    r"cog|tiff|geotiff|mosaic)\b",
+    re.IGNORECASE,
+)
+
+# Requests that belong to another tool even when they mention a raster: NDVI
+# rasters (stress zones, change), RGB greenness, vector operations and styling,
+# grids and H3 layers, precision-ag outputs, insurance, land cover, attribute
+# queries and brain notes.
+_RASTER_FAST_PATH_BLOCKERS = re.compile(
+    r"\b(ndvi|ndwi|grvi|green(?:ness)?|buffer|clip|dissolve|reproject|style|"
+    r"colou?r|paint|grid|hexagons?|h3|management\s+zones?|prescription|sampling|"
+    r"insurance|trigger|payout|land\s*cover|worldcover|features?|parcels?|"
+    r"observation|visit|log|note|record)\b",
     re.IGNORECASE,
 )
 
@@ -585,7 +676,8 @@ _RASTER_CONTEXT_KEYWORDS = re.compile(
     r"\b(analy[sz]e|analysis|where|most|many|cluster|concentrat(?:e|ed|ion)?|"
     r"visible|happening|seeing|inspect|attention|priority|zone|zones|"
     r"risk|damage|problem|issue|context|summary|summari[sz]e|density|"
-    r"densities|hotspot|hotspots|areas?|built[-\s]?up|builtup)\b",
+    r"densities|hotspot|hotspots|areas?|built[-\s]?up|builtup|"
+    r"something|describe|overview|about)\b",
     re.IGNORECASE,
 )
 
@@ -633,7 +725,7 @@ _RASTER_CONTEXT_DOMAIN_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 _RASTER_BUILDING_ASSET_KEYWORDS = re.compile(
     r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
-    r"settlement|settlements)\b",
+    r"settlement|settlements|amazu|inzu)\b",
     re.IGNORECASE,
 )
 
@@ -642,7 +734,7 @@ _RASTER_OBJECT_TARGET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "building",
         re.compile(
             r"\b(house|houses|home|homes|housing|building|buildings|roof|roofs|"
-            r"settlement|settlements)\b",
+            r"settlement|settlements|amazu|inzu)\b",
             re.IGNORECASE,
         ),
     ),
@@ -713,7 +805,7 @@ _RASTER_SURFACE_ANALYSIS_KEYWORDS = re.compile(
 
 _RASTER_EXACT_COUNT_KEYWORDS = re.compile(
     r"\b(how\s+many|count|counts|counted|number\s+of|total|exact|"
-    r"confirmed|enumerate|quantity)\b",
+    r"confirmed|enumerate|quantity|bara)\b",
     re.IGNORECASE,
 )
 
@@ -1010,6 +1102,8 @@ def detect_raster_area_question(text: str) -> bool:
     normalized_prompt = _normalize_raster_name(prompt)
     if not _RASTER_AREA_KEYWORDS.search(normalized_prompt):
         return False
+    if _RASTER_FAST_PATH_BLOCKERS.search(normalized_prompt):
+        return False
     return bool(_RASTER_OBJECT_KEYWORDS.search(normalized_prompt))
 
 
@@ -1034,7 +1128,9 @@ def detect_raster_context_question(text: str) -> bool:
     if not prompt:
         return False
     normalized_prompt = _normalize_raster_name(prompt)
-    if not _RASTER_OBJECT_KEYWORDS.search(normalized_prompt):
+    if not _RASTER_REFERENCE_KEYWORDS.search(normalized_prompt):
+        return False
+    if _RASTER_FAST_PATH_BLOCKERS.search(normalized_prompt):
         return False
     if _RASTER_CONTEXT_KEYWORDS.search(prompt):
         return True
@@ -1111,14 +1207,39 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
     return hits / len(name_tokens)
 
 
+
+def select_fast_raster_layer(question: str, rows: list) -> dict | None:
+    """The raster a deterministic fast path should use, or None to fall back.
+
+    ``rows`` are the raster layers on the map (mappings with a ``name``).
+    Used by message_routes' fast-path handlers and the routing eval.
+    """
+    if not rows:
+        return None
+
+    scored: list[tuple[float, object]] = []
+    for row in rows:
+        scored.append((raster_layer_match_score(question, str(row["name"] or "")), row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_score, top_row = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    if top_score >= 0.75 or (top_score >= 0.5 and top_score > second_score):
+        return dict(top_row)
+
+    # "this raster/orthophoto" is safe only when the map has exactly one raster.
+    if len(rows) == 1:
+        return dict(rows[0])
+    return None
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     decision = choose_geospatial_evidence_path(text)
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
         args = build_admin_boundary_tool_args(text)
         if args:
-            return FastToolCall("show_admin_boundary", args, "fast:admin_boundary")
+            return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
-        return FastToolCall("describe_user_raster", {}, "fast:raster_area")
+        return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
     if (
         decision.should_fast_route
         and decision.primary_tool == RASTER_OBJECT_CANDIDATES_TOOL
@@ -1142,7 +1263,7 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
     raster_context_args = build_raster_context_tool_args(text)
     if raster_context_args:
         return FastToolCall(
-            "create_raster_h3_context_layer",
+            RASTER_H3_CONTEXT_TOOL,
             raster_context_args,
             "fast:raster_context",
         )

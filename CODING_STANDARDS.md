@@ -158,6 +158,9 @@ lines; promote a lesson that recurs into the sections above.
 - **2026-10-03** A test asserted a warning through `caplog`; it passed alone and failed in
   CI, because once lifespan runs, `src` loggers stop propagating to caplog's handler.
   Rule: assert on a module's logs by patching its logger. Gate: `caplog`.
+- **2026-10-02** Sage's deterministic fast paths matched generic words ("layer",
+  "field", "zoom to X"): 25 of 279 eval requests took the wrong tool with no model
+  call. Rule: a deterministic route needs negative cases too. Gate: eval-corpus test.
 - **2026-10-02** CI workers all died at 60 s (`node down`). I first blamed OOM; the
   evidence said pytest-timeout killed them while an autouse fixture ran migrations.
   Rule: capture the evidence (dmesg, timings) before fixing a crash. Gate: CI diagnose step.

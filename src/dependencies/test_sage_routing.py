@@ -829,3 +829,132 @@ def test_extract_last_user_text_multipart() -> None:
 def test_extract_last_user_text_no_user_msg() -> None:
     msgs = [{"role": "system", "content": "you are sage"}]
     assert extract_last_user_text(msgs) == ""
+
+
+# Misfires found by the routing eval (evals/sage_routing): requests that are
+# not admin-boundary displays or raster analyses must not take those
+# deterministic fast paths; they fall through to the model.
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "zoom to Lake Kivu",
+        "zoom to Volcanoes National Park",
+        "go to Akagera park",
+        "map flooded areas in Rwamagana",
+        "find ponds in Musanze with radar",
+        "map small reservoirs in Karongi",
+        "display the latest optical image for Kayonza",
+        "show building exposure in Kigali using Open Buildings",
+    ],
+)
+def test_admin_boundary_fast_path_skips_places_data_and_imagery(msg: str) -> None:
+    assert detect_admin_boundary_display(msg) is False
+    fast = build_fast_tool_call(msg)
+    assert fast is None or fast.tool_name != "show_admin_boundary"
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "put an NDVI layer for Gatsibo on the map",
+        "draw a 500 m zone around the schools layer",
+        "create a 1 km buffer around the roads layer",
+        "cut the roads layer to the Rubavu boundary",
+        "keep only the parts of the farms layer inside Kayonza",
+        "clip the roads layer to Huye district",
+        "colour the sectors layer by NDVI",
+        "make the farms layer red",
+        "log a field visit in Kayonza: beans look healthy",
+        "where is the stress in my NDVI raster Plot7_NDVI?",
+        "NDVI for my uploaded field boundaries this week",
+        "create management zones for this field",
+        "evaluate the insurance trigger on my two drone NDVI flights",
+        "how many features are in the parcels layer?",
+        "make an H3 insight layer of housing density in Musanze",
+        "add the land cover layer for Rwanda",
+        "field coverage and greenness in this orthophoto",
+    ],
+)
+def test_raster_fast_paths_skip_other_tools_requests(msg: str) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is None or fast.tool_name not in {
+        "create_raster_h3_context_layer",
+        "describe_user_raster",
+    }
+
+
+def test_fast_paths_never_misfire_on_routing_eval_cases() -> None:
+    """Every case in evals/sage_routing: a fast path may stay silent, but when
+    it fires it must pick a tool the case accepts."""
+    import json
+    from pathlib import Path
+
+    from evals.sage_routing import scoring
+    from src.dependencies.sage_routing import FAST_PATH_TOOLS
+
+    eval_dir = Path(__file__).resolve().parents[2] / "evals" / "sage_routing"
+    catalog = json.loads((eval_dir / "tool_catalog.json").read_text())
+    misfires = []
+    for path in sorted((eval_dir / "cases").glob("*.jsonl")):
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            case = scoring.effective_case(json.loads(line), catalog)
+            fast = build_fast_tool_call(case["text"])
+            accepted = set(case["expect"].get("any_of") or [])
+            if fast and fast.tool_name in FAST_PATH_TOOLS and fast.tool_name not in accepted:
+                misfires.append(f"{case['id']}: {fast.tool_name} for {case['text']!r}")
+    assert misfires == []
+
+
+# Requests the deterministic admin/raster fast paths missed before, with the
+# arguments they must produce (Kinyarwanda / French need native review).
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ("take me to Kirehe", {"admin_level": "auto", "name": "Kirehe"}),
+        ("list the sectors in Kicukiro", {"admin_level": "sector", "name": "*", "district": "Kicukiro"}),
+        ("how many sectors does Nyagatare have?", {"admin_level": "sector", "name": "*", "district": "Nyagatare"}),
+        ("which sectors are in Burera district?", {"admin_level": "sector", "name": "*", "district": "Burera"}),
+        ("tell me the sectors of nyanza ?", {"admin_level": "sector", "name": "*", "district": "nyanza"}),
+        ("cells of nyagatare ?", {"admin_level": "cell", "name": "*", "district": "nyagatare"}),
+        ("show me the cells in Nyagatare ?", {"admin_level": "cell", "name": "*", "district": "Nyagatare"}),
+        ("show me nyagatare district with its cells on the map",
+         {"admin_level": "cell", "name": "*", "district": "nyagatare"}),
+        ("show me busasamana in nyanza ?", {"admin_level": "auto", "name": "busasamana", "district": "nyanza"}),
+        ("karushuga , Nyagatare", {"admin_level": "auto", "name": "karushuga", "district": "Nyagatare"}),
+        ("Nyereka akarere ka Nyanza ku ikarita", {"admin_level": "district", "name": "Nyanza"}),
+        ("Montre-moi les secteurs de Huye sur la carte", {"admin_level": "sector", "name": "*", "district": "Huye"}),
+    ],
+)
+def test_admin_fast_path_new_phrasings(msg: str, expected: dict) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == "show_admin_boundary"
+    assert fast.arguments == expected
+
+
+@pytest.mark.parametrize(
+    ("msg", "tool"),
+    [
+        ("show where there is houses in Farm_C_Orthophoto3?", "analyze_raster_object_candidates"),
+        ("Bara amazu ari muri Farm_A_Orthophoto", "analyze_raster_object_candidates"),
+        ("tell us something about this Farm_A_Orthophoto ?", "create_raster_h3_context_layer"),
+    ],
+)
+def test_raster_fast_path_new_phrasings(msg: str, tool: str) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == tool
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "ok, thanks",          # not "<place>, <district>"
+        "hello, Sage",
+        "how many hectares are in Nyagatare district?",  # area, not a unit listing
+        "tell me about soil in Huye district",
+    ],
+)
+def test_admin_fast_path_still_ignores_non_displays(msg: str) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is None or fast.tool_name != "show_admin_boundary"
