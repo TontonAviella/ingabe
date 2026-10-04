@@ -803,8 +803,8 @@ def nightly_ndvi_vector_tiles(
 
     Pipeline:
     1. Read latest NDVI from DuckDB cache (district + cell level)
-    2. Join with PostGIS admin boundaries to get H3 centroids
-    3. Generate H3 hexagons at resolution 7 (district) and 9 (cell)
+    2. Place values on hexagons from the H3 admin index (h3_admin_cells)
+    3. District NDVI on resolution-8 hexagons, cell NDVI on resolution-9
     4. Export as GeoJSON → tippecanoe → PMTiles → S3
 
     The resulting PMTiles file is served by the vector tile endpoint:
@@ -853,105 +853,54 @@ def nightly_ndvi_vector_tiles(
         len(district_rows), len(cell_rows),
     )
 
-    # Get admin boundary centroids for H3 gridding
-    district_centroids = {}
-    cell_centroids = {}
-    try:
-        district_centroid_rows = postgres.execute_query("""
-            SELECT district, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
-                   bbox_west, bbox_south, bbox_east, bbox_north
-            FROM rwanda_district_boundaries
-        """)
-        for row in (district_centroid_rows or []):
-            district_centroids[row[0]] = {
-                "lng": row[1], "lat": row[2],
-                "bbox": [row[3], row[4], row[5], row[6]],
-            }
-    except Exception:
-        pass
+    # Hexagons come from the H3 admin index (each resolution-9 hexagon matched
+    # to its district and cell by area). District NDVI goes on the resolution-8
+    # hexagons that are mostly in that district; cell NDVI on every
+    # resolution-9 hexagon of the cell. (Before: hexagons over each district's
+    # bounding box, so neighbours' land got the value and overlaps were drawn
+    # twice; and one hexagon at a cell's centroid stood for a whole cell.)
+    from src.services import h3_admin_index  # lazy: h3/shapely, only this asset needs them
 
-    try:
-        cell_centroid_rows = postgres.execute_query("""
-            SELECT cell_name, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
-                   district_name
-            FROM rwanda_cell_boundaries
-        """)
-        for row in (cell_centroid_rows or []):
-            cell_centroids[row[0]] = {
-                "lng": row[1], "lat": row[2], "district": row[3],
-            }
-    except Exception:
-        pass
-
-    import h3
+    index_rows = postgres.execute_query(
+        "SELECT h3_index, district, cell_name, cell_id FROM h3_admin_cells"
+    ) or []
+    if not index_rows:
+        context.log.warning("h3_admin_cells is empty — run h3_admin_index_job first; no tiles built")
+        return {"status": "no_h3_admin_index", "features": 0}
 
     features = []
-
-    # ── District-level H3 (resolution 7, ~5.16 km²) ──────────────────────
-    for row in district_rows:
-        district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
-        centroid = district_centroids.get(district)
-        if not centroid:
+    by_district = {row[0].lower(): row for row in district_rows}
+    district_hexes = h3_admin_index.coarser_main_units(((r[0], r[1]) for r in index_rows), 8)
+    for h3_id, district in district_hexes.items():
+        row = by_district.get(str(district).lower())
+        if row is None:
             continue
-
-        # Generate H3 cells covering the district bbox
-        bbox = centroid["bbox"]
-        boundary_polygon = {
-            "type": "Polygon",
-            "coordinates": [[
-                [bbox[0], bbox[1]], [bbox[2], bbox[1]],
-                [bbox[2], bbox[3]], [bbox[0], bbox[3]],
-                [bbox[0], bbox[1]],
-            ]],
-        }
-        h3_cells = h3.geo_to_cells(boundary_polygon, res=7)
-
-        for h3_id in h3_cells:
-            boundary = h3.cell_to_boundary(h3_id)
-            coords = [[lng, lat] for lat, lng in boundary]
-            coords.append(coords[0])
-
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "h3": h3_id,
-                    "res": 7,
-                    "district": district,
-                    "ndvi": round_or_none(mean_ndvi, 4),
-                    "ndvi_std": round_or_none(std_ndvi, 4),
-                    "date": str(week_start) if week_start else None,
-                    "level": "district",
-                    "pixels": valid_pixels,
-                },
-                "geometry": {"type": "Polygon", "coordinates": [coords]},
-            })
-
-    # ── Cell-level H3 (resolution 9, ~0.1 km²) ──────────────────────────
-    for row in cell_rows:
-        cell_name, district_name, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
-        centroid = cell_centroids.get(cell_name)
-        if not centroid:
-            continue
-
-        h3_id = h3.latlng_to_cell(centroid["lat"], centroid["lng"], 9)
-        boundary = h3.cell_to_boundary(h3_id)
-        coords = [[lng, lat] for lat, lng in boundary]
-        coords.append(coords[0])
-
+        _, week_start, mean_ndvi, std_ndvi, _min, _max, valid_pixels = row
         features.append({
             "type": "Feature",
             "properties": {
-                "h3": h3_id,
-                "res": 9,
-                "district": district_name or centroid.get("district"),
-                "cell": cell_name,
-                "ndvi": round_or_none(mean_ndvi, 4),
-                "ndvi_std": round_or_none(std_ndvi, 4),
-                "date": str(week_start) if week_start else None,
-                "level": "cell",
-                "pixels": valid_pixels,
+                "h3": h3_id, "res": 8, "district": row[0], "level": "district",
+                "ndvi": round_or_none(mean_ndvi, 4), "ndvi_std": round_or_none(std_ndvi, 4),
+                "date": str(week_start) if week_start else None, "pixels": valid_pixels,
             },
-            "geometry": {"type": "Polygon", "coordinates": [coords]},
+            "geometry": h3_admin_index.outline(h3_id),
+        })
+
+    # Cell names repeat across districts, so cells are matched on (district, cell).
+    by_cell = {(str(r[1] or "").lower(), str(r[0]).lower()): r for r in cell_rows}
+    for h3_id, district, cell_name, _cell_id in index_rows:
+        row = by_cell.get((str(district or "").lower(), str(cell_name or "").lower()))
+        if row is None:
+            continue
+        _, district_name, week_start, mean_ndvi, std_ndvi, _min, _max, valid_pixels = row
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "h3": h3_id, "res": 9, "district": district_name, "cell": row[0], "level": "cell",
+                "ndvi": round_or_none(mean_ndvi, 4), "ndvi_std": round_or_none(std_ndvi, 4),
+                "date": str(week_start) if week_start else None, "pixels": valid_pixels,
+            },
+            "geometry": h3_admin_index.outline(h3_id),
         })
 
     if not features:

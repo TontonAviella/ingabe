@@ -142,6 +142,29 @@ def main_units(rows: Iterable[OverlapRow]) -> dict[str, tuple[str, str]]:
     return {h: (r.unit_id, r.unit_name) for h, r in best.items()}
 
 
+def coarser_main_units(cells: Iterable[tuple[str, Any]], resolution: int) -> dict[str, Any]:
+    """Main unit of each coarser hexagon: the unit most of its resolution-9 children belong to.
+
+    ``cells`` are (resolution-9 hexagon, its main unit) pairs from
+    h3_admin_cells. Children have equal area, so counting them is counting
+    area. Hexagons whose children are all unassigned (None) are left out.
+    """
+    counts: dict[str, dict[Any, int]] = {}
+    for h3_index, unit in cells:
+        if unit is None:
+            continue
+        parent = h3.cell_to_parent(h3_index, resolution)
+        bucket = counts.setdefault(parent, {})
+        bucket[unit] = bucket.get(unit, 0) + 1
+    return {parent: max(sorted(units, key=str), key=lambda u: units[u]) for parent, units in counts.items()}
+
+
+def outline(h3_index: str) -> dict[str, Any]:
+    """GeoJSON Polygon of a hexagon (lon/lat, closed ring)."""
+    ring = [[lng, lat] for lat, lng in h3.cell_to_boundary(h3_index)]
+    return {"type": "Polygon", "coordinates": [ring + [ring[0]]]}
+
+
 async def build(conn: Any, resolution: int = RESOLUTION) -> dict[str, Any]:
     """Rebuild both tables from the boundary tables, in one transaction."""
     started = datetime.now(timezone.utc)
