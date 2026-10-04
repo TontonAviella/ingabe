@@ -18,6 +18,9 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         sees nothing and the test passes or fails by test order
   compose-mem-limit HW  an opt-in (profiled) docker-compose service without
                         mem_limit; the local Docker VM has fixed memory
+  compose-restart   HW  a long-running docker-compose service without `restart:`
+                        (one-shot init services are exempt); it stays down after
+                        a Docker restart
   agents-md-sync    HW  CLAUDE.md does not just import AGENTS.md (`@AGENTS.md`):
                         agent guidance has one source so Claude Code and Codex
                         never drift apart
@@ -517,6 +520,30 @@ def check_compose_mem_limits() -> list[Violation]:
     ]
 
 
+def check_compose_restart_policies() -> list[Violation]:
+    """Long-running compose services must set `restart:`.
+
+    One-shot init services (another service waits on them with
+    `condition: service_completed_successfully`) are exempt.
+    """
+    path = ROOT / COMPOSE_FILE
+    if not path.exists():
+        return []
+    one_shots = set(re.findall(
+        r"^\s+([A-Za-z0-9_.-]+):\s*\n\s+condition:\s*service_completed_successfully",
+        path.read_text(encoding="utf-8"), re.MULTILINE,
+    ))
+    return [
+        Violation(
+            "compose-restart", COMPOSE_FILE, start, name,
+            f"service `{name}` has no restart policy; after a Docker restart it stays down "
+            "(Postgres and the app did on 2026-10-04)",
+        )
+        for name, start, keys in _compose_services()
+        if "restart" not in keys and name not in one_shots
+    ]
+
+
 def check_agents_md_sync() -> list[Violation]:
     """CLAUDE.md only imports AGENTS.md; guidance lives in AGENTS.md alone.
 
@@ -550,6 +577,7 @@ def collect() -> list[Violation]:
         + check_duplicate_bodies()
         + check_caplog_fixture()
         + check_compose_mem_limits()
+        + check_compose_restart_policies()
         + check_agents_md_sync()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))

@@ -143,8 +143,9 @@ Sage tool handlers and React components, 16 duplicated function bodies.
 `python scripts/check_standards.py --list` prints every entry with its line.
 
 Hygiene checks (no baseline debt): `caplog` (a test takes pytest's `caplog`
-fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`)
-and `agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
+fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`),
+`compose-restart` (a long-running compose service without `restart:`) and
+`agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
 of agent guidance).
 
 What the gate cannot see, so review and `standards-retro` must: duplicated
@@ -158,6 +159,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-04** Applying new Docker Desktop resources restarted the engine; Postgres, the app, Redis
+  and QGIS had no restart policy and stayed down until started by hand.
+  Rule: every long-running compose service sets `restart:`. Gate: `compose-restart`.
 - **2026-10-04** I restarted Dagster and ran test jobs while swap was 100% full (2.3 GB "available");
   Postgres crashed twice (02:13, 04:14 UTC). Second time after 2026-10-03: promoted to
   "The Docker VM is a shared memory budget" under How to work. Gate: alerts, plus judgement.

@@ -1,5 +1,6 @@
 services:
   app:
+    restart: unless-stopped
     container_name: mundi-app
     platform: linux/amd64
     image: "${APP_IMAGE:-mundi-public:local}"
@@ -228,6 +229,7 @@ services:
       "
 
   postgresdb:
+    restart: unless-stopped
     platform: linux/amd64
     build:
       context: .
@@ -247,6 +249,7 @@ services:
 
 
   redis:
+    restart: unless-stopped
     image: ${REDIS_IMAGE:-redis:alpine}
     command: redis-server --protected-mode no --maxmemory 2gb --maxmemory-policy allkeys-lru
     healthcheck:
@@ -301,6 +304,7 @@ services:
     restart: unless-stopped
 
   qgis-processing:
+    restart: unless-stopped
     platform: linux/amd64
     image: ${QGIS_PROCESSING_IMAGE:-qgis-processing:local}
     build:
@@ -444,6 +448,7 @@ services:
       - ingabe-cache:/tmp/ingabe_cache
 
   superset:
+    restart: unless-stopped
     platform: linux/amd64
     image: apache/superset:4.1.1
     container_name: mundi-superset

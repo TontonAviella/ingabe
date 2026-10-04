@@ -205,6 +205,26 @@ def test_profiled_compose_service_needs_mem_limit(repo):
     assert [(v.rule, v.detail) for v in found] == [("compose-mem-limit", "extra-uncapped")]
 
 
+def test_long_running_compose_service_needs_restart_policy(repo):
+    repo("docker-compose.yml", """
+        services:
+          app:
+            image: app
+            restart: unless-stopped
+            depends_on:
+              init:
+                condition: service_completed_successfully
+          init:
+            image: busybox
+          db:
+            image: postgres
+        volumes:
+          data:
+    """)
+    found = cs.check_compose_restart_policies()
+    assert [(v.rule, v.detail) for v in found] == [("compose-restart", "db")]
+
+
 def test_claude_md_must_only_import_agents_md(repo):
     repo("AGENTS.md", "# AGENTS.md\n\n## Build\n")
     repo("CLAUDE.md", "# CLAUDE.md\n\n@AGENTS.md\n")
