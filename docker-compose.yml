@@ -387,8 +387,11 @@ services:
     # Runs execute as subprocesses inside this container, so this cap bounds
     # the daemon plus its runs: an over-budget run is killed here instead of
     # pushing the Docker VM into swap and crashing Postgres (2026-10-03).
-    mem_limit: 1536m
-    memswap_limit: 1536m
+    # Measured 2026-10-04: the daemon idles at ~0.95 GB (two gRPC code servers
+    # + daemon) and one run adds up to ~0.8 GB (field NDVI 764 MB, GeoLibre
+    # probe 697 MB), so 1.5 GB OOM-killed every real job.
+    mem_limit: 2048m
+    memswap_limit: 2048m
     restart: unless-stopped
     depends_on:
       postgresdb:
