@@ -60,6 +60,7 @@ from src.dependencies.pydantic_tools import get_pydantic_tool_calls
 from src.dependencies.sage_routing import ADMIN_BOUNDARY_TOOL
 from src.dependencies.session import ServiceUserContext
 from src.routes.websocket import kue_ephemeral_action
+from src.services import data_coverage
 from src.services.sage_result_checks import apply_result_checks
 
 logger = logging.getLogger(__name__)
@@ -336,6 +337,10 @@ async def tool_call(
     )
     if checked is not None:
         tool_result = checked
+    # Say what one value covers (same as the in-process chat loop).
+    covered = data_coverage.annotate(payload.tool_name, payload.arguments or {}, tool_result)
+    if covered is not None:
+        tool_result = covered
 
     # Confirm the result is JSON-serializable before returning — FastAPI
     # will otherwise emit a confusing 500. Round-tripping catches any

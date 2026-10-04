@@ -70,6 +70,7 @@ from src.services.life_harness import (
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
+from src.services import data_coverage
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     UnsupportedAlgorithmError,
@@ -2491,6 +2492,10 @@ async def process_chat_interaction_task(
             if _checked is not None:
                 turn_trace.flag(f"result_checked:{_checked['error_kind']}")
                 message_dict = {**message_dict, "content": json.dumps(_checked)}
+            # Say what one value covers (a district, a cell, a forecast square).
+            _covered = data_coverage.annotate(_call_name, _call_args, message_dict.get("content"))
+            if _covered is not None:
+                message_dict = {**message_dict, "content": _covered}
 
         async with async_conn("add_chat_message") as msg_conn:
             await msg_conn.execute(

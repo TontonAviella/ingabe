@@ -21,6 +21,8 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.services.data_coverage import point_sample_note
+
 logger = logging.getLogger(__name__)
 
 _VALID_AUDIENCES = {"farmer", "insurance", "agronomist", "scientist"}
@@ -897,6 +899,7 @@ def _format_farmer(r: InsuranceReport) -> str:
     lines = [
         f"{status_emoji} {r.location_name} is {status_word}.",
         f"Rain this season: {r.season_rainfall_mm:.0f}mm",
+        f"({point_sample_note('chirps', r.location_name, r.admin_level)})",
     ]
     if r.max_dry_spell_days > 0:
         lines.append(f"Longest dry spell: {r.max_dry_spell_days} days")
@@ -982,6 +985,7 @@ def _format_insurance(r: InsuranceReport) -> str:
 
     sections.append(phase_info)
     sections.append(f"Sources: {sources}")
+    sections.append(f"Rainfall coverage: {point_sample_note('chirps', r.location_name, r.admin_level)}")
 
     return "\n".join(sections)
 
@@ -992,6 +996,7 @@ def _format_agronomist(r: InsuranceReport) -> str:
         f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})",
         "",
         "RAINFALL:",
+        f"  {point_sample_note('chirps', r.location_name, r.admin_level)}",
         f"  Season cumulative: {r.season_rainfall_mm:.0f}mm",
         f"  SPI-1 (30-day): {r.spi_1:.2f}" if r.spi_1 is not None else "  SPI-1: n/a",
         f"  SPI-3 (90-day): {r.spi_3:.2f}" if r.spi_3 is not None else "  SPI-3: n/a",
