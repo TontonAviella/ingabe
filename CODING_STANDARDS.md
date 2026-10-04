@@ -116,7 +116,8 @@ or a hook. When you add a rule here, add or extend its gate in
 checked mechanically.
 
 **The Docker VM is a shared memory budget.** The local stack runs in one
-7.7 GB Docker VM with 1 GB of swap, and Postgres is the first thing to fail
+Docker VM (12 GB with 4 GB of swap since 2026-10-04; it was 7.7 GB with 1 GB
+when Postgres crashed), and Postgres is the first thing to fail
 when it runs short (backends exit with code 2, then crash recovery). Before
 starting a service or a heavy job, check swap as well as available memory:
 if `DockerVMSwapNearlyFull` is firing, do not start more load, whatever
