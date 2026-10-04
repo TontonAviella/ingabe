@@ -11,6 +11,7 @@ test environments keep working without Clerk.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -25,6 +26,8 @@ import jwt
 from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.exceptions import WebSocketException
 from fastapi.security import HTTPBearer
+
+from src.services import workos_auth
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +256,33 @@ class ClerkUserContext(UserContext):
         return self._org_role
 
 
+class WorkOSUserContext(UserContext):
+    """User signed in with WorkOS (sealed session cookie, see src.services.workos_auth)."""
+
+    def __init__(self, internal_uuid: str, workos_user_id: str, email: str | None = None,
+                 org_id: str | None = None, org_role: str | None = None):
+        self._uuid = internal_uuid
+        self._workos_user_id = workos_user_id
+        self._email = email
+        self._org_id = org_id
+        self._org_role = org_role
+
+    def get_user_id(self) -> str:
+        return self._uuid
+
+    def get_workos_user_id(self) -> str:
+        return self._workos_user_id
+
+    def get_email(self) -> str | None:
+        return self._email
+
+    def get_org_id(self) -> str | None:
+        return self._org_id
+
+    def get_org_role(self) -> str | None:
+        return self._org_role
+
+
 class LegacyUserContext(UserContext):
     """Backwards-compatible single-user context for self-hosted / test."""
 
@@ -297,6 +327,11 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 
 def _is_clerk_enabled() -> bool:
     return bool(os.environ.get("CLERK_SECRET_KEY"))
+
+
+def external_auth_enabled() -> bool:
+    """True when users sign in with a real provider (WorkOS or Clerk), not legacy edit mode."""
+    return workos_auth.enabled() or _is_clerk_enabled()
 
 
 def _decode_clerk_jwt(token: str) -> dict:
@@ -372,6 +407,89 @@ async def _resolve_clerk_org(clerk_org_id: str) -> str | None:
         return str(row) if row else None
 
 
+# WorkOS user/org ids -> internal ids; stable for the life of the process.
+_workos_user_ids: dict[str, str] = {}
+_workos_org_ids: dict[str, str] = {}
+_MEMBER_ROLES = {"owner", "admin", "member"}
+
+
+async def provision_workos_user(workos_user_id: str, email: str | None) -> str:
+    """The internal UUID for a WorkOS user, linking an existing account by email.
+
+    Called at sign-in (when WorkOS gives us the email): a user who used the
+    app under Clerk keeps their internal UUID and so their projects.
+    """
+    from src.structures import async_conn
+
+    async with async_conn("workos_user_provision") as conn:
+        existing = await conn.fetchval("SELECT internal_uuid FROM users WHERE workos_user_id = $1", workos_user_id)
+        if existing is None and email:
+            existing = await conn.fetchval(
+                "UPDATE users SET workos_user_id = $1 WHERE internal_uuid = ("
+                "  SELECT internal_uuid FROM users WHERE lower(email) = lower($2) AND workos_user_id IS NULL"
+                "  ORDER BY created_at LIMIT 1"
+                ") RETURNING internal_uuid",
+                workos_user_id, email,
+            )
+            if existing:
+                logger.info("Linked WorkOS user %s to existing account %s by email", workos_user_id, existing)
+        if existing is None:
+            existing = str(uuid.uuid5(uuid.NAMESPACE_URL, f"workos:{workos_user_id}"))
+            await conn.execute(
+                "INSERT INTO users (internal_uuid, workos_user_id, email, created_at) "
+                "VALUES ($1, $2, $3, CURRENT_TIMESTAMP) ON CONFLICT (internal_uuid) DO NOTHING",
+                existing, workos_user_id, email,
+            )
+            logger.info("Provisioned new user workos_user_id=%s uuid=%s", workos_user_id, existing)
+    _workos_user_ids[workos_user_id] = str(existing)
+    return str(existing)
+
+
+async def _workos_user_uuid(workos_user_id: str, email: str | None) -> str:
+    cached = _workos_user_ids.get(workos_user_id)
+    return cached if cached else await provision_workos_user(workos_user_id, email)
+
+
+async def resolve_workos_org(workos_org_id: str, user_uuid: str, role: str | None) -> str:
+    """The internal organizations.id for a WorkOS org, creating the row the first time.
+
+    Clerk never created organization rows, so every org resolved to nothing
+    and partner_id stayed empty. Here the row (and the user's membership) is
+    made on first sight, named from WorkOS.
+    """
+    from src.structures import async_conn
+
+    org_id = _workos_org_ids.get(workos_org_id)
+    async with async_conn("workos_org_provision") as conn:
+        if org_id is None:
+            org_id = await conn.fetchval("SELECT id::text FROM organizations WHERE workos_org_id = $1", workos_org_id)
+        if org_id is None:
+            name = await asyncio.to_thread(workos_auth.organization_name, workos_org_id)
+            base = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-") or "org"
+            org_id = await conn.fetchval(
+                "INSERT INTO organizations (name, slug, workos_org_id) VALUES ($1, $2, $3) "
+                "ON CONFLICT (workos_org_id) DO UPDATE SET name = EXCLUDED.name RETURNING id::text",
+                name, f"{base}-{workos_org_id[-6:].lower()}", workos_org_id,
+            )
+            logger.info("Provisioned organization %s (%s) -> %s", name, workos_org_id, org_id)
+        await conn.execute(
+            "INSERT INTO user_organizations (user_id, org_id, role) VALUES ($1, $2::uuid, $3) "
+            "ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role",
+            user_uuid, org_id, role if role in _MEMBER_ROLES else "member",
+        )
+    _workos_org_ids[workos_org_id] = org_id
+    return org_id
+
+
+async def workos_context(ws_session) -> WorkOSUserContext:
+    """UserContext for a verified WorkOS session (src.services.workos_auth.WorkOSSession)."""
+    user_uuid = await _workos_user_uuid(ws_session.user_id, ws_session.email)
+    org_id = None
+    if ws_session.organization_id:
+        org_id = await resolve_workos_org(ws_session.organization_id, user_uuid, ws_session.role)
+    return WorkOSUserContext(user_uuid, ws_session.user_id, ws_session.email, org_id, ws_session.role)
+
+
 async def _authenticate_clerk(token: str) -> ClerkUserContext:
     """Verify Clerk JWT and return a ClerkUserContext."""
     try:
@@ -409,6 +527,15 @@ async def _authenticate_clerk(token: str) -> ClerkUserContext:
 
 def verify_session(session_required: bool = True):
     async def _verify_session(request: Request = None) -> Optional[UserContext]:
+        # --- WorkOS mode: the session middleware has already verified the cookie ---
+        if workos_auth.enabled() and not (request and _extract_token_from_request(request)):
+            ws_session = getattr(request.state, "workos_session", None) if request else None
+            if ws_session is not None:
+                return await workos_context(ws_session)
+            if session_required:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required")
+            return None
+
         # --- Clerk mode: validate token if present ---
         if _is_clerk_enabled():
             token = _extract_token_from_request(request) if request else None
@@ -480,7 +607,18 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
     provided, falls back to MUNDI_AUTH_MODE so routes behind OptionalAuth
     (e.g. ProjectView) can still use the WebSocket in edit mode.
     Legacy mode: allows all in edit mode, denies in view_only.
+    WorkOS mode: the sealed session cookie comes with the handshake.
     """
+    if workos_auth.enabled() and not websocket.query_params.get("token"):
+        try:
+            ws_session = await asyncio.to_thread(workos_auth.load, websocket.cookies.get(workos_auth.COOKIE_NAME))
+        except Exception as e:  # noqa: BLE001 - WorkOS unreachable: retry later, not "unauthorised"
+            logger.warning("WS WorkOS session check failed: %s", e)
+            raise WebSocketException(code=1013)
+        if ws_session is None:
+            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+        return await workos_context(ws_session)
+
     if _is_clerk_enabled():
         token = websocket.query_params.get("token")
         if token:
