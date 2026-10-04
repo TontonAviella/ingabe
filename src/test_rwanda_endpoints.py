@@ -568,3 +568,29 @@ async def test_h3_admin_endpoints_round_trip(auth_client):
     finally:
         async with get_async_db_connection() as conn:
             await conn.execute("DELETE FROM h3_admin_overlap WHERE unit_id = $1", village)
+
+
+@pytest.mark.anyio
+async def test_admin_outlines_reject_bad_input(auth_client):
+    assert (await auth_client.get("/api/rwanda/admin/country/outlines")).status_code == 400
+    assert (await auth_client.get("/api/rwanda/admin/village/outlines")).status_code == 400  # no bbox
+    assert (await auth_client.get("/api/rwanda/admin/cell/outlines", params={"bbox": "1,2,3"})).status_code == 400
+
+
+@pytest.mark.anyio
+async def test_admin_outlines_in_view(auth_client):
+    r = await auth_client.get("/api/rwanda/admin/sector/outlines", params={"bbox": "30.0,-2.0,30.1,-1.9"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["type"] == "FeatureCollection" and body["level"] == "sector"
+    for f in body["features"]:
+        assert f["properties"]["level"] == "sector" and "district" in f["properties"]
+
+
+@pytest.mark.anyio
+async def test_district_ndvi_map_says_which_levels_have_values(auth_client):
+    r = await auth_client.get("/api/rwanda/ndvi/districts")
+    assert r.status_code == 200
+    levels = {x["level"]: x for x in r.json()["levels"]}
+    assert levels["district"]["has_values"] is True
+    assert levels["village"] == {"level": "village", "has_values": False, "values_from": "district"}

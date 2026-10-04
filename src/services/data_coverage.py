@@ -149,3 +149,31 @@ def annotate(tool_name: str, args: Any, result: Any) -> Optional[Any]:
     covers = spec.value_covers(args if isinstance(args, dict) else {})
     annotated = {**payload, "data_coverage": describe(spec.source, covers)}
     return json.dumps(annotated) if as_text else annotated
+
+
+# Map zoom levels finer than a dataset's values. The map follows the admin
+# level of the zoom (district -> sector -> cell -> village); a dataset is
+# coloured at its finest level with values, and each finer unit says that
+# it shares that value instead of looking measured on its own.
+MAP_LEVELS = ("district", "sector", "cell", "village")
+
+
+def map_levels(levels_with_values: tuple[str, ...]) -> list[dict[str, Any]]:
+    """For each map level: whether the dataset has its own values there, and
+    otherwise which coarser level's value is shown."""
+    out: list[dict[str, Any]] = []
+    values_from: Optional[str] = None
+    for level in MAP_LEVELS:
+        if level in levels_with_values:
+            values_from = level
+        out.append({"level": level, "has_values": level in levels_with_values,
+                    "values_from": values_from})
+    return out
+
+
+def shared_value_note(value_level: str, unit_name: str, shown_level: str, count: int) -> str:
+    """Plain note for a ``shown_level`` unit showing its ``value_level``'s value."""
+    if count <= 1:
+        return f"One value for the whole {unit_name} {value_level}."
+    return (f"One value for the whole {unit_name} {value_level}: "
+            f"all {count} {shown_level}s in it share it.")
