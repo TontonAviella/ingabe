@@ -107,3 +107,59 @@ async def lookup_admin_geometry(
         logger.warning("Admin geometry lookup failed for %s: %s", cache_key, e)
 
     return None
+
+
+# Map outlines per level: (table, id column, name column, parent columns).
+_OUTLINE_SPEC = {
+    "district": ("rwanda_district_boundaries", "district", "district", ()),
+    "sector": ("rwanda_sector_boundaries", "sector_id", "sector_name", ("district_name",)),
+    "cell": ("rwanda_cell_boundaries", "cell_id", "cell_name", ("sector_name", "district_name")),
+    "village": ("rwanda_village_boundaries", "village_id", "village_name",
+                ("cell_name", "sector_name", "district_name")),
+}
+# Simplification tolerance (degrees, ~1 m per 0.00001): coarse enough to keep
+# responses small, fine enough that a unit's outline stays recognisable.
+_OUTLINE_TOLERANCE = {"district": 0.002, "sector": 0.0008, "cell": 0.0003, "village": 0.0001}
+OUTLINE_LIMIT = 4000
+
+
+async def admin_outlines(conn, level: str, bbox: Optional[tuple[float, float, float, float]]) -> dict:
+    """Outlines of every ``level`` unit intersecting ``bbox`` (west, south, east, north).
+
+    Sectors, cells and villages need a bbox; at most OUTLINE_LIMIT units are
+    returned and ``truncated`` says when more were cut.
+    """
+    if level not in _OUTLINE_SPEC:
+        raise ValueError(f"level must be one of {', '.join(_OUTLINE_SPEC)}")
+    if bbox is None and level != "district":
+        raise ValueError(f"a bbox is needed for {level} outlines")
+    table, id_col, name_col, parents = _OUTLINE_SPEC[level]
+    parent_sql = "".join(f", {p}" for p in parents)
+    where = "WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)" if bbox else ""
+    rows = await conn.fetch(
+        f"SELECT {id_col}::text AS id, {name_col} AS name{parent_sql}, "
+        f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {_OUTLINE_TOLERANCE[level]}), 5) AS geometry "
+        f"FROM {table} {where} ORDER BY {id_col} LIMIT {OUTLINE_LIMIT + 1}",
+        *(bbox or ()),
+    )
+    features = [
+        {
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": {"id": r["id"], "name": r["name"], "level": level,
+                           **{p.removesuffix("_name"): r[p] for p in parents}},
+        }
+        for r in rows[:OUTLINE_LIMIT] if r["geometry"]
+    ]
+    return {"type": "FeatureCollection", "level": level,
+            "truncated": len(rows) > OUTLINE_LIMIT, "features": features}
+
+
+async def units_per_district(conn) -> dict[str, dict[str, int]]:
+    """How many sectors, cells and villages each district has, keyed by lower-case name."""
+    counts: dict[str, dict[str, int]] = {}
+    for level in ("sector", "cell", "village"):
+        table = _OUTLINE_SPEC[level][0]
+        for r in await conn.fetch(f"SELECT lower(district_name) AS d, count(*) AS n FROM {table} GROUP BY 1"):
+            counts.setdefault(r["d"], {})[level] = r["n"]
+    return counts
