@@ -59,8 +59,8 @@ def register(ctx) -> None:
     #
     # hidden_tools.py exists because 4 of Sage's most-used tools
     # (new_layer_from_postgis, set_layer_style, add_layer_to_map,
-    # reverse_geocode_coordinates) live as inline elif handlers in
-    # message_routes.py and were never registered in tools.json or the
+    # reverse_geocode_coordinates) are legacy-shim handlers
+    # (src/services/legacy_tool_shim.py) never registered in tools.json or the
     # Pydantic registry. generated_tools.py mirrors only those two sources,
     # so those schemas were silently missing from the LLM's tool
     # catalogue. Without them, asking "show me Nyamagabe on the map" via the
