@@ -24,7 +24,6 @@ import { dark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import remarkGfm from 'remark-gfm';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { QgisIcon } from '@/lib/qgis';
 import {
   Conversation,
   EphemeralAction,
@@ -50,8 +49,6 @@ function iconForToolCall(toolCall: SanitizedToolCall) {
       return <CloudDownload className="w-4 h-4" />;
     case 'zoom-in':
       return <ZoomIn className="w-4 h-4" />;
-    case 'qgis':
-      return <QgisIcon className="w-4 h-4" />;
     case 'square-terminal':
       return <SquareTerminal className="w-4 h-4" />;
   }
