@@ -27,34 +27,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Report disk space
         run: df -h /
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
+      # Default (docker) builder: the image lands straight in the local image
+      # store. The docker-container builder with a type=gha cache never got a
+      # cache hit here and spent ~3 min exporting and re-loading the image.
       - name: Build application images
         run: |
           python3 scripts/posthog_check_event.py --stage ci --check docker_build_app -- \
-            docker buildx bake app \
-            --set app.cache-from=type=gha \
-            --set app.cache-to=type=gha,mode=max \
-            --set app.args.VITE_WEBSITE_DOMAIN=http://localhost:8000 \
-            --set app.args.VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }} \
-            --set app.args.VITE_POSTHOG_HOST=https://us.i.posthog.com \
-            --file docker-compose.yml \
-            --load
+            docker compose build app \
+            --build-arg VITE_WEBSITE_DOMAIN=http://localhost:8000 \
+            --build-arg VITE_POSTHOG_KEY=${{ secrets.VITE_POSTHOG_KEY }} \
+            --build-arg VITE_POSTHOG_HOST=https://us.i.posthog.com
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
@@ -97,6 +82,10 @@ jobs:
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
           POSTHOG_HOST: https://us.i.posthog.com
         timeout-minutes: 25
+
+      - name: Report disk space after tests
+        if: always()
+        run: df -h /
 
       - name: Diagnose test-worker crashes
         # Evidence for a failed test run: memory, container usage, and any
