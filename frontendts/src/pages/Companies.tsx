@@ -107,6 +107,9 @@ export default function Companies() {
 
   useEffect(() => {
     load();
+    // Invitations get accepted elsewhere: refresh when the person comes back to this tab.
+    window.addEventListener('focus', load);
+    return () => window.removeEventListener('focus', load);
   }, [load]);
 
   const add = async (e: FormEvent) => {

@@ -332,11 +332,21 @@ def _company_status(active_members: int, invitations: list[dict[str, Any]]) -> d
     return {"code": "no_admin", "text": "No admin yet: invite one"}
 
 
+def _is_workos_sample(org: Any) -> bool:
+    """WorkOS' built-in "Test Organization" (staging only): it carries the reserved example.com domain.
+
+    WorkOS refuses to rename or delete it, and no real company has that domain.
+    """
+    return any(getattr(d, "domain", None) == "example.com" for d in (getattr(org, "domains", None) or []))
+
+
 def companies() -> list[dict[str, Any]]:
     """Every company with its people and invitations, newest first."""
     page = _client().organizations.list_organizations(limit=100)
     out = []
     for org in getattr(page, "data", page):
+        if _is_workos_sample(org):
+            continue
         memberships = _client().organization_membership.list_organization_memberships(organization_id=org.id, limit=100)
         active = [m for m in getattr(memberships, "data", memberships) if _value(getattr(m, "status", None)) == "active"]
         invs = _client().user_management.list_invitations(organization_id=org.id, limit=100)

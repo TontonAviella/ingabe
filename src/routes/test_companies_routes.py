@@ -62,3 +62,12 @@ def test_each_company_gets_one_plain_status_line():
     assert workos_auth._company_status(0, pending)["code"] == "invited"
     assert workos_auth._company_status(0, [{"email": "a", "state": "expired"}])["code"] == "expired"
     assert workos_auth._company_status(0, [])["code"] == "no_admin"
+
+
+def test_the_workos_sample_company_is_not_listed():
+    from types import SimpleNamespace
+
+    sample = SimpleNamespace(domains=[SimpleNamespace(domain="example.com")])
+    real = SimpleNamespace(domains=[SimpleNamespace(domain="bk.rw")])
+    assert workos_auth._is_workos_sample(sample) and not workos_auth._is_workos_sample(real)
+    assert not workos_auth._is_workos_sample(SimpleNamespace(domains=None))
