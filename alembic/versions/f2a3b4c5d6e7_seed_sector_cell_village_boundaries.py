@@ -1,6 +1,7 @@
 """seed rwanda sector, cell, and village boundaries from geoBoundaries
 
-Seeds three admin boundary tables from the geoBoundaries public API:
+Seeds three admin boundary tables from the vendored geoBoundaries files
+(see src/database/geoboundaries.py):
 - ``rwanda_sector_boundaries`` (~416 ADM3 features)
 - ``rwanda_cell_boundaries`` (~2,148 ADM4 features)
 - ``rwanda_village_boundaries`` (~14,815 ADM5 features — simplified geometry)
@@ -23,6 +24,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from src.database.geoboundaries import rwanda_boundary_features
+
 revision: str = "f2a3b4c5d6e7"
 down_revision: Union[str, None] = "e1f2a3b4c5d6"
 branch_labels: Union[str, Sequence[str], None] = None
@@ -39,11 +42,9 @@ def upgrade() -> None:
 
 
 def _seed_rwanda_sectors() -> None:
-    """Fetch Rwanda ADM3 sector boundaries from geoBoundaries and insert."""
+    """Load Rwanda ADM3 sector boundaries from geoBoundaries and insert."""
     import json
     import logging
-
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -74,23 +75,8 @@ def _seed_rwanda_sectors() -> None:
         )
         return
 
-    api_url = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM3/"
-    try:
-        api_resp = requests.get(api_url, timeout=30)
-        api_resp.raise_for_status()
-        geojson_url = api_resp.json().get("gjDownloadURL")
-        if not geojson_url:
-            logger.warning("No gjDownloadURL in geoBoundaries ADM3 response")
-            return
-
-        geojson_resp = requests.get(geojson_url, timeout=180)
-        geojson_resp.raise_for_status()
-        features = geojson_resp.json().get("features", [])
-    except Exception as exc:
-        logger.warning("Failed to fetch ADM3 boundaries (non-fatal): %s", exc)
-        return
-
-    logger.info("Downloaded %d sector features", len(features))
+    features = rwanda_boundary_features("ADM3")
+    logger.info("Loaded %d sector features", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_sector_boundaries"))
 
@@ -159,11 +145,9 @@ def _seed_rwanda_sectors() -> None:
 
 
 def _seed_rwanda_cells() -> None:
-    """Fetch Rwanda ADM4 cell boundaries from geoBoundaries and insert."""
+    """Load Rwanda ADM4 cell boundaries from geoBoundaries and insert."""
     import json
     import logging
-
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -193,23 +177,8 @@ def _seed_rwanda_cells() -> None:
         )
         return
 
-    api_url = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM4/"
-    try:
-        api_resp = requests.get(api_url, timeout=30)
-        api_resp.raise_for_status()
-        geojson_url = api_resp.json().get("gjDownloadURL")
-        if not geojson_url:
-            logger.warning("No gjDownloadURL in geoBoundaries ADM4 response")
-            return
-
-        geojson_resp = requests.get(geojson_url, timeout=300)
-        geojson_resp.raise_for_status()
-        features = geojson_resp.json().get("features", [])
-    except Exception as exc:
-        logger.warning("Failed to fetch ADM4 boundaries (non-fatal): %s", exc)
-        return
-
-    logger.info("Downloaded %d cell features", len(features))
+    features = rwanda_boundary_features("ADM4")
+    logger.info("Loaded %d cell features", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_cell_boundaries"))
 
@@ -293,15 +262,13 @@ def _seed_rwanda_cells() -> None:
 
 
 def _seed_rwanda_villages() -> None:
-    """Fetch Rwanda ADM5 village boundaries from geoBoundaries and insert.
+    """Load Rwanda ADM5 village boundaries from geoBoundaries and insert.
 
     Uses the simplified GeoJSON (~11 MB) instead of the full version
     (~130 MB) to stay within the 512 MB container memory limit.
     """
     import json
     import logging
-
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -332,27 +299,8 @@ def _seed_rwanda_villages() -> None:
         )
         return
 
-    # Use the SIMPLIFIED GeoJSON to stay within memory limits
-    # Full: 130 MB, Simplified: 11 MB
-    simplified_url = (
-        "https://github.com/wmgeolab/geoBoundaries/raw/9469f09/"
-        "releaseData/gbOpen/RWA/ADM5/"
-        "geoBoundaries-RWA-ADM5_simplified.geojson"
-    )
-    try:
-        geojson_resp = requests.get(simplified_url, timeout=300)
-        geojson_resp.raise_for_status()
-        data = geojson_resp.json()
-        features = data.get("features", [])
-        # Free the raw response immediately
-        del data
-    except Exception as exc:
-        logger.warning(
-            "Failed to fetch ADM5 simplified boundaries (non-fatal): %s", exc,
-        )
-        return
-
-    logger.info("Downloaded %d village features (simplified)", len(features))
+    features = rwanda_boundary_features("ADM5")
+    logger.info("Loaded %d village features (simplified)", len(features))
 
     conn.execute(sa.text("DELETE FROM rwanda_village_boundaries"))
 
