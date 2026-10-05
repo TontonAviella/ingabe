@@ -33,6 +33,7 @@ All notable changes to mundi.ai will be documented in this file.
 - Split Sage's 95 Hermes tools into bounded procedural profiles so each request exposes only relevant map, raster, agriculture, or memory schemas.
 
 ### Fixed
+- Brain source errors no longer keep credentials: URLs in `brain_sources.last_error` lose their `user:pass@` and query string (an API key in `?token=` was stored in plain text, readable by anyone who can read the source table). Ported from #4.
 - Sage's Brain graph tools (`brain_graph_query`, `brain_trajectory`) were described in the prompt but offered only through Hermes; in the normal chat loop a call to them failed the turn. They are now regular tools, and the chat loop runs any tool without its own branch through the shared legacy-shim handler.
 - Tool descriptions that contradicted the code: field health named Sentinel Hub (it reads Sentinel-2 L2A from Digital Earth Africa), satellite search named Landsat (Sentinel-2 only), four tools named a DuckDB cache (PostgreSQL). Yield risk now says it is a vegetation trend, not a yield in tonnes.
 - `run_weather_ingest.py` no longer logs part of the CDS API key.
