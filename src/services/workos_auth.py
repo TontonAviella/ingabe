@@ -26,11 +26,14 @@ Everything WorkOS-specific lives here; ``src.dependencies.session`` turns the
 result into a UserContext (user and partner ids) and provisions the rows.
 
 Env: AUTH_PROVIDER=workos, WORKOS_API_KEY, WORKOS_CLIENT_ID,
-WORKOS_COOKIE_PASSWORD (32+ chars, encrypts the cookie).
+WORKOS_COOKIE_PASSWORD (any secret of 32+ characters; encrypts the cookie).
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -58,8 +61,39 @@ def _client():
     return WorkOSClient(api_key=os.environ["WORKOS_API_KEY"], client_id=os.environ["WORKOS_CLIENT_ID"])
 
 
+def warm_up() -> None:
+    """Load the SDK and check the cookie secret at startup, not on someone's first sign-in.
+
+    Importing the WorkOS SDK takes ~7 s in the local (emulated) image; done lazily,
+    the first visitor waited that long on /auth/login.
+    """
+    if not enabled():
+        return
+    _client()
+    _cookie_password()
+
+
 def _cookie_password() -> str:
-    return os.environ["WORKOS_COOKIE_PASSWORD"]
+    """The cookie key in the form the SDK needs: a Fernet key (32 bytes, url-safe base64).
+
+    WorkOS documents the cookie password as "32+ characters", but the Python SDK
+    passes it straight to Fernet, which only takes that exact encoding. A key
+    already in that form is used as is (existing cookies stay valid); any other
+    secret of 32+ characters is turned into one with SHA-256.
+    """
+    return cookie_key(os.environ["WORKOS_COOKIE_PASSWORD"])
+
+
+def cookie_key(secret: str) -> str:
+    secret = secret.strip()
+    try:
+        if len(base64.urlsafe_b64decode(secret.encode())) == 32 and len(secret) == 44:
+            return secret
+    except (binascii.Error, ValueError):
+        pass
+    if len(secret) < 32:
+        raise RuntimeError("WORKOS_COOKIE_PASSWORD must be at least 32 characters")
+    return base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()).decode()
 
 
 def _value(x: Any) -> Any:
@@ -166,8 +200,14 @@ def switch_organization(sealed: str, organization_id: Optional[str]) -> Optional
     return _from_response(refreshed, refreshed_cookie=refreshed.sealed_session)
 
 
-def logout_url(session_id: str, return_to: str) -> str:
-    return _client().user_management.get_logout_url(session_id=session_id, return_to=return_to)
+def revoke_session(session_id: str) -> None:
+    """End the session at WorkOS, so the hosted page asks for sign-in again.
+
+    Done over the API instead of WorkOS' logout redirect: that redirect only
+    works once a sign-out URL is configured in the WorkOS dashboard, and without
+    it WorkOS shows an error page ("app-homepage-url-not-found").
+    """
+    _client().user_management.revoke_session(session_id=session_id)
 
 
 def organization_name(organization_id: str) -> str:
@@ -188,3 +228,123 @@ def user_organizations(user_id: str) -> list[dict[str, Any]]:
             "role": getattr(role, "slug", role) if role is not None else None,
         })
     return out
+
+
+# ── Organization members (free WorkOS user management) ────────────────────
+
+ASSIGNABLE_ROLES = ("admin", "member")  # WorkOS default roles
+
+
+def _membership_dict(m: Any) -> dict[str, Any]:
+    user = getattr(m, "user", None)
+    user = _user_dict(user) if user is not None else {}
+    role = getattr(m, "role", None)
+    name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+    return {
+        "id": m.id, "user_id": m.user_id, "email": user.get("email"), "name": name,
+        "picture": user.get("profile_picture_url"), "role": getattr(role, "slug", role),
+        "status": _value(getattr(m, "status", None)),
+    }
+
+
+def organization_members(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().organization_membership.list_organization_memberships(
+        organization_id=organization_id, limit=100)
+    members = [_membership_dict(m) for m in getattr(page, "data", page)]
+    for m in members:  # the list may not include the user object
+        if not m["email"]:
+            user = _user_dict(_client().user_management.get_user(m["user_id"]))
+            m["email"] = user.get("email")
+            m["name"] = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+            m["picture"] = user.get("profile_picture_url")
+    return members
+
+
+def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().user_management.list_invitations(organization_id=organization_id, limit=100)
+    return [
+        {"id": i.id, "email": i.email, "role": i.role_slug, "expires_at": str(i.expires_at)}
+        for i in getattr(page, "data", page) if _value(i.state) == "pending"
+    ]
+
+
+def _refusal(e: Exception) -> Optional[str]:
+    """WorkOS' own words when it refused a request (4xx), else None."""
+    status_code = getattr(e, "status_code", None)
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return getattr(e, "message", None) or str(e)
+    return None
+
+
+def _invitation_dict(inv: Any, resent: bool = False) -> dict[str, Any]:
+    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at), "resent": resent}
+
+
+def invite(organization_id: str, email: str, role: str, inviter_user_id: Optional[str]) -> dict[str, Any]:
+    """Email an invitation to join the organization (WorkOS sends the email).
+
+    Someone who already has a pending invitation gets it sent again (WorkOS
+    refuses a second one). Any other refusal becomes a ValueError carrying
+    WorkOS' message, so the page can show it.
+    """
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    try:
+        inv = _client().user_management.send_invitation(
+            email=email, organization_id=organization_id, role_slug=role, inviter_user_id=inviter_user_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors, sorted below
+        if getattr(e, "code", None) == "email_already_invited_to_organization":
+            page = _client().user_management.list_invitations(organization_id=organization_id, email=email, limit=10)
+            pending = next((i for i in getattr(page, "data", page) if _value(i.state) == "pending"), None)
+            if pending is not None:
+                return _invitation_dict(_client().user_management.resend_invitation(pending.id), resent=True)
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
+    return _invitation_dict(inv)
+
+
+def _membership_in(membership_id: str, organization_id: str) -> Any:
+    m = _client().organization_membership.get_organization_membership(membership_id)
+    if m.organization_id != organization_id:
+        raise PermissionError("membership belongs to another organization")
+    return m
+
+
+def set_member_role(membership_id: str, organization_id: str, role: str) -> dict[str, Any]:
+    from workos.organization_membership import RoleSingle  # lazy: WorkOS SDK
+
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    _membership_in(membership_id, organization_id)
+    updated = _client().organization_membership.update_organization_membership(
+        membership_id, role=RoleSingle(role_slug=role))
+    return _membership_dict(updated)
+
+
+def remove_member(membership_id: str, organization_id: str) -> None:
+    _membership_in(membership_id, organization_id)
+    _client().organization_membership.delete_organization_membership(membership_id)
+
+
+def revoke_invitation(invitation_id: str, organization_id: str) -> None:
+    if not any(i["id"] == invitation_id for i in pending_invitations(organization_id)):
+        raise PermissionError("invitation belongs to another organization or is no longer pending")
+    _client().user_management.revoke_invitation(invitation_id)
+
+
+def create_partner(name: str, admin_email: str) -> dict[str, Any]:
+    """Create a partner organization (or reuse the one with this exact name) and invite its first admin.
+
+    WorkOS emails the invitation; once the admin signs in they manage the rest of
+    their staff on the app's members page. Nothing else needs the WorkOS dashboard.
+    """
+    name = name.strip()
+    page = _client().organizations.list_organizations(search=name, limit=100)
+    org = next((o for o in getattr(page, "data", page) if o.name.strip().lower() == name.lower()), None)
+    created = org is None
+    if org is None:
+        org = _client().organizations.create_organization(name=name)
+    invitation = invite(org.id, admin_email.strip(), "admin", None)
+    return {"organization_id": org.id, "name": org.name, "created": created, "invitation": invitation}
