@@ -359,18 +359,6 @@ export default function MapLibreMap({
     return mapData.layers.map((l) => l.id).filter((id) => loadingSourceIds.has(id));
   }, [mapData?.layers, loadingSourceIds]);
 
-  const { data: demoConfigData } = useQuery({
-    queryKey: ['projects', 'config', 'demo-postgis-available'],
-    queryFn: async () => {
-      const response = await apiFetch('/api/projects/config/demo-postgis-available');
-      if (!response.ok) {
-        throw new Error('Failed to fetch demo config');
-      }
-      return (await response.json()) as { available: boolean; description: string };
-    },
-  });
-  const demoConfig = demoConfigData ?? { available: false, description: '' };
-
   const pointCloudLayers = useMemo(() => {
     const filtered = mapData?.layers?.filter((layer) => layer.type === 'point_cloud') ?? EMPTY_POINT_CLOUD_LAYERS;
     return filtered.length === 0 ? EMPTY_POINT_CLOUD_LAYERS : filtered;
@@ -2003,7 +1991,6 @@ export default function MapLibreMap({
                 zoomHistoryIndex={zoomHistoryIndex}
                 setZoomHistoryIndex={setZoomHistoryIndex}
                 uploadingFiles={uploadingFiles}
-                demoConfig={demoConfig}
                 hiddenLayerIDs={hiddenLayerIDs}
                 toggleLayerVisibility={toggleLayerVisibility}
                 errors={errors}
