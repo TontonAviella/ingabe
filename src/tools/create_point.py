@@ -118,7 +118,6 @@ async def create_point_layer(
         "coordinates": [lon, lat],
         "kue_instructions": (
             f"Point layer '{label}' created (ID: {layer_id}), currently invisible. "
-            "To show it on the map, use add_layer_to_map. "
-            "To create a circle/buffer around this point, use native_buffer with this layer as INPUT."
+            "To show it on the map, use add_layer_to_map."
         ),
     }

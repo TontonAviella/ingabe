@@ -1,8 +1,13 @@
 # Dagster workspace configuration
 # Defines the code locations where Dagster will look for pipeline definitions
 
+# One standalone code server, started next to the daemon by the dagster-daemon
+# service in docker-compose.yml. With `python_module` the daemon spawns its own
+# code servers and replaces them every 60 s, so 2-3 copies of the definitions
+# (~400 MB each) were alive during a run. location_name keeps the name the
+# python_module location had: schedule and sensor state is keyed by it.
 load_from:
-  - python_module:
-      module_name: src.pipelines
-      working_directory: /app
-      attribute: defs
+  - grpc_server:
+      host: 127.0.0.1
+      port: 4266
+      location_name: "src.pipelines:defs"

@@ -1,4 +1,4 @@
-import { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.mjs';
+import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.mjs';
 
 export interface MapProject {
   id: string;
@@ -46,16 +46,6 @@ export interface MapLayer {
   original_srid?: number;
 }
 
-export interface PostgresConnectionDetails {
-  connection_id: string;
-  table_count: number;
-  processed_tables_count: number | null;
-  friendly_name: string | null;
-  is_documented: boolean;
-  last_error_text?: string;
-  last_error_timestamp?: string;
-}
-
 export interface MapData {
   map_id: string;
   project_id: string;
@@ -97,6 +87,8 @@ export interface GeoJsonLayerStyle {
   extrude_3d?: boolean;
   extrusion_property?: string;
   extrusion_scale?: number;
+  // Shown by MapLegends (backend: src/services/h3_risk_classes.legend()).
+  legend?: { title: string; items: Array<{ label: string; range?: string; color: string }> };
 }
 
 export interface GeoJsonLayerUpdate {
@@ -164,17 +156,7 @@ export interface CodeBlock {
 export interface SanitizedToolCall {
   id: string;
   tagline: string;
-  icon:
-    | 'text-search'
-    | 'brush'
-    | 'wrench'
-    | 'map-plus'
-    | 'cloud-download'
-    | 'zoom-in'
-    | 'qgis'
-    | 'square-terminal'
-    | 'satellite'
-    | 'map-pin';
+  icon: 'text-search' | 'brush' | 'wrench' | 'map-plus' | 'cloud-download' | 'zoom-in' | 'square-terminal' | 'satellite' | 'map-pin';
   code: CodeBlock | null;
   table?: Record<string, string>;
 }

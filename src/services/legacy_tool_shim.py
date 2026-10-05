@@ -1,59 +1,12 @@
-"""Legacy tool shim — adapts the inline elif chain in message_routes.py so
-mundi-app's `/internal/tool-call` endpoint can dispatch any Sage tool, not
-just the modern Pydantic-registered ones.
+"""Handlers for Sage tools that are not Pydantic tools.
 
-## Why this exists
-
-Sage's tool surface is ~82 tools. Only 28 are cleanly registered in
-`src/dependencies/pydantic_tools.py` with proper args models + async handlers.
-The other 53 are inline `elif function_name == "X":` blocks inside the chat
-loop in `src/routes/message_routes.py:1170-5500ish`. Each of those blocks
-depends on the surrounding chat-loop scope: `conn`, `user_id`,
-`current_project_id`, `connection_manager`, `conversation.id`, `map_id`,
-plus various helpers.
-
-When `MUNDI_USE_HERMES=1`, the Hermes-side plugin issues an HMAC-signed
-`/internal/tool-call` POST per tool dispatch (see PR #55). That endpoint
-currently only routes to the Pydantic registry — so 53 of Sage's most-used
-tools (every weather/NDVI/insurance/satellite/QGIS handler) return 404
-"unknown tool" when invoked through Hermes. From the LLM's perspective the
-tool exists; from the user's perspective Sage just can't do it.
-
-This shim is the **bridge until full Pydantic migration**. It accepts the
-same `(tool_name, arguments)` pair as the Pydantic path, synthesizes the
-chat-loop scope (`LegacyToolContext`), and re-runs the appropriate inline
-handler. Each handler is extracted one at a time into this file as a
-sibling async function — the existing inline elif in `message_routes.py`
-stays in place (so `MUNDI_USE_HERMES=0` keeps working) and calls the
-extracted helper too. Single source of truth, two callers.
-
-## How to migrate a handler from message_routes.py into here
-
-1. Pick a handler. Easiest first: the small data-fetch ones with no nested
-   scope (`reverse_geocode_coordinates`, `query_postgis_database`).
-2. Read its inline block in message_routes.py. Identify every variable it
-   reads from outer scope.
-3. Add fields for those variables to `LegacyToolContext` (most are already
-   here — `conn`, `partner_id`, `user_id`, `conversation_id`, `map_id`,
-   `project_id`, `connection_manager`).
-4. Write an `async def _handle_<tool_name>(ctx: LegacyToolContext, args:
-   dict) -> dict` that runs the same logic against `ctx.X` instead of
-   `outer_scope.X`.
-5. Register it in `LEGACY_HANDLERS` at the bottom of this file.
-6. Replace the inline elif block in message_routes.py with a call to the
-   new helper. Both paths now share one implementation.
-
-## What lives here vs in pydantic_tools.py
-
-| Source                          | Where                              | Modernization |
-|--------------------------------|------------------------------------|---------------|
-| 28 modern Pydantic handlers     | `pydantic_tools.py` + `src/tools/` | Already clean |
-| 53 legacy inline elif handlers  | `message_routes.py` + this shim    | Migrate one at a time |
-
-The end state is: every legacy handler also has a Pydantic args model and a
-clean async function signature, at which point we can collapse this shim
-back into the Pydantic registry and delete it. Until then, this exists to
-unblock the Hermes runtime swap.
+Both runtimes call these: the chat loop in `src/routes/message_routes.py`
+(for every tool without a Pydantic handler) and `/internal/tool-call` (the
+Hermes runtime, `MUNDI_USE_HERMES=1`). Each handler takes a
+`LegacyToolContext` (`conn`, `user_id`, `partner_id`, `conversation_id`,
+`map_id`, `project_id`, `arguments`) and returns a JSON-serializable result
+dict; it never raises. There is one implementation per tool: change a tool's
+behaviour here.
 """
 from __future__ import annotations
 
@@ -66,18 +19,19 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
+from src.services.insurance_engine import season_rainfall_sentence
+from src.services.numbers import round_or_none
+from src.services import ndvi_classes
+
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class LegacyToolContext:
-    """Mirrors the chat-loop scope variables that inline elif handlers
-    reference. Built once per /internal/tool-call request and passed
-    through to whichever legacy handler is dispatched.
-
-    Field naming matches the variable names used inside the elif chain so
-    extracted handlers need minimal rewriting.
+    """What a handler needs from the turn: who is asking, which map and
+    conversation, a database connection, and the tool arguments. Built per
+    call by the chat loop and by /internal/tool-call.
     """
     # Identity (already RLS-scoping the connection)
     user_id: str               # Clerk user uuid
@@ -114,9 +68,7 @@ async def _handle_new_layer_from_postgis(
 ) -> Dict[str, Any]:
     """Create a PostGIS-backed layer and attach it to the current map.
 
-    Extracted from src/routes/message_routes.py:1977-2462 (the
-    `elif function_name == "new_layer_from_postgis":` block). Behavior
-    matches the hand-rolled loop's exactly: validates the SQL, checks
+    Validates the SQL, checks
     EXPLAIN plan is read-only, auto-wraps queries with ROW_NUMBER() when
     `id` column isn't an integer (ST_AsMVT requires int id), computes
     feature_count + geometry_type + transformed bounds, generates default
@@ -145,6 +97,8 @@ async def _handle_new_layer_from_postgis(
         validate_sql_query,
         check_postgis_readonly,
         _generate_postgis_pmtiles_background,
+        is_internal_rwanda_connection,
+        validate_internal_rwanda_query,
     )
     from src.utils import generate_id
     from src.symbology.llm import generate_maplibre_layers_for_layer_id
@@ -173,13 +127,12 @@ async def _handle_new_layer_from_postgis(
             "error": f"Query validation failed: {e.detail}",
         }
 
-    # Verify the PostGIS connection exists and the caller has access. Mirrors
-    # the chat loop's check at message_routes.py:1996. Falls back to
+    # Verify the PostGIS connection exists and the caller has access. Falls back to
     # project-level access for shared internal connections (e.g.
     # CRwandaIntDB shared across users in the same project).
     connection_result = await ctx.conn.fetchrow(
         """
-        SELECT connection_uri FROM project_postgres_connections
+        SELECT connection_uri, connection_name FROM project_postgres_connections
         WHERE id = $1 AND (user_id = $2 OR project_id = $3)
         AND soft_deleted_at IS NULL
         """,
@@ -192,6 +145,16 @@ async def _handle_new_layer_from_postgis(
             "status": "error",
             "error": f"PostGIS connection '{postgis_connection_id}' not found or you do not have access to it.",
         }
+    # The internal Rwanda connection logs in without a user scope, so only the
+    # approved Rwanda tables may be read through it (other tables hold every
+    # user's rows).
+    if is_internal_rwanda_connection(
+        str(postgis_connection_id), ctx.project_id, connection_result["connection_name"]
+    ):
+        try:
+            validate_internal_rwanda_query(query)
+        except HTTPException as e:
+            return {"status": "error", "error": f"Query validation failed: {e.detail}"}
 
     feature_count: Optional[int] = None
     bounds: Optional[list[float]] = None
@@ -226,7 +189,7 @@ async def _handle_new_layer_from_postgis(
                     raise ValueError("Query must return a column named 'geom'")
 
                 # 3. Auto-wrap with ROW_NUMBER() if id missing or not integer.
-                #    Mirrors message_routes.py:2061-2116. Without this,
+                #    Without this,
                 #    tile rendering would fail at runtime with
                 #    "mvt_agg_transfn: Could not find column 'id' of integer type".
                 _INT_OIDS = {21, 23, 20}  # int2, int4, int8
@@ -501,7 +464,7 @@ async def _handle_new_layer_from_postgis(
 async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Attach an existing (unattached) layer to the current map, renaming it.
 
-    Extracted from src/routes/message_routes.py:2463-2536. Sage calls this
+    Sage calls this
     when the user wants to surface a layer that was created earlier (e.g.
     output of a previous geoprocessing tool) but isn't currently on the
     map. Verifies owner_uuid matches the caller so a holder of the
@@ -591,7 +554,7 @@ async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
 async def _handle_set_layer_style(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Apply a new MapLibre style to an existing layer.
 
-    Extracted from src/routes/message_routes.py:2620-2690. Sage calls this
+    Sage calls this
     after a geoprocessing result the user should SEE differently (drought
     severity → red ramp, NDVI → green ramp, etc.). Delegates the actual
     style-record creation to set_layer_style_route in layer_router.py so
@@ -675,305 +638,7 @@ async def _handle_set_layer_style(ctx: LegacyToolContext) -> Dict[str, Any]:
         }
 
 
-async def _handle_query_duckdb_sql(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Run a DuckDB SQL query against vector-layer attributes.
-
-    Extracted from src/routes/message_routes.py:2537-2619. Sage uses this
-    for tabular analysis on user-uploaded vector layers (FlatGeoBuf,
-    GeoJSON, KML) — DuckDB loads each layer_id as a virtual table.
-
-    Args (from ctx.arguments):
-      - layer_ids: list[str] (only the FIRST layer_id is used; multi-layer
-        joins inside DuckDB aren't supported by the underlying executor)
-      - sql_query: str (DuckDB-flavored SELECT)
-      - head_n_rows: int (default 20, used to truncate the result)
-
-    Returns the tool_result dict in CSV-string form. 25,000-char ceiling
-    on the result to keep token usage reasonable for the LLM.
-    """
-    import csv
-    import io
-    import json  # noqa: F401 — kept for parity with message_routes.py shape
-
-    from fastapi import HTTPException
-
-    from src.duckdb import execute_duckdb_query
-    from src.routes.websocket import kue_ephemeral_action
-
-    layer_ids = ctx.arguments.get("layer_ids") or []
-    layer_id = layer_ids[0] if layer_ids else None
-    sql_query = ctx.arguments.get("sql_query")
-    head_n_rows = ctx.arguments.get("head_n_rows", 20)
-
-    layer_exists = await ctx.conn.fetchrow(
-        """
-        SELECT layer_id FROM map_layers
-        WHERE layer_id = $1 AND owner_uuid = $2
-        """,
-        layer_id, ctx.user_id,
-    )
-    if not layer_exists:
-        return {
-            "status": "error",
-            "error": (
-                f"Layer ID '{layer_id}' not found or you do not have "
-                f"permission to access it."
-            ),
-        }
-
-    try:
-        async with kue_ephemeral_action(
-            ctx.conversation_id, "Querying with SQL...", layer_id=layer_id,
-        ):
-            result = await execute_duckdb_query(
-                sql_query=sql_query, layer_id=layer_id,
-                max_n_rows=head_n_rows, timeout=30,
-            )
-        # CSV-format result so the LLM can read tabular data without parsing
-        # JSON. Same format the chat loop emits.
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(result["headers"])
-        writer.writerows(result["result"])
-        result_text = buf.getvalue()
-        if len(result_text) > 25000:
-            return {
-                "status": "error",
-                "error": (
-                    f"DuckDB CSV result too large: {len(result_text)} "
-                    f"characters exceeds 25,000 character limit, try "
-                    f"reducing columns or head_n_rows"
-                ),
-            }
-        return {
-            "status": "success",
-            "result": result_text,
-            "row_count": result["row_count"],
-            "query": sql_query,
-        }
-    except HTTPException as e:
-        return {"status": "error", "error": f"DuckDB query error: {e.detail}"}
-    except Exception as e:
-        return {"status": "error", "error": f"Error executing SQL query: {str(e)}"}
-
-
-async def _handle_query_postgis_database(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Run a PostGIS SQL query against a partner-connected database.
-
-    Extracted from src/routes/message_routes.py:2691-2863. Sage uses this
-    for ad-hoc data exploration (e.g. "how many districts in BK's
-    portfolio", "what crops are in this season's data"). Hard-cap of
-    LIMIT 1000 prevents accidental result-set flooding.
-
-    Args (from ctx.arguments):
-      - postgis_connection_id: str (12-char C-prefixed)
-      - sql_query: str (must contain LIMIT clause, value <= 1000)
-
-    Returns the tool_result dict in tab-separated text form (mirrors the
-    chat loop's formatting). 25,000-char ceiling on the result.
-    """
-    import re
-    import json  # noqa: F401 — parity with message_routes.py shape
-
-    from fastapi import HTTPException
-
-    from src.routes.message_routes import validate_sql_query
-    from src.dependencies.postgres_connection import PostgresConnectionManager
-    from src.routes.websocket import kue_ephemeral_action
-
-    postgis_connection_id = ctx.arguments.get("postgis_connection_id")
-    raw_query = ctx.arguments.get("sql_query")
-    sql_query = raw_query
-
-    # Validate before any execution. validate_sql_query raises HTTPException;
-    # we catch + return so the LLM gets a parseable result rather than 500.
-    if sql_query:
-        try:
-            sql_query = validate_sql_query(sql_query)
-        except HTTPException as e:
-            return {"status": "error", "error": f"Query validation failed: {e.detail}"}
-
-    if not postgis_connection_id or not sql_query:
-        return {
-            "status": "error",
-            "error": "Missing required parameters (postgis_connection_id or sql_query)",
-        }
-
-    # Owner / project access check, same fallback as new_layer_from_postgis.
-    connection_result = await ctx.conn.fetchrow(
-        """
-        SELECT connection_uri FROM project_postgres_connections
-        WHERE id = $1 AND (user_id = $2 OR project_id = $3)
-        AND soft_deleted_at IS NULL
-        """,
-        postgis_connection_id, ctx.user_id, ctx.project_id,
-    )
-    if not connection_result:
-        return {
-            "status": "error",
-            "error": (
-                f"PostGIS connection '{postgis_connection_id}' not found or "
-                f"you do not have access to it."
-            ),
-        }
-
-    limited_query = sql_query.strip()
-    limit_match = re.search(r"\bLIMIT\s+(\d+)\b", limited_query, re.IGNORECASE)
-    if not limit_match:
-        return {
-            "status": "error",
-            "error": "Query must include a LIMIT clause with a value less than 1000",
-        }
-    if int(limit_match.group(1)) > 1000:
-        return {
-            "status": "error",
-            "error": (
-                f"LIMIT value {int(limit_match.group(1))} exceeds maximum "
-                f"allowed limit of 1000"
-            ),
-        }
-
-    connection_manager = PostgresConnectionManager()
-    try:
-        async with kue_ephemeral_action(
-            ctx.conversation_id, "Querying PostgreSQL database...",
-        ):
-            postgres_conn = await connection_manager.connect_to_postgres(
-                postgis_connection_id
-            )
-            try:
-                rows = await postgres_conn.fetch(limited_query)
-                if not rows:
-                    return {
-                        "status": "success",
-                        "message": "Query executed successfully but returned no rows",
-                        "row_count": 0,
-                        "query": limited_query,
-                    }
-                result_data = [dict(row) for row in rows]
-                # Format: single-value, or tab-separated table.
-                if len(result_data) == 1 and len(result_data[0]) == 1:
-                    single_value = next(iter(result_data[0].values()))
-                    result_text = f"Query result: {single_value}"
-                else:
-                    headers = list(result_data[0].keys())
-                    lines = ["\t".join(headers)]
-                    for row in result_data:
-                        lines.append("\t".join(str(row.get(h, "")) for h in headers))
-                    result_text = "\n".join(lines)
-                if len(result_text) > 25000:
-                    return {
-                        "status": "error",
-                        "error": (
-                            f"Query result too large: {len(result_text)} "
-                            f"characters exceeds 25,000 character limit. Try "
-                            f"reducing the number of columns or rows."
-                        ),
-                    }
-                return {
-                    "status": "success",
-                    "result": result_text,
-                    "row_count": len(result_data),
-                    "query": limited_query,
-                }
-            finally:
-                await postgres_conn.close()
-    except HTTPException as e:
-        return {
-            "status": "error",
-            "error": f"Failed to connect to PostGIS database: {e.detail}",
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": f"PostgreSQL query error: {str(e)}",
-            "query": limited_query,
-        }
-
-
-async def _handle_zonal_statistics(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Compute zonal statistics (mean, sum, min, max, count, stdev) for raster
-    values within polygon boundaries.
-
-    Extracted from src/routes/message_routes.py:2865-2942. Delegates the
-    actual raster-over-polygon math to compute_zonal_statistics in
-    src/geoprocessing/zonal_stats.py. This handler just owns the
-    ownership-checks-then-dispatch pattern.
-
-    Args (from ctx.arguments):
-      - raster_layer_id: str
-      - zones_layer_id: str
-      - stats: list[str] (optional; defaults to mean/sum/min/max/count/stdev)
-    """
-    from fastapi import HTTPException
-
-    from src.routes.websocket import kue_ephemeral_action
-
-    raster_layer_id = ctx.arguments.get("raster_layer_id")
-    zones_layer_id = ctx.arguments.get("zones_layer_id")
-    stats = ctx.arguments.get("stats")
-
-    if not raster_layer_id or not zones_layer_id:
-        return {
-            "status": "error",
-            "error": "Missing required parameters (raster_layer_id or zones_layer_id).",
-        }
-
-    raster_exists = await ctx.conn.fetchrow(
-        "SELECT layer_id, type FROM map_layers WHERE layer_id = $1 AND owner_uuid = $2",
-        raster_layer_id, ctx.user_id,
-    )
-    zones_exists = await ctx.conn.fetchrow(
-        "SELECT layer_id, type FROM map_layers WHERE layer_id = $1 AND owner_uuid = $2",
-        zones_layer_id, ctx.user_id,
-    )
-    if not raster_exists:
-        return {
-            "status": "error",
-            "error": (
-                f"Raster layer '{raster_layer_id}' not found or you do not "
-                f"have access to it."
-            ),
-        }
-    if not zones_exists:
-        return {
-            "status": "error",
-            "error": (
-                f"Zones layer '{zones_layer_id}' not found or you do not "
-                f"have access to it."
-            ),
-        }
-
-    try:
-        async with kue_ephemeral_action(
-            ctx.conversation_id, "Computing zonal statistics...",
-        ):
-            # Local import: avoid GDAL/rasterio at module load if the shim
-            # is imported in a context that doesn't need this tool.
-            from src.geoprocessing.zonal_stats import compute_zonal_statistics
-
-            return await compute_zonal_statistics(
-                raster_layer_id=raster_layer_id,
-                zones_layer_id=zones_layer_id,
-                stats=stats,
-                timeout=30,
-            )
-    except HTTPException as e:
-        return {"status": "error", "error": f"Zonal statistics error: {e.detail}"}
-    except Exception as e:
-        logger.exception(
-            "Error computing zonal statistics for raster=%s, zones=%s",
-            raster_layer_id, zones_layer_id,
-        )
-        return {
-            "status": "error",
-            "error": f"Failed to compute zonal statistics: {str(e)}",
-        }
-
-
 # Province-to-district mapping (stable since the 2006 administrative reform).
-# Lifted verbatim from message_routes.py:6061-6074 — keeping the same list so
-# the shim and the hand-rolled loop return identical province values.
 _RWANDA_DISTRICT_TO_PROVINCE: Dict[str, str] = {
     # Kigali City (3 districts)
     "Gasabo": "Kigali City", "Kicukiro": "Kigali City", "Nyarugenge": "Kigali City",
@@ -999,7 +664,7 @@ async def _handle_reverse_geocode_coordinates(ctx: LegacyToolContext) -> Dict[st
     """Resolve lat/lon to Rwanda admin hierarchy (province → district → sector
     → cell → village).
 
-    Extracted from src/routes/message_routes.py:6053-6171. Cascades through
+    Cascades through
     boundary tables in order of specificity (most-precise village first,
     fall back to coarser admin levels). Province is derived from district
     via a hardcoded table since rwanda_district_boundaries doesn't store
@@ -1114,7 +779,7 @@ async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Multi-model weather forecast (ECMWF + GFS + ICON + GraphCast) for a
     Rwanda location.
 
-    Extracted from src/routes/message_routes.py:5301-5353. Delegates the
+    Delegates the
     actual model fusion to `get_farm_forecast`. Adds a district→centroid
     convenience lookup so Sage can say "forecast for Bugesera" without
     knowing coordinates. Defaults to Kigali if everything is missing.
@@ -1173,7 +838,7 @@ async def _handle_detect_dry_spells(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Detect historical dry spells (consecutive days under a rainfall
     threshold) from AgERA5 observed weather data.
 
-    Extracted from src/routes/message_routes.py:5486-5507. Pure delegation
+    Pure delegation
     to `detect_dry_spells` in src.services.weather_accuracy — same shape
     as the inline handler. Defaults match the chat loop (2mm/day threshold,
     10-day minimum duration).
@@ -1202,7 +867,7 @@ async def _handle_detect_dry_spells(ctx: LegacyToolContext) -> Dict[str, Any]:
 def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
     """Render the insurance-intelligence dict into a natural-language briefing.
 
-    Extracted unchanged from src/routes/message_routes.py:5559-5657. Sage's
+    Sage's
     LLM consumes the briefing string as a pre-digested summary so it doesn't
     have to interpret raw SPI/NDVI/ET numbers itself. Kept verbatim for
     output parity with the hand-rolled path.
@@ -1289,7 +954,7 @@ def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
 
     briefing_parts = [
         f"Location: {loc}, Season {season}, currently in {phase} (day {dap}). Overall status: {status_} (confidence {confidence}/100).",
-        f"Rainfall this season: {rain}mm so far. {spi_str}.",
+        f"{season_rainfall_sentence(data.get('season_rainfall_mm'))} {spi_str}.",
     ]
     if ndvi_str:
         briefing_parts.append(ndvi_str + ".")
@@ -1309,7 +974,7 @@ def _build_insurance_briefing(data: Dict[str, Any], fired: list) -> str:
 async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Comprehensive agricultural situation report for a Rwanda location.
 
-    Extracted from src/routes/message_routes.py:5530-5756. The flagship
+    The flagship
     Sage tool for BK Insurance underwriters. Calls the insurance engine
     to compute the multi-signal status (SPI, NDVI, soil moisture, ET,
     dry spells, parametric triggers), renders the result into a natural-
@@ -1319,14 +984,15 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 
     Args (from ctx.arguments):
       - crop, season, district, sector, cell, village: location/crop scope
-      - audience: 'agronomist' | 'underwriter' | 'farmer'
+      - audience: 'farmer' | 'insurance' | 'agronomist' | 'scientist' (aliases such as
+        'underwriter' accepted; unset -> insurance_engine.DEFAULT_AUDIENCE)
       - compare_level: if set, returns comparison mode across multiple areas
     """
     import json as _json
     from datetime import date as _date_cls
 
     try:
-        from src.services.insurance_engine import compute_insurance_intelligence
+        from src.services.insurance_engine import compute_insurance_intelligence, resolve_audience
 
         compare_level = ctx.arguments.get("compare_level")
         result = await compute_insurance_intelligence(
@@ -1337,7 +1003,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             sector=ctx.arguments.get("sector"),
             cell=ctx.arguments.get("cell"),
             village=ctx.arguments.get("village"),
-            audience=ctx.arguments.get("audience", "agronomist"),
+            audience=await resolve_audience(ctx.conn, ctx.arguments.get("audience"), ctx.user_id, ctx.partner_id),
             compare_level=compare_level,
         )
 
@@ -1421,28 +1087,21 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 slug = result.get("slug", "insurance-report").lower()
                 geom = result.get("geometry")
                 geom_str = _json.dumps(geom) if geom else None
-                page_data = result.get("data", {}) if "data" in result else {}
-                # Re-pull data from the original result snapshot — we already
-                # deleted result["data"] above for the LLM-facing output,
-                # but the Brain save needs the structured fields.
-                # Recompute from what's still in result.
-                data_for_brain = {
-                    "crop": ctx.arguments.get("crop"),
-                    "season": ctx.arguments.get("season"),
-                    "location": (
-                        ctx.arguments.get("village")
-                        or ctx.arguments.get("cell")
-                        or ctx.arguments.get("sector")
-                        or ctx.arguments.get("district")
-                    ),
-                }
+                # The engine's resolved fields (real location, season, status),
+                # not the raw arguments; `data` was read before result["data"]
+                # was removed from the model-facing result.
                 page_input = PageInput(
                     type="insurance_intelligence",
-                    title=f"Insurance: {data_for_brain['location'] or ''} Season {data_for_brain['season'] or ''}",
+                    title=f"Insurance: {data.get('location', '')} Season {data.get('season', '')}",
                     compiled_truth=result.get("_report_for_brain", ""),
                     frontmatter={
                         "type": "insurance_intelligence",
-                        **data_for_brain,
+                        "crop": data.get("crop"),
+                        "season": data.get("season"),
+                        "location": data.get("location"),
+                        "admin_level": data.get("admin_level"),
+                        "confidence_score": data.get("confidence_score"),
+                        "overall_status": data.get("overall_status"),
                     },
                     geom_geojson=geom_str,
                 )
@@ -1453,12 +1112,14 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 timeline_input = TimelineInput(
                     date=_date_cls.today(),
                     summary=(
-                        f"insurance_intelligence: {data_for_brain['crop'] or ''} "
-                        f"in {data_for_brain['location'] or ''} "
-                        f"Season {data_for_brain['season'] or ''}"
+                        f"{data.get('overall_status', 'UNKNOWN')}: "
+                        f"{data.get('crop', '')} in {data.get('location', '')} "
+                        f"Season {data.get('season', '')} — "
+                        f"confidence {data.get('confidence_score', 0)}/100, "
+                        f"{data.get('triggers_activated', 0)}/{data.get('triggers_total', 0)} triggers"
                     ),
                     source="insurance_engine",
-                    detail=_json.dumps(data_for_brain, default=str),
+                    detail=_json.dumps(data, default=str),
                 )
                 await brain.add_timeline_entry(
                     ctx.conn, slug, timeline_input,
@@ -1485,7 +1146,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 async def _handle_get_field_health(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Live vegetation health stats for a polygon (NDVI/NDWI/BSI via Sentinel Hub).
 
-    Extracted from src/routes/message_routes.py:3062-3104. Auto-buffers
+    Auto-buffers
     Point/MultiPoint geometries to a 500m polygon so the LLM can pass a
     single coordinate without having to call new_layer + buffer first.
     Sync `_sa_get_field_stats` is offloaded to the default executor.
@@ -1537,7 +1198,7 @@ async def _handle_get_field_health(ctx: LegacyToolContext) -> Dict[str, Any]:
 async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Read parcel-level NDVI from the postgres cache (ndvi_parcel_cache).
 
-    Extracted from src/routes/message_routes.py:3828-3894. Returns the
+    Returns the
     last 100 most-recently-computed rows, optionally filtered by parcel
     name (ILIKE) or by layer_id. Pure cache read — never falls back to
     real-time (parcel boundaries are user-uploaded so cache freshness is
@@ -1594,10 +1255,10 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
                     "parcel_name": r["parcel_name"],
                     "layer_id": r["layer_id"],
                     "week_start": str(r["week_start"]) if r["week_start"] else None,
-                    "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                    "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                    "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                    "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                    "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                    "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                    "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                    "max_ndvi": round_or_none(r["max_ndvi"], 4),
                     "valid_pixels": r["valid_pixels"],
                     "area_ha": r["area_ha"],
                 }
@@ -1625,7 +1286,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """District-level NDVI stats with 3-tier fallback (cache → DE Africa
     real-time → STAC COG).
 
-    Extracted from src/routes/message_routes.py:3350-3592. Big handler
+    Big handler
     with three independent data sources tried in order:
 
       1. PostgreSQL `ndvi_field_cache` populated by the nightly Dagster
@@ -1676,10 +1337,10 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             ndvi_stats.append({
                 "district": r["district"],
                 "week_start": str(r["week_start"]) if r["week_start"] else None,
-                "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                "max_ndvi": round_or_none(r["max_ndvi"], 4),
                 "valid_pixels": r["valid_pixels"],
                 "source": "deafrica_cache",
             })
@@ -1775,8 +1436,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "cached_records": len(ndvi_stats),
                 "realtime_records": len(realtime_stats),
                 "note": (
-                    "NDVI values: 0.6-0.8 = dense vegetation, 0.3-0.5 = cropland, "
-                    "0.1-0.3 = sparse vegetation, <0.1 = bare soil/cloud contaminated. "
+                    f"{ndvi_classes.scale_text()} "
                     "Negative values indicate heavy cloud cover during the observation period. "
                     "Source: Sentinel-2 L2A via Digital Earth Africa (free, public). "
                     "Each record has a 'source' field: 'deafrica_cache' (nightly batch) "
@@ -1845,8 +1505,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "realtime_records": len(stac_stats),
                 "note": (
                     "NDVI computed in real-time from Sentinel-2 COGs via STAC "
-                    "(free, no API key). Values: 0.6-0.8 = dense vegetation, "
-                    "0.3-0.5 = cropland, 0.1-0.3 = sparse vegetation, <0.1 = bare soil."
+                    f"(free, no API key). {ndvi_classes.scale_text()}"
                 ),
                 "ndvi_stats": stac_stats,
             }
@@ -1876,7 +1535,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
 async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Sector/cell-level NDVI stats with cache → real-time fallback.
 
-    Extracted from src/routes/message_routes.py:3594-3761. Like
+    Like
     get_ndvi_stats but one admin level finer (cell granularity, with
     sector_name from the boundary join). Falls back to sector-level
     real-time DE Africa NDVI if the cell-level cache is empty.
@@ -1934,10 +1593,10 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "sector_name": r["sector_name"],
                         "district_name": r["district_name"],
                         "week_start": str(r["week_start"]) if r["week_start"] else None,
-                        "mean_ndvi": round(r["mean_ndvi"], 4) if r["mean_ndvi"] else None,
-                        "std_ndvi": round(r["std_ndvi"], 4) if r["std_ndvi"] else None,
-                        "min_ndvi": round(r["min_ndvi"], 4) if r["min_ndvi"] else None,
-                        "max_ndvi": round(r["max_ndvi"], 4) if r["max_ndvi"] else None,
+                        "mean_ndvi": round_or_none(r["mean_ndvi"], 4),
+                        "std_ndvi": round_or_none(r["std_ndvi"], 4),
+                        "min_ndvi": round_or_none(r["min_ndvi"], 4),
+                        "max_ndvi": round_or_none(r["max_ndvi"], 4),
                         "valid_pixels": r["valid_pixels"],
                     }
                     for r in rows
@@ -2068,7 +1727,7 @@ async def _handle_get_agri_indices(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Multi-index Sentinel-2 stats (NDVI, EVI, NDWI, SAVI, NDRE, NDBI) for
     Rwanda admin boundaries, with cache write-back and direct layer creation.
 
-    Extracted from src/routes/message_routes.py:3896-4305. The biggest
+    The biggest
     inline handler — does six things in sequence:
 
       1. Selects the right admin table (district/sector/cell) based on
@@ -2478,272 +2137,12 @@ async def _handle_get_agri_indices(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-async def _handle_identify_parcel_crop(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Identify the dominant crop in a parcel from NDVI time-series.
-
-    Pipeline: fetch NDVI intervals via satellite_analytics (DE Africa primary,
-    SH fallback) → convert to time-series → run ml_inference.identify_crop.
-    Auto-buffers Point geometries to 500m polygon (UTM 32735 → WGS84) so the
-    LLM can pass a single pin and still get a usable result.
-
-    Lifted byte-for-byte from message_routes.py:3190-3253.
-    """
-    args = ctx.arguments
-    try:
-        from src.services.satellite_analytics import get_field_timeseries as _sa_get_field_timeseries
-        from src.services.ml_inference import get_ml_service
-
-        _ic_geom = args.get("geometry")
-        if not _ic_geom:
-            return {"status": "error", "error": "geometry is required for crop identification"}
-
-        _ic_months = args.get("months", 6)
-        if _ic_months < 3:
-            _ic_months = 3
-
-        # Auto-buffer Point geometries
-        if _ic_geom.get("type") in ("Point", "MultiPoint"):
-            from shapely.geometry import shape as _shape, mapping as _mapping
-            from pyproj import Transformer as _Transformer
-            from shapely.ops import transform as _stransform
-            _pt = _shape(_ic_geom)
-            _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
-            _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
-            _pt_utm = _stransform(_to_utm.transform, _pt)
-            _buf_utm = _pt_utm.buffer(500)
-            _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
-            _ic_geom = _mapping(_buf_wgs)
-            logger.info("identify_parcel_crop: auto-buffered Point to 500m polygon")
-
-        # Step 1: Get NDVI time-series (DE Africa primary, SH fallback)
-        ts_result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: _sa_get_field_timeseries(
-                geometry=_ic_geom,
-                months=_ic_months,
-            )
-        )
-        if "error" in ts_result:
-            return {"status": "error", "error": ts_result["error"]}
-
-        # Convert intervals to time-series format
-        _ndvi_ts = []
-        for interval in ts_result.get("intervals", []):
-            _ndvi_data = interval.get("ndvi", {})
-            if _ndvi_data.get("mean") is not None:
-                _ndvi_ts.append({
-                    "date": interval.get("date_from", ""),
-                    "mean_ndvi": _ndvi_data["mean"],
-                })
-
-        if len(_ndvi_ts) < 4:
-            return {
-                "status": "error",
-                "error": (
-                    f"Insufficient data: only {len(_ndvi_ts)} cloud-free observations "
-                    f"in {_ic_months} months. Need at least 4 for crop identification."
-                ),
-            }
-
-        # Step 2: Run crop identification
-        ml_service = get_ml_service()
-        crop_result = ml_service.identify_crop(_ndvi_ts)
-        if "error" in crop_result:
-            return {"status": "error", "error": crop_result["error"]}
-        return {"status": "success", "crop_identification": crop_result}
-    except Exception as e:
-        logger.exception("identify_parcel_crop failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_confirm_crop_prediction(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Record farmer feedback on a crop prediction into crop_feedback table.
-
-    Auto-detects Rwanda agricultural season from current date when not given
-    (Season A: Sep-Feb, Season B: Feb-Jul). Falls back to log-only if the
-    crop_feedback table is missing — feedback is never silently dropped.
-
-    Lifted byte-for-byte from message_routes.py:3263-3340.
-    """
-    args = ctx.arguments
-    try:
-        from datetime import date as _cdate
-
-        _predicted = args.get("predicted_crop", "")
-        _actual = args.get("actual_crop", "")
-        _confirmed = args.get("confirmed", False)
-        _season = args.get("season")
-        _geom = args.get("geometry")
-
-        # Auto-detect season from current date
-        if not _season:
-            _today = _cdate.today()
-            _yr = _today.year
-            if _today.month >= 9:
-                _season = f"{_yr + 1}A"
-            elif _today.month <= 2:
-                _season = f"{_yr}A"
-            else:
-                _season = f"{_yr}B"
-
-        # Store feedback in PostgreSQL
-        try:
-            await ctx.conn.execute(
-                """INSERT INTO crop_feedback
-                   (user_id, predicted_crop, actual_crop, confirmed,
-                    season, geometry, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, NOW())""",
-                str(ctx.user_id) if ctx.user_id else "anonymous",
-                _predicted,
-                _actual,
-                _confirmed,
-                _season,
-                json.dumps(_geom) if _geom else None,
-            )
-            return {
-                "status": "success",
-                "message": (
-                    f"Thank you! Recorded: prediction was '{_predicted}', "
-                    f"actual crop is '{_actual}' "
-                    f"({'confirmed correct' if _confirmed else 'corrected'}). "
-                    f"Season: {_season}. This feedback improves future predictions."
-                ),
-                "feedback": {
-                    "predicted_crop": _predicted,
-                    "actual_crop": _actual,
-                    "confirmed": _confirmed,
-                    "season": _season,
-                },
-            }
-        except Exception as _db_err:
-            # Table might not exist yet — log feedback anyway
-            logger.warning(
-                "crop_feedback table not found (%s) — logging feedback",
-                _db_err,
-            )
-            logger.info(
-                "CROP_FEEDBACK: predicted=%s actual=%s confirmed=%s season=%s user=%s",
-                _predicted, _actual, _confirmed, _season, ctx.user_id,
-            )
-            return {
-                "status": "success",
-                "message": (
-                    f"Feedback recorded (log): prediction '{_predicted}', "
-                    f"actual '{_actual}' ({'correct' if _confirmed else 'corrected'}). "
-                    f"Season: {_season}."
-                ),
-                "feedback": {
-                    "predicted_crop": _predicted,
-                    "actual_crop": _actual,
-                    "confirmed": _confirmed,
-                    "season": _season,
-                },
-            }
-    except Exception as e:
-        logger.exception("confirm_crop_prediction failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_get_crop_classifications(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Read crop_classification_cache, optionally reverse-geocoded by lat/lon.
-
-    The cache is populated by a weekly Dagster job. On hit, auto-provisions a
-    PostGIS connection so Sage can call new_layer_from_postgis to visualise
-    classifications by district.
-
-    Lifted byte-for-byte from message_routes.py:4669-4747.
-    """
-    args = ctx.arguments
-    try:
-        from src.routes.message_routes import _ensure_rwanda_postgis_connection
-
-        _district = args.get("district")
-        _cc_lat = args.get("lat")
-        _cc_lon = args.get("lon")
-
-        # Reverse-geocode lat/lon to district if not explicitly provided.
-        # Opens its own asyncpg connection (no RLS scope needed for boundary lookup).
-        if _cc_lat is not None and _cc_lon is not None and not _district:
-            try:
-                import asyncpg as _asyncpg_cc
-                _pg_host_cc = os.environ.get("POSTGRES_HOST", "postgresdb")
-                _pg_port_cc = int(os.environ.get("POSTGRES_PORT", "5432"))
-                _pg_db_cc = os.environ.get("POSTGRES_DB", "mundidb")
-                _pg_user_cc = os.environ.get("POSTGRES_USER", "mundiuser")
-                _pg_pass_cc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
-                _pg_conn_cc = await _asyncpg_cc.connect(
-                    host=_pg_host_cc, port=_pg_port_cc,
-                    database=_pg_db_cc, user=_pg_user_cc, password=_pg_pass_cc,
-                )
-                try:
-                    _rg_row = await _pg_conn_cc.fetchrow(
-                        "SELECT district FROM rwanda_district_boundaries "
-                        "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
-                        "LIMIT 1",
-                        float(_cc_lon), float(_cc_lat),
-                    )
-                    if _rg_row:
-                        _district = _rg_row["district"]
-                        logger.info("Crop classifications: reverse-geocoded → district=%s", _district)
-                finally:
-                    await _pg_conn_cc.close()
-            except Exception as _rg_err:
-                logger.warning("Reverse-geocode failed for crop classifications: %s", _rg_err)
-
-        if _district:
-            _rows = await ctx.conn.fetch(
-                "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
-                "FROM crop_classification_cache WHERE district = $1 "
-                "ORDER BY computed_at DESC LIMIT 50",
-                _district,
-            )
-        else:
-            _rows = await ctx.conn.fetch(
-                "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
-                "FROM crop_classification_cache ORDER BY computed_at DESC LIMIT 50"
-            )
-
-        if _rows:
-            tool_result: Dict[str, Any] = {
-                "status": "success",
-                "source": "postgres_cache",
-                "count": len(_rows),
-                "classifications": [
-                    {"district": r["district"], "class_label": r["class_label"], "area_ha": r["area_ha"],
-                     "pixel_count": r["pixel_count"], "confidence": r["confidence"], "job_id": r["job_id"]}
-                    for r in _rows
-                ],
-            }
-            _pgc_id = await _ensure_rwanda_postgis_connection(
-                ctx.conn, ctx.project_id, ctx.user_id,
-            )
-            if _pgc_id:
-                tool_result["postgis_connection_id"] = _pgc_id
-                tool_result["kue_instructions"] = (
-                    "To visualise crop classifications on the map, call new_layer_from_postgis with "
-                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                    "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
-                    "Then add_layer_to_map and set_layer_style. "
-                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                )
-            return tool_result
-        return {
-            "status": "success",
-            "source": "postgres_cache",
-            "classifications": [],
-            "message": "No classification data yet — Dagster weekly schedule populates this cache",
-        }
-    except Exception as e:
-        logger.exception("get_crop_classifications tool failed")
-        return {"status": "error", "error": str(e)}
-
-
 async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Read anomaly_alerts_cache filtered by severity/district.
 
     Returns z-score-sorted alerts (most negative first = worst anomalies).
     Auto-provisions PostGIS connection so Sage can colour districts by severity.
 
-    Lifted byte-for-byte from message_routes.py:4757-4813.
     """
     args = ctx.arguments
     try:
@@ -2776,7 +2175,7 @@ async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "alerts": [
                     {"district": r["district"], "date": str(r["anomaly_date"]) if r["anomaly_date"] else None,
                      "observed_ndvi": r["observed_ndvi"], "expected_ndvi": r["expected_ndvi"],
-                     "z_score": round(r["z_score"], 3) if r["z_score"] else None, "severity": r["severity"]}
+                     "z_score": round_or_none(r["z_score"], 3), "severity": r["severity"]}
                     for r in _rows
                 ],
             }
@@ -2808,7 +2207,6 @@ async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
 async def _handle_get_yield_risk(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Read yield_risk_cache (Mann-Kendall + seasonal deviation analysis).
 
-    Lifted byte-for-byte from message_routes.py:4823-4870.
     """
     args = ctx.arguments
     try:
@@ -2872,7 +2270,6 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
     AND adds a top-level note when ALL districts are insufficient, so the
     LLM does NOT claim drought from missing data.
 
-    Lifted byte-for-byte from message_routes.py:4880-5061.
     """
     args = ctx.arguments
     try:
@@ -3056,7 +2453,6 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
 async def _handle_get_crop_growth_stage(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Read phenology_cache (current growth stage by district/stage filter).
 
-    Lifted byte-for-byte from message_routes.py:5071-5127.
     """
     args = ctx.arguments
     try:
@@ -3126,7 +2522,6 @@ async def _handle_get_soil_properties(ctx: LegacyToolContext) -> Dict[str, Any]:
     style_hint so Sage can paint the map with the same COG it just queried.
     `display_bbox` suggests a ~5km auto-zoom around the queried point.
 
-    Lifted byte-for-byte from message_routes.py:3763-3815.
     """
     args = ctx.arguments
     try:
@@ -3189,7 +2584,6 @@ async def _handle_get_weather_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     NWP reanalysis fills the recent days. Returns up to 300 records sorted by
     date desc, district. Auto-provisions Rwanda PostGIS connection.
 
-    Lifted byte-for-byte from message_routes.py:5137-5288.
     """
     args = ctx.arguments
     try:
@@ -3353,7 +2747,6 @@ async def _handle_get_forecast_accuracy(ctx: LegacyToolContext) -> Dict[str, Any
     district centroids; failures per-district are silently skipped (LLM gets
     the surviving sample).
 
-    Lifted byte-for-byte from message_routes.py:5355-5473.
     """
     args = ctx.arguments
     try:
@@ -3394,10 +2787,10 @@ async def _handle_get_forecast_accuracy(ctx: LegacyToolContext) -> Dict[str, Any
         for r in _obs_rows:
             key = (r["district"], str(r["observation_date"]))
             _obs_lookup[key] = {
-                "temp_mean": float(r["temperature_mean"]) if r["temperature_mean"] else None,
-                "temp_max": float(r["temperature_max"]) if r["temperature_max"] else None,
-                "temp_min": float(r["temperature_min"]) if r["temperature_min"] else None,
-                "precip": float(r["precipitation"]) if r["precipitation"] else None,
+                "temp_mean": round_or_none(r["temperature_mean"]),
+                "temp_max": round_or_none(r["temperature_max"]),
+                "temp_min": round_or_none(r["temperature_min"]),
+                "precip": round_or_none(r["precipitation"]),
             }
 
         _model_errors: Dict[str, list] = {"temp_errors": [], "precip_errors": [], "comparisons": []}
@@ -3479,7 +2872,6 @@ async def _handle_get_forecast_accuracy(ctx: LegacyToolContext) -> Dict[str, Any
 async def _handle_get_insurance_accuracy(ctx: LegacyToolContext) -> Dict[str, Any]:
     """Thin wrapper around weather_accuracy.compute_insurance_accuracy.
 
-    Lifted byte-for-byte from message_routes.py:5509-5520.
     """
     args = ctx.arguments
     try:
@@ -3492,114 +2884,6 @@ async def _handle_get_insurance_accuracy(ctx: LegacyToolContext) -> Dict[str, An
         )
     except Exception as e:
         logger.exception("get_insurance_accuracy tool failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_get_emissions_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """EDGAR v8.0 emissions cache, multi-dim filter (year, type, sector, district).
-
-    Returns up to 500 records sorted by year desc. Defaults to last 7 years
-    when no year filter is given. Auto-provisions Rwanda PostGIS connection
-    with a join-template in kue_instructions for choropleth maps.
-
-    Lifted byte-for-byte from message_routes.py:5758-5850.
-    """
-    args = ctx.arguments
-    try:
-        from src.routes.message_routes import _ensure_rwanda_postgis_connection
-
-        _em_where: list[str] = []
-        _em_params: list[Any] = []
-        _em_pidx = 1
-        if args.get("district"):
-            _em_where.append(f"district = ${_em_pidx}")
-            _em_params.append(args["district"])
-            _em_pidx += 1
-        if args.get("year"):
-            _em_where.append(f"year = ${_em_pidx}")
-            _em_params.append(int(args["year"]))
-            _em_pidx += 1
-        if args.get("year_from"):
-            _em_where.append(f"year >= ${_em_pidx}")
-            _em_params.append(int(args["year_from"]))
-            _em_pidx += 1
-        if args.get("year_to"):
-            _em_where.append(f"year <= ${_em_pidx}")
-            _em_params.append(int(args["year_to"]))
-            _em_pidx += 1
-        if args.get("emission_type"):
-            _em_where.append(f"emission_type = ${_em_pidx}")
-            _em_params.append(args["emission_type"])
-            _em_pidx += 1
-        if args.get("sector"):
-            _em_where.append(f"sector = ${_em_pidx}")
-            _em_params.append(args["sector"])
-            _em_pidx += 1
-        if not args.get("year") and not args.get("year_from") and not args.get("year_to"):
-            _em_where.append("year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 6")
-
-        _em_where_sql = f"WHERE {' AND '.join(_em_where)}" if _em_where else ""
-        _em_rows = await ctx.conn.fetch(
-            f"SELECT district, year, emission_type, sector, "
-            f"sector_label, total_tonnes, grid_cells "
-            f"FROM emissions_annual_cache {_em_where_sql} "
-            f"ORDER BY year DESC, district, emission_type, sector "
-            f"LIMIT 500",
-            *_em_params,
-        )
-
-        _emissions_stats: list[Dict[str, Any]] = []
-        for r in _em_rows:
-            _emissions_stats.append({
-                "district": r["district"],
-                "year": r["year"],
-                "emission_type": r["emission_type"],
-                "sector": r["sector"],
-                "sector_label": r["sector_label"],
-                "total_tonnes": round(r["total_tonnes"], 2) if r["total_tonnes"] else None,
-                "grid_cells": r["grid_cells"],
-            })
-
-        if _emissions_stats:
-            tool_result: Dict[str, Any] = {
-                "status": "success",
-                "source": "EDGAR v8.0 (JRC)",
-                "count": len(_emissions_stats),
-                "note": (
-                    "EDGAR v8.0 emissions data from the Joint Research Centre. "
-                    "Values are total tonnes per district per year. "
-                    "Sectors: AGS=Agricultural soils, ENF=Enteric fermentation, "
-                    "MNM=Manure management, AWB=Agricultural waste burning."
-                ),
-                "emissions_stats": _emissions_stats,
-            }
-            _pgc_id = await _ensure_rwanda_postgis_connection(
-                ctx.conn, ctx.project_id, ctx.user_id,
-            )
-            if _pgc_id:
-                tool_result["postgis_connection_id"] = _pgc_id
-                tool_result["kue_instructions"] = (
-                    "To visualise emissions data on the map, call new_layer_from_postgis with "
-                    f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                    "Join emissions_annual_cache with rwanda_district_boundaries on district. "
-                    "Example: SELECT ROW_NUMBER() OVER() AS id, e.district, e.total_tonnes, e.emission_type, "
-                    "e.year, b.geom FROM emissions_annual_cache e JOIN rwanda_district_boundaries b "
-                    "ON e.district = b.district WHERE e.emission_type = 'CH4' AND e.year = 2022 "
-                    "Then add_layer_to_map and set_layer_style to colour by total_tonnes. "
-                    "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                )
-            return tool_result
-        return {
-            "status": "success",
-            "emissions_stats": [],
-            "message": (
-                "No emissions data available. The emissions_annual_cache table "
-                "may not be populated yet. Trigger the annual_emissions_ingest "
-                "Dagster asset to load EDGAR data."
-            ),
-        }
-    except Exception as e:
-        logger.exception("get_emissions_stats tool failed")
         return {"status": "error", "error": str(e)}
 
 
@@ -3740,7 +3024,6 @@ async def _handle_search_brain(ctx: LegacyToolContext) -> Dict[str, Any]:
     searches (each on its own RLS-scoped connection), dedupes by
     (slug, chunk-text-prefix), and returns top-K by score.
 
-    Lifted byte-for-byte from message_routes.py:6175-6228.
     """
     args = ctx.arguments
     try:
@@ -3813,7 +3096,6 @@ async def _handle_get_entity(ctx: LegacyToolContext) -> Dict[str, Any]:
     Returns `not_found` status (no error) when slug doesn't exist so the LLM
     can tell the user the page hasn't been created yet vs. surface an error.
 
-    Lifted byte-for-byte from message_routes.py:6241-6267.
     """
     args = ctx.arguments
     try:
@@ -3852,7 +3134,6 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
 
     Date defaults to today when not supplied. Source defaults to 'user_report'.
 
-    Lifted byte-for-byte from message_routes.py:6280-6307.
     """
     args = ctx.arguments
     try:
@@ -3894,7 +3175,6 @@ async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, 
     NDVI sample fails silently to None so the search results are still useful
     when the first scene happens to be missing bands.
 
-    Lifted byte-for-byte from message_routes.py:3002-3049.
     """
     args = ctx.arguments
     try:
@@ -3959,9 +3239,6 @@ async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, An
 
     Auto-reverse-geocodes lat/lon to the most-specific admin (cell > sector >
     district) when no admin/bbox was passed.
-
-    Lifted byte-for-byte from message_routes.py:4307-4655. The original
-    `continue` statements at validation points become early `return`s here.
     """
     args = ctx.arguments
     try:
@@ -4291,7 +3568,6 @@ async def _handle_add_land_cover_layer(ctx: LegacyToolContext) -> Dict[str, Any]
     3. Emits a kue_ephemeral_action so the frontend shows "Adding ..." +
        updates the style JSON and recenters to bounds.
 
-    Lifted byte-for-byte from message_routes.py:5863-6038.
     """
     args = ctx.arguments
     try:
@@ -4468,307 +3744,12 @@ async def _handle_add_land_cover_layer(ctx: LegacyToolContext) -> Dict[str, Any]
         return {"status": "error", "error": str(e)}
 
 
-async def _handle_create_management_zones(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Sync precision_ag_service.create_management_zones in executor.
-
-    Lifted byte-for-byte from message_routes.py:3106-3122.
-    """
-    args = ctx.arguments
-    try:
-        from src.services.precision_ag_service import create_management_zones
-
-        result_data = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: create_management_zones(
-                geometry=args.get("geometry"),
-                num_zones=args.get("num_zones", 3),
-                date_from=args.get("date_from"),
-                date_to=args.get("date_to"),
-            ),
-        )
-        if "error" in result_data:
-            return {"status": "error", "error": result_data["error"]}
-        return {"status": "success", "management_zones": result_data}
-    except Exception as e:
-        logger.exception("create_management_zones failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_create_prescription_map(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Sync precision_ag_service.create_prescription_map in executor.
-
-    Lifted byte-for-byte from message_routes.py:3135-3150.
-    """
-    args = ctx.arguments
-    try:
-        from src.services.precision_ag_service import create_prescription_map
-
-        result_data = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: create_prescription_map(
-                geometry=args.get("geometry"),
-                crop_type=args.get("crop_type", "maize"),
-                num_zones=args.get("num_zones", 3),
-            ),
-        )
-        if "error" in result_data:
-            return {"status": "error", "error": result_data["error"]}
-        return {"status": "success", "prescription_map": result_data}
-    except Exception as e:
-        logger.exception("create_prescription_map failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_create_soil_sampling_plan(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Sync precision_ag_service.create_soil_sampling_plan in executor.
-
-    Lifted byte-for-byte from message_routes.py:3163-3177.
-    """
-    args = ctx.arguments
-    try:
-        from src.services.precision_ag_service import create_soil_sampling_plan
-
-        result_data = await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: create_soil_sampling_plan(
-                geometry=args.get("geometry"),
-                num_zones=args.get("num_zones", 3),
-            ),
-        )
-        if "error" in result_data:
-            return {"status": "error", "error": result_data["error"]}
-        return {"status": "success", "sampling_plan": result_data}
-    except Exception as e:
-        logger.exception("create_soil_sampling_plan failed")
-        return {"status": "error", "error": str(e)}
-
-
-async def _handle_query_rwanda_zonal_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Rwanda lakehouse query (district summary or NDVI timeseries).
-
-    Two query_types:
-    - district_summary: by province and/or week_start
-    - ndvi_timeseries: by h3_index OR parcel_id, with date range
-
-    Lifted byte-for-byte from message_routes.py:2944-2992.
-    """
-    args = ctx.arguments
-    query_type = args.get("query_type")
-
-    try:
-        from fastapi import HTTPException
-        from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
-        rwanda_mgr = get_rwanda_lakehouse_manager()
-
-        if query_type == "district_summary":
-            province = args.get("province")
-            week_start = args.get("week_start")
-            result_data = rwanda_mgr.query_district_summary(
-                province=province,
-                week_start=week_start,
-            )
-            return {"status": "success", "data": result_data}
-
-        if query_type == "ndvi_timeseries":
-            h3_index = args.get("h3_index")
-            parcel_id = args.get("parcel_id")
-            date_from = args.get("date_from")
-            date_to = args.get("date_to")
-            result_data = rwanda_mgr.query_ndvi_timeseries(
-                h3_index=h3_index,
-                parcel_id=parcel_id,
-                date_from=date_from,
-                date_to=date_to,
-            )
-            return {"status": "success", "data": result_data}
-
-        return {
-            "status": "error",
-            "error": f"Unknown query_type: {query_type}. Must be 'district_summary' or 'ndvi_timeseries'."
-        }
-    except HTTPException as e:
-        return {
-            "status": "error",
-            "error": f"Rwanda lakehouse query error: {e.detail}",
-        }
-    except Exception as e:
-        logger.exception(
-            "Error querying Rwanda lakehouse: query_type=%s",
-            query_type,
-        )
-        return {
-            "status": "error",
-            "error": f"Failed to query Rwanda lakehouse: {str(e)}",
-        }
-
-
-class _SyntheticFunction:
-    """Lightweight stand-in for OpenAI's tool_call.function object.
-
-    run_geoprocessing_tool reads .name (str) and .arguments (JSON str)
-    off this attribute. We don't need any of the real SDK behaviour, just
-    the duck-typed shape.
-    """
-    __slots__ = ("name", "arguments")
-
-    def __init__(self, name: str, arguments: str) -> None:
-        self.name = name
-        self.arguments = arguments
-
-
-class _SyntheticToolCall:
-    """Lightweight stand-in for an OpenAI ChatCompletionMessageToolCall.
-
-    run_geoprocessing_tool needs .id (str) for error wrapping (via
-    RecoverableToolCallError) and .function (the synthetic above). Built
-    fresh per-call so concurrent dispatches don't share state.
-    """
-    __slots__ = ("id", "function")
-
-    def __init__(self, tool_id: str, name: str, arguments: str) -> None:
-        self.id = tool_id
-        self.function = _SyntheticFunction(name=name, arguments=arguments)
-
-
-def _make_qgis_handler(tool_name: str) -> LegacyHandlerFn:
-    """Closure that delegates to run_geoprocessing_tool with a synthetic tool_call.
-
-    All 16 QGIS-processing tools (native_*, qgis_*, gdal_warpreproject) share
-    the same dispatch path: build the QGIS request from tool args + map state,
-    POST to the qgis-processing sidecar, download outputs from S3, register
-    new map_layers rows. Rather than re-implement each one, we delegate to
-    the existing run_geoprocessing_tool which already handles all of them
-    generically by reading the tool name from the call.
-
-    The synthetic tool_call gives run_geoprocessing_tool the SDK-shaped
-    object it expects (.function.name, .function.arguments, .id) without
-    requiring the Hermes path to construct a real OpenAI tool call.
-    """
-    async def _handler(ctx: LegacyToolContext) -> Dict[str, Any]:
-        try:
-            from src.routes.message_routes import run_geoprocessing_tool
-
-            synthetic_call = _SyntheticToolCall(
-                tool_id=f"shim-{tool_name}-{ctx.conversation_id}",
-                name=tool_name,
-                arguments=json.dumps(ctx.arguments),
-            )
-            return await run_geoprocessing_tool(
-                synthetic_call,
-                ctx.conn,
-                ctx.user_id,
-                ctx.map_id,
-                ctx.conversation_id,
-            )
-        except Exception as e:
-            logger.exception("%s (QGIS shim) failed", tool_name)
-            return {"status": "error", "error": str(e), "algorithm_id": tool_name.replace("_", ":")}
-
-    _handler.__name__ = f"_handle_{tool_name}"
-    return _handler
-
-
-# Names of tools that have inline elif handlers in message_routes.py but
-# haven't been extracted into this shim yet. Each gets a stub handler at
-# module load (see below) so the whitelist in tool_call_routes.py accepts
-# them and the LLM gets a structured "not yet extracted" response instead
-# of a 404. As each is extracted, remove its name from this list and add
-# a real `_handle_<name>` function + `LEGACY_HANDLERS[name] = ...` entry.
-#
-# Derived from message_routes.py's `elif function_name == "X":` chain.
-# Verify with: `grep -E 'elif function_name == "[a-z_]+"' src/routes/message_routes.py`
-_NOT_YET_EXTRACTED: list[str] = [
-    # Map/layer plumbing — all 7 hardcoded tools NOW EXTRACTED:
-    # new_layer_from_postgis, add_layer_to_map, set_layer_style,
-    # query_postgis_database, query_duckdb_sql, zonal_statistics,
-    # reverse_geocode_coordinates. None remain in this section.
-    # Satellite / NDVI / soil / agriculture (in tools.json, no Pydantic handler)
-    # query_rwanda_zonal_stats extracted (Rwanda lakehouse query router).
-    # search_satellite_imagery extracted (STAC + NDVI sample).
-    # NOTE: get_field_health + get_parcel_ndvi_stats extracted.
-    # create_management_zones + create_prescription_map +
-    # create_soil_sampling_plan extracted (precision_ag service trio).
-    # identify_parcel_crop + confirm_crop_prediction extracted.
-    # get_ndvi_stats + get_cell_ndvi_stats extracted.
-    # get_soil_properties extracted (iSDAsoil + display_layer hints).
-    # get_agri_indices extracted (cache + DE Africa + inline layer creation).
-    # query_worldcover_stats + add_land_cover_layer extracted (ESRI LULC).
-    # get_crop_classifications + get_anomaly_alerts + get_yield_risk +
-    # get_drought_status + get_crop_growth_stage extracted (5 cache-read tools).
-    # NOTE: get_forecast + detect_dry_spells + get_insurance_intelligence
-    # have been extracted (the insurance flow).
-    # get_weather_stats + get_forecast_accuracy + get_emissions_stats +
-    # get_insurance_accuracy extracted (weather/accuracy/emissions batch).
-    # search_brain + get_entity + add_observation extracted (brain trio).
-    # add_land_cover_layer extracted (LULC raster overlay).
-    # QGIS-processing tools (all 16) extracted via _make_qgis_handler —
-    # they share run_geoprocessing_tool as their common dispatch path.
-]
-
-
-# All 16 QGIS-processing tools share one generic handler that delegates
-# to run_geoprocessing_tool. Names mirror the inline elif chain in
-# message_routes.py and tools.json exactly.
-_QGIS_TOOL_NAMES = [
-    "gdal_warpreproject",
-    "native_aggregate",
-    "native_buffer",
-    "native_dissolve",
-    "native_fieldcalculator",
-    "native_fixgeometries",
-    "native_geometrybyexpression",
-    "native_joinattributesbylocation",
-    "native_mergevectorlayers",
-    "native_reprojectlayer",
-    "native_creategrid",
-    "native_zonalstatisticsfb",
-    "qgis_clip",
-    "qgis_intersection",
-    "qgis_joinbylocationsummary",
-    "qgis_statisticsbycategories",
-]
-
-
-def _make_not_yet_extracted_handler(tool_name: str) -> LegacyHandlerFn:
-    """Return a closure that always reports the tool isn't extracted yet.
-
-    Used to populate `LEGACY_HANDLERS` for tools whose inline elif blocks
-    in message_routes.py haven't been lifted into this shim. The LLM
-    pattern-matches on `status: not_yet_extracted` and apologizes to the
-    user instead of hallucinating success.
-    """
-    async def _handler(ctx: LegacyToolContext) -> Dict[str, Any]:
-        logger.info(
-            "legacy_tool_shim: %s called via /internal/tool-call but not yet "
-            "extracted from message_routes.py (partner=%s user=%s conv=%s)",
-            tool_name, ctx.partner_id, ctx.user_id, ctx.conversation_id,
-        )
-        return {
-            "status": "not_yet_extracted",
-            "tool_name": tool_name,
-            "message": (
-                f"Tool {tool_name!r} is part of Sage's surface but its handler "
-                f"has not yet been extracted from src/routes/message_routes.py "
-                f"into the Hermes-callable shim. The hand-rolled chat loop "
-                f"(MUNDI_USE_HERMES=0) handles it correctly. Roll back the "
-                f"flag or wait for the migration PR."
-            ),
-        }
-    return _handler
-
-
-# Registry: tool name → handler function. Grows one entry per migrated tool.
-# As of this commit: 3 real handlers (new_layer_from_postgis, add_layer_to_map,
-# set_layer_style) + 50 not-yet-extracted stubs. Each not_yet_extracted stub
-# returns a structured message instead of 404, so the LLM can pattern-match
-# on status and apologize cleanly to the user.
+# Registry: tool name → handler function. Every tool Hermes can call through
+# /internal/tool-call that is not a Pydantic tool needs an entry here.
 LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "new_layer_from_postgis": _handle_new_layer_from_postgis,
     "add_layer_to_map": _handle_add_layer_to_map,
     "set_layer_style": _handle_set_layer_style,
-    "query_duckdb_sql": _handle_query_duckdb_sql,
-    "query_postgis_database": _handle_query_postgis_database,
-    "zonal_statistics": _handle_zonal_statistics,
     "reverse_geocode_coordinates": _handle_reverse_geocode_coordinates,
     "get_forecast": _handle_get_forecast,
     "detect_dry_spells": _handle_detect_dry_spells,
@@ -4778,9 +3759,6 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_ndvi_stats": _handle_get_ndvi_stats,
     "get_cell_ndvi_stats": _handle_get_cell_ndvi_stats,
     "get_agri_indices": _handle_get_agri_indices,
-    "identify_parcel_crop": _handle_identify_parcel_crop,
-    "confirm_crop_prediction": _handle_confirm_crop_prediction,
-    "get_crop_classifications": _handle_get_crop_classifications,
     "get_anomaly_alerts": _handle_get_anomaly_alerts,
     "get_yield_risk": _handle_get_yield_risk,
     "get_drought_status": _handle_get_drought_status,
@@ -4789,7 +3767,6 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "get_weather_stats": _handle_get_weather_stats,
     "get_forecast_accuracy": _handle_get_forecast_accuracy,
     "get_insurance_accuracy": _handle_get_insurance_accuracy,
-    "get_emissions_stats": _handle_get_emissions_stats,
     "search_brain": _handle_search_brain,
     "brain_graph_query": _handle_brain_graph_query,
     "brain_trajectory": _handle_brain_trajectory,
@@ -4798,25 +3775,7 @@ LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "search_satellite_imagery": _handle_search_satellite_imagery,
     "query_worldcover_stats": _handle_query_worldcover_stats,
     "add_land_cover_layer": _handle_add_land_cover_layer,
-    "create_management_zones": _handle_create_management_zones,
-    "create_prescription_map": _handle_create_prescription_map,
-    "create_soil_sampling_plan": _handle_create_soil_sampling_plan,
-    "query_rwanda_zonal_stats": _handle_query_rwanda_zonal_stats,
 }
-# Register the 16 QGIS-processing tools through the generic delegator
-for _qname in _QGIS_TOOL_NAMES:
-    LEGACY_HANDLERS[_qname] = _make_qgis_handler(_qname)
-del _qname
-if _NOT_YET_EXTRACTED:
-    # Stub-handler safety net for any tool that wasn't extracted yet.
-    # As of the QGIS-processing batch landing, this list is empty —
-    # every legacy tool has a real handler — but the machinery stays
-    # so that if message_routes.py grows a new inline elif before its
-    # shim handler exists, it still returns a parseable result instead
-    # of a 404 to Hermes.
-    for _name in _NOT_YET_EXTRACTED:
-        LEGACY_HANDLERS[_name] = _make_not_yet_extracted_handler(_name)
-    del _name
 
 
 async def execute_legacy_tool(

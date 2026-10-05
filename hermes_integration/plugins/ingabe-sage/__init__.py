@@ -57,13 +57,12 @@ def register(ctx) -> None:
     # wires the mundi-app dispatch side so these tools start returning real
     # results instead of 503 ("upstream_unavailable").
     #
-    # hidden_tools.py exists because 7 of Sage's most-used tools
-    # (new_layer_from_postgis #1, set_layer_style #3, add_layer_to_map #4,
-    # query_postgis_database #5, query_duckdb_sql, reverse_geocode_coordinates,
-    # zonal_statistics) live as inline elif handlers in message_routes.py and
-    # were never registered in tools.json or the Pydantic registry. The
-    # auto-generator that produces generated_tools.py only reads those two
-    # sources, so those 7 schemas were silently missing from the LLM's tool
+    # hidden_tools.py exists because 4 of Sage's most-used tools
+    # (new_layer_from_postgis, set_layer_style, add_layer_to_map,
+    # reverse_geocode_coordinates) are legacy-shim handlers
+    # (src/services/legacy_tool_shim.py) never registered in tools.json or the
+    # Pydantic registry. generated_tools.py mirrors only those two sources,
+    # so those schemas were silently missing from the LLM's tool
     # catalogue. Without them, asking "show me Nyamagabe on the map" via the
     # Hermes path produces a wall of reasoning text because the LLM can't see
     # the tools that would actually do the job. PR #57 added the

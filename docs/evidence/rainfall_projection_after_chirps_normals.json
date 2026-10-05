@@ -1,0 +1,134 @@
+{
+ "bugesera/early/dry": {
+  "forecast_precip_mm": 347.7,
+  "forecast_precip_p10_mm": 265.7,
+  "forecast_precip_p90_mm": 431.3,
+  "projected_season_p10_mm": 305.7,
+  "projected_season_p90_mm": 471.3,
+  "projected_season_total_mm": 387.7,
+  "projection_method": "16-day forecast + 100-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "bugesera/early/normal": {
+  "forecast_precip_mm": 395.7,
+  "forecast_precip_p10_mm": 284.9,
+  "forecast_precip_p90_mm": 517.7,
+  "projected_season_p10_mm": 324.9,
+  "projected_season_p90_mm": 557.7,
+  "projected_season_total_mm": 435.7,
+  "projection_method": "16-day forecast + 100-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "bugesera/early/wet": {
+  "forecast_precip_mm": 483.7,
+  "forecast_precip_p10_mm": 320.1,
+  "forecast_precip_p90_mm": 676.1,
+  "projected_season_p10_mm": 360.1,
+  "projected_season_p90_mm": 716.1,
+  "projected_season_total_mm": 523.7,
+  "projection_method": "16-day forecast + 100-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "bugesera/late/dry": {
+  "forecast_precip_mm": 65.6,
+  "forecast_precip_p10_mm": 31.9,
+  "forecast_precip_p90_mm": 100.9,
+  "projected_season_p10_mm": 361.9,
+  "projected_season_p90_mm": 430.9,
+  "projected_season_total_mm": 395.6,
+  "projection_method": "16-day forecast + 23-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "bugesera/late/normal": {
+  "forecast_precip_mm": 113.6,
+  "forecast_precip_p10_mm": 51.1,
+  "forecast_precip_p90_mm": 187.3,
+  "projected_season_p10_mm": 381.1,
+  "projected_season_p90_mm": 517.3,
+  "projected_season_total_mm": 443.6,
+  "projection_method": "16-day forecast + 23-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "bugesera/late/wet": {
+  "forecast_precip_mm": 201.6,
+  "forecast_precip_p10_mm": 86.3,
+  "forecast_precip_p90_mm": 345.7,
+  "projected_season_p10_mm": 416.3,
+  "projected_season_p90_mm": 675.7,
+  "projected_season_total_mm": 531.6,
+  "projection_method": "16-day forecast + 23-day Bugesera monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/early/dry": {
+  "forecast_precip_mm": 444.4,
+  "forecast_precip_p10_mm": 367.1,
+  "forecast_precip_p90_mm": 523.2,
+  "projected_season_p10_mm": 407.1,
+  "projected_season_p90_mm": 563.2,
+  "projected_season_total_mm": 484.4,
+  "projection_method": "16-day forecast + 100-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/early/normal": {
+  "forecast_precip_mm": 492.4,
+  "forecast_precip_p10_mm": 386.3,
+  "forecast_precip_p90_mm": 609.6,
+  "projected_season_p10_mm": 426.3,
+  "projected_season_p90_mm": 649.6,
+  "projected_season_total_mm": 532.4,
+  "projection_method": "16-day forecast + 100-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/early/wet": {
+  "forecast_precip_mm": 580.4,
+  "forecast_precip_p10_mm": 421.5,
+  "forecast_precip_p90_mm": 768.0,
+  "projected_season_p10_mm": 461.5,
+  "projected_season_p90_mm": 808.0,
+  "projected_season_total_mm": 620.4,
+  "projection_method": "16-day forecast + 100-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/late/dry": {
+  "forecast_precip_mm": 74.5,
+  "forecast_precip_p10_mm": 43.5,
+  "forecast_precip_p90_mm": 107.0,
+  "projected_season_p10_mm": 373.5,
+  "projected_season_p90_mm": 437.0,
+  "projected_season_total_mm": 404.5,
+  "projection_method": "16-day forecast + 23-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/late/normal": {
+  "forecast_precip_mm": 122.5,
+  "forecast_precip_p10_mm": 62.7,
+  "forecast_precip_p90_mm": 193.4,
+  "projected_season_p10_mm": 392.7,
+  "projected_season_p90_mm": 523.4,
+  "projected_season_total_mm": 452.5,
+  "projection_method": "16-day forecast + 23-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ },
+ "musanze/late/wet": {
+  "forecast_precip_mm": 210.5,
+  "forecast_precip_p10_mm": 97.9,
+  "forecast_precip_p90_mm": 351.8,
+  "projected_season_p10_mm": 427.9,
+  "projected_season_p90_mm": 681.8,
+  "projected_season_total_mm": 540.5,
+  "projection_method": "16-day forecast + 23-day Musanze monthly normals",
+  "rainfall_trigger_probability": 0.05,
+  "rainfall_trigger_risk": "LOW"
+ }
+}

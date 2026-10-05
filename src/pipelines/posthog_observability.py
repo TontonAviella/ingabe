@@ -11,7 +11,6 @@ import functools
 import logging
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from dagster import Failure
@@ -149,46 +148,6 @@ def raise_if_failed(asset_name: str, result: Any) -> None:
     )
 
 
-def observed_dagster_sensor(
-    *,
-    sensor_name: str,
-    pipeline_family: str,
-    source_category: str,
-) -> Callable[[_F], _F]:
-    """Decorate a Dagster sensor function with PostHog evaluation telemetry."""
-
-    def decorator(fn: _F) -> _F:
-        @functools.wraps(fn)
-        def wrapper(context: Any, *args: Any, **kwargs: Any) -> Any:
-            started_at = time.monotonic()
-            try:
-                result = fn(context, *args, **kwargs)
-            except Exception as exc:
-                capture_dagster_sensor_result(
-                    context,
-                    sensor_name=sensor_name,
-                    pipeline_family=pipeline_family,
-                    source_category=source_category,
-                    result={"status": "error", "error_type": type(exc).__name__},
-                    elapsed_ms_value=elapsed_ms(started_at),
-                )
-                raise
-
-            capture_dagster_sensor_result(
-                context,
-                sensor_name=sensor_name,
-                pipeline_family=pipeline_family,
-                source_category=source_category,
-                result=result,
-                elapsed_ms_value=elapsed_ms(started_at),
-            )
-            return result
-
-        return wrapper  # type: ignore[return-value]
-
-    return decorator
-
-
 def capture_dagster_asset_result(
     context: Any,
     *,
@@ -248,84 +207,6 @@ def capture_dagster_asset_exception(
     _capture("geospatial_pipeline_flow_completed", properties)
     if source_category == "satellite":
         _capture("satellite_pipeline_completed", properties)
-
-
-def capture_dagster_sensor_result(
-    context: Any,
-    *,
-    sensor_name: str,
-    pipeline_family: str,
-    source_category: str,
-    result: Any,
-    elapsed_ms_value: int,
-    extra_properties: Mapping[str, Any] | None = None,
-) -> None:
-    status = _status_from_result(result)
-    properties = {
-        **_context_properties(context),
-        **_result_properties(result),
-        "sensor_name": sensor_name,
-        "pipeline_family": pipeline_family,
-        "source_category": source_category,
-        "status": status,
-        "success": _is_success_status(status),
-        "skipped": status in _SKIPPED_STATUSES,
-        "elapsed_ms": elapsed_ms_value,
-    }
-    if extra_properties:
-        properties.update(_safe_extra_properties(extra_properties))
-    _capture("dagster_sensor_evaluated", properties)
-
-
-def capture_satellite_scene_sensor_success(
-    context: Any,
-    *,
-    scene_count: int,
-    latest_datetime: str,
-    tiles_invalidated: int,
-    cache_warming_started: bool,
-    elapsed_ms_value: int,
-) -> None:
-    """Capture the specific proof event Sage/PostHog need for satellite freshness."""
-    properties = {
-        **_context_properties(context),
-        "sensor_name": "satellite_scene_sensor",
-        "pipeline_family": "satellite_scene_catalog",
-        "source_category": "satellite",
-        "analysis_domain": "agriculture",
-        "evidence_kind": "sentinel_2_scene_catalog",
-        "status": "ok",
-        "success": True,
-        "scene_count": int(scene_count),
-        "latest_datetime": latest_datetime,
-        "freshness_lag_hours": _freshness_lag_hours(latest_datetime),
-        "tiles_invalidated": int(tiles_invalidated),
-        "cache_warming_started": bool(cache_warming_started),
-        "elapsed_ms": elapsed_ms_value,
-    }
-    _capture("satellite_pipeline_completed", properties)
-    _capture("geospatial_pipeline_flow_completed", properties)
-
-
-def capture_dagster_hook_event(
-    context: Any,
-    *,
-    status: str,
-    elapsed_ms_value: int | None = None,
-    error_type: str | None = None,
-) -> None:
-    """Capture hook-level success/failure for jobs that attach Dagster hooks."""
-    properties = {
-        **_context_properties(context),
-        "status": status,
-        "success": status.lower() in {"ok", "success"},
-        "hook_name": "dagster_pipeline_hook",
-    }
-    if elapsed_ms_value is not None:
-        properties["elapsed_ms"] = elapsed_ms_value
-    if error_type:
-        properties["error_type"] = error_type
-    _capture("dagster_hook_completed", properties)
 
 
 def _capture(event: str, properties: Mapping[str, Any]) -> None:
@@ -396,19 +277,6 @@ def _result_properties(result: Any) -> dict[str, Any]:
     return props
 
 
-def _safe_extra_properties(properties: Mapping[str, Any]) -> dict[str, Any]:
-    safe: dict[str, Any] = {}
-    for key, value in properties.items():
-        key_str = str(key)
-        if key_str in _COUNT_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
-            safe[key_str] = value
-        elif key_str in _SAFE_STRING_KEYS and value is not None:
-            safe[key_str] = str(value)[:120]
-        elif isinstance(value, bool):
-            safe[key_str] = value
-    return safe
-
-
 def _status_from_result(result: Any) -> str:
     if result is None:
         return "ok"
@@ -436,15 +304,3 @@ def _is_success_status(status: str) -> bool:
 
 def _is_skip_reason(result: Any) -> bool:
     return result.__class__.__name__ == "SkipReason"
-
-
-def _freshness_lag_hours(value: str) -> float | None:
-    try:
-        normalized = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(normalized)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        lag = datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
-        return round(max(lag.total_seconds(), 0) / 3600, 2)
-    except Exception:
-        return None

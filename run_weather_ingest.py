@@ -15,7 +15,7 @@ cds_key = os.environ.get("CDSAPI_KEY", "")
 if not cds_key:
     logger.error("CDSAPI_KEY not set. Cannot download weather data.")
     sys.exit(1)
-logger.info("CDS API key found: %s...%s", cds_key[:8], cds_key[-4:])
+logger.info("CDS API key is set")
 
 from datetime import date, timedelta
 import duckdb

@@ -16,17 +16,16 @@
 """Dagster assets for Rwanda agriculture data pipelines.
 
 Asset groups:
-  - rwanda_bootstrap:   Initialize Iceberg tables
-  - rwanda_ingestion:   Ingest parcel + admin boundary data
-  - rwanda_ndvi:        Process satellite imagery into NDVI observations
-  - rwanda_precompute:  Scheduled pre-computation (NDVI cache, classification, anomalies)
+  - rwanda_bootstrap:    Load admin boundaries (district, sector, cell) into PostGIS
+  - rwanda_precompute:   Scheduled pre-computation (NDVI cache, anomalies, drought, weather)
+  - rwanda_admin_index:  H3 <-> admin unit index
 
-These assets integrate with the existing lakehouse manager. Cache tables
-(agri_indices, ndvi_field, crop_classification, anomaly_alerts, etc.)
-are stored in PostgreSQL for shared multi-session access. DuckDB is still
-used for analytical workloads (worldcover_admin_stats, H3 aggregation).
+Cache tables (agri_indices, ndvi_field, anomaly_alerts, etc.) are stored in
+PostgreSQL for shared multi-session access. DuckDB is still used for
+analytical workloads (worldcover_admin_stats).
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -36,10 +35,9 @@ import numpy as np
 import requests
 from dagster import AssetExecutionContext, asset
 
-from src.pipelines.resources import DuckDBResource, PostgresResource, S3Resource
+from src.pipelines.resources import DuckDBResource, PostgresResource
 from src.pipelines.posthog_observability import observed_dagster_asset
 from src.services.admin_boundaries import RWANDA_DISTRICTS
-from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
 
 logger = logging.getLogger(__name__)
 
@@ -47,27 +45,6 @@ logger = logging.getLogger(__name__)
 _GEOBOUNDARIES_ADM2_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM2/"
 _GEOBOUNDARIES_ADM3_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM3/"
 _GEOBOUNDARIES_ADM4_API = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM4/"
-
-
-@asset(
-    description="Bootstrap Rwanda Iceberg namespace and core tables",
-    metadata={"dagster/group": "rwanda_bootstrap"},
-)
-def rwanda_table_bootstrap(
-    context: AssetExecutionContext,
-) -> dict[str, Any]:
-    """Create Rwanda Iceberg tables if they don't exist.
-
-    Idempotent: safe to run multiple times.
-    Creates: parcels, parcel_observations, h3_ndvi_weekly
-    """
-    manager = get_rwanda_lakehouse_manager()
-    result = manager.bootstrap_tables()
-
-    for table_id, table_status in result.items():
-        context.log.info("Table %s: %s", table_id, table_status)
-
-    return {"status": "ok", "tables": result}
 
 
 @asset(
@@ -407,142 +384,6 @@ def rwanda_cell_boundaries(
     return {"status": "ok", "cells_loaded": loaded}
 
 
-@asset(
-    description="Ingest parcel boundaries from uploaded GeoPackage/FlatGeoBuf layers",
-    deps=[rwanda_table_bootstrap],
-    metadata={"dagster/group": "rwanda_ingestion"},
-)
-def rwanda_parcel_ingestion(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-    s3: S3Resource,
-) -> dict[str, Any]:
-    """Ingest vector layers tagged as Rwanda parcels into the Iceberg parcels table.
-
-    Looks for map_layers with metadata->>>'rwanda_parcels' = true,
-    converts geometry to WKT, computes H3 index at resolution 9,
-    and appends to the parcels Iceberg table.
-    """
-    # Find layers tagged for Rwanda parcel ingestion
-    query = """
-        SELECT layer_id, name, s3_key, bounds, geometry_type, feature_count
-        FROM map_layers
-        WHERE type = 'vector'
-        AND (metadata->>'rwanda_parcels')::boolean = true
-        AND (metadata->>'rwanda_ingested')::boolean IS NOT TRUE
-        LIMIT 5
-    """
-    results = postgres.execute_query(query)
-
-    if not results:
-        context.log.info("No new Rwanda parcel layers to ingest")
-        return {"status": "no_layers", "ingested": 0}
-
-    ingested = []
-    errors = []
-
-    for layer_id, name, s3_key, bounds, geom_type, feature_count in results:
-        try:
-            context.log.info(
-                "Ingesting parcel layer %s (%s, %d features)",
-                layer_id,
-                name,
-                feature_count or 0,
-            )
-
-            # Mark as ingested (prevents re-processing)
-            postgres.execute_query(
-                """
-                UPDATE map_layers
-                SET metadata = COALESCE(metadata, '{}'::jsonb) || '{"rwanda_ingested": true}'::jsonb
-                WHERE layer_id = %s
-                """,
-                (layer_id,),
-            )
-
-            ingested.append({"layer_id": layer_id, "name": name})
-            context.log.info("Marked layer %s as ingested", layer_id)
-
-        except Exception as e:
-            context.log.error("Ingestion failed for %s: %s", layer_id, e)
-            errors.append({"layer_id": layer_id, "error": str(e)})
-
-    return {
-        "status": "ok",
-        "ingested": ingested,
-        "errors": errors,
-        "count": len(ingested),
-    }
-
-
-@asset(
-    description="Compute H3-aggregated weekly NDVI from parcel observations",
-    metadata={"dagster/group": "rwanda_ndvi"},
-)
-@observed_dagster_asset(
-    asset_name="rwanda_h3_ndvi_aggregation",
-    pipeline_family="satellite_h3_ndvi",
-    source_category="satellite",
-    analysis_domain="agriculture",
-    evidence_kind="h3_ndvi_weekly",
-)
-def rwanda_h3_ndvi_aggregation(
-    context: AssetExecutionContext,
-    duckdb: DuckDBResource,
-) -> dict[str, Any]:
-    """Aggregate parcel-level NDVI observations to H3 resolution 7 hexagons.
-
-    Reads from parcel_observations Iceberg table, groups by H3 parent
-    (resolution 7) and week, writes aggregated stats to h3_ndvi_weekly table.
-
-    This is a downstream asset that runs after satellite imagery processing
-    populates parcel_observations.
-    """
-    try:
-        manager = get_rwanda_lakehouse_manager()
-        catalog = manager._get_catalog()
-
-        # Check if parcel_observations has data
-        from src.services.rwanda_lakehouse import TABLE_PARCEL_OBSERVATIONS
-
-        try:
-            obs_table = catalog.load_table(TABLE_PARCEL_OBSERVATIONS)
-            snapshot = obs_table.current_snapshot()
-            if snapshot is None:
-                context.log.info("No parcel observations yet — skipping H3 aggregation")
-                return {"status": "no_data", "rows_aggregated": 0}
-        except Exception:
-            context.log.info("Parcel observations table not ready — skipping")
-            return {"status": "table_not_ready", "rows_aggregated": 0}
-
-        context.log.info("H3 NDVI aggregation ready for future satellite data")
-        return {"status": "waiting_for_data", "rows_aggregated": 0}
-
-    except Exception as e:
-        context.log.error("H3 NDVI aggregation failed: %s", e)
-        return {"status": "error", "error": str(e)}
-
-
-@asset(
-    group_name="rwanda_ml",
-    description="Run crop classification on latest NDVI observations",
-)
-def rwanda_crop_classification(context: AssetExecutionContext) -> dict[str, Any]:
-    """Classify crops using latest NDVI data from Iceberg tables.
-
-    Uses spectral threshold classification (baseline) or KMeans clustering
-    when scikit-learn is available.  For server-side classification see
-    the weekly_crop_classification asset which uses openEO.
-    """
-    from src.services.ml_inference import get_ml_service
-
-    ml = get_ml_service()
-    status = ml.get_status()
-    context.log.info("ML service status: %s", status)
-
-    return {"status": "ready", "ml_available": status["ml_ready"]}
-
-
 # ─── Pre-compute assets (scheduled, results cached in PostgreSQL) ────────────
 
 # Rwanda admin districts for systematic field NDVI scanning (owned by
@@ -776,252 +617,6 @@ def nightly_cache_cleanup(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Nightly: generate H3 NDVI vector tiles (PMTiles) from cache → S3",
-)
-@observed_dagster_asset(
-    asset_name="nightly_ndvi_vector_tiles",
-    pipeline_family="satellite_h3_tiles",
-    source_category="satellite",
-    analysis_domain="agriculture",
-    evidence_kind="h3_pmtiles_layer",
-)
-def nightly_ndvi_vector_tiles(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-    s3: S3Resource,
-) -> dict[str, Any]:
-    """Convert cached NDVI data into H3-gridded vector tiles (PMTiles).
-
-    This replaces raster tiles for NDVI display with vector tiles, which:
-    - Support district/sector/cell spatial filtering natively
-    - Are much smaller (only hexagons with data)
-    - Allow dynamic styling (color by NDVI value) on the frontend
-    - MapLibre GL renders vectors far more efficiently than raster XYZ tiles
-
-    Runs nightly at 2:45 AM UTC (after nightly_field_ndvi populates cache).
-
-    Pipeline:
-    1. Read latest NDVI from DuckDB cache (district + cell level)
-    2. Join with PostGIS admin boundaries to get H3 centroids
-    3. Generate H3 hexagons at resolution 7 (district) and 9 (cell)
-    4. Export as GeoJSON → tippecanoe → PMTiles → S3
-
-    The resulting PMTiles file is served by the vector tile endpoint:
-    GET /api/rwanda/tiles/ndvi.pmtiles
-    """
-    import os
-    import tempfile
-
-    # Read latest NDVI cache from PostgreSQL
-    try:
-        with postgres.get_sync_connection() as pg_conn:
-            with pg_conn.cursor() as cur:
-                # District-level NDVI (latest per district)
-                cur.execute("""
-                    SELECT district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
-                    FROM ndvi_field_cache
-                    WHERE (district, week_start) IN (
-                        SELECT district, MAX(week_start) FROM ndvi_field_cache
-                        GROUP BY district
-                    )
-                """)
-                district_rows = cur.fetchall()
-
-                # Cell-level NDVI (latest per cell)
-                cur.execute("""
-                    SELECT cell_name, district_name, week_start,
-                           mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels
-                    FROM ndvi_cell_cache
-                    WHERE (cell_name, week_start) IN (
-                        SELECT cell_name, MAX(week_start) FROM ndvi_cell_cache
-                        GROUP BY cell_name
-                    )
-                """)
-                cell_rows = cur.fetchall()
-
-                # Crop classification (latest)
-                cur.execute("""
-                    SELECT district, class_label, area_ha, pixel_count, confidence
-                    FROM crop_classification_cache
-                    WHERE computed_at = (SELECT MAX(computed_at) FROM crop_classification_cache)
-                """)
-                crop_rows = cur.fetchall()
-
-    except Exception as e:
-        context.log.warning("PostgreSQL read failed: %s", e)
-        district_rows, cell_rows, crop_rows = [], [], []
-
-    if not district_rows and not cell_rows:
-        context.log.info("No NDVI cache data — skipping vector tile generation")
-        return {"status": "no_data", "features": 0}
-
-    context.log.info(
-        "Building vector tiles: %d districts, %d cells, %d crop classes",
-        len(district_rows), len(cell_rows), len(crop_rows),
-    )
-
-    # Get admin boundary centroids for H3 gridding
-    district_centroids = {}
-    cell_centroids = {}
-    try:
-        district_centroid_rows = postgres.execute_query("""
-            SELECT district, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
-                   bbox_west, bbox_south, bbox_east, bbox_north
-            FROM rwanda_district_boundaries
-        """)
-        for row in (district_centroid_rows or []):
-            district_centroids[row[0]] = {
-                "lng": row[1], "lat": row[2],
-                "bbox": [row[3], row[4], row[5], row[6]],
-            }
-    except Exception:
-        pass
-
-    try:
-        cell_centroid_rows = postgres.execute_query("""
-            SELECT cell_name, ST_X(ST_Centroid(geom)), ST_Y(ST_Centroid(geom)),
-                   district_name
-            FROM rwanda_cell_boundaries
-        """)
-        for row in (cell_centroid_rows or []):
-            cell_centroids[row[0]] = {
-                "lng": row[1], "lat": row[2], "district": row[3],
-            }
-    except Exception:
-        pass
-
-    import h3
-
-    features = []
-
-    # ── District-level H3 (resolution 7, ~5.16 km²) ──────────────────────
-    for row in district_rows:
-        district, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
-        centroid = district_centroids.get(district)
-        if not centroid:
-            continue
-
-        # Generate H3 cells covering the district bbox
-        bbox = centroid["bbox"]
-        boundary_polygon = {
-            "type": "Polygon",
-            "coordinates": [[
-                [bbox[0], bbox[1]], [bbox[2], bbox[1]],
-                [bbox[2], bbox[3]], [bbox[0], bbox[3]],
-                [bbox[0], bbox[1]],
-            ]],
-        }
-        h3_cells = h3.geo_to_cells(boundary_polygon, res=7)
-
-        for h3_id in h3_cells:
-            boundary = h3.cell_to_boundary(h3_id)
-            coords = [[lng, lat] for lat, lng in boundary]
-            coords.append(coords[0])
-
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "h3": h3_id,
-                    "res": 7,
-                    "district": district,
-                    "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
-                    "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
-                    "date": str(week_start) if week_start else None,
-                    "level": "district",
-                    "pixels": valid_pixels,
-                },
-                "geometry": {"type": "Polygon", "coordinates": [coords]},
-            })
-
-    # ── Cell-level H3 (resolution 9, ~0.1 km²) ──────────────────────────
-    for row in cell_rows:
-        cell_name, district_name, week_start, mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels = row
-        centroid = cell_centroids.get(cell_name)
-        if not centroid:
-            continue
-
-        h3_id = h3.latlng_to_cell(centroid["lat"], centroid["lng"], 9)
-        boundary = h3.cell_to_boundary(h3_id)
-        coords = [[lng, lat] for lat, lng in boundary]
-        coords.append(coords[0])
-
-        features.append({
-            "type": "Feature",
-            "properties": {
-                "h3": h3_id,
-                "res": 9,
-                "district": district_name or centroid.get("district"),
-                "cell": cell_name,
-                "ndvi": round(float(mean_ndvi), 4) if mean_ndvi else None,
-                "ndvi_std": round(float(std_ndvi), 4) if std_ndvi else None,
-                "date": str(week_start) if week_start else None,
-                "level": "cell",
-                "pixels": valid_pixels,
-            },
-            "geometry": {"type": "Polygon", "coordinates": [coords]},
-        })
-
-    if not features:
-        context.log.info("No features generated — skipping tippecanoe")
-        return {"status": "no_features", "features": 0}
-
-    geojson = {"type": "FeatureCollection", "features": features}
-    context.log.info("Generated %d H3 features for vector tiles", len(features))
-
-    # ── tippecanoe → PMTiles → S3 ────────────────────────────────────────
-    with tempfile.TemporaryDirectory() as temp_dir:
-        geojson_path = os.path.join(temp_dir, "ndvi_h3.geojson")
-        pmtiles_path = os.path.join(temp_dir, "rwanda_ndvi.pmtiles")
-
-        with open(geojson_path, "w") as f:
-            json.dump(geojson, f)
-
-        import subprocess
-
-        tip_cmd = [
-            "tippecanoe",
-            "-o", pmtiles_path,
-            "-q",                           # quiet
-            "-Z", "4",                       # min zoom
-            "-z", "14",                      # max zoom
-            "--no-tile-size-limit",          # allow large tiles
-            "--no-feature-limit",            # keep all features
-            "-l", "ndvi",                    # layer name
-            "--coalesce-densest-as-needed",  # merge dense areas
-            "--extend-zooms-if-still-dropping",
-            geojson_path,
-        ]
-
-        result = subprocess.run(tip_cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            context.log.error("tippecanoe failed: %s", result.stderr)
-            return {"status": "error", "error": result.stderr}
-
-        pmtiles_size = os.path.getsize(pmtiles_path)
-        context.log.info(
-            "PMTiles generated: %d bytes (%.1f MB)",
-            pmtiles_size, pmtiles_size / 1e6,
-        )
-
-        # Upload to S3
-        s3_key = "rwanda/vector_tiles/rwanda_ndvi.pmtiles"
-        with s3.get_client() as client:
-            client.upload_file(pmtiles_path, s3.bucket_name, s3_key)
-
-        context.log.info("Uploaded to s3://%s/%s", s3.bucket_name, s3_key)
-
-    return {
-        "status": "ok",
-        "features": len(features),
-        "district_hexagons": sum(1 for f in features if f["properties"]["level"] == "district"),
-        "cell_hexagons": sum(1 for f in features if f["properties"]["level"] == "cell"),
-        "pmtiles_size_bytes": pmtiles_size,
-        "s3_key": s3_key,
-    }
-
-
-@asset(
-    group_name="rwanda_precompute",
     description="Nightly: compute parcel-level NDVI for user-uploaded fields → PostgreSQL cache",
 )
 @observed_dagster_asset(
@@ -1229,263 +824,6 @@ def nightly_parcel_ndvi(
 
 @asset(
     group_name="rwanda_precompute",
-    description="Weekly: run openEO crop classification → PostgreSQL + S3 cache",
-)
-@observed_dagster_asset(
-    asset_name="weekly_crop_classification",
-    pipeline_family="satellite_crop_classification",
-    source_category="satellite",
-    analysis_domain="agriculture",
-    evidence_kind="crop_classification_cache",
-)
-def weekly_crop_classification(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-    s3: S3Resource,
-) -> dict[str, Any]:
-    """Submit openEO batch classification job and cache results in PostgreSQL.
-
-    Runs Sunday 3 AM UTC.  Submits a server-side Random Forest classification
-    job on CDSE using 4-month Sentinel-2 composites.  When the job finishes,
-    downloads the GeoTIFF result, uploads to S3, and writes per-district
-    classification summaries to the PostgreSQL crop_classification_cache table.
-
-    Note: openEO batch jobs take 5-30 minutes.  This asset polls until
-    completion or timeout (max 45 minutes).
-    """
-    import time
-
-    from src.services.openeo_service import get_openeo_service
-
-    openeo_svc = get_openeo_service()
-    if openeo_svc is None:
-        context.log.warning("openEO not available — skipping weekly classification")
-        return {"status": "skipped", "reason": "openeo_unavailable"}
-
-    now = datetime.utcnow()
-    # Use a 4-month growing season window ending now
-    date_to = now.strftime("%Y-%m-%d")
-    date_from = (now - timedelta(days=120)).strftime("%Y-%m-%d")
-
-    try:
-        # Submit batch job
-        job_result = openeo_svc.run_crop_classification(
-            date_from=date_from,
-            date_to=date_to,
-            n_classes=5,
-        )
-        job_id = job_result.get("job_id")
-        context.log.info("openEO classification job submitted: %s", job_id)
-
-        if not job_id:
-            return {"status": "error", "error": "No job_id returned from openEO"}
-
-        # Poll for completion (max 45 minutes)
-        max_wait = 45 * 60  # seconds
-        poll_interval = 60  # seconds
-        waited = 0
-
-        while waited < max_wait:
-            status_info = openeo_svc.check_job_status(job_id)
-            job_status = status_info.get("status", "unknown")
-            context.log.info(
-                "Job %s status: %s (waited %d/%ds)",
-                job_id, job_status, waited, max_wait,
-            )
-
-            if job_status == "finished":
-                break
-            elif job_status in ("error", "canceled"):
-                return {
-                    "status": "error",
-                    "job_id": job_id,
-                    "job_status": job_status,
-                    "error": f"openEO job {job_status}",
-                }
-
-            time.sleep(poll_interval)
-            waited += poll_interval
-
-        if waited >= max_wait:
-            context.log.warning("Job %s timed out after %ds", job_id, max_wait)
-            return {"status": "timeout", "job_id": job_id, "waited_sec": waited}
-
-        # Download result
-        download_result = openeo_svc.download_result(job_id)
-        files = download_result.get("files", [])
-        context.log.info("Downloaded %d files from job %s", len(files), job_id)
-
-        # Upload GeoTIFFs to S3
-        uploaded_keys = []
-        for fpath in files:
-            if fpath.endswith(".tif") or fpath.endswith(".tiff"):
-                import os
-
-                fname = os.path.basename(fpath)
-                s3_key = f"rwanda/classifications/{now.strftime('%Y%m%d')}/{fname}"
-                with s3.get_client() as client:
-                    client.upload_file(fpath, s3.bucket_name, s3_key)
-                uploaded_keys.append(s3_key)
-                context.log.info("Uploaded %s → s3://%s/%s", fname, s3.bucket_name, s3_key)
-
-        # Apply local KMeans classification on the downloaded feature stack
-        import numpy as np
-
-        from src.services.ml_inference import get_ml_service
-
-        ml = get_ml_service()
-        classification_rows = []
-
-        for fpath in files:
-            if not (fpath.endswith(".tif") or fpath.endswith(".tiff")):
-                continue
-
-            try:
-                from osgeo import gdal
-
-                ds = gdal.Open(fpath)
-                if ds is None:
-                    context.log.warning("Could not open %s with GDAL", fpath)
-                    continue
-
-                n_bands = ds.RasterCount
-                if n_bands < 3:
-                    context.log.warning(
-                        "%s has only %d bands, need ≥3 (NDVI, NDWI, BSI)", fpath, n_bands
-                    )
-                    ds = None
-                    continue
-
-                # Read bands: band 1=NDVI, band 2=NDWI, band 3=BSI
-                # The openEO feature stack already has computed indices,
-                # so we run KMeans directly on them.
-                band_data = []
-                for i in range(1, min(n_bands + 1, 4)):
-                    arr = ds.GetRasterBand(i).ReadAsArray().astype(np.float32)
-                    band_data.append(arr)
-
-                ds = None  # close dataset
-
-                # Stack into (rows*cols, n_bands) for KMeans
-                h, w = band_data[0].shape
-                stacked = np.column_stack([b.ravel() for b in band_data])
-
-                # Filter out nodata (NaN or zero)
-                valid_mask = np.all(np.isfinite(stacked), axis=1) & np.any(stacked != 0, axis=1)
-                valid_pixels = stacked[valid_mask]
-
-                if len(valid_pixels) < 100:
-                    context.log.warning("Too few valid pixels in %s", fpath)
-                    continue
-
-                try:
-                    from sklearn.cluster import KMeans
-
-                    n_classes = 5
-                    kmeans = KMeans(n_clusters=n_classes, random_state=42, n_init=10)
-                    labels = kmeans.fit_predict(valid_pixels)
-
-                    # Map cluster centers to land cover labels based on index values
-                    # Band 0 = NDVI: high → vegetation, low → bare
-                    # Band 1 = NDWI: high → water
-                    # Band 2 = BSI: high → bare soil
-                    label_map = {}
-                    for ci in range(n_classes):
-                        center = kmeans.cluster_centers_[ci]
-                        ndvi_val, ndwi_val, bsi_val = center[0], center[1], center[2]
-
-                        if ndwi_val > 0.3:
-                            label_map[ci] = "water"
-                        elif ndvi_val > 0.6:
-                            label_map[ci] = "dense_vegetation"
-                        elif ndvi_val > 0.3:
-                            label_map[ci] = "cropland"
-                        elif bsi_val > 0.2:
-                            label_map[ci] = "bare_soil"
-                        else:
-                            label_map[ci] = "sparse_vegetation"
-
-                    # Count pixels per class and estimate area
-                    # Sentinel-2 at 10m resolution: ~0.01 ha per pixel
-                    ha_per_pixel = 0.01
-                    for ci in range(n_classes):
-                        count = int(np.sum(labels == ci))
-                        classification_rows.append({
-                            "district": "all_rwanda",
-                            "class_label": label_map[ci],
-                            "area_ha": round(count * ha_per_pixel, 2),
-                            "pixel_count": count,
-                            "confidence": round(float(1.0 - kmeans.inertia_ / (len(valid_pixels) * n_classes)), 4),
-                            "job_id": job_id,
-                        })
-
-                    context.log.info(
-                        "KMeans classified %d pixels into %d classes from %s",
-                        len(valid_pixels), n_classes, fpath,
-                    )
-                except ImportError:
-                    context.log.warning("scikit-learn not available — writing placeholder")
-                    classification_rows.append({
-                        "district": "all_rwanda",
-                        "class_label": "unclassified",
-                        "area_ha": 0.0,
-                        "pixel_count": int(np.sum(valid_mask)),
-                        "confidence": 0.0,
-                        "job_id": job_id,
-                    })
-
-            except Exception as e:
-                context.log.warning("Failed to classify %s: %s", fpath, e)
-
-        # Fallback if no classification succeeded
-        if not classification_rows:
-            classification_rows.append({
-                "district": "all_rwanda",
-                "class_label": "composite",
-                "area_ha": 0.0,
-                "pixel_count": 0,
-                "confidence": 0.0,
-                "job_id": job_id,
-            })
-
-        # Write classification results to PostgreSQL cache
-        with postgres.get_sync_connection() as pg_conn:
-            with pg_conn.cursor() as cur:
-                # Clear old results before inserting new ones
-                cur.execute("DELETE FROM crop_classification_cache WHERE job_id = %s", (job_id,))
-
-                for row in classification_rows:
-                    cur.execute(
-                        """
-                        INSERT INTO crop_classification_cache
-                            (district, class_label, area_ha, pixel_count, confidence, job_id)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        """,
-                        (row["district"], row["class_label"], row["area_ha"],
-                         row["pixel_count"], row["confidence"], row["job_id"]),
-                    )
-            pg_conn.commit()
-
-        context.log.info(
-            "Wrote %d classification rows to PostgreSQL cache", len(classification_rows)
-        )
-
-        return {
-            "status": "ok",
-            "job_id": job_id,
-            "date_range": f"{date_from}/{date_to}",
-            "files_uploaded": uploaded_keys,
-            "classification_rows": len(classification_rows),
-            "s3_prefix": f"rwanda/classifications/{now.strftime('%Y%m%d')}/",
-        }
-
-    except Exception as e:
-        context.log.exception("Weekly classification failed: %s", e)
-        return {"status": "error", "error": str(e)}
-
-
-@asset(
-    group_name="rwanda_precompute",
     description="Weekly: scan NDVI cache for anomalies → PostgreSQL alerts cache",
 )
 @observed_dagster_asset(
@@ -1506,8 +844,8 @@ def weekly_anomaly_scan(
     anomaly detection per district, and writes alerts to the
     anomaly_alerts_cache table.
 
-    Sage reads this table via GET /rwanda/ml/anomalies/alerts and
-    the get_anomaly_alerts tool — users see results instantly.
+    Sage reads this table via the get_anomaly_alerts tool — users see
+    results instantly.
     """
     from src.services.ml_inference import get_ml_service
 
@@ -1939,11 +1277,12 @@ def daily_weather_ingest(
         )
         return {"status": "failed", "reason": "cds_api_not_configured: set CDSAPI_KEY"}
 
-    # AgERA5 has ~5-8 day latency.  Build a date range from 30 days ago up to
-    # 7 days ago (safe window).  On each run we skip dates that are already
-    # cached so only missing days are fetched.
+    # AgERA5 2_0 is about 8 days behind (2026-09-26 was the latest day on
+    # 2026-10-04).  Build a date range from 30 days ago up to 9 days ago so
+    # unpublished days are not requested.  On each run we skip dates that are
+    # already cached so only missing days are fetched.
     LOOKBACK_DAYS = 30
-    LATENCY_DAYS = 5
+    LATENCY_DAYS = 9
     today = datetime.utcnow().date()
     start_date = today - timedelta(days=LOOKBACK_DAYS)
     end_date = today - timedelta(days=LATENCY_DAYS)
@@ -2079,210 +1418,6 @@ def daily_weather_ingest(
         "dates_processed": dates_processed,
         "total_rows": total_rows_written,
         "range": f"{all_dates[0]} to {all_dates[-1]}" if all_dates else "none",
-        "errors": errors_list if errors_list else None,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# EDGAR Emissions Annual Ingest
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-@asset(
-    group_name="rwanda_precompute",
-    description="Annual: ingest EDGAR emissions data per district -> PostgreSQL cache",
-)
-def annual_emissions_ingest(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-) -> dict[str, Any]:
-    """Download EDGAR gridded emissions and aggregate to Rwanda districts.
-
-    Runs yearly (or manually).  Downloads 0.1° gridmaps for 4 greenhouse
-    gases (CH4, N2O, CO2, NH3) across 4 agriculture sectors (AGS, ENF,
-    MNM, AWB) for the 5 most recent available years.
-
-    Results are aggregated to each of the 30 Rwanda districts using
-    bounding-box zonal statistics with SUM aggregation (emissions are
-    cumulative) and written to emissions_annual_cache.
-
-    Sage reads this table via the get_emissions_stats tool.
-    """
-    from src.services.emissions_service import (
-        VALID_COMBOS,
-        get_emissions_service,
-    )
-
-    es = get_emissions_service()
-    if es is None:
-        context.log.error("EmissionsService unavailable")
-        return {"status": "error", "reason": "service_unavailable"}
-
-    # EDGAR v8.0 covers up to 2022; fetch last 5 available years
-    current_year = datetime.utcnow().year
-    edgar_latest = min(current_year - 2, 2022)  # EDGAR has ~2-year latency
-    years = list(range(edgar_latest - 4, edgar_latest + 1))
-
-    # Find which combos are already cached
-    cached_combos: set = set()
-    try:
-        with postgres.get_sync_connection() as pg_conn:
-            with pg_conn.cursor() as cur:
-                cur.execute(
-                    "SELECT DISTINCT district, year, emission_type, sector "
-                    "FROM emissions_annual_cache "
-                    "WHERE year >= %s AND year <= %s",
-                    (years[0], years[-1]),
-                )
-                for row in cur.fetchall():
-                    cached_combos.add((row[0], row[1], row[2], row[3]))
-    except Exception:
-        context.log.warning("emissions_annual_cache table may not exist yet")
-
-    # Get district bounding boxes from PostGIS
-    try:
-        district_rows = postgres.execute_query("""
-            SELECT district, bbox_west, bbox_south, bbox_east, bbox_north
-            FROM rwanda_district_boundaries
-            ORDER BY district
-        """)
-    except Exception:
-        district_rows = []
-
-    if not district_rows:
-        context.log.warning(
-            "No district boundaries — run rwanda_admin_boundaries first"
-        )
-        return {"status": "skipped", "reason": "no_district_boundaries"}
-
-    district_geometries = [
-        {
-            "district": row[0],
-            "bbox": (row[1], row[2], row[3], row[4]),
-        }
-        for row in district_rows
-    ]
-    district_names = {row[0] for row in district_rows}
-
-    total_rows_written = 0
-    combos_processed = 0
-    combos_skipped = 0
-    errors_list: list[str] = []
-
-    # Build list of valid combos (not every gas × sector exists)
-    all_combos = [
-        (etype, sector)
-        for etype, sectors in VALID_COMBOS.items()
-        for sector in sectors
-    ]
-    total_combos = len(years) * len(all_combos)
-
-    for year in years:
-        for emission_type, sector in all_combos:
-                # Check if all districts are already cached for this combo
-                all_cached = all(
-                    (d, year, emission_type, sector) in cached_combos
-                    for d in district_names
-                )
-                if all_cached:
-                    combos_skipped += 1
-                    continue
-
-                context.log.info(
-                    "Downloading EDGAR %s/%s/%d (%d/%d combos done)",
-                    emission_type, sector, year,
-                    combos_processed, total_combos,
-                )
-
-                try:
-                    grid_data = es.download_edgar_gridmap(
-                        emission_type, sector, year
-                    )
-                except Exception as exc:
-                    context.log.warning(
-                        "Download failed for %s/%s/%d: %s",
-                        emission_type, sector, year, exc,
-                    )
-                    errors_list.append(f"{emission_type}/{sector}/{year}: {exc}")
-                    continue
-
-                if "error" in grid_data and "values" not in grid_data:
-                    context.log.warning(
-                        "EDGAR download failed: %s/%s/%d: %s",
-                        emission_type, sector, year, grid_data.get("error"),
-                    )
-                    errors_list.append(
-                        f"{emission_type}/{sector}/{year}: {grid_data.get('error')}"
-                    )
-                    continue
-
-                # Aggregate to districts
-                district_stats = es.aggregate_to_districts(
-                    grid_data, district_geometries
-                )
-
-                if not district_stats:
-                    context.log.warning(
-                        "No district stats for %s/%s/%d",
-                        emission_type, sector, year,
-                    )
-                    continue
-
-                # Write to PostgreSQL cache with ON CONFLICT DO UPDATE
-                insert_params = [
-                    (
-                        s["district"],
-                        s["year"],
-                        s["emission_type"],
-                        s["sector"],
-                        s.get("sector_label"),
-                        s.get("total_tonnes"),
-                        s.get("mean_flux_kg_m2_s"),
-                        s.get("grid_cells"),
-                        s.get("source_version"),
-                    )
-                    for s in district_stats
-                ]
-
-                with postgres.get_sync_connection() as pg_conn:
-                    with pg_conn.cursor() as cur:
-                        cur.executemany(
-                            """
-                            INSERT INTO emissions_annual_cache
-                                (district, year, emission_type, sector,
-                                 sector_label, total_tonnes, mean_flux_kg_m2_s,
-                                 grid_cells, source_version)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (district, year, emission_type, sector)
-                            DO UPDATE SET
-                                sector_label = EXCLUDED.sector_label,
-                                total_tonnes = EXCLUDED.total_tonnes,
-                                mean_flux_kg_m2_s = EXCLUDED.mean_flux_kg_m2_s,
-                                grid_cells = EXCLUDED.grid_cells,
-                                source_version = EXCLUDED.source_version,
-                                computed_at = NOW()
-                            """,
-                            insert_params,
-                        )
-                    pg_conn.commit()
-                    total_rows_written += len(insert_params)
-
-                combos_processed += 1
-                context.log.info(
-                    "Emissions cache: wrote %d rows for %s/%s/%d",
-                    len(insert_params), emission_type, sector, year,
-                )
-
-    context.log.info(
-        "Emissions ingest complete: %d combos processed, %d skipped, %d rows written",
-        combos_processed, combos_skipped, total_rows_written,
-    )
-    return {
-        "status": "ok",
-        "combos_processed": combos_processed,
-        "combos_skipped": combos_skipped,
-        "total_rows": total_rows_written,
-        "years": years,
         "errors": errors_list if errors_list else None,
     }
 
@@ -2460,3 +1595,19 @@ def worldcover_zonal_stats(
         "total_sectors": sum(1 for r in all_stats_rows if r[0] == "sector"),
         "total_cells": sum(1 for r in all_stats_rows if r[0] == "cell"),
     }
+
+
+@asset(
+    group_name="rwanda_admin_index",
+    description=(
+        "H3 admin index: every resolution-9 hexagon matched to province, district, "
+        "sector, cell and village by shared area (h3_admin_overlap, h3_admin_cells). "
+        "Run after boundaries change."
+    ),
+)
+def rwanda_h3_admin_index(context: AssetExecutionContext) -> dict[str, Any]:
+    from src.services.h3_admin_index import build_from_env
+
+    summary = asyncio.run(build_from_env())
+    context.log.info("H3 admin index: %s", summary)
+    return summary

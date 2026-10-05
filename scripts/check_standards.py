@@ -13,14 +13,22 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
                         in a rendering layer (routes, Sage tool handlers,
                         renderer, React components)
   dup-body          H2  function bodies that are identical after normalisation
+  zero-as-missing   HW  `round(x, n) if x else None` (or float): a real 0 becomes
+                        None; use src.services.numbers.round_or_none
   caplog            HW  a test takes pytest's `caplog` fixture; `src` loggers stop
                         propagating once the app's lifespan has run, so caplog
                         sees nothing and the test passes or fails by test order
   compose-mem-limit HW  an opt-in (profiled) docker-compose service without
                         mem_limit; the local Docker VM has fixed memory
+  compose-restart   HW  a long-running docker-compose service without `restart:`
+                        (one-shot init services are exempt); it stays down after
+                        a Docker restart
   agents-md-sync    HW  CLAUDE.md does not just import AGENTS.md (`@AGENTS.md`):
                         agent guidance has one source so Claude Code and Codex
                         never drift apart
+  shadow-package    HW  a module directly under src/ named like a dependency in
+                        requirements.txt; src/ has no __init__.py, so pytest puts
+                        it on sys.path and `import <dependency>` loads ours
 
 Existing debt is listed in scripts/standards_baseline.json. The baseline is a
 ratchet:
@@ -87,6 +95,7 @@ TEST_DIRS = ("src", "tests")
 COMPOSE_FILE = "docker-compose.yml"
 AGENTS_FILE = "AGENTS.md"
 CLAUDE_FILE = "CLAUDE.md"
+REQUIREMENTS_FILE = "requirements.txt"
 
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv", "dist", "build"}
 
@@ -452,6 +461,40 @@ def check_duplicate_bodies() -> list[Violation]:
 # Test and runtime hygiene (HW, "How to work")
 # --------------------------------------------------------------------------- #
 
+def _zero_as_missing(node: ast.IfExp) -> bool:
+    """`round(x, n) if x else None` / `float(x) if x else None` (also round(float(x), n))."""
+    if not (isinstance(node.orelse, ast.Constant) and node.orelse.value is None):
+        return False
+    body = node.body
+    if not (isinstance(body, ast.Call) and isinstance(body.func, ast.Name)
+            and body.func.id in {"round", "float"} and body.args):
+        return False
+    arg = body.args[0]
+    if (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)
+            and arg.func.id == "float" and arg.args):
+        arg = arg.args[0]
+    return ast.dump(arg) == ast.dump(node.test)
+
+
+def check_zero_as_missing() -> list[Violation]:
+    """A number tested for truth before rounding turns a real 0 into None."""
+    out: list[Violation] = []
+    for p in _iter_files(("src",), (".py",)):
+        if p.name.startswith("test_"):
+            continue
+        tree = _parse(p)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.IfExp) and _zero_as_missing(node):
+                out.append(Violation(
+                    "zero-as-missing", _rel(p), node.lineno, ast.unparse(node.test),
+                    f"`{ast.unparse(node)}` turns a real 0 into None (NDVI 0.0, VCI 0 = extreme "
+                    "drought); use src.services.numbers.round_or_none",
+                ))
+    return out
+
+
 def check_caplog_fixture() -> list[Violation]:
     """Tests must not rely on caplog: the app's logging config sets the "src"
     logger to propagate=False, so once any test in the worker runs lifespan,
@@ -479,46 +522,66 @@ def check_caplog_fixture() -> list[Violation]:
     return out
 
 
-def check_compose_mem_limits() -> list[Violation]:
-    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+def _compose_services() -> list[tuple[str, int, set[str]]]:
+    """(name, line, top-level keys) for each service in the compose file."""
     path = ROOT / COMPOSE_FILE
     if not path.exists():
         return []
-    out: list[Violation] = []
+    services: list[tuple[str, int, set[str]]] = []
     in_services = False
-    current: str | None = None
-    start = 0
-    has_profile = has_limit = False
-
-    def flush() -> None:
-        if current and has_profile and not has_limit:
-            out.append(Violation(
-                "compose-mem-limit", COMPOSE_FILE, start, current,
-                f"opt-in service `{current}` has no mem_limit; cap it so it cannot starve "
-                "Postgres on the fixed-memory Docker VM",
-            ))
-
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line.startswith(" "):
-            flush()
-            current = None
             in_services = line.rstrip() == "services:"
             continue
         if not in_services:
             continue
         m = re.match(r"^  ([A-Za-z0-9_.-]+):\s*$", line)
         if m:
-            flush()
-            current, start, has_profile, has_limit = m.group(1), lineno, False, False
+            services.append((m.group(1), lineno, set()))
             continue
-        if current and re.match(r"^    profiles:", line):
-            has_profile = True
-        if current and re.match(r"^    mem_limit:", line):
-            has_limit = True
-    flush()
-    return out
+        key = re.match(r"^    ([A-Za-z_]+):", line)
+        if key and services:
+            services[-1][2].add(key.group(1))
+    return services
+
+
+def check_compose_mem_limits() -> list[Violation]:
+    """Opt-in compose services (those with `profiles:`) must set mem_limit."""
+    return [
+        Violation(
+            "compose-mem-limit", COMPOSE_FILE, start, name,
+            f"opt-in service `{name}` has no mem_limit; cap it so it cannot starve "
+            "Postgres on the fixed-memory Docker VM",
+        )
+        for name, start, keys in _compose_services()
+        if "profiles" in keys and "mem_limit" not in keys
+    ]
+
+
+def check_compose_restart_policies() -> list[Violation]:
+    """Long-running compose services must set `restart:`.
+
+    One-shot init services (another service waits on them with
+    `condition: service_completed_successfully`) are exempt.
+    """
+    path = ROOT / COMPOSE_FILE
+    if not path.exists():
+        return []
+    one_shots = set(re.findall(
+        r"^\s+([A-Za-z0-9_.-]+):\s*\n\s+condition:\s*service_completed_successfully",
+        path.read_text(encoding="utf-8"), re.MULTILINE,
+    ))
+    return [
+        Violation(
+            "compose-restart", COMPOSE_FILE, start, name,
+            f"service `{name}` has no restart policy; after a Docker restart it stays down "
+            "(Postgres and the app did on 2026-10-04)",
+        )
+        for name, start, keys in _compose_services()
+        if "restart" not in keys and name not in one_shots
+    ]
 
 
 def check_agents_md_sync() -> list[Violation]:
@@ -545,6 +608,31 @@ def check_agents_md_sync() -> list[Violation]:
     return out
 
 
+def check_shadowed_packages() -> list[Violation]:
+    """A src/ module must not share its name with an installed dependency.
+
+    src/duckdb.py (2026-10-05) made `import duckdb` in layer_describer load
+    our module under pytest; sampling then failed silently."""
+    req, src = ROOT / REQUIREMENTS_FILE, ROOT / "src"
+    if not req.exists() or not src.is_dir():
+        return []
+    deps = set()
+    for line in req.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)", line)
+        if m:
+            deps.add(re.sub(r"[-.]", "_", m.group(1).lower()))
+    out: list[Violation] = []
+    for p in sorted(src.iterdir()):
+        name = p.stem if p.suffix == ".py" else p.name if p.is_dir() else ""
+        if name and name.lower() in deps:
+            out.append(Violation(
+                "shadow-package", _rel(p), 1, name,
+                f"src/{p.name} has the name of the dependency `{name}`; under pytest "
+                f"`import {name}` loads this module instead. Rename it.",
+            ))
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -553,8 +641,11 @@ def collect() -> list[Violation]:
         + check_render_thresholds_ts()
         + check_duplicate_bodies()
         + check_caplog_fixture()
+        + check_zero_as_missing()
         + check_compose_mem_limits()
+        + check_compose_restart_policies()
         + check_agents_md_sync()
+        + check_shadowed_packages()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 

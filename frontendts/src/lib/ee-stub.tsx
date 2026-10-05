@@ -1,9 +1,18 @@
 import { ClerkProvider, OrganizationSwitcher, RedirectToSignIn, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
-import MaplibreGeocoder from '@maplibre/maplibre-gl-geocoder';
 import React, { useEffect } from 'react';
-import '@maplibre/maplibre-gl-geocoder/dist/maplibre-gl-geocoder.css';
+import {
+  SIGNED_OUT_EVENT,
+  useWorkOSSession,
+  WorkOSAccountMenu,
+  WorkOSOrgSwitcher,
+  WorkOSRequireAuth,
+  WorkOSSessionProvider,
+} from '@/components/auth/WorkOSSession';
 
-const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+// Sign-in provider, fixed at build time. "workos": the backend keeps the
+// session in an HTTP-only cookie (no tokens in the browser); otherwise Clerk.
+const IS_WORKOS = (import.meta.env.VITE_AUTH_PROVIDER || '').toLowerCase() === 'workos';
+const CLERK_PUBLISHABLE_KEY = IS_WORKOS ? undefined : import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 // When set, this app acts as a Clerk satellite domain and redirects sign-in
 // to the primary domain (NozaLabs). Example: "https://nozalabs.rw/sign-in"
 const CLERK_SIGN_IN_URL = import.meta.env.VITE_CLERK_SIGN_IN_URL;
@@ -20,6 +29,7 @@ const IS_DEV_KEY = CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_');
 
 // ── init ────────────────────────────────────────────────────────────────
 export async function init(): Promise<void> {
+  if (IS_WORKOS) return;
   if (!CLERK_PUBLISHABLE_KEY) {
     console.warn('[Auth] VITE_CLERK_PUBLISHABLE_KEY not set — auth disabled');
   }
@@ -39,6 +49,9 @@ export async function init(): Promise<void> {
 
 // ── Provider ────────────────────────────────────────────────────────────
 export function Provider({ children }: React.PropsWithChildren) {
+  if (IS_WORKOS) {
+    return <WorkOSSessionProvider>{children}</WorkOSSessionProvider>;
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return <>{children}</>;
   }
@@ -62,6 +75,9 @@ export function Provider({ children }: React.PropsWithChildren) {
 
 // ── RequireAuth ─────────────────────────────────────────────────────────
 export function RequireAuth({ children }: React.PropsWithChildren) {
+  if (IS_WORKOS) {
+    return <WorkOSRequireAuth>{children}</WorkOSRequireAuth>;
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return <>{children}</>;
   }
@@ -94,14 +110,11 @@ export function OptionalAuth({ children }: React.PropsWithChildren) {
   return <>{children}</>;
 }
 
-// ── Routes (sign-in / sign-up pages) ────────────────────────────────────
-export function Routes(_reactRouterDom: unknown): React.ReactNode | null {
-  // Clerk's hosted UI handles sign-in/sign-up, no extra routes needed
-  return null;
-}
-
 // ── AccountMenu ─────────────────────────────────────────────────────────
 export function AccountMenu(): React.ReactNode | null {
+  if (IS_WORKOS) {
+    return <WorkOSAccountMenu />;
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return null;
   }
@@ -125,6 +138,9 @@ export function AccountMenu(): React.ReactNode | null {
 
 // ── OrgSwitcher ────────────────────────────────────────────────────────
 export function OrgSwitcher(): React.ReactNode | null {
+  if (IS_WORKOS) {
+    return <WorkOSOrgSwitcher />;
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return null;
   }
@@ -144,30 +160,6 @@ export function OrgSwitcher(): React.ReactNode | null {
           },
         }}
       />
-    </div>
-  );
-}
-
-// ── ScheduleCallButton ──────────────────────────────────────────────────
-export function ScheduleCallButton(): React.ReactNode | null {
-  return null;
-}
-
-// ── ShareEmbedModal ─────────────────────────────────────────────────────
-export function ShareEmbedModal(_props: { isOpen: boolean; onClose: () => void; projectId?: string }): React.ReactNode | null {
-  return null;
-}
-
-// ── ApiKeys ─────────────────────────────────────────────────────────────
-export function ApiKeys(): React.ReactNode | null {
-  if (!CLERK_PUBLISHABLE_KEY) {
-    return null;
-  }
-
-  return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Account Settings</h1>
-      <p className="text-muted-foreground">Manage your account from the user menu in the sidebar.</p>
     </div>
   );
 }
@@ -280,7 +272,8 @@ export function getCachedToken(): string | null {
 }
 
 /**
- * Returns true if Clerk auth is configured (publishable key is set).
+ * Returns true if Bearer-token auth (Clerk) is configured. False with WorkOS,
+ * whose session travels in a cookie, so callers connect without a token.
  * Use this to distinguish "no auth mode" from "auth configured but session expired".
  */
 export function isAuthConfigured(): boolean {
@@ -291,6 +284,10 @@ export function isAuthConfigured(): boolean {
 // Returns true once Clerk has loaded and the user is signed in.
 // Use this to gate React Query `enabled` so fetches don't fire before auth.
 export function useIsReady(): boolean {
+  if (IS_WORKOS) {
+    // biome-ignore lint/correctness/useHookAtTopLevel: IS_WORKOS is a build-time constant, hook call order is stable per build
+    return useWorkOSSession().status === 'signedIn';
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return true; // no auth — always ready
   }
@@ -303,6 +300,10 @@ export function useIsReady(): boolean {
 // Returns true when Clerk has loaded and the user is definitively NOT signed in.
 // Useful for showing "sign in" prompts on OptionalAuth pages.
 export function useIsSignedOut(): boolean {
+  if (IS_WORKOS) {
+    // biome-ignore lint/correctness/useHookAtTopLevel: IS_WORKOS is a build-time constant, hook call order is stable per build
+    return useWorkOSSession().status === 'signedOut';
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return false; // no auth — never "signed out"
   }
@@ -346,6 +347,13 @@ export async function fetchMaybeAuth(input: RequestInfo | URL, init?: RequestIni
     return fetch(input, { ...fetchInit, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
   };
 
+  if (IS_WORKOS) {
+    // The session cookie goes with every same-origin request; a 401 means it
+    // ended, so tell the session provider (which sends the user to sign in).
+    const response = await doFetch({ credentials: 'same-origin', ...init });
+    if (response.status === 401) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+    return response;
+  }
   if (!CLERK_PUBLISHABLE_KEY) {
     return doFetch(init);
   }
@@ -389,47 +397,3 @@ export const __test__ = {
     tokenManager.destroy();
   },
 };
-
-// ── createGeocoder ──────────────────────────────────────────────────────
-// nominatim allows limited geocoding results
-export function createGeocoder(maplibregl: any) {
-  const geocoderApi = {
-    forwardGeocode: async (config: { query: string; limit?: number }) => {
-      const features: any[] = [];
-      const url = new URL('https://nominatim.openstreetmap.org/search');
-      url.searchParams.set('q', config.query);
-      url.searchParams.set('format', 'geojson');
-      url.searchParams.set('polygon_geojson', '1');
-      url.searchParams.set('addressdetails', '1');
-      url.searchParams.set('limit', String(config.limit ?? 5));
-
-      const response = await fetch(url.toString(), {
-        headers: { Accept: 'application/geo+json' },
-      });
-      const geojson = await response.json();
-
-      for (const feature of geojson.features || []) {
-        if (!feature?.bbox || feature.bbox.length !== 4) continue;
-        const [minx, miny, maxx, maxy] = feature.bbox;
-        const center = [minx + (maxx - minx) / 2, miny + (maxy - miny) / 2];
-        features.push({
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: center },
-          place_name: feature.properties?.display_name,
-          properties: feature.properties,
-          text: feature.properties?.display_name,
-          place_type: ['place'],
-          center,
-          bbox: feature.bbox,
-        });
-      }
-      return { features };
-    },
-  };
-
-  return new MaplibreGeocoder(geocoderApi as any, {
-    maplibregl,
-    placeholder: 'Search places',
-    marker: false,
-  });
-}

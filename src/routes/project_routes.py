@@ -906,24 +906,6 @@ async def delete_project(
         }
 
 
-class DemoPostgisConfigResponse(BaseModel):
-    available: bool
-    description: str = ""
-
-
-@project_router.get(
-    "/config/demo-postgis-available", response_model=DemoPostgisConfigResponse
-)
-async def get_demo_postgis_config():
-    demo_uri = os.environ.get("DEMO_POSTGIS_URI")
-    demo_description = os.environ.get("DEMO_POSTGIS_DESCRIPTION", "")
-
-    if not demo_uri:
-        return DemoPostgisConfigResponse(available=False)
-
-    return DemoPostgisConfigResponse(available=True, description=demo_description)
-
-
 @project_router.get("/embed/v1/{project_id}.html", response_class=HTMLResponse)
 async def get_project_embed(
     project_id: str,

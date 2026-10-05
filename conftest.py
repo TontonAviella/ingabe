@@ -35,6 +35,9 @@ os.environ["MUNDI_BACKGROUND_WORKERS_ENABLED"] = "0"
 # lets tests fall through to the legacy edit-mode bypass without weakening
 # production auth.
 os.environ["CLERK_ALLOW_LEGACY_FALLBACK"] = "true"
+# The local .env sets AUTH_PROVIDER=workos for the running app; tests that need
+# WorkOS turn it on themselves (monkeypatch), so the suite matches CI locally.
+os.environ.pop("AUTH_PROVIDER", None)
 from httpx_ws.transport import ASGIWebSocketTransport
 from httpx import AsyncClient
 from pathlib import Path
@@ -48,6 +51,17 @@ import asyncpg
 
 from src.wsgi import app
 from src.database.pool import _build_postgres_url
+
+# The OpenAI SDK closes a garbage-collected AsyncOpenAI client by scheduling
+# aclose() on whatever event loop is running at that moment. Tests run each
+# coroutine on its own loop, so a client leaked by one test was closed on a later
+# test's loop; closing its TLS socket touched the first, already-closed loop and
+# raised "Event loop is closed" inside an unrelated fixture (seen as random
+# "ERROR at setup" of test_mbgl_idaho / test_view_map_with_bounds in CI).
+# In tests a leaked client is simply dropped; production runs on one loop.
+import openai._base_client as _openai_base_client
+
+_openai_base_client.AsyncHttpxClientWrapper.__del__ = lambda self: None
 
 
 @pytest.fixture
@@ -104,7 +118,25 @@ def pytest_sessionstart(session):
     """
     from src.database.migrate import run_migrations
 
+    _refuse_the_live_database()
     asyncio.run(run_migrations())
+
+
+def _refuse_the_live_database() -> None:
+    """Never run the suite against the live local database (mundidb).
+
+    Until 2026-10 local runs used mundidb itself and left 4,727 test projects and
+    ~431,000 brain pages (Barcelona shops, US counties, re-ingested every run)
+    mixed in with real data. CI's database is a fresh container and says so with
+    MUNDI_TEST_DB_IS_DISPOSABLE=1 (cicd.yml). Locally, point POSTGRES_DB at a
+    copy, e.g. `createdb -T mundidb_pytest_wos mundidb_pytest_x`.
+    """
+    if os.environ.get("POSTGRES_DB") == "mundidb" and os.environ.get("MUNDI_TEST_DB_IS_DISPOSABLE") != "1":
+        pytest.exit(
+            "POSTGRES_DB=mundidb is the live database: refusing to run tests against it. "
+            "Use a copy (POSTGRES_DB=mundidb_pytest_...), see conftest._refuse_the_live_database.",
+            returncode=2,
+        )
 
 
 @pytest.fixture(scope="session")

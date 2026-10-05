@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Tuple
 
 from pydantic import BaseModel, Field
 
+from src.services.crop_stages import stage_from_dap
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.tools.raster_query import (
     describe_user_raster,
@@ -74,29 +75,6 @@ NDVI_HEALTH_RANGES: Dict[str, Dict[str, Tuple[float, float]]] = {
         "_any": (0.40, 0.70),
     },
 }
-
-
-def _stage_from_dap(dap: int, total_dap: int, crop: str) -> str:
-    """Days-after-planting → growth-stage label, by fraction of total cycle.
-
-    Generic 5-bucket model. Beans use 'pod_fill', everything else uses
-    'grain_fill'. If the date is before planting or well past harvest, returns
-    '_any' so the threshold lookup falls back to the crop's vegetative range.
-    """
-    if total_dap <= 0 or dap < 0 or dap > total_dap + 30:
-        return "_any"
-
-    pct = dap / total_dap
-    boundaries = [0.125, 0.375, 0.625, 0.875, 1.0]
-    if crop == "beans":
-        labels = ["planting", "vegetative", "flowering", "pod_fill", "maturity"]
-    else:
-        labels = ["planting", "vegetative", "flowering", "grain_fill", "maturity"]
-
-    for i, b in enumerate(boundaries):
-        if pct <= b:
-            return labels[i]
-    return labels[-1]
 
 
 def _verdict_from_ndvi(
@@ -205,7 +183,7 @@ async def interpret_raster_health(
     args: InterpretRasterHealthArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
     """Interpret pixel data from a user-uploaded NDVI raster as a farmer-language verdict on field health, given a crop type, growth stage, and field polygon. Composes describe_user_raster (for metadata + CRS sanity) plus compute_zonal_stats (for pixel statistics) plus the agricultural crop calendar (to map capture date to growth stage) plus a curated NDVI threshold table (to convert numbers to verdicts). Returns a verdict (exceptional / healthy / moderate_stress / severe_stress) plus evidence and recommended action — NOT raw band statistics. ALWAYS use this when the user asks about the health of a field they have a drone NDVI or NDVI raster for. Do NOT use for satellite-only questions (use get_field_health for those)."""
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     desc = await describe_user_raster(
         DescribeUserRasterArgs(layer_id=args.layer_id), meta
@@ -305,7 +283,7 @@ async def interpret_raster_health(
                 dap_calc = (ref_date - planting_dt).days
                 if 0 <= dap_calc <= harvest_dap + 30:
                     dap = dap_calc
-                    stage = _stage_from_dap(dap, harvest_dap, args.crop)
+                    stage = stage_from_dap(dap, harvest_dap, args.crop)
             except Exception:
                 logger.exception("DAP calculation failed for %s", args.crop)
 
@@ -756,7 +734,7 @@ async def compare_rasters(
         describe_user_raster,
         DescribeUserRasterArgs,
     )
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     # 1. Validate both layers + check both are NDVI-shaped
     for lid in (args.layer_id_a, args.layer_id_b):
@@ -989,8 +967,8 @@ async def compare_rasters(
                     planting_dt = datetime(t2_date.year - 1, pm, pd, tzinfo=t2_date.tzinfo)
                 dap_t1 = max(0, (t1_date - planting_dt).days)
                 dap_t2 = max(0, (t2_date - planting_dt).days)
-                stage_t1 = _stage_from_dap(dap_t1, harvest_dap, args.crop)
-                stage_t2 = _stage_from_dap(dap_t2, harvest_dap, args.crop)
+                stage_t1 = stage_from_dap(dap_t1, harvest_dap, args.crop)
+                stage_t2 = stage_from_dap(dap_t2, harvest_dap, args.crop)
                 ndvi_at_t1 = _stage_midpoint_ndvi(args.crop, stage_t1)
                 ndvi_at_t2 = _stage_midpoint_ndvi(args.crop, stage_t2)
                 expected_delta = round(ndvi_at_t2 - ndvi_at_t1, 3)
@@ -1182,7 +1160,7 @@ async def evaluate_insurance_trigger(
     args: EvaluateInsuranceTriggerArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
     """Evaluate parametric insurance trigger conditions on a user's drone NDVI flights. Composes compare_rasters (change detection) + zonal stats on the 'after' raster (current absolute health) + a per-crop-stage threshold table. Computes a 0-100 composite_score across 4 weighted signals (absolute health, NDVI decline vs expected, area declining significantly, drought context from rainfall) and returns triggered=True if score >= 60. Returns triggered (bool), composite_score (0-100), per-signal status with thresholds, payout_recommendation, plus full underlying compare_rasters evidence. ALWAYS use this when the user asks 'should this claim pay out?', 'is the trigger fired?', 'evaluate the insurance', or any parametric-trigger question on drone NDVI data. Source='drone' — for satellite-based triggers use get_insurance_intelligence."""
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     # 1. Run compare_rasters first — the keystone change-detection signal.
     cmp = await compare_rasters(

@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from src.services.numbers import round_or_none
+
 logger = logging.getLogger(__name__)
 
 # Default hyperparameters for GBR
@@ -355,7 +357,7 @@ class SARNDVIPredictor:
         r2 = float(model.score(X, y))
 
         self._model = model
-        self._model_rmse = round(rmse, 4) if rmse else None
+        self._model_rmse = round_or_none(rmse, 4)
         self._model_r2 = round(r2, 4)
         self._n_training_samples = len(y)
 

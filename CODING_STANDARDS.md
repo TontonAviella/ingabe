@@ -20,11 +20,6 @@ Name the one layer of the file you are editing before you edit it.
 | Adapters / routing | `src/routes/`, `src/tools/` (Sage tool handlers), `src/dependencies/`, `src/senders/`, `src/wsgi.py` | domain, persistence |
 | Presentation | `frontendts/`, `src/renderer/` | API responses only |
 
-Legacy, outside the layering: top-level `services/*.py` (`api_insurance.py`,
-`insurance_report.py`, `api_monitor.py`, `monitor_field_v3.py`) duplicate
-domain logic that belongs in `src/services/`. Do not extend them; consolidate
-into the owning module first (H1).
-
 ## Design principles
 
 Constraints, not a checklist. When two conflict, choose the option with the
@@ -52,6 +47,10 @@ message. H1–H3 below are the hard, CI-enforced form of these.
 - **Fail fast.** Validate at the edges (tool arguments, uploads, external API
   responses). Never swallow an exception; a `except Exception: pass` or a
   silent default on a data fetch is a bug (see Lessons log).
+- **Missing is not zero, and zero is not missing.** Only None means "no
+  data". A total over days, pixels or areas with gaps is unknown below its
+  coverage threshold, never the sum of what arrived; a real 0 is a value.
+  Both mistakes are in the Lessons log (2026-10-04).
 - **Optimise for deletion.** Prefer code that is easy to remove over code
   that is easy to extend.
 - **Boring tech.** Reuse the stack already in the repo before adding a
@@ -70,12 +69,12 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 
 | Domain | Owner | Status |
 |---|---|---|
-| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py`, `services/api_insurance.py`, `services/insurance_report.py` |
+| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py` |
 | Vegetation-index classes (NDVI/EVI breaks, labels, colours, expected NDVI per crop stage) | **none yet** | Scattered across 13 files with conflicting breaks (0.15/0.2/0.3/0.35/0.4/0.6…), plus a crop-stage NDVI table living in the adapter `src/tools/raster_interpret.py`. Create one owner before any new NDVI rule. |
 | Weather forecast + fusion | `src/services/forecast_service.py`, `forecast_fusion.py` | |
 | Forecast accuracy metrics (POD/FAR/HSS/CSI) | `src/services/weather_accuracy.py` | |
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
-| Crop modelling (DSSAT) | `src/services/dssat_service.py` | |
+| Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
 
@@ -115,6 +114,16 @@ or a hook. When you add a rule here, add or extend its gate in
 `scripts/check_standards.py` or a test, or write in the rule why it cannot be
 checked mechanically.
 
+**The Docker VM is a shared memory budget.** The local stack runs in one
+Docker VM (12 GB with 4 GB of swap since 2026-10-04; it was 7.7 GB with 1 GB
+when Postgres crashed), and Postgres is the first thing to fail
+when it runs short (backends exit with code 2, then crash recovery). Before
+starting a service or a heavy job, check swap as well as available memory:
+if `DockerVMSwapNearlyFull` is firing, do not start more load, whatever
+`free -m` says. Every long-running service sets `mem_limit`. Gate: the
+`compose-mem-limit` check and the `DockerVMSwapNearlyFull` /
+`PostgresRecoveredRecently` alerts; starting load is a judgement call.
+
 ### The standards gate
 
 - `python scripts/check_standards.py` runs in CI (`lint.yml`, job
@@ -134,8 +143,10 @@ Sage tool handlers and React components, 16 duplicated function bodies.
 `python scripts/check_standards.py --list` prints every entry with its line.
 
 Hygiene checks (no baseline debt): `caplog` (a test takes pytest's `caplog`
-fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`)
-and `agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
+fixture), `compose-mem-limit` (an opt-in compose service without `mem_limit`),
+`compose-restart` (a long-running compose service without `restart:`),
+`zero-as-missing` (a number tested for truth before rounding) and
+`agents-md-sync` (CLAUDE.md must only import AGENTS.md, the single source
 of agent guidance).
 
 What the gate cannot see, so review and `standards-retro` must: duplicated
@@ -149,9 +160,42 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
+  `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
+  Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
+- **2026-10-05** WorkOS sign-in never worked: the cookie secret was 64 hex chars but the SDK feeds it to Fernet, and every login test
+  mocked the code exchange, so no test ever sealed a cookie; the failed callback then bounced back to the provider in a loop. Rule: an auth
+  or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
+- **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
+  US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
+  them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
 - **2026-10-04** Migration b2c3d4e5f6a7 downloaded Rwanda boundaries from geoboundaries.org and raised on
   failure; the API timed out and CI failed on unchanged code. Rule: migrations read seed data from vendored
   files, never the network. Gate: `tests/test_rwanda_boundary_seed_offline.py` (network blocked).
+- **2026-10-04** Insurance season rainfall summed only the CHIRPS days it downloaded: with the final product weeks behind,
+  every Season A report read 0 mm and fired the rainfall trigger, and late in a season the unfetched early weeks undercounted.
+  Rule: "Missing is not zero" (Design principles). Gate: review only (needs the data's coverage); tests in `test_insurance_engine.py`.
+- **2026-10-04** 63 places formatted numbers with `round(x, n) if x else None`, so a real 0 became "missing":
+  NDVI 0.0, z-score 0 and VCI 0 (the most extreme drought) vanished from results. Rule: only None is missing
+  (`src.services.numbers.round_or_none`). Gate: `zero-as-missing`.
+- **2026-10-04** I ran `git worktree remove --force` on a worktree holding uncommitted scripts and lost them
+  (rebuilt from the session). Rule: commit (or push a WIP commit) before removing a worktree; never `--force`
+  without `git status` first. Gate: review only.
+- **2026-10-04** A verification script re-downloaded 16 months of Open-Meteo forecasts for 120 district-model
+  pairs twice in an hour and hit the hourly limit the live app's forecasts share (429 for up to an hour).
+  Rule: analysis scripts on a shared external quota cache responses and stop on 429. Gate: review only.
+- **2026-10-04** Insurance rainfall normals labelled "CHIRPS v2.0 2000-2023" were hand-entered and 23-28%
+  too low; the season SPI also compared rainfall so far with full-season normals (drought on normal rain).
+  Rule: reference data derived from a dataset is generated by a committed script, stored with its source. Gate: review only.
+- **2026-10-04** I ran test jobs with `dagster job execute` against the shared Dagster instance: the
+  runs held the queue's single slot (one orphaned when I removed its container) and re-runs duplicated cache rows.
+  Rule: out-of-band runs use a throwaway `DAGSTER_HOME`. Gate: review only (operator action).
+- **2026-10-04** Applying new Docker Desktop resources restarted the engine; Postgres, the app, Redis
+  and QGIS had no restart policy and stayed down until started by hand.
+  Rule: every long-running compose service sets `restart:`. Gate: `compose-restart`.
+- **2026-10-04** I restarted Dagster and ran test jobs while swap was 100% full (2.3 GB "available");
+  Postgres crashed twice (02:13, 04:14 UTC). Second time after 2026-10-03: promoted to
+  "The Docker VM is a shared memory budget" under How to work. Gate: alerts, plus judgement.
 - **2026-10-04** The Dagster daemon (no restart policy, no mem_limit) stopped running schedules on
   2026-08-12 and exited on 2026-10-02; nobody noticed, so Sage answered from 7 weeks of missing weather/NDVI.
   Rule: long-running compose services set `restart:` and `mem_limit`. Gate: alert `DataPipelineStale` (cache age).

@@ -45,6 +45,7 @@ WORKDIR /app/frontendts
 COPY frontendts/package*.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --legacy-peer-deps
 ARG VITE_WEBSITE_DOMAIN
+ARG VITE_AUTH_PROVIDER
 ARG VITE_CLERK_PUBLISHABLE_KEY
 ARG VITE_CLERK_SIGN_IN_URL
 ARG VITE_CLERK_SIGN_UP_URL
@@ -52,6 +53,7 @@ ARG VITE_POSTHOG_KEY=phc_W7tOZXWc5oPtpiYyyINii49GodL1NgyS6z30pNW8aTP
 ARG VITE_POSTHOG_HOST=https://us.i.posthog.com
 COPY frontendts/ ./
 ENV VITE_WEBSITE_DOMAIN=$VITE_WEBSITE_DOMAIN \
+    VITE_AUTH_PROVIDER=$VITE_AUTH_PROVIDER \
     VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY \
     VITE_CLERK_SIGN_IN_URL=$VITE_CLERK_SIGN_IN_URL \
     VITE_CLERK_SIGN_UP_URL=$VITE_CLERK_SIGN_UP_URL \
@@ -70,7 +72,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-install DuckDB extensions so they don't need network access at runtime
-RUN /app/.venv/bin/python -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.install_extension('iceberg'); con.close()"
+RUN /app/.venv/bin/python -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.close()"
 
 # Copy application files
 COPY . /app/
@@ -90,9 +92,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TORCH_HOME="/cache/torch" \
     YOLO_CONFIG_DIR="/cache/ultralytics"
 
-COPY scripts/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
@@ -110,4 +109,4 @@ RUN useradd -r -m -s /bin/false appuser \
 USER appuser
 
 ENTRYPOINT []
-CMD ["/entrypoint.sh"]
+CMD ["bash", "/app/scripts/start-services.sh"]

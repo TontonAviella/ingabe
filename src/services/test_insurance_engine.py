@@ -20,7 +20,12 @@ from src.services.insurance_engine import (
     _centroid_from_geojson,
     _compute_confidence,
     _compute_phase_rainfall,
-    _compute_spi,
+    _chirps_dates_to_fetch,
+    _season_rainfall,
+    _prorate_season_rainfall_triggers,
+    _stage_triggers,
+    _window_dry_spell,
+    _climatology_rainfall,
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
@@ -29,50 +34,62 @@ from src.services.insurance_engine import (
     _generate_recommendation,
     _load_triggers,
     _resolve_location_name,
-    _NATIONAL_RAINFALL_NORMALS,
-    _DISTRICT_RAINFALL_NORMALS,
+    _season_to_date_spi,
     _RWANDA_CENTER,
-    _ET_LONG_TERM_MEAN,
+    _et_anomaly_pct,
     _VALID_AUDIENCES,
+    _season_vs_normal,
+    DEFAULT_AUDIENCE,
     compute_insurance_intelligence,
     compute_insurance_accuracy_safe,
     format_for_audience,
+    normalize_audience,
+    rainfall_vs_usual,
 )
 
 
 # ---------------------------------------------------------------------------
-# _compute_spi
+# _season_to_date_spi
 # ---------------------------------------------------------------------------
 
-class TestComputeSPI:
-    def test_normal_rainfall_returns_zero(self):
-        spi = _compute_spi(400.0, "A")
-        assert spi == pytest.approx(0.0)
+def _normal_rain(district, planting, days, factor=1.0):
+    import calendar
+    from src.services.insurance_engine import _get_monthly_normals
+    out = {}
+    for i in range(days):
+        d = planting + timedelta(days=i)
+        normal = _get_monthly_normals(d.month, district)["mean"]
+        out[d.isoformat()] = factor * normal / calendar.monthrange(d.year, d.month)[1]
+    return out
 
-    def test_below_normal_returns_negative(self):
-        spi = _compute_spi(315.0, "A")
-        assert spi == pytest.approx(-1.0)
 
-    def test_above_normal_returns_positive(self):
-        spi = _compute_spi(485.0, "A")
-        assert spi == pytest.approx(1.0)
+class TestSeasonToDateSPI:
+    PLANTING = date(2026, 9, 15)
 
-    def test_season_b_uses_b_normals(self):
-        spi = _compute_spi(350.0, "B")
-        assert spi == pytest.approx(0.0)
+    @pytest.mark.parametrize("days", [20, 60, 120])
+    def test_normal_rain_scores_zero_at_any_point_in_the_season(self, days):
+        rain = _normal_rain("bugesera", self.PLANTING, days)
+        today = self.PLANTING + timedelta(days=days - 1)
+        assert _season_to_date_spi(rain, self.PLANTING, today, "bugesera") == pytest.approx(0.0, abs=0.01)
 
-    def test_unknown_season_falls_back_to_A(self):
-        spi = _compute_spi(400.0, "C")
-        assert spi == pytest.approx(0.0)
+    def test_half_normal_rain_is_a_drought_signal(self):
+        rain = _normal_rain("musanze", self.PLANTING, 60, factor=0.5)
+        spi = _season_to_date_spi(rain, self.PLANTING, self.PLANTING + timedelta(days=59), "musanze")
+        assert spi < -1.0
 
-    def test_severe_drought(self):
-        spi = _compute_spi(230.0, "A")
-        assert spi == pytest.approx(-2.0)
+    def test_season_vs_normal_uses_the_same_days_as_the_trigger(self):
+        today = self.PLANTING + timedelta(days=60)
+        normal = sum(_normal_rain("musanze", self.PLANTING, 60).values())
+        normal_mm, pct = _season_vs_normal(0.7 * normal, self.PLANTING, today, 135, "musanze")
+        assert normal_mm == pytest.approx(normal, rel=1e-6)
+        assert pct == pytest.approx(70.0, abs=0.01)
+        assert _season_vs_normal(None, self.PLANTING, today, 135, "musanze") == (None, None)  # unknown rain
+        assert _season_vs_normal(50.0, self.PLANTING, self.PLANTING + timedelta(days=5), 135, "musanze") == (None, None)
 
-    def test_zero_rainfall(self):
-        spi = _compute_spi(0.0, "A")
-        expected = -400.0 / 85.0
-        assert spi == pytest.approx(expected)
+    def test_too_early_or_no_data_is_none(self):
+        rain = _normal_rain("musanze", self.PLANTING, 5)
+        assert _season_to_date_spi(rain, self.PLANTING, self.PLANTING + timedelta(days=4), "musanze") is None
+        assert _season_to_date_spi({}, self.PLANTING, self.PLANTING + timedelta(days=40), "musanze") is None
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +314,27 @@ class TestComputePhaseRainfall:
         assert planting_phase.daily_avg_mm == pytest.approx(10.0)
         assert planting_phase.cumulative_mm == pytest.approx(planting_phase.daily_avg_mm * planting_phase.day_count)
 
-    def test_no_data_returns_zero(self):
+    def test_no_data_is_unknown_not_dry(self):
         planting = date(2025, 9, 15)
         today = date(2025, 10, 5)
         results = _compute_phase_rainfall({}, planting, self.SEASON_DURATION, today)
         assert len(results) >= 1
-        assert results[0].cumulative_mm == 0.0
+        assert results[0].complete is False
+        assert _season_rainfall(results) is None
+
+    def test_full_season_total_is_known(self):
+        planting = date(2025, 9, 15)
+        today = date(2025, 10, 5)
+        daily = {(planting + timedelta(days=i)).isoformat(): 4.0 for i in range(20)}
+        assert _season_rainfall(_compute_phase_rainfall(daily, planting, self.SEASON_DURATION, today)) == pytest.approx(80.0)
+
+    def test_an_early_phase_without_data_makes_the_total_unknown(self):
+        planting = date(2025, 9, 15)
+        today = date(2025, 12, 1)  # 77 days in: early phase over, mid phase running
+        daily = {(today - timedelta(days=i)).isoformat(): 4.0 for i in range(1, 30)}
+        phases = _compute_phase_rainfall(daily, planting, self.SEASON_DURATION, today)
+        assert [p.complete for p in phases] == [False, True]
+        assert _season_rainfall(phases) is None
 
     def test_future_phases_excluded(self):
         planting = date(2025, 9, 15)
@@ -498,6 +530,11 @@ class TestFormatForAudience:
         text = format_for_audience(report, "farmer")
         assert "1 trigger(s) activated" in text
 
+    @pytest.mark.parametrize("audience", ["farmer", "insurance", "agronomist"])
+    def test_rainfall_says_what_it_covers(self, report, audience):
+        text = format_for_audience(report, audience)
+        assert "at the centre of Musanze, not an average over the whole district" in text
+
     def test_insurance_format_has_table(self, report):
         text = format_for_audience(report, "insurance")
         assert "TRIGGER ASSESSMENT" in text
@@ -525,6 +562,21 @@ class TestFormatForAudience:
     def test_unknown_audience_defaults_to_insurance(self, report):
         text = format_for_audience(report, "unknown_audience")
         assert "TRIGGER ASSESSMENT" in text
+
+    def test_farmer_hears_rain_compared_with_usual(self, report):
+        report.season_normal_mm, report.season_pct_of_normal = 254.0, 70.1
+        text = format_for_audience(report, "farmer")
+        assert "Rain since planting: 178mm, about 30% less than usual for this time of year (usual by now: about 254mm)." in text
+
+    def test_farmer_without_a_normal_keeps_the_plain_total(self, report):
+        assert "Rain this season: 178mm" in format_for_audience(report, "farmer")
+
+    def test_insurer_and_agronomist_get_the_percentage(self, report):
+        report.season_normal_mm, report.season_pct_of_normal = 254.0, 70.1
+        assert "178mm = 70% of normal for these dates (normal 254mm, CHIRPS 2000-2023)" in format_for_audience(report, "insurance")
+        assert "Normal for these dates: 254mm (70% of normal)" in format_for_audience(report, "agronomist")
+        data = json.loads(format_for_audience(report, "scientist"))
+        assert data["season_pct_of_normal"] == 70.0 and "season_vs_normal" in data["methodology"]
 
     def test_farmer_format_with_stressed_ndvi(self, report):
         report.ndvi_z_score = -1.8
@@ -626,31 +678,18 @@ class TestConstants:
         assert isinstance(_RWANDA_CENTER, tuple)
         assert len(_RWANDA_CENTER) == 2
 
-    def test_et_long_term_mean_is_positive(self):
-        assert _ET_LONG_TERM_MEAN > 0
+    def test_et_anomaly_is_against_each_dekads_seasonal_normal(self):
+        result = {"status": "success", "time_series": [
+            {"dekad": "2026-09-D2", "et_mm_per_day": 1.5, "normal_et_mm_per_day": 1.6},
+            {"dekad": "2026-09-D3", "et_mm_per_day": 1.9, "normal_et_mm_per_day": 2.0},
+            {"dekad": "2026-10-D1", "et_mm_per_day": None, "normal_et_mm_per_day": 2.4},  # not published yet
+        ]}
+        # 3.4 observed vs 3.6 normal on the two dekads with both: about -5.6%, not -51% vs a 3.5 constant
+        assert _et_anomaly_pct(result) == pytest.approx((3.4 - 3.6) / 3.6 * 100)
 
-    def test_national_rainfall_normals_has_both_seasons(self):
-        assert "A" in _NATIONAL_RAINFALL_NORMALS
-        assert "B" in _NATIONAL_RAINFALL_NORMALS
-        for season in ("A", "B"):
-            assert "mean" in _NATIONAL_RAINFALL_NORMALS[season]
-            assert "std" in _NATIONAL_RAINFALL_NORMALS[season]
-            assert _NATIONAL_RAINFALL_NORMALS[season]["std"] > 0
-
-    def test_district_rainfall_normals_cover_30_districts(self):
-        assert len(_DISTRICT_RAINFALL_NORMALS) >= 28
-        for dist, seasons in _DISTRICT_RAINFALL_NORMALS.items():
-            assert "A" in seasons, f"{dist} missing season A"
-            assert "B" in seasons, f"{dist} missing season B"
-            for s in ("A", "B"):
-                assert seasons[s]["std"] > 0, f"{dist} season {s} has zero std"
-
-    def test_district_spi_differs_across_districts(self):
-        rainfall = 250.0
-        spi_bugesera = _compute_spi(rainfall, "B", district="bugesera")
-        spi_musanze = _compute_spi(rainfall, "B", district="musanze")
-        assert spi_bugesera != spi_musanze, "SPI should differ for different districts"
-        assert spi_bugesera > spi_musanze, "250mm is closer to normal for dry Bugesera"
+    def test_et_anomaly_unknown_without_normals_or_data(self):
+        assert _et_anomaly_pct(None) is None
+        assert _et_anomaly_pct({"status": "success", "time_series": [{"et_mm_per_day": 3.0, "normal_et_mm_per_day": None}]}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -897,11 +936,10 @@ class TestValidAudiences:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=None))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value="A"))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=None))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value={}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
         svc = MagicMock()
@@ -917,7 +955,7 @@ class TestValidAudiences:
                 audience="hacker_injection", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
-        assert result["audience"] == "farmer"
+        assert result["audience"] == DEFAULT_AUDIENCE
 
 
 # ---------------------------------------------------------------------------
@@ -950,7 +988,7 @@ class TestLoadTriggers:
         args = conn.fetch.call_args[0]
         assert args[1] == "beans"
         assert args[2] == "B"
-        assert args[3] == "vegetative"
+        assert args[3] == ["vegetative"]
         assert args[4] == "Huye"
 
     def test_exception_falls_back_to_defaults(self):
@@ -1019,11 +1057,10 @@ class TestComputeInsuranceIntelligence:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         # SAR services — cloud-penetrating fallback
@@ -1044,7 +1081,7 @@ class TestComputeInsuranceIntelligence:
         assert result["status"] == "ok"
         assert "report" in result
         assert "data" in result
-        assert result["audience"] == "farmer"
+        assert result["audience"] == DEFAULT_AUDIENCE
 
     def test_error_without_location(self):
         conn = self._mock_conn()
@@ -1094,17 +1131,26 @@ class TestComputeInsuranceIntelligence:
 
     def test_chirps_data_flows_to_rainfall(self):
         conn = self._mock_conn()
-        chirps_data = {
-            "2025-10-01": 5.0, "2025-10-02": 3.0, "2025-10-03": 0.0,
-            "2025-10-15": 8.0, "2025-10-20": 12.0,
-            "2025-11-01": 6.0, "2025-11-10": 4.0,
-        }
+        chirps_data = {(date(2025, 9, 1) + timedelta(days=i)).isoformat(): 3.0 for i in range(75)}
         with self._patches(chirps=chirps_data):
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
         assert result["status"] == "ok"
         assert result["data"]["season_rainfall_mm"] > 0
+
+    def test_missing_rainfall_is_unknown_and_does_not_fire_the_trigger(self):
+        conn = self._mock_conn()
+        sparse = {"2025-10-01": 5.0, "2025-10-20": 12.0, "2025-11-10": 4.0}
+        for chirps in ({}, sparse):
+            with self._patches(chirps=chirps):
+                result = _run(compute_insurance_intelligence(
+                    conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15), audience="farmer",
+                ))
+            assert result["status"] == "ok"
+            assert result["data"]["season_rainfall_mm"] is None
+            assert "rainfall_cumulative" not in [t["signal"] for t in result["data"]["triggers"]]
+            assert "do not cover the season yet" in result["report"]
 
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
@@ -1121,7 +1167,8 @@ class TestComputeInsuranceIntelligence:
         et_result = {
             "status": "success",
             "time_series": [
-                {"et_mm_per_day": 3.0}, {"et_mm_per_day": 4.0}, {"et_mm_per_day": 3.5},
+                {"et_mm_per_day": 3.0, "normal_et_mm_per_day": 3.2},
+                {"et_mm_per_day": 4.0, "normal_et_mm_per_day": 3.9},
             ],
         }
         with self._patches(et=et_result):
@@ -1238,31 +1285,6 @@ class TestMigrationIntegrity:
 # ===========================================================================
 # Part 3: Coverage gap tests — edge cases and conditional branches
 # ===========================================================================
-
-
-# ---------------------------------------------------------------------------
-# _compute_spi: std == 0 branch
-# ---------------------------------------------------------------------------
-
-class TestComputeSPIEdgeCases:
-    def test_std_zero_returns_zero(self):
-        """When std is 0, _compute_spi should return 0.0 to avoid division by zero."""
-        with patch.dict(
-            "src.services.insurance_engine._NATIONAL_RAINFALL_NORMALS",
-            {"A": {"mean": 400.0, "std": 0}, "B": {"mean": 350.0, "std": 75.0}},
-        ):
-            spi = _compute_spi(500.0, "A")
-            assert spi == 0.0
-
-    def test_district_normals_used_when_available(self):
-        spi_with_district = _compute_spi(300.0, "B", district="bugesera")
-        spi_without_district = _compute_spi(300.0, "B")
-        assert spi_with_district != spi_without_district
-
-    def test_unknown_district_falls_back_to_national(self):
-        spi_unknown = _compute_spi(300.0, "B", district="nonexistent")
-        spi_national = _compute_spi(300.0, "B")
-        assert spi_unknown == spi_national
 
 
 # ---------------------------------------------------------------------------
@@ -1410,11 +1432,10 @@ class TestOrchestratorEdgeCases:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
-        stack.enter_context(patch("src.services.forecast_fusion._fetch_chirps_precip", return_value=chirps or {}))
+        stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         sar_svc = MagicMock()
@@ -1535,10 +1556,10 @@ class TestInsuranceToolSchema:
         tool = self._load_tool()
         assert tool["function"]["parameters"]["required"] == []
 
-    def test_dispatch_wired_in_message_routes(self):
-        routes_path = pathlib.Path(__file__).parent.parent / "routes" / "message_routes.py"
-        src = routes_path.read_text()
-        assert 'function_name == "get_insurance_intelligence"' in src
+    def test_dispatch_is_registered(self):
+        """Both runtimes dispatch non-Pydantic tools through LEGACY_HANDLERS."""
+        from src.services.legacy_tool_shim import LEGACY_HANDLERS
+        assert "get_insurance_intelligence" in LEGACY_HANDLERS
 
 
 # ---------------------------------------------------------------------------
@@ -1821,3 +1842,247 @@ class TestForecastOutlookThreshold:
         conn.fetch.return_value = []
         _run(_load_triggers(conn, "maize", "A", "flowering", None))
         assert "phase, signal, direction" in conn.fetch.call_args[0][0]
+
+
+class TestProjectToHarvest:
+    """Rainfall beyond the forecast comes from district normals, not the forecast's average."""
+
+    @staticmethod
+    def _days(start: date, mm: float, n: int = 16) -> list[dict]:
+        return [{"date": (start + timedelta(days=i)).isoformat(), "mean": mm, "p10": mm, "p90": mm}
+                for i in range(n)]
+
+    def test_a_dry_fortnight_does_not_make_a_dry_season(self):
+        from src.services.insurance_engine import _project_to_harvest
+        dry = self._days(date(2026, 10, 4), 0.5)
+        mean, p10, p90, method = _project_to_harvest(dry, 116, "bugesera")
+        # Old method: 0.5 mm x 116 days = 58 mm. Now the 100 days after the
+        # forecast get the district's normal for each day.
+        import calendar
+        from src.services.insurance_engine import _get_monthly_normals
+        normals = sum(
+            _get_monthly_normals(d.month, "bugesera")["mean"] / calendar.monthrange(d.year, d.month)[1]
+            for d in (date(2026, 10, 20) + timedelta(days=i) for i in range(100))
+        )
+        assert mean == pytest.approx(16 * 0.5 + normals)
+        assert normals > 200
+        assert p10 < mean < p90
+        assert method == "16-day forecast + 100-day Bugesera monthly normals"
+
+    def test_district_normals_change_the_projection(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 10, 4), 3.0)
+        wet_north = _project_to_harvest(days, 116, "musanze")[0]
+        dry_east = _project_to_harvest(days, 116, "bugesera")[0]
+        assert wet_north > dry_east
+
+    def test_forecast_covering_the_rest_of_the_season_is_used_alone(self):
+        from src.services.insurance_engine import _project_to_harvest
+        days = self._days(date(2026, 12, 20), 2.0)
+        mean, p10, p90, method = _project_to_harvest(days, 10, "musanze")
+        assert (mean, p10, p90) == (20.0, 20.0, 20.0)
+        assert method == "10-day forecast (full coverage)"
+
+
+class TestTriggerProbability:
+    """The payout probability is the chance the season ends BELOW the threshold."""
+
+    def test_drier_outlook_means_higher_payout_probability(self):
+        from src.services.insurance_engine import _trigger_probability
+        threshold = 300.0
+        dry = _trigger_probability(189, 257, 327, threshold)[0]
+        normal = _trigger_probability(208, 305, 413, threshold)[0]
+        wet = _trigger_probability(243, 393, 572, threshold)[0]
+        assert dry > normal > wet
+
+    def test_threshold_just_above_p10_is_unlikely_not_fifty_fifty(self):
+        from src.services.insurance_engine import _trigger_probability
+        probability, risk = _trigger_probability(290, 381, 474, 300.0)
+        assert probability < 0.2
+        assert risk == "LOW"
+
+    def test_quantile_anchors(self):
+        from src.services.insurance_engine import _trigger_probability
+        assert _trigger_probability(100, 200, 300, 200.0) == (0.5, "MODERATE")
+        assert _trigger_probability(100, 200, 300, 350.0) == (0.9, "VERY HIGH")
+        assert _trigger_probability(100, 200, 300, 50.0) == (0.05, "LOW")
+
+
+# ---------------------------------------------------------------------------
+# CHIRPS download plan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("season_days", [19, 60, 150, 200])
+def test_chirps_download_plan_covers_the_season_within_budget(season_days):
+    today = date(2026, 10, 4)
+    planting = today - timedelta(days=season_days)
+    dates = _chirps_dates_to_fetch(planting, today)
+    assert len(dates) <= 90 and dates == sorted(set(dates))
+    assert all((today - timedelta(days=i)).isoformat() in dates for i in range(30))  # SPI-1 window in full
+    early = [d for d in dates if d < (planting + timedelta(days=40)).isoformat() and d >= planting.isoformat()]
+    if season_days >= 40:
+        assert len(early) >= 0.3 * 40  # enough for a season third to count (30%)
+
+
+# ---------------------------------------------------------------------------
+# Full-season rainfall triggers prorated to date (decided 2026-10-04)
+# ---------------------------------------------------------------------------
+
+_SEASON_TRIGGERS = [
+    {"signal": "rainfall_cumulative", "phase": "full_season", "direction": "below", "threshold": 100.0, "weight": 1.0},
+    {"signal": "rainfall_cumulative", "phase": "flowering", "direction": "below", "threshold": 30.0, "weight": 1.0},
+    {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8},
+]
+
+
+def test_season_minimum_is_prorated_to_the_normal_rain_due_by_today():
+    planting, today = date(2026, 9, 15), date(2026, 10, 4)
+    out = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS, planting, today, 135, "rulindo")
+    share = _climatology_rainfall(planting, 19, "rulindo")[0] / _climatology_rainfall(planting, 135, "rulindo")[0]
+    assert out[0]["threshold"] == pytest.approx(100.0 * share, abs=0.05)
+    assert out[0]["full_season_threshold"] == 100.0
+    assert out[1] == _SEASON_TRIGGERS[1] and out[2] == _SEASON_TRIGGERS[2]  # phase and other signals untouched
+
+
+def test_at_season_end_the_full_threshold_applies():
+    planting = date(2026, 9, 15)
+    out = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS, planting, planting + timedelta(days=140), 135, "rulindo")
+    assert out == _SEASON_TRIGGERS
+
+
+def test_above_normal_rain_early_in_the_season_does_not_trigger():
+    from src.services.insurance_engine import _evaluate_triggers
+    planting, today = date(2026, 9, 15), date(2026, 10, 4)
+    defs = _prorate_season_rainfall_triggers(_SEASON_TRIGGERS[:1], planting, today, 135, "rulindo")
+    normal_so_far = _climatology_rainfall(planting, 19, "rulindo")[0]
+    [result] = _evaluate_triggers(defs, {"rainfall_cumulative": 1.8 * normal_so_far})
+    assert not result.triggered
+    [dry] = _evaluate_triggers(defs, {"rainfall_cumulative": 0.1 * normal_so_far})
+    assert dry.triggered and dry.full_season_threshold == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Crop-stage triggers (maize/beans flowering) are measured over their stage
+# ---------------------------------------------------------------------------
+
+_FLOWERING = [
+    {"signal": "rainfall_cumulative", "phase": "flowering", "direction": "below", "threshold": 40.0, "weight": 1.0,
+     "description": "Flowering phase rainfall below 40mm critical minimum"},
+    {"signal": "dry_spell_days", "phase": "flowering", "direction": "above", "threshold": 10.0, "weight": 0.8,
+     "description": "Dry spell during flowering exceeds 10 days"},
+    {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8},
+]
+_PLANT = date(2026, 3, 1)  # maize Season B; flowering = days 51-84 of a 135-day cycle
+
+
+def _rain(mm, days=200, start=_PLANT):
+    return {(start + timedelta(days=i)).isoformat(): mm for i in range(days)}
+
+
+def test_stage_triggers_before_the_stage_are_left_out():
+    out = _stage_triggers(_FLOWERING, "maize", _rain(3.0), _PLANT, _PLANT + timedelta(days=30), 135, "rulindo")
+    assert [t["signal"] for t in out] == ["spi"]
+
+
+def test_a_running_stage_is_measured_over_its_own_days_and_prorated():
+    today = _PLANT + timedelta(days=62)  # 11 flowering days observed (51..61)
+    out = _stage_triggers(_FLOWERING, "maize", _rain(1.0), _PLANT, today, 135, "rulindo")
+    rain = next(t for t in out if t["signal"] == "rainfall_cumulative")
+    assert rain["value"] == pytest.approx(11.0)  # 1 mm/day over the 11 flowering days, not the whole season
+    assert rain["full_season_threshold"] == 40.0 and rain["threshold"] < 40.0
+    spell = next(t for t in out if t["signal"] == "dry_spell_days")
+    assert spell["value"] == 11.0  # every observed flowering day was under 2 mm
+
+
+def test_a_finished_stage_uses_its_full_minimum():
+    out = _stage_triggers(_FLOWERING, "maize", _rain(5.0), _PLANT, _PLANT + timedelta(days=100), 135, "rulindo")
+    rain = next(t for t in out if t["signal"] == "rainfall_cumulative")
+    assert rain["threshold"] == 40.0 and "full_season_threshold" not in rain
+    assert rain["value"] == pytest.approx(5.0 * 34)
+
+
+def test_dry_spell_needs_most_days_and_a_gap_ends_a_run():
+    start, end = _PLANT, _PLANT + timedelta(days=9)
+    daily = _rain(0.0, 10)
+    assert _window_dry_spell(daily, start, end) == 10.0
+    daily[(start + timedelta(days=4)).isoformat()] = None
+    assert _window_dry_spell(daily, start, end) == 5.0  # 9/10 days known; the gap splits 4 + 5
+    for i in range(1, 4):
+        daily[(start + timedelta(days=i)).isoformat()] = None
+    assert _window_dry_spell(daily, start, end) is None  # only 6/10 days known
+
+
+def test_dry_spells_reports_the_running_spell_and_unknowns():
+    from src.services.insurance_engine import _dry_spells
+    start = date(2026, 9, 15)
+    daily = {(start + timedelta(days=i)).isoformat(): (5.0 if i < 10 else 0.0) for i in range(20)}
+    assert _dry_spells(daily, start, start + timedelta(days=19)) == (10, 10)  # last 10 days dry, still running
+    assert _dry_spells({}, start, start + timedelta(days=19)) == (None, None)  # no data is not "no dry spell"
+
+
+# ---------------------------------------------------------------------------
+# Audience names and plain rainfall words
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("given, expected", [
+    ("farmer", "farmer"), ("Farmer", "farmer"), ("underwriter", "insurance"),
+    ("insurer", "insurance"), ("extension officer", "agronomist"), ("researcher", "scientist"),
+    (None, DEFAULT_AUDIENCE), ("", DEFAULT_AUDIENCE), ("hacker_injection", DEFAULT_AUDIENCE),
+])
+def test_normalize_audience(given, expected):
+    assert normalize_audience(given) == expected
+
+
+@pytest.mark.parametrize("pct, words", [
+    (70.1, "about 30% less than usual for this time of year"),
+    (95.0, "about the usual amount for this time of year"),
+    (108.0, "about the usual amount for this time of year"),
+    (128.0, "about 30% more than usual for this time of year"),
+    (None, None),
+])
+def test_rainfall_vs_usual(pct, words):
+    assert rainfall_vs_usual(pct) == words
+
+
+# ---------------------------------------------------------------------------
+# Saved audience: the user's role, else the partner default (decided 2026-10-04)
+# ---------------------------------------------------------------------------
+
+class _AudienceConn:
+    def __init__(self, user=None, partner=None):
+        self.user, self.partner, self.updates = user, partner, []
+
+    async def fetchval(self, sql, arg):
+        return self.user if "FROM users" in sql else self.partner
+
+    async def execute(self, sql, user_id, value):
+        self.updates.append((user_id, value))
+        return "UPDATE 1" if user_id == "known" else "UPDATE 0"
+
+
+@pytest.mark.parametrize("user, partner, expected", [
+    ("farmer", "insurance", ("farmer", "user")),
+    (None, "insurance", ("insurance", "partner")),
+    (None, None, (DEFAULT_AUDIENCE, "default")),
+    ("bogus", "also-bogus", (DEFAULT_AUDIENCE, "default")),
+])
+def test_audience_setting_order(user, partner, expected):
+    from src.services.insurance_engine import audience_setting
+    assert _run(audience_setting(_AudienceConn(user, partner), "u1", "p1")) == expected
+
+
+def test_an_explicit_request_beats_the_saved_role():
+    from src.services.insurance_engine import resolve_audience
+    conn = _AudienceConn(user="farmer")
+    assert _run(resolve_audience(conn, "underwriter", "u1", None)) == "insurance"
+    assert _run(resolve_audience(conn, None, "u1", None)) == "farmer"
+
+
+def test_save_user_audience_validates_and_reports_missing_accounts():
+    from src.services.insurance_engine import save_user_audience
+    conn = _AudienceConn()
+    assert _run(save_user_audience(conn, "known", "Insurer")) is True and conn.updates[-1] == ("known", "insurance")
+    assert _run(save_user_audience(conn, "known", None)) is True and conn.updates[-1] == ("known", None)
+    assert _run(save_user_audience(conn, "legacy-no-row", "farmer")) is False
+    with pytest.raises(ValueError):
+        _run(save_user_audience(conn, "known", "astronaut"))

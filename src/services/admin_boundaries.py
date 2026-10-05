@@ -5,6 +5,7 @@ boundary tables.  Used by worldcover_router, rwanda_routes, and any
 other module that needs admin boundary geometries.
 """
 
+import difflib
 import json
 import logging
 from collections import OrderedDict
@@ -107,3 +108,159 @@ async def lookup_admin_geometry(
         logger.warning("Admin geometry lookup failed for %s: %s", cache_key, e)
 
     return None
+
+
+# Map outlines per level: (table, id column, name column, parent columns).
+_OUTLINE_SPEC = {
+    "district": ("rwanda_district_boundaries", "district", "district", ()),
+    "sector": ("rwanda_sector_boundaries", "sector_id", "sector_name", ("district_name",)),
+    "cell": ("rwanda_cell_boundaries", "cell_id", "cell_name", ("sector_name", "district_name")),
+    "village": ("rwanda_village_boundaries", "village_id", "village_name",
+                ("cell_name", "sector_name", "district_name")),
+}
+# Simplification tolerance (degrees, ~1 m per 0.00001): coarse enough to keep
+# responses small, fine enough that a unit's outline stays recognisable.
+_OUTLINE_TOLERANCE = {"district": 0.002, "sector": 0.0008, "cell": 0.0003, "village": 0.0001}
+OUTLINE_LIMIT = 4000
+
+
+async def admin_outlines(conn, level: str, bbox: Optional[tuple[float, float, float, float]]) -> dict:
+    """Outlines of every ``level`` unit intersecting ``bbox`` (west, south, east, north).
+
+    Sectors, cells and villages need a bbox; at most OUTLINE_LIMIT units are
+    returned and ``truncated`` says when more were cut.
+    """
+    if level not in _OUTLINE_SPEC:
+        raise ValueError(f"level must be one of {', '.join(_OUTLINE_SPEC)}")
+    if bbox is None and level != "district":
+        raise ValueError(f"a bbox is needed for {level} outlines")
+    table, id_col, name_col, parents = _OUTLINE_SPEC[level]
+    parent_sql = "".join(f", {p}" for p in parents)
+    where = "WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)" if bbox else ""
+    rows = await conn.fetch(
+        f"SELECT {id_col}::text AS id, {name_col} AS name{parent_sql}, "
+        f"ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, {_OUTLINE_TOLERANCE[level]}), 5) AS geometry "
+        f"FROM {table} {where} ORDER BY {id_col} LIMIT {OUTLINE_LIMIT + 1}",
+        *(bbox or ()),
+    )
+    features = [
+        {
+            "type": "Feature",
+            "geometry": json.loads(r["geometry"]),
+            "properties": {"id": r["id"], "name": r["name"], "level": level,
+                           **{p.removesuffix("_name"): r[p] for p in parents}},
+        }
+        for r in rows[:OUTLINE_LIMIT] if r["geometry"]
+    ]
+    return {"type": "FeatureCollection", "level": level,
+            "truncated": len(rows) > OUTLINE_LIMIT, "features": features}
+
+
+# Listing units: level -> (table, name column, parent columns from nearest to farthest).
+_LIST_SPEC = {
+    "district": ("rwanda_district_boundaries", "district", ()),
+    "sector": ("rwanda_sector_boundaries", "sector_name", ("district_name",)),
+    "cell": ("rwanda_cell_boundaries", "cell_name", ("sector_name", "district_name")),
+    "village": ("rwanda_village_boundaries", "village_name",
+                ("cell_name", "sector_name", "district_name")),
+}
+LIST_LIMIT = 1000
+
+
+async def list_admin_units(
+    conn, level: str, *, district: str = "", sector: str = "", cell: str = ""
+) -> dict:
+    """The ``level`` units inside the named parents, with an exact count.
+
+    Parent names match case-insensitively. Each row is one boundary polygon, so
+    a name the source data repeats is listed (and counted) twice. Raises
+    ValueError, with a message the model can act on, when no parent is given,
+    a parent name is unknown (with close matches) or a sector/cell name exists
+    in more than one place.
+    """
+    if level not in _LIST_SPEC:
+        raise ValueError(f"level must be one of {', '.join(_LIST_SPEC)}")
+    table, name_col, parent_cols = _LIST_SPEC[level]
+    given = {
+        col: value.strip()
+        for col, value in (("district_name", district), ("sector_name", sector), ("cell_name", cell))
+        if col in parent_cols and value and value.strip()
+    }
+    if parent_cols and not given:
+        raise ValueError(f"name the district (or sector or cell) whose {level}s to list")
+
+    where = " AND ".join(f"lower({col}) = lower(${i})" for i, col in enumerate(given, 1))
+    params = list(given.values())
+    within: dict[str, str] = {}
+    if given:
+        # The most specific named parent must be one place, not a name shared by several.
+        nearest = next(col for col in parent_cols if col in given)
+        place_cols = parent_cols[parent_cols.index(nearest):]
+        places = await conn.fetch(
+            f"SELECT DISTINCT {', '.join(place_cols)} FROM {table} WHERE {where}", *params
+        )
+        if not places:
+            raise ValueError(await _unknown_parent_message(conn, level, given))
+        if len(places) > 1:
+            options = "; ".join(", ".join(r[c] for c in place_cols) for r in places)
+            label = nearest.removesuffix("_name")
+            raise ValueError(
+                f"{label} {given[nearest]!r} exists in more than one place ({options}); "
+                f"name its district too"
+            )
+        within = {c.removesuffix("_name"): places[0][c] for c in place_cols}
+        detail_cols = parent_cols[:parent_cols.index(nearest)]
+    else:
+        detail_cols = ()
+
+    where_sql = f"WHERE {where}" if where else ""
+    count = await conn.fetchval(f"SELECT count(*) FROM {table} {where_sql}", *params)
+    columns = ", ".join((name_col, *detail_cols))
+    rows = await conn.fetch(
+        f"SELECT {columns} FROM {table} {where_sql} "
+        f"ORDER BY {', '.join((*reversed(detail_cols), name_col))} LIMIT {LIST_LIMIT}",
+        *params,
+    )
+    units = [
+        {"name": r[name_col], **{c.removesuffix("_name"): r[c] for c in detail_cols}}
+        for r in rows
+    ]
+    return {"level": level, "within": within, "count": count, "units": units,
+            "truncated": count > len(units)}
+
+
+async def _unknown_parent_message(conn, level: str, given: dict[str, str]) -> str:
+    """Say which named parent does not exist (with the closest real names), or
+    where the most specific one really is when the names do not fit together."""
+    for col, value in given.items():
+        label = col.removesuffix("_name")
+        table, name_col, _ = _LIST_SPEC[label]
+        exists = await conn.fetchval(
+            f"SELECT 1 FROM {table} WHERE lower({name_col}) = lower($1) LIMIT 1", value
+        )
+        if not exists:
+            by_lower = {r[0].lower(): r[0] for r in await conn.fetch(f"SELECT DISTINCT {name_col} FROM {table}") if r[0]}
+            close = [by_lower[m] for m in difflib.get_close_matches(value.lower(), list(by_lower), n=3, cutoff=0.6)]
+            hint = f"; did you mean {', '.join(close)}?" if close else ""
+            return f"no {label} named {value!r}{hint}"
+    nearest = next((c for c in ("cell_name", "sector_name") if c in given), None)
+    if nearest is None:
+        return f"no {level}s are recorded for district {given['district_name']!r}"
+    label = nearest.removesuffix("_name")
+    table, name_col, parents = _LIST_SPEC[label]
+    rows = await conn.fetch(
+        f"SELECT DISTINCT {', '.join(parents)} FROM {table} WHERE lower({name_col}) = lower($1)",
+        given[nearest],
+    )
+    places = "; ".join(", ".join(r[c] for c in parents) for r in rows)
+    return f"{label} {given[nearest]!r} is not in the place named; it is in: {places}"
+
+
+async def units_per_district(conn) -> dict[str, dict[str, int]]:
+    """How many sectors, cells and villages each district has, keyed by lower-case name."""
+    counts: dict[str, dict[str, int]] = {}
+    for level in ("sector", "cell", "village"):
+        table = _OUTLINE_SPEC[level][0]
+        for r in await conn.fetch(f"SELECT lower(district_name) AS d, count(*) AS n FROM {table} GROUP BY 1"):
+            counts.setdefault(r["d"], {})[level] = r["n"]
+    return counts

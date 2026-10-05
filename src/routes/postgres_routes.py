@@ -68,6 +68,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
+from src.services import drone_first_look
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -176,6 +177,9 @@ class LayerUploadResponse(DAGEditOperationResponse):
     message: str = Field(
         default="Layer added successfully",
         description="Status message confirming successful upload",
+    )
+    conversation_id: Optional[int] = Field(
+        default=None, description="Chat where Sage will post the first look at an uploaded drone image"
     )
 
 
@@ -813,6 +817,9 @@ class CompleteUploadRequest(BaseModel):
     filename: str = Field(description="Original filename (used for format detection)")
     layer_name: Optional[str] = Field(default=None, description="Display name for the layer")
     add_layer_to_map: bool = Field(default=True)
+    conversation_id: Optional[int] = Field(
+        default=None, description="Chat open in the browser; the drone first look is posted there"
+    )
 
 
 @router.post(
@@ -1909,7 +1916,9 @@ async def complete_layer_upload(
             "raster": f"/api/layer/{primary_id}.cog.tif",
         }
 
-        # Kick off background COG generation for raster uploads
+        # Kick off background COG generation for raster uploads, then Sage's first look
+        # (background tasks run in order, so it starts once the COG step is done).
+        first_look_conversation = None
         if layer_type == LAYER_TYPE_RASTER:
             background_tasks.add_task(
                 _background_generate_cog,
@@ -1918,6 +1927,18 @@ async def complete_layer_upload(
                 background_seed_path,
                 background_seed_dir,
             )
+            try:
+                async with get_async_db_connection() as conn:
+                    first_look_conversation = await drone_first_look.conversation_for_upload(
+                        conn, mundi_map.project_id, user_id, body.conversation_id,
+                        f"Drone image: {result.first_layer_name or layer_name}",
+                    )
+                background_tasks.add_task(
+                    drone_first_look.post_first_look,
+                    primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
+                )
+            except Exception:  # noqa: BLE001 - the upload succeeded; only the automatic summary is skipped
+                logger.exception("first look not scheduled for %s", primary_id)
 
         logger.info("upload-complete response ready for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
         response = LayerUploadResponse(
@@ -1928,6 +1949,7 @@ async def complete_layer_upload(
             type=result.layer_type,
             url=result.first_layer_url or url_map.get(layer_type, f"/api/layer/{primary_id}.pmtiles"),
             message="Layer added successfully",
+            conversation_id=first_look_conversation,
         )
         capture_for_session(
             "backend_upload_processing_completed",
@@ -2275,119 +2297,6 @@ async def add_remote_layer(
         type=layer_type,
         url=layer_url,
         message="Remote layer processed and added successfully",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Satellite layer (Sentinel Hub / PlanetScope / SkySat)
-# ---------------------------------------------------------------------------
-
-class SatelliteLayerRequest(BaseModel):
-    name: str = Field(description="Display name for the layer (e.g. 'PlanetScope NDVI — May 2025')")
-    collection: str = Field(default="sentinel-2-l2a", description="Data collection (sentinel-2-l2a, planetscope, skysat)")
-    layer: str = Field(default="TRUE-COLOR", description="SH visualization layer (TRUE-COLOR, NDVI, FALSE-COLOR, NDRE)")
-    date_from: str = Field(description="Start date ISO (e.g. 2025-05-01)")
-    date_to: str = Field(description="End date ISO (e.g. 2025-05-31)")
-    maxcc: int = Field(default=20, ge=0, le=100, description="Max cloud coverage %")
-    bounds: Optional[List[float]] = Field(default=None, description="[west, south, east, north] in EPSG:4326")
-
-
-@router.post(
-    "/{original_map_id}/layers/satellite",
-    response_model=LayerUploadResponse,
-    operation_id="add_satellite_layer_to_map",
-    summary="Add live satellite imagery layer",
-)
-async def add_satellite_layer(
-    original_map_id: str,
-    request: SatelliteLayerRequest,
-    forked_map: MundiMap = Depends(forked_map_by_user),
-    session: UserContext = Depends(verify_session_required),
-):
-    """Add a live satellite imagery layer from Sentinel Hub.
-
-    No file upload — tiles are fetched live from Sentinel Hub WMS and cached.
-    Supports Sentinel-2 L2A (free, 10m), PlanetScope (3.7m), and SkySat (50cm).
-    """
-    layer_id = generate_id(prefix="L")
-    style_id = generate_id(prefix="S")
-    bounds = request.bounds or [28.86, -2.84, 30.90, -1.05]  # Rwanda default
-
-    metadata = json.dumps({
-        "satellite": True,
-        "sh_collection": request.collection,
-        "sh_layer": request.layer,
-        "date_from": request.date_from,
-        "date_to": request.date_to,
-        "maxcc": request.maxcc,
-    })
-
-    async with async_conn("add_satellite_layer") as conn:
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO map_layers
-                (layer_id, owner_uuid, name, type, metadata, bounds, source_map_id,
-                 created_on, last_edited)
-                VALUES ($1, $2, $3, 'raster', $4, $5, $6,
-                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                layer_id,
-                session.get_user_id(),
-                request.name,
-                metadata,
-                bounds,
-                forked_map.id,
-            )
-
-            await conn.execute(
-                "INSERT INTO layer_styles (style_id, layer_id, style_json, created_by, created_on) "
-                "VALUES ($1, $2, '[]', $3, CURRENT_TIMESTAMP)",
-                style_id, layer_id, session.get_user_id(),
-            )
-
-            await conn.execute(
-                "INSERT INTO map_layer_styles (map_id, layer_id, style_id) VALUES ($1, $2, $3)",
-                forked_map.id, layer_id, style_id,
-            )
-
-            map_data = await conn.fetchrow(
-                "SELECT layers FROM user_mundiai_maps WHERE id=$1", forked_map.id
-            )
-            current_layers = (
-                map_data["layers"] if map_data and map_data["layers"] else []
-            )
-            await conn.execute(
-                "UPDATE user_mundiai_maps SET layers=$1, last_edited=CURRENT_TIMESTAMP WHERE id=$2",
-                current_layers + [layer_id],
-                forked_map.id,
-            )
-
-            try:
-                from src.dependencies.brain_dep import get_brain_service
-                payload = {
-                    "layer_ids": [layer_id],
-                    "layer_id": layer_id,
-                    "layer_name": request.name,
-                    "user_id": session.get_user_id(),
-                    "bounds": bounds,
-                    "satellite_collection": request.collection,
-                    "satellite_layer": request.layer,
-                    "date_from": request.date_from,
-                    "date_to": request.date_to,
-                }
-                await get_brain_service().enqueue_hook(conn, "raster_upload", payload)
-            except Exception:
-                logger.debug("Brain hook enqueue skipped for satellite layer %s", layer_id)
-
-    return LayerUploadResponse(
-        dag_child_map_id=forked_map.id,
-        dag_parent_map_id=original_map_id,
-        id=layer_id,
-        name=request.name,
-        type="raster",
-        url=f"/api/satellite/0/0/0.png?layer={request.layer}&collection={request.collection}",
-        message="Satellite imagery layer added successfully",
     )
 
 

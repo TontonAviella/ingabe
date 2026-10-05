@@ -14,15 +14,7 @@ import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
 import { parseMapResponse } from '../lib/mapResponse';
 import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/projectViewLoadState';
-import type {
-  Conversation,
-  EphemeralAction,
-  GeoJsonLayerUpdate,
-  MapProject,
-  MapTreeResponse,
-  PostgresConnectionDetails,
-  TileLayerUpdate,
-} from '../lib/types';
+import type { Conversation, EphemeralAction, GeoJsonLayerUpdate, MapProject, MapTreeResponse, TileLayerUpdate } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
 type UploadResponse = {
@@ -30,6 +22,7 @@ type UploadResponse = {
   dag_child_map_id?: string;
   id?: string;
   type?: string;
+  conversation_id?: number | null;
 };
 
 const DROPZONE_ACCEPT: Accept = {
@@ -61,9 +54,6 @@ export default function ProjectView() {
   const isReady = useIsReady();
   const isSignedOut = useIsSignedOut();
 
-  // State for controlling sources (PostGIS connections) refetch interval
-  const [sourcesRefetchInterval, setSourcesRefetchInterval] = useState<number | false>(false);
-
   // handle a single store of project<->map<->conversation data
   const { data: project, error: projectError } = useQuery({
     queryKey: ['project', projectId],
@@ -80,30 +70,8 @@ export default function ProjectView() {
     },
     enabled: isReady,
     retry: shouldRetryProjectQuery,
-    // Do not poll the project route; sources polling is handled below
     refetchInterval: false,
   });
-
-  // Fetch project PostGIS sources and update refetch interval while documenting
-  const { data: projectSources } = useQuery({
-    queryKey: ['project', projectId, 'sources'],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/projects/${projectId}/sources`);
-      if (!res.ok) throw new Error('Failed to fetch project sources');
-      return (await res.json()) as PostgresConnectionDetails[];
-    },
-    enabled: isReady && !!project,
-    retry: 5,
-    retryDelay: (attempt) => 1000 * attempt,
-    // While any connection is still being documented, poll this endpoint
-    refetchInterval: sourcesRefetchInterval,
-  });
-
-  useEffect(() => {
-    // Poll only while there are connections actively documenting (no error yet)
-    const hasLoadingConnections = (projectSources || []).some((c) => !c.is_documented && !c.last_error_text);
-    setSourcesRefetchInterval(hasLoadingConnections ? 500 : false);
-  }, [projectSources]);
 
   const [conversationId, setConversationId] = usePersistedState<number | null>('conversationId', [projectId], null);
   const { data: conversations, isError: conversationsError } = useQuery({
@@ -244,6 +212,7 @@ export default function ProjectView() {
             id: `${gl.source_id}-fill`,
             type: 'fill',
             source: gl.source_id,
+            metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
             paint: { 'fill-color': fillColorExpr, 'fill-opacity': fillOpacity },
           });
           map.addLayer({
@@ -702,6 +671,7 @@ export default function ProjectView() {
                   id: `${gl.source_id}-extrusion`,
                   type: 'fill-extrusion',
                   source: gl.source_id,
+                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
                   paint: {
                     'fill-extrusion-color': fillColorExpr,
                     'fill-extrusion-opacity': Math.min(fillOpacity + 0.08, 0.9),
@@ -714,6 +684,7 @@ export default function ProjectView() {
                   id: `${gl.source_id}-fill`,
                   type: 'fill',
                   source: gl.source_id,
+                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
                   paint: {
                     'fill-color': fillColorExpr,
                     'fill-opacity': fillOpacity,
@@ -1184,6 +1155,7 @@ export default function ProjectView() {
             layer_id: init.layer_id,
             filename: uploadFilename,
             add_layer_to_map: true,
+            conversation_id: conversationId,
           }),
         });
         if (!completeRes.ok) {
@@ -1272,6 +1244,7 @@ export default function ProjectView() {
           layer_id: presign.layer_id,
           filename: file.name,
           add_layer_to_map: true,
+          conversation_id: conversationId,
         }),
       });
       if (!completeRes.ok) {
@@ -1312,6 +1285,12 @@ export default function ProjectView() {
 
       // Invalidate project data to refresh the project state
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+
+      // A drone image gets Sage's first look in this chat: open it if no chat was open.
+      if (response.conversation_id && !conversationId) {
+        setConversationId(response.conversation_id);
+        queryClient.invalidateQueries({ queryKey: ['project', projectId, 'conversations'] });
+      }
 
       // Navigate to the new child map if dag_child_map_id is present
       if (response.dag_child_map_id) {
@@ -1445,7 +1424,7 @@ export default function ProjectView() {
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">Error Loading Map</h1>
         <p>Failed to load map data: {loadState.message}</p>
-        <a href="/maps" className="text-blue-500 hover:underline">
+        <a href="/" className="text-blue-500 hover:underline">
           Back to Maps
         </a>
       </div>
@@ -1455,9 +1434,7 @@ export default function ProjectView() {
   if (loadState.kind === 'loading') {
     return (
       <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">
-          Loading project {projectId} version {versionId}...
-        </h1>
+        <h1 className="text-2xl font-bold mb-4">Loading your map…</h1>
       </div>
     );
   }

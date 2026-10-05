@@ -17,8 +17,8 @@ from `frontendts` and open `http://localhost:5173`.
 
 ## Data Boundary
 
-- PostgreSQL/PostGIS, Redis, MinIO, QGIS processing, rasterd, geokernel,
-  Dagster, FastSAM, and GeoLibre run locally through `docker-compose.yml`.
+- PostgreSQL/PostGIS, Redis, MinIO, rasterd, Dagster, and FastSAM run
+  locally through `docker-compose.yml`.
 - Uploaded orthophotos and generated artifacts remain in local MinIO and
   local database volumes.
 - Do not configure SSH deployment hosts, remote Compose overrides, or public

@@ -60,6 +60,7 @@ from src.dependencies.pydantic_tools import get_pydantic_tool_calls
 from src.dependencies.sage_routing import ADMIN_BOUNDARY_TOOL
 from src.dependencies.session import ServiceUserContext
 from src.routes.websocket import kue_ephemeral_action
+from src.services import data_coverage
 from src.services.sage_result_checks import apply_result_checks
 
 logger = logging.getLogger(__name__)
@@ -198,12 +199,11 @@ async def tool_call(
     # process. Even with auth, only the curated registry is dispatchable.
     #
     # Two-tier whitelist:
-    #   1. Modern path: get_pydantic_tool_calls() — 28 cleanly-architected tools.
-    #   2. Legacy shim: src/services/legacy_tool_shim.py:LEGACY_HANDLERS — 53
-    #      tools whose handlers still live as inline elif blocks in
-    #      message_routes.py and are being migrated incrementally. Both lists
-    #      together form Sage's full callable surface (~82 tools); the
-    #      Hermes plugin shows both kinds to the LLM via generated_tools.py.
+    #   1. get_pydantic_tool_calls(): tools with a Pydantic args model.
+    #   2. src/services/legacy_tool_shim.py:LEGACY_HANDLERS: every other tool;
+    #      the chat loop dispatches the same handlers. Together they are
+    #      Sage's full callable surface; the Hermes plugin shows both kinds to
+    #      the LLM via generated_tools.py and hidden_tools.py.
     #
     # The /internal/tool-call route can dispatch either kind. Whitelist
     # check covers BOTH — anything not in either set is rejected as 404
@@ -336,6 +336,10 @@ async def tool_call(
     )
     if checked is not None:
         tool_result = checked
+    # Say what one value covers (same as the in-process chat loop).
+    covered = data_coverage.annotate(payload.tool_name, payload.arguments or {}, tool_result)
+    if covered is not None:
+        tool_result = covered
 
     # Confirm the result is JSON-serializable before returning — FastAPI
     # will otherwise emit a confusing 500. Round-tripping catches any

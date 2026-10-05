@@ -3,8 +3,8 @@
 #
 # Pattern A — active-memory injection: INGABE_PATTERN_A_ACTIVE_MEMORY default on,
 #             brain_service importable.
-# Pattern B — tool-description disambiguation: pattern_b_annotate_tools.py is
-#             idempotent and 12 target tools carry the "WHEN TO USE:" sentinel.
+# Pattern B — tool-description disambiguation: 12 target tools in the deployed
+#             tools.json carry the "WHEN TO USE:" sentinel.
 # Pattern D — runtime-bound composition: INGABE_PATTERN_D_COMPOSITION default on,
 #             INGABE_PATTERN_D_TOOL_TIMEOUT_SEC default 60.
 #
@@ -53,27 +53,9 @@ else
 fi
 
 # ---------- Pattern B ----------
-# Annotator is a build-time tool — runs from the host against the working tree.
-# The deployed image must carry the already-annotated tools.json; we verify the
-# sentinel count inside the running container as the deployment gate.
+# The sentinels live in the committed tools.json; we verify the count inside
+# the running container as the deployment gate.
 step "Pattern B — tool-description disambiguation"
-
-# Host-side idempotency check: run the annotator twice against the local copy.
-# Captures both the "script works" and "running twice doesn't double-annotate"
-# properties without mutating the live container.
-B_OUT="$(python3 "$REPO_ROOT/scripts/pattern_b_annotate_tools.py" 2>&1)"
-B_RC=$?
-if [ "$B_RC" -eq 0 ]; then
-  ok "annotator exits 0 (host): $B_OUT"
-else
-  bad "annotator exit=$B_RC (host): $B_OUT"
-fi
-
-B_OUT2="$(python3 "$REPO_ROOT/scripts/pattern_b_annotate_tools.py" 2>&1)"
-case "$B_OUT2" in
-  *"annotated=0"*) ok "annotator idempotent (host): $B_OUT2" ;;
-  *)               bad "annotator NOT idempotent (host): $B_OUT2" ;;
-esac
 
 # Deployment gate: deployed image must have the annotated tools.json baked in.
 SENT_COUNT="$(docker exec "$APP_CONTAINER" python -c "

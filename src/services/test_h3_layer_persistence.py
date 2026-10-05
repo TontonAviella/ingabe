@@ -49,3 +49,15 @@ def test_h3_risk_style_keeps_legacy_single_layer_without_zoom_map() -> None:
     assert len(layers) == 2
     assert layers[0]["id"] == "h3-risk-fill-Ltest"
     assert "filter" not in layers[0]
+
+
+def test_saved_layers_use_the_shared_classes_and_carry_a_legend() -> None:
+    from src.services.h3_risk_classes import RISK_CLASSES, legend
+
+    fill = build_h3_risk_maplibre_layers("Ltest", render_3d=False)[0]
+    assert fill["paint"]["fill-color"][2:] == [
+        RISK_CLASSES[0].color, 40.0, RISK_CLASSES[1].color, 60.0,
+        RISK_CLASSES[2].color, 80.0, RISK_CLASSES[3].color,
+    ]
+    assert fill["metadata"]["mundi:legend"] == legend()
+    assert [i["label"] for i in legend()["items"]] == ["Low", "Moderate", "High", "Severe"]

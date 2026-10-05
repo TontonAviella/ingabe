@@ -33,6 +33,8 @@ LAYER = ["show_admin_boundary", "new_layer_from_postgis"]
 HOUSES = ["analyze_raster_object_candidates", "create_raster_h3_context_layer"]
 
 # (intent, category, any_of or None for a text answer, args or None, map_state or None, wordings)
+# Category "unsupported": requests for capabilities Sage does not have; the right
+# answer is a plain reply saying so, not a call to some other tool.
 # Wordings may use {d} for a district; args may use {d} too (lower-cased).
 INTENTS: list[tuple] = [
     ("p-show-district", "admin_display", SHOW, {"search_location": {"query": "{d}"}}, None,
@@ -41,7 +43,7 @@ INTENTS: list[tuple] = [
      ["show the sectors of {d}", "display {d} sectors on the map", "I want to see all sectors in {d} district"]),
     ("p-show-cells", "admin_display", LAYER, None, None,
      ["show me the cells in {d}", "map the cells of {d} district", "display cell boundaries for {d}"]),
-    ("p-list-sectors", "admin_display", LAYER + ["query_postgis_database"], None, None,
+    ("p-list-sectors", "admin_display", LAYER + ["list_admin_units"], None, None,
      ["list the sectors in {d}", "how many sectors does {d} have?", "which sectors are in {d} district?"]),
     ("p-forecast", "weather", ["get_forecast"], None, None,
      ["what's the forecast for {d} this week?", "will it rain in {d} tomorrow?", "rain outlook for {d} for the next 5 days"]),
@@ -55,9 +57,9 @@ INTENTS: list[tuple] = [
      ["evapotranspiration trend in {d}", "how much water are crops using in {d}? give me ET", "actual ET for {d} last 3 months"]),
     ("p-drought", "drought", ["get_drought_status", "get_insurance_intelligence"], None, None,
      ["is {d} in drought right now?", "drought conditions in {d}", "how dry is {d} this season?"]),
-    ("p-food-security", "drought", ["get_food_security_alerts"], None, None,
+    ("p-food-security", "unsupported", None, None, None,
      ["food security phase in Rwanda now", "any IPC food crisis areas in Rwanda?", "which areas face food insecurity?"]),
-    ("p-ndvi-district", "ndvi", ["get_ndvi_stats", "get_agri_indices", "query_rwanda_zonal_stats"],
+    ("p-ndvi-district", "ndvi", ["get_ndvi_stats", "get_agri_indices"],
      {"get_ndvi_stats": {"district": "{d}"}}, None,
      ["NDVI for {d} district", "how green is {d} right now?", "latest vegetation index in {d}"]),
     ("p-ndvi-cells", "ndvi", ["get_cell_ndvi_stats", "get_agri_indices"], {"get_cell_ndvi_stats": {"district": "{d}"}}, None,
@@ -78,7 +80,7 @@ INTENTS: list[tuple] = [
      ["will the drought insurance pay out in {d}?", "is the parametric trigger hit for maize in {d}?", "insurance trigger status for beans in {d}"]),
     ("p-soil-point", "soil", ["get_soil_properties"], None, None,
      ["soil properties at -1.70, 29.90", "what's the soil like at latitude -2.05 longitude 30.40?", "clay and pH at -2.48, 29.57"]),
-    ("p-soil-moisture", "soil", ["get_soil_moisture", "get_cygnss_soil_moisture"], None, None,
+    ("p-soil-moisture", "soil", ["get_soil_moisture"], None, None,
      ["soil moisture at -1.95, 30.10 this month", "how wet is the soil at -2.20, 30.15?", "soil water trend at -1.50, 30.30"]),
     ("p-sat-search", "satellite", ["search_satellite_imagery", "display_satellite_layer"], None, None,
      ["find cloud-free Sentinel-2 scenes over {d} this month", "latest satellite images for {d}", "which satellite passes covered {d} recently?"]),
@@ -86,7 +88,7 @@ INTENTS: list[tuple] = [
      ["show a true colour satellite image of {d}", "put recent satellite imagery of {d} on the map", "display the latest optical image for {d}"]),
     ("p-flood", "satellite", ["detect_flood_extent"], None, None,
      ["how much of {d} flooded last month?", "flood extent in {d} after the rains", "map flooded areas in {d}"]),
-    ("p-water-bodies", "satellite", ["detect_water_bodies"], None, None,
+    ("p-water-bodies", "unsupported", None, None, None,
      ["find ponds in {d} with radar", "detect water bodies in {d}", "map small reservoirs in {d}"]),
     ("p-houses", "ortho_objects", HOUSES, None, RASTER_MAP,
      ["how many houses are in Farm_A_Orthophoto?", "find the buildings in Farm_B_Orthophoto", "mark every roof in Farm_A_Orthophoto"]),
@@ -100,9 +102,9 @@ INTENTS: list[tuple] = [
      ["where are the stressed patches in Plot9_NDVI?", "find low-NDVI clusters in Plot9_NDVI", "show me the problem zones in Plot9_NDVI"]),
     ("p-ndvi-change", "ndvi", ["compare_rasters"], None, NDVI_MAP,
      ["what changed between Plot9_NDVI and Plot9_NDVI_June?", "compare the two NDVI flights of plot 9", "NDVI difference for plot 9 between the flights"]),
-    ("p-buffer", "map_ops", ["native_buffer"], None, None,
+    ("p-buffer", "unsupported", None, None, None,
      ["buffer the wells layer by 2 km", "draw a 500 m zone around the schools layer", "create a 1 km buffer around the roads layer"]),
-    ("p-clip", "map_ops", ["qgis_clip"], None, None,
+    ("p-clip", "unsupported", None, None, None,
      ["clip the rivers layer to {d}", "cut the roads layer to the {d} boundary", "keep only the parts of the farms layer inside {d}"]),
     ("p-style", "map_ops", ["set_layer_style"], None, None,
      ["colour the sectors layer by NDVI", "make the farms layer red", "style the districts by rainfall"]),

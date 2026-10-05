@@ -13,6 +13,7 @@ from typing import Any
 import h3
 from pydantic import BaseModel, Field
 
+from src.services.h3_risk_classes import inline_style_stops, legend, risk_level
 from src.routes.websocket import kue_ephemeral_action
 from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.h3_spatial_insight import h3_cell_geojson_geometry
@@ -602,7 +603,7 @@ def _cell_features(
                     "domain": normalized_domain,
                     "analysis_goal": analysis_goal,
                     "risk_score": round(score, 1),
-                    "risk_level": _risk_level(score),
+                    "risk_level": risk_level(score),
                     "score_kind": _score_kind(normalized_domain),
                     "grvi_mean": round(grvi_mean, 4),
                     "grvi_std": round(grvi_std, 4),
@@ -651,16 +652,6 @@ def _score_cell(domain: str, grvi_mean: float, brightness_mean: float) -> float:
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
-
-
-def _risk_level(score: float) -> str:
-    if score >= 80:
-        return "severe"
-    if score >= 60:
-        return "high"
-    if score >= 40:
-        return "moderate"
-    return "low"
 
 
 def _score_kind(domain: str) -> str:
@@ -748,12 +739,8 @@ def _next_best_evidence(domain: str) -> list[str]:
 def _inline_style(render_3d: bool) -> dict[str, Any]:
     return {
         "color_property": "risk_score",
-        "stops": [
-            {"max": 40, "color": "#22c55e"},
-            {"max": 60, "color": "#facc15"},
-            {"max": 80, "color": "#f97316"},
-            {"max": 101, "color": "#dc2626"},
-        ],
+        "stops": inline_style_stops(),
+        "legend": legend(),
         "fill_opacity": 0.58,
         "stroke_color": "#111827",
         "stroke_width": 1.2,

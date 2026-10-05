@@ -218,27 +218,20 @@ def test_filter_keeps_uncategorized_tools() -> None:
 def test_filter_can_exclude_misleading_proxy_tools() -> None:
     tools = [
         _tool("create_raster_h3_context_layer"),
-        _tool("create_h3_spatial_insight_layer"),
         _tool("analyze_raster_object_candidates"),
-        _tool("analyze_open_buildings_exposure"),
         _tool("describe_user_raster"),
     ]
 
     out = filter_tools_by_categories(
         tools,
         {SPATIAL_INSIGHT, USER_RASTER},
-        excluded_tool_names={
-            "create_raster_h3_context_layer",
-            "create_h3_spatial_insight_layer",
-        },
+        excluded_tool_names={"create_raster_h3_context_layer"},
     )
     names = {t["function"]["name"] for t in out}
 
     assert "analyze_raster_object_candidates" in names
-    assert "analyze_open_buildings_exposure" in names
     assert "describe_user_raster" in names
     assert "create_raster_h3_context_layer" not in names
-    assert "create_h3_spatial_insight_layer" not in names
 
 
 def test_tool_category_helpers_support_observability() -> None:
@@ -551,7 +544,6 @@ def test_route_chat_excludes_h3_proxy_for_raster_house_count() -> None:
     assert decision.is_small_talk is False
     assert SPATIAL_INSIGHT in decision.selected_categories
     assert "create_raster_h3_context_layer" in decision.excluded_tool_names
-    assert "create_h3_spatial_insight_layer" in decision.excluded_tool_names
 
 
 @pytest.mark.parametrize(
@@ -667,14 +659,14 @@ def test_detect_raster_building_count_question_blocks_proxy_asks(msg: str) -> No
             (
                 "external_footprints",
                 "building_count_or_exposure",
-                "analyze_open_buildings_exposure",
+                None,
                 False,
             ),
         ),
     ],
 )
 def test_choose_geospatial_evidence_path_selects_contextual_engine(
-    msg: str, expected: tuple[str, str, str, bool]
+    msg: str, expected: tuple[str, str, str | None, bool]
 ) -> None:
     decision = choose_geospatial_evidence_path(msg)
 

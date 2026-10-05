@@ -17,11 +17,6 @@ def test_runtime_audit_distinguishes_installed_enabled_and_ready(monkeypatch) ->
         "_fastsam_weights_status",
         lambda: {"available": True, "path": "/app/FastSAM-s.pt"},
     )
-    monkeypatch.setattr(
-        runtime_audit,
-        "geolibre_runner_status",
-        lambda include_manifest_sample=False: {"status": "success", "tool_count": 747},
-    )
     monkeypatch.setattr(runtime_audit.Path, "is_dir", lambda _self: True)
     monkeypatch.delenv("MUNDI_USE_HERMES", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

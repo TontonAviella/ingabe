@@ -71,3 +71,14 @@ def test_vector_source_maxzoom_accepts_pmtiles_metadata():
     assert vector_source_maxzoom({"pmtiles_maxzoom": "20"}) == 20
     assert vector_source_maxzoom({"pmtiles_maxzoom": 99}) is None
     assert vector_source_maxzoom({}) is None
+
+
+
+def test_h3_layers_without_a_filter_do_not_get_a_null_filter():
+    from src.services.h3_layer_persistence import build_h3_risk_maplibre_layers
+
+    layers = build_h3_risk_maplibre_layers("Lnofilter", render_3d=False)
+    assert all("filter" not in layer for layer in layers)
+    target: list[dict] = []
+    append_mvt_layers_with_legacy_source_fallbacks(target, layers)
+    assert all("filter" not in layer for layer in target)

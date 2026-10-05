@@ -205,6 +205,26 @@ def test_profiled_compose_service_needs_mem_limit(repo):
     assert [(v.rule, v.detail) for v in found] == [("compose-mem-limit", "extra-uncapped")]
 
 
+def test_long_running_compose_service_needs_restart_policy(repo):
+    repo("docker-compose.yml", """
+        services:
+          app:
+            image: app
+            restart: unless-stopped
+            depends_on:
+              init:
+                condition: service_completed_successfully
+          init:
+            image: busybox
+          db:
+            image: postgres
+        volumes:
+          data:
+    """)
+    found = cs.check_compose_restart_policies()
+    assert [(v.rule, v.detail) for v in found] == [("compose-restart", "db")]
+
+
 def test_claude_md_must_only_import_agents_md(repo):
     repo("AGENTS.md", "# AGENTS.md\n\n## Build\n")
     repo("CLAUDE.md", "# CLAUDE.md\n\n@AGENTS.md\n")
@@ -214,3 +234,29 @@ def test_claude_md_must_only_import_agents_md(repo):
     assert [v.rule for v in found] == ["agents-md-sync"] * 3
     assert found[0].detail == "missing @AGENTS.md import"
 
+
+
+def test_src_module_named_like_a_dependency_is_flagged(repo):
+    repo("requirements.txt", 'duckdb==1.3.2\nPyYAML==6.0\nuvicorn[standard]==0.49.0 ; python_version >= "3.9"\n')
+    repo("src/geoparquet_cache.py", "x = 1\n")
+    assert cs.check_shadowed_packages() == []
+    repo("src/duckdb.py", "x = 1\n")
+    repo("src/uvicorn/__init__.py", "")
+    found = cs.check_shadowed_packages()
+    assert [(v.rule, v.detail) for v in found] == [("shadow-package", "duckdb"), ("shadow-package", "uvicorn")]
+
+
+def test_number_tested_for_truth_before_rounding_is_flagged(repo):
+    repo("src/routes/r.py", """
+        def row(r, x):
+            a = round(r[3], 4) if r[3] else None
+            b = float(x) if x else None
+            c = round(float(x), 2) if x else None
+            ok1 = round(r[3], 4) if r[3] is not None else None
+            ok2 = round(r[4], 4) if r[3] else None
+            return a, b, c, ok1, ok2
+    """)
+    found = cs.check_zero_as_missing()
+    assert [(v.rule, v.line) for v in found] == [
+        ("zero-as-missing", 3), ("zero-as-missing", 4), ("zero-as-missing", 5),
+    ]
