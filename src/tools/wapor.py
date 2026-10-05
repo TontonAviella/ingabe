@@ -60,13 +60,13 @@ def _enrich_with_displayable_layer(
     if "error" in result or result.get("status") == "error":
         return result
 
-    from src.services.wapor_service import _raster_url, get_latest_available_dekad
+    from src.services.wapor_service import raster_url, get_latest_available_dekad
 
     dekad = get_latest_available_dekad()
     if not dekad:
         return result
 
-    cog_url = _raster_url(layer_code, dekad)
+    cog_url = raster_url(layer_code, dekad)
     half_deg = 0.05  # ~5km box around the queried point
     result["displayable_layers"] = [
         {
