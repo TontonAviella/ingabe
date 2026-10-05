@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import useWebSocket from 'react-use-websocket';
 import MapLibreMap from './MapLibreMap';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { apiFetch, fetchMaybeAuth, getCachedToken, getJwt, isAuthConfigured, useIsReady, useIsSignedOut } from '@mundi/ee';
+import { apiFetch, fetchMaybeAuth, useIsReady, useIsSignedOut } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
@@ -50,7 +50,7 @@ export default function ProjectView() {
     throw new Error('No project ID');
   }
 
-  // Gate all queries on Clerk auth readiness to prevent premature 401s
+  // Gate all queries on sign-in readiness to prevent premature 401s
   const isReady = useIsReady();
   const isSignedOut = useIsSignedOut();
 
@@ -365,58 +365,12 @@ export default function ProjectView() {
   // WebSocket using react-use-websocket
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-  // Track whether Clerk auth was ever active (to distinguish "no auth" from "auth died")
-  const hadClerkAuth = useRef(false);
-  // Track whether initial JWT resolution is complete (blocks WS until resolved)
-  const [authResolved, setAuthResolved] = useState(false);
-
-  // Resolve auth mode once on mount so we know whether to connect
-  useEffect(() => {
-    let mounted = true;
-    getJwt().then((token: string | undefined) => {
-      if (!mounted) return;
-      if (token) hadClerkAuth.current = true;
-      setAuthResolved(true);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // Async URL factory: fetches a fresh JWT on every connect/reconnect.
-  // react-use-websocket calls this function each time it opens a new connection,
-  // so the token is always fresh (Clerk JWTs expire in 60s).
+  // With WorkOS the session cookie comes with the WebSocket handshake; without
+  // a sign-in provider the backend's MUNDI_AUTH_MODE decides. No token in the URL.
   const wsUrl = useMemo(() => {
     if (!conversationId) return null;
-    if (!authResolved) return null; // block until initial auth check completes
-
-    const baseUrl = `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
-
-    if (!isAuthConfigured()) {
-      // No Clerk key at all: legacy/no-auth mode, connect without token
-      return baseUrl;
-    }
-
-    if (!hadClerkAuth.current) {
-      // Clerk is configured but session is expired/absent on page load.
-      // Don't connect without auth, it'll just get 403.
-      return null;
-    }
-
-    // Return an async function so react-use-websocket fetches a fresh JWT
-    // on each connection attempt (initial + every reconnect).
-    // skipCache: true forces Clerk to issue a fresh token, avoiding the race
-    // where tab-return reconnect grabs a stale cached token before the
-    // TokenManager visibility handler has finished refreshing.
-    return async () => {
-      const token = await getJwt({ skipCache: true });
-      if (!token) {
-        // Token gone = session died. Throw to prevent connection with no auth.
-        throw new Error('Session expired');
-      }
-      return `${baseUrl}?token=${token}`;
-    };
-  }, [conversationId, wsProtocol, authResolved]);
+    return `${wsProtocol}//${window.location.host}/api/maps/ws/${conversationId}/messages/updates`;
+  }, [conversationId, wsProtocol]);
 
   // Track page visibility and allow socket to remain open for 10 minutes after hidden
   const WS_REMAIN_OPEN_FOR_MS = 10 * 60 * 1000; // 10 minutes
@@ -457,24 +411,9 @@ export default function ProjectView() {
     wsUrl,
     {
       onError: () => {
-        // Check if auth is configured but we have no token. This catches both:
-        // 1. Session expired mid-use (hadClerkAuth was true, token gone)
-        // 2. Session already expired on page load (hadClerkAuth never became true)
-        if (isAuthConfigured() && !getCachedToken()) {
-          toast.error('Session expired. Please sign in again.', {
-            action: { label: 'Sign in', onClick: () => window.location.reload() },
-            duration: 10_000,
-          });
-        } else {
-          toast.error('Chat connection error.');
-        }
+        toast.error('Chat connection error.');
       },
-      shouldReconnect: () => {
-        // Don't retry if auth is configured but there's no token. Retrying
-        // without auth just hammers the server with 403s.
-        if (isAuthConfigured() && !getCachedToken()) return false;
-        return true;
-      },
+      shouldReconnect: () => true,
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
       reconnectInterval: (attempt) => backoffMs[Math.min(attempt, backoffMs.length - 1)],
     },
@@ -1005,8 +944,7 @@ export default function ProjectView() {
           updateUploadFile(fileId, { progress: highWaterPercent, phase: 'Uploading bytes' });
         };
 
-        const putPartOnce = async (partUrl: string, blob: Blob, partNum: number, attempt: number): Promise<XMLHttpRequest> => {
-          const token = isAuthConfigured() ? await getJwt({ skipCache: attempt > 0 }) : undefined;
+        const putPartOnce = (partUrl: string, blob: Blob, partNum: number): Promise<XMLHttpRequest> => {
           return new Promise<XMLHttpRequest>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             // 15 min per 10 MB chunk tolerates slow rural connections while
@@ -1027,7 +965,6 @@ export default function ProjectView() {
             xhr.addEventListener('abort', () => reject(new Error('aborted')));
             xhr.open('PUT', partUrl);
             xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-            if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
             xhr.send(blob);
           });
         };
@@ -1047,7 +984,7 @@ export default function ProjectView() {
                 `?upload_id=${encodeURIComponent(init.upload_id)}` +
                 `&s3_key=${encodeURIComponent(init.s3_key)}` +
                 `&part_number=${partNum}`;
-              const resp = await putPartOnce(partUrl, blob, partNum, attempt);
+              const resp = await putPartOnce(partUrl, blob, partNum);
               const parsed = JSON.parse(resp.responseText || '{}') as { etag?: string };
               const etag = parsed.etag || '';
               if (!etag) throw new Error('missing ETag from upload part');
@@ -1395,7 +1332,7 @@ export default function ProjectView() {
     setHiddenLayerIDs((prev) => (prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]));
   };
 
-  // If Clerk has loaded and the user is definitively not signed in (session
+  // If the session is known and the user is definitively not signed in (session
   // expired or never signed in), show a sign-in prompt instead of an infinite spinner.
   if (isSignedOut) {
     return (

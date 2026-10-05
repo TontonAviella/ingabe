@@ -1,6 +1,6 @@
 """Organization context resolution tests.
 
-Validates P1-1 (organizations tables) and P1-2 (Clerk org → internal UUID
+Validates P1-1 (organizations tables) and P1-2 (WorkOS org → internal UUID
 resolution). These tests hit the real database via asyncpg.
 """
 
@@ -15,8 +15,8 @@ from src.database.pool import _build_postgres_url
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 RUN_TAG = uuid.uuid4().hex[:8]
-TEST_USER_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"clerk:test_org_{RUN_TAG}"))
-TEST_CLERK_ORG = f"org_test_{RUN_TAG}"
+TEST_USER_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"workos:test_org_{RUN_TAG}"))
+TEST_WORKOS_ORG = f"org_test_{RUN_TAG}"
 TEST_ORG_SLUG = f"test-org-{RUN_TAG}"
 
 
@@ -43,32 +43,32 @@ async def db():
 async def test_create_organization(db):
     row = await db.fetchrow(
         """
-        INSERT INTO organizations (name, slug, tier, clerk_org_id)
+        INSERT INTO organizations (name, slug, tier, workos_org_id)
         VALUES ($1, $2, 'partner', $3)
-        RETURNING id, name, slug, tier, clerk_org_id
+        RETURNING id, name, slug, tier, workos_org_id
         """,
         f"Test Org {RUN_TAG}",
         TEST_ORG_SLUG,
-        TEST_CLERK_ORG,
+        TEST_WORKOS_ORG,
     )
     assert row is not None
     assert row["slug"] == TEST_ORG_SLUG
     assert row["tier"] == "partner"
-    assert row["clerk_org_id"] == TEST_CLERK_ORG
+    assert row["workos_org_id"] == TEST_WORKOS_ORG
     assert row["id"] is not None
 
 
 @pytest.mark.postgres
-async def test_resolve_clerk_org_to_internal_uuid(db):
-    """The core P1-2 lookup: Clerk org_id → internal UUID."""
+async def test_resolve_workos_org_to_internal_uuid(db):
+    """The core P1-2 lookup: WorkOS org_id → internal UUID."""
     internal_id = await db.fetchval(
-        "SELECT id FROM organizations WHERE clerk_org_id = $1",
-        TEST_CLERK_ORG,
+        "SELECT id FROM organizations WHERE workos_org_id = $1",
+        TEST_WORKOS_ORG,
     )
     assert internal_id is not None
 
     missing = await db.fetchval(
-        "SELECT id FROM organizations WHERE clerk_org_id = $1",
+        "SELECT id FROM organizations WHERE workos_org_id = $1",
         "org_nonexistent",
     )
     assert missing is None
@@ -78,12 +78,12 @@ async def test_resolve_clerk_org_to_internal_uuid(db):
 async def test_user_organization_membership(db):
     await db.execute(
         """
-        INSERT INTO users (internal_uuid, clerk_id, email)
+        INSERT INTO users (internal_uuid, workos_user_id, email)
         VALUES ($1, $2, 'test@example.com')
-        ON CONFLICT (clerk_id) DO NOTHING
+        ON CONFLICT (workos_user_id) DO NOTHING
         """,
         TEST_USER_UUID,
-        f"clerk_test_{RUN_TAG}",
+        f"user_test_{RUN_TAG}",
     )
 
     org_id = await db.fetchval(

@@ -34,8 +34,8 @@ class LegacyToolContext:
     call by the chat loop and by /internal/tool-call.
     """
     # Identity (already RLS-scoping the connection)
-    user_id: str               # Clerk user uuid
-    partner_id: str            # Clerk org uuid (sets app.partner_id GUC)
+    user_id: str               # internal users.internal_uuid
+    partner_id: str            # internal organizations.id (sets app.partner_id GUC)
 
     # Conversation context
     conversation_id: int       # int because asyncpg expects int for PK column
@@ -1234,7 +1234,7 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
                 "parcel_ndvi_stats": [],
                 "message": (
                     "No parcel NDVI data yet. Upload field boundaries through "
-                    "Mundi UI and tag with rwanda_parcels=true in layer "
+                    "the Ingabe app and tag with rwanda_parcels=true in layer "
                     "metadata. The nightly pipeline processes them."
                 ),
             }

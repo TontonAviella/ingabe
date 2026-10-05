@@ -16,8 +16,8 @@ from src.database.pool import _build_postgres_url
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 RUN_TAG = uuid.uuid4().hex[:8]
-TEST_USER_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"clerk:partner_upload_{RUN_TAG}"))
-TEST_CLERK_ID = f"clerk_upload_{RUN_TAG}"
+TEST_USER_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, f"workos:partner_upload_{RUN_TAG}"))
+TEST_WORKOS_USER_ID = f"user_upload_{RUN_TAG}"
 TEST_ORG_SLUG = f"upload-test-org-{RUN_TAG}"
 
 
@@ -58,12 +58,12 @@ async def org_id(db):
     """Create test user + org, return org UUID."""
     await db.execute(
         """
-        INSERT INTO users (internal_uuid, clerk_id, email)
+        INSERT INTO users (internal_uuid, workos_user_id, email)
         VALUES ($1, $2, 'upload-test@example.com')
-        ON CONFLICT (clerk_id) DO NOTHING
+        ON CONFLICT (workos_user_id) DO NOTHING
         """,
         TEST_USER_UUID,
-        TEST_CLERK_ID,
+        TEST_WORKOS_USER_ID,
     )
     row = await db.fetchrow(
         """
@@ -167,11 +167,11 @@ def test_require_org_rejects_no_org():
 @pytest.mark.postgres
 def test_require_org_accepts_org():
     from src.routes.partner_routes import _require_org
-    from src.dependencies.session import ClerkUserContext
+    from src.dependencies.session import WorkOSUserContext
 
-    ctx = ClerkUserContext(
+    ctx = WorkOSUserContext(
         internal_uuid="test-uuid",
-        clerk_id="clerk_test",
+        workos_user_id="user_test",
         org_id="some-org-uuid",
         org_role="member",
     )

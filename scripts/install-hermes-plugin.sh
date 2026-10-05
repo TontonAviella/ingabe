@@ -23,7 +23,7 @@
 # validate them against a strict regex before writing and YAML-quote the
 # substituted values to neutralize newlines, `#`, or shell metacharacters.
 # Do NOT add lines that reference secret env vars (OPENAI_API_KEY,
-# HERMES_GATEWAY_SECRET, CLERK_SECRET_KEY, etc.) — they would get baked
+# HERMES_GATEWAY_SECRET, WORKOS_API_KEY, etc.) — they would get baked
 # into config.yaml on disk and persist across restarts.
 
 set -eo pipefail

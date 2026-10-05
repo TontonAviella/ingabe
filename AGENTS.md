@@ -26,7 +26,7 @@ Guidance for every coding agent working in this repository (Claude Code, Codex, 
 
 AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and point cloud data. Connects to PostGIS databases and uses LLMs (OpenAI function calling) to invoke geoprocessing algorithms and edit symbology.
 
-**Multi-partner platform.** Mundi.ai serves N partner organizations (BK Insurance is the first active pilot). Every architecture decision must pass the "what if Partner #2 shows up next month" test. Per-partner isolation via Clerk org + Postgres RLS on `app.partner_id` GUC. Sage's identity stays "Sage" to every partner; per-partner skills/prompts/context are composed on top of a base persona.
+**Multi-partner platform.** Mundi.ai serves N partner organizations (BK Insurance is the first active pilot). Every architecture decision must pass the "what if Partner #2 shows up next month" test. Per-partner isolation via WorkOS organization + Postgres RLS on `app.partner_id` GUC. Sage's identity stays "Sage" to every partner; per-partner skills/prompts/context are composed on top of a base persona.
 
 ## Local runtime reality (verified 2026-07-11; roles, fallbacks and embeddings re-verified 2026-10-03)
 
@@ -136,7 +136,8 @@ npm run watch                                  # Watch mode (tsc + vite)
 
 | Variable | Purpose |
 |----------|---------|
-| `MUNDI_AUTH_MODE` | `edit` or `view_only` |
+| `AUTH_PROVIDER` | `workos` turns on WorkOS sign-in (needs `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD`); see `src/services/workos_auth.py` |
+| `MUNDI_AUTH_MODE` | `edit` or `view_only`: the legacy single-user mode used when no sign-in provider is set |
 | `S3_*` | S3/MinIO connection (ACCESS_KEY_ID, SECRET_ACCESS_KEY, ENDPOINT_URL, BUCKET, DEFAULT_REGION) |
 | `POSTGRES_*` | Database connection (HOST, PORT, DB, USER, PASSWORD) |
 | `REDIS_HOST/PORT` | Redis cache |

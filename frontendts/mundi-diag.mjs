@@ -76,7 +76,7 @@ await page.route('**/api/maps/' + MAP_ID + '/tree**', route => {
 // Block websocket noise
 await page.route('**/api/maps/ws/**', route => route.abort());
 
-// Navigate to the project view (OptionalAuth route - no Clerk needed)
+// Navigate to the project view (OptionalAuth route - no sign-in needed)
 const url = 'http://localhost:5173/project/' + PROJ_ID + '/' + MAP_ID;
 console.log('Navigating to: ' + url);
 await page.goto(url);

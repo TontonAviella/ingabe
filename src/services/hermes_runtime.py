@@ -50,7 +50,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from src.services import workos_auth
 
 # Module-level constants used by run_sage_turn_via_hermes and its
 # inner closures. Defined here so they appear before the function that
@@ -355,37 +354,31 @@ async def run_sage_turn_via_hermes(
     # --- 1. Build IngabeContext from the request ---------------------------
     partner_id = session.get_org_id() if hasattr(session, "get_org_id") else None
 
-    # Dev-mode fallback: LegacyUserContext (Clerk off / MUNDI_AUTH_MODE=edit)
-    # has no org and returns partner_id=None. The hand-rolled path tolerates
-    # this because its tool handlers don't actually read app.partner_id; our
-    # HMAC proxy + receiver both require a non-None partner_id by design.
-    # Synthesize the same dev UUID LegacyUserContext uses for user_id so the
-    # local dev experience matches the hand-rolled path. In prod with Clerk,
-    # session.get_org_id() returns a real org UUID and this branch never fires.
+    # Dev-mode fallback: LegacyUserContext (no sign-in provider /
+    # MUNDI_AUTH_MODE=edit) has no org and returns partner_id=None. The
+    # hand-rolled path tolerates this because its tool handlers don't actually
+    # read app.partner_id; our HMAC proxy + receiver both require a non-None
+    # partner_id by design. Synthesize the same dev UUID LegacyUserContext uses
+    # for user_id so the local dev experience matches the hand-rolled path.
+    # With WorkOS sign-in, session.get_org_id() returns a real org UUID (or
+    # None for a user without an org, which is not a LegacyUserContext).
     if partner_id is None:
-        from src.dependencies.session import LegacyUserContext
+        from src.dependencies.session import LegacyUserContext, external_auth_enabled
         if isinstance(session, LegacyUserContext):
-            # Prod safety: refuse to synthesize the dev partner_id when
-            # Clerk is the authoritative session source. If LegacyUserContext
-            # ever leaks into a prod request (middleware bug, accidental
-            # CLERK_ALLOW_LEGACY_FALLBACK=true), every legacy turn would
-            # collapse onto the same synthetic partner UUID, breaking
-            # partner isolation. Fail closed instead — the upstream
-            # caller will surface the error to the user.
-            _clerk_on = bool(os.environ.get("CLERK_SECRET_KEY", "").strip()) or workos_auth.enabled()
-            _legacy_allowed = os.environ.get(
-                "CLERK_ALLOW_LEGACY_FALLBACK", ""
-            ).strip().lower() in {"1", "true", "yes"}
-            if _clerk_on and not _legacy_allowed:
+            # Safety: refuse to synthesize the dev partner_id when a sign-in
+            # provider is the authoritative session source. If
+            # LegacyUserContext ever leaks into such a request (middleware
+            # bug), every legacy turn would collapse onto the same synthetic
+            # partner UUID, breaking partner isolation. Fail closed instead —
+            # the upstream caller will surface the error to the user.
+            if external_auth_enabled():
                 raise RuntimeError(
                     "Hermes runtime refused to synthesize dev partner_id: "
-                    "Clerk is configured (CLERK_SECRET_KEY set) but the "
-                    "request arrived with a LegacyUserContext. This indicates "
-                    "a session-middleware misconfiguration. Set "
-                    "CLERK_ALLOW_LEGACY_FALLBACK=true to permit dev-mode "
-                    "fallback in mixed-auth deployments."
+                    "a sign-in provider (AUTH_PROVIDER=workos) is configured "
+                    "but the request arrived with a LegacyUserContext. This "
+                    "indicates a session-middleware misconfiguration."
                 )
-            # Dev mode (Clerk off): reuse the same UUID LegacyUserContext
+            # Dev mode (no sign-in provider): reuse the same UUID LegacyUserContext
             # gives back for user_id — single source of truth, both sides
             # stay in lockstep if the dev UUID is ever rotated.
             partner_id = LegacyUserContext._LEGACY_UUID
