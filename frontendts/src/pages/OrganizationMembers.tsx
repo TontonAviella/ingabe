@@ -94,6 +94,9 @@ export default function OrganizationMembers() {
 
   useEffect(() => {
     load();
+    // Invitations get accepted elsewhere: refresh when the person comes back to this tab.
+    window.addEventListener('focus', load);
+    return () => window.removeEventListener('focus', load);
   }, [load]);
 
   const run = async (key: string, action: () => Promise<unknown>, done: string | ((result: unknown) => string)) => {
