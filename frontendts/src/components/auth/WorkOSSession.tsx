@@ -38,7 +38,17 @@ const SessionContext = createContext<SessionValue>({ status: 'loading', me: null
 
 export const SIGNED_OUT_EVENT = 'mundi:signed-out';
 
-export function signInUrl(returnTo = window.location.pathname + window.location.search): string {
+/** Set by /auth/callback when WorkOS sent the user back but the session could not be created. */
+const SIGN_IN_ERROR_PARAM = 'sign_in_error';
+
+function currentPathWithoutError(): string {
+  const params = new URLSearchParams(window.location.search);
+  params.delete(SIGN_IN_ERROR_PARAM);
+  const query = params.toString();
+  return window.location.pathname + (query ? `?${query}` : '');
+}
+
+export function signInUrl(returnTo = currentPathWithoutError()): string {
   return `/auth/login?return_to=${encodeURIComponent(returnTo)}`;
 }
 
@@ -92,10 +102,31 @@ export function useWorkOSSession(): SessionValue {
 
 export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
   const { status } = useWorkOSSession();
+  // After a failed callback, never bounce straight back to WorkOS: it remembers
+  // the user and returns at once, so the browser would loop through sign-in.
+  const signInFailed = new URLSearchParams(window.location.search).has(SIGN_IN_ERROR_PARAM);
   useEffect(() => {
-    if (status === 'signedOut') window.location.assign(signInUrl());
-  }, [status]);
+    if (status === 'signedOut' && !signInFailed) window.location.assign(signInUrl());
+  }, [status, signInFailed]);
   if (status === 'signedIn') return <>{children}</>;
+  if (status === 'signedOut' && signInFailed) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <div className="max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-center text-gray-100">
+          <p className="font-medium">Sign-in did not complete</p>
+          <p className="mt-2 text-sm text-gray-400">
+            Your account was recognised, but the app could not start your session. Try again; if it keeps failing, the server log says why.
+          </p>
+          <a
+            href={signInUrl()}
+            className="mt-4 inline-block rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+          >
+            Try again
+          </a>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground">
       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
