@@ -528,7 +528,15 @@ async def _authenticate_clerk(token: str) -> ClerkUserContext:
 def verify_session(session_required: bool = True):
     async def _verify_session(request: Request = None) -> Optional[UserContext]:
         # --- WorkOS mode: the session middleware has already verified the cookie ---
-        if workos_auth.enabled() and not (request and _extract_token_from_request(request)):
+        # WorkOS alone decides. A Bearer token or missing WorkOS keys must never
+        # fall through to Clerk or to MUNDI_AUTH_MODE=edit (the shared user).
+        if workos_auth.selected():
+            if not workos_auth.enabled():
+                logger.error("AUTH_PROVIDER=workos but WorkOS keys are missing; refusing requests")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Sign-in is not configured",
+                )
             ws_session = getattr(request.state, "workos_session", None) if request else None
             if ws_session is not None:
                 return await workos_context(ws_session)
@@ -609,7 +617,11 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
     Legacy mode: allows all in edit mode, denies in view_only.
     WorkOS mode: the sealed session cookie comes with the handshake.
     """
-    if workos_auth.enabled() and not websocket.query_params.get("token"):
+    if workos_auth.selected():
+        # WorkOS alone decides (see verify_session): no ?token= fallthrough.
+        if not workos_auth.enabled():
+            logger.error("AUTH_PROVIDER=workos but WorkOS keys are missing; refusing WebSocket")
+            raise WebSocketException(code=status.WS_1011_INTERNAL_ERROR)
         try:
             ws_session = await asyncio.to_thread(workos_auth.load, websocket.cookies.get(workos_auth.COOKIE_NAME))
         except Exception as e:  # noqa: BLE001 - WorkOS unreachable: retry later, not "unauthorised"

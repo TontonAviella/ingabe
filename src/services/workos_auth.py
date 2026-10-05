@@ -47,9 +47,14 @@ COOKIE_NAME = "wos_session"
 COOKIE_MAX_AGE = 30 * 24 * 3600  # the refresh token, not the cookie, bounds the session
 
 
+def selected() -> bool:
+    """True when AUTH_PROVIDER names WorkOS, whether or not its keys are set."""
+    return os.environ.get("AUTH_PROVIDER", "").strip().lower() == "workos"
+
+
 def enabled() -> bool:
     """True when WorkOS is the configured sign-in provider and its keys are set."""
-    return os.environ.get("AUTH_PROVIDER", "").strip().lower() == "workos" and all(
+    return selected() and all(
         os.environ.get(k) for k in ("WORKOS_API_KEY", "WORKOS_CLIENT_ID", "WORKOS_COOKIE_PASSWORD")
     )
 
