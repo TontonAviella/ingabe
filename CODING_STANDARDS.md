@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
+  `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
+  Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
 - **2026-10-04** Insurance season rainfall summed only the CHIRPS days it downloaded: with the final product weeks behind,
   every Season A report read 0 mm and fired the rainfall trigger, and late in a season the unfetched early weeks undercounted.
   Rule: "Missing is not zero" (Design principles). Gate: review only (needs the data's coverage); tests in `test_insurance_engine.py`.
