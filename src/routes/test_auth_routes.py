@@ -92,3 +92,23 @@ async def test_the_app_page_is_revalidated_after_deploys(client):
     r = await client.get("/project/anything")  # served by the SPA fallback
     if r.headers.get("content-type", "").startswith("text/html"):
         assert r.headers["cache-control"] == "no-cache"
+
+
+@pytest.mark.anyio
+async def test_logout_ends_the_workos_session_and_lands_on_the_app(client, workos_on, monkeypatch):
+    """No WorkOS logout redirect: it errors until a sign-out URL is set in the WorkOS dashboard."""
+    revoked = []
+    signed_in = workos_auth.WorkOSSession(
+        user_id="user_9", email="x@y.rw", first_name=None, last_name=None, profile_picture_url=None,
+        session_id="sess_9", organization_id=None, role=None)
+
+    async def fake_load(cookie):
+        return signed_in
+
+    monkeypatch.setattr(workos_session, "load_session", fake_load)
+    monkeypatch.setattr(workos_auth, "revoke_session", lambda session_id: revoked.append(session_id))
+    client.cookies.set("wos_session", "sealed")
+    r = await client.get("/auth/logout", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/?signed_out=1"
+    assert revoked == ["sess_9"]
+    assert 'wos_session=""' in r.headers["set-cookie"] or "Max-Age=0" in r.headers["set-cookie"]

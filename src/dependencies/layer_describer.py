@@ -692,9 +692,9 @@ class DefaultLayerDescriber(LayerDescriber):
                 or geoparquet_size <= GEOPARQUET_DESCRIBE_MAX_BYTES
             ):
                 try:
-                    from src.duckdb import _geoparquet_layer_filename
+                    from src.geoparquet_cache import geoparquet_layer_filename
 
-                    async with _geoparquet_layer_filename(layer_id, geoparquet_key) as path:
+                    async with geoparquet_layer_filename(layer_id, geoparquet_key) as path:
                         markdown_content.extend(
                             await asyncio.to_thread(
                                 _describe_geoparquet_file,

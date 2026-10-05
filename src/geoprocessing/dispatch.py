@@ -2,14 +2,6 @@ import os
 import json
 
 
-class UnsupportedAlgorithmError(Exception):
-    pass
-
-
-class InvalidInputFormatError(Exception):
-    pass
-
-
 _tools_cache = None
 
 

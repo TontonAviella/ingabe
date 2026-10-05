@@ -71,7 +71,7 @@ async def test_unknown_connection_lists_the_projects_real_connections() -> None:
 @pytest.mark.asyncio
 async def test_no_connections_tells_the_model_not_to_invent_one() -> None:
     out = await rc.check_tool_result(
-        "query_postgis_database", {}, _err("PostGIS connection 'X' not found"), FakeFacts(), admin_boundary_tool=ADMIN_TOOL,
+        "new_layer_from_postgis", {}, _err("PostGIS connection 'X' not found"), FakeFacts(), admin_boundary_tool=ADMIN_TOOL,
     )
     assert out["available_connections"] == []
     assert "no PostGIS connection" in out["next_step"]
@@ -110,7 +110,7 @@ async def test_geocode_miss_points_to_the_admin_boundary_tool() -> None:
 @pytest.mark.asyncio
 async def test_missing_facts_still_give_a_next_step() -> None:
     out = await rc.check_tool_result(
-        "query_postgis_database", {}, _err("PostGIS connection 'X' not found"), FakeFacts(broken=True), admin_boundary_tool=ADMIN_TOOL,
+        "new_layer_from_postgis", {}, _err("PostGIS connection 'X' not found"), FakeFacts(broken=True), admin_boundary_tool=ADMIN_TOOL,
     )
     assert out["error_kind"] == rc.KIND_CONNECTION
     assert out["next_step"]

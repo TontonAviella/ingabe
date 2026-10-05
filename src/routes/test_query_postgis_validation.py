@@ -1,4 +1,4 @@
-"""Tests for SQL injection validation in query_postgis_database.
+"""Tests for SQL injection validation of LLM-written SQL (new_layer_from_postgis).
 
 Confirms that validate_sql_query blocks dangerous patterns before
 the LLM-generated SQL reaches the database.
