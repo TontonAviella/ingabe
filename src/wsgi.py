@@ -30,7 +30,9 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes.profile_routes import router as profile_router
 from src.routes import auth_routes
+from src.services import workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
@@ -193,6 +195,16 @@ async def lifespan(app: FastAPI):
     """
     _configure_app_logging()
 
+    import asyncio
+
+    async def _warm_workos():
+        try:
+            await asyncio.to_thread(workos_auth.warm_up)
+        except Exception:
+            logging.getLogger("src.services.workos_auth").exception("WorkOS is misconfigured: sign-in will fail")
+
+    workos_warm_task = asyncio.create_task(_warm_workos())
+
     # Start brain hook processor as a background task (processes upload hooks)
     import asyncio
 
@@ -232,6 +244,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    workos_warm_task.cancel()
     if hook_task is not None:
         hook_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -332,7 +345,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
+            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com https://workoscdn.com; "
             f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {s3_connect_src} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
@@ -670,6 +683,10 @@ app.include_router(
 )
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
+app.include_router(
+    profile_router,
+    prefix="/api/user",
+)
 app.include_router(
     partner_router,
     prefix="/api/partner",
