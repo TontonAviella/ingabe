@@ -101,3 +101,31 @@ def test_create_partner_makes_the_org_once_and_invites_an_admin(monkeypatch):
     assert first["organization_id"] == again["organization_id"] == "org_1"
     assert first["invitation"]["role"] == "admin"
     assert client.organizations.create_organization.call_count == 1
+
+
+class _Refused(Exception):
+    def __init__(self, code, message="refused", status_code=400):
+        super().__init__(message)
+        self.code, self.message, self.status_code = code, message, status_code
+
+
+def test_inviting_someone_already_invited_sends_their_invitation_again(monkeypatch):
+    client = MagicMock()
+    client.user_management.send_invitation.side_effect = _Refused("email_already_invited_to_organization")
+    client.user_management.list_invitations.return_value = SimpleNamespace(
+        data=[SimpleNamespace(id="inv_9", state="pending")])
+    client.user_management.resend_invitation.return_value = SimpleNamespace(
+        id="inv_9", email="it@bk.rw", role_slug="admin", expires_at="later")
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+
+    out = workos_auth.invite("org_1", "it@bk.rw", "admin", None)
+    assert out["resent"] is True and out["id"] == "inv_9"
+    client.user_management.resend_invitation.assert_called_once_with("inv_9")
+
+
+def test_other_workos_refusals_become_readable_errors(monkeypatch):
+    client = MagicMock()
+    client.user_management.send_invitation.side_effect = _Refused("invalid_email", "Email is not valid.")
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+    with pytest.raises(ValueError, match="Email is not valid"):
+        workos_auth.invite("org_1", "nope", "member", None)
