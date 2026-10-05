@@ -1779,8 +1779,8 @@ async def _compare_areas(
             continue
         comparison.append(r)
 
-    # Sort by rainfall descending (most intuitive default for "who gets more rain")
-    comparison.sort(key=lambda x: x.get("rainfall_mm", 0), reverse=True)
+    comparison = _rank_by_rainfall(comparison)
+    no_rain_data = [c["name"] for c in comparison if c.get("rainfall_mm") is None]
 
     # Collect which signals are present across all areas
     all_signals = set()
@@ -1800,8 +1800,28 @@ async def _compare_areas(
         "area_count": len(comparison),
         "signals_available": sorted(all_signals),
         "areas": comparison,
+        "areas_without_rain_data": no_rain_data,
+        "instruction": COMPARISON_INSTRUCTION,
         "sources": "CHIRPS v2.0, WaPOR v3, Sentinel-1 SAR, Sentinel-2 NDVI, Open-Meteo/ERA5",
     }
+
+
+COMPARISON_INSTRUCTION = (
+    "Present the comparison naturally. Highlight which areas stand out "
+    "(wettest, driest, best NDVI, worst soil moisture, etc). "
+    "Areas in areas_without_rain_data have no rainfall data: say their rain is unknown, never call them driest. "
+    "Use a short table if >3 areas, otherwise describe in sentences. "
+    "Mention the most interesting contrasts — don't list every number for every area. "
+    "End with sources in parentheses."
+)
+
+
+def _rank_by_rainfall(areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Most rain first; areas with no rain data last (by name), never ranked as if they had 0 mm."""
+    measured = sorted((a for a in areas if a.get("rainfall_mm") is not None),
+                      key=lambda a: a["rainfall_mm"], reverse=True)
+    unknown = sorted((a for a in areas if a.get("rainfall_mm") is None), key=lambda a: str(a.get("name", "")))
+    return measured + unknown
 
 # ---------------------------------------------------------------------------
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
