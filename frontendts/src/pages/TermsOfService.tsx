@@ -6,7 +6,7 @@ export default function TermsOfService() {
 
       <h2>1. Acceptance</h2>
       <p>
-        By accessing or using mundi.ai ("the Service"), operated by Ingabe Ltd. ("Ingabe", "we"), you agree to be bound by these Terms of
+        By accessing or using Ingabe ("the Service"), operated by Ingabe Ltd. ("Ingabe", "we"), you agree to be bound by these Terms of
         Service. If you do not agree, do not use the Service.
       </p>
 
@@ -55,8 +55,8 @@ export default function TermsOfService() {
       <h2>8. Open Source</h2>
       <p>
         Ingabe's source code is available under the GNU Affero General Public License v3 (AGPLv3) at{' '}
-        <a href="https://github.com/Ingabe/mundi.ai" target="_blank" rel="noopener noreferrer">
-          github.com/Ingabe/mundi.ai
+        <a href="https://github.com/TontonAviella/ingabe" target="_blank" rel="noopener noreferrer">
+          github.com/TontonAviella/ingabe
         </a>
         . These Terms apply to the hosted service, not self-hosted instances.
       </p>

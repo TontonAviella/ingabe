@@ -6,15 +6,15 @@ export default function PrivacyPolicy() {
 
       <h2>1. Who We Are</h2>
       <p>
-        Ingabe Ltd. ("Ingabe", "we", "our") operates mundi.ai, an open-source, AI-native web GIS platform. This policy describes how we
-        collect, use, and protect your data.
+        Ingabe Ltd. ("Ingabe", "we", "our") operates Ingabe, an open-source crop and insurance intelligence platform built on drone and
+        satellite data. This policy describes how we collect, use, and protect your data.
       </p>
 
       <h2>2. Data We Collect</h2>
       <h3>Account Information</h3>
       <p>
-        When you sign in via our authentication provider (WorkOS), we receive your email address and a unique user identifier. We do not
-        store passwords.
+        When you sign in via our authentication provider (WorkOS), we receive your email address, a unique user identifier and, if your
+        account has them, your name and profile picture, which we show in the app. We do not store passwords.
       </p>
       <h3>Geospatial Data</h3>
       <p>
@@ -23,12 +23,12 @@ export default function PrivacyPolicy() {
       </p>
       <h3>Chat Messages</h3>
       <p>
-        Conversations with the AI assistant (Sage) are stored to maintain chat history within your projects. Messages are sent to OpenAI for
-        processing and are subject to{' '}
-        <a href="https://openai.com/policies/privacy-policy" target="_blank" rel="noopener noreferrer">
-          OpenAI's privacy policy
-        </a>
-        .
+        Conversations with the AI assistant (Sage) are stored to maintain chat history within your projects. Messages are sent through
+        OpenRouter to the AI model that answers them (currently NVIDIA Nemotron) and are subject to{' '}
+        <a href="https://openrouter.ai/privacy" target="_blank" rel="noopener noreferrer">
+          OpenRouter's privacy policy
+        </a>{' '}
+        and the model provider's terms.
       </p>
       <h3>Usage Analytics</h3>
       <p>We use privacy-friendly analytics to understand how the platform is used. We do not sell your data to third parties.</p>
@@ -45,7 +45,7 @@ export default function PrivacyPolicy() {
       <p>We share data with:</p>
       <ul>
         <li>
-          <strong>OpenAI</strong> — chat messages for AI processing
+          <strong>OpenRouter</strong> — chat messages for AI processing
         </li>
         <li>
           <strong>WorkOS</strong> — authentication provider
