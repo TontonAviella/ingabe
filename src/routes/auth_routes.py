@@ -139,6 +139,8 @@ async def _me(request: Request, session: UserContext) -> dict[str, Any]:
         },
         "organization": org,
         "organizations": await _organizations(ws_session.user_id) if ws_session else [],
+        "is_staff": workos_auth.is_platform_staff(ws_session.email if ws_session else None),
+        "is_owner": workos_auth.is_platform_owner(ws_session.email if ws_session else None),
     }
 
 
@@ -169,3 +171,105 @@ async def auth_switch_organization(body: OrganizationSwitch, request: Request,
     response = JSONResponse(await _me(request, new_session))
     set_session_cookie(response, switched.refreshed_cookie, is_secure(request))
     return response
+
+
+# ── Organization members ───────────────────────────────────────────────────
+
+_ADMIN_ROLES = {"admin", "owner"}
+
+
+def _active_org(request: Request) -> tuple[Any, str]:
+    """The WorkOS session and its active organization id, or 400 without one."""
+    _require_enabled()
+    ws_session = getattr(request.state, "workos_session", None)
+    if ws_session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required")
+    if not ws_session.organization_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose an organization first")
+    return ws_session, ws_session.organization_id
+
+
+def _require_admin(ws_session: Any) -> None:
+    if (ws_session.role or "") not in _ADMIN_ROLES:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only organization admins can do that")
+
+
+@api.get("/organization/members")
+async def organization_members(request: Request, session: UserContext = Depends(verify_session_required)):
+    """Members and pending invitations of the active organization."""
+    ws_session, org = _active_org(request)
+    members, invitations = await asyncio.gather(
+        asyncio.to_thread(workos_auth.organization_members, org),
+        asyncio.to_thread(workos_auth.pending_invitations, org),
+    )
+    return {
+        "organization_id": org,
+        "can_manage": (ws_session.role or "") in _ADMIN_ROLES,
+        "me": ws_session.user_id,
+        "roles": list(workos_auth.ASSIGNABLE_ROLES),
+        "members": members,
+        "invitations": invitations if (ws_session.role or "") in _ADMIN_ROLES else [],
+    }
+
+
+class Invite(BaseModel):
+    email: str
+    role: str = "member"
+
+
+@api.post("/organization/invitations")
+async def organization_invite(body: Invite, request: Request, session: UserContext = Depends(verify_session_required)):
+    """Invite someone by email; WorkOS sends the invitation."""
+    ws_session, org = _active_org(request)
+    _require_admin(ws_session)
+    if "@" not in body.email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an email address")
+    try:
+        return await asyncio.to_thread(workos_auth.invite, org, body.email.strip(), body.role, ws_session.user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@api.delete("/organization/invitations/{invitation_id}")
+async def organization_revoke(invitation_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    ws_session, org = _active_org(request)
+    _require_admin(ws_session)
+    try:
+        await asyncio.to_thread(workos_auth.revoke_invitation, invitation_id, org)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    return {"revoked": invitation_id}
+
+
+class RoleChange(BaseModel):
+    role: str
+
+
+@api.patch("/organization/members/{membership_id}")
+async def organization_set_role(membership_id: str, body: RoleChange, request: Request,
+                                session: UserContext = Depends(verify_session_required)):
+    ws_session, org = _active_org(request)
+    _require_admin(ws_session)
+    try:
+        member = await asyncio.to_thread(workos_auth.set_member_role, membership_id, org, body.role)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    _orgs_cache.pop(member["user_id"], None)
+    return member
+
+
+@api.delete("/organization/members/{membership_id}")
+async def organization_remove(membership_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    ws_session, org = _active_org(request)
+    _require_admin(ws_session)
+    members = await asyncio.to_thread(workos_auth.organization_members, org)
+    target = next((m for m in members if m["id"] == membership_id), None)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not a member of this organization")
+    if target["user_id"] == ws_session.user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot remove yourself")
+    await asyncio.to_thread(workos_auth.remove_member, membership_id, org)
+    _orgs_cache.pop(target["user_id"], None)
+    return {"removed": membership_id}

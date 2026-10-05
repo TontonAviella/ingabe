@@ -18,6 +18,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const MapsList = lazy(() => import('./components/MapsList'));
 const ProjectView = lazy(() => import('./components/ProjectView'));
 const PostGISDocumentation = lazy(() => import('./pages/PostGISDocumentation'));
+const OrganizationMembers = lazy(() => import('./pages/OrganizationMembers'));
+const Companies = lazy(() => import('./pages/Companies'));
 const RwandaDashboard = lazy(() => import('./components/RwandaDashboard').then((m) => ({ default: m.RwandaDashboard })));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
@@ -85,6 +87,22 @@ function AppContent() {
                         <ApiKeys />
                       </RequireAuth>
                     </Suspense>
+                  }
+                />
+                <Route
+                  path="/admin/companies"
+                  element={
+                    <RequireAuth>
+                      <Companies />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/settings/organization"
+                  element={
+                    <RequireAuth>
+                      <OrganizationMembers />
+                    </RequireAuth>
                   }
                 />
                 <Route

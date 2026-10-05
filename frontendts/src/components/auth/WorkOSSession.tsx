@@ -1,5 +1,6 @@
-import { Building2, Check, ChevronsUpDown, Loader2, LogOut, User } from 'lucide-react';
+import { Building, Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,8 @@ export interface WorkOSMe {
   user: { email: string | null; first_name: string | null; last_name: string | null; picture: string | null };
   organization: WorkOSOrganization | null;
   organizations: WorkOSOrganization[];
+  is_staff?: boolean;
+  is_owner?: boolean;
 }
 
 type Status = 'loading' | 'signedIn' | 'signedOut';
@@ -183,7 +186,7 @@ function Avatar({ me, size = 'h-8 w-8' }: { me: WorkOSMe; size?: string }) {
 
 const ROLE_LABEL: Record<string, string> = { admin: 'Admin', owner: 'Owner', member: 'Member' };
 
-function roleLabel(role: string | null | undefined): string {
+export function roleLabel(role: string | null | undefined): string {
   return role ? (ROLE_LABEL[role] ?? role.charAt(0).toUpperCase() + role.slice(1)) : 'Member';
 }
 
@@ -246,6 +249,14 @@ export function WorkOSOrgSwitcher() {
               {org.id === current?.id && <Check className="ml-2 h-4 w-4" />}
             </DropdownMenuItem>
           ))}
+          {current && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/settings/organization">
+                <Users className="mr-2 h-4 w-4" />
+                Members of {current.name}
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => pick(null)} className="cursor-pointer">
             <User className="mr-2 h-4 w-4" />
@@ -291,6 +302,14 @@ export function WorkOSAccountMenu() {
             {me.user.email && <span className="block truncate text-xs font-normal text-muted-foreground">{me.user.email}</span>}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          {me.is_staff && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/admin/companies">
+                <Building className="mr-2 h-4 w-4" />
+                Companies
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem asChild className="cursor-pointer">
             <a href="/auth/logout">
               <LogOut className="mr-2 h-4 w-4" />

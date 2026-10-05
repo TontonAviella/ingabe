@@ -228,3 +228,196 @@ def user_organizations(user_id: str) -> list[dict[str, Any]]:
             "role": getattr(role, "slug", role) if role is not None else None,
         })
     return out
+
+
+# ── Organization members (free WorkOS user management) ────────────────────
+
+ASSIGNABLE_ROLES = ("admin", "member")  # WorkOS default roles
+
+
+def _membership_dict(m: Any) -> dict[str, Any]:
+    user = getattr(m, "user", None)
+    user = _user_dict(user) if user is not None else {}
+    role = getattr(m, "role", None)
+    name = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+    return {
+        "id": m.id, "user_id": m.user_id, "email": user.get("email"), "name": name,
+        "picture": user.get("profile_picture_url"), "role": getattr(role, "slug", role),
+        "status": _value(getattr(m, "status", None)),
+    }
+
+
+def organization_members(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().organization_membership.list_organization_memberships(
+        organization_id=organization_id, limit=100)
+    members = [_membership_dict(m) for m in getattr(page, "data", page)]
+    for m in members:  # the list may not include the user object
+        if not m["email"]:
+            user = _user_dict(_client().user_management.get_user(m["user_id"]))
+            m["email"] = user.get("email")
+            m["name"] = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
+            m["picture"] = user.get("profile_picture_url")
+    return members
+
+
+def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
+    page = _client().user_management.list_invitations(organization_id=organization_id, limit=100)
+    return [
+        {"id": i.id, "email": i.email, "role": i.role_slug, "expires_at": str(i.expires_at)}
+        for i in getattr(page, "data", page) if _value(i.state) == "pending"
+    ]
+
+
+def _refusal(e: Exception) -> Optional[str]:
+    """WorkOS' own words when it refused a request (4xx), else None."""
+    status_code = getattr(e, "status_code", None)
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return getattr(e, "message", None) or str(e)
+    return None
+
+
+def _invitation_dict(inv: Any, resent: bool = False) -> dict[str, Any]:
+    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at), "resent": resent}
+
+
+def invite(organization_id: str, email: str, role: str, inviter_user_id: Optional[str]) -> dict[str, Any]:
+    """Email an invitation to join the organization (WorkOS sends the email).
+
+    Someone who already has a pending invitation gets it sent again (WorkOS
+    refuses a second one). Any other refusal becomes a ValueError carrying
+    WorkOS' message, so the page can show it.
+    """
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    try:
+        inv = _client().user_management.send_invitation(
+            email=email, organization_id=organization_id, role_slug=role, inviter_user_id=inviter_user_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors, sorted below
+        if getattr(e, "code", None) == "email_already_invited_to_organization":
+            page = _client().user_management.list_invitations(organization_id=organization_id, email=email, limit=10)
+            pending = next((i for i in getattr(page, "data", page) if _value(i.state) == "pending"), None)
+            if pending is not None:
+                return _invitation_dict(_client().user_management.resend_invitation(pending.id), resent=True)
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
+    return _invitation_dict(inv)
+
+
+def _membership_in(membership_id: str, organization_id: str) -> Any:
+    m = _client().organization_membership.get_organization_membership(membership_id)
+    if m.organization_id != organization_id:
+        raise PermissionError("membership belongs to another organization")
+    return m
+
+
+def set_member_role(membership_id: str, organization_id: str, role: str) -> dict[str, Any]:
+    from workos.organization_membership import RoleSingle  # lazy: WorkOS SDK
+
+    if role not in ASSIGNABLE_ROLES:
+        raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
+    _membership_in(membership_id, organization_id)
+    updated = _client().organization_membership.update_organization_membership(
+        membership_id, role=RoleSingle(role_slug=role))
+    return _membership_dict(updated)
+
+
+def remove_member(membership_id: str, organization_id: str) -> None:
+    _membership_in(membership_id, organization_id)
+    _client().organization_membership.delete_organization_membership(membership_id)
+
+
+def revoke_invitation(invitation_id: str, organization_id: str) -> None:
+    if not any(i["id"] == invitation_id for i in pending_invitations(organization_id)):
+        raise PermissionError("invitation belongs to another organization or is no longer pending")
+    _client().user_management.revoke_invitation(invitation_id)
+
+
+def create_partner(name: str, admin_email: str) -> dict[str, Any]:
+    """Create a partner organization (or reuse the one with this exact name) and invite its first admin.
+
+    WorkOS emails the invitation; once the admin signs in they manage the rest of
+    their staff on the app's members page. Nothing else needs the WorkOS dashboard.
+    """
+    name = name.strip()
+    page = _client().organizations.list_organizations(search=name, limit=100)
+    org = next((o for o in getattr(page, "data", page) if o.name.strip().lower() == name.lower()), None)
+    created = org is None
+    if org is None:
+        org = _client().organizations.create_organization(name=name)
+    invitation = invite(org.id, admin_email.strip(), "admin", None)
+    return {"organization_id": org.id, "name": org.name, "created": created, "invitation": invitation}
+
+
+# ---------------------------------------------------------------------------
+# Companies (partner organizations), for Ingabe staff
+# ---------------------------------------------------------------------------
+
+def _platform_admins() -> list[str]:
+    return [e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()]
+
+
+def is_platform_staff(email: Optional[str]) -> bool:
+    """Ingabe staff who may add companies: PLATFORM_ADMIN_EMAILS, comma-separated."""
+    return bool(email) and email.strip().lower() in _platform_admins()
+
+
+def is_platform_owner(email: Optional[str]) -> bool:
+    """The system owner: the FIRST email in PLATFORM_ADMIN_EMAILS (sees WorkOS dashboard guidance)."""
+    admins = _platform_admins()
+    return bool(email) and bool(admins) and email.strip().lower() == admins[0]
+
+
+def _company_status(active_members: int, invitations: list[dict[str, Any]]) -> dict[str, str]:
+    """One plain-language line per company, for the Companies page."""
+    if active_members:
+        return {"code": "active", "text": f"Active: {active_members} {'person' if active_members == 1 else 'people'}"}
+    pending = [i for i in invitations if i["state"] == "pending"]
+    if pending:
+        return {"code": "invited", "text": f"Invited: waiting for {pending[0]['email']} to accept"}
+    if any(i["state"] == "expired" for i in invitations):
+        return {"code": "expired", "text": "Invitation expired: send it again"}
+    return {"code": "no_admin", "text": "No admin yet: invite one"}
+
+
+def _is_workos_sample(org: Any) -> bool:
+    """WorkOS' built-in "Test Organization" (staging only): it carries the reserved example.com domain.
+
+    WorkOS refuses to rename or delete it, and no real company has that domain.
+    """
+    return any(getattr(d, "domain", None) == "example.com" for d in (getattr(org, "domains", None) or []))
+
+
+def companies() -> list[dict[str, Any]]:
+    """Every company with its people and invitations, newest first."""
+    page = _client().organizations.list_organizations(limit=100)
+    out = []
+    for org in getattr(page, "data", page):
+        if _is_workos_sample(org):
+            continue
+        memberships = _client().organization_membership.list_organization_memberships(organization_id=org.id, limit=100)
+        active = [m for m in getattr(memberships, "data", memberships) if _value(getattr(m, "status", None)) == "active"]
+        invs = _client().user_management.list_invitations(organization_id=org.id, limit=100)
+        invitations = [
+            {"id": i.id, "email": i.email, "state": _value(i.state), "role": i.role_slug,
+             "expires_at": str(i.expires_at), "created_at": str(getattr(i, "created_at", ""))}
+            for i in getattr(invs, "data", invs)
+        ]
+        out.append({
+            "id": org.id, "name": org.name, "created_at": str(getattr(org, "created_at", "")),
+            "active_members": len(active), "invitations": invitations,
+            "status": _company_status(len(active), invitations),
+        })
+    return out
+
+
+def resend_invitation(invitation_id: str) -> dict[str, Any]:
+    try:
+        inv = _client().user_management.resend_invitation(invitation_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: a refusal becomes a readable message
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
+    return {"id": inv.id, "email": inv.email, "state": _value(inv.state), "expires_at": str(inv.expires_at)}
