@@ -1,7 +1,5 @@
 import { ClerkProvider, OrganizationSwitcher, RedirectToSignIn, SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
-import MaplibreGeocoder from '@maplibre/maplibre-gl-geocoder';
 import React, { useEffect } from 'react';
-import '@maplibre/maplibre-gl-geocoder/dist/maplibre-gl-geocoder.css';
 import {
   SIGNED_OUT_EVENT,
   useWorkOSSession,
@@ -112,12 +110,6 @@ export function OptionalAuth({ children }: React.PropsWithChildren) {
   return <>{children}</>;
 }
 
-// ── Routes (sign-in / sign-up pages) ────────────────────────────────────
-export function Routes(_reactRouterDom: unknown): React.ReactNode | null {
-  // Clerk's hosted UI handles sign-in/sign-up, no extra routes needed
-  return null;
-}
-
 // ── AccountMenu ─────────────────────────────────────────────────────────
 export function AccountMenu(): React.ReactNode | null {
   if (IS_WORKOS) {
@@ -168,30 +160,6 @@ export function OrgSwitcher(): React.ReactNode | null {
           },
         }}
       />
-    </div>
-  );
-}
-
-// ── ScheduleCallButton ──────────────────────────────────────────────────
-export function ScheduleCallButton(): React.ReactNode | null {
-  return null;
-}
-
-// ── ShareEmbedModal ─────────────────────────────────────────────────────
-export function ShareEmbedModal(_props: { isOpen: boolean; onClose: () => void; projectId?: string }): React.ReactNode | null {
-  return null;
-}
-
-// ── ApiKeys ─────────────────────────────────────────────────────────────
-export function ApiKeys(): React.ReactNode | null {
-  if (!CLERK_PUBLISHABLE_KEY && !IS_WORKOS) {
-    return null;
-  }
-
-  return (
-    <div className="p-6 max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Account Settings</h1>
-      <p className="text-muted-foreground">Manage your account from the user menu in the sidebar.</p>
     </div>
   );
 }
@@ -429,47 +397,3 @@ export const __test__ = {
     tokenManager.destroy();
   },
 };
-
-// ── createGeocoder ──────────────────────────────────────────────────────
-// nominatim allows limited geocoding results
-export function createGeocoder(maplibregl: any) {
-  const geocoderApi = {
-    forwardGeocode: async (config: { query: string; limit?: number }) => {
-      const features: any[] = [];
-      const url = new URL('https://nominatim.openstreetmap.org/search');
-      url.searchParams.set('q', config.query);
-      url.searchParams.set('format', 'geojson');
-      url.searchParams.set('polygon_geojson', '1');
-      url.searchParams.set('addressdetails', '1');
-      url.searchParams.set('limit', String(config.limit ?? 5));
-
-      const response = await fetch(url.toString(), {
-        headers: { Accept: 'application/geo+json' },
-      });
-      const geojson = await response.json();
-
-      for (const feature of geojson.features || []) {
-        if (!feature?.bbox || feature.bbox.length !== 4) continue;
-        const [minx, miny, maxx, maxy] = feature.bbox;
-        const center = [minx + (maxx - minx) / 2, miny + (maxy - miny) / 2];
-        features.push({
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: center },
-          place_name: feature.properties?.display_name,
-          properties: feature.properties,
-          text: feature.properties?.display_name,
-          place_type: ['place'],
-          center,
-          bbox: feature.bbox,
-        });
-      }
-      return { features };
-    },
-  };
-
-  return new MaplibreGeocoder(geocoderApi as any, {
-    maplibregl,
-    placeholder: 'Search places',
-    marker: false,
-  });
-}
