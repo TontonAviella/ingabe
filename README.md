@@ -1,66 +1,56 @@
-![Mundi, the AI-native web GIS](./docs/src/assets/header.jpg)
+<h1 align="center">Ingabe</h1>
 
-<h4 align="center">
-  <a href="https://github.com/Ingabe/mundi.ai/actions/workflows/cicd.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/Ingabe/mundi.ai/cicd.yml?label=CI" alt="GitHub Actions Workflow Status" />
-  </a>
-  <a href="https://github.com/Ingabe/mundi.ai/actions/workflows/lint.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/Ingabe/mundi.ai/lint.yml?label=lint" alt="GitHub Actions Lint Status" />
-  </a>
-  <a href="https://discord.gg/V63VbgH8dT">
-    <img src="https://dcbadge.limes.pink/api/server/V63VbgH8dT?style=flat" alt="Discord" />
-  </a>
-  <a href="https://github.com/Ingabe/mundi.ai/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/Ingabe/mundi.ai" alt="GitHub License" />
-  </a>
-</h4>
+<p align="center"><b>Drone and satellite crop intelligence for Rwanda, with Sage.</b></p>
 
-# Introduction
+<p align="center">
+  <a href="https://github.com/TontonAviella/ingabe/actions/workflows/cicd.yml"><img src="https://img.shields.io/github/actions/workflow/status/TontonAviella/ingabe/cicd.yml?branch=main&label=CI" alt="CI" /></a>
+  <a href="https://github.com/TontonAviella/ingabe/actions/workflows/lint.yml"><img src="https://img.shields.io/github/actions/workflow/status/TontonAviella/ingabe/lint.yml?branch=main&label=lint" alt="Lint" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0" /></a>
+</p>
 
-Mundi is an AI-native web GIS, credited to Roger:
+Ingabe turns drone images, satellite data and weather into plain answers for the people who decide on Rwanda's fields: **farmers, insurers, agronomists and agricultural scientists**. You upload a drone flight or a field boundary and ask **Sage**, Ingabe's assistant, what you want to know. Sage finds the right data, puts it on the map, and answers in words, for your role.
 
-- Supports vector, raster, and point cloud data
-- Connects to and queries spatial databases like PostGIS
-- Uses LLMs to call geoprocessing algorithms and edit symbology
+## What it does
 
-You can try it for free on [Mundi cloud at `app.mundi.ai`](https://app.mundi.ai),
-our hosted cloud service. [Mundi](https://github.com/Ingabe/mundi.ai)
-is also available as a self-hosted set of Docker images, with full support for local LLMs.
+- **Drone images first.** Upload an orthophoto and Sage posts a first look (greenness and crop cover). Ask for more and it finds stressed patches, compares two flights, and scores an insurance trigger from NDVI flights.
+- **Vegetation, drought and crop risk.** NDVI and other Sentinel-2 indices for any district, sector or cell; drought, vegetation alerts, crop growth stage and yield-risk trends per district.
+- **Weather and insurance.** Past rainfall (CHIRPS, AgERA5), a four-model 16-day forecast, dry spells, and season reports with trigger status for insurers.
+- **Soil and water.** iSDAsoil properties, FAO WaPOR soil moisture and evapotranspiration, and Sentinel-1 radar through clouds (NDVI estimates, flood extent).
+- **Rwanda built in.** All districts, sectors, cells and villages, with outlines that follow the zoom.
+- **A memory for your organization.** The Brain stores reports, policies and field records, so Sage can read and quote them.
 
-## Starting on Mundi cloud
+Data sources and update times are in the [training manual](docs/TRAINING_MANUAL.md#17-data-sources-and-update-times).
 
-You can sign up for free at [app.mundi.ai](https://app.mundi.ai) to try out Mundi and read some guides to learn what's possible:
+## Running it locally
 
-- [Making your first map](https://docs.mundi.ai/getting-started/making-your-first-map/) - Learn how to create your first map in Mundi with sample data and basic visualization.
-- [Connecting to PostGIS](https://docs.mundi.ai/guides/connecting-to-postgis/) - Mundi can connect to, add layers from, and query external PostGIS databases.
+Ingabe runs on your own machine with Docker Compose.
 
-## Self-hosting Mundi
+1. Install Docker and git, then clone this repository.
+2. Copy the settings template and fill it in:
+   ```bash
+   cp .env.example .env
+   ```
+   - **Sage** needs an LLM key: `OPENAI_API_KEY` with `OPENAI_BASE_URL` (OpenRouter by default).
+   - **Sign-in** uses WorkOS: the `WORKOS_*` settings.
+3. Build, start and check everything:
+   ```bash
+   scripts/deploy.sh
+   ```
+4. Open [http://localhost:8000](http://localhost:8000).
 
-Mundi can run entirely on your local machine with local LLMs.
+`scripts/deploy.sh --check-only` re-checks a running stack without rebuilding it. Agents and contributors: start with [AGENTS.md](AGENTS.md) and [CODING_STANDARDS.md](CODING_STANDARDS.md).
 
-We have a [tutorial on self-hosting Mundi](https://docs.mundi.ai/deployments/self-hosting-mundi). Self-hosting requires
-a good computer/server, git, and Docker. You can optionally connect it to a local LLM (or any
-provider that supports the chat completions API).
+## Documentation
 
-Give us a [star on GitHub](https://github.com/Ingabe/mundi.ai),
-[join our Discord to talk to us](https://discord.gg/V63VbgH8dT), or
-[create a pull request](https://github.com/Ingabe/mundi.ai/pulls) to contribute back!
-
-## Contributing
-
-We welcome contributions to Mundi! The best contributions are often a blend of your inspiration, plus our implementation guidance. Discussing ideas with us [in our Discord](https://discord.gg/V63VbgH8dT) or on GitHub issues is a great way to socialize a potential contribution.
-
-1. We value end-to-end test coverage as a way of ensuring code quality. Great contributions should come with great tests, but we know 100% code coverage is not the goal.
-
-2. Contributions that add significant dependencies (e.g. new Docker images) will be weighed against the cost it adds to self-hosting. Self-hosted Mundi is lightweight, which makes it accessible to a wide range of users on varying hardware.
+- [Training manual](docs/TRAINING_MANUAL.md): using Ingabe and Sage, for every role.
+- [Local runtime architecture](docs/LOCAL_RUNTIME_ARCHITECTURE.md)
 
 ## Security
 
-Ingabe takes potential security issues seriously. If you have any concerns about Mundi or believe you have uncovered a vulnerability, please get in touch via our Discord or GitHub issues (for non-sensitive matters).
+Please don't report security problems in a public issue. Contact the maintainer privately through [GitHub](https://github.com/TontonAviella).
 
-Please do not file security-related GitHub issues, because this may compromise the security of our users. Instead, reach out to us directly.
+## License and origin
 
+Ingabe is licensed under the [GNU Affero General Public License v3](./LICENSE). It began as a fork of [Mundi](https://github.com/BuntingLabs/mundi.ai) by Bunting Labs, also AGPL-3.0, and has since been extended and adapted for agriculture in Rwanda.
 
-## License
-
-Licensed under the [GNU Affero General Public License v3](./LICENSE).
+Developed by [NozaLabs](https://app.nozalabs.rw).
