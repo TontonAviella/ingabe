@@ -1,13 +1,10 @@
-"""Auto-generated Hermes tool schemas from mundi.ai's tool surface.
+"""Hermes tool schemas mirroring mundi.ai's tool surface.
 
-DO NOT EDIT BY HAND. Regenerate via:
-    python hermes_integration/codegen/generate_sage_tools.py
-
-Sources:
-  - src/geoprocessing/tools.json (60 GDAL/QGIS schemas)
-  - sage_pydantic_schemas.json (29 Pydantic-derived schemas,
-    of which 15 are unique to Pydantic and 14
-    overlap with tools.json — overlap silently dropped, tools.json wins)
+Sources: `src/geoprocessing/tools.json` and the Pydantic tools in
+`src/dependencies/pydantic_tools.py` (tools.json wins on overlap). There is no
+generator any more: when a tool is added to or removed from either source,
+edit this file to match. `hermes_integration/tests/test_plugin_loads.py`
+checks the two stay in sync.
 
 Schemas only. The actual handlers are built by `make_proxy_handler` in
 `proxy.py`, which signs an HMAC request to mundi-app's /internal/tool-call
@@ -19,91 +16,6 @@ from typing import Any, Dict
 
 
 GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
-    'gdal_warpreproject': {
-        'name': 'gdal_warpreproject',
-        'description': 'Reprojects a raster layer to a different CRS.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Reprojects a raster layer to a different CRS'}, 'TARGET_CRS': {'type': 'string', 'description': 'Assigns a CRS to a raster input. Defaults to EPSG:4326 if not set.'}}, 'required': ['INPUT']},
-    },
-    'native_aggregate': {
-        'name': 'native_aggregate',
-        'description': 'Groups features in a vector layer by a chosen expression and calculates summary values for each group using specified aggregate functions.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Aggregates a vector or table layer using specified summary functions.'}, 'AGGREGATES': {'type': 'array', 'description': 'Aggregates vector layer fields using functions like sum or mean.', 'items': {'type': 'string'}}}, 'required': ['INPUT', 'AGGREGATES']},
-    },
-    'native_buffer': {
-        'name': 'native_buffer',
-        'description': 'Buffers vector layers to a specified distance in kilometers',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Input vector layer to buffer'}, 'DISTANCE': {'type': 'number', 'description': 'Buffer distance in kilometers. For example, 1 = 1 km, 5 = 5 km.', 'default': 1.0}}, 'required': ['INPUT']},
-    },
-    'native_dissolve': {
-        'name': 'native_dissolve',
-        'description': 'Merges features in a vector layer based on shared attributes or all features into one.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Dissolves features in a vector layer.'}}, 'required': ['INPUT']},
-    },
-    'native_fieldcalculator': {
-        'name': 'native_fieldcalculator',
-        'description': 'Adds or updates a field in a vector layer using a formula expression per feature',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Calculates a new or updated field in a vector layer using a formula'}, 'FIELD_NAME': {'type': 'string', 'description': 'Calculates a new or updated field in a vector layer using a formula.'}, 'FORMULA': {'type': 'string', 'description': 'Calculates a new or updated field for each vector feature using a QGIS expression formula.'}}, 'required': ['INPUT', 'FIELD_NAME', 'FORMULA']},
-    },
-    'native_fixgeometries': {
-        'name': 'native_fixgeometries',
-        'description': 'Repairs invalid geometries in a vector layer.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Repairs invalid geometries in a vector layer.'}}, 'required': ['INPUT']},
-    },
-    'native_geometrybyexpression': {
-        'name': 'native_geometrybyexpression',
-        'description': 'Modifies vector layer geometries using a geometry expression.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Modifies the geometry of vector layer features using an expression'}}, 'required': ['INPUT']},
-    },
-    'native_joinattributesbylocation': {
-        'name': 'native_joinattributesbylocation',
-        'description': 'Performs a spatial join by merging attributes from one vector layer to another where features meet a spatial relationship.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Joins attributes from one vector layer to another based on spatial relationship'}, 'JOIN': {'type': 'string', 'description': 'Joins attributes from a vector layer to another vector layer based on spatial location.'}}, 'required': ['INPUT', 'JOIN']},
-    },
-    'native_mergevectorlayers': {
-        'name': 'native_mergevectorlayers',
-        'description': 'Merges multiple vector layers of the same geometry type into one layer, keeping all fields and features.',
-        'parameters': {'type': 'object', 'properties': {'LAYERS': {'type': 'array', 'description': 'Merges multiple vector layers of the same geometry type into one layer.', 'items': {'type': 'string'}}}, 'required': ['LAYERS']},
-    },
-    'native_reprojectlayer': {
-        'name': 'native_reprojectlayer',
-        'description': 'Reprojects a vector layer to another CRS.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Reprojects a vector layer to a different CRS'}, 'TARGET_CRS': {'type': 'string', 'description': 'Reprojects a vector layer to a different CRS.', 'default': 'EPSG:4326'}}, 'required': ['INPUT']},
-    },
-    'qgis_clip': {
-        'name': 'qgis_clip',
-        'description': 'Clips a vector layer using the boundaries of another vector polygon layer.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Clips features from a vector layer using the boundary of another vector layer.'}, 'OVERLAY': {'type': 'string', 'description': 'Clips a vector layer to polygons from another vector layer. Only features inside the overlay polygons are kept.'}}, 'required': ['INPUT', 'OVERLAY']},
-    },
-    'qgis_intersection': {
-        'name': 'qgis_intersection',
-        'description': 'Creates a new vector layer with features where the input and overlay layers intersect, combining attributes from both.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Intersects two vector layers and extracts overlapping features.'}, 'OVERLAY': {'type': 'string', 'description': 'Finds overlapping areas between two vector layers.'}}, 'required': ['INPUT', 'OVERLAY']},
-    },
-    'qgis_joinbylocationsummary': {
-        'name': 'qgis_joinbylocationsummary',
-        'description': 'Joins two vector layers by spatial relationship and adds summary statistics from the join layer to the input layer.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Joins vector layers by location and adds summary attributes from the join layer.'}, 'JOIN': {'type': 'string', 'description': 'Joins attributes from a vector layer based on spatial relationships with another vector layer.'}}, 'required': ['INPUT', 'JOIN']},
-    },
-    'qgis_statisticsbycategories': {
-        'name': 'qgis_statisticsbycategories',
-        'description': 'Calculates grouped statistics for vector layer attributes based on unique values in specified category fields. Outputs a summary table.',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Calculates statistics for a vector layer grouped by a category field.'}, 'CATEGORIES_FIELD_NAME': {'type': 'array', 'description': 'Calculates statistics for vector features grouped by values in the specified field(s)', 'items': {'type': 'string'}}}, 'required': ['INPUT', 'CATEGORIES_FIELD_NAME']},
-    },
-    'native_creategrid': {
-        'name': 'native_creategrid',
-        'description': 'Creates a regular grid of polygons (rectangles or hexagons) covering a specified extent. Useful for spatial sampling, heat maps, and aggregating point data into cells.',
-        'parameters': {'type': 'object', 'properties': {'TYPE': {'type': 'integer', 'description': 'Grid type: 0=Point, 1=Line, 2=Rectangle, 3=Diamond, 4=Hexagon. Default: 2', 'default': 2}, 'EXTENT': {'type': 'string', 'description': "Grid extent as 'xmin,xmax,ymin,ymax [EPSG:code]'. Use a layer name to auto-detect extent."}, 'HSPACING': {'type': 'number', 'description': 'Horizontal spacing between grid cells (in CRS units, e.g. degrees for EPSG:4326)', 'default': 0.01}, 'VSPACING': {'type': 'number', 'description': 'Vertical spacing between grid cells (in CRS units)', 'default': 0.01}, 'CRS': {'type': 'string', 'description': 'CRS for the output grid. Default: EPSG:4326', 'default': 'EPSG:4326'}}, 'required': ['EXTENT']},
-    },
-    'native_zonalstatisticsfb': {
-        'name': 'native_zonalstatisticsfb',
-        'description': 'Calculates raster statistics (mean, min, max, sum, count, std dev) for each polygon zone in a vector layer. Creates a new layer with the statistics appended as columns. Use when the user wants to summarise raster values within polygons (e.g. average elevation per district, total rainfall per field).',
-        'parameters': {'type': 'object', 'properties': {'INPUT': {'type': 'string', 'description': 'Vector polygon layer defining the zones'}, 'INPUT_RASTER': {'type': 'string', 'description': 'Raster layer to compute statistics from'}, 'RASTER_BAND': {'type': 'integer', 'description': 'Raster band number to analyse. Default: 1', 'default': 1}, 'COLUMN_PREFIX': {'type': 'string', 'description': "Prefix for the new statistic columns. Default: '_'", 'default': '_'}, 'STATISTICS': {'type': 'array', 'description': 'Statistics to compute: 0=Count, 1=Sum, 2=Mean, 3=Median, 4=StDev, 5=Min, 6=Max. Default: [2] (Mean)', 'items': {'type': 'integer'}, 'default': [2]}}, 'required': ['INPUT', 'INPUT_RASTER']},
-    },
-    'query_rwanda_zonal_stats': {
-        'name': 'query_rwanda_zonal_stats',
-        'description': "Query agricultural zonal statistics for Rwanda. Use query_type='district_summary' (DEFAULT) for per-district NDVI/crop overviews — works for all districts, a single province, or a single district. Use query_type='ndvi_timeseries' ONLY when you have a specific h3_index or parcel_id.",
-        'parameters': {'type': 'object', 'properties': {'query_type': {'type': 'string', 'enum': ['district_summary', 'ndvi_timeseries'], 'description': 'district_summary: aggregated NDVI stats per district/province (no h3_index needed, this is the default). ndvi_timeseries: weekly NDVI time-series for a SPECIFIC h3_index or parcel_id (REQUIRED, will error without one).'}, 'district': {'type': 'string', 'description': 'District name to filter by (optional, for district_summary)'}, 'province': {'type': 'string', 'description': 'Province name to filter by (optional, for district_summary)'}, 'h3_index': {'type': 'string', 'description': 'H3 hexagon index — REQUIRED for ndvi_timeseries, not used for district_summary'}, 'parcel_id': {'type': 'string', 'description': 'Parcel ID — REQUIRED for ndvi_timeseries (alternative to h3_index), not used for district_summary'}, 'date_from': {'type': 'string', 'description': 'Start date in YYYY-MM-DD format (optional, for ndvi_timeseries)'}, 'date_to': {'type': 'string', 'description': 'End date in YYYY-MM-DD format (optional, for ndvi_timeseries)'}, 'week_start': {'type': 'string', 'description': 'Week start date in YYYY-MM-DD format (optional, for district_summary)'}}, 'required': ['query_type']},
-    },
     'search_satellite_imagery': {
         'name': 'search_satellite_imagery',
         'description': 'Search for satellite imagery (Sentinel-2, Landsat) over Rwanda or a specific area. Returns available scenes with dates, cloud cover, and download links. Use this when the user asks about satellite images, remote sensing data, or wants to find imagery for a specific date/location.',
@@ -149,11 +61,6 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
         'description': "Query ESRI 10m LULC 2024 land-cover statistics for a specific area. Two query types: 'land_cover' returns area in hectares for each land-cover class (crops, trees, rangeland, etc.). 'largest_cropland' returns the biggest contiguous cropland plantations ranked by area. IMPORTANT: always scope to the user's area of interest. Preferred: pass bbox from the relevant layer's bounds in MapState. Alternative: pass lat+lon from the Center Point layer — the tool will auto-detect the correct admin boundary. NEVER guess district names — use bbox or lat/lon and let the tool resolve the location.",
         'parameters': {'type': 'object', 'properties': {'query_type': {'type': 'string', 'enum': ['land_cover', 'largest_cropland'], 'description': 'land_cover: area breakdown by land-cover class (DEFAULT). largest_cropland: ranked list of biggest contiguous cropland areas.'}, 'lat': {'type': 'number', 'description': 'Latitude (EPSG:4326) of the point of interest. The tool auto-detects the containing district/sector/cell from PostGIS. Use this instead of guessing district names.'}, 'lon': {'type': 'number', 'description': 'Longitude (EPSG:4326) of the point of interest.'}, 'bbox': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 4, 'maxItems': 4, 'description': 'Bounding box [west, south, east, north] in EPSG:4326. Use when the user refers to a custom area (buffer circle, drawn polygon, existing layer extent). Extract the bounds from the relevant layer in MapState. This performs on-the-fly analysis for the exact area.'}, 'district': {'type': 'string', 'description': 'Rwanda district name — only use if the user explicitly names a district. Prefer lat/lon or bbox instead.'}, 'sector': {'type': 'string', 'description': 'Rwanda sector name — only use if the user explicitly names a sector.'}, 'cell': {'type': 'string', 'description': 'Rwanda cell name — only use if the user explicitly names a cell.'}, 'limit': {'type': 'integer', 'description': 'Max results for largest_cropland query. Default: 10'}}, 'required': []},
     },
-    'get_crop_classifications': {
-        'name': 'get_crop_classifications',
-        'description': "Read pre-computed crop classification results by district. None are produced at the moment (no labelled crop classifier runs yet), so this returns an empty list with a note saying so. Use ONLY when the user asks specifically about crop classification maps or land use mapping. Do NOT use when the user asks 'what about other crops' after a situation report — use get_insurance_intelligence with a different crop parameter instead. Pass lat+lon to auto-detect the correct district — NEVER guess district names. WHEN TO USE: read the most recent weekly crop classification result for parcels from the cache. WHEN NOT TO USE: classify a parcel that has not been processed yet — use identify_parcel_crop.",
-        'parameters': {'type': 'object', 'properties': {'lat': {'type': 'number', 'description': 'Latitude (EPSG:4326) of the point of interest. Auto-detects the containing district from PostGIS.'}, 'lon': {'type': 'number', 'description': 'Longitude (EPSG:4326) of the point of interest.'}, 'district': {'type': 'string', 'description': 'District name — only use if the user explicitly names a district. Prefer lat/lon instead.'}}, 'required': []},
-    },
     'get_anomaly_alerts': {
         'name': 'get_anomaly_alerts',
         'description': 'Read the latest vegetation anomaly alerts. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use alongside get_insurance_intelligence for situation overviews — it adds spatial hotspot detail. Also use standalone when the user asks specifically about crop problems, stress alerts, or anomalies.',
@@ -189,50 +96,15 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
         'description': 'Compare weather forecast against observed AgERA5 weather data to measure accuracy. Returns MAE (Mean Absolute Error) and bias for temperature and precipitation across districts where both forecast and observation exist. Use when the user asks about forecast accuracy, model performance, how good the forecast is, or weather prediction quality.',
         'parameters': {'type': 'object', 'properties': {'district': {'type': 'string', 'description': 'Specific district to check accuracy for (optional — defaults to all districts)'}, 'lookback_days': {'type': 'integer', 'description': 'Number of days to look back for accuracy comparison. Default: 30'}}, 'required': []},
     },
-    'get_emissions_stats': {
-        'name': 'get_emissions_stats',
-        'description': 'Read annual greenhouse gas and air pollutant emissions from the PostgreSQL cache. Data comes from EDGAR v8.0 (JRC, 0.1 degree resolution, updated annually by Dagster). Returns per-district annual emissions in tonnes for agriculture-related gases. Sectors: AGS (agricultural soils / fertilizers), ENF (enteric fermentation / livestock), MNM (manure management), AWB (agricultural waste burning). Use when the user asks about emissions, greenhouse gases, methane, CH4, N2O, CO2, NH3, fertilizer emissions, livestock emissions, or agricultural pollution for Rwanda districts.',
-        'parameters': {'type': 'object', 'properties': {'district': {'type': 'string', 'description': 'Filter to a specific district name (e.g. Musanze, Gasabo, Bugesera)'}, 'year': {'type': 'integer', 'description': 'Filter to a specific year (e.g. 2022)'}, 'year_from': {'type': 'integer', 'description': 'Start year for range filter (default: 5 years ago)'}, 'year_to': {'type': 'integer', 'description': 'End year for range filter (default: latest available)'}, 'emission_type': {'type': 'string', 'enum': ['CH4', 'N2O', 'CO2', 'NH3'], 'description': 'Filter by gas: CH4 (methane), N2O (nitrous oxide), CO2 (carbon dioxide), NH3 (ammonia)'}, 'sector': {'type': 'string', 'enum': ['AGS', 'ENF', 'MNM', 'AWB'], 'description': 'Filter by agriculture sector: AGS (agricultural soils), ENF (enteric fermentation), MNM (manure management), AWB (agricultural waste burning)'}}, 'required': []},
-    },
-    'create_management_zones': {
-        'name': 'create_management_zones',
-        'description': 'Create NDVI-based management zones for a field or farm polygon. Divides the area into productivity zones (Low/Medium/High) using satellite vegetation data and K-means clustering. Returns zone polygons as a map layer with NDVI statistics per zone. Use when the user asks about management zones, productivity mapping, variable-rate zones, or field zoning.',
-        'parameters': {'type': 'object', 'properties': {'geometry': {'type': 'object', 'description': 'GeoJSON Polygon geometry of the field boundary'}, 'num_zones': {'type': 'integer', 'description': 'Number of zones to create (2-5, default 3)'}, 'date_from': {'type': 'string', 'description': 'Start date ISO 8601 (default: 30 days ago)'}, 'date_to': {'type': 'string', 'description': 'End date ISO 8601 (default: today)'}}, 'required': ['geometry']},
-    },
-    'create_prescription_map': {
-        'name': 'create_prescription_map',
-        'description': 'Create a variable-rate fertilizer prescription map for a field. Combines NDVI management zones with iSDAsoil data and Rwanda Agriculture Board crop-specific baseline rates. Returns zone polygons with N/P/K recommendations in kg/ha. Use when the user asks about fertilizer recommendations, prescription maps, or variable-rate application.',
-        'parameters': {'type': 'object', 'properties': {'geometry': {'type': 'object', 'description': 'GeoJSON Polygon geometry of the field boundary'}, 'crop_type': {'type': 'string', 'enum': ['maize', 'beans', 'rice', 'wheat', 'sorghum', 'potato', 'cassava'], 'description': 'Crop type for baseline fertilizer rates (default: maize)'}, 'num_zones': {'type': 'integer', 'description': 'Number of management zones (2-5, default 3)'}}, 'required': ['geometry']},
-    },
-    'create_soil_sampling_plan': {
-        'name': 'create_soil_sampling_plan',
-        'description': 'Create an optimized soil sampling plan for a field. Places 1-2 sampling points per NDVI management zone at representative locations. Returns point locations with sampling instructions and priority. Use when the user asks about soil testing, soil sampling, or where to collect soil samples.',
-        'parameters': {'type': 'object', 'properties': {'geometry': {'type': 'object', 'description': 'GeoJSON Polygon geometry of the field boundary'}, 'num_zones': {'type': 'integer', 'description': 'Number of management zones for stratification (2-5, default 3)'}}, 'required': ['geometry']},
-    },
-    'identify_parcel_crop': {
-        'name': 'identify_parcel_crop',
-        'description': "Identify what crop is growing on a field parcel using Sentinel-2 NDVI time-series and temporal signature matching. Compares the observed growth curve against known Rwanda crop profiles (maize, beans, cassava, rice, sorghum, banana, tea, coffee, potato, wheat, fallow). Returns the most likely crop with confidence score and ranked alternatives. PREFERRED tool when farmer asks 'what crop is on my field?', 'can you detect what I planted?', or 'identify the crop'. Requires a polygon geometry (field boundary). WHEN TO USE: classify ONE specific parcel right now from Sentinel-2 time-series. WHEN NOT TO USE: look up an already-classified parcel — call get_crop_classifications first (cached weekly). General 'what crops grow here' — use get_entity or search_brain.",
-        'parameters': {'type': 'object', 'properties': {'geometry': {'type': 'object', 'description': 'GeoJSON Polygon geometry of the field/parcel boundary'}, 'months': {'type': 'integer', 'description': 'Number of months of NDVI history to analyze (default: 6, min: 3)'}}, 'required': ['geometry']},
-    },
-    'confirm_crop_prediction': {
-        'name': 'confirm_crop_prediction',
-        'description': "Record farmer confirmation or correction of a crop prediction. When Ingabe predicts a crop type for a parcel and the farmer says 'yes that's correct' or 'no, it's actually beans', use this tool to store the feedback as ground truth. This data improves future predictions. Use when the user confirms or corrects a crop identification result.",
-        'parameters': {'type': 'object', 'properties': {'geometry': {'type': 'object', 'description': 'GeoJSON Polygon geometry of the field/parcel'}, 'predicted_crop': {'type': 'string', 'description': 'The crop that Ingabe predicted (from identify_parcel_crop result)'}, 'actual_crop': {'type': 'string', 'description': 'The actual crop the farmer confirms or corrects to'}, 'confirmed': {'type': 'boolean', 'description': 'true if farmer confirms prediction was correct, false if corrected'}, 'season': {'type': 'string', 'description': "Growing season (e.g. '2026A', '2026B'). Auto-detected if omitted."}}, 'required': ['predicted_crop', 'actual_crop', 'confirmed']},
-    },
     'get_soil_moisture': {
         'name': 'get_soil_moisture',
-        'description': 'Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil. WHEN TO USE: WaPOR 100m dekadal (10-day) area-aggregated soil moisture, optical-derived. WHEN NOT TO USE: point measurement at sub-daily cadence that sees through clouds and vegetation — use get_cygnss_soil_moisture. Soil texture/chemistry — use get_soil_properties.',
+        'description': 'Query relative soil moisture from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of soil moisture percentage for the given location. Use when the user asks about soil moisture, soil wetness, soil dryness, irrigation needs, or water availability in the soil. WHEN TO USE: WaPOR 100m dekadal (10-day) area-aggregated soil moisture, optical-derived. WHEN NOT TO USE: soil texture/chemistry — use get_soil_properties.',
         'parameters': {'type': 'object', 'properties': {'latitude': {'type': 'number', 'description': 'Latitude in decimal degrees (WGS84)'}, 'longitude': {'type': 'number', 'description': 'Longitude in decimal degrees (WGS84)'}, 'date_from': {'type': 'string', 'description': 'Start date (YYYY-MM-DD). Default: 30 days ago'}, 'date_to': {'type': 'string', 'description': 'End date (YYYY-MM-DD). Default: latest available'}}, 'required': ['latitude', 'longitude']},
     },
     'get_evapotranspiration': {
         'name': 'get_evapotranspiration',
         'description': 'Query actual evapotranspiration (ET) and optionally transpiration and net primary productivity from FAO WaPOR v3 at 100m dekadal (10-day) resolution. Returns a time series of ET values in mm/day for the given location. Use when the user asks about evapotranspiration, water use, crop water consumption, water productivity, ET, or how much water a crop/field is using.',
         'parameters': {'type': 'object', 'properties': {'latitude': {'type': 'number', 'description': 'Latitude in decimal degrees (WGS84)'}, 'longitude': {'type': 'number', 'description': 'Longitude in decimal degrees (WGS84)'}, 'date_from': {'type': 'string', 'description': 'Start date (YYYY-MM-DD). Default: 30 days ago'}, 'date_to': {'type': 'string', 'description': 'End date (YYYY-MM-DD). Default: latest available'}, 'include_components': {'type': 'boolean', 'description': 'If true, also return transpiration and net primary productivity. Default: false'}}, 'required': ['latitude', 'longitude']},
-    },
-    'get_food_security_alerts': {
-        'name': 'get_food_security_alerts',
-        'description': 'Query IPC food security classifications for Rwanda from FEWS NET. Returns the current IPC phase (1-5 scale: 1=Minimal, 2=Stressed, 3=Crisis, 4=Emergency, 5=Famine) and any areas of concern. Use when the user asks about food security, hunger, famine risk, IPC classification, food crisis, or food insecurity in Rwanda.',
-        'parameters': {'type': 'object', 'properties': {'district': {'type': 'string', 'description': 'Optional district name to filter (e.g. Kayonza, Bugesera)'}, 'period': {'type': 'string', 'enum': ['current', 'projected'], 'description': 'current = latest observed situation, projected = near-term outlook. Default: current'}}, 'required': []},
     },
     'detect_dry_spells': {
         'name': 'detect_dry_spells',
@@ -254,40 +126,10 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
         'description': 'Predict NDVI vegetation index from Sentinel-1 SAR radar data when optical imagery is blocked by clouds. Uses 30-day SAR backscatter trajectory to estimate what NDVI would be. Use when the user asks about crop health during cloudy periods or wants cloud-proof monitoring.',
         'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'target_date': {'type': 'string', 'description': 'Date to predict NDVI for (YYYY-MM-DD). Default: today'}}, 'required': ['bbox']},
     },
-    'detect_water_bodies': {
-        'name': 'detect_water_bodies',
-        'description': 'Detect water bodies and ponds from Sentinel-1 SAR radar imagery. Works through clouds and under tree canopy. Use for aquaculture pond verification, water body monitoring, or checking if ponds are filled. Returns water area in hectares and water body polygons.',
-        'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'date': {'type': 'string', 'description': 'Target date (YYYY-MM-DD). Default: most recent S1 pass'}}, 'required': ['bbox']},
-    },
     'detect_flood_extent': {
         'name': 'detect_flood_extent',
         'description': 'Delineate flood extent by comparing Sentinel-1 SAR radar imagery from before and after a flood event. Returns new flood area (excluding permanent water bodies) with polygons suitable for insurance claim validation.',
         'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'date_before': {'type': 'string', 'description': 'Pre-flood date (YYYY-MM-DD)'}, 'date_after': {'type': 'string', 'description': 'Post-flood date (YYYY-MM-DD)'}}, 'required': ['bbox', 'date_before', 'date_after']},
-    },
-    'get_alos_l_band_stats': {
-        'name': 'get_alos_l_band_stats',
-        'description': 'Get ALOS-2 PALSAR-2 L-band (24cm wavelength) SAR backscatter statistics for a bounding box over one or more years. Returns per-year HH/HV gamma-naught stats plus the HH/HV ratio in dB. The HH/HV ratio discriminates vegetation structure: forest <-5dB, crops -5 to -10dB, bare/water >-3dB. L-band penetrates dense canopy where Sentinel-1 C-band saturates. Use for crop-type discrimination, biomass analysis, or deep canopy monitoring. No auth needed (Digital Earth Africa public bucket).',
-        'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'years': {'type': 'string', 'description': "Comma-separated years to analyse (e.g. '2020,2021,2022'). Available: 2015-2022 (PALSAR-2), 2007-2010 (PALSAR). Default: 2020,2021,2022"}}, 'required': ['bbox']},
-    },
-    'get_alos_temporal_variation': {
-        'name': 'get_alos_temporal_variation',
-        'description': 'Compute year-over-year variation in ALOS PALSAR L-band HH/HV ratio across multiple years. Reveals agricultural activity patterns: stable ratio = perennial crops/forest, variable ratio = annual crop rotation, high HV std = heterogeneous smallholder mosaics. Use for long-term land-use change analysis or distinguishing perennial vs annual cropping systems.',
-        'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'years': {'type': 'string', 'description': 'Comma-separated years (need at least 2). Default: 2018,2019,2020,2021,2022'}}, 'required': ['bbox']},
-    },
-    'check_cygnss_availability': {
-        'name': 'check_cygnss_availability',
-        'description': "Check what NASA CYGNSS (GNSS-Reflectometry) data is available for a bounding box. CYGNSS is an 8-satellite constellation that measures GPS signal reflections to detect soil moisture and surface water. Coverage ±38° latitude (Rwanda is dead center), median 3-hour revisit, ~6-day latency. CYGNSS's killer feature: L-band penetrates vegetation canopy, detecting water UNDER trees where Sentinel-1 and optical fail. Returns granule counts, latest dates, and auth status. No auth needed for this diagnostic tool. Use first before calling get_cygnss_soil_moisture or get_cygnss_watermask.",
-        'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'. Default: Rwanda national bbox."}}, 'required': []},
-    },
-    'get_cygnss_soil_moisture': {
-        'name': 'get_cygnss_soil_moisture',
-        'description': 'Get CYGNSS soil moisture timeseries for a point (lat/lon). Returns volumetric water content (m³/m³, 0-5cm depth) at 9km or 36km resolution. Interpretation: <0.10 dry, 0.10-0.25 moist, 0.25-0.40 wet/flood risk, >0.40 likely standing water. Complements WaPOR (100m dekadal) with higher temporal resolution. Requires NASA Earthdata credentials — if unavailable, returns granule availability without data. Use for drought monitoring, irrigation planning, or flood risk at a specific field.',
-        'parameters': {'type': 'object', 'properties': {'lat': {'type': 'number', 'description': 'Latitude in decimal degrees (Rwanda: -2.84 to -1.05)'}, 'lon': {'type': 'number', 'description': 'Longitude in decimal degrees (Rwanda: 28.86 to 30.90)'}, 'days_back': {'type': 'integer', 'description': 'How many days of history to pull. Default: 90'}, 'resolution_km': {'type': 'integer', 'description': 'Grid resolution, 9 or 36 km. Default: 9'}}, 'required': ['lat', 'lon']},
-    },
-    'get_cygnss_watermask': {
-        'name': 'get_cygnss_watermask',
-        'description': 'Get CYGNSS binary water/land classification at ~1km resolution for a bounding box. L-band GNSS-R detects water under vegetation canopy — ponds hidden under banana groves show up here where Sentinel-1 fails. Coarser than SAR water detection (detect_water_bodies at ~10m) but sees through canopy. Use for aquaculture pond verification under forest cover, or cross-validating Sentinel-1 flood extent. Requires NASA Earthdata credentials.',
-        'parameters': {'type': 'object', 'properties': {'bbox': {'type': 'string', 'description': "Bounding box as 'lon_min,lat_min,lon_max,lat_max'"}, 'date': {'type': 'string', 'description': 'Target date (YYYY-MM-DD). Default: 7 days ago (accounting for 6-day latency)'}, 'product': {'type': 'string', 'description': "'watermask_daily' (1km, daily) or 'watermask_monthly' (1km, monthly). Default: watermask_daily"}}, 'required': ['bbox']},
     },
     'search_brain': {
         'name': 'search_brain',
@@ -407,6 +249,11 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     # render_map_snapshot: removed with the WhatsApp/Telegram channels it delivered to
     # (2026-10-02). Do not re-add without a delivery path.
+    'list_admin_units': {
+        'name': 'list_admin_units',
+        'description': 'List Rwanda\'s districts, or the sectors, cells or villages inside a named district, sector or cell, with an exact count. Use for "list the sectors in Huye", "how many cells does Nyanza have?", "which villages are in Ruhashya sector?". Sector and cell names repeat across Rwanda, so pass the district too. To draw the units on the map, use new_layer_from_postgis instead.',
+        'parameters': {'properties': {'level': {'description': "Which units to list: 'district', 'sector', 'cell' or 'village'.", 'enum': ['district', 'sector', 'cell', 'village'], 'title': 'Level', 'type': 'string'}, 'district': {'description': "District the units are in, e.g. 'Huye'. '' when listing all 30 districts.", 'title': 'District', 'type': 'string'}, 'sector': {'description': "Sector to list the cells or villages of, e.g. 'Ruhashya'. '' if not needed.", 'title': 'Sector', 'type': 'string'}, 'cell': {'description': "Cell to list the villages of, e.g. 'Karama'. '' if not needed.", 'title': 'Cell', 'type': 'string'}}, 'required': ['level', 'district', 'sector', 'cell'], 'title': 'ListAdminUnitsArgs', 'type': 'object'},
+    },
     'zoom_to_bounds': {
         'name': 'zoom_to_bounds',
         'description': "Zoom the map to a specific bounding box in WGS84 coordinates. This will save the user's current zoom location to history and navigate to the new bounds.",

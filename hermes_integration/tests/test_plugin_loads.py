@@ -171,8 +171,6 @@ def test_register_emits_task_scoped_toolsets() -> None:
         "ingabe-sage-core",
         "ingabe-sage-map-view",
         "ingabe-sage-map-data",
-        "ingabe-sage-map-process",
-        "ingabe-sage-raster-engine",
         "ingabe-sage-raster-vision",
         "ingabe-sage-raster-analysis",
         "ingabe-sage-raster-sensor",
@@ -212,7 +210,7 @@ def test_register_profiles_cover_expected_tool_count() -> None:
     proxied_count = sum(
         1 for t in ctx.tools if t["toolset"] != "ingabe-sage-core"
     )
-    assert proxied_count >= 50, (
+    assert proxied_count >= 40, (
         f"Profiled proxy surface should have many tools; got {proxied_count}. "
         "Did generated_tools.py get regenerated? Or import broken?"
     )
@@ -369,7 +367,7 @@ def test_whoami_handler_reads_env_context_when_set(monkeypatch: pytest.MonkeyPat
 # (per chat_completion_messages.tool_calls history). They were silently
 # missing from the plugin's tool catalogue until this file landed because the
 # auto-generator that produces generated_tools.py only reads tools.json and
-# Pydantic schemas — these 7 live as inline elif handlers in message_routes.py
+# Pydantic schemas — these 4 live as inline elif handlers in message_routes.py
 # and were never registered in either source.
 #
 # Mismatch = the Hermes path hangs on tool-triggering prompts because the LLM
@@ -382,9 +380,6 @@ _EXPECTED_HIDDEN_TOOLS: set[str] = {
     "new_layer_from_postgis",
     "add_layer_to_map",
     "set_layer_style",
-    "query_postgis_database",
-    "query_duckdb_sql",
-    "zonal_statistics",
     "reverse_geocode_coordinates",
 }
 
@@ -396,23 +391,17 @@ _EXPECTED_HIDDEN_TOOLS: set[str] = {
 #   - new_layer_from_postgis     → :155-157
 #   - add_layer_to_map           → :498-499
 #   - set_layer_style            → :593-594
-#   - query_postgis_database     → :761-762
-#   - query_duckdb_sql           → :680-683
-#   - zonal_statistics           → :889-891
 #   - reverse_geocode_coordinates → handler reads `lat`, `lon`
 _EXPECTED_REQUIRED_PROPS: dict[str, set[str]] = {
     "new_layer_from_postgis": {"postgis_connection_id", "query", "layer_name"},
     "add_layer_to_map": {"layer_id", "new_name"},
     "set_layer_style": {"layer_id", "maplibre_json_layers_str"},
-    "query_postgis_database": {"postgis_connection_id", "sql_query"},
-    "query_duckdb_sql": {"layer_ids", "sql_query"},
-    "zonal_statistics": {"raster_layer_id", "zones_layer_id"},
     "reverse_geocode_coordinates": {"lat", "lon"},
 }
 
 
-def test_hidden_tools_module_imports_with_all_seven_schemas() -> None:
-    """hidden_tools.py must export HIDDEN_SCHEMAS containing exactly the 7
+def test_hidden_tools_module_imports_with_all_four_schemas() -> None:
+    """hidden_tools.py must export HIDDEN_SCHEMAS containing exactly the 4
     names the legacy_tool_shim handlers exist for. If any are added later,
     update this list AND legacy_tool_shim's LEGACY_HANDLERS together."""
     _load_plugin_module()
@@ -420,10 +409,29 @@ def test_hidden_tools_module_imports_with_all_seven_schemas() -> None:
     assert isinstance(HIDDEN_SCHEMAS, dict)
     actual = set(HIDDEN_SCHEMAS.keys())
     assert actual == _EXPECTED_HIDDEN_TOOLS, (
-        f"HIDDEN_SCHEMAS keys drifted from the expected 7. "
+        f"HIDDEN_SCHEMAS keys drifted from the expected 4. "
         f"Missing: {_EXPECTED_HIDDEN_TOOLS - actual}. "
         f"Unexpected: {actual - _EXPECTED_HIDDEN_TOOLS}"
     )
+
+
+def test_generated_catalog_matches_tools_json() -> None:
+    """Every tools.json tool is advertised to Hermes, and no retired tool is.
+    generated_tools.py is edited by hand, so this is what keeps it in sync."""
+    _load_plugin_module()
+    from ingabe_sage.generated_tools import GENERATED_SCHEMAS  # type: ignore
+
+    tools_json = _PLUGIN_ROOT.parents[2] / "src" / "geoprocessing" / "tools.json"
+    catalog = {t["function"]["name"] for t in json.loads(tools_json.read_text())}
+    missing = catalog - set(GENERATED_SCHEMAS)
+    assert not missing, f"tools.json tools missing from generated_tools.py: {sorted(missing)}"
+    retired = {
+        "query_duckdb_sql", "query_postgis_database", "zonal_statistics",
+        "native_buffer", "qgis_clip", "gdal_warpreproject", "get_emissions_stats",
+        "identify_parcel_crop", "get_food_security_alerts", "run_geolibre_tool",
+        "analyze_open_buildings_exposure", "create_h3_spatial_insight_layer",
+    }
+    assert not retired & set(GENERATED_SCHEMAS)
 
 
 def test_hidden_tools_disjoint_from_generated() -> None:
@@ -598,10 +606,11 @@ def test_every_registered_tool_is_reachable_by_naming_it() -> None:
     ("text", "expected"),
     [
         ("show the fields with drought stress", "ingabe-sage-agri-field"),
-        ("what are the emissions in Huye", "ingabe-sage-agri-risk"),
+        ("which fields are at drought risk", "ingabe-sage-agri-risk"),
+        ("will it rain next week in Huye", "ingabe-sage-agri-weather"),
         ("how many buildings are in this orthophoto", "ingabe-sage-raster-vision"),
         ("list my layers", "ingabe-sage-map-view"),
-        ("what are the capabilities of the engine", "ingabe-sage-raster-engine"),
+        ("which sectors are in Huye?", "ingabe-sage-map-view"),
     ],
 )
 def test_plural_requests_open_the_owning_profile(text: str, expected: str) -> None:

@@ -97,28 +97,20 @@ class SanitizedMessage(BaseModel):
 # ---------------------------------------------------------------------------
 
 TC_ICON_MAP = {
-    "query_duckdb_sql": "text-search",
-    "query_postgis_database": "text-search",
     "new_layer_from_postgis": "text-search",
     "set_layer_style": "brush",
     "add_layer_to_map": "map-plus",
     "zoom_to_bounds": "zoom-in",
-    "download_from_openstreetmap": "cloud-download",
-    "execute_shell_in_vm": "square-terminal",
     "search_location": "map-pin",
     "display_satellite_layer": "satellite",
     "compute_spectral_index": "satellite",
 }
 
 TC_TAGLINE_MAP = {
-    "query_duckdb_sql": "Querying layer in DuckDB...",
-    "query_postgis_database": "Querying PostGIS layer...",
     "new_layer_from_postgis": "Creating layer from PostGIS...",
     "set_layer_style": "Setting layer style...",
     "add_layer_to_map": "Adding layer to map...",
     "zoom_to_bounds": "Zooming to bounds...",
-    "download_from_openstreetmap": "Downloading from OpenStreetMap...",
-    "execute_shell_in_vm": "Running analysis...",
     "search_location": "Searching for location...",
     "display_satellite_layer": "Loading satellite imagery...",
     "compute_spectral_index": "Computing spectral index...",
@@ -139,45 +131,16 @@ def convert_openai_tool_call_to_sanitized_tool_call(
     args = _parse_tool_args(tool_call["function"]["arguments"])
     function_name = tool_call["function"]["name"]
 
-    all_tools = get_tools()
-    geoprocessing_function_names = [tool["function"]["name"] for tool in all_tools]
-    is_geoprocessing_tool = function_name in geoprocessing_function_names
+    # Tools declared in tools.json show their arguments as a table in the chat.
+    is_catalog_tool = function_name in {tool["function"]["name"] for tool in get_tools()}
 
     code_block: CodeBlock | None = None
-    if function_name == "query_duckdb_sql":
-        code_block = CodeBlock(language="sql", code=args.get("sql_query", ""))
-    elif function_name == "query_postgis_database":
-        code_block = CodeBlock(language="sql", code=args.get("sql_query", ""))
-    elif function_name == "new_layer_from_postgis":
+    if function_name == "new_layer_from_postgis":
         code_block = CodeBlock(language="sql", code=args.get("query", ""))
 
-    table: dict | None = None
-    if function_name == "download_from_openstreetmap":
-        tags = args.get("tags")
-        bbox = args.get("bbox")
-        if tags is not None and bbox is not None:
-            table = sanitized_fc_table_from_args(
-                {
-                    "tags": tags,
-                    "bbox": ", ".join(map(str, bbox)),
-                }
-            )
-    elif is_geoprocessing_tool:
-        table = sanitized_fc_table_from_args(args)
-
-    if function_name in TC_TAGLINE_MAP:
-        tagline = TC_TAGLINE_MAP[function_name]
-    elif is_geoprocessing_tool:
-        tagline = function_name.replace("_", ":")
-    else:
-        tagline = function_name
-
-    if function_name in TC_ICON_MAP:
-        icon = TC_ICON_MAP[function_name]
-    elif is_geoprocessing_tool:
-        icon = "qgis"
-    else:
-        icon = "wrench"
+    table: dict | None = sanitized_fc_table_from_args(args) if is_catalog_tool else None
+    tagline = TC_TAGLINE_MAP.get(function_name, function_name)
+    icon = TC_ICON_MAP.get(function_name, "wrench")
 
     return SanitizedToolCall(
         id=tool_call["id"],

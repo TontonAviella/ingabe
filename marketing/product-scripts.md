@@ -173,51 +173,7 @@ Designed for use in Canva (video/presentations), Figma (visual assets), and soci
 
 ---
 
-## Script 4: Feature Deep-Dive — AI Geoprocessing (2 minute tutorial)
-
-**Title**: "GIS Analysis in Plain English"
-**Format**: Screen recording
-**Audience**: GIS users tired of menu-driven workflows
-
----
-
-**[INTRO — 0:00-0:10]**
-
-> Every GIS operation you normally do through menus — buffers, clips, spatial joins, zonal statistics — you can do by just typing what you want.
-
-**[DEMO 1: BUFFER + CLIP — 0:10-0:40]**
-
-> Upload a points layer — say, weather stations.
-> Type: "Buffer these stations by 5 kilometres and clip to the district boundary"
->
-> *(Show screen: AI calls native_buffer → qgis_clip → result appears on map)*
->
-> The AI picks the right tools, chains them together, and shows you the result.
-> Behind the scenes it's running QGIS processing algorithms — but you never touch a menu.
-
-**[DEMO 2: SPATIAL JOIN — 0:40-1:10]**
-
-> "Join the soil data to the district polygons by location"
->
-> *(Show screen: AI calls native_joinattributesbylocation → attribute table shows joined columns)*
->
-> Spatial joins that used to take 5 clicks and a settings dialog — done in one sentence.
-
-**[DEMO 3: ZONAL STATISTICS — 1:10-1:40]**
-
-> "Calculate average elevation for each district from the DEM"
->
-> *(Show screen: AI calls native_zonalstatisticsfb → choropleth map with results)*
->
-> Zonal statistics — summarising raster values within polygons — is one of the most powerful GIS operations. Here it's just a sentence.
-
-**[CTA — 1:40-2:00]**
-
-> 40+ geoprocessing tools. Zero menus. Just describe what you need.
-
----
-
-## Script 5: Feature Deep-Dive — PostGIS Connection (90 seconds)
+## Script 4: Feature Deep-Dive — PostGIS Connection (90 seconds)
 
 **Title**: "Connect Your Database. Query It in English."
 **Format**: Screen recording
@@ -255,7 +211,7 @@ Designed for use in Canva (video/presentations), Figma (visual assets), and soci
 
 ---
 
-## Script 6: Overview — Data Upload Capabilities (60 seconds)
+## Script 5: Overview — Data Upload Capabilities (60 seconds)
 
 **Title**: "Bring Any Geodata"
 **Format**: Social media short / carousel
@@ -290,7 +246,7 @@ Designed for use in Canva (video/presentations), Figma (visual assets), and soci
 
 ---
 
-## Script 7: Full Product Overview — Investor / Partner Deck (3-5 minutes)
+## Script 6: Full Product Overview — Investor / Partner Deck (3-5 minutes)
 
 **Title**: "Mundi.ai — AI-Native GIS for Agriculture and Development"
 **Format**: Canva presentation / pitch deck voiceover

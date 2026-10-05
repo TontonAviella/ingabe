@@ -208,52 +208,6 @@ async def test_tools_json_is_valid_json(client):
 
 
 @pytest.mark.anyio
-async def test_zonal_stats_tool_definition_exists(client):
-    """Test that query_rwanda_zonal_stats tool is defined in tools.json."""
-    from pathlib import Path
-
-    tools_path = Path(__file__).parent / "geoprocessing" / "tools.json"
-    with open(tools_path, "r") as f:
-        tools = json.load(f)
-
-    # Find the zonal stats tool
-    zonal_tool = None
-    for tool in tools:
-        if tool.get("function", {}).get("name") == "query_rwanda_zonal_stats":
-            zonal_tool = tool
-            break
-
-    assert zonal_tool is not None, "query_rwanda_zonal_stats tool not found in tools.json"
-
-    # Verify structure
-    assert "function" in zonal_tool
-    assert "name" in zonal_tool["function"]
-    assert "description" in zonal_tool["function"]
-    assert "parameters" in zonal_tool["function"]
-
-    # Verify parameters
-    params = zonal_tool["function"]["parameters"]
-    assert "properties" in params
-    assert "query_type" in params["properties"]
-    assert params["properties"]["query_type"]["type"] == "string"
-    assert "enum" in params["properties"]["query_type"]
-    assert "district_summary" in params["properties"]["query_type"]["enum"]
-    assert "ndvi_timeseries" in params["properties"]["query_type"]["enum"]
-
-    # Verify optional parameters exist
-    assert "province" in params["properties"]
-    assert "h3_index" in params["properties"]
-    assert "parcel_id" in params["properties"]
-    assert "date_from" in params["properties"]
-    assert "date_to" in params["properties"]
-    assert "week_start" in params["properties"]
-
-    # Verify required fields
-    assert "required" in params
-    assert "query_type" in params["required"]
-
-
-@pytest.mark.anyio
 async def test_satellite_imagery_tool_definition_exists(client):
     """Test that search_satellite_imagery tool is defined in tools.json."""
     from pathlib import Path
