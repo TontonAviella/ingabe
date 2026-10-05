@@ -86,27 +86,6 @@ class OpenStreetMapProvider(BaseMapProvider):
             "attribution": "&copy; OpenStreetMap contributors &copy; CARTO",
             "maxzoom": 20,
         },
-        "sentinel2_live": {
-            "name": "Sentinel-2 Live",
-            "tiles": [
-                "/api/satellite/{z}/{x}/{y}.png?layer=TRUE-COLOR&collection=sentinel-2-l2a"
-            ],
-            "tileSize": 512,
-            "attribution": "&copy; Copernicus Sentinel-2 (ESA), processed by Sentinel Hub",
-            # Sentinel-2 is 10m resolution — useful up to z14 (~10m/pixel).
-            # Beyond z14, MapLibre overzooms (stretches tiles) instead of
-            # requesting new API calls for data that can't be sharper.
-            "maxzoom": 14,
-        },
-        "ndvi_map": {
-            "name": "NDVI Vegetation",
-            "tiles": [
-                "/api/satellite/{z}/{x}/{y}.png?layer=NDVI&collection=sentinel-2-l2a"
-            ],
-            "tileSize": 512,
-            "attribution": "&copy; Copernicus Sentinel-2 NDVI (ESA), processed by Sentinel Hub",
-            "maxzoom": 14,
-        },
     }
 
     async def get_base_style(self, name: Optional[str] = None) -> Dict[str, Any]:
@@ -178,9 +157,6 @@ class OpenStreetMapProvider(BaseMapProvider):
         """
         return [
             "esri_satellite",
-            # sentinel2_live and ndvi_map disabled until SH credentials are renewed
-            # "sentinel2_live",
-            # "ndvi_map",
             "openstreetmap",
             "openfreemap",
             "esri_topo",
@@ -219,8 +195,6 @@ class OpenStreetMapProvider(BaseMapProvider):
             "openstreetmap": "OpenStreetMap",
             "openfreemap": "OpenFreeMap",
             "esri_satellite": "Satellite",
-            "sentinel2_live": "Sentinel-2 Live",
-            "ndvi_map": "NDVI Vegetation",
             "esri_topo": "Topographic",
             "carto_dark": "Dark Matter",
             "carto_voyager": "Voyager",

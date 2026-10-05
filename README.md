@@ -63,6 +63,4 @@ Please do not file security-related GitHub issues, because this may compromise t
 
 ## License
 
-Optionally, Mundi can use [QGIS](https://qgis.org/) for geoprocessing.
-[The code that links with QGIS](./qgis-processing) is licensed
-as [GPLv3](./qgis-processing/LICENSE).
+Licensed under the [GNU Affero General Public License v3](./LICENSE).

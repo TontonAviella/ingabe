@@ -86,11 +86,11 @@ MULTI_TURN = [
     ("mt-drought-then-payout", "mt-follow-on-question", "insurance", DROUGHT_BUG, "does that trigger the maize insurance?",
      {"any_of": ["get_insurance_intelligence", "evaluate_insurance_trigger"]}, None),
     ("mt-forecast-then-impact", "mt-follow-on-question", "weather", FORECAST_MUS, "what will that rain do to crops there?",
-     {"any_of": ["analyze_expected_rain_impact", "get_insurance_intelligence"]}, None),
+     {"any_of": ["get_insurance_intelligence"]}, None),
     ("mt-houses-then-area", "mt-follow-on-question", "ortho_facts", HOUSES_A, "and how many hectares is that image?",
      {"any_of": ["describe_user_raster"]}, RASTER_MAP),
     ("mt-sectors-then-ndvi", "mt-follow-on-question", "ndvi", SECTORS_NYZ, "which of those sectors has the lowest NDVI?",
-     {"any_of": ["get_cell_ndvi_stats", "get_agri_indices", "query_postgis_database"]}, None),
+     {"any_of": ["get_cell_ndvi_stats", "get_agri_indices"]}, None),
     ("mt-brain-then-add", "mt-follow-on-question", "brain", BRAIN_KABEZA, "add a note that they finished harvesting today",
      {"any_of": ["add_observation"], "args": {"add_observation": {"slug": "kabeza"}}}, None),
     ("mt-correction-place", "mt-correction", "ndvi", NDVI_HUYE, "sorry, I meant Nyaruguru",
@@ -116,11 +116,6 @@ EXTRA_FIRST_STEPS = {
 
 # (id, intent, category, text, must_call, max_steps, stubs, map_state)
 CHAINS = [
-    ("ch-rain-impact", "ch-forecast-then-impact", "weather",
-     "Will this week's rain hurt crops in Bugesera? Map the risk.",
-     ["get_forecast", "analyze_expected_rain_impact"], 5,
-     {"get_forecast": {"status": "success", "district": "Bugesera", "total_precip_mm_24h": 38, "total_precip_mm_72h": 95,
-                       "bbox": "30.0,-2.4,30.4,-2.1"}}, None),
     ("ch-drought-and-rain", "ch-drought-and-forecast", "drought",
      "Is Kayonza in drought, and will it rain there next week?",
      ["get_drought_status", "get_forecast"], 4,

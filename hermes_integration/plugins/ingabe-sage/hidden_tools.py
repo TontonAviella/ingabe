@@ -1,21 +1,20 @@
-"""OpenAI-function-calling schemas for the 7 'hidden' Sage tools.
+"""OpenAI-function-calling schemas for the 4 'hidden' Sage tools.
 
 ## Why this file exists
 
 Sage's dispatch surface has three tiers:
 
-  1. `src/dependencies/pydantic_tools.py` — 29 Pydantic-validated tools, the
+  1. `src/dependencies/pydantic_tools.py` — Pydantic-validated tools, the
      modern path with type-checked args.
-  2. `src/geoprocessing/tools.json` — 60 schemas in OpenAI's function-calling
-     format. The auto-generator that produces `generated_tools.py` reads
-     from this file + sage_pydantic_schemas.json.
+  2. `src/geoprocessing/tools.json` — schemas in OpenAI's function-calling
+     format, mirrored into `generated_tools.py`.
   3. **Inline elif handlers in `src/routes/message_routes.py`** — historically
      hardcoded into the chat loop's tool dispatch but NEVER registered in
      either tools.json or the Pydantic registry. PR #57 ported these into
      `src/services/legacy_tool_shim.py` so `/internal/tool-call` can
      dispatch them, but the schemas were still missing from the plugin.
 
-The 7 tools below live in tier 3. They are the most-used tools in production
+The 4 tools below live in tier 3. They are the most-used tools in production
 (top-5 of the all-time tool-call leaderboard) but the LLM never saw them
 through the Hermes path because the auto-generator that wrote
 `generated_tools.py` never traversed `message_routes.py`'s inline elif chain.
@@ -26,7 +25,7 @@ could not pick `new_layer_from_postgis` or `add_layer_to_map` — they weren't
 in its tool catalogue. It hallucinated tools that don't exist instead
 ("we have web search tool", "let's use the browser tool to look up Nyamagabe").
 
-After this file: those 7 names are advertised to the LLM with the same
+After this file: those names are advertised to the LLM with the same
 shape as everything else in `GENERATED_SCHEMAS`, dispatched through the
 same `make_proxy_handler` HMAC proxy, and executed by the same handlers
 in `legacy_tool_shim.py`.
@@ -80,8 +79,8 @@ HIDDEN_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Create a new map layer from a PostGIS table or SQL query. "
             "Use this whenever the user wants to SEE geographic data on the map: "
-            "Rwanda districts, sectors, cells, villages, parcels, crop "
-            "classification results, drought status, anomaly alerts, weather "
+            "Rwanda districts, sectors, cells, villages, parcels, "
+            "drought status, anomaly alerts, weather "
             "data joined to admin polygons, etc. "
             "Example user prompts that should trigger this tool: "
             "'show me Nyamagabe on the map', 'add the district boundaries', "
@@ -103,8 +102,7 @@ HIDDEN_SCHEMAS: Dict[str, Dict[str, Any]] = {
                         "12-character C-prefixed PostGIS connection ID. Other "
                         "Sage tools return one of these in their result's "
                         "'postgis_connection_id' field (e.g. get_anomaly_alerts, "
-                        "get_yield_risk, get_drought_status, get_crop_classifications, "
-                        "get_emissions_stats). If you don't have one yet, call "
+                        "get_yield_risk, get_drought_status). If you don't have one yet, call "
                         "one of those tools first to obtain a connection ID."
                     ),
                 },
@@ -230,140 +228,6 @@ HIDDEN_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 },
             },
             "required": ["layer_id", "maplibre_json_layers_str"],
-        },
-    },
-    # ──────────────────────────────────────────────────────────────────────
-    # query_postgis_database — #5 most-used (38 calls). For ad-hoc data
-    # exploration when no domain-specific tool fits.
-    # Handler: legacy_tool_shim.py:_handle_query_postgis_database
-    # Args read: postgis_connection_id, sql_query
-    # ──────────────────────────────────────────────────────────────────────
-    "query_postgis_database": {
-        "name": "query_postgis_database",
-        "description": (
-            "Run a read-only SQL query against a connected PostGIS database and "
-            "return rows as tab-separated text. Use this only when you need "
-            "ad-hoc data NOT covered by a domain-specific tool — for crop "
-            "data prefer get_crop_classifications, for drought prefer "
-            "get_drought_status, for weather prefer get_weather_stats, etc. "
-            "Query MUST include an explicit LIMIT clause with a value of 1000 "
-            "or less; queries without LIMIT or with LIMIT > 1000 are rejected."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "postgis_connection_id": {
-                    "type": "string",
-                    "description": (
-                        "12-character C-prefixed PostGIS connection ID, obtained "
-                        "from another Sage tool's 'postgis_connection_id' field."
-                    ),
-                },
-                "sql_query": {
-                    "type": "string",
-                    "description": (
-                        "Read-only SELECT statement with an explicit LIMIT clause "
-                        "(value ≤ 1000). No INSERT / UPDATE / DELETE / DDL. "
-                        "Example: 'SELECT district, ST_AsText(ST_Centroid(geom)) "
-                        "AS centroid FROM rwanda_district_boundaries ORDER BY "
-                        "district LIMIT 30'."
-                    ),
-                },
-            },
-            "required": ["postgis_connection_id", "sql_query"],
-        },
-    },
-    # ──────────────────────────────────────────────────────────────────────
-    # query_duckdb_sql — used for attribute-level analysis on user-uploaded
-    # vector layers.
-    # Handler: legacy_tool_shim.py:_handle_query_duckdb_sql
-    # Args read: layer_ids (list[str], first is used), sql_query, head_n_rows (int, default 20)
-    # ──────────────────────────────────────────────────────────────────────
-    "query_duckdb_sql": {
-        "name": "query_duckdb_sql",
-        "description": (
-            "Run a DuckDB-flavoured SQL query against the attributes of a user-"
-            "uploaded vector layer (FlatGeoBuf, GeoJSON, KML, GeoPackage, etc.). "
-            "The layer is loaded as a virtual DuckDB table; only the FIRST "
-            "layer_id in the list is queryable (multi-layer joins aren't "
-            "supported by the executor). Use for things like 'how many "
-            "features in this layer', 'list unique values in column X', "
-            "'sum of attribute Y'. Result is CSV-encoded text, capped at "
-            "25,000 chars."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "layer_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "List of L-prefixed vector layer IDs. Only the FIRST is "
-                        "used as the queryable table; additional IDs are ignored. "
-                        "The layer must be of type 'vector'."
-                    ),
-                },
-                "sql_query": {
-                    "type": "string",
-                    "description": (
-                        "DuckDB-flavoured SELECT statement. The first layer_id "
-                        "is exposed as a table named after its layer_id. "
-                        "Example: 'SELECT COUNT(*) AS n_features FROM Labcd1234'."
-                    ),
-                },
-                "head_n_rows": {
-                    "type": "integer",
-                    "description": (
-                        "Maximum number of rows to return in the CSV result. "
-                        "Defaults to 20 if omitted; useful upper bound is ~500."
-                    ),
-                },
-            },
-            "required": ["layer_ids", "sql_query"],
-        },
-    },
-    # ──────────────────────────────────────────────────────────────────────
-    # zonal_statistics — raster-over-polygon math.
-    # Handler: legacy_tool_shim.py:_handle_zonal_statistics
-    # Args read: raster_layer_id, zones_layer_id, stats (list[str], optional)
-    # ──────────────────────────────────────────────────────────────────────
-    "zonal_statistics": {
-        "name": "zonal_statistics",
-        "description": (
-            "Compute aggregate statistics (mean, sum, min, max, count, stdev) "
-            "of a raster layer's pixel values, grouped by polygons from a zones "
-            "layer. Use for 'average NDVI per district', 'mean elevation per "
-            "parcel', 'total rainfall per sector'. Both layers must already "
-            "exist on the user's maps."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "raster_layer_id": {
-                    "type": "string",
-                    "description": (
-                        "12-character L-prefixed raster layer ID providing the "
-                        "pixel values to aggregate."
-                    ),
-                },
-                "zones_layer_id": {
-                    "type": "string",
-                    "description": (
-                        "12-character L-prefixed vector layer ID containing the "
-                        "polygons that define each zone."
-                    ),
-                },
-                "stats": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Optional list of statistics to compute. Defaults to "
-                        "['mean','sum','min','max','count','stdev'] when omitted. "
-                        "Valid values: mean, sum, min, max, count, stdev."
-                    ),
-                },
-            },
-            "required": ["raster_layer_id", "zones_layer_id"],
         },
     },
     # ──────────────────────────────────────────────────────────────────────
