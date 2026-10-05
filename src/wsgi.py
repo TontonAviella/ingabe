@@ -30,7 +30,7 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
-from src.routes import auth_routes
+from src.routes import auth_routes, companies_routes
 from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
@@ -670,6 +670,7 @@ app.include_router(
 )
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
+app.include_router(companies_routes.router, prefix="/api/admin/companies", tags=["Companies"])
 app.include_router(
     partner_router,
     prefix="/api/partner",

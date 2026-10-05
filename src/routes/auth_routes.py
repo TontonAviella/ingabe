@@ -138,6 +138,7 @@ async def _me(request: Request, session: UserContext) -> dict[str, Any]:
         },
         "organization": org,
         "organizations": await _organizations(ws_session.user_id) if ws_session else [],
+        "is_staff": workos_auth.is_platform_staff(ws_session.email if ws_session else None),
     }
 
 
