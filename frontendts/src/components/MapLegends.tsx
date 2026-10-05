@@ -49,7 +49,7 @@ export function MapLegends({ map }: { map: MLMap | null }) {
   if (legends.length === 0) return null;
 
   return (
-    <div className="absolute top-28 right-4 z-10 max-w-60 rounded-md bg-white/95 px-2 py-1.5 text-[11px] text-gray-900 shadow-lg dark:bg-gray-800/95 dark:text-gray-100">
+    <div className="absolute top-48 right-4 z-[1] max-w-60 rounded-md bg-white/95 px-2 py-1.5 text-[11px] text-gray-900 shadow-lg dark:bg-gray-800/95 dark:text-gray-100">
       <button
         type="button"
         className="flex w-full items-center justify-between gap-2 font-semibold"

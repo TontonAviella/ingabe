@@ -129,3 +129,27 @@ def test_other_workos_refusals_become_readable_errors(monkeypatch):
     monkeypatch.setattr(workos_auth, "_client", lambda: client)
     with pytest.raises(ValueError, match="Email is not valid"):
         workos_auth.invite("org_1", "nope", "member", None)
+
+
+def test_any_long_secret_becomes_a_key_the_sdk_can_seal_with():
+    """The mocked login tests never sealed a cookie; a 64-char hex secret broke every real sign-in."""
+    import secrets
+
+    from workos.session import seal_data, unseal_data
+
+    for secret in (secrets.token_hex(32), "x" * 32):
+        key = workos_auth.cookie_key(secret)
+        assert unseal_data(seal_data({"user": "u1"}, key), key) == {"user": "u1"}
+
+
+def test_a_key_already_in_fernet_form_is_kept_so_existing_cookies_stay_valid():
+    import base64
+    import os
+
+    key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+    assert workos_auth.cookie_key(key) == key
+
+
+def test_a_short_cookie_secret_is_refused():
+    with pytest.raises(RuntimeError):
+        workos_auth.cookie_key("too-short")

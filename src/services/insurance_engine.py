@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.services import et_normals
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
 
@@ -36,15 +37,60 @@ _AUDIENCE_ALIASES = {
 DEFAULT_AUDIENCE = "agronomist"
 
 
-def normalize_audience(audience: Optional[str]) -> str:
-    """The report audience for a requested name; DEFAULT_AUDIENCE when unknown or unset."""
+AUDIENCE_LABELS = {"farmer": "Farmer", "insurance": "Insurer", "agronomist": "Agronomist", "scientist": "Scientist"}
+
+
+def _known_audience(audience: Optional[str]) -> Optional[str]:
     key = (audience or "").strip().lower().replace(" ", "_")
     key = _AUDIENCE_ALIASES.get(key, key)
-    return key if key in _VALID_AUDIENCES else DEFAULT_AUDIENCE
+    return key if key in _VALID_AUDIENCES else None
+
+
+def normalize_audience(audience: Optional[str]) -> str:
+    """The report audience for a requested name; DEFAULT_AUDIENCE when unknown or unset."""
+    return _known_audience(audience) or DEFAULT_AUDIENCE
+
+
+async def audience_setting(conn: asyncpg.Connection, user_id: Optional[str],
+                           partner_id: Optional[str]) -> tuple[str, str]:
+    """(audience, source) from saved settings: the user's own role, else the
+    partner's default (organizations.metadata.default_audience), else
+    DEFAULT_AUDIENCE. Source is "user", "partner" or "default"."""
+    if user_id:
+        mine = await conn.fetchval("SELECT report_audience FROM users WHERE internal_uuid = $1", user_id)
+        if _known_audience(mine):
+            return _known_audience(mine), "user"  # type: ignore[return-value]
+    if partner_id:
+        theirs = await conn.fetchval(
+            "SELECT metadata->>'default_audience' FROM organizations WHERE id::text = $1", partner_id)
+        if _known_audience(theirs):
+            return _known_audience(theirs), "partner"  # type: ignore[return-value]
+    return DEFAULT_AUDIENCE, "default"
+
+
+async def resolve_audience(conn: asyncpg.Connection, requested: Optional[str],
+                           user_id: Optional[str], partner_id: Optional[str]) -> str:
+    """A view the user asked for in the conversation wins; otherwise their saved setting."""
+    explicit = _known_audience(requested)
+    if explicit:
+        return explicit
+    try:
+        return (await audience_setting(conn, user_id, partner_id))[0]
+    except Exception:
+        logger.warning("audience setting lookup failed; using %s", DEFAULT_AUDIENCE, exc_info=True)
+        return DEFAULT_AUDIENCE
+
+
+async def save_user_audience(conn: asyncpg.Connection, user_id: str, audience: Optional[str]) -> bool:
+    """Save (or clear, with None) the user's report audience. False if the user has no account row."""
+    value = None if audience is None else _known_audience(audience)
+    if audience is not None and value is None:
+        raise ValueError(f"audience must be one of {', '.join(sorted(_VALID_AUDIENCES))}")
+    status = await conn.execute("UPDATE users SET report_audience = $2 WHERE internal_uuid = $1", user_id, value)
+    return status.endswith(" 1")
 
 _RWANDA_CENTER = (-1.94, 29.87)
 
-_ET_LONG_TERM_MEAN = 3.5
 
 # Per-district and national MONTHLY rainfall normals (mm per month), loaded
 # from monthly_rainfall_normals.json beside this module (see "source", "years").
@@ -435,6 +481,22 @@ def _compute_spi_pair(
         "spi_1": _compute_spi_from_daily(daily_precip, ref_date, 30, district),
         "spi_3": _compute_spi_from_daily(daily_precip, ref_date, 90, district),
     }
+
+def _et_anomaly_pct(et_result: Optional[dict]) -> Optional[float]:
+    """ET over the dekads with data, as % above/below their seasonal normal at that pixel.
+
+    Only dekads with both an observation and a normal count (unpublished
+    dekads are missing, not zero). None when there are none.
+    """
+    if not et_result or et_result.get("status") != "success":
+        return None
+    pairs = [(e["et_mm_per_day"], e["normal_et_mm_per_day"]) for e in et_result.get("time_series", [])
+             if e.get("et_mm_per_day") is not None and e.get("normal_et_mm_per_day") is not None]
+    normal = sum(n for _, n in pairs)
+    if not pairs or normal <= 0:
+        return None
+    return (sum(o for o, _ in pairs) - normal) / normal * 100
+
 
 def _classify_drought_state(
     spi_3: Optional[float],
@@ -1312,8 +1374,12 @@ async def _fetch_area_signals(
     today: date,
     season: str,
     district: Optional[str],
+    et_normals_by_cell: Optional[dict[str, dict[int, float]]] = None,
 ) -> dict[str, Any]:
-    """Fetch all signals for a single centroid. Lightweight — no DB, no triggers."""
+    """Fetch all signals for a single centroid. Lightweight — no DB, no triggers.
+
+    ET normals are looked up by the caller for every area in one query.
+    """
     signals: dict[str, Any] = {}
 
     async def _chirps():
@@ -1391,12 +1457,10 @@ async def _fetch_area_signals(
             signals["max_dry_spell_days"] = max_dry
 
     # ET anomaly
-    if et_result and isinstance(et_result, dict) and et_result.get("status") == "success":
-        series = et_result.get("time_series", [])
-        values = [s.get("et_mm_per_day") for s in series if s.get("et_mm_per_day") is not None]
-        if values:
-            mean_et = sum(values) / len(values)
-            signals["et_anomaly_pct"] = round(((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100, 1)
+    et_normals.attach(et_result, (et_normals_by_cell or {}).get(et_normals.cell_for(lat, lon), {}))
+    et_anomaly = _et_anomaly_pct(et_result)
+    if et_anomaly is not None:
+        signals["et_anomaly_pct"] = round(et_anomaly, 1)
 
     # Soil moisture
     if soil_result and isinstance(soil_result, dict) and soil_result.get("status") == "success":
@@ -1578,6 +1642,16 @@ async def _compare_areas(
     except Exception:
         logger.debug("NDVI cache lookup for comparison failed", exc_info=True)
 
+    # ET normals for every area in one query (the areas then fetch in parallel)
+    try:
+        normals_by_cell = await et_normals.normals_by_cell(
+            conn, [et_normals.cell_for(float(r["lat"]), float(r["lon"])) for r in rows],
+            et_normals.dekads_between(planting_date, today),
+        )
+    except Exception:
+        logger.warning("ET normals lookup failed; ET anomaly unavailable for this comparison", exc_info=True)
+        normals_by_cell = {}
+
     # Fetch all signals in parallel for each area
     async def _fetch_one(row: asyncpg.Record) -> dict[str, Any]:
         lat = float(row["lat"])
@@ -1586,6 +1660,7 @@ async def _compare_areas(
         d_name = row["district_name"] if "district_name" in row.keys() else district
         signals = await _fetch_area_signals(
             lat, lon, planting_date, today, season, district=d_name,
+            et_normals_by_cell=normals_by_cell,
         )
         # Merge cached NDVI
         ndvi = ndvi_by_area.get(name.lower())
@@ -1792,6 +1867,13 @@ async def compute_insurance_intelligence(
                      forecast_result.get("models_used", []))
 
     # DB-dependent fetches: sequential on the shared connection
+    if et_result and et_result.get("status") == "success":
+        try:
+            cell = et_normals.cell_for(lat, lon)
+            normals = await et_normals.normals_by_cell(conn, [cell], et_normals.dekads_between(planting_date, today))
+            et_normals.attach(et_result, normals.get(cell, {}))
+        except Exception:
+            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
     try:
         accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
     except Exception:
@@ -1873,15 +1955,9 @@ async def compute_insurance_intelligence(
             sources.append("Sentinel-1 SAR")
 
     # ET and soil moisture
-    et_anomaly = None
-    if et_result and et_result.get("status") == "success":
-        series = et_result.get("time_series", [])
-        if series:
-            values = [s.get("et_mm_per_day") for s in series if s.get("et_mm_per_day") is not None]
-            if values:
-                mean_et = sum(values) / len(values)
-                et_anomaly = ((mean_et - _ET_LONG_TERM_MEAN) / _ET_LONG_TERM_MEAN) * 100
-                sources.append("WaPOR v3 ET")
+    et_anomaly = _et_anomaly_pct(et_result)
+    if et_anomaly is not None:
+        sources.append("WaPOR v3 ET")
 
     soil_moisture = None
     if soil_result and soil_result.get("status") == "success":

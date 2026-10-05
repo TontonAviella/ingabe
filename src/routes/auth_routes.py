@@ -103,11 +103,12 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
 async def auth_logout(request: Request):
     """End the WorkOS session and clear the cookie."""
     ws_session = getattr(request.state, "workos_session", None)
-    target = "/"
     if workos_auth.enabled() and ws_session is not None:
-        home = str(request.base_url)
-        target = await asyncio.to_thread(workos_auth.logout_url, ws_session.session_id, home)
-    response = RedirectResponse(target, status_code=status.HTTP_302_FOUND)
+        try:
+            await asyncio.to_thread(workos_auth.revoke_session, ws_session.session_id)
+        except Exception:  # noqa: BLE001 - the app cookie is cleared anyway; logged for follow-up
+            logger.warning("Revoking WorkOS session %s failed", ws_session.session_id, exc_info=True)
+    response = RedirectResponse("/?signed_out=1", status_code=status.HTTP_302_FOUND)
     set_session_cookie(response, None, is_secure(request))
     return response
 
