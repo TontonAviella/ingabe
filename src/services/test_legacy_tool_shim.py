@@ -189,3 +189,22 @@ async def test_new_layer_from_postgis_rejects_missing_args():
     }))
     assert result2["status"] == "error"
     assert "Missing required parameters" in result2["error"]
+
+
+@pytest.mark.asyncio
+async def test_internal_rwanda_connection_only_reads_rwanda_tables():
+    """The internal Rwanda connection has no user scope; the shim must refuse
+    other tables (they hold every user's rows), as the chat loop does."""
+    from src.routes.message_routes import RWANDA_INTERNAL_CONNECTION_NAME, _rwanda_internal_conn_id
+
+    ctx = _make_ctx({
+        "postgis_connection_id": _rwanda_internal_conn_id("PTESTBBBBBBB"),
+        "query": "SELECT id, geom FROM user_mundiai_maps LIMIT 5",
+        "layer_name": "maps",
+    })
+    ctx.conn.fetchrow = AsyncMock(return_value={
+        "connection_uri": "postgresql://internal", "connection_name": RWANDA_INTERNAL_CONNECTION_NAME,
+    })
+    result = await execute_legacy_tool("new_layer_from_postgis", ctx)
+    assert result["status"] == "error"
+    assert "user_mundiai_maps" in result["error"]

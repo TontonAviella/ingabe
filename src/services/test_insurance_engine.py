@@ -1554,10 +1554,10 @@ class TestInsuranceToolSchema:
         tool = self._load_tool()
         assert tool["function"]["parameters"]["required"] == []
 
-    def test_dispatch_wired_in_message_routes(self):
-        routes_path = pathlib.Path(__file__).parent.parent / "routes" / "message_routes.py"
-        src = routes_path.read_text()
-        assert 'function_name == "get_insurance_intelligence"' in src
+    def test_dispatch_is_registered(self):
+        """Both runtimes dispatch non-Pydantic tools through LEGACY_HANDLERS."""
+        from src.services.legacy_tool_shim import LEGACY_HANDLERS
+        assert "get_insurance_intelligence" in LEGACY_HANDLERS
 
 
 # ---------------------------------------------------------------------------
