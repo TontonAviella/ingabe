@@ -36,11 +36,57 @@ _AUDIENCE_ALIASES = {
 DEFAULT_AUDIENCE = "agronomist"
 
 
-def normalize_audience(audience: Optional[str]) -> str:
-    """The report audience for a requested name; DEFAULT_AUDIENCE when unknown or unset."""
+AUDIENCE_LABELS = {"farmer": "Farmer", "insurance": "Insurer", "agronomist": "Agronomist", "scientist": "Scientist"}
+
+
+def _known_audience(audience: Optional[str]) -> Optional[str]:
     key = (audience or "").strip().lower().replace(" ", "_")
     key = _AUDIENCE_ALIASES.get(key, key)
-    return key if key in _VALID_AUDIENCES else DEFAULT_AUDIENCE
+    return key if key in _VALID_AUDIENCES else None
+
+
+def normalize_audience(audience: Optional[str]) -> str:
+    """The report audience for a requested name; DEFAULT_AUDIENCE when unknown or unset."""
+    return _known_audience(audience) or DEFAULT_AUDIENCE
+
+
+async def audience_setting(conn: asyncpg.Connection, user_id: Optional[str],
+                           partner_id: Optional[str]) -> tuple[str, str]:
+    """(audience, source) from saved settings: the user's own role, else the
+    partner's default (organizations.metadata.default_audience), else
+    DEFAULT_AUDIENCE. Source is "user", "partner" or "default"."""
+    if user_id:
+        mine = await conn.fetchval("SELECT report_audience FROM users WHERE internal_uuid = $1", user_id)
+        if _known_audience(mine):
+            return _known_audience(mine), "user"  # type: ignore[return-value]
+    if partner_id:
+        theirs = await conn.fetchval(
+            "SELECT metadata->>'default_audience' FROM organizations WHERE id::text = $1", partner_id)
+        if _known_audience(theirs):
+            return _known_audience(theirs), "partner"  # type: ignore[return-value]
+    return DEFAULT_AUDIENCE, "default"
+
+
+async def resolve_audience(conn: asyncpg.Connection, requested: Optional[str],
+                           user_id: Optional[str], partner_id: Optional[str]) -> str:
+    """A view the user asked for in the conversation wins; otherwise their saved setting."""
+    explicit = _known_audience(requested)
+    if explicit:
+        return explicit
+    try:
+        return (await audience_setting(conn, user_id, partner_id))[0]
+    except Exception:
+        logger.warning("audience setting lookup failed; using %s", DEFAULT_AUDIENCE, exc_info=True)
+        return DEFAULT_AUDIENCE
+
+
+async def save_user_audience(conn: asyncpg.Connection, user_id: str, audience: Optional[str]) -> bool:
+    """Save (or clear, with None) the user's report audience. False if the user has no account row."""
+    value = None if audience is None else _known_audience(audience)
+    if audience is not None and value is None:
+        raise ValueError(f"audience must be one of {', '.join(sorted(_VALID_AUDIENCES))}")
+    status = await conn.execute("UPDATE users SET report_audience = $2 WHERE internal_uuid = $1", user_id, value)
+    return status.endswith(" 1")
 
 _RWANDA_CENTER = (-1.94, 29.87)
 
