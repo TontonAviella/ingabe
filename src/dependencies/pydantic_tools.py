@@ -21,10 +21,6 @@ from src.tools.zoom import (
     zoom_to_bounds,
 )
 from src.tools.pyd import IngabeToolCallMetaArgs
-from src.tools.openstreetmap import (
-    download_from_openstreetmap as osm_download_tool,
-    DownloadFromOpenStreetMapArgs,
-)
 from src.tools.create_point import (
     create_point_layer,
     CreatePointLayerArgs,
@@ -32,6 +28,10 @@ from src.tools.create_point import (
 from src.tools.search_place import (
     search_location,
     SearchLocationArgs,
+)
+from src.tools.admin_units import (
+    list_admin_units,
+    ListAdminUnitsArgs,
 )
 from src.tools.display_layer import (
     display_satellite_layer,
@@ -51,31 +51,11 @@ from src.tools.wapor import (
     get_evapotranspiration,
     GetEvapotranspirationArgs,
 )
-from src.tools.food_security import (
-    get_food_security_alerts,
-    GetFoodSecurityAlertsArgs,
-)
 from src.tools.sar import (
     predict_ndvi_from_sar,
     PredictNdviFromSarArgs,
-    detect_water_bodies,
-    DetectWaterBodiesArgs,
     detect_flood_extent,
     DetectFloodExtentArgs,
-)
-from src.tools.alos import (
-    get_alos_l_band_stats,
-    GetAlosLBandStatsArgs,
-    get_alos_temporal_variation,
-    GetAlosTemporalVariationArgs,
-)
-from src.tools.cygnss import (
-    check_cygnss_availability,
-    CheckCygnssAvailabilityArgs,
-    get_cygnss_soil_moisture,
-    GetCygnssSoilMoistureArgs,
-    get_cygnss_watermask,
-    GetCygnssWatermaskArgs,
 )
 from src.tools.raster_query import (
     describe_user_raster,
@@ -101,18 +81,6 @@ from src.tools.rgb_visual import (
     analyze_rgb_field,
     AnalyzeRgbFieldArgs,
 )
-from src.tools.rain_impact import (
-    analyze_expected_rain_impact,
-    AnalyzeExpectedRainImpactArgs,
-)
-from src.tools.sphere_flood import (
-    analyze_sphere_flood_impact,
-    AnalyzeSphereFloodImpactArgs,
-)
-from src.tools.h3_spatial_insight import (
-    create_h3_spatial_insight_layer,
-    CreateH3SpatialInsightLayerArgs,
-)
 from src.tools.raster_h3_context import (
     create_raster_h3_context_layer,
     CreateRasterH3ContextLayerArgs,
@@ -121,27 +89,6 @@ from src.tools.raster_object_candidates import (
     analyze_raster_object_candidates,
     AnalyzeRasterObjectCandidatesArgs,
 )
-from src.tools.open_buildings import (
-    analyze_open_buildings_exposure,
-    AnalyzeOpenBuildingsExposureArgs,
-)
-from src.tools.spatial_engines import (
-    get_spatial_engine_capabilities,
-    GetSpatialEngineCapabilitiesArgs,
-)
-from src.tools.pipeline_evidence import (
-    get_pipeline_evidence_status,
-    GetPipelineEvidenceStatusArgs,
-)
-from src.tools.geolibre import (
-    get_geolibre_tool_capabilities,
-    GetGeolibreToolCapabilitiesArgs,
-    run_geolibre_tool,
-    RunGeolibreToolArgs,
-    run_geolibre_smoke_suite_tool,
-    RunGeolibreSmokeSuiteArgs,
-)
-from src.openstreetmap import has_openstreetmap_api_key
 
 
 ToolFn = Callable[[Any, Any], Awaitable[dict]]
@@ -169,6 +116,11 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "search_location": (
             search_location,
             SearchLocationArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "list_admin_units": (
+            list_admin_units,
+            ListAdminUnitsArgs,
             IngabeToolCallMetaArgs,
         ),
         "display_satellite_layer": (
@@ -201,49 +153,14 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
             GetEvapotranspirationArgs,
             IngabeToolCallMetaArgs,
         ),
-        "get_food_security_alerts": (
-            get_food_security_alerts,
-            GetFoodSecurityAlertsArgs,
-            IngabeToolCallMetaArgs,
-        ),
         "predict_ndvi_from_sar": (
             predict_ndvi_from_sar,
             PredictNdviFromSarArgs,
             IngabeToolCallMetaArgs,
         ),
-        "detect_water_bodies": (
-            detect_water_bodies,
-            DetectWaterBodiesArgs,
-            IngabeToolCallMetaArgs,
-        ),
         "detect_flood_extent": (
             detect_flood_extent,
             DetectFloodExtentArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_alos_l_band_stats": (
-            get_alos_l_band_stats,
-            GetAlosLBandStatsArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_alos_temporal_variation": (
-            get_alos_temporal_variation,
-            GetAlosTemporalVariationArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "check_cygnss_availability": (
-            check_cygnss_availability,
-            CheckCygnssAvailabilityArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_cygnss_soil_moisture": (
-            get_cygnss_soil_moisture,
-            GetCygnssSoilMoistureArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_cygnss_watermask": (
-            get_cygnss_watermask,
-            GetCygnssWatermaskArgs,
             IngabeToolCallMetaArgs,
         ),
         "describe_user_raster": (
@@ -291,21 +208,6 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
             EvaluateInsuranceTriggerArgs,
             IngabeToolCallMetaArgs,
         ),
-        "analyze_expected_rain_impact": (
-            analyze_expected_rain_impact,
-            AnalyzeExpectedRainImpactArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "analyze_sphere_flood_impact": (
-            analyze_sphere_flood_impact,
-            AnalyzeSphereFloodImpactArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "create_h3_spatial_insight_layer": (
-            create_h3_spatial_insight_layer,
-            CreateH3SpatialInsightLayerArgs,
-            IngabeToolCallMetaArgs,
-        ),
         "create_raster_h3_context_layer": (
             create_raster_h3_context_layer,
             CreateRasterH3ContextLayerArgs,
@@ -316,41 +218,5 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
             AnalyzeRasterObjectCandidatesArgs,
             IngabeToolCallMetaArgs,
         ),
-        "analyze_open_buildings_exposure": (
-            analyze_open_buildings_exposure,
-            AnalyzeOpenBuildingsExposureArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_spatial_engine_capabilities": (
-            get_spatial_engine_capabilities,
-            GetSpatialEngineCapabilitiesArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_pipeline_evidence_status": (
-            get_pipeline_evidence_status,
-            GetPipelineEvidenceStatusArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "get_geolibre_tool_capabilities": (
-            get_geolibre_tool_capabilities,
-            GetGeolibreToolCapabilitiesArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "run_geolibre_tool": (
-            run_geolibre_tool,
-            RunGeolibreToolArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "run_geolibre_smoke_suite_tool": (
-            run_geolibre_smoke_suite_tool,
-            RunGeolibreSmokeSuiteArgs,
-            IngabeToolCallMetaArgs,
-        ),
     }
-    if has_openstreetmap_api_key():
-        registry["download_from_openstreetmap"] = (
-            osm_download_tool,
-            DownloadFromOpenStreetMapArgs,
-            IngabeToolCallMetaArgs,
-        )
     return registry

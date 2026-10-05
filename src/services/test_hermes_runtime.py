@@ -102,19 +102,6 @@ def test_hermes_toolsets_keep_small_talk_on_core_only():
     assert selected == ["ingabe-sage-core"]
 
 
-def test_hermes_toolsets_route_spatial_engine_probe_to_raster():
-    selected = select_hermes_toolsets(
-        list(HERMES_INGABE_TOOLSETS),
-        "Show the spatial engine capabilities; do not answer from memory.",
-    )
-
-    assert selected == [
-        "ingabe-sage-core",
-        "ingabe-sage-map-view",
-        "ingabe-sage-raster-engine",
-    ]
-
-
 def test_hermes_result_rejects_empty_and_incomplete_turns():
     assert hermes_result_failure_reason(
         {"completed": False, "turn_exit_reason": "empty_response_exhausted"},

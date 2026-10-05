@@ -54,14 +54,6 @@ class PredictNdviFromSarArgs(BaseModel):
     )
 
 
-class DetectWaterBodiesArgs(BaseModel):
-    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
-    date: str = Field(
-        ...,
-        description="Date YYYY-MM-DD, OR empty string '' to use the most recent scene.",
-    )
-
-
 class DetectFloodExtentArgs(BaseModel):
     bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
     date_before: str = Field(..., description="Pre-flood date YYYY-MM-DD.")
@@ -78,25 +70,6 @@ async def predict_ndvi_from_sar(
     bbox = _parse_bbox(args.bbox)
     return await asyncio.get_running_loop().run_in_executor(
         None, lambda: svc.predict_ndvi(bbox, _none_if_empty(args.target_date))
-    )
-
-
-async def detect_water_bodies(
-    args: DetectWaterBodiesArgs, meta: IngabeToolCallMetaArgs
-) -> dict:
-    """Detect water bodies from Sentinel-1 SAR imagery. Returns water area, fraction, and polygon evidence in 'displayable_geojson' — call display_geojson_layer with style_hint='water' to paint the detected water on the map."""
-    from src.services.sar_water import get_sar_water_service
-
-    svc = get_sar_water_service()
-    bbox = _parse_bbox(args.bbox)
-    result = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: svc.detect_water(bbox, _none_if_empty(args.date))
-    )
-    scene = result.get("scene_date", "") if isinstance(result, dict) else ""
-    return _enrich_with_displayable_geojson(
-        result, bbox,
-        style_hint="water",
-        title=f"SAR Water Bodies — {scene[:10] if scene else 'recent scene'}",
     )
 
 

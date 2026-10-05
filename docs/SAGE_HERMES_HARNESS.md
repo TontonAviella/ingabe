@@ -34,7 +34,7 @@ This is the difference between a clever chat response and an operating system fo
 - Broken map/tool behavior -> investigation or review skill, plus focused tests.
 - Performance claim -> benchmark skill and recorded numbers.
 - PESTEL shift across agriculture, housing, infrastructure, or environment -> `docs/PESTEL_ANALYSIS.md`.
-- Pipeline truth claim -> inspect Dagster/job state or `get_pipeline_evidence_status`, then verify with PostHog telemetry if available.
+- Pipeline truth claim -> inspect Dagster/job state and the `pipeline_cache_age_seconds` metric in Prometheus, then verify with PostHog telemetry if available.
 
 ## Geospatial Intelligence Rules
 

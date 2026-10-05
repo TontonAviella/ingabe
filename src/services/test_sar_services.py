@@ -309,10 +309,8 @@ class TestToolsJsonIntegrity:
             tools = json.load(f)
         assert isinstance(tools, list)
 
-        # Check our 3 new tools exist
         tool_names = [t["function"]["name"] for t in tools]
         assert "predict_ndvi_from_sar" in tool_names
-        assert "detect_water_bodies" in tool_names
         assert "detect_flood_extent" in tool_names
 
     def test_new_tools_have_required_fields(self):
