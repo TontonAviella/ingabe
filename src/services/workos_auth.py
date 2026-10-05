@@ -314,10 +314,19 @@ def create_partner(name: str, admin_email: str) -> dict[str, Any]:
 # Companies (partner organizations), for Ingabe staff
 # ---------------------------------------------------------------------------
 
+def _platform_admins() -> list[str]:
+    return [e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()]
+
+
 def is_platform_staff(email: Optional[str]) -> bool:
     """Ingabe staff who may add companies: PLATFORM_ADMIN_EMAILS, comma-separated."""
-    allowed = {e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()}
-    return bool(email) and email.strip().lower() in allowed
+    return bool(email) and email.strip().lower() in _platform_admins()
+
+
+def is_platform_owner(email: Optional[str]) -> bool:
+    """The system owner: the FIRST email in PLATFORM_ADMIN_EMAILS (sees WorkOS dashboard guidance)."""
+    admins = _platform_admins()
+    return bool(email) and bool(admins) and email.strip().lower() == admins[0]
 
 
 def _company_status(active_members: int, invitations: list[dict[str, Any]]) -> dict[str, str]:

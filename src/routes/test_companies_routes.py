@@ -71,3 +71,10 @@ def test_the_workos_sample_company_is_not_listed():
     real = SimpleNamespace(domains=[SimpleNamespace(domain="bk.rw")])
     assert workos_auth._is_workos_sample(sample) and not workos_auth._is_workos_sample(real)
     assert not workos_auth._is_workos_sample(SimpleNamespace(domains=None))
+
+
+def test_only_the_first_staff_email_is_the_owner(monkeypatch):
+    monkeypatch.setenv("PLATFORM_ADMIN_EMAILS", "Owner@ingabe.rw, staff@ingabe.rw")
+    assert workos_auth.is_platform_owner("owner@ingabe.rw")
+    assert not workos_auth.is_platform_owner("staff@ingabe.rw") and workos_auth.is_platform_staff("staff@ingabe.rw")
+    assert not workos_auth.is_platform_owner(None)

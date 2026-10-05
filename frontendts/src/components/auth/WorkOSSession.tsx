@@ -26,6 +26,7 @@ export interface WorkOSMe {
   organization: WorkOSOrganization | null;
   organizations: WorkOSOrganization[];
   is_staff?: boolean;
+  is_owner?: boolean;
 }
 
 type Status = 'loading' | 'signedIn' | 'signedOut';
