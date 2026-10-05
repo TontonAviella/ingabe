@@ -7,11 +7,7 @@ import { Card } from './ui/card';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from './ui/pagination';
 import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
-interface MapsListProps {
-  hideNewButton?: boolean;
-}
-
-export default function MapsList({ hideNewButton = false }: MapsListProps) {
+export default function MapsList() {
   const {
     projects,
     totalPages,
@@ -126,24 +122,22 @@ export default function MapsList({ hideNewButton = false }: MapsListProps) {
           </h1>
         </div>
 
-        {!hideNewButton && (
-          <TooltipProvider delayDuration={100}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div>
-                  <Button
-                    onClick={handleCreateMap}
-                    disabled={isLoading}
-                    className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
-                  >
-                    <Plus className="mr-2 h-4 w-4" />
-                    {isLoading ? 'Creating...' : 'New Map'}
-                  </Button>
-                </div>
-              </TooltipTrigger>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+        <TooltipProvider delayDuration={100}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div>
+                <Button
+                  onClick={handleCreateMap}
+                  disabled={isLoading}
+                  className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  {isLoading ? 'Creating...' : 'New Map'}
+                </Button>
+              </div>
+            </TooltipTrigger>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Top pagination */}
@@ -187,15 +181,13 @@ export default function MapsList({ hideNewButton = false }: MapsListProps) {
           <Plus className="h-8 w-8 mb-2 text-[#e2420d]" />
           <h3 className="text-lg font-medium">No Maps Found</h3>
           <p className="text-sm text-gray-400 text-center mt-1">Create your first map to get started</p>
-          {!hideNewButton && (
-            <Button
-              onClick={handleCreateMap}
-              disabled={isLoading}
-              className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
-            >
-              {isLoading ? 'Creating...' : 'Create Your First Map'}
-            </Button>
-          )}
+          <Button
+            onClick={handleCreateMap}
+            disabled={isLoading}
+            className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+          >
+            {isLoading ? 'Creating...' : 'Create Your First Map'}
+          </Button>
         </Card>
       ) : (
         <>

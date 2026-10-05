@@ -199,12 +199,11 @@ async def tool_call(
     # process. Even with auth, only the curated registry is dispatchable.
     #
     # Two-tier whitelist:
-    #   1. Modern path: get_pydantic_tool_calls() — 28 cleanly-architected tools.
-    #   2. Legacy shim: src/services/legacy_tool_shim.py:LEGACY_HANDLERS — 53
-    #      tools whose handlers still live as inline elif blocks in
-    #      message_routes.py and are being migrated incrementally. Both lists
-    #      together form Sage's full callable surface (~82 tools); the
-    #      Hermes plugin shows both kinds to the LLM via generated_tools.py.
+    #   1. get_pydantic_tool_calls(): tools with a Pydantic args model.
+    #   2. src/services/legacy_tool_shim.py:LEGACY_HANDLERS: every other tool;
+    #      the chat loop dispatches the same handlers. Together they are
+    #      Sage's full callable surface; the Hermes plugin shows both kinds to
+    #      the LLM via generated_tools.py and hidden_tools.py.
     #
     # The /internal/tool-call route can dispatch either kind. Whitelist
     # check covers BOTH — anything not in either set is rejected as 404

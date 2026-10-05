@@ -2,7 +2,7 @@ export default function TermsOfService() {
   return (
     <div className="max-w-3xl mx-auto p-8 prose dark:prose-invert">
       <h1>Terms of Service</h1>
-      <p className="text-sm text-muted-foreground">Last updated: February 2026</p>
+      <p className="text-sm text-muted-foreground">Last updated: October 2026</p>
 
       <h2>1. Acceptance</h2>
       <p>
@@ -13,7 +13,7 @@ export default function TermsOfService() {
       <h2>2. Description of Service</h2>
       <p>
         Ingabe is an AI-native web GIS platform for geospatial data management, visualization, and analysis. The Service includes map
-        creation, layer management, AI-assisted geoprocessing, and PostGIS database connections.
+        creation, layer management, and AI-assisted geoprocessing.
       </p>
 
       <h2>3. User Accounts</h2>
@@ -46,19 +46,13 @@ export default function TermsOfService() {
         the accuracy of any AI-generated analysis, statistics, or geoprocessing results before relying on them for decisions.
       </p>
 
-      <h2>7. PostGIS Connections</h2>
-      <p>
-        When you connect external PostgreSQL/PostGIS databases, you are responsible for ensuring you have the right to access that data.
-        Ingabe stores connection credentials encrypted and does not share them with third parties.
-      </p>
-
-      <h2>8. Service Availability</h2>
+      <h2>7. Service Availability</h2>
       <p>
         We strive for high availability but do not guarantee uninterrupted service. We may perform maintenance with reasonable notice. We
         are not liable for data loss — please maintain your own backups of critical data.
       </p>
 
-      <h2>9. Open Source</h2>
+      <h2>8. Open Source</h2>
       <p>
         Ingabe's source code is available under the GNU Affero General Public License v3 (AGPLv3) at{' '}
         <a href="https://github.com/Ingabe/mundi.ai" target="_blank" rel="noopener noreferrer">
@@ -67,24 +61,24 @@ export default function TermsOfService() {
         . These Terms apply to the hosted service, not self-hosted instances.
       </p>
 
-      <h2>10. Limitation of Liability</h2>
+      <h2>9. Limitation of Liability</h2>
       <p>
         To the maximum extent permitted by law, Ingabe shall not be liable for any indirect, incidental, or consequential damages arising
         from your use of the Service, including but not limited to loss of data, revenue, or profits.
       </p>
 
-      <h2>11. Termination</h2>
+      <h2>10. Termination</h2>
       <p>
         We may suspend or terminate your account for violation of these Terms. You may delete your account at any time. Upon termination,
         your data will be deleted per our Privacy Policy.
       </p>
 
-      <h2>12. Changes to Terms</h2>
+      <h2>11. Changes to Terms</h2>
       <p>
         We may update these Terms from time to time. Continued use of the Service after changes constitutes acceptance of the updated Terms.
       </p>
 
-      <h2>13. Contact</h2>
+      <h2>12. Contact</h2>
       <p>
         For questions about these Terms, contact us at <a href="mailto:legal@ingabe.com">legal@ingabe.com</a>.
       </p>
