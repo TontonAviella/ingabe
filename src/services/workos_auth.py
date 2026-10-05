@@ -228,7 +228,7 @@ def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def invite(organization_id: str, email: str, role: str, inviter_user_id: str) -> dict[str, Any]:
+def invite(organization_id: str, email: str, role: str, inviter_user_id: Optional[str]) -> dict[str, Any]:
     """Email an invitation to join the organization (WorkOS sends the email)."""
     if role not in ASSIGNABLE_ROLES:
         raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
@@ -264,3 +264,19 @@ def revoke_invitation(invitation_id: str, organization_id: str) -> None:
     if not any(i["id"] == invitation_id for i in pending_invitations(organization_id)):
         raise PermissionError("invitation belongs to another organization or is no longer pending")
     _client().user_management.revoke_invitation(invitation_id)
+
+
+def create_partner(name: str, admin_email: str) -> dict[str, Any]:
+    """Create a partner organization (or reuse the one with this exact name) and invite its first admin.
+
+    WorkOS emails the invitation; once the admin signs in they manage the rest of
+    their staff on the app's members page. Nothing else needs the WorkOS dashboard.
+    """
+    name = name.strip()
+    page = _client().organizations.list_organizations(search=name, limit=100)
+    org = next((o for o in getattr(page, "data", page) if o.name.strip().lower() == name.lower()), None)
+    created = org is None
+    if org is None:
+        org = _client().organizations.create_organization(name=name)
+    invitation = invite(org.id, admin_email.strip(), "admin", None)
+    return {"organization_id": org.id, "name": org.name, "created": created, "invitation": invitation}

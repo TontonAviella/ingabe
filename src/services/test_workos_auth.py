@@ -78,3 +78,26 @@ def test_user_organizations_lists_active_memberships(workos_env):
         SimpleNamespace(organization_id="org_2", organization_name="Old", status="inactive", role=None),
     ])
     assert workos_auth.user_organizations("user_1") == [{"id": "org_1", "name": "BK Insurance", "role": "admin"}]
+
+
+def test_create_partner_makes_the_org_once_and_invites_an_admin(monkeypatch):
+    client = MagicMock()
+    orgs: list = []
+
+    def create_organization(name):
+        org = SimpleNamespace(id=f"org_{len(orgs) + 1}", name=name)
+        orgs.append(org)
+        return org
+
+    client.organizations.list_organizations.side_effect = lambda **kw: SimpleNamespace(data=list(orgs))
+    client.organizations.create_organization.side_effect = create_organization
+    client.user_management.send_invitation.side_effect = lambda **kw: SimpleNamespace(
+        id="inv_1", email=kw["email"], role_slug=kw["role_slug"], expires_at="later")
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+
+    first = workos_auth.create_partner("BK Insurance", "admin@bk.rw")
+    again = workos_auth.create_partner(" bk insurance ", "second@bk.rw")
+    assert first["created"] is True and again["created"] is False
+    assert first["organization_id"] == again["organization_id"] == "org_1"
+    assert first["invitation"]["role"] == "admin"
+    assert client.organizations.create_organization.call_count == 1
