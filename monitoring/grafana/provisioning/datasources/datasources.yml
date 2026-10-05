@@ -9,14 +9,3 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
-
-  - name: Tempo
-    type: tempo
-    access: proxy
-    url: http://tempo:3200
-    editable: true
-    jsonData:
-      tracesToMetrics:
-        datasourceUid: prometheus
-      serviceMap:
-        datasourceUid: prometheus

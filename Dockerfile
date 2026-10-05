@@ -72,7 +72,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-install DuckDB extensions so they don't need network access at runtime
-RUN /app/.venv/bin/python -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.install_extension('iceberg'); con.close()"
+RUN /app/.venv/bin/python -c "import duckdb; con = duckdb.connect(':memory:'); con.install_extension('spatial'); con.close()"
 
 # Copy application files
 COPY . /app/
@@ -92,9 +92,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TORCH_HOME="/cache/torch" \
     YOLO_CONFIG_DIR="/cache/ultralytics"
 
-COPY scripts/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
 RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /app \
     && chmod -R u+rwX,go+rX /app/src \
@@ -112,4 +109,4 @@ RUN useradd -r -m -s /bin/false appuser \
 USER appuser
 
 ENTRYPOINT []
-CMD ["/entrypoint.sh"]
+CMD ["bash", "/app/scripts/start-services.sh"]

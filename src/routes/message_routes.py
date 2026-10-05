@@ -2278,7 +2278,7 @@ async def process_chat_interaction_task(
                     # args + repair name via longest-prefix match.
                     _tcs = m.get("tool_calls")
                     if _tcs:
-                        # Full tool name universe: pydantic/qgis tools + hardcoded
+                        # Full tool name universe: pydantic/tools.json tools + hardcoded
                         # message_routes tools that aren't in get_tools().
                         _HARDCODED_TOOL_NAMES = {
                             "add_layer_to_map", "zoom_to_bounds", "set_layer_style",

@@ -20,11 +20,6 @@ Name the one layer of the file you are editing before you edit it.
 | Adapters / routing | `src/routes/`, `src/tools/` (Sage tool handlers), `src/dependencies/`, `src/senders/`, `src/wsgi.py` | domain, persistence |
 | Presentation | `frontendts/`, `src/renderer/` | API responses only |
 
-Legacy, outside the layering: top-level `services/*.py` (`api_insurance.py`,
-`insurance_report.py`, `api_monitor.py`, `monitor_field_v3.py`) duplicate
-domain logic that belongs in `src/services/`. Do not extend them; consolidate
-into the owning module first (H1).
-
 ## Design principles
 
 Constraints, not a checklist. When two conflict, choose the option with the
@@ -74,12 +69,12 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 
 | Domain | Owner | Status |
 |---|---|---|
-| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py`, `services/api_insurance.py`, `services/insurance_report.py` |
+| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py` |
 | Vegetation-index classes (NDVI/EVI breaks, labels, colours, expected NDVI per crop stage) | **none yet** | Scattered across 13 files with conflicting breaks (0.15/0.2/0.3/0.35/0.4/0.6…), plus a crop-stage NDVI table living in the adapter `src/tools/raster_interpret.py`. Create one owner before any new NDVI rule. |
 | Weather forecast + fusion | `src/services/forecast_service.py`, `forecast_fusion.py` | |
 | Forecast accuracy metrics (POD/FAR/HSS/CSI) | `src/services/weather_accuracy.py` | |
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
-| Crop modelling (DSSAT) | `src/services/dssat_service.py` | |
+| Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
 

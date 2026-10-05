@@ -2,7 +2,7 @@
 
 Three tiers:
   - expensive:  LLM chat, AI endpoints           (default: 20/minute)
-  - heavy:      file uploads, QGIS processing     (default: 10/minute)
+  - heavy:      file uploads                      (default: 10/minute)
   - general:    all other /api/* routes            (default: 120/minute)
 
 Keyed by authenticated user ID when available, falls back to client IP.

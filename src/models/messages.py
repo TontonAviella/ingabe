@@ -67,7 +67,6 @@ class SanitizedToolCall(BaseModel):
         "map-plus",
         "cloud-download",
         "zoom-in",
-        "qgis",
         "square-terminal",
         "satellite",
         "map-pin",

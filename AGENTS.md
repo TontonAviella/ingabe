@@ -48,7 +48,7 @@ Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert 
 
 ### Docker (primary development method)
 ```bash
-docker compose up                              # Start all services (app, postgres+pgvector, redis, minio, qgis-processing, qdrant, ollama)
+docker compose up                              # Start all services (app, postgres+pgvector, redis, minio, rasterd, dagster-daemon, monitoring)
 docker compose build                           # Rebuild images
 docker compose run app pytest -xvs -n auto     # Run all tests in Docker
 ```
@@ -98,13 +98,12 @@ npm run watch                                  # Watch mode (tsc + vite)
 ### AI/LLM Integration
 - OpenAI function calling with tools defined in `src/geoprocessing/tools.json`
 - `src/dependencies/chat_completions.py` and `src/dependencies/pydantic_tools.py` wire up tool dispatch
-- `src/tools/` contains Pydantic tool handler modules (ALOS, CYGNSS, SAR, WaPOR, food security, insurance, spectral index, raster interpretation, similarity search, etc.)
+- `src/tools/` contains Pydantic tool handler modules (SAR, WaPOR, insurance, spectral index, raster interpretation, etc.)
 - `src/symbology/llm.py` generates MapLibre styles via LLM
 - WebSocket streaming for real-time chat completions and tool execution updates
 
 ### Sage Tool Surface
 - **Phase 1 raster interpretation** (`src/tools/raster_interpret.py`): mechanical (`describe_user_raster`, `compute_zonal_stats`, `get_value_distribution`, `read_pixel_at`, `find_stress_zones`) + verdicts (`interpret_raster_health`, `compare_rasters`, `evaluate_insurance_trigger`)
-- **Phase 2 visual similarity** (`src/tools/similarity.py` + `src/services/clay_embedding.py`): Clay v1.5 cls_token embeddings → Qdrant cosine search, drone tile auto-embedding on COG completion
 - **Insurance intelligence** (`src/services/insurance_engine.py`): location-based agricultural reports combining CHIRPS, NDVI, WaPOR, SAR, soil moisture across Rwanda's Season A/B/C calendar
 
 ### Storage & Services
@@ -112,11 +111,9 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **MinIO/S3**: File storage for layers (FlatGeoBuf, GeoJSON, LAZ, GeoTIFF)
 - **Cloudflare R2** (optional, when 4 R2_* env vars set): transit upload layer for fast uploads from Africa edges; background worker pulls R2 → MinIO. 1-day lifecycle delete on R2 bucket.
 - **Redis**: Caching layer
-- **Qdrant 1.17.1**: Visual similarity index for Clay v1.5 tile embeddings (1024-dim cosine HNSW). Replaces Milvus.
 - **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses Nemotron Super 3 (`nvidia/nemotron-3-super-120b-a12b:free`) through OpenRouter; local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
 - **Life-Harness runtime guard** (`src/services/life_harness.py` + `external/life-harness` submodule): production adaptation of the pinned upstream Life-Harness benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 task-relevant agriculture procedure retrieval around the frozen brain model.
 - **Monitoring**: Prometheus (`:9090`) and Grafana (`:3000`, "Mundi.ai Overview") scrape the app, `postgres-exporter` (`pg_up`, and `pipeline_cache_age_seconds` for the Dagster-filled caches Sage reads) and `node-exporter` (Docker-VM memory and swap); alert rules live in `monitoring/alerts.yml` and are tested by `promtool test rules monitoring/alerts_test.yml`.
-- **QGIS Processing**: Separate FastAPI service (`qgis-processing/server.py`) exposing QGIS algorithms over HTTP
 
 ### GIS Toolchain (built in Dockerfile)
 - GDAL 3.11.3, Tippecanoe (vector tiles), PMTiles CLI, LAStools (point clouds), MapLibre GL Style Spec validator
@@ -153,9 +150,8 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
 | `BRAIN_EMBEDDINGS_BASE_URL` | Embeddings endpoint (empty = `OLLAMA_BASE_URL`). On a Mac use `http://host.docker.internal:11434`: the native Ollama has the same `nomic-embed-text` model and answers in ~40 ms vs ~3 s on the CPU-only container. |
 | `BRAIN_EMBEDDINGS_API_KEY` | Required when `BRAIN_EMBEDDINGS_PROVIDER=openai`. Distinct from `OPENAI_API_KEY` so Brain auth is isolated from Sage chat auth. |
-| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_GRPC_PORT` | Qdrant connection. Defaults: `qdrant` / `6333` / `6334` |
 | `R2_ENDPOINT_URL` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` | All four required to activate Cloudflare R2 transit upload layer. Without them, uploads go direct to MinIO. |
-| `QGIS_PROCESSING_URL` | QGIS service endpoint |
+| `QGIS_PROCESSING_URL` | QGIS service endpoint (the service is not in the compose stack) |
 | `POSTGIS_LOCALHOST_POLICY` | `docker_rewrite` or `disallow` |
 
 <!-- gitnexus:start -->
