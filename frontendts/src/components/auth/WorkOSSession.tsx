@@ -1,5 +1,6 @@
-import { Building2, Check, ChevronsUpDown, Loader2, LogOut, User } from 'lucide-react';
+import { Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -183,7 +184,7 @@ function Avatar({ me, size = 'h-8 w-8' }: { me: WorkOSMe; size?: string }) {
 
 const ROLE_LABEL: Record<string, string> = { admin: 'Admin', owner: 'Owner', member: 'Member' };
 
-function roleLabel(role: string | null | undefined): string {
+export function roleLabel(role: string | null | undefined): string {
   return role ? (ROLE_LABEL[role] ?? role.charAt(0).toUpperCase() + role.slice(1)) : 'Member';
 }
 
@@ -246,6 +247,14 @@ export function WorkOSOrgSwitcher() {
               {org.id === current?.id && <Check className="ml-2 h-4 w-4" />}
             </DropdownMenuItem>
           ))}
+          {current && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/settings/organization">
+                <Users className="mr-2 h-4 w-4" />
+                Members of {current.name}
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => pick(null)} className="cursor-pointer">
             <User className="mr-2 h-4 w-4" />
