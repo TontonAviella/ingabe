@@ -226,32 +226,6 @@
                 }
             }
         ],
-        "./src/duckdb.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 41,
-                    "endColumn": 59,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 17,
-                    "endColumn": 24,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 25,
-                    "endColumn": 32,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/geoprocessing/test_geoprocessing.py": [
             {
                 "code": "reportAttributeAccessIssue",

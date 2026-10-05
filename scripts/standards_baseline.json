@@ -3,7 +3,7 @@
   "totals": {
     "dup-body": 8,
     "lazy-import": 107,
-    "private-import": 46,
+    "private-import": 45,
     "render-threshold": 22,
     "web-import": 35
   },
@@ -121,7 +121,6 @@
     "lazy-import|src/services/weather_accuracy.py|compute_binary_accuracy->src.services.forecast_fusion": 1,
     "private-import|src/database/connection.py|src.database.pool._build_postgres_url": 1,
     "private-import|src/database/migrate.py|src.database.pool._build_postgres_url": 1,
-    "private-import|src/dependencies/layer_describer.py|src.duckdb._geoparquet_layer_filename": 1,
     "private-import|src/routes/message_routes.py|src.models.messages._parse_tool_args": 1,
     "private-import|src/routes/message_routes.py|src.routes.rwanda_routes._lookup_admin_bbox": 1,
     "private-import|src/routes/message_routes.py|src.services.brain_embeddings._get_embeddings": 1,

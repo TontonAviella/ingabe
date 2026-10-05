@@ -17,6 +17,14 @@ All notable changes to mundi.ai will be documented in this file.
   - Answers that could mislead: the rain-impact estimate (a synthetic curve), the H3 insight layer (scores supplied by the model), crop identification and classification (no validated crop classifier), and a crop confirmation that reported a save it never made.
   - Research and experiments: CYGNSS, ALOS L-band, SAR water bodies, Open Buildings exposure, Sphere flood loss, EDGAR emissions, FEWS NET food security, and the Sentinel Hub management-zone, prescription and soil-sampling tools.
   - The routing eval keeps those requests as "unsupported" cases whose right answer is a plain reply saying Sage cannot do it.
+- Backend services, routes and jobs nothing in the MVP uses:
+  - Sentinel Hub (expired credentials): its router, tiles, basemaps and the precision-ag service.
+  - The lakehouse/Iceberg layer, the layer-enrichment endpoints, and the `/rwanda` dashboard endpoints (including `/rwanda/admin/backfill-caches`, which any signed-in user could trigger).
+  - Research services behind the removed tools; openEO, DSSAT and NASA POWER; TESSERA, Forge3D and GeoLibre/Whitebox.
+  - The legacy APIs on ports 8001/8002.
+  - Dagster jobs, sensors and assets with no consumer (raster/vector processing, Iceberg maintenance, cache warm-up, the old Rwanda ingestion/NDVI/ML jobs).
+- Compose services tempo, superset, geokernel, qgis-processing and Langfuse (with their volumes); the `qgis-processing/` sidecar code.
+- Python dependencies only those used: openeo, sentinelhub, agent-client-protocol, dagster-aws, dagster-webserver, pyiceberg, niyamit-sphere, whitebox, geolibre-wasm, wasmtime. `uvicorn[standard]` keeps uvloop and httptools, which used to arrive only through dagster-webserver.
 - WhatsApp and Telegram integrations: the two sender services, the inbound `/internal/inbox` route, the Kinyarwanda voice-note service, the proactive alert cron (`sage_alerts`, `cron_expr`) and the `render_map_snapshot` tool, which only delivered through them. A migration drops `user_channel_bindings`, `channel_bind_codes` and `alert_subscriptions` (downgrade restores the empty tables).
 
 ### Changed
@@ -25,6 +33,10 @@ All notable changes to mundi.ai will be documented in this file.
 - Split Sage's 95 Hermes tools into bounded procedural profiles so each request exposes only relevant map, raster, agriculture, or memory schemas.
 
 ### Fixed
+- Sage's Brain graph tools (`brain_graph_query`, `brain_trajectory`) were described in the prompt but offered only through Hermes; in the normal chat loop a call to them failed the turn. They are now regular tools, and the chat loop runs any tool without its own branch through the shared legacy-shim handler.
+- Tool descriptions that contradicted the code: field health named Sentinel Hub (it reads Sentinel-2 L2A from Digital Earth Africa), satellite search named Landsat (Sentinel-2 only), four tools named a DuckDB cache (PostgreSQL). Yield risk now says it is a vegetation trend, not a yield in tonnes.
+- `run_weather_ingest.py` no longer logs part of the CDS API key.
+- The training manual describes the app as it is: drone and map uploads, documents for Sage, the admin outlines, and what Sage answers from which data.
 - When Hermes fails, returns an incomplete turn or an empty response, the turn ends with an error instead of presenting provider output as an answer. There is no fallback to the legacy planner (a second planner could repeat tool side effects); a user cancel ends the turn quietly.
 - Mount the live Hermes plugin into local Compose, persist its generated HMAC key with owner-only permissions, and make runtime/deploy audits use the container virtual environment.
 

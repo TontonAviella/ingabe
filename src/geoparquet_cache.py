@@ -2,6 +2,7 @@
 
 The layer describer reads a layer's GeoParquet copy with DuckDB; this module
 downloads it from object storage once and keeps it in a size-bounded cache.
+(It was src/duckdb.py, a name that shadowed the duckdb package under pytest.)
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ async def _ensure_geoparquet_cached(layer_id: str, geoparquet_key: str) -> str:
 
 
 @asynccontextmanager
-async def _geoparquet_layer_filename(layer_id: str, geoparquet_key: str):
+async def geoparquet_layer_filename(layer_id: str, geoparquet_key: str):
     cache = _geoparquet_cache()
     cache_key = await _ensure_geoparquet_cached(layer_id, geoparquet_key)
     cache.lock(cache_key)
