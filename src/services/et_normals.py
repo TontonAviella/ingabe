@@ -132,14 +132,28 @@ def _pixel_cells(shape: tuple[int, int], transform: Any, keep: set[str]) -> tupl
 
 
 async def build(conn: Any, last_year: Optional[int] = None) -> dict[str, Any]:
-    """Rebuild et_dekad_normals for Rwanda from WaPOR FIRST_YEAR..last_year."""
+    """Rebuild et_dekad_normals for Rwanda from WaPOR FIRST_YEAR..last_year on one connection.
+
+    For long runs prefer build_from_env: computing takes about an hour and an idle
+    connection held that long gets closed before the write (2026-10-05).
+    """
     last_year = last_year or date.today().year - 1
-    years = list(range(FIRST_YEAR, last_year + 1))
+    records = await compute(await rwanda_cells(conn), last_year)
+    return await write(conn, records, last_year)
+
+
+async def rwanda_cells(conn: Any) -> set[str]:
+    """The H3 cells (at RESOLUTION) that cover Rwanda, from the H3 admin index."""
     keep = {h3.cell_to_parent(r["h3_index"], RESOLUTION)
             for r in await conn.fetch("SELECT h3_index FROM h3_admin_cells")}
     if not keep:
         raise RuntimeError("h3_admin_cells is empty: build the H3 admin index first")
+    return keep
 
+
+async def compute(keep: set[str], last_year: int) -> list[tuple[str, int, float, int]]:
+    """(h3_index, dekad, mean_mm_day, years) rows from WaPOR; needs no database connection."""
+    years = list(range(FIRST_YEAR, last_year + 1))
     pixel_cell: Optional[np.ndarray] = None
     cells: list[str] = []
     records: list[tuple[str, int, float, int]] = []
@@ -169,7 +183,13 @@ async def build(conn: Any, last_year: Optional[int] = None) -> dict[str, Any]:
             if counts[i]:
                 records.append((cell, dekad, float(sums[i] / counts[i]), int(min_years[i])))
         logger.info("et_normals: dekad %d/36, %d years", dekad, len(stack))
+    return records
 
+
+async def write(conn: Any, records: list[tuple[str, int, float, int]], last_year: int) -> dict[str, Any]:
+    """Replace et_dekad_normals with records in one transaction and log the build."""
+    if not records:
+        raise RuntimeError("no ET normals computed: refusing to empty et_dekad_normals")
     async with conn.transaction():
         await conn.execute("DELETE FROM et_dekad_normals")
         await conn.copy_records_to_table(
@@ -185,16 +205,27 @@ async def build(conn: Any, last_year: Optional[int] = None) -> dict[str, Any]:
     return summary
 
 
-async def build_from_env() -> dict[str, Any]:
+async def build_from_env(last_year: Optional[int] = None) -> dict[str, Any]:
+    """CLI / Dagster entry: short connections before and after the hour of computing."""
     import asyncpg  # lazy: only the CLI/Dagster entry point opens its own connection
 
-    conn = await asyncpg.connect(
-        host=os.environ.get("POSTGRES_HOST", "postgresdb"), port=int(os.environ.get("POSTGRES_PORT", "5432")),
-        user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"],
-        database=os.environ.get("POSTGRES_DB", "mundidb"),
-    )
+    async def connect() -> Any:
+        return await asyncpg.connect(
+            host=os.environ.get("POSTGRES_HOST", "postgresdb"), port=int(os.environ.get("POSTGRES_PORT", "5432")),
+            user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"],
+            database=os.environ.get("POSTGRES_DB", "mundidb"),
+        )
+
+    last_year = last_year or date.today().year - 1
+    conn = await connect()
     try:
-        return await build(conn)
+        keep = await rwanda_cells(conn)
+    finally:
+        await conn.close()
+    records = await compute(keep, last_year)
+    conn = await connect()
+    try:
+        return await write(conn, records, last_year)
     finally:
         await conn.close()
 

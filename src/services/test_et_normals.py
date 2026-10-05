@@ -6,6 +6,8 @@ import asyncio
 from datetime import date
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.services import et_normals
 
 
@@ -39,3 +41,13 @@ def test_normals_by_cell_groups_rows():
     out = asyncio.run(et_normals.normals_by_cell(conn, ["88abc", "88abc"], [27, 26]))
     assert out == {"88abc": {26: 2.3, 27: 2.1}}
     assert conn.fetch.call_args.args[1:] == (["88abc"], [26, 27])
+
+
+@pytest.mark.anyio
+async def test_an_empty_build_never_wipes_the_table():
+    class Conn:
+        def transaction(self):
+            raise AssertionError("must not touch the table")
+
+    with pytest.raises(RuntimeError, match="no ET normals"):
+        await et_normals.write(Conn(), [], 2025)
