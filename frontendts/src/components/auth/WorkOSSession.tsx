@@ -107,6 +107,8 @@ export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
   const signInFailed = new URLSearchParams(window.location.search).has(SIGN_IN_ERROR_PARAM);
   useEffect(() => {
     if (status === 'signedOut' && !signInFailed) window.location.assign(signInUrl());
+    // Signed in after all (e.g. a later try worked): drop the stale error from the address bar.
+    if (status === 'signedIn' && signInFailed) window.history.replaceState(null, '', currentPathWithoutError());
   }, [status, signInFailed]);
   if (status === 'signedIn') return <>{children}</>;
   if (status === 'signedOut' && signInFailed) {
@@ -152,8 +154,16 @@ function initials(me: WorkOSMe): string {
 }
 
 function Avatar({ me, size = 'h-8 w-8' }: { me: WorkOSMe; size?: string }) {
-  return me.user.picture ? (
-    <img src={me.user.picture} alt="" className={`${size} rounded-full object-cover`} referrerPolicy="no-referrer" />
+  // Initials whenever there is no picture or it fails to load, never a broken image.
+  const [failed, setFailed] = useState(false);
+  return me.user.picture && !failed ? (
+    <img
+      src={me.user.picture}
+      alt=""
+      className={`${size} rounded-full object-cover`}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
   ) : (
     <span className={`${size} inline-flex items-center justify-center rounded-full bg-emerald-600 text-xs font-semibold text-white`}>
       {initials(me)}

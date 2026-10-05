@@ -344,7 +344,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
+            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com https://workoscdn.com; "
             f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {s3_connect_src} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
