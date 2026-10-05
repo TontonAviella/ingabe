@@ -1,7 +1,7 @@
 """Put an H3 risk result on the map: a saved layer when possible, an inline preview otherwise.
 
-Every Sage tool that draws H3 risk hexagons (spatial insight, raster context,
-Open Buildings exposure) goes through ``render_h3_risk_layer``. A saved layer
+The drone-raster context layer (raster_h3_context) draws its hexagons through
+``render_h3_risk_layer``. A saved layer
 (PMTiles + GeoParquet, see src.services.h3_layer_persistence) survives a page
 reload; the inline GeoJSON preview only lives in the open browser tab, so it is
 used only when saving fails.
@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 
 from src.routes.websocket import kue_ephemeral_action
-from src.services.h3_layer_persistence import PersistedH3Layer, persist_h3_spatial_insight_layer
+from src.services.h3_layer_persistence import PersistedH3Layer, persist_h3_layer
 from src.services.h3_risk_classes import inline_style_stops, legend
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
@@ -60,7 +60,7 @@ async def render_h3_risk_layer(
 
     persisted: PersistedH3Layer | None = None
     try:
-        persisted = await persist_h3_spatial_insight_layer(
+        persisted = await persist_h3_layer(
             result=result,
             user_uuid=meta.user_uuid,
             map_id=meta.map_id,

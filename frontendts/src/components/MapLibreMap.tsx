@@ -138,6 +138,7 @@ import ReactMarkdown from 'react-markdown';
 import { ReadyState } from 'react-use-websocket';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
+import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
 import { BufferPieOverlay, type PieChartData } from '@/components/BufferPieOverlay';
 import LayerList from '@/components/LayerList';
@@ -357,18 +358,6 @@ export default function MapLibreMap({
     if (!mapData?.layers) return [] as string[];
     return mapData.layers.map((l) => l.id).filter((id) => loadingSourceIds.has(id));
   }, [mapData?.layers, loadingSourceIds]);
-
-  const { data: demoConfigData } = useQuery({
-    queryKey: ['projects', 'config', 'demo-postgis-available'],
-    queryFn: async () => {
-      const response = await apiFetch('/api/projects/config/demo-postgis-available');
-      if (!response.ok) {
-        throw new Error('Failed to fetch demo config');
-      }
-      return (await response.json()) as { available: boolean; description: string };
-    },
-  });
-  const demoConfig = demoConfigData ?? { available: false, description: '' };
 
   const pointCloudLayers = useMemo(() => {
     const filtered = mapData?.layers?.filter((layer) => layer.type === 'point_cloud') ?? EMPTY_POINT_CLOUD_LAYERS;
@@ -1931,6 +1920,7 @@ export default function MapLibreMap({
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
 
         {/* Sentinel-2 scene info badge with mosaic toggle */}
         {isSentinel2Active && sceneInfo?.scene_date && (
@@ -2001,7 +1991,6 @@ export default function MapLibreMap({
                 zoomHistoryIndex={zoomHistoryIndex}
                 setZoomHistoryIndex={setZoomHistoryIndex}
                 uploadingFiles={uploadingFiles}
-                demoConfig={demoConfig}
                 hiddenLayerIDs={hiddenLayerIDs}
                 toggleLayerVisibility={toggleLayerVisibility}
                 errors={errors}

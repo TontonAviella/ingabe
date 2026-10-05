@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 from src.services.h3_risk_classes import inline_style_stops, legend, risk_level
 from src.routes.websocket import kue_ephemeral_action
-from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.h3_spatial_insight import h3_cell_geojson_geometry
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.h3_layer_render import compact_h3_geojson, render_h3_risk_layer

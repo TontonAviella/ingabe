@@ -12,8 +12,6 @@ import re
 CORE_TOOLSET = "ingabe-sage-core"
 MAP_VIEW_TOOLSET = "ingabe-sage-map-view"
 MAP_DATA_TOOLSET = "ingabe-sage-map-data"
-MAP_PROCESS_TOOLSET = "ingabe-sage-map-process"
-RASTER_ENGINE_TOOLSET = "ingabe-sage-raster-engine"
 RASTER_VISION_TOOLSET = "ingabe-sage-raster-vision"
 RASTER_ANALYSIS_TOOLSET = "ingabe-sage-raster-analysis"
 RASTER_SENSOR_TOOLSET = "ingabe-sage-raster-sensor"
@@ -26,8 +24,6 @@ ALL_TOOLSETS = (
     CORE_TOOLSET,
     MAP_VIEW_TOOLSET,
     MAP_DATA_TOOLSET,
-    MAP_PROCESS_TOOLSET,
-    RASTER_ENGINE_TOOLSET,
     RASTER_VISION_TOOLSET,
     RASTER_ANALYSIS_TOOLSET,
     RASTER_SENSOR_TOOLSET,
@@ -43,17 +39,10 @@ _CORE_TOOLS = {
 }
 
 _BRAIN_MARKERS = ("brain", "entity", "observation", "trajectory")
-_RASTER_ENGINE_MARKERS = ("spatial_engine", "geolibre", "pipeline_evidence")
-_RASTER_SENSOR_MARKERS = (
-    "alos",
-    "cygnss",
-    "soil_moisture",
-)
+_RASTER_SENSOR_MARKERS = ("soil_moisture",)
 _RASTER_VISION_MARKERS = (
     "rgb",
     "flood",
-    "water",
-    "sphere",
     "raster_h3",
     "raster_object",
 )
@@ -64,11 +53,7 @@ _RASTER_ANALYSIS_MARKERS = (
     "zonal",
     "value_distribution",
 )
-_MAP_DATA_MARKERS = (
-    "postgis",
-    "duckdb",
-    "database",
-)
+_MAP_DATA_MARKERS = ("postgis",)
 _MAP_VIEW_MARKERS = (
     "layer",
     "map",
@@ -77,18 +62,7 @@ _MAP_VIEW_MARKERS = (
     "display",
     "render",
     "reverse_geocode",
-)
-_MAP_PROCESS_MARKERS = (
-    "buffer",
-    "clip",
-    "intersection",
-    "reproject",
-    "dissolve",
-    "aggregate",
-    "fieldcalculator",
-    "fixgeometries",
-    "creategrid",
-    "warpreproject",
+    "admin",
 )
 _AGRI_WEATHER_MARKERS = (
     "weather",
@@ -101,10 +75,6 @@ _AGRI_RISK_MARKERS = (
     "anomaly",
     "drought",
     "insurance",
-    "food_security",
-    "emission",
-    "expected_rain",
-    "exposure",
 )
 
 
@@ -112,17 +82,10 @@ _AGRI_RISK_MARKERS = (
 # markers above are added automatically (split on "_"), so a request that
 # names a tool always opens the profile that tool lives in.
 _EXTRA_SELECTION_WORDS = {
-    MAP_VIEW_TOOLSET: {"show", "style", "boundary", "location"},
+    MAP_VIEW_TOOLSET: {
+        "show", "style", "boundary", "location", "district", "sector", "cell", "village",
+    },
     MAP_DATA_TOOLSET: {"sql", "query", "table"},
-    MAP_PROCESS_TOOLSET: {
-        "intersect", "join", "grid", "geometry", "calculate",
-        # toolset_for_tool's prefix rule: native_/qgis_/gdal_ algorithms.
-        "native", "qgis", "gdal",
-    },
-    RASTER_ENGINE_TOOLSET: {
-        "spatial", "engine", "capability", "geoprocessing", "whitebox", "wasi", "wasm",
-        "fresh", "freshness", "dagster",
-    },
     RASTER_VISION_TOOLSET: {
         "raster", "orthophoto", "drone", "pixel", "image", "imagery", "building",
         "roof", "road", "tree", "object", "mask", "segment", "fastsam", "house",
@@ -144,12 +107,10 @@ _EXTRA_SELECTION_WORDS = {
 
 _MARKERS_BY_TOOLSET = {
     BRAIN_TOOLSET: _BRAIN_MARKERS,
-    RASTER_ENGINE_TOOLSET: _RASTER_ENGINE_MARKERS,
     RASTER_SENSOR_TOOLSET: _RASTER_SENSOR_MARKERS,
     RASTER_VISION_TOOLSET: _RASTER_VISION_MARKERS,
     RASTER_ANALYSIS_TOOLSET: _RASTER_ANALYSIS_MARKERS,
     MAP_DATA_TOOLSET: _MAP_DATA_MARKERS,
-    MAP_PROCESS_TOOLSET: _MAP_PROCESS_MARKERS,
     MAP_VIEW_TOOLSET: _MAP_VIEW_MARKERS,
     AGRI_WEATHER_TOOLSET: _AGRI_WEATHER_MARKERS,
     AGRI_RISK_TOOLSET: _AGRI_RISK_MARKERS,
@@ -199,9 +160,9 @@ def select_profiles(user_text: str) -> set[str]:
     for toolset, words in SELECTION_WORDS.items():
         if tokens & words:
             selected.add(toolset)
-    # QGIS-style names run words together ("zonalstatisticsfb"), so also
-    # match each profile's longer single-word markers inside a token, the
-    # same substring rule toolset_for_tool uses.
+    # Requests can run words together ("dryspell"), so also match each
+    # profile's longer single-word markers inside a token, the same
+    # substring rule toolset_for_tool uses.
     for toolset, markers in _MARKERS_BY_TOOLSET.items():
         if any(
             marker in token
@@ -221,8 +182,6 @@ def toolset_for_tool(name: str) -> str:
         return CORE_TOOLSET
     if any(marker in normalized for marker in _BRAIN_MARKERS):
         return BRAIN_TOOLSET
-    if any(marker in normalized for marker in _RASTER_ENGINE_MARKERS):
-        return RASTER_ENGINE_TOOLSET
     if any(marker in normalized for marker in _RASTER_SENSOR_MARKERS):
         return RASTER_SENSOR_TOOLSET
     if any(marker in normalized for marker in _RASTER_VISION_MARKERS):
@@ -231,10 +190,6 @@ def toolset_for_tool(name: str) -> str:
         return RASTER_ANALYSIS_TOOLSET
     if any(marker in normalized for marker in _MAP_DATA_MARKERS):
         return MAP_DATA_TOOLSET
-    if normalized.startswith(("native_", "qgis_", "gdal_")) or any(
-        marker in normalized for marker in _MAP_PROCESS_MARKERS
-    ):
-        return MAP_PROCESS_TOOLSET
     if any(marker in normalized for marker in _MAP_VIEW_MARKERS):
         return MAP_VIEW_TOOLSET
     if any(marker in normalized for marker in _AGRI_WEATHER_MARKERS):

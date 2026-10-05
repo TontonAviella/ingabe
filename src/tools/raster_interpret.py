@@ -205,7 +205,7 @@ async def interpret_raster_health(
     args: InterpretRasterHealthArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
     """Interpret pixel data from a user-uploaded NDVI raster as a farmer-language verdict on field health, given a crop type, growth stage, and field polygon. Composes describe_user_raster (for metadata + CRS sanity) plus compute_zonal_stats (for pixel statistics) plus the agricultural crop calendar (to map capture date to growth stage) plus a curated NDVI threshold table (to convert numbers to verdicts). Returns a verdict (exceptional / healthy / moderate_stress / severe_stress) plus evidence and recommended action — NOT raw band statistics. ALWAYS use this when the user asks about the health of a field they have a drone NDVI or NDVI raster for. Do NOT use for satellite-only questions (use get_field_health for those)."""
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     desc = await describe_user_raster(
         DescribeUserRasterArgs(layer_id=args.layer_id), meta
@@ -756,7 +756,7 @@ async def compare_rasters(
         describe_user_raster,
         DescribeUserRasterArgs,
     )
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     # 1. Validate both layers + check both are NDVI-shaped
     for lid in (args.layer_id_a, args.layer_id_b):
@@ -1182,7 +1182,7 @@ async def evaluate_insurance_trigger(
     args: EvaluateInsuranceTriggerArgs, meta: IngabeToolCallMetaArgs
 ) -> dict:
     """Evaluate parametric insurance trigger conditions on a user's drone NDVI flights. Composes compare_rasters (change detection) + zonal stats on the 'after' raster (current absolute health) + a per-crop-stage threshold table. Computes a 0-100 composite_score across 4 weighted signals (absolute health, NDVI decline vs expected, area declining significantly, drought context from rainfall) and returns triggered=True if score >= 60. Returns triggered (bool), composite_score (0-100), per-signal status with thresholds, payout_recommendation, plus full underlying compare_rasters evidence. ALWAYS use this when the user asks 'should this claim pay out?', 'is the trigger fired?', 'evaluate the insurance', or any parametric-trigger question on drone NDVI data. Source='drone' — for satellite-based triggers use get_insurance_intelligence."""
-    from src.services.dssat_service import _CROP_CALENDARS, detect_current_season
+    from src.services.crop_calendar import CROP_CALENDARS as _CROP_CALENDARS, detect_current_season
 
     # 1. Run compare_rasters first — the keystone change-detection signal.
     cmp = await compare_rasters(

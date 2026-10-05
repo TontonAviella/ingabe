@@ -42,13 +42,13 @@ async def test_a_saved_layer_is_announced_and_the_geojson_left_out(monkeypatch, 
         return PersistedH3Layer(layer_id="L1", style_id="S1", pmtiles_key="k.pmtiles", geoparquet_key=None,
                                 pmtiles_maxzoom=20, bounds=None, feature_count=1, geometry_type="polygon")
 
-    monkeypatch.setattr(h3_layer_render, "persist_h3_spatial_insight_layer", fake_persist)
+    monkeypatch.setattr(h3_layer_render, "persist_h3_layer", fake_persist)
     result = _result()
     persisted = await h3_layer_render.render_h3_risk_layer(
         result, meta=META, layer_name="Building Exposure - X", render_3d=False, bounds=None,
-        analysis_kind="open_buildings_h3_exposure")
+        analysis_kind="raster_h3_context")
     h3_layer_render.compact_h3_geojson(result, persisted)
-    assert kinds == ["open_buildings_h3_exposure"]
+    assert kinds == ["raster_h3_context"]
     assert sent == [{"h3_layer_persisted": {"layer_id": "L1", "name": "Building Exposure - X", "pmtiles": True,
                                             "geoparquet": False, "pmtiles_maxzoom": 20, "feature_count": 1}}]
     assert result["layer_id"] == "L1" and result["engines"]["transport"]["current"] == "pmtiles_vector_layer"
@@ -60,10 +60,10 @@ async def test_when_saving_fails_the_preview_says_it_will_not_survive_a_reload(m
     async def broken_persist(**kwargs):
         raise RuntimeError("tippecanoe failed")
 
-    monkeypatch.setattr(h3_layer_render, "persist_h3_spatial_insight_layer", broken_persist)
+    monkeypatch.setattr(h3_layer_render, "persist_h3_layer", broken_persist)
     result = _result()
     persisted = await h3_layer_render.render_h3_risk_layer(
-        result, meta=META, layer_name="Spatial Risk - X", render_3d=False, bounds=None, analysis_kind="h3_spatial_insight")
+        result, meta=META, layer_name="Spatial Risk - X", render_3d=False, bounds=None, analysis_kind="raster_h3_context")
     h3_layer_render.compact_h3_geojson(result, persisted)
     assert persisted is None and "add_geojson_layer" in sent[0]
     assert result["engines"]["transport"]["current"] == "inline_geojson_preview_fallback"

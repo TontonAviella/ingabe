@@ -11,6 +11,7 @@ from src.services.h3_risk_classes import legend, maplibre_color_expression
 from src.database.models import LAYER_TYPE_VECTOR
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.structures import get_async_db_connection
+from src.upload.pmtiles import process_vector_layer_common
 from src.utils import generate_id
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ class PersistedH3Layer:
     geometry_type: str
 
 
-async def persist_h3_spatial_insight_layer(
+async def persist_h3_layer(
     *,
     result: dict[str, Any],
     user_uuid: str,
@@ -39,7 +40,7 @@ async def persist_h3_spatial_insight_layer(
     project_id: str,
     layer_name: str,
     render_3d: bool,
-    analysis_kind: str = "h3_spatial_insight",
+    analysis_kind: str,
 ) -> PersistedH3Layer:
     """Persist an H3 analysis as a real map layer.
 
@@ -70,8 +71,6 @@ async def persist_h3_spatial_insight_layer(
         geojson_path = os.path.join(temp_dir, f"{layer_id}.geojson")
         with open(geojson_path, "w", encoding="utf-8") as f:
             json.dump(feature_collection, f, separators=(",", ":"))
-
-        from src.upload.pmtiles import process_vector_layer_common
 
         processed = await process_vector_layer_common(
             layer_id,

@@ -24,13 +24,13 @@ from src.routes import (
 from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes.attribute_table import attribute_table_router
-from src.routes.lakehouse_routes import lakehouse_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
-from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
-from src.routes import auth_routes
+from src.routes.profile_routes import router as profile_router
+from src.routes import auth_routes, companies_routes
+from src.services import workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
@@ -193,6 +193,16 @@ async def lifespan(app: FastAPI):
     """
     _configure_app_logging()
 
+    import asyncio
+
+    async def _warm_workos():
+        try:
+            await asyncio.to_thread(workos_auth.warm_up)
+        except Exception:
+            logging.getLogger("src.services.workos_auth").exception("WorkOS is misconfigured: sign-in will fail")
+
+    workos_warm_task = asyncio.create_task(_warm_workos())
+
     # Start brain hook processor as a background task (processes upload hooks)
     import asyncio
 
@@ -232,6 +242,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    workos_warm_task.cancel()
     if hook_task is not None:
         hook_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -332,7 +343,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             f"script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://static.cloudflareinsights.com; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com; "
+            "img-src 'self' data: blob: https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://img.clerk.com https://workoscdn.com; "
             f"connect-src 'self' https://*.arcgisonline.com https://tile.openstreetmap.org https://basemaps.cartocdn.com https://*.basemaps.cartocdn.com https://tiles.openfreemap.org https://demotiles.maplibre.org https://isdasoil.s3.amazonaws.com https://*.r2.cloudflarestorage.com {s3_connect_src} https://*.posthog.com https://*.i.posthog.com https://*.clerk.accounts.dev{clerk_csp} https://cloudflareinsights.com ws: wss:; "
             "font-src 'self' https://demotiles.maplibre.org https://tiles.openfreemap.org; "
             "worker-src 'self' blob:; "
@@ -546,13 +557,12 @@ async def metrics():
 @app.get("/health")
 @app.get("/api/health")
 async def health_check():
-    """Detailed health check (PostgreSQL, Redis, QGIS).
+    """Detailed health check (PostgreSQL, Redis).
 
     Always returns 200 so monitoring tools can read the body.
     The "status" field is "healthy" or "degraded".
     """
     import asyncio
-    import httpx
 
     async def _check_postgres() -> str:
         try:
@@ -573,19 +583,8 @@ async def health_check():
         except Exception as e:
             return f"error: {e}"
 
-    async def _check_qgis() -> str:
-        qgis_url = os.environ.get("QGIS_PROCESSING_URL", "http://qgis-processing:8817")
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{qgis_url}/health")
-                return "ok" if resp.status_code == 200 else f"status {resp.status_code}"
-        except Exception as e:
-            return f"error: {e}"
-
-    pg, redis_r, qgis = await asyncio.gather(
-        _check_postgres(), _check_redis(), _check_qgis(),
-    )
-    checks = {"postgres": pg, "redis": redis_r, "qgis": qgis}
+    pg, redis_r = await asyncio.gather(_check_postgres(), _check_redis())
+    checks = {"postgres": pg, "redis": redis_r}
 
     pg_ok = pg == "ok"
     all_ok = all(v == "ok" for v in checks.values())
@@ -651,11 +650,6 @@ app.include_router(
     tags=["Internal/ToolCall"],
 )
 app.include_router(
-    lakehouse_router,
-    prefix="/api",
-    tags=["Lakehouse"],
-)
-app.include_router(
     rwanda_router,
     prefix="/api",
     tags=["Rwanda"],
@@ -664,12 +658,13 @@ app.include_router(
     worldcover_router,
     tags=["WorldCover"],
 )
-app.include_router(
-    satellite_router,
-    tags=["Satellite"],
-)
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
+app.include_router(companies_routes.router, prefix="/api/admin/companies", tags=["Companies"])
+app.include_router(
+    profile_router,
+    prefix="/api/user",
+)
 app.include_router(
     partner_router,
     prefix="/api/partner",
