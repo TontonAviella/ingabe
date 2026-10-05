@@ -2,7 +2,7 @@
   "_comment": "Debt that existed when CODING_STANDARDS.md was adopted. A ratchet: delete entries as you fix them; never add new ones. Regenerating this file to admit new debt is a standards violation.",
   "totals": {
     "dup-body": 8,
-    "lazy-import": 107,
+    "lazy-import": 106,
     "private-import": 42,
     "render-threshold": 10,
     "web-import": 35
@@ -30,7 +30,6 @@
     "lazy-import|src/services/brain_service.py|BrainService.put_page->src.services.brain_edge_inference": 1,
     "lazy-import|src/services/brain_service.py|_extract_link_targets->src.services.brain_edge_inference": 1,
     "lazy-import|src/services/forecast_openmeteo.py|fetch_openmeteo_multimodel->src.services.forecast_fusion": 1,
-    "lazy-import|src/services/h3_layer_persistence.py|persist_h3_spatial_insight_layer->src.upload.pmtiles": 1,
     "lazy-import|src/services/hermes_runtime.py|_build_conversation_history->src.routes.message_routes": 1,
     "lazy-import|src/services/hermes_runtime.py|_persist_assistant_message->src.structures": 1,
     "lazy-import|src/services/hermes_runtime.py|run_sage_turn_via_hermes->src.dependencies.session": 1,

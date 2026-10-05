@@ -15,9 +15,9 @@ from pydantic import BaseModel, Field
 
 from src.services.h3_risk_classes import inline_style_stops, legend, risk_level
 from src.routes.websocket import kue_ephemeral_action
-from src.services.h3_layer_persistence import persist_h3_spatial_insight_layer
 from src.services.h3_spatial_insight import h3_cell_geojson_geometry
 from src.tools.geojson_transport import geojson_layer_update
+from src.tools.h3_layer_render import compact_h3_geojson, render_h3_risk_layer
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
@@ -158,81 +158,19 @@ async def create_raster_h3_context_layer(
 
     persisted_layer = None
     if args.render_map and result.get("status") == "success":
-        try:
-            persisted_layer = await persist_h3_spatial_insight_layer(
-                result=result,
-                user_uuid=meta.user_uuid,
-                map_id=meta.map_id,
-                project_id=meta.project_id,
-                layer_name=f"Raster Context - {row['name']}",
-                render_3d=args.render_3d,
-            )
-        except Exception as exc:
-            logger.warning("Raster H3 layer persistence failed; using inline fallback: %s", exc, exc_info=True)
-
-        engines = result.setdefault("engines", {})
-        render_engine = engines.setdefault("render", {})
-        transport = engines.setdefault("transport", {})
-        if persisted_layer:
-            async with kue_ephemeral_action(
-                meta.conversation_id,
-                f"Saving raster context layer: {row['name']}",
-                layer_id=persisted_layer.layer_id,
-                update_style_json=True,
-                bounds=persisted_layer.bounds or result.get("bbox"),
-            ) as payload:
-                payload.updates["h3_layer_persisted"] = {
-                    "layer_id": persisted_layer.layer_id,
-                    "name": f"Raster Context - {row['name']}",
-                    "pmtiles": True,
-                    "geoparquet": bool(persisted_layer.geoparquet_key),
-                    "pmtiles_maxzoom": persisted_layer.pmtiles_maxzoom,
-                    "feature_count": persisted_layer.feature_count,
-                }
-                await asyncio.sleep(0.2)
-            render_engine["layer_id"] = persisted_layer.layer_id
-            render_engine["rendered"] = True
-            transport["current"] = "pmtiles_vector_layer"
-            transport["browser"] = "PMTiles/MVT"
-            transport["analytics_cache"] = (
-                "GeoParquet" if persisted_layer.geoparquet_key else "pending"
-            )
-            result["layer_id"] = persisted_layer.layer_id
-            result["pmtiles_key"] = persisted_layer.pmtiles_key
-            result["geoparquet_key"] = persisted_layer.geoparquet_key
-            result["pmtiles_maxzoom"] = persisted_layer.pmtiles_maxzoom
-        else:
-            source_id = f"sage-raster-h3-{uuid.uuid4().hex[:8]}"
-            async with kue_ephemeral_action(
-                meta.conversation_id,
-                f"Rendering raster context preview: {row['name']}",
-                bounds=result.get("bbox"),
-            ) as payload:
-                payload.updates["add_geojson_layer"] = geojson_layer_update(
-                    source_id=source_id,
-                    geojson=result["geojson"],
-                    name=f"Raster Context - {row['name']}",
-                    bounds=result.get("bbox"),
-                    style_hint="h3_spatial_insight_risk",
-                    style=_inline_style(args.render_3d),
-                )
-                await asyncio.sleep(0.2)
-            render_engine["source_id"] = source_id
-            render_engine["rendered"] = True
-            transport["current"] = "inline_geojson_preview_fallback"
+        persisted_layer = await render_h3_risk_layer(
+            result,
+            meta=meta,
+            layer_name=f"Raster Context - {row['name']}",
+            render_3d=args.render_3d,
+            bounds=result.get("bbox"),
+            analysis_kind="raster_h3_context",
+        )
 
     _capture_raster_h3_telemetry(result, args=args, meta=meta, persisted=bool(persisted_layer))
 
     if result.get("status") == "success":
-        geojson = result["geojson"]
-        result["geojson_feature_count"] = len(geojson.get("features", []))
-        if persisted_layer:
-            result["geojson"] = (
-                "omitted from tool response; persisted as PMTiles/MVT layer "
-                f"{persisted_layer.layer_id}"
-            )
-        else:
-            result["geojson"] = json.dumps(geojson)
+        compact_h3_geojson(result, persisted_layer)
 
     return result
 
@@ -734,20 +672,6 @@ def _next_best_evidence(domain: str) -> list[str]:
     if domain == "environment":
         return ["Whitebox terrain/hydrology metrics", "water/drainage layer", "pollution/erosion observations"]
     return ["domain evidence such as buildings, roads, farms, drainage, rain, or terrain metrics"]
-
-
-def _inline_style(render_3d: bool) -> dict[str, Any]:
-    return {
-        "color_property": "risk_score",
-        "stops": inline_style_stops(),
-        "legend": legend(),
-        "fill_opacity": 0.58,
-        "stroke_color": "#111827",
-        "stroke_width": 1.2,
-        "extrude_3d": render_3d,
-        "extrusion_property": "risk_score",
-        "extrusion_scale": 35,
-    }
 
 
 def _capture_raster_h3_telemetry(
