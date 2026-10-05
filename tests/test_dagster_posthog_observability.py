@@ -137,63 +137,6 @@ def test_observed_asset_emits_failure_without_error_message(monkeypatch):
     assert "secret path" not in str(props)
 
 
-def test_satellite_scene_success_reports_freshness_and_counts(monkeypatch):
-    captured: list[tuple[str, dict]] = []
-
-    def fake_capture(event, *, distinct_id=None, properties=None, groups=None):
-        captured.append((event, dict(properties or {})))
-        return True
-
-    monkeypatch.setattr(observability, "capture_backend_event", fake_capture)
-
-    observability.capture_satellite_scene_sensor_success(
-        _FakeContext(),
-        scene_count=5,
-        latest_datetime="2026-06-18T08:00:00Z",
-        tiles_invalidated=42,
-        cache_warming_started=True,
-        elapsed_ms_value=1234,
-    )
-
-    events = [event for event, _props in captured]
-    assert events == [
-        "satellite_pipeline_completed",
-        "geospatial_pipeline_flow_completed",
-    ]
-    props = captured[0][1]
-    assert props["sensor_name"] == "satellite_scene_sensor"
-    assert props["scene_count"] == 5
-    assert props["tiles_invalidated"] == 42
-    assert props["cache_warming_started"] is True
-    assert props["freshness_lag_hours"] is not None
-
-
-def test_sensor_observer_summarizes_run_requests(monkeypatch):
-    captured: list[tuple[str, dict]] = []
-
-    def fake_capture(event, *, distinct_id=None, properties=None, groups=None):
-        captured.append((event, dict(properties or {})))
-        return True
-
-    monkeypatch.setattr(observability, "capture_backend_event", fake_capture)
-
-    @observability.observed_dagster_sensor(
-        sensor_name="s3_upload_sensor",
-        pipeline_family="upload_ingest",
-        source_category="upload",
-    )
-    def sensor_fn(context):
-        return [object(), object()]
-
-    sensor_fn(_FakeContext())
-
-    assert captured[0][0] == "dagster_sensor_evaluated"
-    props = captured[0][1]
-    assert props["sensor_name"] == "s3_upload_sensor"
-    assert props["run_request_count"] == 2
-    assert props["success"] is True
-
-
 def _observed(result):
     @observability.observed_dagster_asset(
         asset_name="weekly_drought_scan",

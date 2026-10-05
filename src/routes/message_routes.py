@@ -15,16 +15,17 @@ import time
 from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
-import io
-import csv
 import asyncio
 import traceback
 import uuid as _uuid
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
+from src.services.legacy_tool_shim import (
+    LEGACY_HANDLERS,
+    LegacyToolContext,
+    execute_legacy_tool,
+)
 from src.dependencies.dag import get_map
-from fastapi import UploadFile
-import httpx
 from typing import Callable
 from src.dependencies.rate_limiter import expensive_limit
 from src.dependencies.redis_client import get_redis_client
@@ -56,13 +57,11 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_chat_client_for_model, get_openai_client
-from src.llm_defaults import DEFAULT_CHAT_MODEL, supports_strict_tool_schema
+from src.llm_defaults import supports_strict_tool_schema
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
     generate_id,
-    internal_upload_layer,
-    InternalLayerUploadResponse,
 )
 from src.services.life_harness import (
     life_harness_tool_signature,
@@ -75,13 +74,9 @@ from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
-    UnsupportedAlgorithmError,
-    InvalidInputFormatError,
     get_tools,
 )
 from src.dependencies.conversation import get_or_create_conversation
-from src.duckdb import execute_duckdb_query
-from src.utils import get_async_s3_client, get_bucket_name
 from src.dependencies.postgis import get_postgis_provider
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from src.dependencies.chat_completions import ChatArgsProvider, get_chat_args_provider
@@ -884,309 +879,6 @@ def validate_sql_query(query: str) -> str:
             )
 
     return query
-
-
-async def run_geoprocessing_tool(
-    tool_call: ChatCompletionToolMessageParam,
-    conn,
-    user_id: str,
-    map_id: str,
-    conversation_id: int,
-):
-    function_name = tool_call.function.name
-    tool_args = json.loads(tool_call.function.arguments)
-
-    all_tools = get_tools()
-    for tool in all_tools:
-        if function_name == tool["function"]["name"]:
-            tool_def = tool
-            break
-    assert tool_def is not None
-
-    algorithm_id = tool_def["function"]["name"].replace("_", ":")
-
-    mapped_args = tool_args.copy()
-    mapped_args["map_id"] = map_id
-    mapped_args["user_uuid"] = user_id
-
-    # Convert buffer DISTANCE from kilometres to degrees for EPSG:4326 layers.
-    # All layers in the system are stored in EPSG:4326, so the QGIS native:buffer
-    # algorithm interprets DISTANCE in degrees. 1 degree ≈ 111.32 km at equator;
-    # for Rwanda (~-2° latitude) cos(2°) ≈ 0.9994, so using 111.32 is close enough.
-    if algorithm_id == "native:buffer" and "DISTANCE" in mapped_args:
-        try:
-            km_distance = float(mapped_args["DISTANCE"])
-            mapped_args["DISTANCE"] = km_distance / 111.32
-            logger.info(
-                "Buffer distance converted: %.2f km → %.6f degrees",
-                km_distance,
-                mapped_args["DISTANCE"],
-            )
-        except (ValueError, TypeError):
-            pass  # leave as-is if not numeric
-
-    logger.info(
-        "Geoprocessing tool call: %s (algorithm=%s) args=%s",
-        function_name, algorithm_id,
-        json.dumps({k: v for k, v in tool_args.items() if k != "user_uuid"}, default=str)[:500],
-    )
-
-    with tracer.start_as_current_span(f"geoprocessing.{algorithm_id}") as span:
-        try:
-            async with (
-                kue_ephemeral_action(
-                    conversation_id, f"QGIS running {algorithm_id}..."
-                ),
-                async_conn("get_layer_for_geoprocessing") as conn,
-            ):
-                input_params = {}
-                input_urls = {}
-
-                for key, val in mapped_args.items():
-                    if key in ("OUTPUT", "map_id", "user_uuid"):
-                        continue
-                    elif is_layer_id(val):
-                        # Get OGR source for any layer type (S3, remote URL, PostGIS)
-                        try:
-                            layer_row = await conn.fetchrow(
-                                """
-                                SELECT *
-                                FROM map_layers
-                                WHERE layer_id = $1 AND owner_uuid = $2
-                                """,
-                                val,
-                                user_id,
-                            )
-                            if not layer_row:
-                                raise HTTPException(404, f"Layer {val} not found")
-                            layer = MapLayer(**dict(layer_row))
-
-                            ogr_source_context = await layer.get_ogr_source(
-                                never_return_local_file=True,
-                                presigned_url_endpoint_override=os.environ.get(
-                                    "S3_INTERNAL_ENDPOINT_URL"
-                                ),
-                            )
-                            async with ogr_source_context as ogr_source:
-                                input_urls[key] = ogr_source
-                        except Exception as e:
-                            logger.warning("Layer %s could not be accessed for geoprocessing: %s", val, e)
-                            raise RecoverableToolCallError(
-                                f"Layer {val} could not be accessed for geoprocessing",
-                                tool_call.id,
-                            )
-                    else:
-                        input_params[key] = str(val)
-
-                map_data = await conn.fetchrow(
-                    """
-                    SELECT project_id FROM user_mundiai_maps
-                    WHERE id = $1
-                    """,
-                    map_id,
-                )
-                project_id = map_data["project_id"]
-
-                output_layer_mappings = {}
-
-                # Generate presigned PUT URLs for all output parameters
-                s3_client = await get_async_s3_client()
-                bucket_name = get_bucket_name()
-                output_presigned_put_urls = {}
-
-                # Generate output layer ID and S3 key for this output
-                output_layer_id = generate_id(prefix="L")
-                # Determine file extension based on tool description
-                tool_description = tool_def["function"]["description"].lower()
-                vector_count = tool_description.count("vector")
-                raster_count = tool_description.count("raster")
-
-                if vector_count > raster_count:
-                    file_extension = ".fgb"
-                    layer_type = "vector"
-                else:
-                    file_extension = ".tif"
-                    layer_type = "raster"
-
-                output_s3_key = (
-                    f"uploads/{user_id}/{project_id}/{output_layer_id}{file_extension}"
-                )
-
-                # Generate presigned PUT URL for this output
-                output_presigned_url = await s3_client.generate_presigned_url(
-                    "put_object",
-                    Params={
-                        "Bucket": bucket_name,
-                        "Key": output_s3_key,
-                        "ContentType": "application/x-www-form-urlencoded",
-                    },
-                    ExpiresIn=3600,  # 1 hour
-                )
-
-                output_presigned_put_urls["OUTPUT"] = output_presigned_url
-                output_layer_mappings["OUTPUT"] = {
-                    "layer_id": output_layer_id,
-                    "s3_key": output_s3_key,
-                    "layer_type": layer_type,
-                    "file_extension": file_extension,
-                }
-
-                qgis_request = {
-                    "algorithm_id": algorithm_id,
-                    "qgis_inputs": input_params,
-                    "output_presigned_put_urls": output_presigned_put_urls,
-                    "input_urls": input_urls,
-                }
-
-                # Call QGIS processing service
-                _qgis_timeout = float(
-                    os.environ.get("QGIS_PROCESSING_TIMEOUT_SEC", "120")
-                )
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(
-                        os.environ["QGIS_PROCESSING_URL"] + "/run_qgis_process",
-                        json=qgis_request,
-                        timeout=_qgis_timeout,
-                    )
-
-                if response.status_code != 200:
-                    # Parse QGIS error details for logging and LLM feedback
-                    qgis_error_detail = ""
-                    try:
-                        err_body = response.json()
-                        detail = err_body.get("detail", err_body)
-                        if isinstance(detail, dict):
-                            # 500: QGIS process failure uses stderr/stdout keys
-                            # 400: pre-flight checks use error/message keys
-                            stderr = detail.get("stderr", "")
-                            stdout = detail.get("stdout", "")
-                            err_msg = detail.get("error", "")
-                            err_detail = detail.get("message", "")
-                            qgis_error_detail = stderr or stdout or f"{err_msg}: {err_detail}".strip(": ")
-                        else:
-                            qgis_error_detail = str(detail)
-                    except Exception:
-                        qgis_error_detail = response.text[:2000]
-
-                    logger.error(
-                        "QGIS processing failed for %s (HTTP %s): %s",
-                        algorithm_id,
-                        response.status_code,
-                        qgis_error_detail[:1000],
-                    )
-
-                    # Give the LLM a concise, actionable error message
-                    return {
-                        "status": "error",
-                        "error": f"QGIS algorithm {algorithm_id} failed. Details: {qgis_error_detail[:500]}",
-                        "algorithm_id": algorithm_id,
-                    }
-
-                qgis_result = response.json()
-
-                # Check if all layer outputs were successfully uploaded
-                upload_results = qgis_result.get("upload_results", {})
-
-                for param_name in output_layer_mappings.keys():
-                    if (
-                        param_name not in upload_results
-                        or not upload_results[param_name]["uploaded"]
-                    ):
-                        upload_err = upload_results.get(param_name, {}).get("error", "unknown")
-                        logger.error(
-                            "QGIS %s output %s not uploaded: %s",
-                            algorithm_id, param_name, upload_err,
-                        )
-                        return {
-                            "status": "error",
-                            "error": f"QGIS processing completed but output file {param_name} was not uploaded: {upload_err}",
-                            "qgis_result": qgis_result,
-                        }
-
-                # Create new layers from the uploaded results
-                created_layers = []
-
-                for param_name, layer_info in output_layer_mappings.items():
-                    # Download the output file from S3
-                    downloaded_file = await s3_client.get_object(
-                        Bucket=bucket_name, Key=layer_info["s3_key"]
-                    )
-                    file_content = await downloaded_file["Body"].read()
-
-                    # Create an UploadFile-like object
-                    filename = f"{layer_info['layer_id']}{layer_info['file_extension']}"
-                    upload_file = UploadFile(
-                        filename=filename,
-                        file=io.BytesIO(file_content),
-                    )
-
-                    upload_result: InternalLayerUploadResponse = (
-                        await internal_upload_layer(
-                            map_id=map_id,
-                            file=upload_file,
-                            layer_name=filename,
-                            add_layer_to_map=False,
-                            user_id=user_id,
-                            project_id=project_id,
-                        )
-                    )
-
-                    created_layers.append(
-                        {
-                            "param_name": param_name,
-                            "layer_id": upload_result.id,
-                            "layer_name": filename,
-                            "layer_type": layer_info["layer_type"],
-                        }
-                    )
-
-                # Prepare the response
-                logger.info(
-                    "Geoprocessing %s completed: %d layers created",
-                    algorithm_id, len(created_layers),
-                )
-                result = {
-                    "status": "success",
-                    "message": f"{function_name} completed successfully",
-                    "algorithm_id": algorithm_id,
-                    "qgis_result": qgis_result,
-                    "created_layers": created_layers,
-                }
-
-                # Add instructions about available layers
-                if created_layers:
-                    layer_names = [layer["layer_name"] for layer in created_layers]
-                    layer_ids = [layer["layer_id"] for layer in created_layers]
-                    result["kue_instructions"] = (
-                        f"New layers available: {', '.join(layer_names)} "
-                        f"(IDs: {', '.join(layer_ids)}), not added to map. "
-                        'Use "add_layer_to_map" with the layer_id and descriptive new_name for layers that should be visible to the user. DO NOT include feature count or CRS in name, those are already visible to the user.'
-                    )
-
-                return result
-
-        except UnsupportedAlgorithmError as e:
-            return {
-                "status": "error",
-                "error": f"Unsupported algorithm parameter: {str(e)}",
-            }
-        except InvalidInputFormatError as e:
-            return {
-                "status": "error",
-                "error": f"Invalid input format: {str(e)}",
-            }
-        except Exception as e:
-            logger.exception(
-                "Unexpected error running geoprocessing algorithm %s: %s",
-                algorithm_id, e,
-            )
-            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
-            span.set_attribute("error.traceback", traceback.format_exc())
-            return {
-                "status": "error",
-                "error": f"Unexpected error running {algorithm_id}: {str(e)[:300]}",
-                "algorithm_id": algorithm_id,
-            }
 
 
 async def _generate_postgis_pmtiles_background(
@@ -2580,19 +2272,17 @@ async def process_chat_interaction_task(
                     # cleaning landed. gemma4:31b sometimes (a) streams
                     # tool_call.arguments with trailing tokens / concatenated
                     # JSON objects, or (b) fuses two tool names into one string
-                    # (e.g. "add_layer_to_mapnative_buffer"). Both cause Ollama
+                    # (e.g. "add_layer_to_mapzoom_to_bounds"). Both cause Ollama
                     # to reject the replayed history with HTTP 400 "invalid tool
                     # call arguments" → "Error connecting to LLM". Fix: clean
                     # args + repair name via longest-prefix match.
                     _tcs = m.get("tool_calls")
                     if _tcs:
-                        # Full tool name universe: pydantic/qgis tools + hardcoded
+                        # Full tool name universe: pydantic/tools.json tools + hardcoded
                         # message_routes tools that aren't in get_tools().
                         _HARDCODED_TOOL_NAMES = {
                             "add_layer_to_map", "zoom_to_bounds", "set_layer_style",
-                            "query_duckdb_sql", "query_postgis_database",
-                            "new_layer_from_postgis", "download_from_openstreetmap",
-                            "execute_shell_in_vm", "create_point_layer",
+                            "new_layer_from_postgis", "create_point_layer",
                         }
                         _all_tool_names: list[str] | None = None
                         for _tc in _tcs:
@@ -2691,9 +2381,6 @@ async def process_chat_interaction_task(
             client = get_openai_client(request)
 
             tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
-            geoprocessing_function_names = [
-                tool["function"]["name"] for tool in get_tools()
-            ]
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -3078,7 +2765,7 @@ async def process_chat_interaction_task(
                         full_content = "".join(content_parts) or None
                         # gemma4:31b sometimes streams tool_call.function.name
                         # as two fused tool names (e.g. "add_layer_to_map" +
-                        # "native_buffer" → "add_layer_to_mapnative_buffer") and
+                        # "zoom_to_bounds" → "add_layer_to_mapzoom_to_bounds") and
                         # tool_call.arguments as concatenated JSON objects. Both
                         # cause HTTP 400 from Ollama on next turn. Fix at write
                         # time so the DB record is always clean.
@@ -3086,9 +2773,7 @@ async def process_chat_interaction_task(
                             from src.dependencies.pydantic_tools import get_pydantic_tool_calls
                             _wt_tool_names = list(
                                 {"add_layer_to_map", "zoom_to_bounds", "set_layer_style",
-                                 "query_duckdb_sql", "query_postgis_database",
-                                 "new_layer_from_postgis", "download_from_openstreetmap",
-                                 "execute_shell_in_vm", "create_point_layer"}
+                                 "new_layer_from_postgis", "create_point_layer"}
                                 | {t["function"]["name"] for t in get_tools()}
                                 | set(get_pydantic_tool_calls().keys())
                             )
@@ -3859,89 +3544,6 @@ async def process_chat_interaction_task(
                                         content=json.dumps(tool_result),
                                     )
                                 )
-                        elif function_name == "query_duckdb_sql":
-                            layer_id = tool_args.get("layer_ids", [None])[
-                                0
-                            ]  # Use first layer or None
-                            sql_query = tool_args.get("sql_query")
-                            head_n_rows = tool_args.get("head_n_rows", 20)
-
-                            layer_exists = await conn.fetchrow(
-                                """
-                                SELECT layer_id FROM map_layers
-                                WHERE layer_id = $1 AND owner_uuid = $2
-                                """,
-                                layer_id,
-                                user_id,
-                            )
-
-                            if not layer_exists:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"Layer ID '{layer_id}' not found or you do not have permission to access it.",
-                                }
-                                await add_chat_completion_message(
-                                    ChatCompletionToolMessageParam(
-                                        role="tool",
-                                        tool_call_id=tool_call.id,
-                                        content=json.dumps(tool_result),
-                                    )
-                                )
-                                continue
-
-                            try:
-                                # Execute the query using the async function
-                                async with kue_ephemeral_action(
-                                    conversation.id,
-                                    "Querying with SQL...",
-                                    layer_id=layer_id,
-                                ):
-                                    result = await execute_duckdb_query(
-                                        sql_query=sql_query,
-                                        layer_id=layer_id,
-                                        max_n_rows=head_n_rows,
-                                        timeout=30,
-                                    )
-
-                                # Convert result to CSV format
-                                # write header + rows to an in-memory buffer
-                                buf = io.StringIO()
-                                writer = csv.writer(buf)
-                                writer.writerow(result["headers"])
-                                writer.writerows(result["result"])
-
-                                result_text = buf.getvalue()
-
-                                if len(result_text) > 25000:
-                                    tool_result = {
-                                        "status": "error",
-                                        "error": f"DuckDB CSV result too large: {len(result_text)} characters exceeds 25,000 character limit, try reducing columns or head_n_rows",
-                                    }
-                                else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "result": result_text,
-                                        "row_count": result["row_count"],
-                                        "query": sql_query,
-                                    }
-                            except HTTPException as e:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"DuckDB query error: {e.detail}",
-                                }
-                            except Exception as e:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"Error executing SQL query: {str(e)}",
-                                }
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
                         elif function_name == "set_layer_style":
                             layer_id = tool_args.get("layer_id")
                             maplibre_json_layers_str = tool_args.get(
@@ -4013,324 +3615,6 @@ async def process_chat_interaction_task(
                                     content=json.dumps(tool_result),
                                 ),
                             )
-                        elif function_name == "query_postgis_database":
-                            postgis_connection_id = tool_args.get(
-                                "postgis_connection_id"
-                            )
-                            sql_query = tool_args.get("sql_query")
-
-                            # Validate query for SQL injection before any execution
-                            if sql_query:
-                                sql_query = validate_sql_query(sql_query)
-
-                            if not postgis_connection_id or not sql_query:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": "Missing required parameters (postgis_connection_id or sql_query)",
-                                }
-                            else:
-                                # Verify the PostGIS connection exists and user has access.
-                                # Fall back to project-level access for internal connections.
-                                connection_result = await conn.fetchrow(
-                                    """
-                                    SELECT connection_uri, connection_name
-                                    FROM project_postgres_connections
-                                    WHERE id = $1 AND (user_id = $2 OR project_id = $3)
-                                    AND soft_deleted_at IS NULL
-                                    """,
-                                    postgis_connection_id,
-                                    user_id,
-                                    current_project_id,
-                                )
-
-                                if not connection_result:
-                                    tool_result = {
-                                        "status": "error",
-                                        "error": f"PostGIS connection '{postgis_connection_id}' not found or you do not have access to it.",
-                                    }
-                                else:
-                                    if _is_internal_rwanda_connection(
-                                        str(postgis_connection_id),
-                                        current_project_id,
-                                        connection_result["connection_name"],
-                                    ):
-                                        _validate_internal_rwanda_query(sql_query)
-                                    try:
-                                        # Check if LIMIT is already present and validate it
-                                        limited_query = sql_query.strip()
-                                        limit_match = re.search(
-                                            r"\bLIMIT\s+(\d+)\b",
-                                            limited_query,
-                                            re.IGNORECASE,
-                                        )
-
-                                        if limit_match:
-                                            limit_value = int(limit_match.group(1))
-                                            if limit_value > 1000:
-                                                tool_result = {
-                                                    "status": "error",
-                                                    "error": f"LIMIT value {limit_value} exceeds maximum allowed limit of 1000",
-                                                }
-                                                await add_chat_completion_message(
-                                                    ChatCompletionToolMessageParam(
-                                                        role="tool",
-                                                        tool_call_id=tool_call.id,
-                                                        content=json.dumps(tool_result),
-                                                    ),
-                                                )
-                                                continue
-                                        else:
-                                            # No LIMIT found, require explicit LIMIT
-                                            tool_result = {
-                                                "status": "error",
-                                                "error": "Query must include a LIMIT clause with a value less than 1000",
-                                            }
-                                            await add_chat_completion_message(
-                                                ChatCompletionToolMessageParam(
-                                                    role="tool",
-                                                    tool_call_id=tool_call.id,
-                                                    content=json.dumps(tool_result),
-                                                ),
-                                            )
-                                            continue
-
-                                        async with kue_ephemeral_action(
-                                            conversation.id,
-                                            "Querying PostgreSQL database...",
-                                        ):
-                                            postgres_conn = await connection_manager.connect_to_postgres(
-                                                postgis_connection_id
-                                            )
-                                            try:
-                                                # Execute the query
-                                                rows = await postgres_conn.fetch(
-                                                    limited_query
-                                                )
-
-                                                if not rows:
-                                                    tool_result = {
-                                                        "status": "success",
-                                                        "message": "Query executed successfully but returned no rows",
-                                                        "row_count": 0,
-                                                        "query": limited_query,
-                                                    }
-                                                else:
-                                                    # Convert rows to list of dicts
-                                                    result_data = [
-                                                        dict(row) for row in rows
-                                                    ]
-
-                                                    # Format the result as a readable string
-                                                    if (
-                                                        len(result_data) == 1
-                                                        and len(result_data[0]) == 1
-                                                    ):
-                                                        # Single value result
-                                                        single_value = list(
-                                                            result_data[0].values()
-                                                        )[0]
-                                                        result_text = f"Query result: {single_value}"
-                                                    else:
-                                                        # Table format
-                                                        if result_data:
-                                                            headers = list(
-                                                                result_data[0].keys()
-                                                            )
-                                                            result_lines = [
-                                                                "\t".join(headers)
-                                                            ]
-                                                            for row in result_data:
-                                                                result_lines.append(
-                                                                    "\t".join(
-                                                                        str(
-                                                                            row.get(
-                                                                                h, ""
-                                                                            )
-                                                                        )
-                                                                        for h in headers
-                                                                    )
-                                                                )
-                                                            result_text = "\n".join(
-                                                                result_lines
-                                                            )
-                                                        else:
-                                                            result_text = "No results"
-
-                                                    # Check if result is too large
-                                                    if len(result_text) > 25000:
-                                                        tool_result = {
-                                                            "status": "error",
-                                                            "error": f"Query result too large: {len(result_text)} characters exceeds 25,000 character limit. Try reducing the number of columns or rows.",
-                                                        }
-                                                    else:
-                                                        tool_result = {
-                                                            "status": "success",
-                                                            "result": result_text,
-                                                            "row_count": len(
-                                                                result_data
-                                                            ),
-                                                            "query": limited_query,
-                                                        }
-                                            finally:
-                                                await postgres_conn.close()
-
-                                    except HTTPException as e:
-                                        tool_result = {
-                                            "status": "error",
-                                            "error": f"Failed to connect to PostGIS database: {e.detail}",
-                                        }
-                                    except Exception as e:
-                                        tool_result = {
-                                            "status": "error",
-                                            "error": f"PostgreSQL query error: {str(e)}",
-                                            "query": limited_query,
-                                        }
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                ),
-                            )
-
-                        elif function_name == "zonal_statistics":
-                            raster_layer_id = tool_args.get("raster_layer_id")
-                            zones_layer_id = tool_args.get("zones_layer_id")
-                            stats = tool_args.get("stats")
-
-                            if not raster_layer_id or not zones_layer_id:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": "Missing required parameters (raster_layer_id or zones_layer_id).",
-                                }
-                            else:
-                                # Verify both layers exist and user has access
-                                raster_exists = await conn.fetchrow(
-                                    """
-                                    SELECT layer_id, type FROM map_layers
-                                    WHERE layer_id = $1 AND owner_uuid = $2
-                                    """,
-                                    raster_layer_id,
-                                    user_id,
-                                )
-                                zones_exists = await conn.fetchrow(
-                                    """
-                                    SELECT layer_id, type FROM map_layers
-                                    WHERE layer_id = $1 AND owner_uuid = $2
-                                    """,
-                                    zones_layer_id,
-                                    user_id,
-                                )
-
-                                if not raster_exists:
-                                    tool_result = {
-                                        "status": "error",
-                                        "error": f"Raster layer '{raster_layer_id}' not found or you do not have access to it.",
-                                    }
-                                elif not zones_exists:
-                                    tool_result = {
-                                        "status": "error",
-                                        "error": f"Zones layer '{zones_layer_id}' not found or you do not have access to it.",
-                                    }
-                                else:
-                                    try:
-                                        async with kue_ephemeral_action(
-                                            conversation.id,
-                                            "Computing zonal statistics...",
-                                        ):
-                                            from src.geoprocessing.zonal_stats import (
-                                                compute_zonal_statistics,
-                                            )
-
-                                            tool_result = await compute_zonal_statistics(
-                                                raster_layer_id=raster_layer_id,
-                                                zones_layer_id=zones_layer_id,
-                                                stats=stats,
-                                                timeout=30,
-                                            )
-                                    except HTTPException as e:
-                                        tool_result = {
-                                            "status": "error",
-                                            "error": f"Zonal statistics error: {e.detail}",
-                                        }
-                                    except Exception as e:
-                                        logger.exception(
-                                            "Error computing zonal statistics for raster=%s, zones=%s",
-                                            raster_layer_id,
-                                            zones_layer_id,
-                                        )
-                                        tool_result = {
-                                            "status": "error",
-                                            "error": f"Failed to compute zonal statistics: {str(e)}",
-                                        }
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                ),
-                            )
-
-                        elif function_name == "query_rwanda_zonal_stats":
-                            query_type = tool_args.get("query_type")
-
-                            try:
-                                from src.services.rwanda_lakehouse import get_rwanda_lakehouse_manager
-                                rwanda_mgr = get_rwanda_lakehouse_manager()
-
-                                if query_type == "district_summary":
-                                    province = tool_args.get("province")
-                                    week_start = tool_args.get("week_start")
-                                    result_data = rwanda_mgr.query_district_summary(
-                                        province=province,
-                                        week_start=week_start
-                                    )
-                                    tool_result = {"status": "success", "data": result_data}
-
-                                elif query_type == "ndvi_timeseries":
-                                    h3_index = tool_args.get("h3_index")
-                                    parcel_id = tool_args.get("parcel_id")
-                                    date_from = tool_args.get("date_from")
-                                    date_to = tool_args.get("date_to")
-                                    result_data = rwanda_mgr.query_ndvi_timeseries(
-                                        h3_index=h3_index,
-                                        parcel_id=parcel_id,
-                                        date_from=date_from,
-                                        date_to=date_to
-                                    )
-                                    tool_result = {"status": "success", "data": result_data}
-
-                                else:
-                                    tool_result = {
-                                        "status": "error",
-                                        "error": f"Unknown query_type: {query_type}. Must be 'district_summary' or 'ndvi_timeseries'."
-                                    }
-
-                            except HTTPException as e:
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"Rwanda lakehouse query error: {e.detail}"
-                                }
-                            except Exception as e:
-                                logger.exception(
-                                    "Error querying Rwanda lakehouse: query_type=%s",
-                                    query_type
-                                )
-                                tool_result = {
-                                    "status": "error",
-                                    "error": f"Failed to query Rwanda lakehouse: {str(e)}"
-                                }
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
                         elif function_name == "search_satellite_imagery":
                             try:
                                 from src.services.stac_service import get_stac_service
@@ -4425,250 +3709,6 @@ async def process_chat_interaction_task(
                                     tool_result = {"status": "success", "field_stats": result_data}
                             except Exception as e:
                                 logger.exception("get_field_health tool failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
-                        elif function_name == "create_management_zones":
-                            try:
-                                from src.services.precision_ag_service import create_management_zones
-
-                                result_data = await asyncio.get_event_loop().run_in_executor(
-                                    None,
-                                    lambda: create_management_zones(
-                                        geometry=tool_args.get("geometry"),
-                                        num_zones=tool_args.get("num_zones", 3),
-                                        date_from=tool_args.get("date_from"),
-                                        date_to=tool_args.get("date_to"),
-                                    ),
-                                )
-                                if "error" in result_data:
-                                    tool_result = {"status": "error", "error": result_data["error"]}
-                                else:
-                                    tool_result = {"status": "success", "management_zones": result_data}
-                            except Exception as e:
-                                logger.exception("create_management_zones failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
-                        elif function_name == "create_prescription_map":
-                            try:
-                                from src.services.precision_ag_service import create_prescription_map
-
-                                result_data = await asyncio.get_event_loop().run_in_executor(
-                                    None,
-                                    lambda: create_prescription_map(
-                                        geometry=tool_args.get("geometry"),
-                                        crop_type=tool_args.get("crop_type", "maize"),
-                                        num_zones=tool_args.get("num_zones", 3),
-                                    ),
-                                )
-                                if "error" in result_data:
-                                    tool_result = {"status": "error", "error": result_data["error"]}
-                                else:
-                                    tool_result = {"status": "success", "prescription_map": result_data}
-                            except Exception as e:
-                                logger.exception("create_prescription_map failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
-                        elif function_name == "create_soil_sampling_plan":
-                            try:
-                                from src.services.precision_ag_service import create_soil_sampling_plan
-
-                                result_data = await asyncio.get_event_loop().run_in_executor(
-                                    None,
-                                    lambda: create_soil_sampling_plan(
-                                        geometry=tool_args.get("geometry"),
-                                        num_zones=tool_args.get("num_zones", 3),
-                                    ),
-                                )
-                                if "error" in result_data:
-                                    tool_result = {"status": "error", "error": result_data["error"]}
-                                else:
-                                    tool_result = {"status": "success", "sampling_plan": result_data}
-                            except Exception as e:
-                                logger.exception("create_soil_sampling_plan failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
-                        elif function_name == "identify_parcel_crop":
-                            try:
-                                from src.services.satellite_analytics import get_field_timeseries as _sa_get_field_timeseries
-                                from src.services.ml_inference import get_ml_service
-
-                                _ic_geom = tool_args.get("geometry")
-                                if not _ic_geom:
-                                    tool_result = {"status": "error", "error": "geometry is required for crop identification"}
-                                else:
-                                    _ic_months = tool_args.get("months", 6)
-                                    if _ic_months < 3:
-                                        _ic_months = 3
-
-                                    # Auto-buffer Point geometries
-                                    if _ic_geom and _ic_geom.get("type") in ("Point", "MultiPoint"):
-                                        from shapely.geometry import shape as _shape, mapping as _mapping
-                                        from pyproj import Transformer as _Transformer
-                                        from shapely.ops import transform as _stransform
-                                        _pt = _shape(_ic_geom)
-                                        _to_utm = _Transformer.from_crs("EPSG:4326", "EPSG:32735", always_xy=True)
-                                        _to_wgs = _Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True)
-                                        _pt_utm = _stransform(_to_utm.transform, _pt)
-                                        _buf_utm = _pt_utm.buffer(500)
-                                        _buf_wgs = _stransform(_to_wgs.transform, _buf_utm)
-                                        _ic_geom = _mapping(_buf_wgs)
-                                        logger.info("identify_parcel_crop: auto-buffered Point to 500m polygon")
-
-                                    # Step 1: Get NDVI time-series (DE Africa primary, SH fallback)
-                                    ts_result = await asyncio.get_event_loop().run_in_executor(
-                                        None, lambda: _sa_get_field_timeseries(
-                                            geometry=_ic_geom,
-                                            months=_ic_months,
-                                        )
-                                    )
-                                    if "error" in ts_result:
-                                        tool_result = {"status": "error", "error": ts_result["error"]}
-                                    else:
-                                        # Convert intervals to time-series format
-                                        _ndvi_ts = []
-                                        for interval in ts_result.get("intervals", []):
-                                            _ndvi_data = interval.get("ndvi", {})
-                                            if _ndvi_data.get("mean") is not None:
-                                                _ndvi_ts.append({
-                                                    "date": interval.get("date_from", ""),
-                                                    "mean_ndvi": _ndvi_data["mean"],
-                                                })
-
-                                        if len(_ndvi_ts) < 4:
-                                            tool_result = {
-                                                "status": "error",
-                                                "error": f"Insufficient data: only {len(_ndvi_ts)} cloud-free observations "
-                                                         f"in {_ic_months} months. Need at least 4 for crop identification.",
-                                            }
-                                        else:
-                                            # Step 2: Run crop identification
-                                            ml_service = get_ml_service()
-                                            crop_result = ml_service.identify_crop(_ndvi_ts)
-                                            if "error" in crop_result:
-                                                tool_result = {"status": "error", "error": crop_result["error"]}
-                                            else:
-                                                tool_result = {"status": "success", "crop_identification": crop_result}
-                            except Exception as e:
-                                logger.exception("identify_parcel_crop failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
-                        elif function_name == "confirm_crop_prediction":
-                            try:
-                                from datetime import date as _cdate
-
-                                _predicted = tool_args.get("predicted_crop", "")
-                                _actual = tool_args.get("actual_crop", "")
-                                _confirmed = tool_args.get("confirmed", False)
-                                _season = tool_args.get("season")
-                                _geom = tool_args.get("geometry")
-
-                                # Auto-detect season from current date
-                                if not _season:
-                                    _today = _cdate.today()
-                                    _yr = _today.year
-                                    # Season A: Sep-Feb, Season B: Feb-Jul
-                                    if _today.month >= 9:
-                                        _season = f"{_yr + 1}A"
-                                    elif _today.month <= 2:
-                                        _season = f"{_yr}A"
-                                    else:
-                                        _season = f"{_yr}B"
-
-                                # Store feedback in PostgreSQL
-                                try:
-                                    await conn.execute(
-                                        """INSERT INTO crop_feedback
-                                           (user_id, predicted_crop, actual_crop, confirmed,
-                                            season, geometry, created_at)
-                                           VALUES ($1, $2, $3, $4, $5, $6, NOW())""",
-                                        str(user_id) if user_id else "anonymous",
-                                        _predicted,
-                                        _actual,
-                                        _confirmed,
-                                        _season,
-                                        json.dumps(_geom) if _geom else None,
-                                    )
-                                    tool_result = {
-                                        "status": "success",
-                                        "message": (
-                                            f"Thank you! Recorded: prediction was '{_predicted}', "
-                                            f"actual crop is '{_actual}' "
-                                            f"({'confirmed correct' if _confirmed else 'corrected'}). "
-                                            f"Season: {_season}. This feedback improves future predictions."
-                                        ),
-                                        "feedback": {
-                                            "predicted_crop": _predicted,
-                                            "actual_crop": _actual,
-                                            "confirmed": _confirmed,
-                                            "season": _season,
-                                        },
-                                    }
-                                except Exception as _db_err:
-                                    # Table might not exist yet — log feedback anyway
-                                    logger.warning(
-                                        "crop_feedback table not found (%s) — logging feedback",
-                                        _db_err,
-                                    )
-                                    logger.info(
-                                        "CROP_FEEDBACK: predicted=%s actual=%s confirmed=%s season=%s user=%s",
-                                        _predicted, _actual, _confirmed, _season, user_id,
-                                    )
-                                    tool_result = {
-                                        "status": "success",
-                                        "message": (
-                                            f"Feedback recorded (log): prediction '{_predicted}', "
-                                            f"actual '{_actual}' ({'correct' if _confirmed else 'corrected'}). "
-                                            f"Season: {_season}."
-                                        ),
-                                        "feedback": {
-                                            "predicted_crop": _predicted,
-                                            "actual_crop": _actual,
-                                            "confirmed": _confirmed,
-                                            "season": _season,
-                                        },
-                                    }
-                            except Exception as e:
-                                logger.exception("confirm_crop_prediction failed")
                                 tool_result = {"status": "error", "error": str(e)}
 
                             await add_chat_completion_message(
@@ -5996,94 +5036,6 @@ async def process_chat_interaction_task(
                                 )
                             )
 
-                        elif function_name == "get_crop_classifications":
-                            try:
-                                _district = tool_args.get("district")
-                                _cc_lat = tool_args.get("lat")
-                                _cc_lon = tool_args.get("lon")
-
-                                # Reverse-geocode lat/lon to district if not explicitly provided
-                                if _cc_lat is not None and _cc_lon is not None and not _district:
-                                    try:
-                                        import asyncpg as _asyncpg_cc
-                                        _pg_host_cc = os.environ.get("POSTGRES_HOST", "postgresdb")
-                                        _pg_port_cc = int(os.environ.get("POSTGRES_PORT", "5432"))
-                                        _pg_db_cc = os.environ.get("POSTGRES_DB", "mundidb")
-                                        _pg_user_cc = os.environ.get("POSTGRES_USER", "mundiuser")
-                                        _pg_pass_cc = os.environ.get("POSTGRES_PASSWORD", "gdalpassword")
-                                        _pg_conn_cc = await _asyncpg_cc.connect(
-                                            host=_pg_host_cc, port=_pg_port_cc,
-                                            database=_pg_db_cc, user=_pg_user_cc, password=_pg_pass_cc,
-                                        )
-                                        try:
-                                            _rg_row = await _pg_conn_cc.fetchrow(
-                                                "SELECT district FROM rwanda_district_boundaries "
-                                                "WHERE ST_Contains(geom, ST_SetSRID(ST_Point($1, $2), 4326)) "
-                                                "LIMIT 1",
-                                                float(_cc_lon), float(_cc_lat),
-                                            )
-                                            if _rg_row:
-                                                _district = _rg_row["district"]
-                                                logger.info("Crop classifications: reverse-geocoded → district=%s", _district)
-                                        finally:
-                                            await _pg_conn_cc.close()
-                                    except Exception as _rg_err:
-                                        logger.warning("Reverse-geocode failed for crop classifications: %s", _rg_err)
-                                if _district:
-                                    _rows = await conn.fetch(
-                                        "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
-                                        "FROM crop_classification_cache WHERE district = $1 "
-                                        "ORDER BY computed_at DESC LIMIT 50",
-                                        _district,
-                                    )
-                                else:
-                                    _rows = await conn.fetch(
-                                        "SELECT district, class_label, area_ha, pixel_count, confidence, job_id "
-                                        "FROM crop_classification_cache ORDER BY computed_at DESC LIMIT 50"
-                                    )
-
-                                if _rows:
-                                    tool_result = {
-                                        "status": "success",
-                                        "source": "postgres_cache",
-                                        "count": len(_rows),
-                                        "classifications": [
-                                            {"district": r["district"], "class_label": r["class_label"], "area_ha": r["area_ha"],
-                                             "pixel_count": r["pixel_count"], "confidence": r["confidence"], "job_id": r["job_id"]}
-                                            for r in _rows
-                                        ],
-                                    }
-                                    _pgc_id = await _ensure_rwanda_postgis_connection(
-                                        conn, current_project_id, user_id,
-                                    )
-                                    if _pgc_id:
-                                        tool_result["postgis_connection_id"] = _pgc_id
-                                        tool_result["kue_instructions"] = (
-                                            "To visualise crop classifications on the map, call new_layer_from_postgis with "
-                                            f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                                            "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
-                                            "Then add_layer_to_map and set_layer_style. "
-                                            "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                                        )
-                                else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "source": "postgres_cache",
-                                        "classifications": [],
-                                        "message": "No crop classification is produced: no labelled crop classifier runs yet, so there are no crop classes to report. To identify the crop on one field, use identify_parcel_crop.",
-                                    }
-                            except Exception as e:
-                                logger.exception("get_crop_classifications tool failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
                         elif function_name == "get_anomaly_alerts":
                             try:
                                 _where = []
@@ -7085,111 +6037,6 @@ async def process_chat_interaction_task(
                                 )
                             )
 
-                        elif function_name == "get_emissions_stats":
-                            try:
-                                # ── Query emissions_annual_cache (PostgreSQL) ──
-                                _em_where: list = []
-                                _em_params: list = []
-                                _em_pidx = 1
-                                if tool_args.get("district"):
-                                    _em_where.append(f"district = ${_em_pidx}")
-                                    _em_params.append(tool_args["district"])
-                                    _em_pidx += 1
-                                if tool_args.get("year"):
-                                    _em_where.append(f"year = ${_em_pidx}")
-                                    _em_params.append(int(tool_args["year"]))
-                                    _em_pidx += 1
-                                if tool_args.get("year_from"):
-                                    _em_where.append(f"year >= ${_em_pidx}")
-                                    _em_params.append(int(tool_args["year_from"]))
-                                    _em_pidx += 1
-                                if tool_args.get("year_to"):
-                                    _em_where.append(f"year <= ${_em_pidx}")
-                                    _em_params.append(int(tool_args["year_to"]))
-                                    _em_pidx += 1
-                                if tool_args.get("emission_type"):
-                                    _em_where.append(f"emission_type = ${_em_pidx}")
-                                    _em_params.append(tool_args["emission_type"])
-                                    _em_pidx += 1
-                                if tool_args.get("sector"):
-                                    _em_where.append(f"sector = ${_em_pidx}")
-                                    _em_params.append(tool_args["sector"])
-                                    _em_pidx += 1
-                                if not tool_args.get("year") and not tool_args.get("year_from") and not tool_args.get("year_to"):
-                                    _em_where.append("year >= EXTRACT(YEAR FROM CURRENT_DATE)::int - 6")
-
-                                _em_where_sql = f"WHERE {' AND '.join(_em_where)}" if _em_where else ""
-                                _em_rows = await conn.fetch(
-                                    f"SELECT district, year, emission_type, sector, "
-                                    f"sector_label, total_tonnes, grid_cells "
-                                    f"FROM emissions_annual_cache {_em_where_sql} "
-                                    f"ORDER BY year DESC, district, emission_type, sector "
-                                    f"LIMIT 500",
-                                    *_em_params,
-                                )
-
-                                _emissions_stats: list = []
-                                for r in _em_rows:
-                                    _emissions_stats.append({
-                                        "district": r["district"],
-                                        "year": r["year"],
-                                        "emission_type": r["emission_type"],
-                                        "sector": r["sector"],
-                                        "sector_label": r["sector_label"],
-                                        "total_tonnes": round_or_none(r["total_tonnes"], 2),
-                                        "grid_cells": r["grid_cells"],
-                                    })
-
-                                if _emissions_stats:
-                                    tool_result = {
-                                        "status": "success",
-                                        "source": "EDGAR v8.0 (JRC)",
-                                        "count": len(_emissions_stats),
-                                        "note": (
-                                            "EDGAR v8.0 emissions data from the Joint Research Centre. "
-                                            "Values are total tonnes per district per year. "
-                                            "Sectors: AGS=Agricultural soils, ENF=Enteric fermentation, "
-                                            "MNM=Manure management, AWB=Agricultural waste burning."
-                                        ),
-                                        "emissions_stats": _emissions_stats,
-                                    }
-                                    _pgc_id = await _ensure_rwanda_postgis_connection(
-                                        conn, current_project_id, user_id,
-                                    )
-                                    if _pgc_id:
-                                        tool_result["postgis_connection_id"] = _pgc_id
-                                        tool_result["kue_instructions"] = (
-                                            "To visualise emissions data on the map, call new_layer_from_postgis with "
-                                            f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                                            "Join emissions_annual_cache with rwanda_district_boundaries on district. "
-                                            "Example: SELECT ROW_NUMBER() OVER() AS id, e.district, e.total_tonnes, e.emission_type, "
-                                            "e.year, b.geom FROM emissions_annual_cache e JOIN rwanda_district_boundaries b "
-                                            "ON e.district = b.district WHERE e.emission_type = 'CH4' AND e.year = 2022 "
-                                            "Then add_layer_to_map and set_layer_style to colour by total_tonnes. "
-                                            "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                                        )
-                                else:
-                                    tool_result = {
-                                        "status": "success",
-                                        "emissions_stats": [],
-                                        "message": (
-                                            "No emissions data available. The emissions_annual_cache table "
-                                            "may not be populated yet. Trigger the annual_emissions_ingest "
-                                            "Dagster asset to load EDGAR data."
-                                        ),
-                                    }
-                            except Exception as e:
-                                logger.exception("get_emissions_stats tool failed")
-                                tool_result = {"status": "error", "error": str(e)}
-
-                            await add_chat_completion_message(
-                                ChatCompletionToolMessageParam(
-                                    role="tool",
-                                    tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                )
-                            )
-
                         elif function_name == "add_land_cover_layer":
                             # Add ESRI 10m LULC 2024 land cover as a raster overlay
                             try:
@@ -7647,21 +6494,34 @@ async def process_chat_interaction_task(
                                 )
                             )
 
-                        elif function_name in geoprocessing_function_names:
-                            tool_result = await run_geoprocessing_tool(
-                                tool_call,
-                                conn,
-                                user_id,
-                                map_id,
-                                conversation.id,
-                            )
+                        elif function_name in LEGACY_HANDLERS:
+                            # Tools with no branch above run through the same
+                            # handlers /internal/tool-call (Hermes) uses.
+                            from src.database.pool import get_async_db_connection
+
+                            async with get_async_db_connection(
+                                user_id=user_id, partner_id=partner_id
+                            ) as _shim_conn:
+                                tool_result = await execute_legacy_tool(
+                                    function_name,
+                                    LegacyToolContext(
+                                        user_id=user_id,
+                                        partner_id=partner_id or "",
+                                        conversation_id=conversation.id,
+                                        map_id=map_id,
+                                        project_id=current_project_id,
+                                        conn=_shim_conn,
+                                        arguments=tool_args,
+                                    ),
+                                )
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
                                     tool_call_id=tool_call.id,
-                                    content=json.dumps(tool_result),
-                                ),
+                                    content=json.dumps(tool_result, default=str),
+                                )
                             )
+
                         else:
                             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
 

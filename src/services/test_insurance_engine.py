@@ -936,7 +936,6 @@ class TestValidAudiences:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=None))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value="A"))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=None))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=None))
@@ -1058,7 +1057,6 @@ class TestComputeInsuranceIntelligence:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))
@@ -1434,7 +1432,6 @@ class TestOrchestratorEdgeCases:
         from contextlib import ExitStack
         stack = ExitStack()
         stack.enter_context(patch("src.services.admin_boundaries.lookup_admin_geometry", new_callable=AsyncMock, return_value=geom))
-        stack.enter_context(patch("src.services.dssat_service.detect_current_season", return_value=season))
         stack.enter_context(patch("src.services.insurance_engine.compute_insurance_accuracy_safe", new_callable=AsyncMock, return_value=acc))
         stack.enter_context(patch("src.services.weather_accuracy.detect_dry_spells", new_callable=AsyncMock, return_value=dry))
         stack.enter_context(patch("src.services.weather_accuracy.compute_ndvi_concordance", new_callable=AsyncMock, return_value=conc))

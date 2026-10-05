@@ -1,5 +1,6 @@
-import { Building2, Check, ChevronsUpDown, Loader2, LogOut, User } from 'lucide-react';
+import { Building, Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,8 @@ export interface WorkOSMe {
   user: { email: string | null; first_name: string | null; last_name: string | null; picture: string | null };
   organization: WorkOSOrganization | null;
   organizations: WorkOSOrganization[];
+  is_staff?: boolean;
+  is_owner?: boolean;
 }
 
 type Status = 'loading' | 'signedIn' | 'signedOut';
@@ -38,7 +41,20 @@ const SessionContext = createContext<SessionValue>({ status: 'loading', me: null
 
 export const SIGNED_OUT_EVENT = 'mundi:signed-out';
 
-export function signInUrl(returnTo = window.location.pathname + window.location.search): string {
+/** Set by /auth/callback when WorkOS sent the user back but the session could not be created. */
+const SIGN_IN_ERROR_PARAM = 'sign_in_error';
+/** Set by /auth/logout. */
+const SIGNED_OUT_PARAM = 'signed_out';
+
+function currentPathWithoutError(): string {
+  const params = new URLSearchParams(window.location.search);
+  params.delete(SIGN_IN_ERROR_PARAM);
+  params.delete(SIGNED_OUT_PARAM);
+  const query = params.toString();
+  return window.location.pathname + (query ? `?${query}` : '');
+}
+
+export function signInUrl(returnTo = currentPathWithoutError()): string {
   return `/auth/login?return_to=${encodeURIComponent(returnTo)}`;
 }
 
@@ -92,10 +108,40 @@ export function useWorkOSSession(): SessionValue {
 
 export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
   const { status } = useWorkOSSession();
+  // After a failed callback or a sign-out, never bounce straight back to WorkOS:
+  // after a failure it would loop, after a sign-out it would look like nothing happened.
+  const params = new URLSearchParams(window.location.search);
+  const notice = params.has(SIGN_IN_ERROR_PARAM) ? 'failed' : params.has(SIGNED_OUT_PARAM) ? 'signedOut' : null;
   useEffect(() => {
-    if (status === 'signedOut') window.location.assign(signInUrl());
-  }, [status]);
+    if (status === 'signedOut' && !notice) window.location.assign(signInUrl());
+    // Signed in after all: drop the stale notice from the address bar.
+    if (status === 'signedIn' && notice) window.history.replaceState(null, '', currentPathWithoutError());
+  }, [status, notice]);
   if (status === 'signedIn') return <>{children}</>;
+  if (status === 'signedOut' && notice) {
+    const text =
+      notice === 'failed'
+        ? {
+            title: 'Sign-in did not complete',
+            body: 'Your account was recognised, but the app could not start your session. Try again; if it keeps failing, the server log says why.',
+            action: 'Try again',
+          }
+        : { title: 'You are signed out', body: 'Sign in again to get back to your maps.', action: 'Sign in' };
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <div className="max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-center text-gray-100">
+          <p className="font-medium">{text.title}</p>
+          <p className="mt-2 text-sm text-gray-400">{text.body}</p>
+          <a
+            href={signInUrl('/')}
+            className="mt-4 inline-block rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+          >
+            {text.action}
+          </a>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground">
       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -121,8 +167,16 @@ function initials(me: WorkOSMe): string {
 }
 
 function Avatar({ me, size = 'h-8 w-8' }: { me: WorkOSMe; size?: string }) {
-  return me.user.picture ? (
-    <img src={me.user.picture} alt="" className={`${size} rounded-full object-cover`} referrerPolicy="no-referrer" />
+  // Initials whenever there is no picture or it fails to load, never a broken image.
+  const [failed, setFailed] = useState(false);
+  return me.user.picture && !failed ? (
+    <img
+      src={me.user.picture}
+      alt=""
+      className={`${size} rounded-full object-cover`}
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
   ) : (
     <span className={`${size} inline-flex items-center justify-center rounded-full bg-emerald-600 text-xs font-semibold text-white`}>
       {initials(me)}
@@ -132,7 +186,7 @@ function Avatar({ me, size = 'h-8 w-8' }: { me: WorkOSMe; size?: string }) {
 
 const ROLE_LABEL: Record<string, string> = { admin: 'Admin', owner: 'Owner', member: 'Member' };
 
-function roleLabel(role: string | null | undefined): string {
+export function roleLabel(role: string | null | undefined): string {
   return role ? (ROLE_LABEL[role] ?? role.charAt(0).toUpperCase() + role.slice(1)) : 'Member';
 }
 
@@ -195,6 +249,14 @@ export function WorkOSOrgSwitcher() {
               {org.id === current?.id && <Check className="ml-2 h-4 w-4" />}
             </DropdownMenuItem>
           ))}
+          {current && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/settings/organization">
+                <Users className="mr-2 h-4 w-4" />
+                Members of {current.name}
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => pick(null)} className="cursor-pointer">
             <User className="mr-2 h-4 w-4" />
@@ -240,6 +302,14 @@ export function WorkOSAccountMenu() {
             {me.user.email && <span className="block truncate text-xs font-normal text-muted-foreground">{me.user.email}</span>}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          {me.is_staff && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/admin/companies">
+                <Building className="mr-2 h-4 w-4" />
+                Companies
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem asChild className="cursor-pointer">
             <a href="/auth/logout">
               <LogOut className="mr-2 h-4 w-4" />

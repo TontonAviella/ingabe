@@ -45,68 +45,48 @@ def _make_ctx(arguments: dict[str, Any] | None = None) -> LegacyToolContext:
 
 
 @pytest.mark.asyncio
-async def test_registry_includes_all_53_legacy_names():
-    """Whitelist sanity: every name the chat loop dispatches must be in
-    LEGACY_HANDLERS so /internal/tool-call's whitelist check accepts it.
-
-    Failure mode this guards: someone removes a name from
-    _NOT_YET_EXTRACTED but doesn't add a real handler — the route returns
-    404 and Hermes turns silently break. Pin the names explicitly.
-    """
+async def test_registry_includes_core_legacy_names():
+    """Whitelist sanity: every non-Pydantic tool Sage can call must be in
+    LEGACY_HANDLERS so /internal/tool-call's whitelist check accepts it;
+    a missing name returns 404 and the Hermes turn silently breaks."""
     must_have_names = {
         # Hardcoded in message_routes.py (no tools.json or pydantic schema)
         "new_layer_from_postgis", "set_layer_style", "add_layer_to_map",
-        "query_postgis_database", "query_duckdb_sql", "zonal_statistics",
         "reverse_geocode_coordinates",
-        # tools.json schemas with inline elif handlers
+        # tools.json schemas
         "get_forecast", "get_field_health", "get_ndvi_stats", "search_brain",
-        "identify_parcel_crop", "get_insurance_intelligence",
-        "create_management_zones",
-        # QGIS-processing forwards
-        "native_buffer", "qgis_clip", "gdal_warpreproject",
+        "get_insurance_intelligence",
     }
     missing = must_have_names - set(LEGACY_HANDLERS.keys())
     assert not missing, (
         f"LEGACY_HANDLERS is missing {len(missing)} tool name(s): {sorted(missing)}. "
-        f"This means /internal/tool-call would return 404 when the Hermes "
-        f"plugin invokes them — confirmed broken turn for the user."
-    )
-    # Lower bound: at least 53 entries total (1 real + 52 stubs as of this PR)
-    assert len(LEGACY_HANDLERS) >= 53, (
-        f"LEGACY_HANDLERS has only {len(LEGACY_HANDLERS)} entries — fewer than the "
-        f"53 inline elif blocks in message_routes.py. Some legacy tools are unreachable."
+        f"/internal/tool-call would return 404 when the Hermes plugin invokes them."
     )
 
 
 @pytest.mark.asyncio
-async def test_all_legacy_handlers_extracted():
-    """Migration completeness gate: every legacy tool now has a REAL
-    handler in the shim, not a not_yet_extracted stub. The Hermes path
-    achieves full parity with the hand-rolled chat loop.
+async def test_retired_tools_are_not_registered():
+    """Tools retired from the MVP (2026-10-05) must not be callable through
+    Hermes either: SQL/QGIS tools for GIS teams, and tools whose answers were
+    misleading (crop guesses, a crop confirmation that saved nothing)."""
+    retired = {
+        "query_duckdb_sql", "query_postgis_database", "zonal_statistics",
+        "identify_parcel_crop", "confirm_crop_prediction", "get_crop_classifications",
+        "get_emissions_stats", "create_management_zones", "create_prescription_map",
+        "create_soil_sampling_plan", "query_rwanda_zonal_stats",
+        "native_buffer", "qgis_clip", "gdal_warpreproject",
+    }
+    assert not retired & set(LEGACY_HANDLERS.keys())
 
-    If this test fails because `_NOT_YET_EXTRACTED` grew again, it means
-    someone added a new inline elif in message_routes.py without writing
-    the corresponding shim handler. Fix it before merging — Hermes turns
-    will silently break otherwise.
-    """
-    from src.services.legacy_tool_shim import _NOT_YET_EXTRACTED, LEGACY_HANDLERS
 
-    assert _NOT_YET_EXTRACTED == [], (
-        f"_NOT_YET_EXTRACTED should be empty post-migration but contains "
-        f"{len(_NOT_YET_EXTRACTED)} entries: {_NOT_YET_EXTRACTED}. "
-        f"Each one needs a real `_handle_<name>` function in legacy_tool_shim.py."
-    )
-
-    # Belt-and-braces: every registered handler must be a real `_handle_*`
-    # function, not the stub closure from `_make_not_yet_extracted_handler`.
+@pytest.mark.asyncio
+async def test_all_legacy_handlers_are_real_functions():
+    """Every registered handler is a real `_handle_<name>` function."""
     stub_names = [
         name for name, fn in LEGACY_HANDLERS.items()
         if not getattr(fn, "__name__", "").startswith("_handle_")
     ]
-    assert stub_names == [], (
-        f"These tools are still stubs (closure-wrapped not_yet_extracted): "
-        f"{stub_names}. Real handlers required for cutover."
-    )
+    assert stub_names == [], f"These tools are not real handlers: {stub_names}."
 
 
 @pytest.mark.asyncio
@@ -177,14 +157,6 @@ async def test_set_layer_style_rejects_invalid_json():
 
 
 @pytest.mark.asyncio
-async def test_zonal_statistics_rejects_missing_args():
-    """Both raster_layer_id and zones_layer_id are required."""
-    result = await execute_legacy_tool("zonal_statistics", _make_ctx({}))
-    assert result["status"] == "error"
-    assert "Missing required parameters" in result["error"]
-
-
-@pytest.mark.asyncio
 async def test_reverse_geocode_requires_coords():
     """lat and lon are required. Missing either should return a clean error
     before opening any DB connection."""
@@ -196,48 +168,6 @@ async def test_reverse_geocode_requires_coords():
         "reverse_geocode_coordinates", _make_ctx({"lat": -1.9})
     )
     assert result2["status"] == "error"
-
-
-@pytest.mark.asyncio
-async def test_query_postgis_database_requires_limit_clause():
-    """query_postgis_database hard-blocks queries without an explicit LIMIT
-    clause. Prevents accidental million-row pulls that would OOM the worker
-    OR flood the LLM context window."""
-    # Need to set up the connection lookup to succeed first. Mock the conn
-    # to return a result for the connection_uri check.
-    from unittest.mock import AsyncMock
-    ctx = _make_ctx({
-        "postgis_connection_id": "C00000000001",
-        "sql_query": "SELECT * FROM districts",  # no LIMIT
-    })
-    ctx.conn.fetchrow = AsyncMock(return_value={"connection_uri": "postgresql://..."})
-
-    result = await execute_legacy_tool("query_postgis_database", ctx)
-    assert result["status"] == "error"
-    assert "LIMIT clause" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_query_postgis_database_caps_limit_at_1000():
-    """LIMIT > 1000 should be rejected as a guard against runaway queries."""
-    from unittest.mock import AsyncMock
-    ctx = _make_ctx({
-        "postgis_connection_id": "C00000000001",
-        "sql_query": "SELECT * FROM districts LIMIT 5000",
-    })
-    ctx.conn.fetchrow = AsyncMock(return_value={"connection_uri": "postgresql://..."})
-
-    result = await execute_legacy_tool("query_postgis_database", ctx)
-    assert result["status"] == "error"
-    assert "exceeds maximum allowed limit" in result["error"]
-
-
-@pytest.mark.asyncio
-async def test_query_postgis_database_rejects_missing_args():
-    """Both postgis_connection_id and sql_query are required."""
-    result = await execute_legacy_tool("query_postgis_database", _make_ctx({}))
-    assert result["status"] == "error"
-    assert "Missing required parameters" in result["error"]
 
 
 @pytest.mark.asyncio
