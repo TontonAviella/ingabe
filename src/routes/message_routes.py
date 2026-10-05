@@ -6859,7 +6859,7 @@ async def process_chat_interaction_task(
 
                         elif function_name == "get_insurance_intelligence":
                             try:
-                                from src.services.insurance_engine import compute_insurance_intelligence, season_rainfall_sentence
+                                from src.services.insurance_engine import compute_insurance_intelligence, resolve_audience, season_rainfall_sentence
                                 _ins_compare = tool_args.get("compare_level")
                                 tool_result = await compute_insurance_intelligence(
                                     conn,
@@ -6869,7 +6869,7 @@ async def process_chat_interaction_task(
                                     sector=tool_args.get("sector"),
                                     cell=tool_args.get("cell"),
                                     village=tool_args.get("village"),
-                                    audience=tool_args.get("audience"),
+                                    audience=await resolve_audience(conn, tool_args.get("audience"), user_id, session.get_org_id()),
                                     compare_level=_ins_compare,
                                 )
                                 # A comparison carries its own presentation instruction.

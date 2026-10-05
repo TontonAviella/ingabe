@@ -1,7 +1,10 @@
 import { Layer, Map as MapGL, type MapRef, NavigationControl, ScaleControl, Source } from '@vis.gl/react-maplibre';
 import type { ExpressionSpecification, MapGeoJSONFeature } from 'maplibre-gl';
 import { useRef, useState } from 'react';
+import { AdminLevelLadder } from '@/components/AdminLevelLadder';
+import { AdminUnitTooltip } from '@/components/AdminUnitTooltip';
 import { type AdminLevel, useAdminOutlines, useDistrictNdviMap } from '@/hooks/useRwandaApi';
+import { formatWeek, levelForZoom, viewBbox } from '@/lib/adminLevels';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 interface RwandaMapProps {
@@ -18,40 +21,6 @@ const NO_DATA_COLOR = '#cccccc';
 // Colours, labels and legend come from the API (src/services/ndvi_classes.py),
 // the same scale Sage uses when it describes NDVI.
 const NDVI_FILL: ExpressionSpecification = ['coalesce', ['get', 'color'], NO_DATA_COLOR];
-
-// The outlines follow the zoom: each level appears once its units are roughly
-// 70-90 px across (sector ~58 km2, cell ~11 km2, village ~1.6 km2).
-const LEVEL_MIN_ZOOM: Array<[AdminLevel, number]> = [
-  ['village', 12.5],
-  ['cell', 11],
-  ['sector', 9.5],
-  ['district', 0],
-];
-const LEVEL_NAMES: Record<AdminLevel, string> = {
-  district: 'District',
-  sector: 'Sector',
-  cell: 'Cell',
-  village: 'Village',
-};
-
-function levelForZoom(zoom: number): AdminLevel {
-  return (LEVEL_MIN_ZOOM.find(([, min]) => zoom >= min) ?? ['district', 0])[0];
-}
-
-// Round the view outwards to a 0.05 degree grid so small pans reuse the same request.
-function viewBbox(map: maplibregl.Map): string {
-  const b = map.getBounds();
-  const out = (v: number, up: boolean) => ((up ? Math.ceil(v * 20) : Math.floor(v * 20)) / 20).toFixed(2);
-  return [out(b.getWest(), false), out(b.getSouth(), false), out(b.getEast(), true), out(b.getNorth(), true)].join(',');
-}
-
-function formatWeek(weekStart?: string | null): string | null {
-  if (!weekStart) return null;
-  const d = new Date(`${weekStart}T00:00:00Z`);
-  return Number.isNaN(d.getTime())
-    ? weekStart
-    : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-}
 
 export function RwandaMap({ selectedDistrict }: RwandaMapProps) {
   const mapRef = useRef<MapRef>(null);
@@ -84,12 +53,6 @@ export function RwandaMap({ selectedDistrict }: RwandaMapProps) {
     setHoveredUnit((unit as MapGeoJSONFeature) ?? null);
     setCursor(district ? { x: event.point.x, y: event.point.y } : null);
   };
-
-  const hoveredNdvi = hoveredDistrict?.properties?.mean_ndvi;
-  const hasNdvi = typeof hoveredNdvi === 'number';
-  const unitLevel = hoveredUnit?.properties?.level as AdminLevel | undefined;
-  const unitParents = hoveredUnit ? [hoveredUnit.properties?.cell, hoveredUnit.properties?.sector].filter(Boolean).join(', ') : '';
-  const sharedNote = unitLevel ? hoveredDistrict?.properties?.[`shared_note_${unitLevel}`] : undefined;
 
   return (
     <div className="relative w-full h-full">
@@ -155,38 +118,7 @@ export function RwandaMap({ selectedDistrict }: RwandaMapProps) {
       )}
 
       {hoveredDistrict && cursor && (
-        <div
-          className="absolute bg-white dark:bg-gray-800 px-3 py-2 rounded-md shadow-lg text-xs pointer-events-none z-10 max-w-64"
-          style={{ left: cursor.x + 10, top: cursor.y + 10 }}
-        >
-          {hoveredUnit && unitLevel ? (
-            <>
-              <div className="font-semibold">
-                {hoveredUnit.properties?.name} {unitLevel}
-              </div>
-              <div className="text-gray-600 dark:text-gray-400 mb-1">
-                {unitParents ? `${unitParents}, ` : ''}
-                {hoveredDistrict.properties?.district} district
-              </div>
-            </>
-          ) : (
-            <div className="font-semibold mb-1">{hoveredDistrict.properties?.district} district</div>
-          )}
-          {hasNdvi ? (
-            <>
-              <div>
-                Vegetation index (NDVI): <span className="font-semibold">{hoveredNdvi.toFixed(2)}</span> —{' '}
-                {hoveredDistrict.properties?.ndvi_label}
-              </div>
-              {hoveredDistrict.properties?.week_start && (
-                <div className="text-gray-600 dark:text-gray-400">Week of {formatWeek(hoveredDistrict.properties.week_start)}</div>
-              )}
-              {sharedNote && <div className="mt-1 text-gray-600 dark:text-gray-400">{sharedNote}</div>}
-            </>
-          ) : (
-            <div className="text-gray-600 dark:text-gray-400">No vegetation data yet</div>
-          )}
-        </div>
+        <AdminUnitTooltip district={hoveredDistrict.properties} unit={hoveredUnit?.properties} x={cursor.x} y={cursor.y} />
       )}
 
       {/* Caption, level ladder and legend stack at the top left, clear of the attribution. */}
@@ -205,34 +137,7 @@ export function RwandaMap({ selectedDistrict }: RwandaMapProps) {
             {noteOpen && <span className="mt-1 block text-gray-600 dark:text-gray-400">{data.data_coverage.note}</span>}
           </button>
         )}
-        {data && !isLoading && (
-          <div
-            className="bg-white/95 dark:bg-gray-800/95 px-2 py-1 rounded-md shadow text-[11px] flex items-center gap-1"
-            aria-label={`Showing ${LEVEL_NAMES[view.level].toLowerCase()} outlines`}
-          >
-            {data.levels.map((l, i) => (
-              <span key={l.level} className="flex items-center gap-1">
-                {i > 0 && (
-                  <span aria-hidden className="text-gray-400">
-                    ›
-                  </span>
-                )}
-                <span
-                  className={
-                    l.level === view.level
-                      ? 'font-semibold underline underline-offset-2'
-                      : l.has_values
-                        ? ''
-                        : 'text-gray-400 dark:text-gray-500'
-                  }
-                  title={l.has_values ? `${LEVEL_NAMES[l.level]} values` : `${LEVEL_NAMES[l.level]}s show their ${l.values_from} value`}
-                >
-                  {LEVEL_NAMES[l.level]}
-                </span>
-              </span>
-            ))}
-          </div>
-        )}
+        {data && !isLoading && <AdminLevelLadder levels={data.levels} current={view.level} />}
         {showOutlines && outlines.data?.truncated && (
           <div className="bg-white/95 dark:bg-gray-800/95 px-2 py-1 rounded-md shadow text-[11px]">Zoom in to see every {view.level}.</div>
         )}
