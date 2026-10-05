@@ -3,8 +3,7 @@ import re
 
 import asyncpg
 from fastapi import HTTPException, status
-from collections import defaultdict
-from typing import Dict, List, Optional, Sequence
+from typing import List
 
 from src.database.models import LAYER_TYPE_POSTGIS, MapLayer
 import redis.exceptions
@@ -22,10 +21,6 @@ MVT_LAYER_NAME = "reprojectedfgb"
 _MVT_CACHE_TTL = 300
 
 from src.dependencies.redis_client import get_async_redis as _get_async_redis
-from src.services.enrichment_service import AVAILABLE_METRICS
-
-# Column names that are enrichment metrics — never exist in the PostGIS source
-_ENRICHMENT_METRIC_KEYS = frozenset(AVAILABLE_METRICS.keys())
 
 
 def _validate_column_name(name: str) -> str:
@@ -40,76 +35,14 @@ def _validate_column_name(name: str) -> str:
     return f'"{name}"'
 
 
-def _build_enrichment_cte(
-    enrichments: Sequence,
-) -> tuple[str, list[str]]:
-    """Build a VALUES CTE and column list from layer_enrichments rows.
-
-    Each row has (feature_id, column_name, value).
-
-    Returns:
-        (cte_sql, enrichment_col_names)  — e.g.
-        ("enrichment_values AS (SELECT * FROM (VALUES (1,45.2,0.67), ...) AS ev(feature_id, cropland_pct, ndvi_mean))",
-         ["cropland_pct", "ndvi_mean"])
-    """
-    # Pivot: group by feature_id, collect {col_name: value}
-    by_feature: Dict[int, Dict[str, float]] = defaultdict(dict)
-    col_names_set: dict[str, None] = {}  # ordered set
-    for row in enrichments:
-        fid = row["feature_id"]
-        col = row["column_name"]
-        val = row["value"]
-        by_feature[fid][col] = val
-        col_names_set[col] = None
-
-    col_names = list(col_names_set.keys())
-
-    # Validate all enrichment column names
-    for cn in col_names:
-        _validate_column_name(cn)
-
-    # Build VALUES rows: (feature_id::int, v1::float8, v2::float8, ...)
-    # First row uses explicit casts to set column types for PostgreSQL.
-    val_rows = []
-    is_first = True
-    for fid, cols in by_feature.items():
-        vals = []
-        for cn in col_names:
-            v = cols.get(cn)
-            if v is not None:
-                vals.append(f"{v}::float8" if is_first else str(v))
-            else:
-                vals.append("NULL::float8" if is_first else "NULL")
-        fid_str = f"{fid}::int" if is_first else str(fid)
-        val_rows.append(f"({fid_str},{','.join(vals)})")
-        is_first = False
-
-    values_sql = ",".join(val_rows)
-    quoted_cols = ", ".join([_validate_column_name(cn) for cn in col_names])
-    cte_sql = (
-        f"enrichment_values AS ("
-        f"SELECT * FROM (VALUES {values_sql}) "
-        f'AS ev("feature_id", {quoted_cols})'
-        f")"
-    )
-
-    return cte_sql, col_names
-
-
 async def fetch_mvt_tile(
     layer: MapLayer,
     conn: asyncpg.Connection,
     z: int,
     x: int,
     y: int,
-    enrichments: Optional[Sequence] = None,
 ) -> bytes:
-    """Generate an MVT tile for a PostGIS layer, optionally injecting enrichment columns.
-
-    When ``enrichments`` is provided (list of rows with feature_id, column_name, value),
-    a VALUES CTE is prepended and LEFT JOINed so the enrichment columns appear in tiles.
-    When ``enrichments`` is None, behaviour is identical to the original implementation.
-    """
+    """Generate an MVT tile for a PostGIS layer."""
     # Check if layer is a PostGIS type
     if layer.type != LAYER_TYPE_POSTGIS:
         raise HTTPException(
@@ -139,46 +72,7 @@ async def fetch_mvt_tile(
         except Exception as e:
             logger.error("Unexpected error during MVT cache get for %s: %s", cache_key, e)
 
-    # --- Enrichment CTE (optional) ---
-    enrich_cte = ""
-    enrich_col_names: list[str] = []
-    enrich_join = ""
-    enrich_select_filtered = ""
-    enrich_select_candidates = ""
-    enrich_select_mvt = ""
-
-    if enrichments:
-        try:
-            cte_sql, enrich_col_names = _build_enrichment_cte(enrichments)
-            enrich_cte = cte_sql + ","
-            enrich_join = ' LEFT JOIN enrichment_values e ON t."id" = e."feature_id"'
-            enrich_select_filtered = ", " + ", ".join(
-                [f'e.{_validate_column_name(cn)}' for cn in enrich_col_names]
-            )
-            enrich_select_candidates = ", " + ", ".join(
-                [f'f.{_validate_column_name(cn)}' for cn in enrich_col_names]
-            )
-            enrich_select_mvt = ", " + ", ".join(
-                [f'c.{_validate_column_name(cn)}' for cn in enrich_col_names]
-            )
-        except (ValueError, Exception) as e:
-            logger.warning("Failed to build enrichment CTE, proceeding without: %s", e)
-            enrich_cte = ""
-            enrich_col_names = []
-            enrich_join = ""
-            enrich_select_filtered = ""
-            enrich_select_candidates = ""
-            enrich_select_mvt = ""
-
-    # Build base column list from PostGIS source, excluding enrichment columns
-    # (enrichment columns come from the CTE join, not the source table).
-    # Also exclude all known metric keys as a safety net — even if no enrichments
-    # are present, a previously-corrupted postgis_attribute_column_list might
-    # still reference them.
-    exclude = set(enrich_col_names) | _ENRICHMENT_METRIC_KEYS
-    raw_names: List[str] = [
-        c for c in (layer.postgis_attribute_column_list or []) if c not in exclude
-    ] + ["id"]
+    raw_names: List[str] = list(layer.postgis_attribute_column_list or []) + ["id"]
     try:
         safe_names = [_validate_column_name(n) for n in raw_names]
     except ValueError as e:
@@ -201,7 +95,6 @@ async def fetch_mvt_tile(
 
     mvt_query = f"""
         WITH
-        {enrich_cte}
         bounds_webmerc AS (
             SELECT ST_TileEnvelope($1, $2, $3) AS wm_geom
         ),
@@ -209,17 +102,17 @@ async def fetch_mvt_tile(
             SELECT ST_Transform(ST_TileEnvelope($1, $2, $3), 4326) AS geom_4326
         ),
         filtered AS (
-            SELECT {", ".join([f"t.{name}" for name in safe_names])}{enrich_select_filtered}, t.geom
-            FROM ({layer.postgis_query}) t{enrich_join}, bounds_4326 b
+            SELECT {", ".join([f"t.{name}" for name in safe_names])}, t.geom
+            FROM ({layer.postgis_query}) t, bounds_4326 b
             WHERE t.geom && b.geom_4326
         ),
         candidates AS (
-            SELECT {", ".join([f"f.{name}" for name in safe_names])}{enrich_select_candidates},
+            SELECT {", ".join([f"f.{name}" for name in safe_names])},
                    {simplify_expr.replace('t.geom', 'f.geom')} AS geom
             FROM filtered f
         ),
         mvtgeom AS (
-            SELECT {", ".join([f"c.{name}" for name in safe_names])}{enrich_select_mvt},
+            SELECT {", ".join([f"c.{name}" for name in safe_names])},
                    ST_AsMVTGeom(c.geom, b.wm_geom::box2d) AS geom
             FROM candidates c, bounds_webmerc b
             WHERE c.geom IS NOT NULL

@@ -91,5 +91,4 @@ class CircuitBreaker:
 
 # Pre-configured circuit breakers for external services
 open_meteo_cb = CircuitBreaker("open-meteo", failure_threshold=3, recovery_timeout=120)
-sentinel_hub_cb = CircuitBreaker("sentinel-hub", failure_threshold=3, recovery_timeout=120)
 isdasoil_cb = CircuitBreaker("isdasoil", failure_threshold=3, recovery_timeout=120)

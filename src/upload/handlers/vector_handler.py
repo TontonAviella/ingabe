@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import shutil
 import uuid
 
@@ -14,12 +13,6 @@ from src.upload.pmtiles import process_vector_layer_common
 from src.utils import process_kmz_to_kml, process_zip_with_shapefile, generate_id as _generate_id
 
 logger = logging.getLogger(__name__)
-
-# Dagster integration (Phase 3): Set USE_DAGSTER=true to delegate processing
-# to Dagster pipelines for FlatGeoBuf conversion, PMTiles generation, and
-# Iceberg registration. Uploads complete faster with async processing.
-_USE_DAGSTER = os.environ.get("USE_DAGSTER", "false").lower() in ("true", "1", "yes")
-
 
 class VectorUploadHandler(BaseUploadHandler):
     """Handles vector file uploads (GeoJSON, FGB, GPKG, KML, KMZ, ZIP).
@@ -95,15 +88,7 @@ class VectorUploadHandler(BaseUploadHandler):
     async def create_layers(
         self, ctx: UploadContext, result: HandlerResult
     ) -> HandlerResult:
-        """Iterate sublayers, run vector processing pipeline, insert DB rows.
-
-        When USE_DAGSTER is enabled, Dagster pipelines will handle additional
-        processing (FlatGeoBuf conversion, PMTiles optimization, Iceberg registration)
-        after the initial upload completes.
-        """
-        if _USE_DAGSTER:
-            logger.info("USE_DAGSTER enabled - Additional vector processing will be handled by Dagster pipelines for map %s", ctx.map_id)
-
+        """Iterate sublayers, run vector processing pipeline, insert DB rows."""
         temp_file_path = result.updated_temp_file_path or ctx.temp_file_path
 
         try:

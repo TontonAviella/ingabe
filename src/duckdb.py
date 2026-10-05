@@ -203,47 +203,6 @@ def _run_duckdb_query_from_path(
         con.close()
 
 
-def get_lakehouse_connection() -> duckdb.DuckDBPyConnection:
-    """Create a DuckDB connection with spatial and iceberg extensions loaded.
-
-    Configures S3 credentials for MinIO access. This connection can be used
-    for both spatial queries and Iceberg table operations.
-
-    Returns:
-        DuckDB connection with spatial and iceberg extensions enabled.
-    """
-    con = duckdb.connect(":memory:")
-    # Cap DuckDB memory to avoid OOM (standard plan=2GB, shared with app+pools)
-    con.execute("SET memory_limit='256MB';")
-    con.execute("SET threads=1;")
-    # Container's appuser has HOME=/home/appuser but no such dir; point DuckDB
-    # at /cache (created+chowned in Dockerfile) so install_extension can write.
-    con.execute("SET home_directory='/cache';")
-
-    # Load extensions (install is a no-op if already cached on disk from Dockerfile)
-    con.install_extension("spatial")
-    con.load_extension("spatial")
-
-    con.install_extension("iceberg")
-    con.load_extension("iceberg")
-
-    # Configure S3 credentials for MinIO
-    s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "http://minio:9000")
-    s3_access_key = os.environ.get("S3_ACCESS_KEY_ID", "")
-    s3_secret_key = os.environ.get("S3_SECRET_ACCESS_KEY", "")
-    s3_region = os.environ.get("S3_DEFAULT_REGION", "us-east-1")
-
-    # DuckDB S3 configuration
-    con.execute(f"SET s3_endpoint='{s3_endpoint}';")
-    con.execute(f"SET s3_access_key_id='{s3_access_key}';")
-    con.execute(f"SET s3_secret_access_key='{s3_secret_key}';")
-    con.execute(f"SET s3_region='{s3_region}';")
-    con.execute("SET s3_use_ssl=false;")
-    con.execute("SET s3_url_style='path';")
-
-    return con
-
-
 async def execute_duckdb_query(
     sql_query: str, layer_id: str, max_n_rows: int = 25, timeout: int = 30
 ):

@@ -13,69 +13,15 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Dagster schedules for periodic maintenance jobs.
+"""Dagster schedules for the Rwanda pre-compute jobs.
 
-Defines cron-style schedules for:
-- Iceberg table compaction (hourly)
-- Snapshot expiry (daily)
-- Redis cache warmup (daily)
-- Table optimization (weekly)
-- Rwanda pre-compute: nightly district pre-warm, cache cleanup, weekly analytics
+Defines cron-style schedules for the Rwanda pre-compute jobs: nightly
+district pre-warm, parcel NDVI and cache cleanup, weekly analytics, and the
+daily weather ingest.
 """
 
 from dagster import DefaultScheduleStatus, ScheduleDefinition
 
-
-compaction_schedule = ScheduleDefinition(
-    name="hourly_compaction",
-    cron_schedule="0 * * * *",
-    job_name="iceberg_compaction_job",
-    execution_timezone="UTC",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
-snapshot_expiry_schedule = ScheduleDefinition(
-    name="daily_snapshot_expiry",
-    cron_schedule="0 2 * * *",
-    job_name="snapshot_expiry_job",
-    execution_timezone="UTC",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
-cache_warmup_schedule = ScheduleDefinition(
-    name="daily_cache_warmup",
-    cron_schedule="0 3 * * *",
-    job_name="cache_warmup_job",
-    execution_timezone="UTC",
-    default_status=DefaultScheduleStatus.STOPPED,  # Disabled by default
-)
-
-table_optimization_schedule = ScheduleDefinition(
-    name="weekly_table_optimization",
-    cron_schedule="0 4 * * 0",
-    job_name="table_optimization_job",
-    execution_timezone="UTC",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
-# Rwanda schedules
-weekly_ndvi_aggregation = ScheduleDefinition(
-    name="weekly_rwanda_ndvi",
-    cron_schedule="0 6 * * 1",  # Every Monday at 6 AM UTC
-    job_name="rwanda_ndvi_job",
-    execution_timezone="UTC",
-    description="Weekly NDVI aggregation to H3 hexagons for Rwanda",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
-daily_parcel_sync = ScheduleDefinition(
-    name="daily_rwanda_parcel_sync",
-    cron_schedule="0 2 * * *",  # Every day at 2 AM UTC
-    job_name="rwanda_ingestion_job",
-    execution_timezone="UTC",
-    description="Daily parcel data synchronization for Rwanda",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
 
 # ─── Rwanda pre-compute schedules (populate DuckDB cache for Sage) ────────
 
@@ -152,14 +98,5 @@ daily_weather_ingest_schedule = ScheduleDefinition(
     job_name="daily_weather_ingest_job",
     execution_timezone="UTC",
     description="Daily AgERA5 weather data → district aggregation → DuckDB cache",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
-geolibre_runtime_probe_schedule = ScheduleDefinition(
-    name="geolibre_runtime_probe",
-    cron_schedule="15 * * * *",  # Hourly proof that the Rust/WASM runner works
-    job_name="geolibre_runtime_probe_job",
-    execution_timezone="UTC",
-    description="Hourly GeoLibre-Rust/WASM smoke proof for vector and raster workflows",
     default_status=DefaultScheduleStatus.RUNNING,
 )

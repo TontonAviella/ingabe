@@ -8,10 +8,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from src.services.geolibre_runner import (
-    geolibre_runner_status,
-    run_geolibre_smoke_suite,
-)
 from src.services.life_harness import life_harness_enabled
 from src.services.raster_object_candidates import _fastsam_weights_status
 from src.services.hermes_runtime import hermes_is_enabled
@@ -51,21 +47,12 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
         and hermes_secret
     )
 
-    geolibre = geolibre_runner_status(include_manifest_sample=False)
     components: dict[str, Any] = {
         "fastsam": {
             **fastsam_package,
             "weights": fastsam_weights,
             "ready": fastsam_ready,
             "decision": "keep: primary orthophoto object-mask engine",
-        },
-        "geolibre_rust": {
-            **geolibre,
-            "ready": geolibre.get("status") == "success",
-            "decision": (
-                "keep: deterministic raster/vector conversion, spectral, terrain, "
-                "hydrology, GeoParquet, and PMTiles work"
-            ),
         },
         "hermes_sage": {
             **hermes_package,
@@ -111,22 +98,12 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
                 "not the selected local CPU path"
             ),
         },
-        "forge3d": {
-            **_package_status("forge3d", "forge3d"),
-            "enabled": False,
-            "ready": False,
-            "decision": (
-                "optional only: useful for a future dedicated 3D viewer/export path, "
-                "not for FastSAM accuracy or current MapLibre delivery"
-            ),
-        },
     }
 
     if deep:
-        components["geolibre_rust"]["smoke"] = run_geolibre_smoke_suite()
         components["hermes_sage"]["plugin_probe"] = _hermes_plugin_probe()
 
-    required = ("fastsam", "geolibre_rust", "life_harness")
+    required = ("fastsam", "life_harness")
     return {
         "status": (
             "healthy"
@@ -181,7 +158,7 @@ def main() -> None:
     parser.add_argument(
         "--deep",
         action="store_true",
-        help="also execute the GeoLibre smoke suite and Hermes plugin discovery",
+        help="also run Hermes plugin discovery",
     )
     args = parser.parse_args()
     print(json.dumps(build_runtime_audit(deep=args.deep), indent=2, default=str))

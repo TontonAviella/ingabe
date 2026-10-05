@@ -10,7 +10,6 @@ from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 from src.services.h3_risk_classes import risk_level
-from src.services.whitebox_engine import whitebox_engine_status
 
 _EVIDENCE_FACTOR_KEYS = {
     "rainfall_mm_24h",
@@ -132,7 +131,6 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
         )
 
     scores = scores or [0.0]
-    whitebox = whitebox_engine_status()
     top_cells = sorted(
         (
             {
@@ -177,11 +175,8 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
             "grid": {
                 "name": "H3",
                 "runtime": "python-h3-v4",
-                "rust_target": "mundi-geokernel/h3o",
             },
             "analysis": {
-                "whitebox_tools_ready": bool(whitebox.get("executable_ready")),
-                "whitebox_tools_used": False,
                 "note": (
                     "This layer is based only on supplied exposure geometry and "
                     "risk factors. It does not infer buildings, crops, roads, or "
@@ -199,7 +194,7 @@ def create_h3_spatial_insight(payload: H3SpatialInsightInput) -> dict[str, Any]:
                 "best_for": "in-process scoring and temporary conversion only",
                 "browser_target": "MVT/PMTiles",
                 "analytics_target": "GeoParquet",
-                "large_layer_target": "MVT/PMTiles from Rust geokernel/h3o or a cached tiler",
+                "large_layer_target": "MVT/PMTiles from a cached tiler",
             },
         },
     }
