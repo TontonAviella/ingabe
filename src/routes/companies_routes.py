@@ -49,7 +49,10 @@ async def add_company(body: NewCompany, request: Request, session: UserContext =
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the company name")
     if "@" not in body.admin_email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the admin's email address")
-    return await asyncio.to_thread(workos_auth.create_partner, body.name, body.admin_email)
+    try:
+        return await asyncio.to_thread(workos_auth.create_partner, body.name, body.admin_email)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 class AdminInvite(BaseModel):
@@ -63,10 +66,16 @@ async def invite_admin(organization_id: str, body: AdminInvite, request: Request
     _require_staff(request)
     if "@" not in body.email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an email address")
-    return await asyncio.to_thread(workos_auth.invite, organization_id, body.email.strip(), "admin", None)
+    try:
+        return await asyncio.to_thread(workos_auth.invite, organization_id, body.email.strip(), "admin", None)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.post("/invitations/{invitation_id}/resend")
 async def resend(invitation_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
     _require_staff(request)
-    return await asyncio.to_thread(workos_auth.resend_invitation, invitation_id)
+    try:
+        return await asyncio.to_thread(workos_auth.resend_invitation, invitation_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

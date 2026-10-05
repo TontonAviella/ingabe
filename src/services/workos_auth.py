@@ -354,5 +354,11 @@ def companies() -> list[dict[str, Any]]:
 
 
 def resend_invitation(invitation_id: str) -> dict[str, Any]:
-    inv = _client().user_management.resend_invitation(invitation_id)
+    try:
+        inv = _client().user_management.resend_invitation(invitation_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: a refusal becomes a readable message
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
     return {"id": inv.id, "email": inv.email, "state": _value(inv.state), "expires_at": str(inv.expires_at)}

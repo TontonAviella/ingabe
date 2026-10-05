@@ -55,8 +55,11 @@ function InviteAdmin({ company, onDone }: { company: Company; onDone: () => void
     e.preventDefault();
     setBusy(true);
     try {
-      await call(`/${company.id}/admins`, { method: 'POST', body: JSON.stringify({ email: email.trim() }) });
-      toast.success(`Invitation sent to ${email.trim()}`);
+      const res = await call<{ resent?: boolean }>(`/${company.id}/admins`, {
+        method: 'POST',
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      toast.success(res.resent ? `${email.trim()} was already invited: invitation sent again` : `Invitation sent to ${email.trim()}`);
       setEmail('');
       onDone();
     } catch (err) {
@@ -110,12 +113,13 @@ export default function Companies() {
     e.preventDefault();
     setAdding(true);
     try {
-      const res = await call<{ name: string; created: boolean }>('', {
+      const res = await call<{ name: string; created: boolean; invitation: { resent?: boolean } }>('', {
         method: 'POST',
         body: JSON.stringify({ name: name.trim(), admin_email: adminEmail.trim() }),
       });
+      const sent = res.invitation?.resent ? 'was already invited: invitation sent again' : 'invitation sent';
       toast.success(
-        res.created ? `${res.name} added; invitation sent to ${adminEmail.trim()}` : `${res.name} already existed; invitation sent`,
+        res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}`,
       );
       setName('');
       setAdminEmail('');
