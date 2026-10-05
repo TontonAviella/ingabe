@@ -1984,3 +1984,47 @@ def test_normalize_audience(given, expected):
 ])
 def test_rainfall_vs_usual(pct, words):
     assert rainfall_vs_usual(pct) == words
+
+
+# ---------------------------------------------------------------------------
+# Saved audience: the user's role, else the partner default (decided 2026-10-04)
+# ---------------------------------------------------------------------------
+
+class _AudienceConn:
+    def __init__(self, user=None, partner=None):
+        self.user, self.partner, self.updates = user, partner, []
+
+    async def fetchval(self, sql, arg):
+        return self.user if "FROM users" in sql else self.partner
+
+    async def execute(self, sql, user_id, value):
+        self.updates.append((user_id, value))
+        return "UPDATE 1" if user_id == "known" else "UPDATE 0"
+
+
+@pytest.mark.parametrize("user, partner, expected", [
+    ("farmer", "insurance", ("farmer", "user")),
+    (None, "insurance", ("insurance", "partner")),
+    (None, None, (DEFAULT_AUDIENCE, "default")),
+    ("bogus", "also-bogus", (DEFAULT_AUDIENCE, "default")),
+])
+def test_audience_setting_order(user, partner, expected):
+    from src.services.insurance_engine import audience_setting
+    assert _run(audience_setting(_AudienceConn(user, partner), "u1", "p1")) == expected
+
+
+def test_an_explicit_request_beats_the_saved_role():
+    from src.services.insurance_engine import resolve_audience
+    conn = _AudienceConn(user="farmer")
+    assert _run(resolve_audience(conn, "underwriter", "u1", None)) == "insurance"
+    assert _run(resolve_audience(conn, None, "u1", None)) == "farmer"
+
+
+def test_save_user_audience_validates_and_reports_missing_accounts():
+    from src.services.insurance_engine import save_user_audience
+    conn = _AudienceConn()
+    assert _run(save_user_audience(conn, "known", "Insurer")) is True and conn.updates[-1] == ("known", "insurance")
+    assert _run(save_user_audience(conn, "known", None)) is True and conn.updates[-1] == ("known", None)
+    assert _run(save_user_audience(conn, "legacy-no-row", "farmer")) is False
+    with pytest.raises(ValueError):
+        _run(save_user_audience(conn, "known", "astronaut"))
