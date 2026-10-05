@@ -23,6 +23,8 @@ from src.services.insurance_engine import (
     _chirps_dates_to_fetch,
     _season_rainfall,
     _prorate_season_rainfall_triggers,
+    _stage_triggers,
+    _window_dry_spell,
     _climatology_rainfall,
     _default_triggers,
     _evaluate_triggers,
@@ -986,7 +988,7 @@ class TestLoadTriggers:
         args = conn.fetch.call_args[0]
         assert args[1] == "beans"
         assert args[2] == "B"
-        assert args[3] == "vegetative"
+        assert args[3] == ["vegetative"]
         assert args[4] == "Huye"
 
     def test_exception_falls_back_to_defaults(self):
@@ -1957,6 +1959,65 @@ def test_above_normal_rain_early_in_the_season_does_not_trigger():
     assert not result.triggered
     [dry] = _evaluate_triggers(defs, {"rainfall_cumulative": 0.1 * normal_so_far})
     assert dry.triggered and dry.full_season_threshold == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Crop-stage triggers (maize/beans flowering) are measured over their stage
+# ---------------------------------------------------------------------------
+
+_FLOWERING = [
+    {"signal": "rainfall_cumulative", "phase": "flowering", "direction": "below", "threshold": 40.0, "weight": 1.0,
+     "description": "Flowering phase rainfall below 40mm critical minimum"},
+    {"signal": "dry_spell_days", "phase": "flowering", "direction": "above", "threshold": 10.0, "weight": 0.8,
+     "description": "Dry spell during flowering exceeds 10 days"},
+    {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8},
+]
+_PLANT = date(2026, 3, 1)  # maize Season B; flowering = days 51-84 of a 135-day cycle
+
+
+def _rain(mm, days=200, start=_PLANT):
+    return {(start + timedelta(days=i)).isoformat(): mm for i in range(days)}
+
+
+def test_stage_triggers_before_the_stage_are_left_out():
+    out = _stage_triggers(_FLOWERING, "maize", _rain(3.0), _PLANT, _PLANT + timedelta(days=30), 135, "rulindo")
+    assert [t["signal"] for t in out] == ["spi"]
+
+
+def test_a_running_stage_is_measured_over_its_own_days_and_prorated():
+    today = _PLANT + timedelta(days=62)  # 11 flowering days observed (51..61)
+    out = _stage_triggers(_FLOWERING, "maize", _rain(1.0), _PLANT, today, 135, "rulindo")
+    rain = next(t for t in out if t["signal"] == "rainfall_cumulative")
+    assert rain["value"] == pytest.approx(11.0)  # 1 mm/day over the 11 flowering days, not the whole season
+    assert rain["full_season_threshold"] == 40.0 and rain["threshold"] < 40.0
+    spell = next(t for t in out if t["signal"] == "dry_spell_days")
+    assert spell["value"] == 11.0  # every observed flowering day was under 2 mm
+
+
+def test_a_finished_stage_uses_its_full_minimum():
+    out = _stage_triggers(_FLOWERING, "maize", _rain(5.0), _PLANT, _PLANT + timedelta(days=100), 135, "rulindo")
+    rain = next(t for t in out if t["signal"] == "rainfall_cumulative")
+    assert rain["threshold"] == 40.0 and "full_season_threshold" not in rain
+    assert rain["value"] == pytest.approx(5.0 * 34)
+
+
+def test_dry_spell_needs_most_days_and_a_gap_ends_a_run():
+    start, end = _PLANT, _PLANT + timedelta(days=9)
+    daily = _rain(0.0, 10)
+    assert _window_dry_spell(daily, start, end) == 10.0
+    daily[(start + timedelta(days=4)).isoformat()] = None
+    assert _window_dry_spell(daily, start, end) == 5.0  # 9/10 days known; the gap splits 4 + 5
+    for i in range(1, 4):
+        daily[(start + timedelta(days=i)).isoformat()] = None
+    assert _window_dry_spell(daily, start, end) is None  # only 6/10 days known
+
+
+def test_dry_spells_reports_the_running_spell_and_unknowns():
+    from src.services.insurance_engine import _dry_spells
+    start = date(2026, 9, 15)
+    daily = {(start + timedelta(days=i)).isoformat(): (5.0 if i < 10 else 0.0) for i in range(20)}
+    assert _dry_spells(daily, start, start + timedelta(days=19)) == (10, 10)  # last 10 days dry, still running
+    assert _dry_spells({}, start, start + timedelta(days=19)) == (None, None)  # no data is not "no dry spell"
 
 
 # ---------------------------------------------------------------------------
