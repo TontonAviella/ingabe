@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const MapsList = lazy(() => import('./components/MapsList'));
 const ProjectView = lazy(() => import('./components/ProjectView'));
 const OrganizationMembers = lazy(() => import('./pages/OrganizationMembers'));
+const Companies = lazy(() => import('./pages/Companies'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 const TermsOfService = lazy(() => import('./pages/TermsOfService'));
@@ -62,6 +63,14 @@ function AppContent() {
                     <OptionalAuth>
                       <ProjectView />
                     </OptionalAuth>
+                  }
+                />
+                <Route
+                  path="/admin/companies"
+                  element={
+                    <RequireAuth>
+                      <Companies />
+                    </RequireAuth>
                   }
                 />
                 <Route

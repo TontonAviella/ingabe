@@ -1,4 +1,4 @@
-import { Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
+import { Building, Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -25,6 +25,8 @@ export interface WorkOSMe {
   user: { email: string | null; first_name: string | null; last_name: string | null; picture: string | null };
   organization: WorkOSOrganization | null;
   organizations: WorkOSOrganization[];
+  is_staff?: boolean;
+  is_owner?: boolean;
 }
 
 type Status = 'loading' | 'signedIn' | 'signedOut';
@@ -300,6 +302,14 @@ export function WorkOSAccountMenu() {
             {me.user.email && <span className="block truncate text-xs font-normal text-muted-foreground">{me.user.email}</span>}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
+          {me.is_staff && (
+            <DropdownMenuItem asChild className="cursor-pointer">
+              <Link to="/admin/companies">
+                <Building className="mr-2 h-4 w-4" />
+                Companies
+              </Link>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem asChild className="cursor-pointer">
             <a href="/auth/logout">
               <LogOut className="mr-2 h-4 w-4" />

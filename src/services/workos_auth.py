@@ -348,3 +348,76 @@ def create_partner(name: str, admin_email: str) -> dict[str, Any]:
         org = _client().organizations.create_organization(name=name)
     invitation = invite(org.id, admin_email.strip(), "admin", None)
     return {"organization_id": org.id, "name": org.name, "created": created, "invitation": invitation}
+
+
+# ---------------------------------------------------------------------------
+# Companies (partner organizations), for Ingabe staff
+# ---------------------------------------------------------------------------
+
+def _platform_admins() -> list[str]:
+    return [e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()]
+
+
+def is_platform_staff(email: Optional[str]) -> bool:
+    """Ingabe staff who may add companies: PLATFORM_ADMIN_EMAILS, comma-separated."""
+    return bool(email) and email.strip().lower() in _platform_admins()
+
+
+def is_platform_owner(email: Optional[str]) -> bool:
+    """The system owner: the FIRST email in PLATFORM_ADMIN_EMAILS (sees WorkOS dashboard guidance)."""
+    admins = _platform_admins()
+    return bool(email) and bool(admins) and email.strip().lower() == admins[0]
+
+
+def _company_status(active_members: int, invitations: list[dict[str, Any]]) -> dict[str, str]:
+    """One plain-language line per company, for the Companies page."""
+    if active_members:
+        return {"code": "active", "text": f"Active: {active_members} {'person' if active_members == 1 else 'people'}"}
+    pending = [i for i in invitations if i["state"] == "pending"]
+    if pending:
+        return {"code": "invited", "text": f"Invited: waiting for {pending[0]['email']} to accept"}
+    if any(i["state"] == "expired" for i in invitations):
+        return {"code": "expired", "text": "Invitation expired: send it again"}
+    return {"code": "no_admin", "text": "No admin yet: invite one"}
+
+
+def _is_workos_sample(org: Any) -> bool:
+    """WorkOS' built-in "Test Organization" (staging only): it carries the reserved example.com domain.
+
+    WorkOS refuses to rename or delete it, and no real company has that domain.
+    """
+    return any(getattr(d, "domain", None) == "example.com" for d in (getattr(org, "domains", None) or []))
+
+
+def companies() -> list[dict[str, Any]]:
+    """Every company with its people and invitations, newest first."""
+    page = _client().organizations.list_organizations(limit=100)
+    out = []
+    for org in getattr(page, "data", page):
+        if _is_workos_sample(org):
+            continue
+        memberships = _client().organization_membership.list_organization_memberships(organization_id=org.id, limit=100)
+        active = [m for m in getattr(memberships, "data", memberships) if _value(getattr(m, "status", None)) == "active"]
+        invs = _client().user_management.list_invitations(organization_id=org.id, limit=100)
+        invitations = [
+            {"id": i.id, "email": i.email, "state": _value(i.state), "role": i.role_slug,
+             "expires_at": str(i.expires_at), "created_at": str(getattr(i, "created_at", ""))}
+            for i in getattr(invs, "data", invs)
+        ]
+        out.append({
+            "id": org.id, "name": org.name, "created_at": str(getattr(org, "created_at", "")),
+            "active_members": len(active), "invitations": invitations,
+            "status": _company_status(len(active), invitations),
+        })
+    return out
+
+
+def resend_invitation(invitation_id: str) -> dict[str, Any]:
+    try:
+        inv = _client().user_management.resend_invitation(invitation_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: a refusal becomes a readable message
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
+    return {"id": inv.id, "email": inv.email, "state": _value(inv.state), "expires_at": str(inv.expires_at)}
