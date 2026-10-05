@@ -68,6 +68,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
+from src.services import drone_first_look
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -176,6 +177,9 @@ class LayerUploadResponse(DAGEditOperationResponse):
     message: str = Field(
         default="Layer added successfully",
         description="Status message confirming successful upload",
+    )
+    conversation_id: Optional[int] = Field(
+        default=None, description="Chat where Sage will post the first look at an uploaded drone image"
     )
 
 
@@ -813,6 +817,9 @@ class CompleteUploadRequest(BaseModel):
     filename: str = Field(description="Original filename (used for format detection)")
     layer_name: Optional[str] = Field(default=None, description="Display name for the layer")
     add_layer_to_map: bool = Field(default=True)
+    conversation_id: Optional[int] = Field(
+        default=None, description="Chat open in the browser; the drone first look is posted there"
+    )
 
 
 @router.post(
@@ -1909,7 +1916,9 @@ async def complete_layer_upload(
             "raster": f"/api/layer/{primary_id}.cog.tif",
         }
 
-        # Kick off background COG generation for raster uploads
+        # Kick off background COG generation for raster uploads, then Sage's first look
+        # (background tasks run in order, so it starts once the COG step is done).
+        first_look_conversation = None
         if layer_type == LAYER_TYPE_RASTER:
             background_tasks.add_task(
                 _background_generate_cog,
@@ -1918,6 +1927,18 @@ async def complete_layer_upload(
                 background_seed_path,
                 background_seed_dir,
             )
+            try:
+                async with get_async_db_connection() as conn:
+                    first_look_conversation = await drone_first_look.conversation_for_upload(
+                        conn, mundi_map.project_id, user_id, body.conversation_id,
+                        f"Drone image: {result.first_layer_name or layer_name}",
+                    )
+                background_tasks.add_task(
+                    drone_first_look.post_first_look,
+                    primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
+                )
+            except Exception:  # noqa: BLE001 - the upload succeeded; only the automatic summary is skipped
+                logger.exception("first look not scheduled for %s", primary_id)
 
         logger.info("upload-complete response ready for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
         response = LayerUploadResponse(
@@ -1928,6 +1949,7 @@ async def complete_layer_upload(
             type=result.layer_type,
             url=result.first_layer_url or url_map.get(layer_type, f"/api/layer/{primary_id}.pmtiles"),
             message="Layer added successfully",
+            conversation_id=first_look_conversation,
         )
         capture_for_session(
             "backend_upload_processing_completed",

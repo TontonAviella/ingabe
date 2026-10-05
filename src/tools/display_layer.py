@@ -238,7 +238,7 @@ GEOJSON_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     # GRVI-based field health for RGB-only drone orthos. GRVI saturates earlier
     # and ranges roughly -0.05..+0.30 for typical canopy. Thresholds match the
-    # rgb_visual.GRVI_VERDICT_BANDS so colors match the verdict text.
+    # src.services.grvi.GRVI_VERDICT_BANDS so colors match the verdict text.
     "rgb_field_health": {
         "color_property": "grvi_mean",
         "stops": [

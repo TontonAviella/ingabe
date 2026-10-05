@@ -22,25 +22,13 @@ from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
+from src.services.grvi import GRVI_VERDICT_BANDS
 from src.tools.pyd import IngabeToolCallMetaArgs
 
 logger = logging.getLogger(__name__)
 
 
-# GRVI = (Green - Red) / (Green + Red). Values typically:
-#   -0.05 to +0.05 = bare/dry
-#   +0.05 to +0.15 = moderate canopy
-#   +0.15 to +0.30 = healthy green canopy
-#   > +0.30        = dense lush vegetation (or wet leaves at saturation)
-# These are coarser thresholds than NDVI ranges. Stage-aware refinement is
-# limited because GRVI saturates earlier than NDVI.
-GRVI_VERDICT_BANDS = [
-    (0.20, "lush_canopy", "Dense, vigorous green canopy."),
-    (0.10, "healthy_canopy", "Healthy green canopy. Looks normal for an established crop."),
-    (0.03, "moderate_canopy", "Moderate canopy. Could be early growth, partially senescent, or under stress."),
-    (-0.05, "sparse_or_stressed", "Sparse vegetation or stress signature. Worth inspecting."),
-    (-1.0, "bare_or_dry", "Mostly bare soil or dry/dormant vegetation."),
-]
+# Thresholds and formula live in src.services.grvi (shared with the drone first look).
 
 
 class AnalyzeRgbFieldArgs(BaseModel):
