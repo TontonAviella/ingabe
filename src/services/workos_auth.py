@@ -200,8 +200,14 @@ def switch_organization(sealed: str, organization_id: Optional[str]) -> Optional
     return _from_response(refreshed, refreshed_cookie=refreshed.sealed_session)
 
 
-def logout_url(session_id: str, return_to: str) -> str:
-    return _client().user_management.get_logout_url(session_id=session_id, return_to=return_to)
+def revoke_session(session_id: str) -> None:
+    """End the session at WorkOS, so the hosted page asks for sign-in again.
+
+    Done over the API instead of WorkOS' logout redirect: that redirect only
+    works once a sign-out URL is configured in the WorkOS dashboard, and without
+    it WorkOS shows an error page ("app-homepage-url-not-found").
+    """
+    _client().user_management.revoke_session(session_id=session_id)
 
 
 def organization_name(organization_id: str) -> str:
