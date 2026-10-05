@@ -1,19 +1,6 @@
-import { apiFetch, ShareEmbedModal } from '@mundi/ee';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  BookText,
-  ChevronLeft,
-  ChevronRight,
-  DatabaseZap,
-  FileText,
-  Loader2,
-  Plus,
-  Share2,
-  SignalHigh,
-  SignalLow,
-  Trash,
-  Upload,
-} from 'lucide-react';
+import { apiFetch } from '@mundi/ee';
+import { useMutation } from '@tanstack/react-query';
+import { ChevronLeft, ChevronRight, FileText, Plus, SignalHigh, SignalLow, Upload } from 'lucide-react';
 import { Map as MLMap } from 'maplibre-gl';
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -29,7 +16,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
 import type { ErrorEntry } from '../lib/frontend-types';
-import type { EphemeralAction, MapData, MapLayer, MapProject, PostgresConnectionDetails } from '../lib/types';
+import type { EphemeralAction, MapData, MapLayer, MapProject } from '../lib/types';
 
 interface UploadingFile {
   id: string;
@@ -90,7 +77,6 @@ const LayerList: React.FC<LayerListProps> = ({
   onLayerColorChange,
 }) => {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
   // Helper function to get errors for a specific source/layer ID
   const getLayerErrors = (layerId: string): ErrorEntry[] => {
@@ -143,49 +129,7 @@ const LayerList: React.FC<LayerListProps> = ({
     // Vector layer — symbol not yet loaded, show neutral placeholder
     return <div className="w-4 h-4 rounded-sm bg-gray-600 opacity-60 flex-shrink-0" title="Vector layer" />;
   };
-  const [showShareModal, setShowShareModal] = useState(false);
   const [showUploadDocDialog, setShowUploadDocDialog] = useState(false);
-
-  // Fetch PostGIS sources (database connections) for this project
-  const { data: projectSources } = useQuery({
-    queryKey: ['project', project.id, 'sources'],
-    queryFn: async () => {
-      const response = await apiFetch(`/api/projects/${project.id}/sources`);
-      if (!response.ok) throw new Error('Failed to fetch project sources');
-      return (await response.json()) as PostgresConnectionDetails[];
-    },
-    retry: 5,
-    retryDelay: (attempt) => 1000 * attempt,
-  });
-
-  const deleteConnectionMutation = useMutation({
-    mutationFn: async ({ projectId, connectionId }: { projectId: string; connectionId: string }) => {
-      const response = await apiFetch(`/api/projects/${projectId}/postgis-connections/${connectionId}`, {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        const d = errorData.detail;
-        throw new Error(typeof d === 'string' ? d : d ? JSON.stringify(d) : response.statusText);
-      }
-
-      return response.json();
-    },
-    onSuccess: () => {
-      toast.success('Database connection deleted successfully');
-      // Invalidate the project query to refresh the data
-      queryClient.invalidateQueries({ queryKey: ['project', project.id] });
-      queryClient.invalidateQueries({ queryKey: ['project', project.id, 'map'] });
-      queryClient.invalidateQueries({ queryKey: ['project', project.id, 'sources'] });
-    },
-    onError: (error: Error) => {
-      toast.error(`Failed to delete connection: ${error.message}`);
-    },
-  });
 
   const renameMutation = useMutation({
     mutationFn: async ({ layerId, newName }: { layerId: string; newName: string }) => {
@@ -249,25 +193,6 @@ const LayerList: React.FC<LayerListProps> = ({
             </Tooltip>
             <EditableTitle projectId={currentMapData.project_id} title={project?.title} placeholder="Enter map title here" />
           </div>
-          <React.Suspense fallback={null}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowShareModal(true)}
-                  className="p-0.5 hover:cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
-                >
-                  <Share2 className="h-3 w-3" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Share link or embed map</p>
-              </TooltipContent>
-            </Tooltip>
-
-            <ShareEmbedModal isOpen={showShareModal} onClose={() => setShowShareModal(false)} projectId={currentMapData?.project_id} />
-          </React.Suspense>
         </CardTitle>
       </CardHeader>
       <CardContent className="px-0">
@@ -387,13 +312,6 @@ const LayerList: React.FC<LayerListProps> = ({
                           setShowAttributeTable(true);
                         },
                       },
-                      'export-geopackage': {
-                        label: 'Export as GeoPackage',
-                        disabled: layerDetails.type !== 'vector',
-                        action: () => {
-                          // TODO: Implement geopackage export
-                        },
-                      },
                       'delete-layer': {
                         label: 'Delete layer',
                         action: (layerId) => {
@@ -479,160 +397,6 @@ const LayerList: React.FC<LayerListProps> = ({
                   )}
                 </li>
               ))}
-            </ul>
-          </>
-        )}
-
-        {/* Database Sources section */}
-        {projectSources && projectSources.length > 0 && (
-          <>
-            <div className="flex items-center px-2 py-2">
-              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
-              <span className="px-3 text-xs font-medium text-gray-600 dark:text-gray-400">DATABASES</span>
-              <div className="flex-1 h-px bg-gray-300 dark:bg-gray-600"></div>
-            </div>
-            <ul className="text-sm">
-              {(projectSources || []).map((connection, index) =>
-                connection.last_error_text ? (
-                  <TooltipProvider key={index}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <li className={`flex items-center justify-between px-2 py-1 gap-2 hover:bg-slate-100 dark:hover:bg-gray-600 group`}>
-                          <span className="font-medium truncate flex items-center gap-2 text-red-400">
-                            <span className="text-red-400">⚠</span>
-                            Connection Error
-                          </span>
-                          <div className="flex-shrink-0 flex items-center gap-2">
-                            <div className="group-hover:hidden">
-                              <span className="text-xs text-red-400">Error</span>
-                            </div>
-                            <div className="hidden group-hover:flex items-center gap-2">
-                              <button
-                                title="Delete connection"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  deleteConnectionMutation.mutate({ projectId: project.id, connectionId: connection.connection_id });
-                                }}
-                                className="w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-gray-500 cursor-pointer text-red-400 hover:text-red-500"
-                              >
-                                <Trash className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        </li>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>{connection.last_error_text}</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                ) : !connection.is_documented ? (
-                  <li key={index} className="border border-gray-200 dark:border-gray-700 rounded-lg p-2 mx-2 mb-2 group">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate flex items-center gap-2">
-                        {(() => {
-                          const processed = connection.processed_tables_count ?? 0;
-                          const total = connection.table_count ?? 0;
-                          const isSummarizing = !(processed === 0 && total === 0) && processed >= total;
-                          return isSummarizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <DatabaseZap className="h-4 w-4" />;
-                        })()}
-                        {(() => {
-                          const processed = connection.processed_tables_count ?? 0;
-                          const total = connection.table_count ?? 0;
-                          if (processed === 0 && total === 0) return 'Connecting...';
-                          return processed < total ? 'Querying tables...' : 'Summarizing...';
-                        })()}
-                      </span>
-                      <div className="flex-shrink-0 flex items-center gap-2">
-                        <div className="group-hover:hidden">
-                          <span className="text-xs text-gray-500 dark:text-gray-400">
-                            {connection.processed_tables_count}/{connection.table_count}
-                          </span>
-                        </div>
-                        <div className="hidden group-hover:flex items-center gap-2">
-                          <a
-                            href={`/postgis/${connection.connection_id}`}
-                            title="View documentation"
-                            onClick={(e) => e.stopPropagation()}
-                            className="w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-gray-500 cursor-pointer"
-                          >
-                            <BookText className="w-4 h-4 text-slate-600 dark:text-gray-300" />
-                          </a>
-                          <button
-                            title="Delete connection"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteConnectionMutation.mutate({ projectId: project.id, connectionId: connection.connection_id });
-                            }}
-                            className="w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-gray-500 cursor-pointer text-slate-600 dark:text-gray-300 hover:text-red-500"
-                          >
-                            <Trash className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                    {(() => {
-                      const processed = connection.processed_tables_count ?? 0;
-                      const total = connection.table_count ?? 0;
-                      const isConnecting = processed === 0 && total === 0;
-                      const isSummarizing = !isConnecting && processed >= total;
-                      const widthPct = isConnecting ? 0 : total > 0 ? Math.min(100, Math.max(0, (processed / total) * 100)) : 0;
-                      return (
-                        <>
-                          <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                            <div
-                              className={`bg-blue-600 h-1.5 rounded-full transition-all duration-300 ${isSummarizing ? 'animate-pulse' : ''}`}
-                              style={{ width: `${isSummarizing ? 100 : widthPct}%` }}
-                            />
-                          </div>
-                          <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">
-                            {isConnecting
-                              ? 'Connecting...'
-                              : processed < total
-                                ? 'Understanding feature attributes...'
-                                : 'Takes about 30 seconds...'}
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </li>
-                ) : (
-                  <li
-                    key={index}
-                    className={`flex items-center justify-between px-2 py-1 gap-2 hover:bg-slate-100 dark:hover:bg-gray-600 group ${connection.friendly_name === 'Loading...' ? 'animate-pulse' : ''}`}
-                  >
-                    <span className="font-medium truncate flex items-center gap-2" title={connection.friendly_name || undefined}>
-                      <DatabaseZap className="h-4 w-4" />
-                      {connection.friendly_name}
-                    </span>
-                    <div className="flex-shrink-0 flex items-center gap-2">
-                      <div className="group-hover:hidden">
-                        <span className="text-xs text-slate-500 dark:text-gray-400">{connection.table_count} tables</span>
-                      </div>
-                      <div className="hidden group-hover:flex items-center gap-2">
-                        <a
-                          href={`/postgis/${connection.connection_id}`}
-                          title="View documentation"
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-gray-500 cursor-pointer"
-                        >
-                          <BookText className="w-4 h-4 text-slate-600 dark:text-gray-300" />
-                        </a>
-                        <button
-                          title="Delete connection"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteConnectionMutation.mutate({ projectId: project.id, connectionId: connection.connection_id });
-                          }}
-                          className="w-5 h-5 flex items-center justify-center rounded hover:bg-slate-200 dark:hover:bg-gray-500 cursor-pointer text-slate-600 dark:text-gray-300 hover:text-red-500"
-                        >
-                          <Trash className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  </li>
-                ),
-              )}
             </ul>
           </>
         )}
