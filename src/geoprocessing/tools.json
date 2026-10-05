@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "search_satellite_imagery",
-      "description": "Search for satellite imagery (Sentinel-2, Landsat) over Rwanda or a specific area. Returns available scenes with dates, cloud cover, and download links. Use this when the user asks about satellite images, remote sensing data, or wants to find imagery for a specific date/location.",
+      "description": "Search for satellite imagery (Sentinel-2 L2A) over Rwanda or a specific area. Returns available scenes with dates, cloud cover, and download links. Use this when the user asks about satellite images, remote sensing data, or wants to find imagery for a specific date/location.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -32,7 +32,7 @@
     "type": "function",
     "function": {
       "name": "get_field_health",
-      "description": "Get real-time vegetation health statistics for a specific polygon/area using Sentinel Hub. Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. PREFERRED tool when the user asks about NDVI, crop health, vegetation, or field monitoring for a specific area, buffer zone, field, or any polygon that is NOT an admin boundary. Use the geometry from an existing layer on the map (buffer, drawn polygon, uploaded field boundary). WHEN TO USE: a user-drawn polygon, any geography, optionally a specific date. WHEN NOT TO USE: Rwanda admin boundary (district/sector/cell) \u2014 use get_agri_indices. Cached weekly aggregates \u2014 use get_ndvi_stats or get_parcel_ndvi_stats.",
+      "description": "Get recent vegetation health statistics for a specific polygon/area from Sentinel-2 L2A (Digital Earth Africa). Returns NDVI (and optionally NDWI, BSI) mean/std/min/max per day for the last 30 days. PREFERRED tool when the user asks about NDVI, crop health, vegetation, or field monitoring for a specific area, buffer zone, field, or any polygon that is NOT an admin boundary. Use the geometry from an existing layer on the map (buffer, drawn polygon, uploaded field boundary). WHEN TO USE: a user-drawn polygon, any geography, optionally a specific date. WHEN NOT TO USE: Rwanda admin boundary (district/sector/cell) \u2014 use get_agri_indices. Cached weekly aggregates \u2014 use get_ndvi_stats or get_parcel_ndvi_stats.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -175,7 +175,7 @@
     "type": "function",
     "function": {
       "name": "get_parcel_ndvi_stats",
-      "description": "Read parcel-level NDVI statistics from the DuckDB cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health. WHEN TO USE: user-uploaded field boundary by slug or name (e.g. Cyampirita, Kabarama, Kabari). WHEN NOT TO USE: Rwanda admin boundary \u2014 use get_ndvi_stats or get_cell_ndvi_stats. Real-time on an arbitrary polygon \u2014 use get_field_health.",
+      "description": "Read parcel-level NDVI statistics from the nightly cache for user-uploaded field boundaries. Updated nightly by Dagster at 10m native Sentinel-2 resolution. These are individual farm fields uploaded by users and tagged with rwanda_parcels=true. Returns per-parcel mean, std, min, max NDVI and estimated area. Use when the user asks about specific fields, farm parcels, or individual plot vegetation health. WHEN TO USE: user-uploaded field boundary by slug or name (e.g. Cyampirita, Kabarama, Kabari). WHEN NOT TO USE: Rwanda admin boundary \u2014 use get_ndvi_stats or get_cell_ndvi_stats. Real-time on an arbitrary polygon \u2014 use get_field_health.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -368,7 +368,7 @@
     "type": "function",
     "function": {
       "name": "get_yield_risk",
-      "description": "Read pre-computed yield risk assessments from the DuckDB cache. Uses Mann-Kendall trend analysis and Theil-Sen slope on NDVI time series to predict crop yield risk per district. Returns risk level (low/normal/moderate/high/critical), trend direction, and statistical confidence. Use when the user asks about harvest outlook, yield forecast, or crop risk.",
+      "description": "Read pre-computed yield risk assessments, refreshed weekly. Uses Mann-Kendall trend analysis and Theil-Sen slope on NDVI time series to flag crop yield risk per district. It is a vegetation trend, not a yield estimate in tonnes; say so when the user asks for a yield forecast. Returns risk level (low/normal/moderate/high/critical), trend direction, and statistical confidence. Use when the user asks about harvest outlook, yield risk, or crop risk.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -386,7 +386,7 @@
     "type": "function",
     "function": {
       "name": "get_drought_status",
-      "description": "Read pre-computed drought status from the DuckDB cache. Uses Vegetation Condition Index (VCI) with NDWI water stress analysis per district. Returns drought status (normal/watch/moderate_drought/severe_drought), VCI score, and affected period count. Use when the user asks about drought, water stress, or dry conditions. WHEN TO USE: drought severity now (VCI + NDWI). WHEN NOT TO USE: forward-looking yield risk \u2014 use get_yield_risk. Recent NDVI drop alerts \u2014 use get_anomaly_alerts. Historical no-rain windows \u2014 use detect_dry_spells.",
+      "description": "Read pre-computed drought status, refreshed weekly. Uses Vegetation Condition Index (VCI) with NDWI water stress analysis per district. Returns drought status (normal/watch/moderate_drought/severe_drought), VCI score, and affected period count. Use when the user asks about drought, water stress, or dry conditions. WHEN TO USE: drought severity now (VCI + NDWI). WHEN NOT TO USE: forward-looking yield risk \u2014 use get_yield_risk. Recent NDVI drop alerts \u2014 use get_anomaly_alerts. Historical no-rain windows \u2014 use detect_dry_spells.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -414,7 +414,7 @@
     "type": "function",
     "function": {
       "name": "get_crop_growth_stage",
-      "description": "Read pre-computed crop growth stage analysis from the DuckDB cache. Uses NDVI phenology curve analysis to identify current crop stage per district: dormant, green_up, peak, senescence, or harvest. Returns current stage, peak NDVI date, and key phenological transition dates. Use when the user asks about crop growth, planting, harvesting, or growing season.",
+      "description": "Read pre-computed crop growth stage analysis, refreshed weekly. Uses NDVI phenology curve analysis to identify current crop stage per district: dormant, green_up, peak, senescence, or harvest. Returns current stage, peak NDVI date, and key phenological transition dates. Use when the user asks about crop growth, planting, harvesting, or growing season.",
       "strict": false,
       "parameters": {
         "type": "object",
@@ -807,6 +807,64 @@
         },
         "required": [
           "slug"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "brain_graph_query",
+      "description": "Walk the Brain's links from one entity: the related entities up to N hops out, each link with its type (field_in_district, field_owned_by, claim_under_policy, crop_planted_in, ...). Use for RELATIONAL questions: 'which fields are under this policy', 'claims in this district last season', 'who owns the fields in Huye', 'what is Cyampirita connected to'. For a plain lookup use search_brain first to find the slug; for how one value changed over time use brain_trajectory.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Starting entity slug, e.g. 'fields/cyampirita', 'districts/huye'. Use search_brain to find it if unsure."
+          },
+          "depth": {
+            "type": "integer",
+            "description": "Hops out from the starting entity (default 2, limited to 1-5)."
+          },
+          "edge_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional: only these link types, e.g. ['field_in_district', 'policy_covers_field']."
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "brain_trajectory",
+      "description": "History of one recorded value on one Brain entity, oldest to newest, with drops flagged as regressions. Use for 'how has the NDVI of field X changed', 'soil moisture history for this farm'. Common keys: ndvi, soil_moisture, anomaly_score, crop, yield_kg_per_ha. Returns entries with valid_from, value, status and regression_flag.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "description": "Entity slug, e.g. 'fields/cyampirita'. Use search_brain to find it if unsure."
+          },
+          "key": {
+            "type": "string",
+            "description": "Which value, e.g. 'ndvi', 'soil_moisture', 'crop'."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum entries (default 50, at most 500)."
+          }
+        },
+        "required": [
+          "slug",
+          "key"
         ]
       }
     }

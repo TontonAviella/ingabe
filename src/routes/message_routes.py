@@ -20,6 +20,11 @@ import traceback
 import uuid as _uuid
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
+from src.services.legacy_tool_shim import (
+    LEGACY_HANDLERS,
+    LegacyToolContext,
+    execute_legacy_tool,
+)
 from src.dependencies.dag import get_map
 from typing import Callable
 from src.dependencies.rate_limiter import expensive_limit
@@ -6486,6 +6491,34 @@ async def process_chat_interaction_task(
                                     role="tool",
                                     tool_call_id=tool_call.id,
                                     content=json.dumps(tool_result),
+                                )
+                            )
+
+                        elif function_name in LEGACY_HANDLERS:
+                            # Tools with no branch above run through the same
+                            # handlers /internal/tool-call (Hermes) uses.
+                            from src.database.pool import get_async_db_connection
+
+                            async with get_async_db_connection(
+                                user_id=user_id, partner_id=partner_id
+                            ) as _shim_conn:
+                                tool_result = await execute_legacy_tool(
+                                    function_name,
+                                    LegacyToolContext(
+                                        user_id=user_id,
+                                        partner_id=partner_id or "",
+                                        conversation_id=conversation.id,
+                                        map_id=map_id,
+                                        project_id=current_project_id,
+                                        conn=_shim_conn,
+                                        arguments=tool_args,
+                                    ),
+                                )
+                            await add_chat_completion_message(
+                                ChatCompletionToolMessageParam(
+                                    role="tool",
+                                    tool_call_id=tool_call.id,
+                                    content=json.dumps(tool_result, default=str),
                                 )
                             )
 

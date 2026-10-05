@@ -5,6 +5,8 @@
     "add_observation",
     "analyze_raster_object_candidates",
     "analyze_rgb_field",
+    "brain_graph_query",
+    "brain_trajectory",
     "compare_rasters",
     "compute_spectral_index",
     "compute_zonal_stats",

@@ -165,6 +165,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "search_brain": BRAIN,
     "get_entity": BRAIN,
     "add_observation": BRAIN,
+    "brain_graph_query": BRAIN,
+    "brain_trajectory": BRAIN,
 }
 
 
