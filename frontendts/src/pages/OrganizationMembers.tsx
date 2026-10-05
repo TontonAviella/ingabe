@@ -96,11 +96,11 @@ export default function OrganizationMembers() {
     load();
   }, [load]);
 
-  const run = async (key: string, action: () => Promise<unknown>, done: string) => {
+  const run = async (key: string, action: () => Promise<unknown>, done: string | ((result: unknown) => string)) => {
     setBusy(key);
     try {
-      await action();
-      toast.success(done);
+      const result = await action();
+      toast.success(typeof done === 'function' ? done(result) : done);
       await load();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
@@ -116,7 +116,8 @@ export default function OrganizationMembers() {
     run(
       'invite',
       () => call('/invitations', { method: 'POST', body: JSON.stringify({ email: address, role: inviteRole }) }),
-      `Invitation sent to ${address}`,
+      (result) =>
+        (result as { resent?: boolean }).resent ? `${address} was already invited: invitation sent again` : `Invitation sent to ${address}`,
     ).then(() => setEmail(''));
   };
 

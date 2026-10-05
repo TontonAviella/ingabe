@@ -228,13 +228,41 @@ def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _refusal(e: Exception) -> Optional[str]:
+    """WorkOS' own words when it refused a request (4xx), else None."""
+    status_code = getattr(e, "status_code", None)
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return getattr(e, "message", None) or str(e)
+    return None
+
+
+def _invitation_dict(inv: Any, resent: bool = False) -> dict[str, Any]:
+    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at), "resent": resent}
+
+
 def invite(organization_id: str, email: str, role: str, inviter_user_id: Optional[str]) -> dict[str, Any]:
-    """Email an invitation to join the organization (WorkOS sends the email)."""
+    """Email an invitation to join the organization (WorkOS sends the email).
+
+    Someone who already has a pending invitation gets it sent again (WorkOS
+    refuses a second one). Any other refusal becomes a ValueError carrying
+    WorkOS' message, so the page can show it.
+    """
     if role not in ASSIGNABLE_ROLES:
         raise ValueError(f"role must be one of {', '.join(ASSIGNABLE_ROLES)}")
-    inv = _client().user_management.send_invitation(
-        email=email, organization_id=organization_id, role_slug=role, inviter_user_id=inviter_user_id)
-    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at)}
+    try:
+        inv = _client().user_management.send_invitation(
+            email=email, organization_id=organization_id, role_slug=role, inviter_user_id=inviter_user_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors, sorted below
+        if getattr(e, "code", None) == "email_already_invited_to_organization":
+            page = _client().user_management.list_invitations(organization_id=organization_id, email=email, limit=10)
+            pending = next((i for i in getattr(page, "data", page) if _value(i.state) == "pending"), None)
+            if pending is not None:
+                return _invitation_dict(_client().user_management.resend_invitation(pending.id), resent=True)
+        message = _refusal(e)
+        if message:
+            raise ValueError(message) from e
+        raise
+    return _invitation_dict(inv)
 
 
 def _membership_in(membership_id: str, organization_id: str) -> Any:
