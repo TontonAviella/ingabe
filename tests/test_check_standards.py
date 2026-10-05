@@ -236,6 +236,16 @@ def test_claude_md_must_only_import_agents_md(repo):
 
 
 
+def test_src_module_named_like_a_dependency_is_flagged(repo):
+    repo("requirements.txt", 'duckdb==1.3.2\nPyYAML==6.0\nuvicorn[standard]==0.49.0 ; python_version >= "3.9"\n')
+    repo("src/geoparquet_cache.py", "x = 1\n")
+    assert cs.check_shadowed_packages() == []
+    repo("src/duckdb.py", "x = 1\n")
+    repo("src/uvicorn/__init__.py", "")
+    found = cs.check_shadowed_packages()
+    assert [(v.rule, v.detail) for v in found] == [("shadow-package", "duckdb"), ("shadow-package", "uvicorn")]
+
+
 def test_number_tested_for_truth_before_rounding_is_flagged(repo):
     repo("src/routes/r.py", """
         def row(r, x):

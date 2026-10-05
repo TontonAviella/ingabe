@@ -17,9 +17,6 @@
 
 Used as fallback when the primary Open-Meteo multi-model API is unavailable.
 GEFS provides a 31-member traditional ensemble at 28km resolution via AWS S3.
-
-This module also contains the NOMADS AIGFS/AIGEFS/HGEFS code, which is no
-longer used in the primary forecast path but preserved for reference.
 """
 
 from __future__ import annotations
@@ -33,25 +30,16 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# NOMADS base URLs
-# ---------------------------------------------------------------------------
-_NOMADS_AIGFS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod"
-_NOMADS_AIGEFS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod"
-_NOMADS_HGEFS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hgefs/prod"
-
-# ---------------------------------------------------------------------------
 # AWS S3 — traditional GEFS (no rate limits, 20+ day retention)
 # ---------------------------------------------------------------------------
 _S3_GEFS = "https://noaa-gefs-pds.s3.amazonaws.com"
-
-ModelName = Literal["AIGFS", "AIGEFS", "HGEFS", "GEFS"]
 
 # ---------------------------------------------------------------------------
 # Surface variables — shared across all models
@@ -303,354 +291,6 @@ def _build_distributions(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Run date detection — shared pattern
-# ---------------------------------------------------------------------------
-
-
-def _latest_complete_run(
-    nomads_base: str,
-    model_prefix: str,
-    file_subpath_template: str,
-    required_fhr: int = 240,
-) -> Tuple[str, str]:
-    """Find latest available model run on NOMADS.
-
-    Strategy:
-      1. Try to find a run where f{required_fhr} exists (fully complete).
-      2. If none found, fall back to any run where at least f006 exists
-         (partial run — better than nothing, code handles missing hours).
-
-    NOMADS keeps ~2 days of data and purges old runs. During transitions
-    the newest run may still be publishing while the oldest is being purged.
-
-    Conservative with requests: checks at most 5 candidates (30h back)
-    to avoid NOMADS rate limits. Probes sequentially and stops at first hit.
-    """
-    now = datetime.now(timezone.utc)
-
-    # Build candidate list: newest first, 5 cycles back (~30h)
-    # Offset by 4h (not 8h) so we can find today's runs sooner.
-    # A cycle initiated 4h ago has at least f006-f024 published.
-    candidates = []
-    seen = set()
-    for hours_back in range(0, 36, 6):
-        candidate = now - timedelta(hours=hours_back + 4)
-        date_str = candidate.strftime("%Y%m%d")
-        cycle = f"{(candidate.hour // 6) * 6:02d}"
-        key = f"{date_str}/{cycle}"
-        if key not in seen:
-            seen.add(key)
-            candidates.append((date_str, cycle))
-
-    def _probe(date_str: str, cycle: str, fhr: int) -> bool:
-        fhr_str = f"f{fhr:03d}"
-        test_path = file_subpath_template.format(
-            prefix=model_prefix, cycle=cycle, fhr=fhr_str,
-        )
-        idx_url = f"{nomads_base}/{model_prefix}.{date_str}/{cycle}/{test_path}.idx"
-        try:
-            req = urllib.request.Request(idx_url, method="HEAD")
-            req.add_header("User-Agent", "mundi.ai/1.0")
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                # Check for rate-limit HTML served as 200
-                if resp.headers.get("Content-Type", "").startswith("text/html"):
-                    return False
-                return True
-        except Exception:
-            return False
-
-    # Pass 1: find newest complete run (sequential, stop-early)
-    for date_str, cycle in candidates:
-        if _probe(date_str, cycle, required_fhr):
-            logger.info(
-                "Found complete %s run: %s/%s (verified f%03d)",
-                model_prefix.upper(), date_str, cycle, required_fhr,
-            )
-            return date_str, cycle
-
-    # Pass 2: fallback to newest partial run (at least f006 exists)
-    for date_str, cycle in candidates:
-        if _probe(date_str, cycle, 6):
-            logger.warning(
-                "No complete %s run found — using partial %s/%s (f006 exists, f%03d missing)",
-                model_prefix.upper(), date_str, cycle, required_fhr,
-            )
-            return date_str, cycle
-
-    yesterday = (now - timedelta(days=1)).strftime("%Y%m%d")
-    logger.error("No %s data found on NOMADS at all — returning fallback %s/12", model_prefix.upper(), yesterday)
-    return yesterday, "12"
-
-
-def _latest_aigfs_run(forecast_days: int = 16) -> Tuple[str, str]:
-    return _latest_complete_run(
-        _NOMADS_AIGFS, "aigfs",
-        "model/atmos/grib2/{prefix}.t{cycle}z.sfc.{fhr}.grib2",
-        required_fhr=min(forecast_days * 24, 384),
-    )
-
-
-def _latest_aigefs_run(forecast_days: int = 10) -> Tuple[str, str]:
-    return _latest_complete_run(
-        _NOMADS_AIGEFS, "aigefs",
-        "ensstat/products/atmos/grib2/{prefix}.t{cycle}z.sfc.avg.{fhr}.grib2",
-        required_fhr=min(forecast_days * 24, 240),
-    )
-
-
-def _latest_hgefs_run(forecast_days: int = 10) -> Tuple[str, str]:
-    return _latest_complete_run(
-        _NOMADS_HGEFS, "hgefs",
-        "ensstat/products/atmos/grib2/{prefix}.t{cycle}z.sfc.avg.{fhr}.grib2",
-        required_fhr=min(forecast_days * 24, 240),
-    )
-
-
-# ---------------------------------------------------------------------------
-# AIGFS — deterministic forecast (single run, no ensemble)
-# ---------------------------------------------------------------------------
-
-
-def _fetch_aigfs_hour(
-    date_str: str,
-    cycle: str,
-    fhr: int,
-    lat: float,
-    lon: float,
-) -> Optional[Dict[str, Any]]:
-    """Fetch AIGFS deterministic values for one forecast hour."""
-    fhr_str = f"f{fhr:03d}"
-    grib_url = (
-        f"{_NOMADS_AIGFS}/aigfs.{date_str}/{cycle}/"
-        f"model/atmos/grib2/aigfs.t{cycle}z.sfc.{fhr_str}.grib2"
-    )
-
-    raw_bytes = _download_variables_for_hour(grib_url, f"{grib_url}.idx", _SURFACE_VARIABLES)
-    if not raw_bytes:
-        return None
-
-    mean_conv = {out_key: conv for _, out_key, conv, _ in _SURFACE_VARIABLES}
-    vals = _convert_raw_values(raw_bytes, mean_conv, lat, lon)
-    _combine_wind(vals)
-    _rename_pressure(vals)
-
-    if not vals:
-        return None
-
-    init_dt = datetime.strptime(f"{date_str}{cycle}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
-    valid_dt = init_dt + timedelta(hours=fhr)
-
-    result: Dict[str, Any] = {
-        "valid_time": valid_dt.strftime("%Y-%m-%dT%H:%MZ"),
-        "forecast_hour": fhr,
-    }
-    result.update(vals)
-    return result
-
-
-def fetch_aigfs_forecast(
-    lat: float,
-    lon: float,
-    forecast_days: int = 16,
-) -> Dict[str, Any]:
-    """Fetch AIGFS deterministic forecast — 6-hourly point values."""
-    forecast_days = min(max(1, forecast_days), 16)
-    max_hour = forecast_days * 24
-
-    date_str, cycle = _latest_aigfs_run(forecast_days)
-    init_time = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T{cycle}:00Z"
-
-    logger.info("AIGFS forecast %.4f,%.4f — init %s, %dd", lat, lon, init_time, forecast_days)
-
-    forecast_hours = [fhr for fhr in range(0, 385, 6) if fhr <= max_hour]
-
-    forecasts = []
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-        futures = {
-            pool.submit(_fetch_aigfs_hour, date_str, cycle, fhr, lat, lon): fhr
-            for fhr in forecast_hours
-        }
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    forecasts.append(result)
-            except Exception as e:
-                logger.debug("AIGFS hour failed: %s", e)
-
-    forecasts.sort(key=lambda f: f["forecast_hour"])
-
-    return {
-        "model": "AIGFS",
-        "init_time": init_time,
-        "location": {"lat": lat, "lon": lon},
-        "resolution_km": 28,
-        "forecast_count": len(forecasts),
-        "forecasts": forecasts,
-    }
-
-
-def fetch_aigfs_daily(
-    lat: float,
-    lon: float,
-    forecast_days: int = 16,
-) -> Dict[str, Any]:
-    """Fetch AIGFS forecast aggregated to daily summaries (deterministic — no distributions)."""
-    raw = fetch_aigfs_forecast(lat, lon, forecast_days)
-
-    by_date: Dict[str, List[Dict[str, Any]]] = {}
-    for fc in raw.get("forecasts", []):
-        date_key = fc["valid_time"][:10]
-        by_date.setdefault(date_key, []).append(fc)
-
-    daily = []
-    for date_str in sorted(by_date.keys()):
-        steps = by_date[date_str]
-        day: Dict[str, Any] = {"date": date_str}
-
-        # Temperature: max, min, mean
-        temps = [s["temperature_2m"] for s in steps if "temperature_2m" in s]
-        if temps:
-            day["temperature_max"] = round(max(temps), 1)
-            day["temperature_min"] = round(min(temps), 1)
-            day["temperature_mean"] = round(sum(temps) / len(temps), 1)
-
-        # Precipitation: sum
-        precips = [s["precipitation_mm"] for s in steps if "precipitation_mm" in s]
-        if precips:
-            day["precipitation_mm"] = round(sum(precips), 1)
-
-        # Wind: average
-        winds = [s["wind_speed_ms"] for s in steps if "wind_speed_ms" in s]
-        if winds:
-            day["wind_speed_ms"] = round(sum(winds) / len(winds), 1)
-
-        # Pressure: average
-        pressures = [s["pressure_hpa"] for s in steps if "pressure_hpa" in s]
-        if pressures:
-            day["pressure_hpa"] = round(sum(pressures) / len(pressures), 1)
-
-        daily.append(day)
-
-    return {
-        "model": "AIGFS",
-        "init_time": raw.get("init_time"),
-        "location": raw.get("location"),
-        "resolution_km": 28,
-        "daily": daily,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Ensemble forecast — shared for AIGEFS (31 members) and HGEFS (62 members)
-# ---------------------------------------------------------------------------
-
-
-def _fetch_ensemble_hour(
-    nomads_base: str,
-    model_prefix: str,
-    members: int,
-    date_str: str,
-    cycle: str,
-    fhr: int,
-    lat: float,
-    lon: float,
-) -> Optional[Dict[str, Any]]:
-    """Fetch ensemble mean + spread for one forecast hour, derive distributions."""
-    fhr_str = f"f{fhr:03d}"
-    base_path = (
-        f"{nomads_base}/{model_prefix}.{date_str}/{cycle}/"
-        f"ensstat/products/atmos/grib2"
-    )
-    avg_url = f"{base_path}/{model_prefix}.t{cycle}z.sfc.avg.{fhr_str}.grib2"
-    spr_url = f"{base_path}/{model_prefix}.t{cycle}z.sfc.spr.{fhr_str}.grib2"
-
-    avg_bytes = _download_variables_for_hour(avg_url, f"{avg_url}.idx", _SURFACE_VARIABLES)
-    spr_bytes = _download_variables_for_hour(spr_url, f"{spr_url}.idx", _SURFACE_VARIABLES)
-
-    if not avg_bytes:
-        return None
-
-    mean_conv = {out_key: conv for _, out_key, conv, _ in _SURFACE_VARIABLES}
-    spr_conv = {out_key: conv for _, out_key, _, conv in _SURFACE_VARIABLES}
-
-    avg_vals = _convert_raw_values(avg_bytes, mean_conv, lat, lon)
-    spr_vals = _convert_raw_values(spr_bytes, spr_conv, lat, lon)
-
-    _combine_wind(avg_vals)
-    _combine_wind(spr_vals)
-    _rename_pressure(avg_vals)
-    _rename_pressure(spr_vals)
-
-    distributions = _build_distributions(avg_vals, spr_vals)
-    if not distributions:
-        return None
-
-    init_dt = datetime.strptime(f"{date_str}{cycle}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
-    valid_dt = init_dt + timedelta(hours=fhr)
-
-    result: Dict[str, Any] = {
-        "valid_time": valid_dt.strftime("%Y-%m-%dT%H:%MZ"),
-        "forecast_hour": fhr,
-        "members": members,
-    }
-    result.update(distributions)
-    return result
-
-
-def _fetch_ensemble_forecast(
-    nomads_base: str,
-    model_prefix: str,
-    model_name: str,
-    members: int,
-    latest_run_fn: Any,
-    lat: float,
-    lon: float,
-    forecast_days: int,
-    max_fhr: int = 240,
-) -> Dict[str, Any]:
-    """Fetch ensemble forecast with parallel hour downloads."""
-    forecast_days = min(max(1, forecast_days), max_fhr // 24)
-    max_hour = forecast_days * 24
-
-    date_str, cycle = latest_run_fn(forecast_days)
-    init_time = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T{cycle}:00Z"
-
-    logger.info("%s forecast %.4f,%.4f — init %s, %dd", model_name, lat, lon, init_time, forecast_days)
-
-    forecast_hours = [fhr for fhr in range(0, max_fhr + 1, 6) if fhr <= max_hour]
-
-    forecasts = []
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-        futures = {
-            pool.submit(
-                _fetch_ensemble_hour, nomads_base, model_prefix, members,
-                date_str, cycle, fhr, lat, lon,
-            ): fhr
-            for fhr in forecast_hours
-        }
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    forecasts.append(result)
-            except Exception as e:
-                logger.debug("%s hour failed: %s", model_name, e)
-
-    forecasts.sort(key=lambda f: f["forecast_hour"])
-
-    return {
-        "model": model_name,
-        "init_time": init_time,
-        "location": {"lat": lat, "lon": lon},
-        "resolution_km": 28,
-        "members": members,
-        "forecast_count": len(forecasts),
-        "forecasts": forecasts,
-    }
-
-
 def _aggregate_ensemble_daily(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Aggregate 6-hourly ensemble forecast to daily summaries with distributions."""
     by_date: Dict[str, List[Dict[str, Any]]] = {}
@@ -723,44 +363,8 @@ def _aggregate_ensemble_daily(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# AIGEFS public API
-# ---------------------------------------------------------------------------
-
-
-def fetch_aigefs_forecast(lat: float, lon: float, forecast_days: int = 10) -> Dict[str, Any]:
-    """Fetch AIGEFS 31-member AI ensemble forecast — 6-hourly with distributions."""
-    return _fetch_ensemble_forecast(
-        _NOMADS_AIGEFS, "aigefs", "AIGEFS", 31,
-        _latest_aigefs_run, lat, lon, forecast_days, max_fhr=240,
-    )
-
-
-def fetch_aigefs_daily(lat: float, lon: float, forecast_days: int = 10) -> Dict[str, Any]:
-    """Fetch AIGEFS forecast aggregated to daily summaries with distributions."""
-    return _aggregate_ensemble_daily(fetch_aigefs_forecast(lat, lon, forecast_days))
-
-
-# ---------------------------------------------------------------------------
-# HGEFS public API
-# ---------------------------------------------------------------------------
-
-
-def fetch_hgefs_forecast(lat: float, lon: float, forecast_days: int = 10) -> Dict[str, Any]:
-    """Fetch HGEFS 62-member hybrid ensemble forecast — 6-hourly with distributions."""
-    return _fetch_ensemble_forecast(
-        _NOMADS_HGEFS, "hgefs", "HGEFS", 62,
-        _latest_hgefs_run, lat, lon, forecast_days, max_fhr=240,
-    )
-
-
-def fetch_hgefs_daily(lat: float, lon: float, forecast_days: int = 10) -> Dict[str, Any]:
-    """Fetch HGEFS forecast aggregated to daily summaries with distributions."""
-    return _aggregate_ensemble_daily(fetch_hgefs_forecast(lat, lon, forecast_days))
-
-
-# ---------------------------------------------------------------------------
 # AWS S3 GEFS — 31-member traditional ensemble (always available, no rate limits)
-# Uses same avg+spr+idx pattern as NOMADS but from S3.
+# Uses pre-computed avg+spr GRIB2 files with .idx byte-range downloads.
 # 3-hourly steps (f000-f384), but we fetch 6-hourly for consistency.
 # ---------------------------------------------------------------------------
 
@@ -923,40 +527,7 @@ def fetch_gefs_s3_daily(
 
 
 # ---------------------------------------------------------------------------
-# All-models comparison
-# ---------------------------------------------------------------------------
-
-
-def fetch_all_models_daily(
-    lat: float,
-    lon: float,
-    forecast_days: int = 10,
-) -> Dict[str, Any]:
-    """Fetch all three models in parallel and return combined daily output."""
-    results: Dict[str, Any] = {}
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {
-            pool.submit(fetch_aigfs_daily, lat, lon, forecast_days): "AIGFS",
-            pool.submit(fetch_aigefs_daily, lat, lon, forecast_days): "AIGEFS",
-            pool.submit(fetch_hgefs_daily, lat, lon, forecast_days): "HGEFS",
-        }
-        for future in as_completed(futures):
-            model = futures[future]
-            try:
-                results[model] = future.result()
-            except Exception as e:
-                logger.warning("Model %s failed: %s", model, e)
-                results[model] = {"model": model, "error": str(e), "daily": []}
-
-    return {
-        "location": {"lat": lat, "lon": lon},
-        "models": results,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Persistent forecast cache — survives NOMADS data gaps
+# Persistent forecast cache — survives S3 data gaps
 # ---------------------------------------------------------------------------
 
 _CACHE_DIR = pathlib.Path(os.environ.get(
@@ -972,7 +543,7 @@ def _cache_path(grid_key: str, model: str, forecast_days: int) -> pathlib.Path:
 
 
 def _save_cache(grid_key: str, model: str, forecast_days: int, data: Dict[str, Any]) -> None:
-    """Persist forecast to disk so it survives NOMADS gaps."""
+    """Persist forecast to disk so it survives S3 gaps."""
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         path = _cache_path(grid_key, model, forecast_days)
@@ -1015,20 +586,12 @@ def _load_cache(
         return None
 
 
-def _fetch_from_nomads(grid_key: str, model: str, forecast_days: int) -> Dict[str, Any]:
-    """Fetch a single model from NOMADS (no caching)."""
+def _fetch_gefs(grid_key: str, model: str, forecast_days: int) -> Dict[str, Any]:
+    """Fetch GEFS from AWS S3 (no caching). GEFS is the only model served here."""
+    if model != "GEFS":
+        raise ValueError(f"Unsupported NOAA fallback model: {model}")
     lat_str, lon_str = grid_key.split(",")
-    lat, lon = float(lat_str), float(lon_str)
-    if model == "AIGFS":
-        return fetch_aigfs_daily(lat, lon, forecast_days)
-    elif model == "AIGEFS":
-        return fetch_aigefs_daily(lat, lon, forecast_days)
-    elif model == "HGEFS":
-        return fetch_hgefs_daily(lat, lon, forecast_days)
-    elif model == "GEFS":
-        return fetch_gefs_s3_daily(lat, lon, forecast_days)
-    else:
-        return fetch_hgefs_daily(lat, lon, forecast_days)
+    return fetch_gefs_s3_daily(float(lat_str), float(lon_str), forecast_days)
 
 
 def _has_data_fallback(result: Dict[str, Any]) -> bool:
@@ -1043,42 +606,19 @@ def _has_data_fallback(result: Dict[str, Any]) -> bool:
     return False
 
 
-def _fetch_gefs_s3_fallback(grid_key: str, forecast_days: int) -> Optional[Dict[str, Any]]:
-    """Fetch GEFS from AWS S3 as fallback when NOMADS fails.
-
-    Returns data with model name adjusted to indicate it's a fallback source.
-    Returns None if S3 also fails (should be extremely rare).
-    """
-    lat_str, lon_str = grid_key.split(",")
-    lat, lon = float(lat_str), float(lon_str)
-    try:
-        result = fetch_gefs_s3_daily(lat, lon, min(forecast_days, 16))
-        if _has_data_fallback(result):
-            result["fallback_source"] = "AWS S3 GEFS"
-            logger.info("S3 GEFS fallback succeeded for %s", grid_key)
-            return result
-    except Exception as e:
-        logger.warning("S3 GEFS fallback failed for %s: %s", grid_key, e)
-    return None
-
-
 def _fetch_single_model_cached(
     grid_key: str,
     today: str,
     model: str,
     forecast_days: int,
 ) -> Dict[str, Any]:
-    """Fetch a single model with 5-layer fallback.
+    """Fetch GEFS with 4-layer fallback.
 
     Priority:
       1. Memory cache (5 min TTL good data, 1 min TTL empty)
-      2. Live NOMADS fetch (HGEFS/AIGEFS/AIGFS — best AI models)
-      3. AWS S3 GEFS (always available, no rate limits, live data)
-      4. Fresh disk cache (<24h old)
-      5. Stale disk cache (any age — better than nothing)
-
-    Layer 3 (S3 GEFS) means we almost never serve stale disk data.
-    GEFS is on S3 so we skip this layer if the requested model is already GEFS.
+      2. Live AWS S3 GEFS fetch (always available, no rate limits)
+      3. Fresh disk cache (<24h old)
+      4. Stale disk cache (any age — better than nothing)
     """
     cache_key = f"{grid_key}:{today}:{model}:{forecast_days}"
 
@@ -1090,34 +630,25 @@ def _fetch_single_model_cached(
         if time.time() - ts <= ttl:
             return data
 
-    # Layer 2: fetch requested model (NOMADS for AI models, S3 for GEFS)
-    result = _fetch_from_nomads(grid_key, model, forecast_days)
+    # Layer 2: live S3 fetch
+    result = _fetch_gefs(grid_key, model, forecast_days)
 
     if _has_data_fallback(result):
         _FALLBACK_MEM_CACHE[cache_key] = (time.time(), result)
         _save_cache(grid_key, model, forecast_days, result)
         return result
 
-    # Layer 3: AWS S3 GEFS fallback (skip if already fetching GEFS)
-    if model != "GEFS":
-        s3_result = _fetch_gefs_s3_fallback(grid_key, forecast_days)
-        if s3_result is not None:
-            logger.warning("NOMADS %s gap — falling back to S3 GEFS for %s", model, grid_key)
-            _FALLBACK_MEM_CACHE[cache_key] = (time.time(), s3_result)
-            _save_cache(grid_key, model, forecast_days, s3_result)
-            return s3_result
-
-    # Layer 4: fresh disk cache (<24h)
+    # Layer 3: fresh disk cache (<24h)
     cached_disk = _load_cache(grid_key, model, forecast_days)
     if cached_disk is not None:
-        logger.warning("NOMADS+S3 gap — serving cached %s for %s", model, grid_key)
+        logger.warning("S3 GEFS gap — serving cached %s for %s", model, grid_key)
         _FALLBACK_MEM_CACHE[cache_key] = (time.time(), cached_disk)
         return cached_disk
 
-    # Layer 5: stale disk cache (any age — stale data > no data)
+    # Layer 4: stale disk cache (any age — stale data > no data)
     stale_disk = _load_cache(grid_key, model, forecast_days, allow_stale=True)
     if stale_disk is not None:
-        logger.warning("NOMADS+S3 gap — serving STALE %s for %s (>24h old)", model, grid_key)
+        logger.warning("S3 GEFS gap — serving STALE %s for %s (>24h old)", model, grid_key)
         _FALLBACK_MEM_CACHE[cache_key] = (time.time(), stale_disk)
         return stale_disk
 

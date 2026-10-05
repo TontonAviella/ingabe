@@ -24,10 +24,8 @@ from src.routes import (
 from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes.attribute_table import attribute_table_router
-from src.routes.lakehouse_routes import lakehouse_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
-from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
 from src.routes.profile_routes import router as profile_router
@@ -559,13 +557,12 @@ async def metrics():
 @app.get("/health")
 @app.get("/api/health")
 async def health_check():
-    """Detailed health check (PostgreSQL, Redis, QGIS).
+    """Detailed health check (PostgreSQL, Redis).
 
     Always returns 200 so monitoring tools can read the body.
     The "status" field is "healthy" or "degraded".
     """
     import asyncio
-    import httpx
 
     async def _check_postgres() -> str:
         try:
@@ -586,19 +583,8 @@ async def health_check():
         except Exception as e:
             return f"error: {e}"
 
-    async def _check_qgis() -> str:
-        qgis_url = os.environ.get("QGIS_PROCESSING_URL", "http://qgis-processing:8817")
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{qgis_url}/health")
-                return "ok" if resp.status_code == 200 else f"status {resp.status_code}"
-        except Exception as e:
-            return f"error: {e}"
-
-    pg, redis_r, qgis = await asyncio.gather(
-        _check_postgres(), _check_redis(), _check_qgis(),
-    )
-    checks = {"postgres": pg, "redis": redis_r, "qgis": qgis}
+    pg, redis_r = await asyncio.gather(_check_postgres(), _check_redis())
+    checks = {"postgres": pg, "redis": redis_r}
 
     pg_ok = pg == "ok"
     all_ok = all(v == "ok" for v in checks.values())
@@ -664,11 +650,6 @@ app.include_router(
     tags=["Internal/ToolCall"],
 )
 app.include_router(
-    lakehouse_router,
-    prefix="/api",
-    tags=["Lakehouse"],
-)
-app.include_router(
     rwanda_router,
     prefix="/api",
     tags=["Rwanda"],
@@ -676,10 +657,6 @@ app.include_router(
 app.include_router(
     worldcover_router,
     tags=["WorldCover"],
-)
-app.include_router(
-    satellite_router,
-    tags=["Satellite"],
 )
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])

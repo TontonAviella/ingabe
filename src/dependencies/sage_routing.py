@@ -113,31 +113,15 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "create_point_layer": ALWAYS_ON,
     "search_location": ALWAYS_ON,
     "reverse_geocode_coordinates": ALWAYS_ON,
+    "list_admin_units": ALWAYS_ON,
     "add_layer_to_map": ALWAYS_ON,
+    # Show results that other tools return (flood polygons, saved layers).
+    "display_layer": ALWAYS_ON,
+    "display_geojson_layer": ALWAYS_ON,
     # --- Map editing / postgis / generic geoprocessing ---
     "new_layer_from_postgis": MAP_EDIT,
     "set_layer_style": MAP_EDIT,
-    "query_duckdb_sql": MAP_EDIT,
-    "query_postgis_database": MAP_EDIT,
-    "zonal_statistics": MAP_EDIT,
-    "query_rwanda_zonal_stats": MAP_EDIT,
     "add_land_cover_layer": MAP_EDIT,
-    "gdal_warpreproject": MAP_EDIT,
-    "native_aggregate": MAP_EDIT,
-    "native_buffer": MAP_EDIT,
-    "native_dissolve": MAP_EDIT,
-    "native_fieldcalculator": MAP_EDIT,
-    "native_fixgeometries": MAP_EDIT,
-    "native_geometrybyexpression": MAP_EDIT,
-    "native_joinattributesbylocation": MAP_EDIT,
-    "native_mergevectorlayers": MAP_EDIT,
-    "native_reprojectlayer": MAP_EDIT,
-    "native_creategrid": MAP_EDIT,
-    "native_zonalstatisticsfb": MAP_EDIT,
-    "qgis_clip": MAP_EDIT,
-    "qgis_intersection": MAP_EDIT,
-    "qgis_joinbylocationsummary": MAP_EDIT,
-    "qgis_statisticsbycategories": MAP_EDIT,
     # --- Satellite imagery ---
     "search_satellite_imagery": SATELLITE,
     "display_satellite_layer": SATELLITE,
@@ -150,7 +134,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_parcel_ndvi_stats": AGRICULTURE,
     "get_agri_indices": AGRICULTURE,
     "query_worldcover_stats": AGRICULTURE,
-    "get_crop_classifications": AGRICULTURE,
     "get_anomaly_alerts": AGRICULTURE,
     "get_yield_risk": AGRICULTURE,
     "get_drought_status": AGRICULTURE,
@@ -158,26 +141,13 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_weather_stats": AGRICULTURE,
     "get_forecast": AGRICULTURE,
     "get_forecast_accuracy": AGRICULTURE,
-    "get_emissions_stats": AGRICULTURE,
-    "create_management_zones": AGRICULTURE,
-    "create_prescription_map": AGRICULTURE,
-    "create_soil_sampling_plan": AGRICULTURE,
-    "identify_parcel_crop": AGRICULTURE,
-    "confirm_crop_prediction": AGRICULTURE,
     "get_soil_moisture": AGRICULTURE,
     "get_evapotranspiration": AGRICULTURE,
-    "get_food_security_alerts": AGRICULTURE,
     "detect_dry_spells": AGRICULTURE,
     "get_insurance_accuracy": AGRICULTURE,
     "get_insurance_intelligence": AGRICULTURE,
     "predict_ndvi_from_sar": AGRICULTURE,
-    "detect_water_bodies": AGRICULTURE,
     "detect_flood_extent": AGRICULTURE,
-    "get_alos_l_band_stats": AGRICULTURE,
-    "get_alos_temporal_variation": AGRICULTURE,
-    "check_cygnss_availability": AGRICULTURE,
-    "get_cygnss_soil_moisture": AGRICULTURE,
-    "get_cygnss_watermask": AGRICULTURE,
     # --- User-uploaded raster (drone, COG) analysis ---
     "describe_user_raster": USER_RASTER,
     "compute_zonal_stats": USER_RASTER,
@@ -189,17 +159,14 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
     # --- H3/city/environment insight layers ---
-    "create_h3_spatial_insight_layer": SPATIAL_INSIGHT,
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_raster_object_candidates": SPATIAL_INSIGHT,
-    "analyze_open_buildings_exposure": SPATIAL_INSIGHT,
-    "get_geolibre_tool_capabilities": SPATIAL_INSIGHT,
-    "run_geolibre_tool": SPATIAL_INSIGHT,
-    "run_geolibre_smoke_suite_tool": SPATIAL_INSIGHT,
     # --- Knowledge graph / Brain ---
     "search_brain": BRAIN,
     "get_entity": BRAIN,
     "add_observation": BRAIN,
+    "brain_graph_query": BRAIN,
+    "brain_trajectory": BRAIN,
 }
 
 
@@ -932,7 +899,6 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             should_fast_route=True,
             reason="raster_house_count_uses_object_candidates",
             supporting_tools=(
-                "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
                 "search_satellite_imagery",
                 "compute_spectral_index",
@@ -980,7 +946,6 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             should_fast_route=True,
             reason="uploaded_raster_object_candidates",
             supporting_tools=(
-                "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
                 "search_satellite_imagery",
                 "compute_spectral_index",
@@ -1001,7 +966,6 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
             should_fast_route=True,
             reason="raster_housing_uses_object_candidates",
             supporting_tools=(
-                "analyze_open_buildings_exposure",
                 "create_raster_h3_context_layer",
                 "search_satellite_imagery",
                 "compute_spectral_index",
@@ -1030,7 +994,9 @@ def choose_geospatial_evidence_path(text: str) -> GeospatialEvidenceDecision:
         return GeospatialEvidenceDecision(
             source_kind="external_footprints",
             task="building_count_or_exposure",
-            primary_tool="analyze_open_buildings_exposure",
+            # No building-footprint source is wired: Sage must say it cannot
+            # count buildings from basemap pixels rather than guess.
+            primary_tool=None,
             evidence_level="requires_building_footprints",
             should_fast_route=False,
             reason="basemap_is_not_analyzable_pixels",
@@ -1442,13 +1408,8 @@ def route_chat(
     }:
         # H3 is a rendering/indexing layer, not an object detector. Keep it out
         # of house/building count turns so Sage cannot present proxy cells as
-        # evidence. Open Buildings remains available through SPATIAL_INSIGHT.
-        excluded_tool_names = frozenset(
-            {
-                "create_h3_spatial_insight_layer",
-                "create_raster_h3_context_layer",
-            }
-        )
+        # evidence.
+        excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
     if cats:

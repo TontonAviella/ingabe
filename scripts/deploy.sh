@@ -82,7 +82,7 @@ import sys
 
 payload = json.loads(os.environ["HEALTH_JSON"])
 checks = payload.get("checks") or {}
-required = ("postgres", "redis", "qgis")
+required = ("postgres", "redis")
 sys.exit(0 if payload.get("status") == "healthy" and all(checks.get(k) == "ok" for k in required) else 1)
 PY
   then
@@ -108,5 +108,5 @@ curl --silent --show-error --fail --max-time 5 \
 docker exec mundi-app /app/.venv/bin/python -m src.services.runtime_audit >/dev/null \
   || fail "local runtime capability audit failed"
 
-log "API, frontend, FastSAM, Dagster, Postgres, Redis, QGIS, and MinIO are healthy"
+log "API, frontend, FastSAM, Dagster, Postgres, Redis, and MinIO are healthy"
 log "local app: http://localhost:8000"

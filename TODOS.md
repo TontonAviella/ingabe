@@ -2,12 +2,6 @@
 
 ## Deferred from display_layer Pattern (2026-05-04)
 
-### CYGNSS family — display path
-- **What**: `get_cygnss_soil_moisture` and `get_cygnss_watermask` compute aggregated stats (water_fraction, water_pixels, water_area_km2) from netCDF in-memory. They don't preserve a rasterio transform from the lat/lon coordinate arrays, so there's no way to vectorize the watermask into polygons or render the soil moisture as a tile layer.
-- **Why deferred**: A retrofit needs the existing return shape preserved; building polygons requires modifying the service to compute an affine from the netCDF coordinate arrays and call `rasterio.features.shapes`. That's a service-level change, not a return-dict enrichment.
-- **Depends on**: Nothing. Mechanical work in `src/services/cygnss.py:get_watermask` (around line 461) to vectorize the mask before returning.
-- **When to revisit**: When BK Insurance asks "show me the saturated soil zones" and the answer needs to be a map, not a single number.
-
 ### compare_rasters — display path
 - **What**: `compare_rasters` computes a change-detection diff array entirely in numpy. There's no public URL for the diff so `display_layer` has nothing to point at.
 - **Why deferred**: Would need to write the diff array as a COG to S3, presign for 6h, surface URL via `displayable_layers`. Worth it once partners actually ask for visual diffs.
@@ -53,12 +47,6 @@
 - **When to revisit**: Continue migrating tools as they're touched for bug fixes or feature work.
 
 ## Deferred from Brain Ingestion Phase 0 (2026-04-17)
-
-### _seconds_until_midnight_utc bug in concurrency.py
-- **What**: `src/services/brain_ingestion/concurrency.py:106-113` has broken TTL math. `tomorrow.replace(day=tomorrow.day)` is a no-op, so the fallback branch always fires and the TTL computation is wrong on every call. Fix: compute `(now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now`.
-- **Why deferred**: Phase 0 is HTML-only, the OCR budget path that consumes this TTL never runs in production yet.
-- **Depends on**: Nothing, trivial fix.
-- **When to revisit**: Before the PDF fetcher lands in Phase 1, or sooner if anyone wires up `reserve_ocr_budget`.
 
 ### URL credential leak in last_error
 - **What**: When a fetch fails, `record_fetch_failure` stores `repr(e)[:500]` which can include the full URL with query params. If partner sources ever embed an API key in the URL, that key ends up in `brain_sources.last_error` (visible to anyone with source-table read). Fix: strip query strings and basic-auth userinfo before logging.
