@@ -165,6 +165,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-05** WorkOS sign-in never worked: the cookie secret was 64 hex chars but the SDK feeds it to Fernet, and every login test
+  mocked the code exchange, so no test ever sealed a cookie; the failed callback then bounced back to the provider in a loop. Rule: an auth
+  or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
 - **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
   US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
   them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
