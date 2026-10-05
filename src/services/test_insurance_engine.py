@@ -2044,6 +2044,13 @@ def test_rainfall_vs_usual(pct, words):
     assert rainfall_vs_usual(pct) == words
 
 
+def test_comparison_ranks_areas_without_rain_data_last_not_as_zero():
+    from src.services.insurance_engine import _rank_by_rainfall
+    areas = [{"name": "Dry", "rainfall_mm": 0.0}, {"name": "Unknown B"}, {"name": "Wet", "rainfall_mm": 210.5},
+             {"name": "Unknown A", "rainfall_mm": None}]
+    assert [a["name"] for a in _rank_by_rainfall(areas)] == ["Wet", "Dry", "Unknown A", "Unknown B"]
+
+
 # ---------------------------------------------------------------------------
 # Saved audience: the user's role, else the partner default (decided 2026-10-04)
 # ---------------------------------------------------------------------------
