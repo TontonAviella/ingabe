@@ -30,6 +30,7 @@ from src.routes.worldcover_router import worldcover_router
 from src.routes.sentinel_hub_router import satellite_router
 from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
+from src.routes.profile_routes import router as profile_router
 from src.routes import auth_routes
 from src.services import workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
@@ -682,6 +683,10 @@ app.include_router(
 )
 app.include_router(auth_routes.pages, tags=["Auth"])
 app.include_router(auth_routes.api, prefix="/api/auth", tags=["Auth"])
+app.include_router(
+    profile_router,
+    prefix="/api/user",
+)
 app.include_router(
     partner_router,
     prefix="/api/partner",
