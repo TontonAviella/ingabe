@@ -91,7 +91,7 @@ jobs:
         # author's intended same-worker test ordering inside each file.
         run: >
           python3 scripts/posthog_check_event.py --stage backend --check backend_pytest --
-          docker compose run app pytest -vs -n auto --dist=loadfile --ignore=src/test_worldcover.py
+          docker compose run -e MUNDI_TEST_DB_IS_DISPOSABLE=1 app pytest -vs -n auto --dist=loadfile --ignore=src/test_worldcover.py
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}

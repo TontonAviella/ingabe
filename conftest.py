@@ -118,7 +118,25 @@ def pytest_sessionstart(session):
     """
     from src.database.migrate import run_migrations
 
+    _refuse_the_live_database()
     asyncio.run(run_migrations())
+
+
+def _refuse_the_live_database() -> None:
+    """Never run the suite against the live local database (mundidb).
+
+    Until 2026-10 local runs used mundidb itself and left 4,727 test projects and
+    ~431,000 brain pages (Barcelona shops, US counties, re-ingested every run)
+    mixed in with real data. CI's database is a fresh container and says so with
+    MUNDI_TEST_DB_IS_DISPOSABLE=1 (cicd.yml). Locally, point POSTGRES_DB at a
+    copy, e.g. `createdb -T mundidb_pytest_wos mundidb_pytest_x`.
+    """
+    if os.environ.get("POSTGRES_DB") == "mundidb" and os.environ.get("MUNDI_TEST_DB_IS_DISPOSABLE") != "1":
+        pytest.exit(
+            "POSTGRES_DB=mundidb is the live database: refusing to run tests against it. "
+            "Use a copy (POSTGRES_DB=mundidb_pytest_...), see conftest._refuse_the_live_database.",
+            returncode=2,
+        )
 
 
 @pytest.fixture(scope="session")
