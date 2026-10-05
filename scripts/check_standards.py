@@ -26,6 +26,9 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
   agents-md-sync    HW  CLAUDE.md does not just import AGENTS.md (`@AGENTS.md`):
                         agent guidance has one source so Claude Code and Codex
                         never drift apart
+  shadow-package    HW  a module directly under src/ named like a dependency in
+                        requirements.txt; src/ has no __init__.py, so pytest puts
+                        it on sys.path and `import <dependency>` loads ours
 
 Existing debt is listed in scripts/standards_baseline.json. The baseline is a
 ratchet:
@@ -92,6 +95,7 @@ TEST_DIRS = ("src", "tests")
 COMPOSE_FILE = "docker-compose.yml"
 AGENTS_FILE = "AGENTS.md"
 CLAUDE_FILE = "CLAUDE.md"
+REQUIREMENTS_FILE = "requirements.txt"
 
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv", "dist", "build"}
 
@@ -604,6 +608,31 @@ def check_agents_md_sync() -> list[Violation]:
     return out
 
 
+def check_shadowed_packages() -> list[Violation]:
+    """A src/ module must not share its name with an installed dependency.
+
+    src/duckdb.py (2026-10-05) made `import duckdb` in layer_describer load
+    our module under pytest; sampling then failed silently."""
+    req, src = ROOT / REQUIREMENTS_FILE, ROOT / "src"
+    if not req.exists() or not src.is_dir():
+        return []
+    deps = set()
+    for line in req.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_.\-]*)", line)
+        if m:
+            deps.add(re.sub(r"[-.]", "_", m.group(1).lower()))
+    out: list[Violation] = []
+    for p in sorted(src.iterdir()):
+        name = p.stem if p.suffix == ".py" else p.name if p.is_dir() else ""
+        if name and name.lower() in deps:
+            out.append(Violation(
+                "shadow-package", _rel(p), 1, name,
+                f"src/{p.name} has the name of the dependency `{name}`; under pytest "
+                f"`import {name}` loads this module instead. Rename it.",
+            ))
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -616,6 +645,7 @@ def collect() -> list[Violation]:
         + check_compose_mem_limits()
         + check_compose_restart_policies()
         + check_agents_md_sync()
+        + check_shadowed_packages()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 

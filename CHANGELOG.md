@@ -5,12 +5,26 @@ All notable changes to mundi.ai will be documented in this file.
 ## Unreleased
 
 ### Added
+- `list_admin_units` Sage tool: Rwanda's districts, or the sectors, cells or villages inside a named district, sector or cell, with an exact count. It replaces model-written SQL for these questions (every SQL call in local usage was such a lookup). A sector or cell name that exists in more than one district is refused with the candidates rather than merged, and a misspelt name gets close matches.
 - Result checks for Sage tool calls (`src/services/sage_result_checks.py`), on both the chat loop and the Hermes tool-call route: a known, repairable failure gains `error_kind`, a `next_step` and the facts to fix it — the project's real PostGIS connection ids for an unknown connection, the referenced tables' real columns for an unknown column, the admin-boundary tool for a geocoding miss on a Rwandan admin unit, and the LIMIT rule. Connection URIs are never included. Repaired turns are tagged `result_checked:<kind>` in the flight recorder.
 - Sage flight recorder: self-hosted Langfuse (`docker compose --profile langfuse`, set up by `scripts/setup_langfuse.py`) receives one trace per Sage turn with the routing decision and tool shortlist, every model call including fallbacks, every tool call with arguments and result, and the abdication guard. Problem turns are tagged (`abdication`, `guard_fired`, `guard_recovered`, `tool_error`, `llm_error`, `fallback_model`, `step_limit`, `cancelled`, `fast_path:*`), and routing-eval runs are traced under the `eval` environment tagged by variant and outcome. Off unless Langfuse keys are set; uses its own tracer provider so Tempo traces are unchanged.
 - Abdication guard for Sage (`SAGE_ABDICATION_GUARD`, off by default): on the first model call of a turn, a prose answer to a request that needs a tool is retried once with a forced tool call over the 5 best-ranked tools; streamed prose is held back until that is decided. Small talk, explanation requests and short clarifying questions are left alone.
 - Per-turn tool shortlist for Sage (`SAGE_TOOL_SHORTLIST_K`, off by default): ranks the full tool catalog against each turn with keyword BM25 fused with local `nomic-embed-text` similarity and sends the top K. Offline on the routing eval it keeps an accepted tool for 98.5% of model-bound requests at K=15 (current routing: 89.7% with a median of 47 tools). Falls back to keywords, with a warning, when embeddings are unavailable.
 
 ### Removed
+- 44 Sage tools outside the MVP (farmers, insurers, agronomists and scientists; drone imagery first), from every dispatch layer (tools.json, the Pydantic registry, the chat loop, the Hermes shim and catalogs, routing, prompt and the routing eval):
+  - GIS-team tools: the 16 QGIS algorithms (buffer, clip, dissolve, reproject, ...), DuckDB and PostGIS SQL queries, vector zonal statistics, the Rwanda lakehouse zonal query, OpenStreetMap download and the GeoLibre/spatial-engine/pipeline-evidence probes.
+  - Answers that could mislead: the rain-impact estimate (a synthetic curve), the H3 insight layer (scores supplied by the model), crop identification and classification (no validated crop classifier), and a crop confirmation that reported a save it never made.
+  - Research and experiments: CYGNSS, ALOS L-band, SAR water bodies, Open Buildings exposure, Sphere flood loss, EDGAR emissions, FEWS NET food security, and the Sentinel Hub management-zone, prescription and soil-sampling tools.
+  - The routing eval keeps those requests as "unsupported" cases whose right answer is a plain reply saying Sage cannot do it.
+- Backend services, routes and jobs nothing in the MVP uses:
+  - Sentinel Hub (expired credentials): its router, tiles, basemaps and the precision-ag service.
+  - The lakehouse/Iceberg layer, the layer-enrichment endpoints, and the `/rwanda` dashboard endpoints (including `/rwanda/admin/backfill-caches`, which any signed-in user could trigger).
+  - Research services behind the removed tools; openEO, DSSAT and NASA POWER; TESSERA, Forge3D and GeoLibre/Whitebox.
+  - The legacy APIs on ports 8001/8002.
+  - Dagster jobs, sensors and assets with no consumer (raster/vector processing, Iceberg maintenance, cache warm-up, the old Rwanda ingestion/NDVI/ML jobs).
+- Compose services tempo, superset, geokernel, qgis-processing and Langfuse (with their volumes); the `qgis-processing/` sidecar code.
+- Python dependencies only those used: openeo, sentinelhub, agent-client-protocol, dagster-aws, dagster-webserver, pyiceberg, niyamit-sphere, whitebox, geolibre-wasm, wasmtime. `uvicorn[standard]` keeps uvloop and httptools, which used to arrive only through dagster-webserver.
 - WhatsApp and Telegram integrations: the two sender services, the inbound `/internal/inbox` route, the Kinyarwanda voice-note service, the proactive alert cron (`sage_alerts`, `cron_expr`) and the `render_map_snapshot` tool, which only delivered through them. A migration drops `user_channel_bindings`, `channel_bind_codes` and `alert_subscriptions` (downgrade restores the empty tables).
 
 ### Changed
@@ -19,6 +33,10 @@ All notable changes to mundi.ai will be documented in this file.
 - Split Sage's 95 Hermes tools into bounded procedural profiles so each request exposes only relevant map, raster, agriculture, or memory schemas.
 
 ### Fixed
+- Sage's Brain graph tools (`brain_graph_query`, `brain_trajectory`) were described in the prompt but offered only through Hermes; in the normal chat loop a call to them failed the turn. They are now regular tools, and the chat loop runs any tool without its own branch through the shared legacy-shim handler.
+- Tool descriptions that contradicted the code: field health named Sentinel Hub (it reads Sentinel-2 L2A from Digital Earth Africa), satellite search named Landsat (Sentinel-2 only), four tools named a DuckDB cache (PostgreSQL). Yield risk now says it is a vegetation trend, not a yield in tonnes.
+- `run_weather_ingest.py` no longer logs part of the CDS API key.
+- The training manual describes the app as it is: drone and map uploads, documents for Sage, the admin outlines, and what Sage answers from which data.
 - When Hermes fails, returns an incomplete turn or an empty response, the turn ends with an error instead of presenting provider output as an answer. There is no fallback to the legacy planner (a second planner could repeat tool side effects); a user cancel ends the turn quietly.
 - Mount the live Hermes plugin into local Compose, persist its generated HMAC key with owner-only permissions, and make runtime/deploy audits use the container virtual environment.
 

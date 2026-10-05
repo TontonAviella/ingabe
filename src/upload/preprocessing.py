@@ -71,7 +71,7 @@ def preprocess_raster(temp_file_path: str, metadata: dict):
         else:
             logger.warning(
                 "Raster has no CRS — bounds stored as-is and may be incorrect. "
-                "Consider assigning a CRS with gdal_warpreproject."
+                "Re-export the file with a CRS (for example EPSG:4326) and upload it again."
             )
             metadata["crs_missing"] = True
 

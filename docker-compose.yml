@@ -29,11 +29,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      qgis-processing:
-        condition: service_healthy
       rasterd:
-        condition: service_started
-      geokernel:
         condition: service_started
       cache-init:
         condition: service_completed_successfully
@@ -49,6 +45,7 @@ services:
       - WORKOS_CLIENT_ID=${WORKOS_CLIENT_ID:-}
       - WORKOS_COOKIE_PASSWORD=${WORKOS_COOKIE_PASSWORD:-}
       - WORKOS_REDIRECT_URI=${WORKOS_REDIRECT_URI:-}
+      - PLATFORM_ADMIN_EMAILS=${PLATFORM_ADMIN_EMAILS:-}
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
       - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}
@@ -56,7 +53,6 @@ services:
       - S3_PUBLIC_ENDPOINT_URL=${S3_PUBLIC_ENDPOINT_URL:-http://localhost:9000}
       - S3_BUCKET=${S3_BUCKET:-test-bucket}
       - WEBSITE_DOMAIN=${VITE_WEBSITE_DOMAIN:-http://localhost:8000}
-      - QGIS_PROCESSING_URL=http://qgis-processing:8817
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - RASTER_TILE_ENGINE_URL=${RASTER_TILE_ENGINE_URL:-http://rasterd:8877}
@@ -65,9 +61,6 @@ services:
       - RASTER_TILE_ENGINE_DIRECT_S3=${RASTER_TILE_ENGINE_DIRECT_S3:-1}
       - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
       - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
-      - GEOKERNEL_URL=${GEOKERNEL_URL:-http://geokernel:8878}
-      - GEOKERNEL_TIMEOUT=${GEOKERNEL_TIMEOUT:-5.0}
-      - GEOKERNEL_H3_CONTAINMENT_MODE=${GEOKERNEL_H3_CONTAINMENT_MODE:-centroid}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b-it-qat}
@@ -109,7 +102,7 @@ services:
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-ingabe}
       # Sage flight recorder (src/services/sage_flight_recorder.py). Empty
-      # keys = tracing off. Filled by scripts/setup_langfuse.py.
+      # keys = tracing off. Point LANGFUSE_HOST at a Langfuse instance to use it.
       - LANGFUSE_HOST=${LANGFUSE_HOST:-http://langfuse-web:3000}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
@@ -120,22 +113,13 @@ services:
       - PYTHONUNBUFFERED=1
       - PYTHONIOENCODING=utf-8
       - POSTGIS_LOCALHOST_POLICY=docker_rewrite
-      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
-      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
-      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
-      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
       - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
       - CDSAPI_KEY=${CDSAPI_KEY:-}
-      - ESRI_API_KEY=${ESRI_API_KEY:-}
-      - SUPERSET_URL=http://superset:8088
       # Rate limiting
       - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
       - RATE_LIMIT_EXPENSIVE=${RATE_LIMIT_EXPENSIVE:-20/minute}
       - RATE_LIMIT_HEAVY=${RATE_LIMIT_HEAVY:-10/minute}
       - RATE_LIMIT_GENERAL=${RATE_LIMIT_GENERAL:-120/minute}
-      # Iceberg lakehouse configuration (Phase 2)
-      - ICEBERG_CATALOG_DB=/tmp/iceberg_catalog.db
-      - ICEBERG_WAREHOUSE_PATH=s3://test-bucket/lakehouse/warehouse
       # Read replica (set to route SELECT queries to replica; omit to use primary for all)
       # - POSTGRES_READ_HOST=postgresdb-replica
       # - POSTGRES_READ_PORT=5432
@@ -162,10 +146,6 @@ services:
       - ./scripts:/app/scripts
       - ./evals:/app/evals
       - ./hermes_integration:/app/hermes_integration
-      - ./services/api_monitor.py:/app/api_monitor.py
-      - ./services/api_insurance.py:/app/api_insurance.py
-      - ./services/monitor_field_v3.py:/app/monitor_field_v3.py
-      - ./services/insurance_report.py:/app/insurance_report.py
       - ingabe-cache:/tmp/ingabe_cache
 
   cache-init:
@@ -297,37 +277,6 @@ services:
       - GDAL_CACHEMAX=256
     restart: unless-stopped
 
-  geokernel:
-    build:
-      context: ./services/geokernel
-      dockerfile: Dockerfile
-    image: mundi-geokernel:local
-    container_name: mundi-geokernel
-    ports:
-      - "${GEOKERNEL_PORT:-8878}:8878"
-    environment:
-      - RUST_LOG=${GEOKERNEL_RUST_LOG:-info}
-      - GEOKERNEL_PORT=8878
-    restart: unless-stopped
-
-  qgis-processing:
-    restart: unless-stopped
-    platform: linux/amd64
-    image: ${QGIS_PROCESSING_IMAGE:-qgis-processing:local}
-    build:
-      context: ./qgis-processing
-      dockerfile: Dockerfile
-      x-bake:
-        tags:
-          - qgis-processing:local
-    command: python -m uvicorn server:app --host 0.0.0.0 --port 8817
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8817/health"]
-      interval: 30s
-      timeout: 30s
-      retries: 3
-      start_period: 10s
-
   # --- Optional: PostgreSQL read replica (uncomment to scale read-heavy workloads) ---
   # Requires the primary to have wal_level=replica (default in PostgreSQL 10+).
   # For production, use your cloud provider's managed read replica (RDS, Cloud SQL)
@@ -387,7 +336,6 @@ services:
 
   # --- Dagster pipeline orchestration ---
   # dagster-webserver removed — monitor via: dagster run list / dagster run logs <run_id>
-  # Failure alerts sent via Dagster hooks (see src/pipelines/__init__.py)
 
   dagster-daemon:
     image: "${APP_IMAGE:-mundi-public:local}"
@@ -413,8 +361,8 @@ services:
     # the daemon plus its runs: an over-budget run is killed here instead of
     # pushing the Docker VM into swap and crashing Postgres (2026-10-03).
     # Measured 2026-10-04: the daemon idles at ~0.95 GB (two gRPC code servers
-    # + daemon) and one run adds up to ~0.8 GB (field NDVI 764 MB, GeoLibre
-    # probe 697 MB), so 1.5 GB OOM-killed every real job.
+    # + daemon) and one run adds up to ~0.8 GB (field NDVI 764 MB), so 1.5 GB
+    # OOM-killed every real job.
     mem_limit: 2048m
     memswap_limit: 2048m
     restart: unless-stopped
@@ -440,10 +388,6 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mundidb}
       - POSTGRES_USER=${POSTGRES_USER:-mundiuser}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme}
-      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
-      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
-      - OPENEO_CLIENT_ID=${OPENEO_CLIENT_ID:-}
-      - OPENEO_CLIENT_SECRET=${OPENEO_CLIENT_SECRET:-}
       - CDSAPI_URL=${CDSAPI_URL:-https://cds.climate.copernicus.eu/api}
       - CDSAPI_KEY=${CDSAPI_KEY:-}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
@@ -454,63 +398,7 @@ services:
       - ./workspace.yaml:/app/dagster_home/workspace.yaml
       - ingabe-cache:/tmp/ingabe_cache
 
-  superset:
-    restart: unless-stopped
-    platform: linux/amd64
-    image: apache/superset:4.1.1
-    container_name: mundi-superset
-    ports:
-      - "8088:8088"
-    depends_on:
-      postgresdb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      - SUPERSET_SECRET_KEY=${SUPERSET_SECRET_KEY:-changeme}
-      - DATABASE_DB=superset
-      - DATABASE_HOST=${POSTGRES_HOST:-postgresdb}
-      - DATABASE_PASSWORD=${POSTGRES_PASSWORD:-changeme}
-      - DATABASE_USER=${POSTGRES_USER:-mundiuser}
-      - DATABASE_PORT=${POSTGRES_PORT:-5432}
-      - DATABASE_DIALECT=postgresql
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - SUPERSET_LOAD_EXAMPLES=no
-      - SUPERSET_ENV=production
-      - PYTHONPATH=/app/pythonpath
-    volumes:
-      - ./superset_config.py:/app/pythonpath/superset_config.py
-      - superset-home:/app/superset_home
-    command:
-      - bash
-      - -c
-      - |
-        pip install psycopg2-binary pillow flask-cors &&
-        python -c "
-        import os, psycopg2; from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-        conn = psycopg2.connect(host=os.environ['DATABASE_HOST'], port=int(os.environ['DATABASE_PORT']), user=os.environ['DATABASE_USER'], password=os.environ['DATABASE_PASSWORD'], dbname='mundidb')
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT); cur = conn.cursor()
-        cur.execute(\"SELECT 1 FROM pg_database WHERE datname = 'superset'\")
-        exists = cur.fetchone()
-        if not exists: cur.execute('CREATE DATABASE superset'); print('Created superset database')
-        else: print('superset database already exists')
-        conn.close()
-        " &&
-        superset db upgrade &&
-        (superset fab create-admin --username admin --firstname Admin --lastname User --email admin@localhost --password admin || true) &&
-        superset init &&
-        superset run -h 0.0.0.0 -p 8088 --with-threads --reload
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-
-  # --- Monitoring stack (Prometheus + Grafana + Tempo) ---
-  # To enable OTEL tracing to Tempo, set in your .env or shell:
-  #   OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+  # --- Monitoring stack (Prometheus + Grafana) ---
   prometheus:
     image: prom/prometheus:v2.53.0
     container_name: mundi-prometheus
@@ -582,19 +470,6 @@ services:
       - prometheus
     restart: unless-stopped
 
-  tempo:
-    image: grafana/tempo:2.5.0
-    container_name: mundi-tempo
-    ports:
-      - "3200:3200"   # Tempo API
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP
-    volumes:
-      - ./monitoring/tempo.yml:/etc/tempo/tempo.yml:ro
-      - tempo-data:/var/tempo
-    command: ["-config.file=/etc/tempo/tempo.yml"]
-    restart: unless-stopped
-
   # --- Database backup (pg_dump → gzip → S3/MinIO) ---
   backup:
     image: alpine:3.21
@@ -631,176 +506,8 @@ services:
         crond -f -l 2
     restart: unless-stopped
 
-  # --- Langfuse: Sage flight recorder (self-hosted, opt-in) ---
-  # One trace per Sage turn: routing, shortlist, each model call, each tool,
-  # the abdication guard. Self-hosted so partner prompts never leave this
-  # machine. Off by default; set up and start with:
-  #   python scripts/setup_langfuse.py      # writes secrets + keys to .env
-  #   docker compose --profile langfuse up -d
-  # UI: http://localhost:3100. Memory is capped per service (~4.4 GB total):
-  # on a 7.7 GB Docker VM, uncapped Langfuse filled swap and Postgres'
-  # background workers started dying (2026-10-03). Adapted from Langfuse's official v4 compose,
-  # with its own Postgres/Redis/ClickHouse/MinIO and only the UI exposed.
-  langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:4
-    container_name: mundi-langfuse-worker
-    mem_limit: 1g
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    depends_on: &langfuse-depends-on
-      langfuse-postgres:
-        condition: service_healthy
-      langfuse-minio:
-        condition: service_healthy
-      langfuse-redis:
-        condition: service_healthy
-      langfuse-clickhouse:
-        condition: service_healthy
-    environment: &langfuse-env
-      NEXTAUTH_URL: http://localhost:3100
-      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-}@langfuse-postgres:5432/langfuse
-      SALT: ${LANGFUSE_SALT:-}
-      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-}
-      TELEMETRY_ENABLED: "false"
-      NODE_OPTIONS: --max-old-space-size=768
-      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
-      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-}
-      CLICKHOUSE_CLUSTER_ENABLED: "false"
-      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
-      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-}
-      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
-      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
-      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
-      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
-      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-}
-      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://langfuse-minio:9000
-      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
-      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
-      REDIS_HOST: langfuse-redis
-      REDIS_PORT: "6379"
-      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:-}
-
-  langfuse-web:
-    image: docker.langfuse.com/langfuse/langfuse:4
-    container_name: mundi-langfuse-web
-    mem_limit: 1g
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    depends_on: *langfuse-depends-on
-    ports:
-      - "127.0.0.1:3100:3000"
-    environment:
-      <<: *langfuse-env
-      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-}
-      # Headless first start: one org, one project with the keys Sage uses,
-      # one admin user. All values come from scripts/setup_langfuse.py.
-      LANGFUSE_INIT_ORG_ID: ingabe
-      LANGFUSE_INIT_ORG_NAME: Ingabe
-      LANGFUSE_INIT_PROJECT_ID: sage
-      LANGFUSE_INIT_PROJECT_NAME: Sage
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_ADMIN_EMAIL:-}
-      LANGFUSE_INIT_USER_NAME: Admin
-      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_ADMIN_PASSWORD:-}
-
-  langfuse-clickhouse:
-    image: docker.io/clickhouse/clickhouse-server:25.12
-    container_name: mundi-langfuse-clickhouse
-    mem_limit: 1536m
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    user: "101:101"
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-}
-    volumes:
-      - langfuse-clickhouse-data:/var/lib/clickhouse
-      - langfuse-clickhouse-logs:/var/log/clickhouse-server
-    healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 1s
-
-  langfuse-minio:
-    image: cgr.dev/chainguard/minio
-    container_name: mundi-langfuse-minio
-    mem_limit: 256m
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    entrypoint: sh
-    # create the 'langfuse' bucket before starting the service
-    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-}
-    volumes:
-      - langfuse-minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 1s
-      timeout: 5s
-      retries: 5
-      start_period: 1s
-
-  langfuse-redis:
-    image: docker.io/redis:7
-    container_name: mundi-langfuse-redis
-    mem_limit: 256m
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    # Langfuse queues live here; eviction would silently drop traces.
-    command: >
-      --requirepass ${LANGFUSE_REDIS_PASSWORD:-}
-      --maxmemory-policy noeviction
-    volumes:
-      - langfuse-redis-data:/data
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping"]
-      interval: 3s
-      timeout: 10s
-      retries: 10
-    environment:
-      REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:-}
-
-  langfuse-postgres:
-    image: docker.io/postgres:17
-    container_name: mundi-langfuse-postgres
-    mem_limit: 384m
-    profiles: ["langfuse"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U langfuse"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-    environment:
-      POSTGRES_USER: langfuse
-      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-}
-      POSTGRES_DB: langfuse
-      TZ: UTC
-      PGTZ: UTC
-    volumes:
-      - langfuse-postgres-data:/var/lib/postgresql/data
-
 volumes:
   dagster-home:
-  superset-home:
   ingabe-cache:
   prometheus-data:
   grafana-data:
-  tempo-data:
-  langfuse-postgres-data:
-  langfuse-clickhouse-data:
-  langfuse-clickhouse-logs:
-  langfuse-minio-data:
-  langfuse-redis-data:

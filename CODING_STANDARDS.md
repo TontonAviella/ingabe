@@ -20,11 +20,6 @@ Name the one layer of the file you are editing before you edit it.
 | Adapters / routing | `src/routes/`, `src/tools/` (Sage tool handlers), `src/dependencies/`, `src/senders/`, `src/wsgi.py` | domain, persistence |
 | Presentation | `frontendts/`, `src/renderer/` | API responses only |
 
-Legacy, outside the layering: top-level `services/*.py` (`api_insurance.py`,
-`insurance_report.py`, `api_monitor.py`, `monitor_field_v3.py`) duplicate
-domain logic that belongs in `src/services/`. Do not extend them; consolidate
-into the owning module first (H1).
-
 ## Design principles
 
 Constraints, not a checklist. When two conflict, choose the option with the
@@ -74,12 +69,12 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 
 | Domain | Owner | Status |
 |---|---|---|
-| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py`, `services/api_insurance.py`, `services/insurance_report.py` |
+| Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py` |
 | Vegetation-index classes (NDVI/EVI breaks, labels, colours, expected NDVI per crop stage) | **none yet** | Scattered across 13 files with conflicting breaks (0.15/0.2/0.3/0.35/0.4/0.6…), plus a crop-stage NDVI table living in the adapter `src/tools/raster_interpret.py`. Create one owner before any new NDVI rule. |
 | Weather forecast + fusion | `src/services/forecast_service.py`, `forecast_fusion.py` | |
 | Forecast accuracy metrics (POD/FAR/HSS/CSI) | `src/services/weather_accuracy.py` | |
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
-| Crop modelling (DSSAT) | `src/services/dssat_service.py` | |
+| Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
 
@@ -165,6 +160,15 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
+  `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
+  Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
+- **2026-10-05** WorkOS sign-in never worked: the cookie secret was 64 hex chars but the SDK feeds it to Fernet, and every login test
+  mocked the code exchange, so no test ever sealed a cookie; the failed callback then bounced back to the provider in a loop. Rule: an auth
+  or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
+- **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
+  US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
+  them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
 - **2026-10-04** Insurance season rainfall summed only the CHIRPS days it downloaded: with the final product weeks behind,
   every Season A report read 0 mm and fired the rainfall trigger, and late in a season the unfetched early weeks undercounted.
   Rule: "Missing is not zero" (Design principles). Gate: review only (needs the data's coverage); tests in `test_insurance_engine.py`.
