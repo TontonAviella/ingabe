@@ -1,4 +1,4 @@
-import { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.mjs';
+import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions.mjs';
 
 export interface MapProject {
   id: string;
@@ -44,16 +44,6 @@ export interface MapLayer {
   geometry_type?: string;
   feature_count?: number;
   original_srid?: number;
-}
-
-export interface PostgresConnectionDetails {
-  connection_id: string;
-  table_count: number;
-  processed_tables_count: number | null;
-  friendly_name: string | null;
-  is_documented: boolean;
-  last_error_text?: string;
-  last_error_timestamp?: string;
 }
 
 export interface MapData {

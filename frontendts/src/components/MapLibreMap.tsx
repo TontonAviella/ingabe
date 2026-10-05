@@ -140,7 +140,6 @@ import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
-import { BufferPieOverlay, type PieChartData } from '@/components/BufferPieOverlay';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -319,7 +318,6 @@ export default function MapLibreMap({
   const [assistantExpanded, setAssistantExpanded] = useState(false);
   const [mobileWorkspacePanel, setMobileWorkspacePanel] = useState<MobileWorkspacePanel>(null);
   const [isMapReady, setIsMapReady] = useState(false);
-  const [pieOverlays, setPieOverlays] = useState<Map<string, PieChartData>>(new Map());
   const [sceneInfo, setSceneInfo] = useState<{
     scene_date: string | null;
     cloud_cover: number | null;
@@ -2011,23 +2009,6 @@ export default function MapLibreMap({
         >
           <History className="size-5" />
         </button>
-        {/* Pie chart overlays for single-feature buffer layers */}
-        {mapRef.current &&
-          Array.from(pieOverlays.entries()).map(([layerId, data]) => (
-            <BufferPieOverlay
-              key={layerId}
-              map={mapRef.current!}
-              center={data.center}
-              slices={data.slices}
-              onRemove={() => {
-                setPieOverlays((prev) => {
-                  const next = new Map(prev);
-                  next.delete(layerId);
-                  return next;
-                });
-              }}
-            />
-          ))}
         {selectedFeature && (
           <Card className="absolute bottom-10 left-4 max-h-[60vh] overflow-auto py-2 rounded-sm border-0 gap-2 max-w-72 w-full">
             <CardHeader className="px-2">
