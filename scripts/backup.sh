@@ -21,6 +21,12 @@ RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 echo "[backup] Starting pg_dump of ${DB_NAME} at ${TIMESTAMP}"
 
 # 1. Dump + compress
+# The brain/map tables FORCE row-level security, so pg_dump as the app user
+# fails without --enable-row-security. With it, the app user with no
+# app.user_id / app.partner_id set sees every row (the policies' admin
+# context): checked 2026-10-05, identical row counts to the superuser on all
+# 24 forced-RLS tables. If a policy ever hides rows from that context, this
+# backup would silently miss them; re-check after RLS policy changes.
 PGPASSWORD="${POSTGRES_PASSWORD:-changeme}" pg_dump \
   -h "${POSTGRES_HOST:-postgresdb}" \
   -p "${POSTGRES_PORT:-5432}" \
@@ -28,6 +34,7 @@ PGPASSWORD="${POSTGRES_PASSWORD:-changeme}" pg_dump \
   -d "${DB_NAME}" \
   --no-owner \
   --no-privileges \
+  --enable-row-security \
   --format=plain \
   | gzip > "${DUMP_FILE}"
 
@@ -51,14 +58,14 @@ rm -f "${DUMP_FILE}"
 
 # 5. Prune old backups
 echo "[backup] Pruning backups older than ${RETENTION_DAYS} days"
-CUTOFF=$(date -u -d "-${RETENTION_DAYS} days" +"%Y-%m-%dT" 2>/dev/null || \
-         date -u -v-"${RETENTION_DAYS}"d +"%Y-%m-%dT" 2>/dev/null || echo "")
+# Epoch arithmetic: busybox date (alpine) cannot parse "-7 days".
+CUTOFF=$(date -u -d "@$(( $(date -u +%s) - RETENTION_DAYS * 86400 ))" +"%Y-%m-%dT" 2>/dev/null || echo "")
 
 if [ -n "${CUTOFF}" ]; then
   mc ls "mundi/${S3_BUCKET:-test-bucket}/backups/" 2>/dev/null | while read -r line; do
     FILENAME=$(echo "${line}" | awk '{print $NF}')
     # Extract date from filename: mundidb_2026-02-22T020000Z.sql.gz
-    FILE_DATE=$(echo "${FILENAME}" | grep -oP '\d{4}-\d{2}-\d{2}T' || echo "")
+    FILE_DATE=$(echo "${FILENAME}" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T' || echo "")
     if [ -n "${FILE_DATE}" ] && [ "${FILE_DATE}" \< "${CUTOFF}" ]; then
       echo "[backup] Removing old backup: ${FILENAME}"
       mc rm "mundi/${S3_BUCKET:-test-bucket}/backups/${FILENAME}"

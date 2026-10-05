@@ -497,12 +497,12 @@ services:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache postgresql16-client bash curl &&
-        curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc &&
-        chmod +x /usr/local/bin/mc &&
+        # MinIO no longer serves mc downloads (410); alpine packages it as mcli.
+        apk add --no-cache postgresql16-client bash minio-client &&
+        ln -sf /usr/bin/mcli /usr/local/bin/mc &&
         echo "$$BACKUP_CRON /bin/bash /backup.sh >> /var/log/backup.log 2>&1" > /etc/crontabs/root &&
         echo "[backup] Cron scheduled: $$BACKUP_CRON — running initial backup" &&
-        /bin/bash /backup.sh &&
+        { /bin/bash /backup.sh || echo "[backup] initial backup FAILED; the nightly cron still runs"; } &&
         crond -f -l 2
     restart: unless-stopped
 
