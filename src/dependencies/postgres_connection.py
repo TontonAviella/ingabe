@@ -84,7 +84,7 @@ class PostgresConnectionManager:
 
             if localhost_policy == "disallow":
                 raise PostgresConnectionURIError(
-                    f"Detected a localhost database address ({host}) that Mundi cannot connect to. "
+                    f"Detected a localhost database address ({host}) that Ingabe cannot connect to. "
                 )
             elif localhost_policy == "docker_rewrite":
                 # Rewrite localhost to host.docker.internal for Docker environments

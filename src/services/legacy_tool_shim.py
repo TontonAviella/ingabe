@@ -1234,7 +1234,7 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
                 "parcel_ndvi_stats": [],
                 "message": (
                     "No parcel NDVI data yet. Upload field boundaries through "
-                    "Mundi UI and tag with rwanda_parcels=true in layer "
+                    "the Ingabe app and tag with rwanda_parcels=true in layer "
                     "metadata. The nightly pipeline processes them."
                 ),
             }
