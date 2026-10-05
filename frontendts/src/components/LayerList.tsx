@@ -37,7 +37,16 @@ import UploadDocument from '@/components/UploadDocument';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import type { PaintOverrides } from '../hooks/useLayerPaintOverrides';
@@ -835,61 +844,72 @@ const LayerList: React.FC<LayerListProps> = ({
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>Add layer source</p>
+                  <p>Add data</p>
                 </TooltipContent>
               </Tooltip>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={openDropzone} className="cursor-pointer">
-                  <Upload className="h-4 w-4 mr-2" />
-                  Upload file
+              {/* What people actually add (2026-10 usage): drone/map files, satellite scenes and
+                  documents for Sage. The rest are connectors for GIS teams, kept under "More sources". */}
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuItem onClick={openDropzone} className="cursor-pointer items-start">
+                  <Upload className="h-4 w-4 mr-2 mt-0.5 shrink-0" />
+                  <span>
+                    <span className="block">Upload drone or map files</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Orthophoto (GeoTIFF), field shapes (KML, GeoJSON, zipped Shapefile) or points (CSV)
+                    </span>
+                  </span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowRemoteUrlDialog(true)} className="cursor-pointer">
-                  <Link className="h-4 w-4 mr-2" />
-                  Add remote URL
+                <DropdownMenuItem onClick={() => setShowSatelliteDialog(true)} className="cursor-pointer items-start">
+                  <Satellite className="h-4 w-4 mr-2 mt-0.5 shrink-0" />
+                  <span>
+                    <span className="block">Add satellite imagery</span>
+                    <span className="block text-xs text-muted-foreground">Sentinel-2 for this area over a date range</span>
+                  </span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowWFSDialog(true)} className="cursor-pointer">
-                  <Server className="h-4 w-4 mr-2" />
-                  Connect to WFS
+                <DropdownMenuItem onClick={() => setShowUploadDocDialog(true)} className="cursor-pointer items-start">
+                  <FileText className="h-4 w-4 mr-2 mt-0.5 shrink-0" />
+                  <span>
+                    <span className="block">Add documents for Sage</span>
+                    <span className="block text-xs text-muted-foreground">Reports, policies or guides Sage can read and quote</span>
+                  </span>
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowGoogleSheetsDialog(true)} className="cursor-pointer">
-                  <Sheet className="h-4 w-4 mr-2" />
-                  Google Sheets
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowESRIDialog(true)} className="cursor-pointer">
-                  <Database className="h-4 w-4 mr-2" />
-                  ESRI Feature Service
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowSatelliteDialog(true)} className="cursor-pointer">
-                  <Satellite className="h-4 w-4 mr-2" />
-                  Satellite Imagery
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowUploadDocDialog(true)} className="cursor-pointer">
-                  <FileText className="h-4 w-4 mr-2" />
-                  Upload Document
-                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="cursor-pointer">
+                    <Server className="h-4 w-4 mr-2" />
+                    More sources (for GIS teams)
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuItem onClick={() => setShowRemoteUrlDialog(true)} className="cursor-pointer">
+                      <Link className="h-4 w-4 mr-2" />
+                      File from a web link
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setConnectionMethod(demoConfig.available ? 'demo' : 'uri');
+                        setShowPostgisDialog(true);
+                      }}
+                      className="cursor-pointer"
+                    >
+                      <Database className="h-4 w-4 mr-2" />
+                      PostGIS database
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setShowWFSDialog(true)} className="cursor-pointer">
+                      <Server className="h-4 w-4 mr-2" />
+                      WFS service
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setShowESRIDialog(true)} className="cursor-pointer">
+                      <Database className="h-4 w-4 mr-2" />
+                      ESRI Feature Service
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setShowGoogleSheetsDialog(true)} className="cursor-pointer">
+                      <Sheet className="h-4 w-4 mr-2" />
+                      Google Sheets
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               </DropdownMenuContent>
             </DropdownMenu>
-          </TooltipProvider>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="p-0.5 hover:cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-600"
-                  onClick={() => {
-                    // Default to demo tab when available
-                    setConnectionMethod(demoConfig.available ? 'demo' : 'uri');
-                    setShowPostgisDialog(true);
-                  }}
-                >
-                  <Database className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Load PostGIS</p>
-              </TooltipContent>
-            </Tooltip>
           </TooltipProvider>
         </div>
 
