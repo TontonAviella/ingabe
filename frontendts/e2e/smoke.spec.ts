@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Smoke Tests', () => {
   test('homepage loads and redirects to sign-in or shows map list', async ({ page }) => {
     await page.goto('/');
-    // Either we get redirected to Clerk sign-in, or we see the maps list
+    // Either we get redirected to WorkOS sign-in, or we see the maps list
     await expect(
       page
         .locator('text=Sign in')

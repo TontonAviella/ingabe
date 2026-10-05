@@ -34,8 +34,8 @@ class LegacyToolContext:
     call by the chat loop and by /internal/tool-call.
     """
     # Identity (already RLS-scoping the connection)
-    user_id: str               # Clerk user uuid
-    partner_id: str            # Clerk org uuid (sets app.partner_id GUC)
+    user_id: str               # internal users.internal_uuid
+    partner_id: str            # internal organizations.id (sets app.partner_id GUC)
 
     # Conversation context
     conversation_id: int       # int because asyncpg expects int for PK column

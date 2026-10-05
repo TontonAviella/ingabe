@@ -48,12 +48,17 @@ LAYER_TYPE_POINT_CLOUD = "point_cloud"
 
 
 class User(Base):
-    """Signed-in user: internal UUID plus the sign-in provider's user id (WorkOS, or legacy Clerk)."""
+    """Signed-in user: internal UUID plus the WorkOS user id.
+
+    Rows created under the retired Clerk sign-in keep their internal UUID
+    (uuid5("clerk:" + clerk_id)) and their clerk_id; WorkOS links them by email.
+    New WorkOS users get uuid5("workos:" + workos_user_id). Never recompute ids.
+    """
 
     __tablename__ = "users"
 
-    internal_uuid = Column(String(36), primary_key=True)  # UUID5 from clerk_id
-    clerk_id = Column(String(255), unique=True, nullable=True, index=True)  # legacy Clerk sign-in
+    internal_uuid = Column(String(36), primary_key=True)  # UUID5, see the class docstring
+    clerk_id = Column(String(255), unique=True, nullable=True, index=True)  # retired Clerk sign-in; read by nothing
     workos_user_id = Column(Text, unique=True)
     email = Column(String(255))
     created_at = Column(
@@ -68,7 +73,7 @@ class Organization(Base):
     name = Column(Text, nullable=False)
     slug = Column(Text, nullable=False, unique=True)
     tier = Column(Text, nullable=False, server_default="partner")
-    clerk_org_id = Column(Text, unique=True)
+    clerk_org_id = Column(Text, unique=True)  # retired Clerk sign-in; read by nothing
     workos_org_id = Column(Text, unique=True)
     metadata_json = Column("metadata", JSONB, nullable=False, server_default="{}")
     created_at = Column(

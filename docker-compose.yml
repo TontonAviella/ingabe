@@ -10,11 +10,6 @@ services:
       args:
         - VITE_WEBSITE_DOMAIN=http://localhost:8000
         - VITE_AUTH_PROVIDER=${AUTH_PROVIDER:-}
-        - VITE_CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
-        # Frontend satellite mode is independent from backend Clerk JWT auth.
-        # Keep these blank locally unless a separate primary frontend is running.
-        - VITE_CLERK_SIGN_IN_URL=${VITE_CLERK_SIGN_IN_URL:-}
-        - VITE_CLERK_SIGN_UP_URL=${VITE_CLERK_SIGN_UP_URL:-}
       x-bake:
         tags:
           - "${APP_IMAGE:-mundi-public:local}"
@@ -34,12 +29,8 @@ services:
       cache-init:
         condition: service_completed_successfully
     environment:
-      - MUNDI_AUTH_MODE=edit # Legacy auth: "edit" or "view_only" (ignored when CLERK_SECRET_KEY is set)
-      # Clerk authentication (set these to enable real multi-user auth)
-      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:-}
-      - CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY:-}
-      - CLERK_ISSUER=${CLERK_ISSUER:-}  # e.g. https://your-app.clerk.accounts.dev
-      # WorkOS sign-in (replaces Clerk when AUTH_PROVIDER=workos); see src/services/workos_auth.py
+      - MUNDI_AUTH_MODE=edit # No-provider fallback: "edit" or "view_only"; ignored when AUTH_PROVIDER=workos
+      # WorkOS sign-in (AUTH_PROVIDER=workos); see src/services/workos_auth.py
       - AUTH_PROVIDER=${AUTH_PROVIDER:-}
       - WORKOS_API_KEY=${WORKOS_API_KEY:-}
       - WORKOS_CLIENT_ID=${WORKOS_CLIENT_ID:-}

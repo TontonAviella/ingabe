@@ -222,7 +222,7 @@ async def get_project(
         return MundiProject(**dict(project_row))
 
 
-# Edit guards — signed-in users (WorkOS or Clerk) can always edit; legacy mode checks MUNDI_AUTH_MODE
+# Edit guards — signed-in (WorkOS) users can always edit; legacy mode checks MUNDI_AUTH_MODE
 def _editing_allowed() -> bool:
     if external_auth_enabled():
         return True  # real sign-in: user is authenticated, editing allowed

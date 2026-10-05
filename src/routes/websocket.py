@@ -430,7 +430,7 @@ async def ws_conversation_chat(
     conversation_id: int,
     user_context: UserContext = Depends(verify_websocket),
 ):
-    # Auth is now handled by verify_websocket dependency (Clerk JWT or legacy mode)
+    # Auth is handled by the verify_websocket dependency (WorkOS session cookie or legacy mode)
     user_id = user_context.get_user_id()
 
     # Check if user owns the conversation

@@ -28,13 +28,6 @@ os.environ["POSTHOG_BACKEND_DISABLED"] = "1"
 # depend on timing and database leftovers.
 os.environ["MUNDI_BACKGROUND_WORKERS_ENABLED"] = "0"
 
-# Tests run inside the prod container which has CLERK_SECRET_KEY set, so the
-# Clerk-mode auth path blocks unauthenticated requests with 401 before the
-# MUNDI_AUTH_MODE=edit fallback is consulted. CLERK_ALLOW_LEGACY_FALLBACK=true
-# is the documented escape hatch (see src/dependencies/session.py:290) — it
-# lets tests fall through to the legacy edit-mode bypass without weakening
-# production auth.
-os.environ["CLERK_ALLOW_LEGACY_FALLBACK"] = "true"
 # The local .env sets AUTH_PROVIDER=workos for the running app; tests that need
 # WorkOS turn it on themselves (monkeypatch), so the suite matches CI locally.
 os.environ.pop("AUTH_PROVIDER", None)
@@ -158,11 +151,8 @@ async def client():
 
 @pytest.fixture(scope="session")
 async def auth_client(client):
-    # Accept either Clerk auth or legacy edit mode
-    assert (
-        os.environ.get("CLERK_SECRET_KEY")
-        or os.environ.get("MUNDI_AUTH_MODE") == "edit"
-    )
+    # Requests run as the legacy edit-mode user (no sign-in provider in tests)
+    assert os.environ.get("MUNDI_AUTH_MODE") == "edit"
 
     yield client
 
@@ -257,10 +247,7 @@ def sync_client(_migrations_done):
 
 @pytest.fixture(scope="function")
 def sync_auth_client(sync_client):
-    assert (
-        os.environ.get("CLERK_SECRET_KEY")
-        or os.environ.get("MUNDI_AUTH_MODE") == "edit"
-    )
+    assert os.environ.get("MUNDI_AUTH_MODE") == "edit"
     yield sync_client
 
 
@@ -391,8 +378,8 @@ def env_override():
     Usage::
 
         def test_something(env_override):
-            with env_override(MUNDI_AUTH_MODE="view_only", CLERK_SECRET_KEY=None):
-                # MUNDI_AUTH_MODE is set; CLERK_SECRET_KEY is removed
+            with env_override(MUNDI_AUTH_MODE="view_only", AUTH_PROVIDER=None):
+                # MUNDI_AUTH_MODE is set; AUTH_PROVIDER is removed
                 ...
             # originals restored automatically
     """

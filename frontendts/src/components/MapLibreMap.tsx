@@ -1,4 +1,4 @@
-import { apiFetch, getCachedToken, getJwt } from '@mundi/ee';
+import { apiFetch } from '@mundi/ee';
 import { useQuery } from '@tanstack/react-query';
 import legendSymbol, { type RenderElement } from 'legend-symbol-ts';
 import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
@@ -857,16 +857,6 @@ export default function MapLibreMap({
         attributionControl: {
           compact: false,
         },
-        transformRequest: (url: string) => {
-          // Inject Clerk Bearer token into tile/API requests to the same origin
-          if (url.startsWith('/api/') || url.startsWith(window.location.origin + '/api/')) {
-            const token = getCachedToken();
-            if (token) {
-              return { url, headers: { Authorization: `Bearer ${token}` } };
-            }
-          }
-          return { url };
-        },
       };
 
       const newMap = new MLMap(mapOptions);
@@ -996,46 +986,16 @@ export default function MapLibreMap({
         if (e.error?.message?.includes('multiple versions detected')) return;
 
         if (e.error instanceof AJAXError) {
-          // 401 on tile requests = expired Clerk token. Refresh and reload tiles
-          // instead of showing a confusing "Token expired" error to the user.
+          // 401 on tile requests = the sign-in session ended (tile requests carry
+          // the session cookie). Say so instead of a confusing "Token expired".
           if (e.error.status === 401) {
-            track('map_tile_auth_refresh_started', {
+            trackError('map_tile_auth_refresh_failed', e.error, {
               project_id: project.id,
               map_id: mapId,
-              source_id: 'sourceId' in e && typeof e.sourceId === 'string' ? e.sourceId : null,
+              http_status: e.error.status,
             });
-            (async () => {
-              // No skipCache: TokenManager deduplicates concurrent 401 refresh calls.
-              // 20 tiles failing at once → 1 Clerk token request, not 20.
-              const freshToken = await getJwt();
-              if (freshToken) {
-                // Token refreshed successfully, reload map sources to retry tiles
-                const m = localMapRef.current;
-                if (m) {
-                  const style = m.getStyle();
-                  if (style?.sources) {
-                    for (const [id, src] of Object.entries(style.sources)) {
-                      if ('tiles' in (src as any)) {
-                        // Force MapLibre to re-request tiles with the new cached token
-                        const source = m.getSource(id);
-                        if (source && 'setTiles' in source) {
-                          (source as any).setTiles((src as any).tiles);
-                        }
-                      }
-                    }
-                  }
-                }
-              } else {
-                // Clerk session is fully dead, user needs to re-login
-                trackError('map_tile_auth_refresh_failed', e.error, {
-                  project_id: project.id,
-                  map_id: mapId,
-                  http_status: e.error.status,
-                });
-                addError('Session expired. Please refresh the page to sign in again.', true);
-              }
-            })();
-            return; // Don't show "Token expired" error for tile requests
+            addError('Session expired. Please refresh the page to sign in again.', true);
+            return;
           }
           // Non-auth 4xx errors: show the user the message
           if (e.error.status >= 400 && e.error.status < 500 && e.error.body instanceof Blob) {

@@ -2,7 +2,7 @@ export default function PrivacyPolicy() {
   return (
     <div className="max-w-3xl mx-auto p-8 prose dark:prose-invert">
       <h1>Privacy Policy</h1>
-      <p className="text-sm text-muted-foreground">Last updated: February 2026</p>
+      <p className="text-sm text-muted-foreground">Last updated: October 2026</p>
 
       <h2>1. Who We Are</h2>
       <p>
@@ -13,7 +13,7 @@ export default function PrivacyPolicy() {
       <h2>2. Data We Collect</h2>
       <h3>Account Information</h3>
       <p>
-        When you sign in via our authentication provider (Clerk), we receive your email address and a unique user identifier. We do not
+        When you sign in via our authentication provider (WorkOS), we receive your email address and a unique user identifier. We do not
         store passwords.
       </p>
       <h3>Geospatial Data</h3>
@@ -48,7 +48,7 @@ export default function PrivacyPolicy() {
           <strong>OpenAI</strong> — chat messages for AI processing
         </li>
         <li>
-          <strong>Clerk</strong> — authentication provider
+          <strong>WorkOS</strong> — authentication provider
         </li>
         <li>
           <strong>Cloud infrastructure</strong> — hosting providers for storage and compute
