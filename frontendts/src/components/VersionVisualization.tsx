@@ -22,6 +22,7 @@ import ReactMarkdown from 'react-markdown';
 import SyntaxHighlighter from 'react-syntax-highlighter';
 import { dark } from 'react-syntax-highlighter/dist/esm/styles/hljs';
 import remarkGfm from 'remark-gfm';
+import { ReportAudienceSelect } from '@/components/ReportAudienceSelect';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
@@ -413,6 +414,7 @@ export default function VersionVisualization({
               </Tooltip>
             </div>
           </div>
+          <ReportAudienceSelect />
           {isExpanded && (
             <div className="space-y-1 max-h-32 overflow-y-auto pb-2">
               {conversations.map((conversation) => (

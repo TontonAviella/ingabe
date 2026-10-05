@@ -78,15 +78,20 @@ def _dekad_dates(date_from: date, date_to: date) -> list[str]:
     return dekads
 
 
-def _raster_url(layer_code: str, dekad: str) -> str:
+def raster_url(layer_code: str, dekad: str) -> str:
     """Build GCS URL for a WaPOR raster."""
     return f"{GCS_BASE}/{layer_code}/WAPOR-3.{layer_code}.{dekad}.tif"
+
+
+# Without this, GDAL lists the bucket directory (thousands of files) on every
+# open: ~11 s per point read instead of ~6 s (measured 2026-10-04).
+GDAL_COG_ENV = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif"}
 
 
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:
     """Read a single pixel value from a COG at given coordinates."""
     try:
-        with rasterio.open(url) as ds:
+        with rasterio.Env(**GDAL_COG_ENV), rasterio.open(url) as ds:
             row, col = ds.index(lon, lat)
             window = rasterio.windows.Window(col, row, 1, 1)
             data = ds.read(1, window=window)
@@ -141,7 +146,7 @@ def query_et(
     for layer_code in layers_to_query:
         scale, offset, unit, desc = LAYERS[layer_code]
         for dk in dekads:
-            url = _raster_url(layer_code, dk)
+            url = raster_url(layer_code, dk)
             tasks.append((layer_code, dk, url, scale, offset, unit))
 
     # Parallel COG reads (each is a single HTTP range request, fast)
@@ -225,7 +230,7 @@ def query_soil_moisture(
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {}
         for dk in dekads:
-            url = _raster_url("L2-RSM-D", dk)
+            url = raster_url("L2-RSM-D", dk)
             f = executor.submit(_read_point, url, lat, lon, scale, offset)
             futures[f] = dk
 

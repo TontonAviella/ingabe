@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 // Lazy-loaded route components — each gets its own chunk
 const MapsList = lazy(() => import('./components/MapsList'));
 const ProjectView = lazy(() => import('./components/ProjectView'));
+const OrganizationMembers = lazy(() => import('./pages/OrganizationMembers'));
 const NotFound = lazy(() => import('./pages/NotFound'));
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'));
 const TermsOfService = lazy(() => import('./pages/TermsOfService'));
@@ -61,6 +62,14 @@ function AppContent() {
                     <OptionalAuth>
                       <ProjectView />
                     </OptionalAuth>
+                  }
+                />
+                <Route
+                  path="/settings/organization"
+                  element={
+                    <RequireAuth>
+                      <OrganizationMembers />
+                    </RequireAuth>
                   }
                 />
                 <Route path="/sign-up" element={<Navigate to="/" replace />} />
