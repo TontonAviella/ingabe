@@ -140,7 +140,6 @@ import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
-import { BufferPieOverlay, type PieChartData } from '@/components/BufferPieOverlay';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -222,9 +221,6 @@ const BASEMAP_SOURCE_IDS = new Set([
   'esri-topo',
   'carto-dark',
   'carto-voyager',
-  'sentinel2-live',
-  'ndvi-map',
-  'basemap-underlay',
   // OpenFreeMap vector style uses these source IDs:
   'ne2_shaded',
   'openmaptiles',
@@ -319,14 +315,6 @@ export default function MapLibreMap({
   const [assistantExpanded, setAssistantExpanded] = useState(false);
   const [mobileWorkspacePanel, setMobileWorkspacePanel] = useState<MobileWorkspacePanel>(null);
   const [isMapReady, setIsMapReady] = useState(false);
-  const [pieOverlays, setPieOverlays] = useState<Map<string, PieChartData>>(new Map());
-  const [sceneInfo, setSceneInfo] = useState<{
-    scene_date: string | null;
-    cloud_cover: number | null;
-    scenes_available: number;
-  } | null>(null);
-  const [isSentinel2Active, setIsSentinel2Active] = useState(false);
-  const [mosaicMode, setMosaicMode] = useState<'leastCC' | 'mostRecent'>('leastCC');
 
   const {
     overrides: paintOverrides,
@@ -502,50 +490,20 @@ export default function MapLibreMap({
           for (const layer of currentStyle.layers) {
             const src = 'source' in layer ? layer.source : undefined;
             if (typeof src === 'string' && BASEMAP_SOURCE_IDS.has(src)) continue;
-            if (layer.id === 'basemap-underlay-layer') continue;
             overlayLayers.push(layer as LayerSpecification);
           }
         }
 
         // 3. Compose merged style
-        // Only add Esri underlay for TRUE-COLOR satellite (not NDVI — its green/red
-        // output looks nothing like satellite imagery, so an Esri underlay is misleading)
-        const needsUnderlay = newBasemap === 'sentinel2_live';
         const mergedSources: Record<string, SourceSpecification> = {};
         const mergedLayers: LayerSpecification[] = [];
-
-        // For Sentinel-2 Live, add Esri underlay first (bottom-most)
-        if (needsUnderlay) {
-          mergedSources['basemap-underlay'] = {
-            type: 'raster',
-            tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-            tileSize: 256,
-            maxzoom: 18,
-          } as SourceSpecification;
-          mergedLayers.push({
-            id: 'basemap-underlay-layer',
-            type: 'raster',
-            source: 'basemap-underlay',
-            layout: { visibility: 'visible' },
-            paint: {},
-          } as LayerSpecification);
-        }
 
         // New basemap sources and layers
         for (const [id, src] of Object.entries(newBasemapStyle.sources || {})) {
           mergedSources[id] = src as SourceSpecification;
         }
         for (const layer of newBasemapStyle.layers || []) {
-          const pushed = layer as LayerSpecification;
-          // When Esri underlay is present, fade Sentinel-2 at high zoom so the
-          // sharp Esri imagery shows through beyond Sentinel-2's native 10m resolution.
-          if (needsUnderlay && pushed.type === 'raster' && 'source' in pushed && pushed.source === 'sentinel2-live') {
-            (pushed as any).paint = {
-              ...(pushed as any).paint,
-              'raster-opacity': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 0.25],
-            };
-          }
-          mergedLayers.push(pushed);
+          mergedLayers.push(layer as LayerSpecification);
         }
 
         // Overlay sources and layers (on top)
@@ -584,11 +542,7 @@ export default function MapLibreMap({
           });
         }
 
-        // 5. Track Sentinel-2 Live for scene info overlay
-        setIsSentinel2Active(newBasemap === 'sentinel2_live' || newBasemap === 'ndvi_map');
-        if (newBasemap !== 'sentinel2_live' && newBasemap !== 'ndvi_map') setSceneInfo(null);
-
-        // 6. Persist basemap choice to DB (fire-and-forget, don't block UI)
+        // 5. Persist basemap choice to DB (fire-and-forget, don't block UI)
         apiFetch(`/api/maps/${urlMapId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -1041,10 +995,6 @@ export default function MapLibreMap({
         if (e.error?.message && /^(__\w+|[\w$]{1,3}) is not defined$/.test(e.error.message)) return;
         if (e.error?.message?.includes('multiple versions detected')) return;
 
-        // Suppress satellite tile errors — cloud cover gaps and validation errors
-        // are expected and shouldn't show as user-facing error banners.
-        if (e.error?.url?.includes('/api/satellite/')) return;
-
         if (e.error instanceof AJAXError) {
           // 401 on tile requests = expired Clerk token. Refresh and reload tiles
           // instead of showing a confusing "Token expired" error to the user.
@@ -1403,44 +1353,6 @@ export default function MapLibreMap({
       // opacity) directly into the layer paint properties.
       const style = JSON.parse(JSON.stringify(styleData));
       injectOverridesIntoStyle(style, paintOverridesRef.current);
-
-      // For Sentinel-2 TRUE-COLOR basemap, inject a fast Esri underlay so the
-      // user sees imagery instantly while slow satellite tiles load.
-      // NDVI is excluded — its green/red output is nothing like satellite imagery.
-      const hasSatelliteSource = style.sources && 'sentinel2-live' in style.sources;
-      if (hasSatelliteSource && !style.sources['basemap-underlay']) {
-        style.sources['basemap-underlay'] = {
-          type: 'raster',
-          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-          tileSize: 256,
-          maxzoom: 18,
-        };
-        // Insert underlay layer at position 0 (behind everything)
-        const underlayLayer = {
-          id: 'basemap-underlay-layer',
-          type: 'raster' as const,
-          source: 'basemap-underlay',
-          layout: { visibility: 'visible' as const },
-          paint: {},
-        };
-        if (style.layers) {
-          style.layers.unshift(underlayLayer);
-        } else {
-          style.layers = [underlayLayer];
-        }
-        // Fade Sentinel-2 tiles at high zoom so sharp Esri underlay shows through
-        // beyond Sentinel-2's native 10m/pixel resolution (maxzoom 14).
-        if (style.layers) {
-          for (const layer of style.layers) {
-            if (layer.type === 'raster' && 'source' in layer && layer.source === 'sentinel2-live') {
-              layer.paint = {
-                ...layer.paint,
-                'raster-opacity': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 0.25],
-              };
-            }
-          }
-        }
-      }
 
       // Inject invisible fill layers for polygon sources that only have line
       // layers. Without a fill layer, queryRenderedFeatures only returns hits
@@ -1804,89 +1716,6 @@ export default function MapLibreMap({
     }
   }, [handleBasemapChange]);
 
-  // Update Sentinel Hub tile source URLs when mosaic mode changes
-  useEffect(() => {
-    const map = localMapRef.current;
-    if (!map || !isSentinel2Active) return;
-
-    const style = map.getStyle();
-    if (!style?.sources) return;
-
-    for (const [sourceId, sourceDef] of Object.entries(style.sources)) {
-      if (sourceDef.type !== 'raster' || !('tiles' in sourceDef)) continue;
-      const tiles = (sourceDef as any).tiles as string[] | undefined;
-      if (!tiles?.some((t: string) => t.includes('/api/satellite/'))) continue;
-
-      // Replace or add mosaic param in the tile URL (avoid new URL() which encodes {z}/{x}/{y} templates)
-      const newTiles = tiles.map((url: string) => {
-        const hasQuery = url.includes('?');
-        const base = hasQuery ? url.replace(/([&?])mosaic=[^&]*/g, '') : url;
-        const sep = base.includes('?') ? '&' : '?';
-        return `${base}${sep}mosaic=${mosaicMode}`;
-      });
-
-      // Use internal method to update tiles and force reload
-      const src = map.getSource(sourceId);
-      if (src && 'setTiles' in src) {
-        (src as any).setTiles(newTiles);
-      }
-    }
-  }, [mosaicMode, isSentinel2Active]);
-
-  // Detect sentinel2_live basemap from initial style load
-  useEffect(() => {
-    setIsSentinel2Active(currentBasemap === 'sentinel2_live' || currentBasemap === 'ndvi_map');
-    if (currentBasemap !== 'sentinel2_live') setSceneInfo(null);
-  }, [currentBasemap]);
-
-  // Fetch scene info when Sentinel-2 Live basemap is active
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mapInstanceId is an intentional trigger-only dependency.
-  useEffect(() => {
-    const map = localMapRef.current;
-    if (!map || !isSentinel2Active) return;
-
-    let cancelled = false;
-    let debounceTimer: ReturnType<typeof setTimeout>;
-
-    const fetchSceneInfo = () => {
-      const bounds = map.getBounds();
-      if (!bounds) return;
-
-      const params = new URLSearchParams({
-        west: bounds.getWest().toFixed(4),
-        south: bounds.getSouth().toFixed(4),
-        east: bounds.getEast().toFixed(4),
-        north: bounds.getNorth().toFixed(4),
-        collection: 'sentinel-2-l2a',
-        mosaic: mosaicMode,
-      });
-
-      apiFetch(`/api/satellite/scene-info?${params}`)
-        .then((r) => r.json())
-        .then((data) => {
-          if (!cancelled) setSceneInfo(data);
-        })
-        .catch(() => {
-          /* scene info is best-effort */
-        });
-    };
-
-    const onMoveEnd = () => {
-      clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(fetchSceneInfo, 500);
-    };
-
-    // Fetch immediately + on map move
-    fetchSceneInfo();
-    map.on('moveend', onMoveEnd);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(debounceTimer);
-      map.off('moveend', onMoveEnd);
-    };
-  }, [isSentinel2Active, mapInstanceId, mosaicMode]);
-
   // Effect to log when attribute table is opened/closed
   useEffect(() => {
     if (showAttributeTable && selectedLayer) {
@@ -1921,40 +1750,6 @@ export default function MapLibreMap({
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
         <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
-
-        {/* Sentinel-2 scene info badge with mosaic toggle */}
-        {isSentinel2Active && sceneInfo?.scene_date && (
-          <div className="absolute bottom-8 left-28 z-10 bg-black/70 text-white text-xs px-3 py-1.5 rounded-md backdrop-blur-sm flex items-center gap-2">
-            <span className="font-semibold">
-              Captured: {new Date(sceneInfo.scene_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-            </span>
-            {sceneInfo.cloud_cover != null && <span className="text-white/70">| Cloud: {Math.round(sceneInfo.cloud_cover)}%</span>}
-            <span className="text-white/50">
-              | {sceneInfo.scenes_available} scene{sceneInfo.scenes_available !== 1 ? 's' : ''} in range
-            </span>
-            <span className="text-white/30">|</span>
-            <button
-              type="button"
-              className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mosaicMode === 'leastCC' ? 'bg-emerald-500/80 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'
-              }`}
-              onClick={() => setMosaicMode('leastCC')}
-              title="Show clearest (least cloudy) scene"
-            >
-              Clearest
-            </button>
-            <button
-              type="button"
-              className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                mosaicMode === 'mostRecent' ? 'bg-blue-500/80 text-white' : 'bg-white/10 text-white/60 hover:bg-white/20'
-              }`}
-              onClick={() => setMosaicMode('mostRecent')}
-              title="Show most recent scene"
-            >
-              Most Recent
-            </button>
-          </div>
-        )}
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (
@@ -2011,23 +1806,6 @@ export default function MapLibreMap({
         >
           <History className="size-5" />
         </button>
-        {/* Pie chart overlays for single-feature buffer layers */}
-        {mapRef.current &&
-          Array.from(pieOverlays.entries()).map(([layerId, data]) => (
-            <BufferPieOverlay
-              key={layerId}
-              map={mapRef.current!}
-              center={data.center}
-              slices={data.slices}
-              onRemove={() => {
-                setPieOverlays((prev) => {
-                  const next = new Map(prev);
-                  next.delete(layerId);
-                  return next;
-                });
-              }}
-            />
-          ))}
         {selectedFeature && (
           <Card className="absolute bottom-10 left-4 max-h-[60vh] overflow-auto py-2 rounded-sm border-0 gap-2 max-w-72 w-full">
             <CardHeader className="px-2">

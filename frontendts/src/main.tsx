@@ -1,7 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
-import '@geoman-io/maplibre-geoman-free/dist/maplibre-geoman.css'; // Geoman draw primitives
 import { init } from '@mundi/ee';
 import App from './App';
 import { initAnalytics, trackError } from './lib/analytics';
