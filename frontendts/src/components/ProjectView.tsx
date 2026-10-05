@@ -22,6 +22,7 @@ type UploadResponse = {
   dag_child_map_id?: string;
   id?: string;
   type?: string;
+  conversation_id?: number | null;
 };
 
 const DROPZONE_ACCEPT: Accept = {
@@ -1154,6 +1155,7 @@ export default function ProjectView() {
             layer_id: init.layer_id,
             filename: uploadFilename,
             add_layer_to_map: true,
+            conversation_id: conversationId,
           }),
         });
         if (!completeRes.ok) {
@@ -1242,6 +1244,7 @@ export default function ProjectView() {
           layer_id: presign.layer_id,
           filename: file.name,
           add_layer_to_map: true,
+          conversation_id: conversationId,
         }),
       });
       if (!completeRes.ok) {
@@ -1282,6 +1285,12 @@ export default function ProjectView() {
 
       // Invalidate project data to refresh the project state
       queryClient.invalidateQueries({ queryKey: ['project', projectId] });
+
+      // A drone image gets Sage's first look in this chat: open it if no chat was open.
+      if (response.conversation_id && !conversationId) {
+        setConversationId(response.conversation_id);
+        queryClient.invalidateQueries({ queryKey: ['project', projectId, 'conversations'] });
+      }
 
       // Navigate to the new child map if dag_child_map_id is present
       if (response.dag_child_map_id) {
