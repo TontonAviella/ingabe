@@ -1,7 +1,7 @@
 """ET normals: usual WaPOR evapotranspiration per H3 res-8 hexagon and dekad of year
 
 Revision ID: c9e5f1a3b4d6
-Revises: e4c9b2d7a1f3
+Revises: d2a7c4e8f1b9
 Create Date: 2026-10-04
 
 Tables only; src/services/et_normals.build() fills them from WaPOR v3.
@@ -12,7 +12,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "c9e5f1a3b4d6"
-down_revision: Union[str, None] = "e4c9b2d7a1f3"
+down_revision: Union[str, None] = "d2a7c4e8f1b9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
