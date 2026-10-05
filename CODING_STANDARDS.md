@@ -163,6 +163,12 @@ lines; promote a lesson that recurs into the sections above.
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
+- **2026-10-05** WorkOS sign-in never worked: the cookie secret was 64 hex chars but the SDK feeds it to Fernet, and every login test
+  mocked the code exchange, so no test ever sealed a cookie; the failed callback then bounced back to the provider in a loop. Rule: an auth
+  or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
+- **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
+  US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
+  them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
 - **2026-10-04** Insurance season rainfall summed only the CHIRPS days it downloaded: with the final product weeks behind,
   every Season A report read 0 mm and fired the rainfall trigger, and late in a season the unfetched early weeks undercounted.
   Rule: "Missing is not zero" (Design principles). Gate: review only (needs the data's coverage); tests in `test_insurance_engine.py`.

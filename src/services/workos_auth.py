@@ -26,11 +26,14 @@ Everything WorkOS-specific lives here; ``src.dependencies.session`` turns the
 result into a UserContext (user and partner ids) and provisions the rows.
 
 Env: AUTH_PROVIDER=workos, WORKOS_API_KEY, WORKOS_CLIENT_ID,
-WORKOS_COOKIE_PASSWORD (32+ chars, encrypts the cookie).
+WORKOS_COOKIE_PASSWORD (any secret of 32+ characters; encrypts the cookie).
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -58,8 +61,39 @@ def _client():
     return WorkOSClient(api_key=os.environ["WORKOS_API_KEY"], client_id=os.environ["WORKOS_CLIENT_ID"])
 
 
+def warm_up() -> None:
+    """Load the SDK and check the cookie secret at startup, not on someone's first sign-in.
+
+    Importing the WorkOS SDK takes ~7 s in the local (emulated) image; done lazily,
+    the first visitor waited that long on /auth/login.
+    """
+    if not enabled():
+        return
+    _client()
+    _cookie_password()
+
+
 def _cookie_password() -> str:
-    return os.environ["WORKOS_COOKIE_PASSWORD"]
+    """The cookie key in the form the SDK needs: a Fernet key (32 bytes, url-safe base64).
+
+    WorkOS documents the cookie password as "32+ characters", but the Python SDK
+    passes it straight to Fernet, which only takes that exact encoding. A key
+    already in that form is used as is (existing cookies stay valid); any other
+    secret of 32+ characters is turned into one with SHA-256.
+    """
+    return cookie_key(os.environ["WORKOS_COOKIE_PASSWORD"])
+
+
+def cookie_key(secret: str) -> str:
+    secret = secret.strip()
+    try:
+        if len(base64.urlsafe_b64decode(secret.encode())) == 32 and len(secret) == 44:
+            return secret
+    except (binascii.Error, ValueError):
+        pass
+    if len(secret) < 32:
+        raise RuntimeError("WORKOS_COOKIE_PASSWORD must be at least 32 characters")
+    return base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()).decode()
 
 
 def _value(x: Any) -> Any:
@@ -166,8 +200,14 @@ def switch_organization(sealed: str, organization_id: Optional[str]) -> Optional
     return _from_response(refreshed, refreshed_cookie=refreshed.sealed_session)
 
 
-def logout_url(session_id: str, return_to: str) -> str:
-    return _client().user_management.get_logout_url(session_id=session_id, return_to=return_to)
+def revoke_session(session_id: str) -> None:
+    """End the session at WorkOS, so the hosted page asks for sign-in again.
+
+    Done over the API instead of WorkOS' logout redirect: that redirect only
+    works once a sign-out URL is configured in the WorkOS dashboard, and without
+    it WorkOS shows an error page ("app-homepage-url-not-found").
+    """
+    _client().user_management.revoke_session(session_id=session_id)
 
 
 def organization_name(organization_id: str) -> str:
