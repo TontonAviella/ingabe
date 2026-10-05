@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import asyncpg
 
+from src.services import crop_stages
 from src.services import et_normals
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
@@ -136,10 +137,12 @@ class TriggerResult:
     description: str
     # Set when `threshold` is a full-season threshold prorated to date.
     full_season_threshold: Optional[float] = None
+    phase: str = "full_season"  # or the crop stage the trigger is measured over
 
     def to_dict(self) -> dict:
         return {
             "signal": self.signal,
+            "phase": self.phase,
             "current_value": round(self.current_value, 2),
             "threshold": self.threshold,
             "full_season_threshold": self.full_season_threshold,
@@ -175,8 +178,8 @@ class InsuranceReport:
     et_anomaly_pct: Optional[float] = None
     soil_moisture_pct: Optional[float] = None
 
-    max_dry_spell_days: int = 0
-    active_dry_spell_days: int = 0
+    max_dry_spell_days: Optional[int] = None  # None: not enough daily rainfall data to tell
+    active_dry_spell_days: Optional[int] = None
 
     triggers: list[TriggerResult] = field(default_factory=list)
     triggers_activated: int = 0
@@ -732,10 +735,13 @@ async def _load_triggers(
     conn: asyncpg.Connection,
     crop: str,
     season: str,
-    phase: str,
+    phase: str | list[str],
     district: Optional[str] = None,
 ) -> list[dict]:
     """Load trigger thresholds from insurance_triggers table.
+
+    ``phase`` is a crop stage or a list of them (the stages that have started);
+    full-season triggers always come too.
 
     District-specific rows override national defaults (district IS NULL)
     for the same (phase, signal) combination.
@@ -745,13 +751,13 @@ async def _load_triggers(
             "SELECT DISTINCT ON (phase, signal) "
             "phase, signal, direction, threshold, weight, description "
             "FROM insurance_triggers "
-            "WHERE crop = $1 AND season = $2 AND (phase = $3 OR phase = 'full_season') "
+            "WHERE crop = $1 AND season = $2 AND (phase = ANY($3::text[]) OR phase = 'full_season') "
             "AND enabled = true "
             "AND (district IS NULL OR LOWER(district) = LOWER($4)) "
             "ORDER BY phase, signal, "
             "CASE WHEN district IS NOT NULL THEN 0 ELSE 1 END, "
             "weight DESC",
-            crop, season, phase, district,
+            crop, season, [phase] if isinstance(phase, str) else list(phase), district,
         )
         return [dict(r) for r in rows]
     except Exception:
@@ -832,6 +838,95 @@ def _prorate_season_rainfall_triggers(
                 "description": (f"Rain so far below {full * share:.0f}mm: the {full:.0f}mm season minimum "
                                 f"prorated to the {share:.0%} of normal season rain due by now"),
             }
+        out.append(trig)
+    return out
+
+
+_DRY_DAY_MM = 2.0  # a day under 2 mm counts as dry (as in the dry-spell signal)
+
+
+def _window_rain(daily: dict[str, Optional[float]], start: date, end: date) -> Optional[float]:
+    """Rain over start..end, scaled up for missing days; None under 30% coverage."""
+    days = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+    values = [daily[d] for d in days if daily.get(d) is not None]
+    if not days or len(values) < 0.3 * len(days):
+        return None
+    return sum(values) * len(days) / len(values)
+
+
+def _dry_spells(daily: dict[str, Optional[float]], start: date, end: date) -> tuple[Optional[int], Optional[int]]:
+    """(longest, still running at `end`) runs of dry days in start..end.
+
+    (None, None) under 80% coverage: a missing day is unknown, not dry, and it
+    ends a run, so a gap can only shorten a spell, never invent one.
+    """
+    days = [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+    if not days or sum(daily.get(d) is not None for d in days) < 0.8 * len(days):
+        return None, None
+    longest = run = 0
+    for d in days:
+        v = daily.get(d)
+        run = run + 1 if v is not None and v < _DRY_DAY_MM else 0
+        longest = max(longest, run)
+    return longest, run
+
+
+def _window_dry_spell(daily: dict[str, Optional[float]], start: date, end: date) -> Optional[float]:
+    """Longest run of dry days in start..end; None under 80% coverage."""
+    longest, _ = _dry_spells(daily, start, end)
+    return None if longest is None else float(longest)
+
+
+def _last_observed_day(daily: dict[str, Optional[float]], today: date) -> date:
+    days = [k for k, v in daily.items() if v is not None]
+    return min(date.fromisoformat(max(days)), today - timedelta(days=1)) if days else today - timedelta(days=1)
+
+
+def _stage_triggers(
+    trigger_defs: list[dict],
+    crop: str,
+    daily: dict[str, Optional[float]],
+    planting_date: date,
+    today: date,
+    season_days: int,
+    district: Optional[str],
+) -> list[dict]:
+    """Give each crop-stage trigger (e.g. maize flowering) its value over that stage.
+
+    Before: stage triggers were looked up by the season third ("mid_season"),
+    never matched a stage ("flowering") and were never evaluated. Now every
+    stage that has started is evaluated over its own days; while it is still
+    running, a rainfall minimum is prorated to the normal rain due so far.
+    Stages not yet started, unknown stage names and unsupported signals drop out.
+    """
+    out = []
+    last_observed = today - timedelta(days=1)
+    for trig in trigger_defs:
+        phase = trig.get("phase", "full_season") or "full_season"
+        if phase == "full_season":
+            out.append(trig)
+            continue
+        window = crop_stages.stage_window(phase, crop, planting_date, season_days)
+        if window is None or window[0] > last_observed:
+            continue
+        start, end = window
+        upto = min(end, last_observed)
+        span = f"{start:%d %b}–{end:%d %b}"
+        if trig["signal"] == "rainfall_cumulative":
+            trig = {**trig, "value": _window_rain(daily, start, upto)}
+            if upto < end:
+                full_normal, _ = _climatology_rainfall(start, (end - start).days + 1, district)
+                so_far, _ = _climatology_rainfall(start, (upto - start).days + 1, district)
+                if full_normal > 0:
+                    full = float(trig["threshold"])
+                    trig["threshold"] = round(full * so_far / full_normal, 1)
+                    trig["full_season_threshold"] = full
+            trig["description"] = f"{trig.get('description') or 'Rainfall'} ({phase} {span})"
+        elif trig["signal"] == "dry_spell_days":
+            trig = {**trig, "value": _window_dry_spell(daily, start, upto),
+                    "description": f"{trig.get('description') or 'Dry spell'} ({phase} {span})"}
+        else:
+            continue
         out.append(trig)
     return out
 
@@ -1032,7 +1127,8 @@ def _evaluate_triggers(
     results = []
     for trig in trigger_defs:
         signal = trig["signal"]
-        value = current_values.get(signal)
+        # Stage-scoped triggers carry their own value (measured over the stage).
+        value = trig["value"] if "value" in trig else current_values.get(signal)
         if value is None:
             continue
 
@@ -1058,6 +1154,7 @@ def _evaluate_triggers(
             weight=weight,
             description=trig.get("description", signal),
             full_season_threshold=trig.get("full_season_threshold"),
+            phase=trig.get("phase") or "full_season",
         ))
 
     return results
@@ -1160,7 +1257,7 @@ def _format_farmer(r: InsuranceReport) -> str:
         _farmer_rain_line(r),
         f"({point_sample_note('chirps', r.location_name, r.admin_level)})",
     ]
-    if r.max_dry_spell_days > 0:
+    if r.max_dry_spell_days:
         lines.append(f"Longest dry spell: {r.max_dry_spell_days} days")
     if r.ndvi_z_score is not None:
         health = "healthy" if r.ndvi_z_score > -0.5 else "stressed" if r.ndvi_z_score > -1.5 else "very stressed"
@@ -1190,6 +1287,10 @@ def _format_farmer(r: InsuranceReport) -> str:
 
     lines.append(f"Season progress: {r.growth_phase} (day {r.days_after_planting})")
     return "\n".join(lines)
+
+def _trigger_label(t: TriggerResult) -> str:
+    return t.signal if t.phase == "full_season" else f"{t.signal} ({t.phase})"
+
 
 def _farmer_rain_line(r: InsuranceReport) -> str:
     usual = rainfall_vs_usual(r.season_pct_of_normal)
@@ -1229,22 +1330,25 @@ def _format_insurance(r: InsuranceReport) -> str:
         else:
             op = ">"
         rows.append(
-            f"  {t.signal:<22s} {t.current_value:>8.1f}  {op}{t.threshold:<8.1f}  "
+            f"  {_trigger_label(t):<34s} {t.current_value:>8.1f}  {op}{t.threshold:<8.1f}  "
             f"{status:<10s} {t.weight:.1f}"
         )
 
     table = "\n".join([
-        f"  {'Signal':<22s} {'Current':>8s}  {'Threshold':<9s}  {'Status':<10s} {'Weight'}",
-        "  " + "-" * 65,
+        f"  {'Signal':<34s} {'Current':>8s}  {'Threshold':<9s}  {'Status':<10s} {'Weight'}",
+        "  " + "-" * 77,
         *rows,
     ])
 
     sources = ", ".join(r.sources) if r.sources else "CHIRPS, Sentinel-1/2, WaPOR"
     phase_info = f"Season progress: {r.growth_phase} (day {r.days_after_planting} of {_get_season_duration(r.season)})"
 
-    prorated = [f"  Note: {t.signal} uses the {t.full_season_threshold:.0f}mm season minimum prorated to "
-                f"{t.threshold:.0f}mm, the share of normal season rain due by now."
-                for t in r.triggers if t.full_season_threshold is not None]
+    prorated = [
+        f"  Note: {_trigger_label(t)} uses the {t.full_season_threshold:.0f}mm "
+        f"{'season' if t.phase == 'full_season' else t.phase} minimum prorated to {t.threshold:.0f}mm, "
+        f"the share of normal rain due so far."
+        for t in r.triggers if t.full_season_threshold is not None
+    ]
     vs_normal = _season_vs_normal_line(r)
     sections = [header, status_line, *([vs_normal] if vs_normal else []), "", table, *prorated, ""]
 
@@ -1285,9 +1389,9 @@ def _format_agronomist(r: InsuranceReport) -> str:
     for p in r.phase_rainfall:
         lines.append(f"  {p.phase:<12s}: {p.cumulative_mm:.0f}mm over {p.day_count} days ({p.daily_avg_mm:.1f}mm/day)")
 
-    if r.max_dry_spell_days > 0:
+    if r.max_dry_spell_days:
         lines.append(f"  Max dry spell: {r.max_dry_spell_days} days")
-    if r.active_dry_spell_days > 0:
+    if r.active_dry_spell_days:
         lines.append(f"  Active dry spell: {r.active_dry_spell_days} days (ongoing)")
 
     lines.append("")
@@ -1444,17 +1548,9 @@ async def _fetch_area_signals(
             signals["spi_1"] = round(spi_pair["spi_1"], 2)
         if spi_pair["spi_3"] is not None:
             signals["spi_3"] = round(spi_pair["spi_3"], 2)
-        rain_days = [v for v in chirps_daily.values() if v is not None]
-        if rain_days:
-            consecutive_dry = 0
-            max_dry = 0
-            for v in rain_days:
-                if v < 2.0:
-                    consecutive_dry += 1
-                    max_dry = max(max_dry, consecutive_dry)
-                else:
-                    consecutive_dry = 0
-            signals["max_dry_spell_days"] = max_dry
+        longest, _ = _dry_spells(chirps_daily, planting_date, _last_observed_day(chirps_daily, today))
+        if longest is not None:
+            signals["max_dry_spell_days"] = longest
 
     # ET anomaly
     et_normals.attach(et_result, (et_normals_by_cell or {}).get(et_normals.cell_for(lat, lon), {}))
@@ -1930,9 +2026,12 @@ async def compute_insurance_intelligence(
         sources.append(_chirps_source_label(chirps_prelim_days))
 
     # Dry spells
-    max_dry_spell = 0
-    active_dry_spell = 0
-    if dry_spells_result and dry_spells_result.get("status") == "success":
+    # From the same CHIRPS days as the rainfall (the methodology says so); the
+    # weather cache only when CHIRPS cannot tell. Unknown stays None: a 0 here
+    # used to pass the dry-spell trigger whenever the cache was empty.
+    max_dry_spell, active_dry_spell = _dry_spells(
+        chirps_daily or {}, planting_date, _last_observed_day(chirps_daily or {}, today))
+    if max_dry_spell is None and dry_spells_result and dry_spells_result.get("status") == "success":
         max_dry_spell = dry_spells_result.get("longest_spell_days", 0)
         spells = dry_spells_result.get("dry_spells", [])
         if spells:
@@ -1974,12 +2073,18 @@ async def compute_insurance_intelligence(
     drought_diagnostic_label = _DROUGHT_STATE_LABELS.get(drought_diagnostic, "")
 
     # --- TRIGGER EVALUATION ---
-    trigger_defs = await _load_triggers(conn, crop or "general", season, growth_phase, district)
+    stage = crop_stages.stage_from_dap(dap, harvest_dap, crop or "general")
+    labels = crop_stages.stage_labels(crop or "general")
+    started = labels if stage == "_any" and dap > 0 else labels[: labels.index(stage) + 1] if stage in labels else []
+    trigger_defs = _stage_triggers(
+        await _load_triggers(conn, crop or "general", season, started, district),
+        crop or "general", chirps_daily or {}, planting_date, today, harvest_dap, district,
+    )
 
     current_values: dict[str, Optional[float]] = {
         "rainfall_cumulative": season_rainfall,
         "spi": spi,
-        "dry_spell_days": float(max_dry_spell),
+        "dry_spell_days": None if max_dry_spell is None else float(max_dry_spell),
         "ndvi_z_score": ndvi_z,
         "sar_backscatter": sar_vh_vv_ratio,
         "et_anomaly": et_anomaly,
