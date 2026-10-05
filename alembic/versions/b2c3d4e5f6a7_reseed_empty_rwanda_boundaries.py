@@ -9,8 +9,10 @@ Two issues fixed:
    does an unconditional spatial join to fix district_name for sectors.
 
 2. **Empty tables**: Previous seed migrations swallowed API download failures.
-   If any table is under-populated, this migration re-downloads from
+   If any table is under-populated, this migration re-seeds it from
    geoBoundaries and RAISES on failure so Alembic retries on next deploy.
+   The features now come from vendored files, not the network
+   (see src/database/geoboundaries.py).
 
 Revision ID: b2c3d4e5f6a7
 Revises: a1b2c3d4e5f6
@@ -22,6 +24,8 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+
+from src.database.geoboundaries import rwanda_boundary_features
 
 revision: str = "b2c3d4e5f6a7"
 down_revision: Union[str, None] = "a1b2c3d4e5f6"
@@ -46,7 +50,6 @@ def upgrade() -> None:
 def _reseed_districts() -> None:
     import json
     import logging
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -72,17 +75,8 @@ def _reseed_districts() -> None:
 
     logger.info("rwanda_district_boundaries has %d rows — re-seeding", count or 0)
 
-    api_url = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM2/"
-    # RAISE on failure — migration stays unapplied and retries next deploy
-    api_resp = requests.get(api_url, timeout=30)
-    api_resp.raise_for_status()
-    geojson_url = api_resp.json().get("gjDownloadURL")
-    if not geojson_url:
-        raise RuntimeError("No gjDownloadURL in geoBoundaries ADM2 response")
-
-    geojson_resp = requests.get(geojson_url, timeout=120)
-    geojson_resp.raise_for_status()
-    features = geojson_resp.json().get("features", [])
+    # RAISE on failure — migration stays unapplied
+    features = rwanda_boundary_features("ADM2")
     if not features:
         raise RuntimeError("geoBoundaries ADM2 returned 0 features")
 
@@ -126,7 +120,6 @@ def _reseed_districts() -> None:
 def _reseed_sectors() -> None:
     import json
     import logging
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -154,16 +147,7 @@ def _reseed_sectors() -> None:
 
     logger.info("rwanda_sector_boundaries has %d rows — re-seeding", count or 0)
 
-    api_url = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM3/"
-    api_resp = requests.get(api_url, timeout=30)
-    api_resp.raise_for_status()
-    geojson_url = api_resp.json().get("gjDownloadURL")
-    if not geojson_url:
-        raise RuntimeError("No gjDownloadURL in geoBoundaries ADM3 response")
-
-    geojson_resp = requests.get(geojson_url, timeout=180)
-    geojson_resp.raise_for_status()
-    features = geojson_resp.json().get("features", [])
+    features = rwanda_boundary_features("ADM3")
     if not features:
         raise RuntimeError("geoBoundaries ADM3 returned 0 features")
 
@@ -235,7 +219,6 @@ def _reseed_sectors() -> None:
 def _reseed_cells() -> None:
     import json
     import logging
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -264,16 +247,7 @@ def _reseed_cells() -> None:
 
     logger.info("rwanda_cell_boundaries has %d rows — re-seeding", count or 0)
 
-    api_url = "https://www.geoboundaries.org/api/current/gbOpen/RWA/ADM4/"
-    api_resp = requests.get(api_url, timeout=30)
-    api_resp.raise_for_status()
-    geojson_url = api_resp.json().get("gjDownloadURL")
-    if not geojson_url:
-        raise RuntimeError("No gjDownloadURL in geoBoundaries ADM4 response")
-
-    geojson_resp = requests.get(geojson_url, timeout=300)
-    geojson_resp.raise_for_status()
-    features = geojson_resp.json().get("features", [])
+    features = rwanda_boundary_features("ADM4")
     if not features:
         raise RuntimeError("geoBoundaries ADM4 returned 0 features")
 
@@ -361,7 +335,6 @@ def _reseed_cells() -> None:
 def _reseed_villages() -> None:
     import json
     import logging
-    import requests
 
     logger = logging.getLogger(__name__)
     conn = op.get_bind()
@@ -391,16 +364,7 @@ def _reseed_villages() -> None:
 
     logger.info("rwanda_village_boundaries has %d rows — re-seeding", count or 0)
 
-    simplified_url = (
-        "https://github.com/wmgeolab/geoBoundaries/raw/9469f09/"
-        "releaseData/gbOpen/RWA/ADM5/"
-        "geoBoundaries-RWA-ADM5_simplified.geojson"
-    )
-    geojson_resp = requests.get(simplified_url, timeout=300)
-    geojson_resp.raise_for_status()
-    data = geojson_resp.json()
-    features = data.get("features", [])
-    del data
+    features = rwanda_boundary_features("ADM5")
     if not features:
         raise RuntimeError("geoBoundaries ADM5 simplified returned 0 features")
 

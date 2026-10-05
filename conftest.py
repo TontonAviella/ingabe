@@ -93,8 +93,8 @@ def pytest_sessionstart(session):
     This is a hook, not an autouse session fixture, on purpose. A fixture's
     setup runs inside the first test's pytest-timeout budget (pytest.ini:
     timeout = 60, method = thread). A fresh database runs the whole
-    migration chain, including the Rwanda boundary re-seed that downloads
-    from geoboundaries.org, while every other xdist worker waits on the
+    migration chain, including the Rwanda boundary seeds (~17k features
+    inserted one by one), while every other xdist worker waits on the
     advisory lock. When that took over 60 s, pytest-timeout `os._exit()`-ed
     every worker at once (`[gwN] node down: Not properly terminated` on each
     worker's first test; PRs #77, #78, #79 on 2026-10-02). Hooks run outside
