@@ -77,3 +77,24 @@ async def test_safe_chat_task_cancellation_clears_frontend_state(monkeypatch):
         "Sage stopped before finishing this request. Please try again.",
     ]
     assert deleted_keys == ["chat_lock:123"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_never_returns_is_stopped_and_the_model_told(monkeypatch):
+    monkeypatch.setattr(message_routes, "_tool_timeout_seconds", lambda: 0.05)
+
+    async def stalled() -> dict:
+        await asyncio.sleep(60)
+        return {"status": "success"}
+
+    result = await message_routes._within_tool_limit("get_insurance_intelligence", stalled())
+    assert result["status"] == "error"
+    assert "did not finish within 0 seconds" in result["error"] and "which part is missing" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_within_the_limit_returns_its_own_result():
+    async def quick() -> dict:
+        return {"status": "success", "value": 1}
+
+    assert await message_routes._within_tool_limit("x", quick()) == {"status": "success", "value": 1}

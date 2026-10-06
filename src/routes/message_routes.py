@@ -1700,6 +1700,29 @@ def _fast_raster_object_turn_timeout_seconds() -> float:
         return 600.0
 
 
+def _tool_timeout_seconds() -> float:
+    raw = os.environ.get("SAGE_TOOL_TIMEOUT_SECONDS", "120")
+    try:
+        return max(15.0, float(raw))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+async def _within_tool_limit(function_name: str, call: Any) -> Any:
+    """Runs one tool call. A tool that never returns (a stalled download, say) must not hold the
+    person's turn for ever: it is stopped and the model told, so it answers with what it has."""
+    limit = _tool_timeout_seconds()
+    try:
+        return await asyncio.wait_for(call, timeout=limit)
+    except TimeoutError:
+        logger.warning("Sage tool %s stopped after %.0f s", function_name, limit)
+        return {
+            "status": "error",
+            "error": (f"{function_name} did not finish within {limit:.0f} seconds and was stopped. "
+                      "Answer with what the other tools found, and say plainly which part is missing."),
+        }
+
+
 async def _maybe_run_fast_raster_object_turn(
     *,
     map_id: str,
@@ -2927,7 +2950,7 @@ async def process_chat_interaction_task(
                                     project_id=current_project_id,
                                     session=session,
                                 )
-                                tool_result = await fn(parsed_args, mundi_args)
+                                tool_result = await _within_tool_limit(function_name, fn(parsed_args, mundi_args))
 
                             except Exception as e:
                                 logger.exception("Tool execution failed for %s", tool_call.function.name)
@@ -2955,7 +2978,7 @@ async def process_chat_interaction_task(
                             # handlers /internal/tool-call (Hermes) uses, on this
                             # loop's tool connection (handlers that read the Brain
                             # open their own user- and partner-scoped connection).
-                            tool_result = await execute_legacy_tool(
+                            tool_result = await _within_tool_limit(function_name, execute_legacy_tool(
                                 function_name,
                                 LegacyToolContext(
                                     user_id=user_id,
@@ -2966,7 +2989,7 @@ async def process_chat_interaction_task(
                                     conn=conn,
                                     arguments=tool_args,
                                 ),
-                            )
+                            ))
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
                                     role="tool",
