@@ -117,15 +117,32 @@ def test_missing_water_data_is_said_not_shown_as_zero(photo, monkeypatch):
     assert "no satellite reading" in answer["what"]
 
 
-def test_soil_values_without_a_false_spread(photo, monkeypatch):
+def test_soil_values_show_the_likely_range(photo, monkeypatch):
+    # The service's output at Cyampirita (see test_isdasoil_service.py).
     monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "success", "properties": {
-        "nitrogen_total": {"value": 1.44, "uncertainty": 0.13, "unit": "g/kg", "label": "Total Nitrogen"},
-        "ph": {"value": 5.81, "uncertainty": 0.1, "unit": "", "label": "Soil pH"},
+        "nitrogen_total": {"value": 1.44, "likely_range": [1.15, 1.76], "unit": "g/kg", "label": "Total Nitrogen"},
+        "phosphorous_extractable": {"value": 10.59, "likely_range": [9.27, 12.08], "unit": "ppm",
+                                    "label": "Extractable Phosphorus"},
+        "potassium_extractable": {"value": 166.67, "likely_range": [137.66, 201.76], "unit": "ppm",
+                                  "label": "Extractable Potassium"},
+        "ph": {"value": 5.81, "uncertainty": 0.1, "likely_range": [5.71, 5.92], "unit": "", "label": "Soil pH"},
     }})
     answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", drone_cards.Here(photos=1))
-    assert {"label": "Total Nitrogen", "value": "1.44 g/kg"} in answer["facts"]
-    assert "±" not in json.dumps(answer["facts"])  # the service's spread is not a real range yet
+    assert answer["facts"] == [
+        {"label": "Total Nitrogen", "value": "1.44 g/kg (likely 1.15-1.76)"},
+        {"label": "Extractable Phosphorus", "value": "10.6 ppm (likely 9.3-12.1)"},
+        {"label": "Extractable Potassium", "value": "167 ppm (likely 138-202)"},
+        {"label": "Soil pH", "value": "5.81 (likely 5.71-5.92)"},
+    ]
     assert answer["how_sure"]["level"] == "low"
+
+
+def test_soil_value_without_a_range_is_shown_alone(photo, monkeypatch):
+    monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "success", "properties": {
+        "nitrogen_total": {"value": 1.44, "unit": "g/kg", "label": "Total Nitrogen"},
+    }})
+    answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", drone_cards.Here(photos=1))
+    assert answer["facts"] == [{"label": "Total Nitrogen", "value": "1.44 g/kg"}]
 
 
 def test_unknown_card(photo):

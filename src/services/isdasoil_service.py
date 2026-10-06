@@ -38,8 +38,20 @@ S3_BASE = "https://isdasoil.s3.amazonaws.com/soil_data"
 
 
 def _log_scaled(divisor: float) -> Dict[str, Any]:
-    """A property iSDAsoil log-scaled before modelling, stored as divisor * log1p(value)."""
-    return {"transform": lambda x: np.expm1(x / divisor)}
+    """A property iSDAsoil log-scaled before modelling, stored as divisor * log1p(value).
+
+    Its stdev band is a spread in that log space, so it only means something
+    added to the mean before back-transforming (see `_spread`).
+    """
+    return {"transform": lambda x: np.expm1(x / divisor), "log_scale": True}
+
+
+# What the spread fields in a query result mean, for whoever reads them (Sage included).
+SPREAD_NOTE = (
+    "likely_range is the model's one-standard-deviation interval around the value "
+    "(about 68% likely), in the property's units. uncertainty, given only for properties "
+    "on a linear scale, is that standard deviation as a +/- value."
+)
 
 # All 21 available soil properties with their back-transformation and units.
 # Back-transform functions convert raw uint8/uint16 COG values to real-world units.
@@ -239,6 +251,24 @@ def _read_point(
     return result
 
 
+def _spread(prop_info: Dict[str, Any], raw_mean: float, raw_stdev: float) -> Dict[str, Any]:
+    """The model's one-standard-deviation spread around a value, in the property's units.
+
+    The stdev band is in the same stored units as the mean band, so the interval is
+    taken there and back-transformed: [transform(mean - sd), transform(mean + sd)],
+    the 68% interval iSDAsoil reports. For a log-scaled property, transform(sd) alone
+    is not a spread in ppm or g/kg (it read "10.59 +/- 0.13 ppm" for phosphorus whose
+    interval is 9.27-12.08), so those get the range only.
+    """
+    transform_fn = prop_info["transform"]
+    low = max(0.0, float(transform_fn(raw_mean - raw_stdev)))
+    high = float(transform_fn(raw_mean + raw_stdev))
+    spread: Dict[str, Any] = {"likely_range": [round(low, 2), round(high, 2)]}
+    if not prop_info.get("log_scale"):
+        spread["uncertainty"] = round(float(transform_fn(raw_stdev)), 2)
+    return spread
+
+
 def _property_entry(prop_name: str, raw: np.ndarray, depth: str) -> Dict[str, Any]:
     """Back-transform one property's raw band means (from _read_point) into its result entry."""
     prop_info = SOIL_PROPERTIES[prop_name]
@@ -263,12 +293,7 @@ def _property_entry(prop_name: str, raw: np.ndarray, depth: str) -> Dict[str, An
             "note": "No data at this location",
         }
 
-    transform_fn = prop_info["transform"]
-    value = float(transform_fn(raw[depth_band]))
-    uncertainty = None
-    if stdev_band is not None and raw[stdev_band] > 0:
-        uncertainty = float(transform_fn(raw[stdev_band]))
-
+    value = float(prop_info["transform"](raw[depth_band]))
     entry: Dict[str, Any] = {
         "value": round(value, 2),
         "unit": prop_info["unit"],
@@ -276,8 +301,8 @@ def _property_entry(prop_name: str, raw: np.ndarray, depth: str) -> Dict[str, An
         "description": prop_info["description"],
         "depth": f"{depth} cm",
     }
-    if uncertainty is not None:
-        entry["uncertainty"] = round(uncertainty, 2)
+    if stdev_band is not None and raw[stdev_band] > 0:
+        entry.update(_spread(prop_info, raw[depth_band], raw[stdev_band]))
 
     if prop_name == "texture_class":
         class_id = int(round(value))
@@ -340,5 +365,6 @@ def query_soil_point(
         "coordinates": {"lon": lon, "lat": lat},
         "depth": f"{depth} cm",
         "source": "iSDAsoil (30m resolution, machine learning predictions)",
+        "spread_note": SPREAD_NOTE,
         "properties": results,
     }

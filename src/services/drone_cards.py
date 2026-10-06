@@ -261,6 +261,11 @@ def _pct(share: float) -> str:
     return f"{round(share * 100)}%"
 
 
+def _soil_digits(value: float) -> int:
+    """Decimals for about three significant figures: 167, 10.6, 1.44."""
+    return 0 if value >= 100 else 1 if value >= 10 else 2
+
+
 def _camera_label(analysis: PhotoAnalysis) -> str:
     return "Multispectral camera" if analysis.camera == "multispectral" else "Normal colour camera"
 
@@ -309,7 +314,8 @@ TERMS: dict[str, dict[str, Any]] = {
         "word": "Soil estimate",
         "plain": ("A guess of the soil's nutrients made by a computer model for all of Africa, at 30 m.",
                   "It shows what the soil may be short of before you test. A lab test of real samples decides."),
-        "technical": ("iSDAsoil: machine-learning predictions at 30 m for the top 20 cm, with an uncertainty for each value.",
+        "technical": ("iSDAsoil: machine-learning predictions at 30 m for the top 20 cm. The likely range is "
+                      "one model standard deviation either side (about 68%).",
                       "A prior for sampling design and first rates; it does not replace laboratory analysis."),
     },
     "water_use": {
@@ -601,10 +607,13 @@ def _soil(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
         entry = (props or {}).get(key) or {}
         if entry.get("value") is None:
             continue
-        # The service's "uncertainty" back-transforms a log-scale spread for N, P and K, so it reads
-        # far too small (± 0.13 ppm); the card shows the value alone until the service gives a real range.
         unit = f" {entry['unit']}" if entry.get("unit") else ""
-        facts.append({"label": entry["label"], "value": f"{entry['value']}{unit}"})
+        digits = _soil_digits(entry["value"])
+        value = f"{entry['value']:.{digits}f}{unit}"
+        if entry.get("likely_range"):
+            low, high = entry["likely_range"]
+            value += f" (likely {low:.{digits}f}-{high:.{digits}f})"
+        facts.append({"label": entry["label"], "value": value})
     if facts:
         what = "A first estimate for the soil in the middle of this photo, top 20 cm. The values are below."
     else:

@@ -42,7 +42,7 @@ def soil(monkeypatch):
 
 def test_linear_property_keeps_a_plus_minus_spread(soil):
     ph = soil("ph")["ph"]
-    assert (ph["value"], ph["uncertainty"]) == (5.81, 0.1)
+    assert (ph["value"], ph["uncertainty"], ph["likely_range"]) == (5.81, 0.1, [5.71, 5.92])
 
 
 def test_log_scaled_values(soil):
@@ -53,14 +53,30 @@ def test_log_scaled_values(soil):
     }
 
 
-def test_log_scaled_spread(soil):
-    props = soil("nitrogen_total", "phosphorous_extractable", "potassium_extractable")
-    assert [props[name]["uncertainty"] for name in props] == [0.13, 0.13, 0.21]
+def test_log_scaled_spread_is_a_range_not_plus_minus(soil):
+    # Before: expm1 of the log-space stdev alone, "10.59 +/- 0.13 ppm" for phosphorus.
+    # After: the 1-sd interval taken in log space, then back-transformed.
+    props = soil("nitrogen_total", "phosphorous_extractable", "potassium_extractable", "carbon_organic")
+    assert {name: entry["likely_range"] for name, entry in props.items()} == {
+        "nitrogen_total": [1.15, 1.76], "phosphorous_extractable": [9.27, 12.08],
+        "potassium_extractable": [137.66, 201.76], "carbon_organic": [14.0, 17.65],
+    }
+    assert not any("uncertainty" in entry for entry in props.values())
+
+
+def test_range_never_goes_below_zero(soil):
+    zinc = soil("zinc_extractable")["zinc_extractable"]
+    assert (zinc["value"], zinc["likely_range"]) == (0.35, [0.0, 1.23])
+
+
+def test_result_says_what_the_spread_fields_mean(soil):
+    result = isdasoil_service.query_soil_point(*CYAMPIRITA, properties=["ph"])
+    assert "68%" in result["spread_note"]
 
 
 def test_deeper_layer_reads_its_own_bands(soil):
     ph = soil("ph", depth="20-50")["ph"]
-    assert (ph["value"], ph["uncertainty"], ph["depth"]) == (5.68, 0.12, "20-50 cm")
+    assert (ph["value"], ph["uncertainty"], ph["likely_range"], ph["depth"]) == (5.68, 0.12, [5.56, 5.8], "20-50 cm")
 
 
 def test_nodata_is_missing_not_zero(soil):
@@ -72,10 +88,10 @@ def test_nodata_is_missing_not_zero(soil):
 def test_no_spread_without_a_stdev_band(soil):
     iron = soil("iron_extractable")["iron_extractable"]
     assert iron["value"] == 53.6
-    assert "uncertainty" not in iron
+    assert "uncertainty" not in iron and "likely_range" not in iron
 
 
 def test_texture_class_is_named(soil):
     texture = soil("texture_class")["texture_class"]
     assert texture["texture_name"] == "Clay loam"
-    assert "uncertainty" not in texture
+    assert "uncertainty" not in texture and "likely_range" not in texture
