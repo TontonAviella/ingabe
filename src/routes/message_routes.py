@@ -1708,6 +1708,36 @@ def _tool_timeout_seconds() -> float:
         return 120.0
 
 
+def _pair_tool_results(messages: list[Any]) -> list[Any]:
+    """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
+    conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
+    without results; a call dropped while cleaning the history can leave a result without its call."""
+    def calls(m: Any) -> list[str]:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            return []
+        return [tc["id"] for tc in m.get("tool_calls") or [] if isinstance(tc, dict) and tc.get("id")]
+
+    called = {call_id for m in messages for call_id in calls(m)}
+    answered = {m.get("tool_call_id") for m in messages if isinstance(m, dict) and m.get("role") == "tool"}
+    unfinished = json.dumps({"status": "error", "error": "This tool did not finish: the turn was interrupted."})
+    out: list[Any] = []
+    missing: list[str] = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            if m.get("tool_call_id") in called:
+                out.append(m)
+            else:
+                logger.warning("Dropped a tool result with no call before it: %s", m.get("tool_call_id"))
+            continue
+        out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+        out.append(m)
+        missing = [call_id for call_id in calls(m) if call_id not in answered]
+        if missing:
+            logger.warning("Gave %d unfinished tool call(s) a result: %s", len(missing), missing)
+    out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+    return out
+
+
 async def _within_tool_limit(function_name: str, call: Any) -> Any:
     """Runs one tool call. A tool that never returns (a stalled download, say) must not hold the
     person's turn for ever: it is stopped and the model told, so it answers with what it has."""
@@ -2335,6 +2365,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
+            openai_messages = _pair_tool_results(openai_messages)
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
