@@ -1717,6 +1717,7 @@ export default function MapLibreMap({
           layers={mapData?.layers ?? []}
           hiddenLayerIDs={hiddenLayerIDs}
           historyOpen={mobileWorkspacePanel === 'history'}
+          onAskSage={(prompt) => void sendMessage(prompt)}
         />
 
         {/* Render the attribute table if showAttributeTable is true */}

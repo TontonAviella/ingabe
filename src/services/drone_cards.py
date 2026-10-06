@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -33,9 +35,17 @@ from rasterio.enums import Resampling
 from rasterio.features import shapes
 from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping, shape
-from shapely.ops import transform as reproject
+from shapely.ops import transform as reproject, unary_union
 
-from src.services import background_jobs, drone_first_look, drone_plots, drone_vision, isdasoil_service, wapor_service
+from src.services import (
+    background_jobs,
+    drone_first_look,
+    drone_plots,
+    drone_vision,
+    farm_records,
+    isdasoil_service,
+    wapor_service,
+)
 from src.services.grvi import BARE_PIXEL, LOW_GREEN, grvi
 from src.services.insurance_engine import AUDIENCE_LABELS, normalize_audience
 
@@ -141,6 +151,9 @@ class Here:
     plot_map_error: Optional[str] = None  # why the chosen map could not be used
     survey: Optional[drone_vision.Survey] = None  # the vision model's look at each plot
     survey_job: Optional[background_jobs.Job] = None
+    spots: Optional[dict[str, Any]] = None  # bare soil inside plots seen with gaps (GeoJSON), when measured
+    records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
+    seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
 
 
 def _to_wgs84(crs: Any) -> Callable[..., Any]:
@@ -359,28 +372,37 @@ def _how_sure(level: str, because: list[str], surer: Optional[str]) -> dict[str,
 class _CardDef:
     id: str
     service: int
-    question: str
+    questions: tuple[str, ...]  # the same question in other words; the deck's seed picks one
+
+    @property
+    def question(self) -> str:
+        return self.questions[0]
 
 
 _CARDS = [
-    _CardDef("plots_green", 1, "Which plots are the least green?"),
-    _CardDef("weak_spots", 1, "Which parts of my crop look weak?"),
-    _CardDef("plot_problems", 4, "What problems show from the air?"),
-    _CardDef("crop_types", 5, "What is growing in each plot?"),
-    _CardDef("plot_stage", 6, "Which plots are behind their neighbours?"),
-    _CardDef("weeds", 9, "Which plots need weeding first?"),
-    _CardDef("bare_ground", 1, "Which fields are bare right now?"),
-    _CardDef("fertilizer", 2, "Which zones need more fertilizer?"),
-    _CardDef("water", 3, "Is water reaching every part of the field?"),
-    _CardDef("pests", 4, "Where might pests or disease be starting?"),
-    _CardDef("field_outlines", 5, "Where exactly are my plots, and how big is each?"),
-    _CardDef("growth", 6, "Is the crop growing on schedule?"),
-    _CardDef("plant_count", 7, "How many plants came up, and where are the gaps?"),
-    _CardDef("yield", 8, "How much will this field yield?"),
-    _CardDef("spray", 9, "Where should we spray, and where not?"),
-    _CardDef("history", 10, "How did this field do in past seasons?"),
-    _CardDef("soil", 11, "What do my soils need, zone by zone?"),
-    _CardDef("learn_camera", 1, "Is my crop sick, or just less green?"),
+    _CardDef("plots_green", 1, ("Which plots are the least green?", "Which plots look paler than their neighbours?",
+                                "Where is the crop thinnest right now?")),
+    _CardDef("weak_spots", 1, ("Which parts of my crop look weak?", "Is any part of this photo falling behind?")),
+    _CardDef("plot_problems", 4, ("What problems show from the air?", "Where are gaps, yellow leaves or standing water?",
+                                  "Which plots should someone walk to first?")),
+    _CardDef("crop_types", 5, ("What is growing in each plot?", "Which crops are planted here, and how much of each?",
+                               "How much land is under maize, cassava and beans?")),
+    _CardDef("plot_stage", 6, ("Which plots are behind their neighbours?", "Which plots were planted late?",
+                               "Is every plot of the same crop at the same stage?")),
+    _CardDef("weeds", 9, ("Which plots need weeding first?", "Where are weeds taking over?",
+                          "Where should the weeding team go this week?")),
+    _CardDef("bare_ground", 1, ("Which fields are bare right now?", "How much land is not planted yet?")),
+    _CardDef("fertilizer", 2, ("Which zones need more fertilizer?", "Where would fertilizer help most?")),
+    _CardDef("water", 3, ("Is water reaching every part of the field?", "Are the crops getting enough water?")),
+    _CardDef("pests", 4, ("Where might pests or disease be starting?", "Is anything eating or killing the crop?")),
+    _CardDef("field_outlines", 5, ("Where exactly are my plots, and how big is each?", "How many plots are there, and how big?")),
+    _CardDef("growth", 6, ("Is the crop growing on schedule?", "Has the crop grown since the last flight?")),
+    _CardDef("plant_count", 7, ("How many plants came up, and where are the gaps?", "Did enough seeds come up?")),
+    _CardDef("yield", 8, ("How much will this field yield?", "What harvest can we expect?")),
+    _CardDef("spray", 9, ("Where should we spray, and where not?", "Can we spray less and still protect the crop?")),
+    _CardDef("history", 10, ("How did this field do in past seasons?", "What did each plot harvest before?")),
+    _CardDef("soil", 11, ("What do my soils need, zone by zone?", "What does the soil test say?")),
+    _CardDef("learn_camera", 1, ("Is my crop sick, or just less green?", "What can this camera see, and what not?")),
 ]
 _CARD_BY_ID = {card.id: card for card in _CARDS}
 
@@ -413,6 +435,10 @@ def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return _plot_status(here)
     if card_id in _SURVEY_CARDS:
         return _survey_status(here)
+    if card_id == "soil" and farm_records.soil_samples(list(here.records)):
+        return READY
+    if card_id == "history" and farm_records.harvests(list(here.records)):
+        return READY
     if card_id in ("water", "history", "soil"):
         return PARTLY
     if card_id == "fertilizer":
@@ -491,10 +517,24 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id == "spray":
         return "Spray zones and the area to treat, from the pest map."
     if card_id == "history":
+        rows = farm_records.harvests(list(here.records))
+        if rows:
+            return _harvest_summary(rows)
         return f"{here.photos} photo{'s' if here.photos != 1 else ''} of this place kept so far."
     if card_id == "soil":
+        samples = farm_records.soil_samples(list(here.records))
+        if samples:
+            flagged = [s for _, s in samples if _soil_flags(s)]
+            return f"Your lab report: {len(flagged)} of {len(samples)} samples need attention."
         return "A first estimate of N, P and K here; lab tests decide."
     return "Your camera sees colour, not health. See what a special camera adds."
+
+
+def _wording(definition: _CardDef, seed: int) -> str:
+    """The question in the words the seed picks (the first wording when the seed is 0)."""
+    if not seed:
+        return definition.question
+    return definition.questions[(seed + zlib.crc32(definition.id.encode())) % len(definition.questions)]
 
 
 def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
@@ -504,15 +544,20 @@ def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
         "id": card_id,
         "service": definition.service,
         "service_name": SERVICES[definition.service],
-        "question": definition.question,
+        "question": _wording(definition, here.seed),
         "preview": _preview(card_id, analysis, here),
         "status": status,
         "status_label": STATUS_LABELS[status],
     }
 
 
-def _score(card: dict[str, Any], analysis: PhotoAnalysis, audience: str) -> int:
-    score = _BASE_SCORE[card["status"]] + _READER_BOOST.get(audience, {}).get(card["id"], 0)
+SHUFFLE_POINTS = 30  # with a seed, each card gets up to this many extra points at random, so the deck changes
+
+
+def _score(card: dict[str, Any], analysis: PhotoAnalysis, audience: str, seed: int = 0) -> float:
+    score: float = _BASE_SCORE[card["status"]] + _READER_BOOST.get(audience, {}).get(card["id"], 0)
+    if seed:
+        score += random.Random(f"{seed}:{card['id']}").uniform(0, SHUFFLE_POINTS)
     look_area = analysis.look.area_ha
     bare_share = analysis.bare.area_ha / look_area if look_area else 0.0
     if card["id"] == "bare_ground" and bare_share >= BARE_SHARE_WORTH_ASKING:
@@ -549,7 +594,7 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> 
     cards = [_card(card.id, analysis, here) for card in _CARDS]
     learn = next(card for card in cards if card["status"] == LEARN)
     ranked = sorted((card for card in cards if card is not learn),
-                    key=lambda card: _score(card, analysis, reader), reverse=True)
+                    key=lambda card: _score(card, analysis, reader, here.seed), reverse=True)
     look = analysis.look
     summary = [f"About {_ha(look.area_ha)}" if look.area_ha is not None else None, _camera_label(analysis),
                f"{look.resolution_cm:.1f} cm per pixel" if look.resolution_cm is not None else None]
@@ -570,6 +615,8 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> 
         "audience_label": AUDIENCE_LABELS[reader],
         "audiences": [{"id": key, "label": label} for key, label in AUDIENCE_LABELS.items()],
         "for_you": ranked[:FOR_YOU_COUNT - 1] + [learn],
+        "ask_sage": _deck_asks(analysis, here),
+        "seed": here.seed,
         "services": [
             {"service": number, "name": name, "cards": [card for card in cards if card["service"] == number]}
             for number, name in SERVICES.items()
@@ -583,13 +630,15 @@ def _answer(card_id: str, analysis: PhotoAnalysis, here: Here, *, what: str, why
             how_sure: dict[str, Any], terms: list[str], audience: str,
             overlay: Optional[dict[str, Any]] = None, facts: Optional[list[dict[str, str]]] = None,
             items: Optional[list[dict[str, Any]]] = None, downloads: Optional[list[dict[str, str]]] = None,
-            progress: Optional[dict[str, Any]] = None, choices: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+            progress: Optional[dict[str, Any]] = None, choices: Optional[dict[str, Any]] = None,
+            upload: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """One answer. items: places to go, each with a point; progress: set while the answer is still being worked
     out; choices: options the reader can pick that change the answer (where the plots come from)."""
     card = _card(card_id, analysis, here)
     return {**card, "what": what, "why": why, "todo": todo, "how_sure": how_sure,
             "overlay": overlay, "facts": facts or [], "terms": _terms(terms, audience),
-            "items": items or [], "downloads": downloads or [], "progress": progress, "choices": choices}
+            "items": items or [], "downloads": downloads or [], "progress": progress, "choices": choices,
+            "upload": upload}
 
 
 def _weak_spots(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -827,8 +876,12 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
 
     features = [{**f, "properties": {**f["properties"], "label": label(f["properties"])}}
                 for f in plots.geojson["features"]]
+    for f in features:
+        if f["properties"]["group"] == drone_plots.LEAST_GREEN:
+            f["properties"]["badge"] = "Pale"
     overlay = {"kind": "plot_groups", "legend": "Least green fifth of the plots with a crop",
-               "geojson": {"type": "FeatureCollection", "features": features}}
+               "geojson": {"type": "FeatureCollection", "features": features},
+               "spotlight": _spotlight(analysis, plots, {p["number"] for p in least})}
     if not least:
         return _answer(
             "plots_green", analysis, here,
@@ -862,9 +915,8 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
         why = ("Less green can mean plants short of water or food, missing plants, or weeds cleared. A crop "
                "planted later than its neighbours is also less green, so look before acting.")
         todo = f"Walk to plots {_plot_names(first)} first and look at the plants and the soil. Tap a plot to see its name."
-    items = [{"id": str(p["number"]), "title": _plot_label(p),
-              "detail": f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""),
-              "lon": p["lon"], "lat": p["lat"]} for p in least[:5]]
+    items = [_plot_item(analysis, p, f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""))
+             for p in least[:5]]
     facts = [{"label": "Plots with a crop", "value": str(len(with_crop))},
              {"label": "Least green fifth", "value": f"{len(least)} plots, {_ha(least_ha)}"},
              {"label": "Mostly soil showing", "value": f"{len(soil)} plots"},
@@ -884,6 +936,8 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
 # --- What the AI vision model saw in each plot ------------------------------------------------
 
 _NOT_A_CROP = {"unsure", "fallow_or_bare", "grass_or_pasture", "woodlot"}
+PROBLEM_BADGES = {"yellowing": "Yellowing", "gaps": "Gaps", "standing_water": "Water", "wilting": "Wilting",
+                  "lodging": "Fallen", "damage": "Damage"}
 WEEDY_FIRST = 3  # plots listed first in the weeding and problem answers
 
 
@@ -971,20 +1025,55 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str])
                      "Tell Ingabe what is really in 10 plots; it will then say how often the model is right.")
 
 
-def _flag_overlay(plots: drone_plots.PlotSet, flagged: dict[int, str], legend: str) -> dict[str, Any]:
-    """All plots outlined; flagged plots filled, each with its own label."""
+def _spotlight(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, numbers: set[int]) -> Optional[dict[str, Any]]:
+    """The photo with holes where the plots that matter are: drawn dark, so those plots stand out."""
+    if not numbers:
+        return None
+    west, south, east, north = analysis.bounds
+    holes = unary_union([shape(f["geometry"]) for f in plots.geojson["features"] if f["properties"]["number"] in numbers])
+    dimmed = box(west, south, east, north).difference(holes)
+    return {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": mapping(dimmed), "properties": {}}]}
+
+
+def _flag_overlay(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, flagged: dict[int, str], legend: str,
+                  badges: dict[int, str]) -> dict[str, Any]:
+    """All plots outlined; flagged plots filled, labelled with a short badge, and the rest of the photo dimmed."""
     features = []
     for f in plots.geojson["features"]:
         p = f["properties"]
         reason = flagged.get(p["number"])
         label = f"{_plot_label(p)} · {_ha(p['area_ha'])}" + (f" · {reason}" if reason else "")
-        features.append({**f, "properties": {**p, "flag": reason is not None, "label": label}})
-    return {"kind": "plot_flags", "legend": legend, "geojson": {"type": "FeatureCollection", "features": features}}
+        props = {**p, "flag": reason is not None, "label": label}
+        if p["number"] in badges:
+            props["badge"] = badges[p["number"]]
+        features.append({**f, "properties": props})
+    return {"kind": "plot_flags", "legend": legend, "geojson": {"type": "FeatureCollection", "features": features},
+            "spotlight": _spotlight(analysis, plots, set(flagged))}
 
 
-def _plot_item(plot: dict[str, Any], detail: str) -> dict[str, Any]:
+def _plot_item(analysis: PhotoAnalysis, plot: dict[str, Any], detail: str) -> dict[str, Any]:
+    """A plot to go to, with the picture of it the vision model is shown."""
     return {"id": str(plot["number"]), "title": _plot_label(plot), "detail": detail,
+            "picture": f"/api/layer/{analysis.layer_id}/plots/{plot['number']}/picture.jpg",
             "lon": plot["lon"], "lat": plot["lat"]}
+
+
+MAX_SPOT_PLOTS = 60  # plots whose bare spots are measured for the problems answer, most problems first
+
+
+def _problem_plots(plots: drone_plots.PlotSet, survey: drone_vision.Survey) -> list[tuple[dict[str, Any], drone_vision.PlotLook]]:
+    """Plots where the model saw a problem, most problems first."""
+    return sorted([(p, look) for p, look in _looked(plots, survey) if look.problems],
+                  key=lambda t: (len(t[1].problems), t[1].confidence != "low"), reverse=True)
+
+
+def plots_to_measure_spots(card_id: str, here: Here) -> list[dict[str, Any]]:
+    """The plot features whose bare soil the problems answer shows: plots where the model saw gaps."""
+    if card_id != "plot_problems" or here.plots is None or here.survey is None:
+        return []
+    numbers = [p["number"] for p, look in _problem_plots(here.plots, here.survey) if "gaps" in look.problems]
+    keep = set(numbers[:MAX_SPOT_PLOTS])
+    return [f for f in here.plots.geojson["features"] if f["properties"]["number"] in keep]
 
 
 def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -1015,7 +1104,10 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         extra = f" + {', '.join(_crop_words(c) for c in look.other_crops)}" if look and look.other_crops else ""
         stage = f" · {look.stage.replace('_', ' ')}" if look and look.stage != "unsure" else ""
         label = f"{_plot_label(p)} · {drone_vision.CROP_LABELS[crop]}{extra}{stage} · {_ha(p['area_ha'])}"
-        features.append({**f, "properties": {**p, "crop": crop, "label": label}})
+        props = {**p, "crop": crop, "label": label}
+        if crop not in _NOT_A_CROP:
+            props["badge"] = drone_vision.CROP_LABELS[crop]
+        features.append({**f, "properties": props})
     overlay = {"kind": "crop_map", "legend": "Crop seen in each plot",
                "legend_items": [{"key": c, "label": drone_vision.CROP_LABELS[c], "count": n} for c, n, _ in totals],
                "geojson": {"type": "FeatureCollection", "features": features}}
@@ -1040,8 +1132,7 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     if plots is None or survey is None:
         return _survey_pending("plot_problems", analysis, audience, here)
     pairs = _looked(plots, survey)
-    seen = sorted([(p, look) for p, look in pairs if look.problems],
-                  key=lambda t: (len(t[1].problems), t[1].confidence != "low"), reverse=True)
+    seen = _problem_plots(plots, survey)
     counts: dict[str, int] = {}
     for _, look in seen:
         for problem in look.problems:
@@ -1056,13 +1147,20 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     else:
         what = f"The AI vision model saw no problems from the air in the {len(pairs)} plots it looked at."
         todo = "Nothing to chase from this photo. Fly again in a few weeks to see what changes."
-    items = [_plot_item(p, flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
+    items = [_plot_item(analysis, p, flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
+    overlay = _flag_overlay(analysis, plots, flagged, "Possible problems seen from the air",
+                            {p["number"]: PROBLEM_BADGES[look.problems[0]] for p, look in seen})
+    if here.spots and here.spots.get("features"):
+        overlay["spots"] = here.spots
+        overlay["spots_legend"] = "Bare soil inside those plots, measured from the photo"
+        what += (f" The bare soil inside them is filled in bright on the photo "
+                 f"({len(here.spots['features'])} spots of 1 m² or more).")
     return _answer(
         "plot_problems", analysis, here, what=what,
         why="Gaps, yellowing or standing water found early can still be fixed this season.",
         todo=todo, how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"]),
         terms=["vision_model", "colour_camera"], audience=audience,
-        overlay=_flag_overlay(plots, flagged, "Possible problems seen from the air"), items=items,
+        overlay=overlay, items=items,
         facts=[{"label": drone_vision.PROBLEM_LABELS[k].capitalize(), "value": f"{n} plots"} for k, n in counts.items()],
         choices=_plot_choices(analysis, here))
 
@@ -1086,12 +1184,12 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
     else:
         what = f"No plot with a crop looks very weedy; {some} of {len(cropped)} have a few weeds."
         todo = "No urgent weeding seen from the air. Check again after the next rains."
-    items = [_plot_item(p, f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
+    items = [_plot_item(analysis, p, f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
     return _answer(
         "weeds", analysis, here, what=what,
         why="Weeds take the water and food meant for the crop, most of all while the crop is young.",
         todo=todo, how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"]),
-        terms=["vision_model"], audience=audience, overlay=_flag_overlay(plots, flagged, "Plots that look weedy"),
+        terms=["vision_model"], audience=audience, overlay=_flag_overlay(analysis, plots, flagged, "Plots that look weedy", {n: "Weeds" for n in flagged}),
         items=items, facts=[{"label": "Look weedy", "value": f"{len(weedy)} plots, {_ha(weedy_ha)}"},
                             {"label": "A few weeds", "value": f"{some} plots"}],
         choices=_plot_choices(analysis, here))
@@ -1117,14 +1215,14 @@ def _plot_stage(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     else:
         what = f"The {compared} plots compared look at a similar stage to the rest of their crop."
         todo = "Nothing behind from this photo. Fly again in a few weeks to see who keeps up."
-    items = [_plot_item(p, flagged[p["number"]]) for p, _, _ in behind[:5]]
+    items = [_plot_item(analysis, p, flagged[p["number"]]) for p, _, _ in behind[:5]]
     why = ("A plot behind its neighbours was planted later or is held back; either way it changes when it can be "
            "harvested." if audience != "insurance" else
            "Plots planted late carry a different risk; a plot held back may be an early sign of loss.")
     return _answer(
         "plot_stage", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, 0, ["Stage judged from one photo, without planting dates"]),
-        terms=["vision_model"], audience=audience, overlay=_flag_overlay(plots, flagged, "Younger than most of their crop"),
+        terms=["vision_model"], audience=audience, overlay=_flag_overlay(analysis, plots, flagged, "Younger than most of their crop", {n: "Behind" for n in flagged}),
         items=items, choices=_plot_choices(analysis, here))
 
 
@@ -1188,6 +1286,158 @@ def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) ->
         terms=["near_infrared"] if card_id == "fertilizer" else [], audience=audience)
 
 
+# --- The farm's own records: soil lab reports and harvests ------------------------------------
+
+# Common guide values for East African soils (0-20 cm); a lab's own guide or the agronomist decides.
+SOIL_GUIDE = {"ph": 5.5, "phosphorus_mg_kg": 15.0, "potassium_cmol_kg": 0.2, "nitrogen_percent": 0.10,
+              "organic_carbon_percent": 1.5}
+_SOIL_FLAG_WORDS = {"ph": "Acidic", "phosphorus_mg_kg": "Low P", "potassium_cmol_kg": "Low K",
+                    "nitrogen_percent": "Low N", "organic_carbon_percent": "Low carbon"}
+RECORD_TYPES = ".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv"
+
+
+def _soil_flags(sample: farm_records.SoilSample) -> list[str]:
+    """What a lab sample is below the guide in, in short words (Acidic, Low P, ...)."""
+    return [_SOIL_FLAG_WORDS[key] for key, guide in SOIL_GUIDE.items()
+            if (value := getattr(sample, key)) is not None and value < guide]
+
+
+def _plot_key(name: Optional[str]) -> str:
+    """A plot name reduced so 'Block A-01', 'A01' and 'a-1' match."""
+    import re
+
+    text = re.sub(r"\b(block|plot|field|parcel|umurima)\b", "", (name or "").lower())
+    parts = re.findall(r"[a-z]+|\d+", text)
+    return "".join(p.lstrip("0") or "0" if p.isdigit() else p for p in parts)
+
+
+def _plot_named(here: Here, name: Optional[str]) -> Optional[dict[str, Any]]:
+    """The photo's plot with this name (or number), if the records name one."""
+    if here.plots is None or not name:
+        return None
+    key = _plot_key(name)
+    return next((p for p in here.plots.plots() if key and key in (_plot_key(p.get("name")), _plot_key(str(p["number"])))), None)
+
+
+def _upload(analysis: PhotoAnalysis, label: str) -> dict[str, str]:
+    return {"label": label, "href": f"/api/layer/{analysis.layer_id}/records", "accept": RECORD_TYPES}
+
+
+def _num(value: Optional[float], digits: int) -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    samples = farm_records.soil_samples(list(here.records))
+    if not samples:
+        answer = _soil(analysis, audience, here)
+        answer["upload"] = _upload(analysis, "Add a soil lab report (PDF, photo or spreadsheet)")
+        return answer
+    documents = {d.id: d for d, _ in samples}
+    report = next(iter(documents.values()))
+    flagged = [(d, s, _soil_flags(s)) for d, s in samples if _soil_flags(s)]
+    counts: dict[str, int] = {}
+    for _, _, words in flagged:
+        for word in words:
+            counts[word] = counts.get(word, 0) + 1
+    source = ", ".join(x for x in (report.source or report.title, report.date) if x)
+    what = (f"Your lab report{f' ({source})' if source else ''} has {len(samples)} samples. "
+            + (", ".join(f"{n} {word.lower()}" for word, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+               + " against common guide values." if counts else "All of them are within common guide values."))
+    facts = []
+    items = []
+    flags_by_plot: dict[int, str] = {}
+    for _, sample, words in [(d, s, _soil_flags(s)) for d, s in samples]:
+        label = " · ".join(x for x in (sample.sample, sample.place) if x) or "Sample"
+        facts.append({"label": label, "value": f"pH {_num(sample.ph, 1)} · N {_num(sample.nitrogen_percent, 2)} % · "
+                                               f"P {_num(sample.phosphorus_mg_kg, 1)} mg/kg · K {_num(sample.potassium_cmol_kg, 2)} cmol/kg"})
+        plot = _plot_named(here, sample.place or sample.sample)
+        if plot is not None and words:
+            flags_by_plot[plot["number"]] = ", ".join(words)
+            items.append(_plot_item(analysis, plot, f"{', '.join(words)} · pH {_num(sample.ph, 1)}"))
+    acidic = [s.place or s.sample for _, s, w in flagged if "Acidic" in w]
+    low_p = [s.place or s.sample for _, s, w in flagged if "Low P" in w]
+    steps = []
+    if acidic:
+        steps.append(f"lime {', '.join(x for x in acidic if x)} before planting (pH below {SOIL_GUIDE['ph']})")
+    if low_p:
+        steps.append(f"add phosphorus on {', '.join(x for x in low_p if x)}")
+    todo = ("Next: " + "; ".join(steps) + ". Your agronomist sets the rates." if steps
+            else "Keep the same practice and test again in two or three seasons.")
+    overlay = (_flag_overlay(analysis, here.plots, flags_by_plot, "Plots whose lab sample is below the guide",
+                             {n: w.split(", ")[0] for n, w in flags_by_plot.items()})
+               if here.plots is not None and flags_by_plot else None)
+    warnings = [w for d in documents.values() for w in d.warnings]
+    because = ["Measured in a lab" + (f" ({samples[0][1].phosphorus_method} for phosphorus)" if samples[0][1].phosphorus_method else ""),
+               "Read from your report by an AI vision model: check the numbers against the report",
+               "Guide values are common ones for East African soils; your lab's own guide may differ"]
+    return _answer(
+        "soil", analysis, here, what=what,
+        why="Acid soil and too little phosphorus hold back maize and beans more than anything else in Rwanda's hills.",
+        todo=todo, how_sure=_how_sure("high" if not warnings else "medium", because + warnings[:2], None),
+        terms=["soil_estimate"], audience=audience, facts=facts, items=items, overlay=overlay,
+        upload=_upload(analysis, "Add another lab report"))
+
+
+def _harvest_summary(rows: list[tuple[farm_records.FarmDocument, farm_records.Harvest]]) -> str:
+    yields = [h.tonnes_per_ha for _, h in rows if h.tonnes_per_ha is not None]
+    seasons = sorted({h.season for _, h in rows if h.season})
+    if not yields:
+        return f"{len(rows)} harvests recorded" + (f" for {', '.join(seasons)}" if seasons else "") + "."
+    return (f"{', '.join(seasons) or 'Recorded'}: {sum(yields) / len(yields):.1f} t/ha on average over "
+            f"{len(yields)} plots.")
+
+
+def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    rows = farm_records.harvests(list(here.records))
+    if not rows:
+        answer = _history(analysis, audience, here)
+        answer["upload"] = _upload(analysis, "Add harvest records (PDF, photo or spreadsheet)")
+        return answer
+    measured = sorted([(d, h) for d, h in rows if h.tonnes_per_ha is not None], key=lambda t: -(t[1].tonnes_per_ha or 0))
+    total_kg = sum(h.harvest_kg or 0 for _, h in rows)
+    area = sum(h.area_ha or 0 for _, h in measured)
+    crops = sorted({h.crop for _, h in rows if h.crop})
+    seasons = sorted({h.season for _, h in rows if h.season})
+    what = (f"Your records: {len(rows)} harvests of {', '.join(crops) or 'the crop'}"
+            + (f" in {', '.join(seasons)}" if seasons else "") + f", {total_kg / 1000:.1f} t in all")
+    if measured:
+        mean = sum(total for total in (h.harvest_kg or 0 for _, h in measured)) / 1000 / area if area else None
+        best, low = measured[0][1], measured[-1][1]
+        what += (f" on {_ha(area)}, {mean:.1f} t/ha overall. Best: {best.plot} ({best.tonnes_per_ha:.1f} t/ha); "
+                 f"lowest: {low.plot} ({low.tonnes_per_ha:.1f} t/ha).") if mean is not None else "."
+        # what the other records say about the lowest plots
+        samples = {_plot_key(s.place or s.sample): s for _, s in farm_records.soil_samples(list(here.records))}
+        notes = []
+        for _, h in measured[-2:]:
+            sample = samples.get(_plot_key(h.plot))
+            if sample is not None and _soil_flags(sample):
+                notes.append(f"{h.plot} also tested {', '.join(_soil_flags(sample)).lower()} (pH {_num(sample.ph, 1)})")
+        if notes:
+            what += " " + "; ".join(notes) + ": the soil may explain part of the gap."
+    else:
+        what += "."
+    facts = [{"label": " · ".join(x for x in (h.plot, h.farmer) if x) or "Harvest",
+              "value": f"{_num(h.harvest_kg, 0)} kg" + (f" · {h.tonnes_per_ha:.1f} t/ha" if h.tonnes_per_ha is not None else "")}
+             for _, h in (measured or rows)[:12]]
+    items = []
+    for _, h in measured[-3:]:
+        plot = _plot_named(here, h.plot)
+        if plot is not None:
+            items.append(_plot_item(analysis, plot, f"{h.tonnes_per_ha:.1f} t/ha last harvest"))
+    warnings = [w for d, _ in rows for w in d.warnings]
+    return _answer(
+        "history", analysis, here, what=what,
+        why="Harvests by plot show which plots keep doing badly, so the next season's effort goes where it pays back in crop.",
+        todo=("Walk the lowest plots with this season's photo: are they behind again? Add each new season's records "
+              "to see the trend."),
+        how_sure=_how_sure("high" if not warnings else "medium",
+                           ["From your own records", "Read from the document by an AI vision model: check the numbers"]
+                           + warnings[:2], None),
+        terms=["hectare"], audience=audience, facts=facts, items=items,
+        upload=_upload(analysis, "Add more harvest records"))
+
+
 _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
     "plots_green": _plots_green,
     "crop_types": _crop_types,
@@ -1196,12 +1446,112 @@ _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
     "plot_stage": _plot_stage,
     "weak_spots": _weak_spots,
     "bare_ground": _bare_ground,
-    "soil": _soil,
+    "soil": _soil_card,
     "water": _water,
     "field_outlines": _field_outlines,
-    "history": _history,
+    "history": _history_card,
     "learn_camera": _learn_camera,
 }
+
+
+# --- Questions for Sage --------------------------------------------------------------------
+
+ASKS_PER_ANSWER = 3
+ASKS_PER_DECK = 3
+
+
+def _context(analysis: PhotoAnalysis) -> str:
+    look = analysis.look
+    return f'On my drone photo "{look.layer_name}"' + (f" ({look.place})" if look.place else "")
+
+
+def _main_crop(here: Here) -> Optional[str]:
+    """The crop the vision model named in most plots, if it named any."""
+    if here.plots is None or here.survey is None:
+        return None
+    named = [c for c, _, _ in _crop_totals(_looked(here.plots, here.survey)) if c not in _NOT_A_CROP]
+    return _crop_words(named[0]) if named else None
+
+
+def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Follow-up questions for Sage, written from what this answer found, with the photo and place named.
+
+    Sage can then bring in what a drone photo cannot show: rain, satellite history, soil, the season."""
+    ctx = _context(analysis)
+    crop = _main_crop(here) or "the crop"
+    # Items are plots: their id is the plot number, their title "<name> · plot <n>" or "Plot <n>".
+    shown = [{"number": i["id"], "name": i["title"].split(" · ")[0] if " · " in i["title"] else None} for i in items[:3]]
+    names = _plot_names(shown) if shown else None
+    first = items[0]["title"].split(" · ")[0] if items else None
+    rain = ("Has it rained enough here?", f"{ctx}: how much rain fell here in the last 30 days compared with "
+                                          f"normal for this season, and is {crop} short of water?")
+    asks: dict[str, list[tuple[str, str]]] = {
+        "plots_green": ([(f"Why are plots {names} paler?", f"{ctx}, plots {names} are the least green of the plots "
+                         "with a crop. What could explain it here (rain, soil, planting date, pests), and what should "
+                         "be checked first?")] if names else []) + [rain],
+        "weak_spots": [("What could hold this crop back?", f"{ctx}: some parts look less green. What could hold "
+                        f"{crop} back here this season, and what should a farmer check?"), rain],
+        "plot_problems": ([(f"What could cause this in {first}?", f"{ctx}, {first} shows {items[0]['detail'].split(' · ')[0]} "
+                            f"from the air. What are the likely causes for {crop} in this area and season, and what "
+                            "should the farmer check on the ground?")] if items else [])
+        + [(f"Which pests threaten {crop} now?", f"{ctx}: which pests or diseases are a risk for {crop} in this "
+            "district at this time of the season, and what are the first signs to look for?")],
+        "crop_types": [(f"How is {crop} doing this season?", f"{ctx}, most plots the model could name grow {crop}. "
+                        f"How is {crop} doing this season in this district: rain, satellite greenness and risks?"),
+                       ("Which crop suits this soil best?", f"{ctx}: what does the soil here suit best, and what is it "
+                        "short of?")],
+        "plot_stage": ([(f"Why are plots {names} behind?", f"{ctx}, plots {names} look younger than most plots of the "
+                         "same crop. Did the rains start late or unevenly here this season? What can still be done?")]
+                       if names else []) + [rain],
+        "weeds": [(f"When should {crop} be weeded?", f"{ctx}: when and how should {crop} be weeded at this stage, and "
+                   "which herbicide, if any, is safe for it?")],
+        "bare_ground": [("Was this land planted last season?", f"{ctx}: some land is bare now. Using satellite "
+                         "greenness for the past seasons, was this land planted before, and when?")],
+        "soil": [("What fertilizer does this soil need?", f"{ctx}: from the soil here, which fertilizer and how much "
+                  f"would suit {crop}, and when should it go on?")],
+        "water": [rain, ("Is a dry spell coming?", f"{ctx}: what is the rain forecast here for the next 10 days?")],
+        "field_outlines": [("Which sector are these plots in?", f"{ctx}: which sector and cell is this, and how much "
+                            "of the sector's land is farmed?")],
+        "history": [("How green was this place in past seasons?", f"{ctx}: compare satellite greenness here over the "
+                     "last seasons. Were any seasons clearly worse?")],
+    }
+    samples = farm_records.soil_samples(list(here.records))
+    if samples:
+        worst = min((s for _, s in samples if s.ph is not None), key=lambda s: s.ph or 0, default=None)
+        if worst is not None and worst.ph is not None and worst.ph < SOIL_GUIDE["ph"]:
+            where = worst.place or worst.sample or "the most acidic sample"
+            asks["soil"] = [(f"How much lime for pH {worst.ph:.1f} in {where}?",
+                             f"{ctx}: my lab report shows pH {worst.ph:.1f}, phosphorus {_num(worst.phosphorus_mg_kg, 1)} "
+                             f"mg/kg and potassium {_num(worst.potassium_cmol_kg, 2)} cmol/kg in {where}. How much lime and "
+                             f"which fertilizer would suit {crop} there, and when should they go on?")] + asks["soil"]
+    harvested = [h for _, h in farm_records.harvests(list(here.records)) if h.tonnes_per_ha is not None]
+    if harvested:
+        low = min(harvested, key=lambda h: h.tonnes_per_ha or 0)
+        asks["history"] = [(f"Why did {low.plot} harvest only {low.tonnes_per_ha:.1f} t/ha?",
+                            f"{ctx}: {low.plot} harvested {low.tonnes_per_ha:.1f} t/ha of {low.crop or 'the crop'} in "
+                            f"{low.season or 'the last season'}. Using rain, satellite greenness and soil for this place, "
+                            "what most likely held it back?")] + asks["history"]
+    chosen = asks.get(card_id) or [(f"Ask Sage: {_CARD_BY_ID[card_id].question.lower()}",
+                                    f"{ctx}: {_CARD_BY_ID[card_id].question}")]
+    return [{"label": label, "prompt": prompt} for label, prompt in chosen[:ASKS_PER_ANSWER]]
+
+
+def _deck_asks(analysis: PhotoAnalysis, here: Here) -> list[dict[str, str]]:
+    """A few questions for Sage built from what this photo shows; the seed picks which."""
+    candidates: list[dict[str, str]] = []
+    for card_id in ("plot_problems", "plot_stage", "plots_green", "crop_types", "water", "bare_ground", "soil", "history"):
+        if card_id in _SURVEY_CARDS and here.survey is None or card_id in _PLOT_CARDS and here.plots is None:
+            continue
+        items: list[dict[str, Any]] = []
+        if card_id in ("plot_problems", "plot_stage", "plots_green"):
+            items = answer_card(card_id, analysis, None, here)["items"]
+            if not items:
+                continue
+        candidates.extend(_asks(card_id, analysis, here, items)[:1])
+    unique = list({ask["label"]: ask for ask in candidates}.values())
+    if here.seed:
+        random.Random(here.seed).shuffle(unique)
+    return unique[:ASKS_PER_DECK]
 
 
 def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
@@ -1209,6 +1559,7 @@ def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], 
     if card_id not in _CARD_BY_ID:
         raise KeyError(card_id)
     reader = normalize_audience(audience)
-    if card_id in _ANSWERS:
-        return _ANSWERS[card_id](analysis, reader, here)
-    return _coming(card_id, analysis, reader, here)
+    answer = (_ANSWERS[card_id](analysis, reader, here) if card_id in _ANSWERS
+              else _coming(card_id, analysis, reader, here))
+    answer["ask_sage"] = _asks(card_id, analysis, here, answer["items"])
+    return answer

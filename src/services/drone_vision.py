@@ -115,6 +115,11 @@ def _model() -> str:
     return os.environ.get("DRONE_VISION_MODEL", VISION_MODEL)
 
 
+def vision_client() -> tuple[AsyncOpenAI, str]:
+    """The vision model's client and its name (DRONE_VISION_MODEL); also used to read farm documents."""
+    return _client()
+
+
 def _client() -> tuple[AsyncOpenAI, str]:
     endpoint = resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
                                      base_url=os.environ.get("OPENAI_BASE_URL"),
@@ -141,6 +146,14 @@ def plot_picture(ds: Any, outline: Any) -> tuple[bytes, float, float]:
     image.save(out, format="JPEG", quality=88)
     metres = maxx - minx  # photo CRS units; Ingabe's drone photos are in metres (UTM or Web Mercator)
     return out.getvalue(), metres, 100 * metres / max(width, 1)
+
+
+def picture_of_plot(cog_url: str, feature: dict[str, Any]) -> bytes:
+    """The picture the model is shown for one plot feature (WGS84)."""
+    with rasterio.open(cog_url) as ds:
+        to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
+        picture, _, _ = plot_picture(ds, reproject(to_photo, shape(feature["geometry"])))
+    return picture
 
 
 async def _ask(client: AsyncOpenAI, model: str, picture: bytes, width_m: float, cm: float,

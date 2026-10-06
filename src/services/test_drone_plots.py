@@ -201,3 +201,10 @@ def test_a_kml_plot_map_keeps_its_names_and_drops_google_earth_fields(tmp_path):
     plots = drone_plots.read_plot_map(str(path))
     assert [p.name for p in plots] == ["Block A-01"]
     assert plots[0].attributes == {"Name": "Block A-01", "Farmer": "Test farmer 1"}
+
+
+def test_bare_spots_are_found_inside_a_plot_only(plots, photo):
+    features = {f["properties"]["number"]: f for f in plots.geojson["features"]}
+    bare = drone_plots.bare_spots(str(photo), [features[BARE_PLOT + 1], features[1]])
+    assert {f["properties"]["number"] for f in bare["features"]} == {BARE_PLOT + 1}  # plot 1 is green
+    assert sum(f["properties"]["area_m2"] for f in bare["features"]) == pytest.approx(PLOT_M * PLOT_M, rel=0.1)

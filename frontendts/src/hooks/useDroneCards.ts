@@ -32,6 +32,15 @@ export interface DroneDeck {
   audiences: { id: string; label: string }[];
   for_you: DroneCard[];
   services: { service: number; name: string; cards: DroneCard[] }[];
+  /** Questions for Sage built from what this photo shows. */
+  ask_sage: AskSage[];
+  seed: number;
+}
+
+/** A question to send to Sage: a short label, and the full prompt with the photo and place named. */
+export interface AskSage {
+  label: string;
+  prompt: string;
 }
 
 export interface DroneCardAnswer extends DroneCard {
@@ -45,11 +54,16 @@ export interface DroneCardAnswer extends DroneCard {
     /** One entry per class drawn (a crop map); the key picks its colour. */
     legend_items?: { key: string; label: string; count: number }[];
     geojson: GeoJSON.FeatureCollection;
+    /** The photo with holes at the plots that matter: drawn dark so they stand out. */
+    spotlight?: GeoJSON.FeatureCollection | null;
+    /** Exact spots measured inside those plots (bare soil), drawn bright. */
+    spots?: GeoJSON.FeatureCollection;
+    spots_legend?: string;
   } | null;
   facts: { label: string; value: string }[];
   terms: { id: string; word: string; simple: string; why: string }[];
   /** Places to go first, each with a point to fly to. */
-  items: { id: string; title: string; detail: string; lon: number; lat: number }[];
+  items: { id: string; title: string; detail: string; lon: number; lat: number; picture?: string }[];
   downloads: { label: string; href: string }[];
   /** Set while the answer is still being worked out on the server. */
   progress: { done: number; parts: number; minutes_left: number | null } | null;
@@ -59,6 +73,19 @@ export interface DroneCardAnswer extends DroneCard {
     options: { id: string; label: string; detail: string; selected: boolean }[];
     href: string;
   } | null;
+  ask_sage: AskSage[];
+  /** A document the reader can add (soil lab report, harvest records) to answer with their own numbers. */
+  upload: { label: string; href: string; accept: string } | null;
+}
+
+/** What the server read in an added document. */
+export interface FarmRecordResult {
+  id: string;
+  kind: 'soil_report' | 'harvest_records' | 'other';
+  title: string | null;
+  soil_samples: number;
+  harvests: number;
+  warnings: string[];
 }
 
 /** Errors the server explains in words (a photo still processing, not a colour photo). */
@@ -88,17 +115,21 @@ async function getJson<T>(url: string): Promise<T> {
   return res.json();
 }
 
-function audienceParam(audience: string | null) {
-  return audience ? `?audience=${encodeURIComponent(audience)}` : '';
+function query(audience: string | null, seed: number) {
+  const params = new URLSearchParams({ seed: String(seed) });
+  if (audience) params.set('audience', audience);
+  return `?${params}`;
 }
 
 // While a card is still being worked out on the server, ask again at this pace.
 const WORKING_REFRESH_MS = 15_000;
 
-export function useDroneDeck(layerId: string | null, audience: string | null) {
+/** The deck for a photo; another seed picks other wordings and another mix of questions. */
+export function useDroneDeck(layerId: string | null, audience: string | null, seed: number) {
   return useQuery<DroneDeck, DroneCardsError>({
-    queryKey: ['drone-cards', layerId, audience],
-    queryFn: () => getJson<DroneDeck>(`/api/layer/${layerId}/cards${audienceParam(audience)}`),
+    queryKey: ['drone-cards', layerId, audience, seed],
+    queryFn: () => getJson<DroneDeck>(`/api/layer/${layerId}/cards${query(audience, seed)}`),
+    placeholderData: (previous) => previous,
     enabled: !!layerId,
     staleTime: 10 * 60 * 1000,
     retry: (count, error) => error.status === 409 && count < 20,
@@ -108,10 +139,10 @@ export function useDroneDeck(layerId: string | null, audience: string | null) {
   });
 }
 
-export function useDroneCardAnswer(layerId: string | null, cardId: string | null, audience: string | null) {
+export function useDroneCardAnswer(layerId: string | null, cardId: string | null, audience: string | null, seed: number) {
   return useQuery<DroneCardAnswer, DroneCardsError>({
-    queryKey: ['drone-card-answer', layerId, cardId, audience],
-    queryFn: () => getJson<DroneCardAnswer>(`/api/layer/${layerId}/cards/${cardId}${audienceParam(audience)}`),
+    queryKey: ['drone-card-answer', layerId, cardId, audience, seed],
+    queryFn: () => getJson<DroneCardAnswer>(`/api/layer/${layerId}/cards/${cardId}${query(audience, seed)}`),
     enabled: !!layerId && !!cardId,
     staleTime: 10 * 60 * 1000,
     retry: false,
@@ -130,6 +161,25 @@ export function useChoosePlotSource(layerId: string | null) {
         body: JSON.stringify({ source }),
       });
       if (!res.ok) throw await failure(res);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
+      queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
+    },
+  });
+}
+
+/** Add a soil lab report or harvest records; the photo's cards are asked again once it is read. */
+export function useAddFarmRecord(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<FarmRecordResult, DroneCardsError, { href: string; file: File }>({
+    mutationFn: async ({ href, file }) => {
+      const body = new FormData();
+      body.append('file', file);
+      // Reading a document takes the vision model about 10 seconds; give it more than the usual 30 s limit.
+      const res = await apiFetch(href, { method: 'POST', body, signal: AbortSignal.timeout(120_000) });
+      if (!res.ok) throw await failure(res);
+      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });

@@ -37,7 +37,7 @@ import rasterio
 from affine import Affine
 from pyproj import Geod, Transformer
 from rasterio.enums import Resampling
-from rasterio.features import rasterize
+from rasterio.features import rasterize, shapes
 from rasterio.warp import transform_bounds
 from rasterio.windows import from_bounds
 from shapely import STRtree
@@ -83,6 +83,12 @@ LEAST_GREEN = "least_green"
 BETWEEN = "between"
 GREENEST = "greenest"
 UNKNOWN = "unknown"
+
+# --- Bare spots inside plots -------------------------------------------------------------
+
+SPOTS_M_PER_PX = 0.1  # bare soil inside a plot is read at this detail
+SPOT_SMOOTH_PX = 5  # a spot must be bare over about half a metre, not one soil pixel between leaves
+MIN_SPOT_M2 = 1.0
 
 # --- The reader's own plot map ----------------------------------------------------------
 
@@ -420,6 +426,43 @@ def _name_column(columns: list[str]) -> Optional[str]:
     return next((by_lower[name] for name in PLOT_NAME_COLUMNS if name in by_lower), None)
 
 
+def bare_spots(cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
+    """Patches of bare soil (GRVI below BARE_PIXEL over about half a metre) of 1 m² or more inside the given
+    plot features (WGS84), as WGS84 polygons; each spot keeps its plot's number."""
+    import cv2
+
+    features = []
+    with rasterio.open(cog_url) as ds:
+        to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
+        to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
+        factor = max(1.0, SPOTS_M_PER_PX / _photo_m_per_px(ds))
+        for plot in plots:
+            outline = reproject(to_photo, shape(plot["geometry"]))
+            w = from_bounds(*outline.bounds, transform=ds.transform)
+            col0, row0 = max(0, int(np.floor(w.col_off))), max(0, int(np.floor(w.row_off)))
+            col1 = min(ds.width, int(np.ceil(w.col_off + w.width)))
+            row1 = min(ds.height, int(np.ceil(w.row_off + w.height)))
+            if col1 <= col0 or row1 <= row0:
+                continue
+            window = rasterio.windows.Window(col0, row0, col1 - col0, row1 - row0)
+            rows, cols = max(1, int(window.height / factor)), max(1, int(window.width / factor))
+            bands = ds.read([1, 2], window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
+            green = grvi(bands[0], bands[1])
+            bare = ((green < BARE_PIXEL) & ~np.isnan(green)).astype("uint8")
+            bare = cv2.morphologyEx(bare, cv2.MORPH_OPEN, np.ones((SPOT_SMOOTH_PX, SPOT_SMOOTH_PX), np.uint8))
+            transform = ds.window_transform(window) * Affine.scale(window.width / cols, window.height / rows)
+            inside = rasterize([(outline, 1)], out_shape=(rows, cols), transform=transform, fill=0, dtype="uint8")
+            bare &= inside
+            for geom, _ in shapes(bare, mask=bare.astype(bool), transform=transform):
+                spot = reproject(to_wgs84, shape(geom).simplify(abs(transform.a)))
+                area = _area_ha(spot) * 10_000
+                if area >= MIN_SPOT_M2:
+                    features.append({"type": "Feature", "geometry": mapping(spot),
+                                     "properties": {"number": plot["properties"]["number"], "area_m2": round(area, 1),
+                                                    "label": f"Bare soil · {area:.0f} m²"}})
+    return {"type": "FeatureCollection", "features": features}
+
+
 def read_plot_map(path: str) -> list[MapPlot]:
     """The polygons of a map file (GeoParquet, GeoPackage, Shapefile, KML, GeoJSON) in WGS84, with their names."""
     import geopandas as gpd
@@ -488,6 +531,25 @@ async def load_plots(s3: Any, bucket: str, photo_key: str) -> Optional[PlotSet]:
         plots = _from_json(await body.read())
     _results[photo_key] = plots
     return plots
+
+
+_spots: dict[str, dict[str, Any]] = {}
+
+
+async def load_spots(s3: Any, bucket: str, key: str, cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
+    """Bare spots inside these plots, measured once per key (photo, plot set and plot numbers) and kept."""
+    if key in _spots:
+        return _spots[key]
+    store = _store_key(f"spots|{key}")
+    try:
+        response = await s3.get_object(Bucket=bucket, Key=store)
+        async with response["Body"] as body:
+            spots = json.loads(await body.read())
+    except s3.exceptions.NoSuchKey:
+        spots = await asyncio.to_thread(bare_spots, cog_url, plots)
+        await s3.put_object(Bucket=bucket, Key=store, Body=json.dumps(spots).encode(), ContentType="application/json")
+    _spots[key] = spots
+    return spots
 
 
 _map_locks: dict[str, asyncio.Lock] = {}

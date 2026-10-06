@@ -157,18 +157,18 @@ def test_no_card_talks_about_money(photo, monkeypatch, audience):
 
 
 def _plot_set(n=10):
-    """n square plots in a row over Rwanda; plot 3 is the least green."""
+    """n square plots in rows of 5 on the test photo; plot 3 is the least green."""
     features = []
     for i in range(n):
-        lon = 30.0 + i * 0.001
+        lon, lat = 29.9658 + (i % 5) * 0.0005, -1.7168 - (i // 5) * 0.0005
         greenness = 0.02 if i == 2 else 0.1 + i * 0.01
         features.append({"type": "Feature",
-                         "geometry": {"type": "Polygon", "coordinates": [[[lon, -1.5], [lon + 0.0008, -1.5],
-                                                                          [lon + 0.0008, -1.5008], [lon, -1.5008],
-                                                                          [lon, -1.5]]]},
+                         "geometry": {"type": "Polygon", "coordinates": [[[lon, lat], [lon + 0.0004, lat],
+                                                                          [lon + 0.0004, lat - 0.0004], [lon, lat - 0.0004],
+                                                                          [lon, lat]]]},
                          "properties": {"number": i + 1, "area_ha": 0.79, "greenness": greenness,
                                         "bare_share": 0.4 if i == 2 else 0.0, "confidence": 0.5,
-                                        "lon": lon + 0.0004, "lat": -1.5004}})
+                                        "lon": lon + 0.0002, "lat": lat - 0.0002}})
     groups = drone_plots.plot_groups([(f["properties"]["greenness"], f["properties"]["bare_share"]) for f in features])
     for f, group in zip(features, groups):
         f["properties"]["group"] = group
@@ -329,3 +329,99 @@ def test_weeding_leaves_out_fallow_plots(photo):
     answer = drone_cards.answer_card("weeds", _analysis(photo), "farmer", here)
     assert answer["what"].startswith("1 of 8 plots with a crop look weedy")
     assert [i["title"] for i in answer["items"]] == ["Plot 1"]
+
+
+def test_a_seed_changes_the_wording_and_the_mix_but_seed_0_is_fixed(photo):
+    plots = _plot_set()
+    analysis = _analysis(photo)
+    fixed = drone_cards.build_deck(analysis, "farmer", drone_cards.Here(plots=plots))
+    assert fixed == drone_cards.build_deck(analysis, "farmer", drone_cards.Here(plots=plots))
+    decks = [drone_cards.build_deck(analysis, "farmer", drone_cards.Here(plots=plots, seed=s)) for s in range(1, 30)]
+    questions = {card["question"] for deck in decks for card in deck["for_you"]}
+    mixes = {tuple(card["id"] for card in deck["for_you"]) for deck in decks}
+    assert len(questions) > len(fixed["for_you"]) and len(mixes) > 1
+    assert all(deck["for_you"][-1]["status"] == drone_cards.LEARN for deck in decks)
+    # the answer uses the same words as the card the reader tapped
+    card = decks[0]["for_you"][0]
+    answer = drone_cards.answer_card(card["id"], analysis, "farmer", drone_cards.Here(plots=plots, seed=1))
+    assert answer["question"] == card["question"]
+
+
+def test_answers_suggest_questions_for_sage_with_the_photo_named(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {3: {"problems": ["gaps"]}}))
+    answer = drone_cards.answer_card("plot_problems", _analysis(photo), "farmer", here)
+    labels = [a["label"] for a in answer["ask_sage"]]
+    assert labels[0] == "What could cause this in Plot 3?" and "maize" in labels[1]
+    assert all(a["prompt"].startswith('On my drone photo "Test field" (Test cell)') for a in answer["ask_sage"])
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", here)
+    assert 1 <= len(deck["ask_sage"]) <= drone_cards.ASKS_PER_DECK
+
+
+def test_flagged_plots_are_badged_and_the_rest_dimmed(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {2: {"weeds": "many"}}))
+    overlay = drone_cards.answer_card("weeds", _analysis(photo), "farmer", here)["overlay"]
+    badges = {f["properties"]["number"]: f["properties"].get("badge") for f in overlay["geojson"]["features"]}
+    assert badges[2] == "Weeds" and badges[1] is None
+    dimmed = overlay["spotlight"]["features"][0]["geometry"]
+    assert dimmed["type"] == "Polygon" and len(dimmed["coordinates"]) == 2  # the photo with one hole
+
+
+def test_problem_answers_show_bare_spots_inside_plots_with_gaps(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {3: {"problems": ["gaps"]}, 5: {"problems": ["yellowing"]}}))
+    assert [f["properties"]["number"] for f in drone_cards.plots_to_measure_spots("plot_problems", here)] == [3]
+    assert drone_cards.plots_to_measure_spots("weeds", here) == []
+    spots = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"number": 3},
+                                                        "geometry": plots.geojson["features"][2]["geometry"]}]}
+    answer = drone_cards.answer_card("plot_problems", _analysis(photo), "farmer", _replace(here, spots))
+    assert answer["overlay"]["spots"] == spots and "1 spots of 1 m² or more" in answer["what"]
+
+
+def _replace(here, spots):
+    import dataclasses
+
+    return dataclasses.replace(here, spots=spots)
+
+
+def _records():
+    from src.services import farm_records
+
+    soil = farm_records.FarmDocument(
+        id="s", filename="report.pdf", file_key="k", kind=farm_records.SOIL_REPORT, title="Soil report",
+        source="Example Soil Laboratory", date="26/09/2026", added_at="2026-10-07T00:00:00+00:00",
+        soil_samples=[farm_records.SoilSample("S1", "Plot 3", "0-20 cm", 4.9, 0.95, 0.08, 4.1, "Bray II", 0.12, "Sandy loam"),
+                      farm_records.SoilSample("S2", "Plot 5", "0-20 cm", 6.1, 1.9, 0.16, 17.5, "Bray II", 0.42, "Clay loam")])
+    harvest = farm_records.FarmDocument(
+        id="h", filename="register.jpg", file_key="k2", kind=farm_records.HARVEST_RECORDS, title="Harvest register",
+        source=None, date=None, added_at="2026-10-07T00:00:00+00:00",
+        harvests=[farm_records.Harvest("3", "Test farmer 3", "maize", "2026A", None, 190, 0.10),
+                  farm_records.Harvest("5", "Test farmer 5", "maize", "2026A", None, 640, 0.15)])
+    return (soil, harvest)
+
+
+def test_the_soil_card_answers_from_the_lab_report(photo):
+    here = drone_cards.Here(plots=_plot_set(), records=_records())
+    answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.READY
+    assert answer["what"].startswith("Your lab report (Example Soil Laboratory, 26/09/2026) has 2 samples.")
+    assert "lime Plot 3" in answer["todo"] and answer["items"][0]["title"] == "Plot 3"
+    assert answer["facts"][0]["value"] == "pH 4.9 · N 0.08 % · P 4.1 mg/kg · K 0.12 cmol/kg"
+    assert answer["ask_sage"][0]["label"] == "How much lime for pH 4.9 in Plot 3?"
+
+
+def test_the_history_card_answers_from_harvests_and_links_the_soil(photo):
+    here = drone_cards.Here(plots=_plot_set(), records=_records())
+    answer = drone_cards.answer_card("history", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.READY
+    assert "Best: 5 (4.3 t/ha); lowest: 3 (1.9 t/ha)" in answer["what"]
+    assert "3 also tested acidic" in answer["what"]
+    assert answer["upload"]["href"] == "/api/layer/Ltest/records"
+
+
+def test_without_records_the_soil_and_history_cards_offer_to_read_a_document(photo, monkeypatch):
+    monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "error", "error": "offline"})
+    for card in ("soil", "history"):
+        answer = drone_cards.answer_card(card, _analysis(photo), "farmer", drone_cards.Here())
+        assert answer["upload"]["accept"].startswith(".pdf")

@@ -7,17 +7,22 @@ import {
   ChevronRight,
   CircleDashed,
   Download,
+  FileUp,
   Hammer,
   LoaderCircle,
+  MessageCircle,
   Plane,
+  Shuffle,
   X,
 } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  type AskSage,
   type DroneCard,
   type DroneCardAnswer,
   type DroneDeck,
+  useAddFarmRecord,
   useChoosePlotSource,
   useDroneCardAnswer,
   useDroneDeck,
@@ -37,6 +42,13 @@ const PHONE_SHEET_SHARE = 0.52;
 
 const SOURCE = 'drone-card-overlay';
 const LAYERS = { fill: 'drone-card-fill', casing: 'drone-card-casing', line: 'drone-card-line', label: 'drone-card-label' };
+// The rest of the photo is dimmed under the plots an answer points at, so they stand out at a glance.
+const SPOTLIGHT = { source: 'drone-card-spotlight', fill: 'drone-card-spotlight-fill' };
+// Exact spots measured inside those plots (bare soil), drawn bright above everything else.
+const SPOTS = { source: 'drone-card-spots', fill: 'drone-card-spots-fill', line: 'drone-card-spots-line' };
+// A short word on each plot that matters ("Gaps", "Weeds", "Maize"), dark on caramel so it reads like a tag.
+const BADGE_LAYER = 'drone-card-badge';
+const BADGE_MIN_ZOOM = 13.5;
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 // The satellite basemap's glyph server has this font; plot numbers show from this zoom on.
 const LABEL_FONT = ['Open Sans Semibold'];
@@ -199,6 +211,68 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
+function AskSageChips({ asks, onAsk, label }: { asks: AskSage[]; onAsk: (prompt: string) => void; label: string }) {
+  if (asks.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-semibold text-[#B8A99B]">{label}</span>
+      <div className="flex flex-col gap-1.5">
+        {asks.map((ask) => (
+          <button
+            key={ask.label}
+            type="button"
+            title={ask.prompt}
+            onClick={() => onAsk(ask.prompt)}
+            className="flex items-center gap-2.5 min-h-11 px-3.5 rounded-[14px] text-left text-[14px] font-semibold text-[#F3EDE6] bg-[#D9A066]/[0.1] border border-[#D9A066]/35 hover:bg-[#D9A066]/[0.18] cursor-pointer"
+          >
+            <MessageCircle className="size-4 shrink-0 text-[#D9A066]" />
+            <span className="leading-snug">{ask.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable<DroneCardAnswer['upload']> }) {
+  const add = useAddFarmRecord(layerId);
+  const input = useRef<HTMLInputElement>(null);
+  const result = add.data;
+  return (
+    <div className="flex flex-col gap-2">
+      <input
+        ref={input}
+        type="file"
+        accept={upload.accept}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) add.mutate({ href: upload.href, file });
+          e.target.value = '';
+        }}
+      />
+      <button
+        type="button"
+        disabled={add.isPending}
+        onClick={() => input.current?.click()}
+        className="inline-flex items-center justify-center gap-2 min-h-11 px-4 rounded-[14px] text-[14px] font-semibold bg-[#D9A066] text-[#140E0B] hover:bg-[#E9B987] disabled:opacity-60 cursor-pointer"
+      >
+        {add.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <FileUp className="size-4" />}
+        {add.isPending ? 'Reading your document…' : upload.label}
+      </button>
+      {result && (
+        <p className="m-0 text-[13px] leading-snug text-[#D8CCBF]">
+          {result.kind === 'soil_report' && `Read ${result.soil_samples} soil samples.`}
+          {result.kind === 'harvest_records' && `Read ${result.harvests} harvests.`}
+          {result.kind === 'other' && 'This does not look like a soil report or harvest records; nothing was added to the cards.'}
+          {result.warnings.length > 0 && ` Note: ${result.warnings.join(' ')}`}
+        </p>
+      )}
+      {add.error && <p className="m-0 text-[13px] text-[#E9B987]">{add.error.message}</p>}
+    </div>
+  );
+}
+
 function Progress({ progress }: { progress: NonNullable<DroneCardAnswer['progress']> }) {
   const share = progress.parts ? progress.done / progress.parts : 0;
   return (
@@ -258,11 +332,13 @@ function AnswerView({
   layerId,
   onBack,
   onGoTo,
+  onAskSage,
 }: {
   answer: DroneCardAnswer;
   layerId: string;
   onBack: () => void;
   onGoTo: (lon: number, lat: number) => void;
+  onAskSage: (prompt: string) => void;
 }) {
   const [openTerm, setOpenTerm] = useState<string | null>(null);
   const termRef = useRef<HTMLDivElement>(null);
@@ -318,6 +394,13 @@ function AnswerView({
         </div>
       )}
 
+      {answer.overlay?.spots && answer.overlay.spots.features.length > 0 && (
+        <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
+          <span className="inline-block h-3 w-4 rounded-[3px] bg-[#FF6B3D]" />
+          {answer.overlay.spots_legend}
+        </span>
+      )}
+
       {answer.choices && <Choices layerId={layerId} choices={answer.choices} />}
 
       <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
@@ -337,11 +420,19 @@ function AnswerView({
                 key={item.id}
                 type="button"
                 onClick={() => onGoTo(item.lon, item.lat)}
-                className="flex items-center justify-between gap-3 min-h-11 px-4 text-left hover:bg-white/[0.04] cursor-pointer"
+                className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5 text-left hover:bg-white/[0.04] cursor-pointer"
               >
-                <span className="flex flex-col">
+                {item.picture && (
+                  <img
+                    src={item.picture}
+                    alt={`What the vision model saw of ${item.title}`}
+                    loading="lazy"
+                    className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
+                  />
+                )}
+                <span className="flex flex-col flex-1 min-w-0">
                   <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
-                  <span className="text-[13px] text-[#B8A99B] tabular-nums">{item.detail}</span>
+                  <span className="text-[13px] leading-snug text-[#B8A99B] tabular-nums">{item.detail}</span>
                 </span>
                 <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
               </button>
@@ -379,6 +470,10 @@ function AnswerView({
           )}
         </Section>
       </div>
+
+      {answer.upload && <AddDocument layerId={layerId} upload={answer.upload} />}
+
+      <AskSageChips asks={answer.ask_sage} onAsk={onAskSage} label="Ask Sage for more" />
 
       {answer.downloads.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -442,6 +537,8 @@ function DeckView({
   onPickPhoto,
   onPickAudience,
   onOpen,
+  onShuffle,
+  onAskSage,
 }: {
   deck: DroneDeck;
   photos: MapLayer[];
@@ -449,6 +546,8 @@ function DeckView({
   onPickPhoto: (id: string) => void;
   onPickAudience: (id: string) => void;
   onOpen: (id: string) => void;
+  onShuffle: () => void;
+  onAskSage: (prompt: string) => void;
 }) {
   const [servicesOpen, setServicesOpen] = useState(false);
   const { photo } = deck;
@@ -492,11 +591,23 @@ function DeckView({
       </div>
 
       <div className="flex flex-col gap-2.5">
-        <span className="text-[13px] font-semibold text-[#B8A99B]">For this photo</span>
+        <div className="flex items-center justify-between">
+          <span className="text-[13px] font-semibold text-[#B8A99B]">For this photo</span>
+          <button
+            type="button"
+            onClick={onShuffle}
+            className="inline-flex items-center gap-1.5 min-h-8 px-2.5 rounded-full text-[13px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+          >
+            <Shuffle className="size-3.5" />
+            Other questions
+          </button>
+        </div>
         {deck.for_you.map((card) => (
           <CardButton key={card.id} card={card} onOpen={onOpen} />
         ))}
       </div>
+
+      <AskSageChips asks={deck.ask_sage} onAsk={onAskSage} label="Ask Sage about this photo" />
 
       <div className="flex flex-col gap-2">
         <button
@@ -540,6 +651,14 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
     const overlay = answer?.overlay ?? null;
     const apply = () => {
       try {
+        if (!map.getSource(SPOTLIGHT.source)) map.addSource(SPOTLIGHT.source, { type: 'geojson', data: EMPTY });
+        if (!map.getLayer(SPOTLIGHT.fill))
+          map.addLayer({
+            id: SPOTLIGHT.fill,
+            type: 'fill',
+            source: SPOTLIGHT.source,
+            paint: { 'fill-color': '#0B0908', 'fill-opacity': 0.58 },
+          });
         if (!map.getSource(SOURCE)) map.addSource(SOURCE, { type: 'geojson', data: EMPTY });
         if (!map.getLayer(LAYERS.fill)) map.addLayer({ id: LAYERS.fill, type: 'fill', source: SOURCE, paint: {} });
         if (!map.getLayer(LAYERS.casing)) map.addLayer({ id: LAYERS.casing, type: 'line', source: SOURCE, paint: {} });
@@ -559,6 +678,37 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
             },
             paint: { 'text-color': '#FFF7EC', 'text-halo-color': '#0B0908', 'text-halo-width': 1.6 },
           });
+        if (!map.getSource(SPOTS.source)) map.addSource(SPOTS.source, { type: 'geojson', data: EMPTY });
+        if (!map.getLayer(SPOTS.fill))
+          map.addLayer({
+            id: SPOTS.fill,
+            type: 'fill',
+            source: SPOTS.source,
+            paint: { 'fill-color': '#FF6B3D', 'fill-opacity': 0.85 },
+          });
+        if (!map.getLayer(SPOTS.line))
+          map.addLayer({
+            id: SPOTS.line,
+            type: 'line',
+            source: SPOTS.source,
+            paint: { 'line-color': '#FFF1E6', 'line-width': 1.2 },
+          });
+        if (!map.getLayer(BADGE_LAYER))
+          map.addLayer({
+            id: BADGE_LAYER,
+            type: 'symbol',
+            source: SOURCE,
+            minzoom: BADGE_MIN_ZOOM,
+            filter: ['has', 'badge'],
+            layout: {
+              'text-field': ['get', 'badge'],
+              'text-font': LABEL_FONT,
+              'text-size': 13,
+              'text-offset': [0, -1.1],
+              'symbol-placement': 'point',
+            },
+            paint: { 'text-color': '#140E0B', 'text-halo-color': '#F2C14E', 'text-halo-width': 3.5 },
+          });
       } catch {
         map.once('idle', apply);
         return;
@@ -573,6 +723,8 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       map.setPaintProperty(LAYERS.line, 'line-width', style.width);
       map.setLayoutProperty(LAYERS.label, 'visibility', overlay && style.numbers ? 'visible' : 'none');
       (map.getSource(SOURCE) as GeoJSONSource).setData(overlay?.geojson ?? EMPTY);
+      (map.getSource(SPOTLIGHT.source) as GeoJSONSource).setData(overlay?.spotlight ?? EMPTY);
+      (map.getSource(SPOTS.source) as GeoJSONSource).setData(overlay?.spots ?? EMPTY);
     };
     apply();
     map.on('style.load', apply);
@@ -580,7 +732,7 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       map.off('style.load', apply);
       map.off('idle', apply);
       try {
-        (map.getSource(SOURCE) as GeoJSONSource | undefined)?.setData(EMPTY);
+        for (const id of [SOURCE, SPOTLIGHT.source, SPOTS.source]) (map.getSource(id) as GeoJSONSource | undefined)?.setData(EMPTY);
       } catch {
         /* style mid-reload */
       }
@@ -607,11 +759,18 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       popup = new Popup({ closeButton: false, className: 'drone-card-popup' }).setLngLat(e.lngLat).setText(String(label)).addTo(map);
     };
     map.on('click', LAYERS.fill, onClick);
+    map.on('click', SPOTS.fill, onClick);
     return () => {
       map.off('click', LAYERS.fill, onClick);
+      map.off('click', SPOTS.fill, onClick);
       popup?.remove();
     };
   }, [map, answer]);
+}
+
+/** A new mix of questions each time the panel opens, and on "Other questions". */
+function newSeed() {
+  return 1 + Math.floor(Math.random() * 1_000_000);
 }
 
 export function DroneCards({
@@ -619,13 +778,17 @@ export function DroneCards({
   layers,
   hiddenLayerIDs,
   historyOpen,
+  onAskSage,
 }: {
   map: MLMap | null;
   layers: MapLayer[];
   hiddenLayerIDs: string[];
   /** "Previous chats" is open; below xl it covers the right side of the map, so the cards step aside. */
   historyOpen: boolean;
+  /** Sends a question to Sage in the chat. */
+  onAskSage: (prompt: string) => void;
 }) {
+  const [seed, setSeed] = useState(newSeed);
   const photos = useMemo(() => layers.filter((l) => l.type === 'raster' && !hiddenLayerIDs.includes(l.id)), [layers, hiddenLayerIDs]);
   const [layerId, setLayerId] = useState<string | null>(null);
   const [audience, setAudience] = useState<string | null>(null);
@@ -640,8 +803,8 @@ export function DroneCards({
     }
   }, [photos, layerId]);
 
-  const deck = useDroneDeck(layerId, audience);
-  const answer = useDroneCardAnswer(layerId, openCard, audience);
+  const deck = useDroneDeck(layerId, audience, seed);
+  const answer = useDroneCardAnswer(layerId, openCard, audience, seed);
   useAnswerOverlay(map, collapsed ? null : (answer.data ?? null), deck.data?.photo.bounds ?? null);
 
   // A photo the cards cannot read (not a colour photo, not a raster) shows no panel.
@@ -701,6 +864,8 @@ export function DroneCards({
             }}
             onPickAudience={setAudience}
             onOpen={setOpenCard}
+            onShuffle={() => setSeed(newSeed())}
+            onAskSage={onAskSage}
           />
         )}
         {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Working out the answer…</p>}
@@ -722,6 +887,7 @@ export function DroneCards({
             layerId={layerId}
             onBack={() => setOpenCard(null)}
             onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, padding: panelPadding(), duration: 900 })}
+            onAskSage={onAskSage}
           />
         )}
       </div>
