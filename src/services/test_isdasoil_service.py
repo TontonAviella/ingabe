@@ -19,6 +19,9 @@ RAW = {
     "carbon_organic": [28.17, 23.0, 1.09, 1.1],
     "ph": [58.14, 56.8, 1.01, 1.17],
     "clay_content": [35.68, 39.94, 4.13, 5.2],
+    "sand_content": [43.95, 41.31, 5.28, 5.86],
+    "silt_content": [16.9, 16.28, 1.52, 1.49],
+    "stone_content": [5.82, 6.27, 2.88, 2.91],
     "texture_class": [4.22, 4.4],
     "zinc_extractable": [3.0, 0.0, 5.0, 0.0],  # stdev larger than the mean; nodata at 20-50
     "iron_extractable": [40.0, 41.0, 0.0, 0.0],  # no stdev
@@ -72,6 +75,24 @@ def test_range_never_goes_below_zero(soil):
 def test_result_says_what_the_spread_fields_mean(soil):
     result = isdasoil_service.query_soil_point(*CYAMPIRITA, properties=["ph"])
     assert "68%" in result["spread_note"]
+
+
+def test_texture_fractions_are_stored_in_percent(soil):
+    # Before: x / 10 gave 3.57% clay, 4.4% sand, 1.69% silt (9.7% in all) on a soil the
+    # texture band calls clay loam. iSDAsoil stores them in % (STAC: no back-transformation).
+    props = soil("clay_content", "sand_content", "silt_content")
+    assert {name: entry["value"] for name, entry in props.items()} == {
+        "clay_content": 35.68, "sand_content": 43.95, "silt_content": 16.9,
+    }
+    assert 95 < sum(entry["value"] for entry in props.values()) < 105
+    assert (props["clay_content"]["uncertainty"], props["clay_content"]["likely_range"]) == (4.13, [31.55, 39.81])
+
+
+def test_stone_content_is_log_scaled(soil):
+    # Before: x / 10, 0.58 +/- 0.29 %. STAC and the FAQ give it as log-scaled, expm1(x / 10).
+    stone = soil("stone_content")["stone_content"]
+    assert (stone["value"], stone["likely_range"]) == (0.79, [0.34, 1.39])
+    assert "uncertainty" not in stone
 
 
 def test_deeper_layer_reads_its_own_bands(soil):

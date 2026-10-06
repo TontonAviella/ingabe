@@ -55,6 +55,10 @@ SPREAD_NOTE = (
 
 # All 21 available soil properties with their back-transformation and units.
 # Back-transform functions convert raw uint8/uint16 COG values to real-world units.
+# They follow the "back-transformation" of each iSDAsoil STAC item
+# (soil_data/<prop>/<prop>.json), except nitrogen_total: STAC says expm1(x/10),
+# which turns the raw 89 read at Cyampirita into 7,331 g/kg (more than the
+# whole soil); expm1(x/100) gives 1.44 g/kg.
 # fmt: off
 SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "ph": {
@@ -90,19 +94,19 @@ SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "clay_content": {
         "label": "Clay Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Clay fraction — affects water retention and nutrient holding",
     },
     "sand_content": {
         "label": "Sand Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Sand fraction — affects drainage and aeration",
     },
     "silt_content": {
         "label": "Silt Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Silt fraction — affects soil structure",
     },
     "bulk_density": {
@@ -162,7 +166,7 @@ SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "stone_content": {
         "label": "Stone Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        **_log_scaled(10.0),
         "description": "Coarse fragment content",
     },
     "bedrock_depth": {
