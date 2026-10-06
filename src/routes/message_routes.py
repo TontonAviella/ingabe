@@ -96,6 +96,7 @@ from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
     apply_tool_shortlist,
     build_sage_tools_payload,
+    guard_tool_calls,
     guard_tools,
     RATE_LIMIT_RETRIES,
     is_abdication,
@@ -1165,7 +1166,7 @@ async def _run_abdication_guard(
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
-    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    calls = guard_tool_calls(getattr(response.choices[0].message, "tool_calls", None) or [])
     logger.info(
         "sage_routing: abdication guard fired (tools=%s) -> %s",
         ",".join(t["function"]["name"] for t in tools),
