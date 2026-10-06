@@ -161,7 +161,7 @@ def _plot_set(n=10):
                          "properties": {"number": i + 1, "area_ha": 0.79, "greenness": greenness,
                                         "bare_share": 0.4 if i == 2 else 0.0, "confidence": 0.5,
                                         "lon": lon + 0.0004, "lat": -1.5004}})
-    groups = drone_plots._groups([f["properties"]["greenness"] for f in features])
+    groups = drone_plots.plot_groups([(f["properties"]["greenness"], f["properties"]["bare_share"]) for f in features])
     for f, group in zip(features, groups):
         f["properties"]["group"] = group
     return drone_plots.PlotSet(geojson={"type": "FeatureCollection", "features": features},
@@ -182,7 +182,7 @@ def test_least_green_plots_are_named_and_drawn(photo):
     answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)
     assert answer["status"] == drone_cards.READY
     assert answer["items"][0]["title"] == "Plot 3"
-    assert "plots 3 and 1" in answer["what"]
+    assert answer["what"].startswith("Of the 10 plots with a crop") and "plots 3 and 1" in answer["what"]
     assert answer["overlay"]["kind"] == "plot_groups"
     assert {d["label"] for d in answer["downloads"]} == {"Excel table", "Shapefile", "GeoJSON"}
 

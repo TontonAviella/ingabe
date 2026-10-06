@@ -71,8 +71,12 @@ BLOCK_PLOTS = 2  # an outline around this many kept plots is a block of plots (a
 
 STATS_M_PER_PX = 0.25  # greenness and bare ground per plot are read at this detail
 MIN_MEASURED_SHARE = 0.5  # below this share of readable pixels a plot's greenness is unknown
-TAIL_SHARE = 0.2  # the least green and the greenest fifth of the plots in a photo
+TAIL_SHARE = 0.2  # the least green and the greenest fifth of the plots with a crop in a photo
+# A plot with at least this share of bare soil is just prepared, just planted or harvested: comparing its
+# greenness with plots in full crop says nothing about the crop (on Cyampirita 81 of 445 plots).
+MOSTLY_BARE = 0.5
 
+MOSTLY_SOIL = "mostly_soil"
 LEAST_GREEN = "least_green"
 BETWEEN = "between"
 GREENEST = "greenest"
@@ -262,15 +266,23 @@ def _photo_m_per_px(ds: Any) -> float:
     return _GEOD.inv(west, lat, east, lat)[2] / ds.width
 
 
-def _groups(greenness: list[Optional[float]]) -> list[str]:
-    """Least green and greenest fifth of the measured plots; the rest in between."""
-    measured = sorted(g for g in greenness if g is not None)
-    if len(measured) < 5:
-        return [UNKNOWN if g is None else BETWEEN for g in greenness]
-    tail = max(1, int(len(measured) * TAIL_SHARE))
-    low_cut, high_cut = measured[tail - 1], measured[-tail]
-    return [UNKNOWN if g is None else LEAST_GREEN if g <= low_cut else GREENEST if g >= high_cut else BETWEEN
-            for g in greenness]
+def plot_groups(measures: list[tuple[Optional[float], Optional[float]]]) -> list[str]:
+    """Each plot's group from its (greenness, bare share): mostly soil apart, then the least green and the
+    greenest fifth of the plots with a crop, the rest in between; unknown when not measured."""
+    with_crop = sorted(g for g, bare in measures if g is not None and bare is not None and bare < MOSTLY_BARE)
+    tail = max(1, int(len(with_crop) * TAIL_SHARE))
+    low_cut, high_cut = (with_crop[tail - 1], with_crop[-tail]) if len(with_crop) >= 5 else (None, None)
+
+    def group(greenness: Optional[float], bare: Optional[float]) -> str:
+        if greenness is None or bare is None:
+            return UNKNOWN
+        if bare >= MOSTLY_BARE:
+            return MOSTLY_SOIL
+        if low_cut is None or high_cut is None:
+            return BETWEEN
+        return LEAST_GREEN if greenness <= low_cut else GREENEST if greenness >= high_cut else BETWEEN
+
+    return [group(g, bare) for g, bare in measures]
 
 
 def _plot_set(ds: Any, found: list[tuple[float, Polygon]], source: str, seconds: float) -> PlotSet:
@@ -278,7 +290,7 @@ def _plot_set(ds: Any, found: list[tuple[float, Polygon]], source: str, seconds:
     to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
     outlines = [p for _, p in found]
     measures = _measure(ds, outlines)
-    groups = _groups([g for g, _ in measures])
+    groups = plot_groups(measures)
     features = []
     for number, i in enumerate(_north_west_order(outlines), start=1):
         conf, outline = found[i]
@@ -441,8 +453,8 @@ def start_finding(s3: Any, bucket: str, photo_key: str, cog_url: str) -> PlotJob
 
 # --- Files to download ----------------------------------------------------------------------
 
-GROUP_LABELS = {LEAST_GREEN: "Least green fifth", BETWEEN: "In between", GREENEST: "Greenest fifth",
-                UNKNOWN: "Not measured"}
+GROUP_LABELS = {MOSTLY_SOIL: "Mostly soil showing", LEAST_GREEN: "Least green fifth", BETWEEN: "In between",
+                GREENEST: "Greenest fifth", UNKNOWN: "Not measured"}
 
 _COLUMNS = [  # (heading, property, Shapefile field of 10 characters at most)
     ("Plot", "number", "plot"),
@@ -488,8 +500,9 @@ def to_xlsx(plots: PlotSet, photo_name: str) -> bytes:
         ("Greenness", f"mean GRVI = (green - red) / (green + red), read at {STATS_M_PER_PX} m per pixel. "
                       "Greenness, not health: a colour camera cannot see stress that still looks green."),
         ("Bare ground", f"share of the plot with GRVI below {BARE_PIXEL}"),
-        ("Group", "the least green and the greenest fifth of the plots in this photo. Least green can also mean "
-                  "just planted or just harvested."),
+        ("Group", f"plots with {round(MOSTLY_BARE * 100)}% or more bare soil are 'mostly soil showing' (just "
+                  "prepared, just planted or harvested). The others, with a crop, are split into the least green "
+                  "fifth, the greenest fifth and those in between, compared within this photo."),
         ("Empty cells", "not measured: too little of the plot is on the photo"),
     ]
     for r, (label, text) in enumerate(lines):

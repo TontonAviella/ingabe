@@ -405,8 +405,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id == "plots_green" and plots is not None:
         least = _least_green(plots)
         if not least:
-            return f"{plots.count} plots found; too few measured to compare."
-        return f"Plots {_numbers(least[:3])} are the least green of {plots.count}."
+            return f"{plots.count} plots found; too few with a crop to compare."
+        return f"Of the plots with a crop, {_numbers(least[:3])} are the least green."
     if card_id == "weak_spots":
         hot = look.green.hotspots
         if hot:
@@ -729,9 +729,12 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
         return _plots_pending("plots_green", analysis, audience, here)
     technical = _tone(audience) == "technical"
     least = _least_green(plots)
-    measured = [p for p in plots.plots() if p["greenness"] is not None]
+    with_crop = [p for p in plots.plots() if p["group"] in (drone_plots.LEAST_GREEN, drone_plots.BETWEEN,
+                                                            drone_plots.GREENEST)]
+    soil = [p for p in plots.plots() if p["group"] == drone_plots.MOSTLY_SOIL]
     group_label = {drone_plots.LEAST_GREEN: "least green", drone_plots.GREENEST: "greenest",
-                   drone_plots.BETWEEN: "in between", drone_plots.UNKNOWN: "not measured"}
+                   drone_plots.BETWEEN: "in between", drone_plots.MOSTLY_SOIL: "mostly soil showing",
+                   drone_plots.UNKNOWN: "not measured"}
 
     def label(p: dict[str, Any]) -> str:
         text = f"Plot {p['number']} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
@@ -739,22 +742,25 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
 
     features = [{**f, "properties": {**f["properties"], "label": label(f["properties"])}}
                 for f in plots.geojson["features"]]
-    overlay = {"kind": "plot_groups", "legend": "Least green fifth of the plots",
+    overlay = {"kind": "plot_groups", "legend": "Least green fifth of the plots with a crop",
                "geojson": {"type": "FeatureCollection", "features": features}}
     if not least:
         return _answer(
             "plots_green", analysis, here,
-            what=f"{plots.count} plots found, but too few could be measured to compare them.",
-            why="Comparing needs at least 5 plots that lie fully on the photo.",
+            what=f"{plots.count} plots found, but too few have a crop to compare them.",
+            why="Comparing needs at least 5 plots with a crop that lie fully on the photo.",
             todo="Fly a wider area, or ask about the whole photo instead.",
             how_sure=_how_sure("low", ["Too few plots measured"], None),
             terms=["greenness"], audience=audience, overlay=overlay)
     first = least[:3]
     least_ha = sum(p["area_ha"] for p in least)
-    what = (f"Of the {len(measured)} plots measured, {len(least)} are the least green ({_ha(least_ha)}), "
+    what = (f"Of the {len(with_crop)} plots with a crop, {len(least)} are the least green ({_ha(least_ha)}), "
             f"filled on the photo. Least green first: plots {_numbers(least[:5])}.")
+    if soil:
+        what += (f" {len(soil)} more plots show mostly bare soil (just prepared, planted or harvested) and are "
+                 "shaded lightly; the bare-ground question covers them.")
     if technical:
-        greenness = sorted(p["greenness"] for p in measured)
+        greenness = sorted(p["greenness"] for p in with_crop)
         what += (f" Mean GRVI of the least green plot {least[0]['greenness']:.3f}; middle plot "
                  f"{greenness[len(greenness) // 2]:.3f}.")
     if audience == "insurance":
@@ -763,25 +769,27 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
         todo = (f"Before judging a claim on plots {_numbers(first)}, compare with an earlier flight or the "
                 "planting dates.")
     elif technical:
-        why = ("Low greenness can mean water or nutrient stress, gaps, weeds cleared, or a different stage. "
-               "It is relative to the other plots in this photo.")
+        why = ("Low greenness can mean water or nutrient stress, gaps, weeds cleared, or a later stage. It is "
+               f"relative to the other plots with a crop in this photo (under {round(drone_plots.MOSTLY_BARE * 100)}% "
+               "bare soil).")
         todo = f"Scout plots {_numbers(first)} first: check the stage, gaps, water, nutrients and pests."
     else:
-        why = ("Less green can mean plants short of water or food, missing plants, or bare soil. A plot just "
-               "planted or just harvested is also less green, so look before acting.")
+        why = ("Less green can mean plants short of water or food, missing plants, or weeds cleared. A crop "
+               "planted later than its neighbours is also less green, so look before acting.")
         todo = f"Walk to plots {_numbers(first)} first and look at the plants and the soil. Tap a plot to see its number."
     items = [{"id": str(p["number"]), "title": f"Plot {p['number']}",
-              "detail": f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare" if p["bare_share"] else ""),
+              "detail": f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""),
               "lon": p["lon"], "lat": p["lat"]} for p in least[:5]]
-    facts = [{"label": "Plots measured", "value": str(len(measured))},
+    facts = [{"label": "Plots with a crop", "value": str(len(with_crop))},
              {"label": "Least green fifth", "value": f"{len(least)} plots, {_ha(least_ha)}"},
-             {"label": "Compared with", "value": "the other plots in this photo"},
+             {"label": "Mostly soil showing", "value": f"{len(soil)} plots"},
+             {"label": "Compared with", "value": "the other plots with a crop in this photo"},
              {"label": "Outlines", "value": _plot_source(plots)}]
     return _answer(
         "plots_green", analysis, here, what=what, why=why, todo=todo,
         how_sure=_how_sure("medium", [
             "Greenness from a colour camera, not health",
-            "Compared only with the other plots in this photo",
+            "Compared only with the other plots with a crop in this photo",
             "Not checked on the ground",
         ], f"Look at plots {_numbers(first)} on foot and note what you find."),
         terms=["greenness", "colour_camera"], audience=audience, overlay=overlay, facts=facts, items=items,

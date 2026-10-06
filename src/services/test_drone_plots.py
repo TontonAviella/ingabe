@@ -63,20 +63,21 @@ def test_plots_are_numbered_from_the_north_west_with_true_areas(plots):
     assert plots.total_ha == pytest.approx(6 * 0.64, rel=0.02)
 
 
-def test_the_bare_plot_is_the_least_green_and_mostly_bare(plots):
+def test_the_bare_plot_is_set_apart_and_the_others_compared(plots):
     by_number = {p["number"]: p for p in plots.plots()}
     bare = by_number[BARE_PLOT + 1]
-    assert bare["group"] == drone_plots.LEAST_GREEN
-    assert bare["bare_share"] > 0.9
+    assert bare["bare_share"] > 0.9 and bare["group"] == drone_plots.MOSTLY_SOIL
     assert by_number[6]["group"] == drone_plots.GREENEST
-    assert min(plots.plots(), key=lambda p: p["greenness"])["number"] == BARE_PLOT + 1
+    assert {by_number[n]["group"] for n in (1, 2, 4, 5)} == {drone_plots.LEAST_GREEN}  # tied, all at the cut
 
 
-def test_groups_need_five_measured_plots_and_keep_unknown_apart():
-    assert drone_plots._groups([0.1, 0.2, None]) == [drone_plots.BETWEEN, drone_plots.BETWEEN, drone_plots.UNKNOWN]
-    groups = drone_plots._groups([0.05, 0.1, 0.15, 0.2, 0.25, None])
+def test_groups_compare_only_plots_with_a_crop():
+    crop = [(0.05, 0.1), (0.1, 0.0), (0.15, 0.2), (0.2, 0.0), (0.25, 0.1)]
+    groups = drone_plots.plot_groups(crop + [(None, None), (-0.1, 0.9)])
     assert groups[0] == drone_plots.LEAST_GREEN and groups[4] == drone_plots.GREENEST
-    assert groups[5] == drone_plots.UNKNOWN
+    assert groups[5] == drone_plots.UNKNOWN and groups[6] == drone_plots.MOSTLY_SOIL
+    few = drone_plots.plot_groups([(0.1, 0.0), (0.2, 0.0), (-0.2, 0.95)])
+    assert few == [drone_plots.BETWEEN, drone_plots.BETWEEN, drone_plots.MOSTLY_SOIL]
 
 
 def test_a_plot_off_the_photo_is_not_measured(photo):

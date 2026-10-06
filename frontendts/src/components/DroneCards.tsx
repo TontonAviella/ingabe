@@ -47,8 +47,9 @@ type OverlayStyle = {
   swatch: { fill: string; line: string };
 };
 
-// Plots in the least green fifth are filled; the server sets each plot's group.
-const LEAST_GREEN: ExpressionSpecification = ['==', ['get', 'group'], 'least_green'];
+// Plots in the least green fifth are filled, plots showing mostly soil shaded lightly; the server sets each group.
+const BY_GROUP = <T,>(leastGreen: T, mostlySoil: T, other: T): ExpressionSpecification =>
+  ['match', ['get', 'group'], 'least_green', leastGreen, 'mostly_soil', mostlySoil, other] as ExpressionSpecification;
 
 // How each kind of answer is drawn on the photo (styling only; the kind comes from the server).
 const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], OverlayStyle> = {
@@ -65,10 +66,10 @@ const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], Ove
   outline: { fill: '#F3EDE6', fillOpacity: 0, line: '#F3EDE6', width: 2, numbers: false, swatch: { fill: '#00000000', line: '#F3EDE6' } },
   plots: { fill: '#F3EDE6', fillOpacity: 0.04, line: '#F3EDE6', width: 1.5, numbers: true, swatch: { fill: '#F3EDE611', line: '#F3EDE6' } },
   plot_groups: {
-    fill: '#E8743B',
-    fillOpacity: ['case', LEAST_GREEN, 0.5, 0.03],
-    line: ['case', LEAST_GREEN, '#FFF1E6', '#F3EDE6'],
-    width: ['case', LEAST_GREEN, 2.5, 1],
+    fill: BY_GROUP('#E8743B', '#F0C896', '#F3EDE6'),
+    fillOpacity: BY_GROUP(0.5, 0.18, 0.03),
+    line: BY_GROUP('#FFF1E6', '#F0C896', '#F3EDE6'),
+    width: BY_GROUP(2.5, 1, 1),
     numbers: true,
     swatch: { fill: '#E8743B88', line: '#FFF1E6' },
   },
