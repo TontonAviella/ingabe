@@ -162,6 +162,13 @@ function panelPadding() {
     : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
 }
 
+/** Shift that puts a point in the middle of the free part of the map. An offset, not `padding`: padding given to
+ * flyTo stays on the map and adds to the next fitBounds, which then cannot fit on a phone and does nothing. */
+function panelOffset(): [number, number] {
+  const p = panelPadding();
+  return [(p.left - p.right) / 2, (p.top - p.bottom) / 2];
+}
+
 function readCollapsed(): boolean {
   try {
     return localStorage.getItem(COLLAPSED_KEY) === '1';
@@ -904,7 +911,7 @@ export function DroneCards({
             answer={answer.data}
             layerId={layerId}
             onBack={() => setOpenCard(null)}
-            onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, padding: panelPadding(), duration: 900 })}
+            onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, offset: panelOffset(), duration: 900 })}
             onAskSage={onAskSage}
           />
         )}
