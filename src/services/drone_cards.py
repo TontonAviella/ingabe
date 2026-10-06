@@ -1501,7 +1501,8 @@ def _asks(card_id: str, analysis: PhotoAnalysis, here: Here, items: list[dict[st
         + [(f"Which pests threaten {crop} now?", f"{ctx}: which pests or diseases are a risk for {crop} in this "
             "district at this time of the season, and what are the first signs to look for?")],
         "crop_types": [(f"How is {crop} doing this season?", f"{ctx}, most plots the model could name grow {crop}. "
-                        f"How is {crop} doing this season in this district: rain, satellite greenness and risks?"),
+                        f"How is {crop} doing this season around this photo, in its cell: rain, satellite greenness "
+                        "and risks?"),
                        ("Which crop suits this soil best?", f"{ctx}: what does the soil here suit best, and what is it "
                         "short of?")],
         "plot_stage": ([(f"Why are plots {names} behind?", f"{ctx}, plots {names} look younger than most plots of the "
