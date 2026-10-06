@@ -409,6 +409,8 @@ def test_the_soil_card_answers_from_the_lab_report(photo):
     assert "lime Plot 3" in answer["todo"] and answer["items"][0]["title"] == "Plot 3"
     assert answer["facts"][0]["value"] == "pH 4.9 · N 0.08 % · P 4.1 mg/kg · K 0.12 cmol/kg"
     assert answer["ask_sage"][0]["label"] == "How much lime for pH 4.9 in Plot 3?"
+    assert "1 low phosphorus" in answer["what"] and "low p," not in answer["what"]
+    assert answer["how_sure"]["level"] == "medium"  # numbers copied by a model from a document
 
 
 def test_the_history_card_answers_from_harvests_and_links_the_soil(photo):
@@ -416,7 +418,8 @@ def test_the_history_card_answers_from_harvests_and_links_the_soil(photo):
     answer = drone_cards.answer_card("history", _analysis(photo), "farmer", here)
     assert answer["status"] == drone_cards.READY
     assert "Best: 5 (4.3 t/ha); lowest: 3 (1.9 t/ha)" in answer["what"]
-    assert "3 also tested acidic" in answer["what"]
+    assert "3 also tested acidic, low phosphorus" in answer["what"]
+    assert answer["how_sure"]["level"] == "medium"
     assert answer["upload"]["href"] == "/api/layer/Ltest/records"
 
 

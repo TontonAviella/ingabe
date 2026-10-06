@@ -1291,13 +1291,15 @@ def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) ->
 # Common guide values for East African soils (0-20 cm); a lab's own guide or the agronomist decides.
 SOIL_GUIDE = {"ph": 5.5, "phosphorus_mg_kg": 15.0, "potassium_cmol_kg": 0.2, "nitrogen_percent": 0.10,
               "organic_carbon_percent": 1.5}
-_SOIL_FLAG_WORDS = {"ph": "Acidic", "phosphorus_mg_kg": "Low P", "potassium_cmol_kg": "Low K",
-                    "nitrogen_percent": "Low N", "organic_carbon_percent": "Low carbon"}
+_SOIL_FLAG_WORDS = {"ph": "Acidic", "phosphorus_mg_kg": "Low phosphorus", "potassium_cmol_kg": "Low potassium",
+                    "nitrogen_percent": "Low nitrogen", "organic_carbon_percent": "Low organic carbon"}
+# Numbers a model copied from a document: the reading can be wrong, so never more than medium.
+_RECORDS_SURE = "medium"
 RECORD_TYPES = ".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.csv"
 
 
 def _soil_flags(sample: farm_records.SoilSample) -> list[str]:
-    """What a lab sample is below the guide in, in short words (Acidic, Low P, ...)."""
+    """What a lab sample is below the guide in, in short words (Acidic, Low phosphorus, ...)."""
     return [_SOIL_FLAG_WORDS[key] for key, guide in SOIL_GUIDE.items()
             if (value := getattr(sample, key)) is not None and value < guide]
 
@@ -1356,7 +1358,7 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
             flags_by_plot[plot["number"]] = ", ".join(words)
             items.append(_plot_item(analysis, plot, f"{', '.join(words)} · pH {_num(sample.ph, 1)}"))
     acidic = [s.place or s.sample for _, s, w in flagged if "Acidic" in w]
-    low_p = [s.place or s.sample for _, s, w in flagged if "Low P" in w]
+    low_p = [s.place or s.sample for _, s, w in flagged if "Low phosphorus" in w]
     steps = []
     if acidic:
         steps.append(f"lime {', '.join(x for x in acidic if x)} before planting (pH below {SOIL_GUIDE['ph']})")
@@ -1374,7 +1376,7 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
     return _answer(
         "soil", analysis, here, what=what,
         why="Acid soil and too little phosphorus hold back maize and beans more than anything else in Rwanda's hills.",
-        todo=todo, how_sure=_how_sure("high" if not warnings else "medium", because + warnings[:2], None),
+        todo=todo, how_sure=_how_sure(_RECORDS_SURE, because + warnings[:2], None),
         terms=["soil_estimate"], audience=audience, facts=facts, items=items, overlay=overlay,
         upload=_upload(analysis, "Add another lab report"))
 
@@ -1431,7 +1433,7 @@ def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
         why="Harvests by plot show which plots keep doing badly, so the next season's effort goes where it pays back in crop.",
         todo=("Walk the lowest plots with this season's photo: are they behind again? Add each new season's records "
               "to see the trend."),
-        how_sure=_how_sure("high" if not warnings else "medium",
+        how_sure=_how_sure(_RECORDS_SURE,
                            ["From your own records", "Read from the document by an AI vision model: check the numbers"]
                            + warnings[:2], None),
         terms=["hectare"], audience=audience, facts=facts, items=items,
