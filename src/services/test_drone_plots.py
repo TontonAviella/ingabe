@@ -187,3 +187,17 @@ def test_kept_plots_round_trip_through_json(plots):
     assert again.geojson == json.loads(json.dumps(plots.geojson))  # tuples come back as lists
     assert (again.found_at, again.source, again.count) == (plots.found_at, plots.source, plots.count)
     assert json.loads(drone_plots.to_geojson(plots))["type"] == "FeatureCollection"
+
+
+def test_a_kml_plot_map_keeps_its_names_and_drops_google_earth_fields(tmp_path):
+    ring = "30.4270,-1.6950,0 30.4275,-1.6950,0 30.4275,-1.6955,0 30.4270,-1.6955,0 30.4270,-1.6950,0"
+    path = tmp_path / "blocks.kml"
+    path.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><Placemark>
+  <name>Block A-01</name>
+  <ExtendedData><Data name="Farmer"><value>Test farmer 1</value></Data></ExtendedData>
+  <Polygon><tessellate>1</tessellate><outerBoundaryIs><LinearRing><coordinates>{ring}</coordinates></LinearRing></outerBoundaryIs></Polygon>
+</Placemark></Document></kml>""")
+    plots = drone_plots.read_plot_map(str(path))
+    assert [p.name for p in plots] == ["Block A-01"]
+    assert plots[0].attributes == {"Name": "Block A-01", "Farmer": "Test farmer 1"}

@@ -89,6 +89,9 @@ UNKNOWN = "unknown"
 PLOT_NAME_COLUMNS = ("upi", "plot_id", "plotid", "plot_no", "plot_name", "plot", "parcel_id", "parcel", "field_id",
                      "field", "block", "name", "label", "code", "id")
 TAG_CHARS = 10  # a plot's own name shows on the photo when it is this short; otherwise its number does
+# Fields KML files (Google Earth) add to every placemark; they say nothing about the plot.
+KML_SYSTEM_COLUMNS = {"timestamp", "begin", "end", "altitudemode", "tessellate", "extrude", "visibility",
+                      "draworder", "icon", "snippet"}
 MAX_MAP_COLUMNS = 20  # columns of the reader's map carried into the spreadsheet
 
 _GEOD = Geod(ellps="WGS84")
@@ -419,7 +422,9 @@ def _photo_cover(polygon: Polygon, readable: np.ndarray) -> float:
 
 
 def _text(value: Any) -> Optional[str]:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    import pandas as pd
+
+    if value is None or (np.ndim(value) == 0 and pd.isna(value)):
         return None
     text = str(value).strip()
     return text or None
@@ -438,7 +443,7 @@ def read_plot_map(path: str) -> list[MapPlot]:
     if frame.crs is None:
         frame = frame.set_crs("EPSG:4326")
     frame = frame.to_crs("EPSG:4326")
-    columns = [str(c) for c in frame.columns if c != frame.geometry.name]
+    columns = [str(c) for c in frame.columns if c != frame.geometry.name and str(c).lower() not in KML_SYSTEM_COLUMNS]
     name_column = _name_column(columns)
     kept_columns = columns[:MAX_MAP_COLUMNS]
     plots = []
