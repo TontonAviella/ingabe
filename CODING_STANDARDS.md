@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-06** WorkOS signed users out 13 times in a day: zero JWT leeway against a clock 0.5-0.9 s off, and the SDK's refresh dropped new tokens
+  after spending the old refresh token; the mocked tests replaced `session.refresh` and saw none of it. Rule: token checks allow clock leeway, and code that
+  spends a single-use credential keeps what it got back before checking it. Gate: `test_workos_auth.py` / `test_workos_session.py` (real SDK, fake clock).
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.

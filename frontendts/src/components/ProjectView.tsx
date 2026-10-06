@@ -25,6 +25,9 @@ type UploadResponse = {
   conversation_id?: number | null;
 };
 
+/** The chat socket closes with this when the sign-in needs refreshing first (src/dependencies/session.py). */
+const WS_SESSION_REFRESH_NEEDED = 4401;
+
 const DROPZONE_ACCEPT: Accept = {
   'application/geo+json': ['.geojson', '.json'],
   'application/vnd.google-earth.kml+xml': ['.kml'],
@@ -412,6 +415,12 @@ export default function ProjectView() {
     {
       onError: () => {
         toast.error('Chat connection error.');
+      },
+      // The handshake cannot refresh the sign-in (it could not send the new cookie back).
+      // A normal request does; the reconnect that follows carries the refreshed cookie,
+      // and a 401 there sends the user to sign in as usual.
+      onClose: (event) => {
+        if (event.code === WS_SESSION_REFRESH_NEEDED) void apiFetch('/api/auth/me');
       },
       shouldReconnect: () => true,
       reconnectAttempts: 2880, // 24 hours of continuous work, at 30 seconds each = 2,880
