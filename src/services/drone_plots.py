@@ -65,6 +65,7 @@ MIN_PLOT_M2 = 100.0  # smaller shapes are paths, trees and noise
 MAX_PLOT_HA = 20.0  # larger shapes are whole hillsides, not one plot
 MIN_PHOTO_COVER = 0.9  # a plot must lie at least this much on the photo, not on its empty edges
 MAX_SHARED = 0.3  # a plot sharing more than this with plots already kept is a duplicate
+BLOCK_PLOTS = 2  # an outline around this many kept plots is a block of plots (a tree inside a plot is fine)
 
 # --- Plot measurements --------------------------------------------------------------
 
@@ -191,13 +192,16 @@ def _touches_inner_edge(bounds: tuple[float, float, float, float], x0: int, y0: 
 
 
 def _keep_distinct(candidates: list[tuple[float, Polygon]]) -> list[tuple[float, Polygon]]:
-    """Most confident first; a candidate mostly covered by kept plots is dropped, a small overlap is cut away."""
+    """Most confident first; a candidate mostly covered by kept plots is dropped, a small overlap is cut away,
+    and one that surrounds kept plots is a block of plots, not a plot (Cyampirita: a 6.4 ha outline around 9)."""
     kept: list[tuple[float, Polygon]] = []
     kept_shapes: list[Polygon] = []
     for conf, polygon in sorted(candidates, key=lambda c: c[0], reverse=True):
         if kept_shapes:
             tree = STRtree(kept_shapes)
             near = [kept_shapes[i] for i in tree.query(polygon)]
+            if sum(polygon.contains(p) for p in near) >= BLOCK_PLOTS:
+                continue
             overlap = unary_union([p.intersection(polygon) for p in near]) if near else None
             if overlap is not None and not overlap.is_empty:
                 if overlap.area > MAX_SHARED * polygon.area:

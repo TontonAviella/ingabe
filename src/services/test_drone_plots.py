@@ -95,6 +95,20 @@ def test_duplicates_from_overlapping_tiles_are_dropped_and_small_overlaps_cut():
     assert kept[1][1].intersection(a).area == pytest.approx(0, abs=1e-9)
 
 
+def test_an_outline_around_kept_plots_is_a_block_not_a_plot():
+    plots = [(0.6, box(10, 10, 20, 20)), (0.5, box(30, 10, 40, 20))]
+    block = (0.15, box(0, 0, 100, 50))  # the plots cover 8% of it: a small overlap, but it surrounds them
+    kept = drone_plots._keep_distinct(plots + [block])
+    assert [conf for conf, _ in kept] == [0.6, 0.5]
+
+
+def test_a_plot_with_a_tree_inside_keeps_its_outline():
+    tree = (0.6, box(40, 20, 45, 25))
+    plot = (0.3, box(0, 0, 100, 50))
+    kept = drone_plots._keep_distinct([tree, plot])
+    assert len(kept) == 2 and len(kept[1][1].interiors) == 1
+
+
 def test_outlines_cut_by_an_inner_tile_edge_are_left_to_the_next_tile():
     width = height = 3000
     inner = (0, 100, 1021, 300)  # touches the east edge of the first tile, which has a neighbour
