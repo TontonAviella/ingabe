@@ -428,3 +428,16 @@ def test_without_records_the_soil_and_history_cards_offer_to_read_a_document(pho
     for card in ("soil", "history"):
         answer = drone_cards.answer_card(card, _analysis(photo), "farmer", drone_cards.Here())
         assert answer["upload"]["accept"].startswith(".pdf")
+
+
+def test_soil_and_history_only_promise_a_test_or_harvests_once_documents_are_added(photo):
+    analysis = _analysis(photo)
+    for seed in range(1, 9):
+        bare = drone_cards.build_deck(analysis, "farmer", drone_cards.Here(seed=seed))
+        with_docs = drone_cards.build_deck(analysis, "farmer", drone_cards.Here(seed=seed, records=_records()))
+        wordings = {c["id"]: c["question"] for s in bare["services"] for c in s["cards"]}
+        doc_wordings = {c["id"]: c["question"] for s in with_docs["services"] for c in s["cards"]}
+        assert wordings["soil"] not in ("What does the soil test say?", "What does my lab report show?")
+        assert "harvest" not in wordings["history"]
+        assert doc_wordings["soil"] in ("What does the soil test say?", "What does my lab report show?")
+        assert "harvest" in doc_wordings["history"]

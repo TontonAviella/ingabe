@@ -373,6 +373,9 @@ class _CardDef:
     id: str
     service: int
     questions: tuple[str, ...]  # the same question in other words; the deck's seed picks one
+    # Wordings once the farmer's own documents answer it (a lab report, harvest records): before that,
+    # "What does the soil test say?" would promise a test nobody has added.
+    with_records: tuple[str, ...] = ()
 
     @property
     def question(self) -> str:
@@ -400,8 +403,10 @@ _CARDS = [
     _CardDef("plant_count", 7, ("How many plants came up, and where are the gaps?", "Did enough seeds come up?")),
     _CardDef("yield", 8, ("How much will this field yield?", "What harvest can we expect?")),
     _CardDef("spray", 9, ("Where should we spray, and where not?", "Can we spray less and still protect the crop?")),
-    _CardDef("history", 10, ("How did this field do in past seasons?", "What did each plot harvest before?")),
-    _CardDef("soil", 11, ("What do my soils need, zone by zone?", "What does the soil test say?")),
+    _CardDef("history", 10, ("How did this field do in past seasons?", "Has this land been farmed well before?"),
+             with_records=("What did each plot harvest before?", "Which plots harvested least, and why?")),
+    _CardDef("soil", 11, ("What do my soils need, zone by zone?", "What is this soil likely short of?"),
+             with_records=("What does the soil test say?", "What does my lab report show?")),
     _CardDef("learn_camera", 1, ("Is my crop sick, or just less green?", "What can this camera see, and what not?")),
 ]
 _CARD_BY_ID = {card.id: card for card in _CARDS}
@@ -530,11 +535,22 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     return "Your camera sees colour, not health. See what a special camera adds."
 
 
-def _wording(definition: _CardDef, seed: int) -> str:
+def _has_records(card_id: str, here: Here) -> bool:
+    """Whether the farmer's documents answer this card (soil: lab samples; history: harvests)."""
+    records = list(here.records)
+    if card_id == "soil":
+        return bool(farm_records.soil_samples(records))
+    if card_id == "history":
+        return bool(farm_records.harvests(records))
+    return False
+
+
+def _wording(definition: _CardDef, here: Here) -> str:
     """The question in the words the seed picks (the first wording when the seed is 0)."""
-    if not seed:
-        return definition.question
-    return definition.questions[(seed + zlib.crc32(definition.id.encode())) % len(definition.questions)]
+    words = definition.with_records if definition.with_records and _has_records(definition.id, here) else definition.questions
+    if not here.seed:
+        return words[0]
+    return words[(here.seed + zlib.crc32(definition.id.encode())) % len(words)]
 
 
 def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
@@ -544,7 +560,7 @@ def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
         "id": card_id,
         "service": definition.service,
         "service_name": SERVICES[definition.service],
-        "question": _wording(definition, here.seed),
+        "question": _wording(definition, here),
         "preview": _preview(card_id, analysis, here),
         "status": status,
         "status_label": STATUS_LABELS[status],
