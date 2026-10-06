@@ -140,6 +140,7 @@ import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
+import { DroneCards } from '@/components/DroneCards';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -1710,6 +1711,7 @@ export default function MapLibreMap({
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
         <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
+        <DroneCards key={`cards-${mapInstanceId}`} map={mapRef.current} layers={mapData?.layers ?? []} hiddenLayerIDs={hiddenLayerIDs} />
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (

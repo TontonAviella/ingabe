@@ -168,7 +168,8 @@ def measure_bare_ground(ds: Any) -> BareGround:
             patches.append((area, outline))
     patches.sort(key=lambda p: p[0], reverse=True)
     features = [
-        {"type": "Feature", "geometry": mapping(outline), "properties": {"rank": i + 1, "area_ha": round(area, 2)}}
+        {"type": "Feature", "geometry": mapping(outline),
+         "properties": {"rank": i + 1, "area_ha": round(area, 2), "label": f"Bare patch {i + 1}: {_ha(area)}"}}
         for i, (area, outline) in enumerate(patches)
     ]
     return BareGround(
@@ -433,8 +434,11 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], photos_here: in
     ranked = sorted((card for card in cards if card is not learn),
                     key=lambda card: _score(card, analysis, reader), reverse=True)
     look = analysis.look
+    summary = [f"About {_ha(look.area_ha)}" if look.area_ha is not None else None, _camera_label(analysis),
+               f"{look.resolution_cm:.1f} cm per pixel" if look.resolution_cm is not None else None]
     return {
         "photo": {
+            "summary": " · ".join(part for part in summary if part),
             "layer_id": analysis.layer_id,
             "name": look.layer_name,
             "place": look.place,
