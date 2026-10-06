@@ -1342,7 +1342,9 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
     for _, _, words in flagged:
         for word in words:
             counts[word] = counts.get(word, 0) + 1
-    source = ", ".join(x for x in (report.source or report.title, report.date) if x)
+    # The model sometimes copies the whole header ("Lab; Client: ...; Report no: ..."): keep the lab.
+    lab = (report.source or report.title or "").split(";")[0].strip()
+    source = ", ".join(x for x in (lab, report.date) if x)
     what = (f"Your lab report{f' ({source})' if source else ''} has {len(samples)} samples. "
             + (", ".join(f"{n} {word.lower()}" for word, n in sorted(counts.items(), key=lambda kv: -kv[1]))
                + " against common guide values." if counts else "All of them are within common guide values."))
@@ -1377,7 +1379,7 @@ def _soil_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, 
         "soil", analysis, here, what=what,
         why="Acid soil and too little phosphorus hold back maize and beans more than anything else in Rwanda's hills.",
         todo=todo, how_sure=_how_sure(_RECORDS_SURE, because + warnings[:2], None),
-        terms=["soil_estimate"], audience=audience, facts=facts, items=items, overlay=overlay,
+        terms=["vision_model"], audience=audience, facts=facts, items=items, overlay=overlay,
         upload=_upload(analysis, "Add another lab report"))
 
 
@@ -1436,7 +1438,7 @@ def _history_card(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[st
         how_sure=_how_sure(_RECORDS_SURE,
                            ["From your own records", "Read from the document by an AI vision model: check the numbers"]
                            + warnings[:2], None),
-        terms=["hectare"], audience=audience, facts=facts, items=items,
+        terms=["hectare", "vision_model"], audience=audience, facts=facts, items=items,
         upload=_upload(analysis, "Add more harvest records"))
 
 

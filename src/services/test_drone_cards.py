@@ -390,7 +390,7 @@ def _records():
 
     soil = farm_records.FarmDocument(
         id="s", filename="report.pdf", file_key="k", kind=farm_records.SOIL_REPORT, title="Soil report",
-        source="Example Soil Laboratory", date="26/09/2026", added_at="2026-10-07T00:00:00+00:00",
+        source="Example Soil Laboratory; Client: Test cooperative", date="26/09/2026", added_at="2026-10-07T00:00:00+00:00",
         soil_samples=[farm_records.SoilSample("S1", "Plot 3", "0-20 cm", 4.9, 0.95, 0.08, 4.1, "Bray II", 0.12, "Sandy loam"),
                       farm_records.SoilSample("S2", "Plot 5", "0-20 cm", 6.1, 1.9, 0.16, 17.5, "Bray II", 0.42, "Clay loam")])
     harvest = farm_records.FarmDocument(
