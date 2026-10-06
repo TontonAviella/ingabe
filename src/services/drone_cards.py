@@ -994,11 +994,13 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     pairs = _looked(plots, survey)
     totals = _crop_totals(pairs)
     unsure = next((n for c, n, _ in totals if c == "unsure"), 0)
-    named = [(c, n, ha) for c, n, ha in totals if c != "unsure"]
-    if named:
-        what = (f"The AI vision model named what grows in {len(pairs) - unsure} of {len(pairs)} plots: "
-                + ", ".join(f"{_crop_words(c)} in {n} plot{'s' if n != 1 else ''} ({_ha(ha)})" for c, n, ha in named[:4])
-                + "." + (f" It was not sure about {unsure} plots." if unsure else ""))
+    crops = [(c, n, ha) for c, n, ha in totals if c not in _NOT_A_CROP]
+    no_crop = sum(n for c, n, _ in totals if c in _NOT_A_CROP and c != "unsure")
+    if crops:
+        what = (f"The AI vision model named the crop in {sum(n for _, n, _ in crops)} of {len(pairs)} plots: "
+                + ", ".join(f"{_crop_words(c)} in {n} plot{'s' if n != 1 else ''} ({_ha(ha)})" for c, n, ha in crops[:4])
+                + "." + (f" {no_crop} more look fallow, bare, grass or woodland." if no_crop else "")
+                + (f" It was not sure about {unsure} plots." if unsure else ""))
     else:
         what = f"The AI vision model could not tell what grows in the {len(pairs)} plots it looked at."
     mixed = sum(1 for _, look in pairs if look.other_crops)
@@ -1070,17 +1072,19 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
     if plots is None or survey is None:
         return _survey_pending("weeds", analysis, audience, here)
     pairs = _looked(plots, survey)
-    weedy = sorted([(p, look) for p, look in pairs if look.weeds == "many"], key=lambda t: -t[0]["area_ha"])
-    some = sum(1 for _, look in pairs if look.weeds == "few")
+    # Weeding is for plots with a crop (or one the model could not name); fallow, grass and woodland are left out.
+    cropped = [(p, look) for p, look in pairs if look.main_crop not in _NOT_A_CROP - {"unsure"}]
+    weedy = sorted([(p, look) for p, look in cropped if look.weeds == "many"], key=lambda t: -t[0]["area_ha"])
+    some = sum(1 for _, look in cropped if look.weeds == "few")
     flagged = {p["number"]: "many weeds" for p, _ in weedy}
     weedy_ha = sum(p["area_ha"] for p, _ in weedy)
     if weedy:
-        what = (f"{len(weedy)} of {len(pairs)} plots look weedy ({_ha(weedy_ha)}), filled on the photo; {some} more "
-                f"have a few weeds. Largest first: plots {_plot_names([p for p, _ in weedy[:WEEDY_FIRST]])}.")
+        what = (f"{len(weedy)} of {len(cropped)} plots with a crop look weedy ({_ha(weedy_ha)}), filled on the photo; "
+                f"{some} more have a few weeds. Largest first: plots {_plot_names([p for p, _ in weedy[:WEEDY_FIRST]])}.")
         todo = (f"Weed plots {_plot_names([p for p, _ in weedy[:WEEDY_FIRST]])} first. Weeding before fertilizer "
                 "means the crop, not the weeds, gets it.")
     else:
-        what = f"No plot looks very weedy; {some} of {len(pairs)} have a few weeds."
+        what = f"No plot with a crop looks very weedy; {some} of {len(cropped)} have a few weeds."
         todo = "No urgent weeding seen from the air. Check again after the next rains."
     items = [_plot_item(p, f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
     return _answer(

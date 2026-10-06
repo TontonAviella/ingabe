@@ -276,7 +276,7 @@ def test_crop_types_name_the_crops_and_count_what_is_not_sure(photo):
     here = drone_cards.Here(plots=plots, survey=_survey(plots, crops, {1: {"other_crops": ["beans"]}}))
     answer = drone_cards.answer_card("crop_types", _analysis(photo), "insurer", here)
     assert answer["status"] == drone_cards.READY
-    assert answer["what"].startswith("The AI vision model named what grows in 8 of 10 plots: maize in 5 plots")
+    assert answer["what"].startswith("The AI vision model named the crop in 8 of 10 plots: maize in 5 plots")
     assert "not sure about 2 plots" in answer["what"] and "1 plot looks intercropped" in answer["what"]
     assert [i["key"] for i in answer["overlay"]["legend_items"]] == ["maize", "beans", "unsure"]
     assert answer["how_sure"]["level"] == "low"
@@ -298,7 +298,7 @@ def test_weedy_plots_are_listed_largest_first(photo):
     plots = _plot_set()
     here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {2: {"weeds": "many"}, 7: {"weeds": "many"}}))
     answer = drone_cards.answer_card("weeds", _analysis(photo), "farmer", here)
-    assert answer["what"].startswith("2 of 10 plots look weedy")
+    assert answer["what"].startswith("2 of 10 plots with a crop look weedy")
     assert {i["title"] for i in answer["items"]} == {"Plot 2", "Plot 7"}
 
 
@@ -319,3 +319,13 @@ def test_no_vision_card_talks_about_money(photo, audience):
                for c in ("crop_types", "plot_problems", "plot_stage", "weeds")]
     text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
     assert not MONEY.search(text)
+
+
+def test_weeding_leaves_out_fallow_plots(photo):
+    plots = _plot_set()
+    crops = ["maize"] * 8 + ["fallow_or_bare"] * 2
+    overrides = {9: {"weeds": "many"}, 10: {"weeds": "many"}, 1: {"weeds": "many"}}
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, crops, overrides))
+    answer = drone_cards.answer_card("weeds", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("1 of 8 plots with a crop look weedy")
+    assert [i["title"] for i in answer["items"]] == ["Plot 1"]
