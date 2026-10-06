@@ -1,6 +1,6 @@
 import { BookOpen, Camera, Check, ChevronDown, ChevronLeft, CircleDashed, Hammer, Plane, X } from 'lucide-react';
 import { type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { type DroneCard, type DroneCardAnswer, type DroneDeck, useDroneCardAnswer, useDroneDeck } from '@/hooks/useDroneCards';
 import type { MapLayer } from '@/lib/types';
 
@@ -10,6 +10,9 @@ import type { MapLayer } from '@/lib/types';
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif";
 const COLLAPSED_KEY = 'ingabe.droneCards.collapsed';
+
+// On phones the panel is a sheet over the lower part of the map, above the chat box.
+const PHONE_SHEET_SHARE = 0.52;
 
 const SOURCE = 'drone-card-overlay';
 const LAYERS = { fill: 'drone-card-fill', casing: 'drone-card-casing', line: 'drone-card-line' };
@@ -94,8 +97,12 @@ function Section({ label, children }: { label: string; children: React.ReactNode
 
 function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () => void }) {
   const [openTerm, setOpenTerm] = useState<string | null>(null);
+  const termRef = useRef<HTMLDivElement>(null);
   const style = answer.overlay ? OVERLAY_STYLE[answer.overlay.kind] : null;
   const term = answer.terms.find((t) => t.id === openTerm);
+  useEffect(() => {
+    if (openTerm) termRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [openTerm]);
   return (
     <div className="flex flex-col gap-3">
       <button
@@ -180,7 +187,7 @@ function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () =>
             ))}
           </div>
           {term && (
-            <div className="flex flex-col gap-2 rounded-[16px] bg-[#D9A066]/[0.12] border border-[#D9A066]/30 px-4 py-3">
+            <div ref={termRef} className="flex flex-col gap-2 rounded-[16px] bg-[#D9A066]/[0.12] border border-[#D9A066]/30 px-4 py-3">
               <span className="text-[15px] font-bold text-[#F3EDE6]">{term.word}</span>
               <p className="m-0 text-[14px] leading-snug text-[#F3EDE6]">{term.simple}</p>
               <p className="m-0 text-[14px] leading-snug text-[#E6DCD1]">
@@ -334,11 +341,15 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
   // Bring the photo into view when an answer with outlines opens.
   useEffect(() => {
     if (!map || !answer?.overlay || !bounds) return;
-    const wide = window.innerWidth >= 640;
-    map.fitBounds(bounds, { padding: { top: 70, bottom: 170, left: 60, right: wide ? 440 : 40 }, maxZoom: 18, duration: 800 });
+    const padding =
+      window.innerWidth >= 640
+        ? { top: 70, bottom: 170, left: 60, right: 440 }
+        : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
+    map.fitBounds(bounds, { padding, maxZoom: 18, duration: 800 });
   }, [map, answer, bounds]);
 
-  // Click a patch: its own label, written by the server.
+  // Click a patch: its own label, written by the server. A new answer closes it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: answer only resets the label
   useEffect(() => {
     if (!map) return;
     let popup: Popup | null = null;
@@ -353,7 +364,7 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       map.off('click', LAYERS.fill, onClick);
       popup?.remove();
     };
-  }, [map]);
+  }, [map, answer]);
 }
 
 export function DroneCards({ map, layers, hiddenLayerIDs }: { map: MLMap | null; layers: MapLayer[]; hiddenLayerIDs: string[] }) {
@@ -400,7 +411,7 @@ export function DroneCards({ map, layers, hiddenLayerIDs }: { map: MLMap | null;
     <section
       aria-label="Questions for this drone photo"
       style={{ fontFamily: FONT }}
-      className="absolute z-30 inset-x-2 bottom-2 top-16 sm:inset-auto sm:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-180px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.88] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6]"
+      className="absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto sm:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-180px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6]"
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-1">
         <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Questions</span>

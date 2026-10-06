@@ -545,9 +545,10 @@ def _soil(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str,
         entry = (props or {}).get(key) or {}
         if entry.get("value") is None:
             continue
-        spread = f" ± {entry['uncertainty']}" if entry.get("uncertainty") is not None else ""
+        # The service's "uncertainty" back-transforms a log-scale spread for N, P and K, so it reads
+        # far too small (± 0.13 ppm); the card shows the value alone until the service gives a real range.
         unit = f" {entry['unit']}" if entry.get("unit") else ""
-        facts.append({"label": entry["label"], "value": f"{entry['value']}{spread}{unit}"})
+        facts.append({"label": entry["label"], "value": f"{entry['value']}{unit}"})
     if facts:
         what = "A first estimate for the soil in the middle of this photo, top 20 cm. The values are below."
     else:

@@ -117,13 +117,14 @@ def test_missing_water_data_is_said_not_shown_as_zero(photo, monkeypatch):
     assert "no satellite reading" in answer["what"]
 
 
-def test_soil_values_carry_their_uncertainty(photo, monkeypatch):
+def test_soil_values_without_a_false_spread(photo, monkeypatch):
     monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "success", "properties": {
         "nitrogen_total": {"value": 1.44, "uncertainty": 0.13, "unit": "g/kg", "label": "Total Nitrogen"},
         "ph": {"value": 5.81, "uncertainty": 0.1, "unit": "", "label": "Soil pH"},
     }})
     answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", 1)
-    assert {"label": "Total Nitrogen", "value": "1.44 ± 0.13 g/kg"} in answer["facts"]
+    assert {"label": "Total Nitrogen", "value": "1.44 g/kg"} in answer["facts"]
+    assert "±" not in json.dumps(answer["facts"])  # the service's spread is not a real range yet
     assert answer["how_sure"]["level"] == "low"
 
 
