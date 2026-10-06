@@ -44,15 +44,15 @@ def _photo_ready(layer: MapLayer) -> dict[str, Any]:
     return metadata
 
 
-def _photo_key(layer: MapLayer, metadata: dict[str, Any]) -> str:
-    """Copies of the same uploaded file share their plots."""
-    return metadata.get("upload_etag") or f"{layer.layer_id}:{metadata['cog_key']}"
+def _photo_key(metadata: dict[str, Any]) -> str:
+    """Copies of a photo layer point at the same stored image, so they share its plots."""
+    return metadata["cog_key"]
 
 
 async def _plots(s3: Any, layer: MapLayer, metadata: dict[str, Any], *,
                  retry_failed: bool) -> tuple[Optional[drone_plots.PlotSet], Optional[drone_plots.PlotJob]]:
     """The photo's plots if found; otherwise the search is started (or retried when asked) in the background."""
-    key = _photo_key(layer, metadata)
+    key = _photo_key(metadata)
     bucket = get_bucket_name()
     plots = await drone_plots.load_plots(s3, bucket, key)
     job = drone_plots.job(key)
@@ -127,7 +127,7 @@ async def download_drone_plots(
         raise HTTPException(404, "Plots download as xlsx, zip (Shapefile) or geojson")
     metadata = _photo_ready(layer)
     s3 = await get_async_s3_client()
-    plots = await drone_plots.load_plots(s3, get_bucket_name(), _photo_key(layer, metadata))
+    plots = await drone_plots.load_plots(s3, get_bucket_name(), _photo_key(metadata))
     if plots is None:
         raise HTTPException(409, "The plots of this photo are not found yet")
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", layer.name or layer.layer_id).strip("_")[:60] + "_plots"
