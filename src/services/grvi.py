@@ -28,6 +28,12 @@ GRVI_VERDICT_BANDS = [
 # Below this a pixel is "low green": sparse, stressed or bare (the moderate_canopy lower bound).
 LOW_GREEN = 0.03
 
+# Below this a single pixel counts as bare ground (soil redder than it is green).
+# A per-pixel cut, unlike the verdict bands above, which judge a whole field's mean:
+# -0.05 per pixel missed most brown plots on Cyampirita. Chosen 2026-10-06 by checking
+# the outlines against that photo by eye; not yet checked on the ground.
+BARE_PIXEL = -0.01
+
 
 def grvi_verdict(mean: float) -> tuple[str, str]:
     """(level, sentence) for a GRVI mean."""
