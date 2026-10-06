@@ -4,18 +4,22 @@ the plots in src/services/drone_plots.py."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel
 
 from src.database.models import LAYER_TYPE_RASTER, MapLayer
-from src.dependencies.dag import get_layer
+from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import drone_cards, drone_plots
 from src.services.insurance_engine import resolve_audience
-from src.structures import async_read_conn
+from src.structures import async_read_conn, get_async_db_connection
 from src.utils import get_async_s3_client, get_bucket_name
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -32,7 +36,25 @@ SELECT count(DISTINCT COALESCE(l.metadata->>'upload_etag', l.layer_id))
           AND m.project_id IN (SELECT m2.project_id FROM user_mundiai_maps m2 WHERE $1 = ANY(m2.layers)))
 """
 
+# Polygon layers in the layer's project that overlap its outline: the maps a reader can choose as its plots.
+# Outlines Sage drew on photos (roofs, trees) are not plot maps.
+_PLOT_MAPS_SQL = """
+SELECT l.layer_id, l.name, l.feature_count, l.last_edited
+  FROM map_layers l
+ WHERE l.type IN ('vector', 'postgis')
+   AND l.geometry_type ILIKE '%polygon%'
+   AND l.bounds IS NOT NULL
+   AND l.bounds[1] < $4 AND l.bounds[3] > $2 AND l.bounds[2] < $5 AND l.bounds[4] > $3
+   AND COALESCE(l.metadata->>'source', '') <> 'sage_raster_object_candidates'
+   AND l.layer_id IN (
+       SELECT unnest(m.layers) FROM user_mundiai_maps m
+        WHERE m.soft_deleted_at IS NULL
+          AND m.project_id IN (SELECT m2.project_id FROM user_mundiai_maps m2 WHERE $1 = ANY(m2.layers)))
+ ORDER BY l.last_edited DESC NULLS LAST
+"""
+
 _PLOT_SEARCH_URL_SECONDS = 4 * 3600  # the plot search reads the photo for many minutes
+_PLOT_MAP_KEY = "plot_map_layer_id"  # in the photo layer's metadata: the reader's chosen plot map
 
 
 def _photo_ready(layer: MapLayer) -> dict[str, Any]:
@@ -63,12 +85,52 @@ async def _plots(s3: Any, layer: MapLayer, metadata: dict[str, Any], *,
     return plots, (None if plots is not None else job)
 
 
+async def _map_plots(user_id: str, map_layer_id: str) -> list[drone_plots.MapPlot]:
+    async with async_read_conn("drone_plot_map", user_id=user_id) as conn:
+        row = await conn.fetchrow("SELECT * FROM map_layers WHERE layer_id = $1", map_layer_id)
+    if row is None:
+        raise ValueError("the map layer is gone")
+    async with await MapLayer(**dict(row)).get_ogr_source() as source:
+        return await asyncio.to_thread(drone_plots.read_plot_map, source)
+
+
+async def _plot_maps(conn: Any, layer_id: str, bounds: list[float]) -> list[tuple[drone_plots.PlotMap, str]]:
+    """(map, version) for each polygon layer the reader can choose; the version changes when the map is edited."""
+    west, south, east, north = bounds
+    rows = await conn.fetch(_PLOT_MAPS_SQL, layer_id, west, south, east, north)
+    return [(drone_plots.PlotMap(layer_id=r["layer_id"], name=r["name"], shapes=r["feature_count"]),
+             f"{r['layer_id']}:{r['last_edited'].isoformat() if r['last_edited'] else ''}") for r in rows]
+
+
+async def _plots_from_chosen_map(
+    s3: Any, layer: MapLayer, metadata: dict[str, Any], user_id: str, cog_url: str,
+    maps: list[tuple[drone_plots.PlotMap, str]],
+) -> tuple[Optional[drone_plots.PlotSet], Optional[str], Optional[str]]:
+    """(plots, chosen map layer id, error) for the plot map chosen for this photo; all None when none is chosen."""
+    chosen = next(((m, version) for m, version in maps if m.layer_id == metadata.get(_PLOT_MAP_KEY)), None)
+    if chosen is None:
+        return None, None, None
+    plot_map, version = chosen
+    try:
+        plots = await drone_plots.load_map_plots(
+            s3, get_bucket_name(), _photo_key(metadata), version, cog_url, plot_map.name,
+            lambda: _map_plots(user_id, plot_map.layer_id))
+    except Exception as exc:  # the cards say the map could not be read and use the plots Ingabe found
+        logger.exception("plot map %s could not be read for %s", plot_map.layer_id, layer.layer_id)
+        return None, None, f"{plot_map.name} could not be read ({str(exc)[:120]})"
+    return plots, plot_map.layer_id, None
+
+
+async def _cog_url(s3: Any, metadata: dict[str, Any]) -> str:
+    return await s3.generate_presigned_url(
+        "get_object", Params={"Bucket": get_bucket_name(), "Key": metadata["cog_key"]}, ExpiresIn=900)
+
+
 async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str], *,
                  retry_plots: bool = False) -> tuple[Any, drone_cards.Here, str]:
     metadata = _photo_ready(layer)
     s3 = await get_async_s3_client()
-    cog_url = await s3.generate_presigned_url(
-        "get_object", Params={"Bucket": get_bucket_name(), "Key": metadata["cog_key"]}, ExpiresIn=900)
+    cog_url = await _cog_url(s3, metadata)
     user_id = session.get_user_id()
     row = {"layer_id": layer.layer_id, "name": layer.name, "bounds": layer.bounds, "metadata": metadata}
     async with async_read_conn("drone_cards", user_id=user_id) as conn:
@@ -78,8 +140,13 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
         west, south, east, north = analysis.bounds
         photos_here = await conn.fetchval(_PHOTOS_HERE_SQL, layer.layer_id, west, south, east, north)
         reader = await resolve_audience(conn, audience, user_id, session.get_org_id())
-    plots, plot_job = await _plots(s3, layer, metadata, retry_failed=retry_plots)
-    here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job)
+        maps = await _plot_maps(conn, layer.layer_id, analysis.bounds)
+    plots, plot_map, map_error = await _plots_from_chosen_map(s3, layer, metadata, user_id, cog_url, maps)
+    plot_job = None
+    if plots is None:
+        plots, plot_job = await _plots(s3, layer, metadata, retry_failed=retry_plots)
+    here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
+                            plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error)
     return analysis, here, reader
 
 
@@ -109,6 +176,35 @@ async def get_drone_card_answer(
         raise HTTPException(404, f"No card {card_id}") from None
 
 
+class PlotSource(BaseModel):
+    source: str  # "found" for the plots Ingabe finds in the photo, or the layer id of the reader's plot map
+
+
+@router.put("/layer/{layer_id}/plots/source", operation_id="choose_drone_plot_source")
+async def choose_drone_plot_source(
+    choice: PlotSource,
+    layer: MapLayer = Depends(edit_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, str]:
+    """Use the reader's own plot map for this photo's plots, or go back to the plots Ingabe found."""
+    _photo_ready(layer)
+    if choice.source == "found":
+        sql, args = "UPDATE map_layers SET metadata = metadata - $2::text WHERE layer_id = $1", (layer.layer_id, _PLOT_MAP_KEY)
+    else:
+        if not layer.bounds:
+            raise HTTPException(409, "The photo's outline is not known yet")
+        async with async_read_conn("drone_plot_maps", user_id=session.get_user_id()) as conn:
+            maps = await _plot_maps(conn, layer.layer_id, list(layer.bounds))
+        if choice.source not in {m.layer_id for m, _ in maps}:
+            raise HTTPException(400, "Choose a map of polygons in this project that covers the photo")
+        sql = ("UPDATE map_layers SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object($2::text, $3::text) "
+               "WHERE layer_id = $1")
+        args = (layer.layer_id, _PLOT_MAP_KEY, choice.source)
+    async with get_async_db_connection() as conn:
+        await conn.execute(sql, *args)
+    return {"layer_id": layer.layer_id, "source": choice.source}
+
+
 _EXPORTS = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "zip": "application/zip",
@@ -127,7 +223,14 @@ async def download_drone_plots(
         raise HTTPException(404, "Plots download as xlsx, zip (Shapefile) or geojson")
     metadata = _photo_ready(layer)
     s3 = await get_async_s3_client()
-    plots = await drone_plots.load_plots(s3, get_bucket_name(), _photo_key(metadata))
+    plots = None
+    if metadata.get(_PLOT_MAP_KEY) and layer.bounds:
+        user_id = session.get_user_id()
+        async with async_read_conn("drone_plot_maps", user_id=user_id) as conn:
+            maps = await _plot_maps(conn, layer.layer_id, list(layer.bounds))
+        plots, _, _ = await _plots_from_chosen_map(s3, layer, metadata, user_id, await _cog_url(s3, metadata), maps)
+    if plots is None:
+        plots = await drone_plots.load_plots(s3, get_bucket_name(), _photo_key(metadata))
     if plots is None:
         raise HTTPException(409, "The plots of this photo are not found yet")
     stem = re.sub(r"[^A-Za-z0-9_-]+", "_", layer.name or layer.layer_id).strip("_")[:60] + "_plots"

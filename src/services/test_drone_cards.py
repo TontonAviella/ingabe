@@ -187,6 +187,44 @@ def test_least_green_plots_are_named_and_drawn(photo):
     assert {d["label"] for d in answer["downloads"]} == {"Excel table", "Shapefile", "GeoJSON"}
 
 
+def test_plot_cards_offer_the_readers_own_maps(photo):
+    plot_map = drone_plots.PlotMap(layer_id="Lmap", name="Cooperative blocks", shapes=12)
+    here = drone_cards.Here(photos=1, plots=_plot_set(), plot_maps=(plot_map,))
+    answer = drone_cards.answer_card("field_outlines", _analysis(photo), "farmer", here)
+    options = answer["choices"]["options"]
+    assert [(o["id"], o["selected"]) for o in options] == [("found", True), ("Lmap", False)]
+    assert options[1]["detail"] == "Your map · 12 shapes"
+    assert answer["choices"]["href"] == "/api/layer/Ltest/plots/source"
+    assert "Add data" not in answer["todo"]  # a map is already there to choose
+
+
+def test_without_a_plot_map_the_card_says_how_to_add_one(photo):
+    answer = drone_cards.answer_card("field_outlines", _analysis(photo), "farmer", drone_cards.Here(plots=_plot_set()))
+    assert answer["choices"] is None and "Add data" in answer["todo"]
+
+
+def test_plots_from_the_readers_map_go_by_their_names(photo):
+    plots = _plot_set()
+    for f in plots.geojson["features"]:
+        f["properties"]["name"] = f"B-{f['properties']['number']:02d}"
+    own = drone_plots.PlotSet(geojson=plots.geojson, found_at=plots.found_at, seconds=1.0,
+                              source="Cooperative blocks", read_m_per_px=0.5)
+    here = drone_cards.Here(plots=own, plot_maps=(drone_plots.PlotMap("Lmap", "Cooperative blocks", 10),),
+                            plot_map="Lmap")
+    green = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)
+    assert "plots B-03 and B-01" in green["what"] and green["items"][0]["title"] == "B-03 · plot 3"
+    outlines = drone_cards.answer_card("field_outlines", _analysis(photo), "farmer", here)
+    assert outlines["what"].startswith("Your map Cooperative blocks has 10 plots")
+    assert [o["selected"] for o in outlines["choices"]["options"]] == [False, True]
+
+
+def test_a_map_that_cannot_be_read_is_said_so(photo):
+    here = drone_cards.Here(plots=_plot_set(), plot_maps=(drone_plots.PlotMap("Lmap", "Blocks", 3),),
+                            plot_map_error="Blocks could not be read (bad file)")
+    answer = drone_cards.answer_card("field_outlines", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("Your map Blocks could not be read (bad file), so these are the plots Ingabe found.")
+
+
 def test_field_outlines_count_and_measure_the_plots(photo):
     here = drone_cards.Here(photos=1, plots=_plot_set())
     answer = drone_cards.answer_card("field_outlines", _analysis(photo), "insurer", here)

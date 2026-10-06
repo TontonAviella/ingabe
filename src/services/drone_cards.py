@@ -132,6 +132,9 @@ class Here:
     photos: int = 1
     plots: Optional[drone_plots.PlotSet] = None
     plot_job: Optional[drone_plots.PlotJob] = None
+    plot_maps: tuple[drone_plots.PlotMap, ...] = ()  # the reader's maps of polygons that cover this photo
+    plot_map: Optional[str] = None  # layer id of the map the plots come from; None for the plots Ingabe found
+    plot_map_error: Optional[str] = None  # why the chosen map could not be used
 
 
 def _to_wgs84(crs: Any) -> Callable[..., Any]:
@@ -406,7 +409,7 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         least = _least_green(plots)
         if not least:
             return f"{plots.count} plots found; too few with a crop to compare."
-        return f"Of the plots with a crop, {_numbers(least[:3])} are the least green."
+        return f"Of the plots with a crop, {_plot_names(least[:3])} are the least green."
     if card_id == "weak_spots":
         hot = look.green.hotspots
         if hot:
@@ -425,6 +428,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id == "pests":
         return "Spots that look different, ranked; a leaf close-up names the cause."
     if card_id == "field_outlines" and plots is not None:
+        if plots.source != "found":
+            return f"{plots.count} plots from your map {plots.source}, measured, {_ha(plots.total_ha)} in all."
         return f"{plots.count} plots, numbered and measured, {_ha(plots.total_ha)} in all."
     if card_id == "growth":
         return ("This is the only photo of this place. Fly again to compare."
@@ -473,9 +478,19 @@ def _least_green(plots: drone_plots.PlotSet) -> list[dict[str, Any]]:
     return sorted(least, key=lambda p: p["greenness"])
 
 
-def _numbers(plots: list[dict[str, Any]]) -> str:
-    numbers = [str(p["number"]) for p in plots]
-    return numbers[0] if len(numbers) == 1 else ", ".join(numbers[:-1]) + " and " + numbers[-1]
+def _plot_name(plot: dict[str, Any]) -> str:
+    """The reader's own name for a plot when their map gives one, else Ingabe's number."""
+    return plot.get("name") or str(plot["number"])
+
+
+def _plot_names(plots: list[dict[str, Any]]) -> str:
+    names = [_plot_name(p) for p in plots]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _plot_label(plot: dict[str, Any]) -> str:
+    """How a plot is named on its label on the photo."""
+    return f"{plot['name']} · plot {plot['number']}" if plot.get("name") else f"Plot {plot['number']}"
 
 
 def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
@@ -518,12 +533,13 @@ def _answer(card_id: str, analysis: PhotoAnalysis, here: Here, *, what: str, why
             how_sure: dict[str, Any], terms: list[str], audience: str,
             overlay: Optional[dict[str, Any]] = None, facts: Optional[list[dict[str, str]]] = None,
             items: Optional[list[dict[str, Any]]] = None, downloads: Optional[list[dict[str, str]]] = None,
-            progress: Optional[dict[str, Any]] = None) -> dict[str, Any]:
-    """One answer. items: places to go, each with a point; progress: set while the answer is still being worked out."""
+            progress: Optional[dict[str, Any]] = None, choices: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """One answer. items: places to go, each with a point; progress: set while the answer is still being worked
+    out; choices: options the reader can pick that change the answer (where the plots come from)."""
     card = _card(card_id, analysis, here)
     return {**card, "what": what, "why": why, "todo": todo, "how_sure": how_sure,
             "overlay": overlay, "facts": facts or [], "terms": _terms(terms, audience),
-            "items": items or [], "downloads": downloads or [], "progress": progress}
+            "items": items or [], "downloads": downloads or [], "progress": progress, "choices": choices}
 
 
 def _weak_spots(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -655,6 +671,19 @@ def _photo_outline(analysis: PhotoAnalysis) -> dict[str, Any]:
                 {"type": "Feature", "geometry": mapping(box(west, south, east, north)), "properties": {}}]}}
 
 
+def _plot_choices(analysis: PhotoAnalysis, here: Here) -> Optional[dict[str, Any]]:
+    """Where the plots come from: the plots Ingabe found, or one of the reader's maps that cover the photo."""
+    if not here.plot_maps:
+        return None
+    found_detail = (f"{here.plots.count} plots outlined from the photo" if here.plots is not None and here.plot_map is None
+                    else "Outlined from the photo")
+    options = [{"id": "found", "label": "Found by Ingabe", "detail": found_detail, "selected": here.plot_map is None}]
+    options += [{"id": m.layer_id, "label": m.name,
+                 "detail": (f"Your map · {m.shapes} shape{'s' if m.shapes != 1 else ''}" if m.shapes else "Your map"),
+                 "selected": here.plot_map == m.layer_id} for m in here.plot_maps]
+    return {"label": "Plots from", "options": options, "href": f"/api/layer/{analysis.layer_id}/plots/source"}
+
+
 def _plots_pending(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     """A plot card while the plots are still being found, or after finding them failed."""
     job = here.plot_job
@@ -668,7 +697,8 @@ def _plots_pending(card_id: str, analysis: PhotoAnalysis, audience: str, here: H
         todo=("Open this question again to try once more." if failed
               else "Keep the photo open, or come back later: the plots are kept once found."),
         how_sure=_how_sure("low", ["Not answered yet"], None),
-        terms=["hectare"], audience=audience, overlay=_photo_outline(analysis), progress=progress)
+        terms=["hectare"], audience=audience, overlay=_photo_outline(analysis), progress=progress,
+        choices=_plot_choices(analysis, here))
 
 
 def _plot_downloads(analysis: PhotoAnalysis) -> list[dict[str, str]]:
@@ -691,7 +721,9 @@ def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[
     found = plots.source == "found"
     what = (f"Ingabe found {plots.count} plots in this photo, {_ha(plots.total_ha)} in all, numbered from the "
             "north-west." if found else f"Your map {plots.source} has {plots.count} plots on this photo, "
-            f"{_ha(plots.total_ha)} in all.")
+            f"{_ha(plots.total_ha)} in all, each with the name your map gives it.")
+    if here.plot_map_error:
+        what = f"Your map {here.plot_map_error}, so these are the plots Ingabe found. " + what
     facts = [{"label": "Plots", "value": str(plots.count)}, {"label": "All plots together", "value": _ha(plots.total_ha)}]
     if areas:
         median = areas[len(areas) // 2]
@@ -700,7 +732,7 @@ def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[
                   {"label": "Smallest and largest", "value": f"{_ha(areas[0])} and {_ha(areas[-1])}"}]
     facts.append({"label": "Outlines", "value": _plot_source(plots)})
     features = [{**f, "properties": {**f["properties"],
-                                     "label": f"Plot {f['properties']['number']} · {_ha(f['properties']['area_ha'])}"}}
+                                     "label": f"{_plot_label(f['properties'])} · {_ha(f['properties']['area_ha'])}"}}
                 for f in plots.geojson["features"]]
     because = [_plot_source(plots), "Areas measured from the outlines"]
     if found:
@@ -712,15 +744,18 @@ def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[
         why = "Every measurement can then be given per plot, with its own area, and joined to your records by number."
     else:
         why = "Every answer can then be given plot by plot, each with its own size."
+    todo = "Tap a plot to see its name and size. Check the outlines of plots you know, then download the table or the map."
+    if found and not here.plot_maps:
+        todo += (" Have your own map of the plots? Add it with Add data (Shapefile, KML, GeoJSON or GeoPackage) "
+                 "and choose it here: Ingabe will use your plots and their names.")
     return _answer(
-        "field_outlines", analysis, here, what=what, why=why,
-        todo=("Tap a plot to see its number and size. Check the outlines of plots you know, then download the "
-              "table or the map to share it."),
+        "field_outlines", analysis, here, what=what, why=why, todo=todo,
         how_sure=_how_sure("medium" if found else "high", because,
                            "Walk the edges of a few plots with a phone GPS and compare." if found else None),
         terms=["hectare"], audience=audience, facts=facts, downloads=_plot_downloads(analysis),
-        overlay={"kind": "plots", "legend": "Plots, numbered from the north-west",
-                 "geojson": {"type": "FeatureCollection", "features": features}})
+        overlay={"kind": "plots", "legend": "Plots, numbered from the north-west" if found else f"Plots from {plots.source}",
+                 "geojson": {"type": "FeatureCollection", "features": features}},
+        choices=_plot_choices(analysis, here))
 
 
 def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -737,7 +772,7 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
                    drone_plots.UNKNOWN: "not measured"}
 
     def label(p: dict[str, Any]) -> str:
-        text = f"Plot {p['number']} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
+        text = f"{_plot_label(p)} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
         return text + (f" · GRVI {p['greenness']:.3f}" if technical and p["greenness"] is not None else "")
 
     features = [{**f, "properties": {**f["properties"], "label": label(f["properties"])}}
@@ -751,11 +786,11 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
             why="Comparing needs at least 5 plots with a crop that lie fully on the photo.",
             todo="Fly a wider area, or ask about the whole photo instead.",
             how_sure=_how_sure("low", ["Too few plots measured"], None),
-            terms=["greenness"], audience=audience, overlay=overlay)
+            terms=["greenness"], audience=audience, overlay=overlay, choices=_plot_choices(analysis, here))
     first = least[:3]
     least_ha = sum(p["area_ha"] for p in least)
     what = (f"Of the {len(with_crop)} plots with a crop, {len(least)} are the least green ({_ha(least_ha)}), "
-            f"filled on the photo. Least green first: plots {_numbers(least[:5])}.")
+            f"filled on the photo. Least green first: plots {_plot_names(least[:5])}.")
     if soil:
         what += (f" {len(soil)} more plots show mostly bare soil (just prepared, planted or harvested) and are "
                  "shaded lightly; the bare-ground question covers them.")
@@ -766,18 +801,18 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
     if audience == "insurance":
         why = ("Least green can be damage, but also a crop planted later or just harvested. One photo cannot "
                "tell them apart.")
-        todo = (f"Before judging a claim on plots {_numbers(first)}, compare with an earlier flight or the "
+        todo = (f"Before judging a claim on plots {_plot_names(first)}, compare with an earlier flight or the "
                 "planting dates.")
     elif technical:
         why = ("Low greenness can mean water or nutrient stress, gaps, weeds cleared, or a later stage. It is "
                f"relative to the other plots with a crop in this photo (under {round(drone_plots.MOSTLY_BARE * 100)}% "
                "bare soil).")
-        todo = f"Scout plots {_numbers(first)} first: check the stage, gaps, water, nutrients and pests."
+        todo = f"Scout plots {_plot_names(first)} first: check the stage, gaps, water, nutrients and pests."
     else:
         why = ("Less green can mean plants short of water or food, missing plants, or weeds cleared. A crop "
                "planted later than its neighbours is also less green, so look before acting.")
-        todo = f"Walk to plots {_numbers(first)} first and look at the plants and the soil. Tap a plot to see its number."
-    items = [{"id": str(p["number"]), "title": f"Plot {p['number']}",
+        todo = f"Walk to plots {_plot_names(first)} first and look at the plants and the soil. Tap a plot to see its name."
+    items = [{"id": str(p["number"]), "title": _plot_label(p),
               "detail": f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare soil" if p["bare_share"] else ""),
               "lon": p["lon"], "lat": p["lat"]} for p in least[:5]]
     facts = [{"label": "Plots with a crop", "value": str(len(with_crop))},
@@ -791,9 +826,9 @@ def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str
             "Greenness from a colour camera, not health",
             "Compared only with the other plots with a crop in this photo",
             "Not checked on the ground",
-        ], f"Look at plots {_numbers(first)} on foot and note what you find."),
+        ], f"Look at plots {_plot_names(first)} on foot and note what you find."),
         terms=["greenness", "colour_camera"], audience=audience, overlay=overlay, facts=facts, items=items,
-        downloads=_plot_downloads(analysis))
+        downloads=_plot_downloads(analysis), choices=_plot_choices(analysis, here))
 
 
 def _history(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:

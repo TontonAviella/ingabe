@@ -1,5 +1,5 @@
 import { apiFetch } from '@mundi/ee';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 // Shapes returned by src/routes/drone_card_routes.py. Every word, number and
 // status is decided on the server (src/services/drone_cards.py); the panel only shows them.
@@ -51,6 +51,12 @@ export interface DroneCardAnswer extends DroneCard {
   downloads: { label: string; href: string }[];
   /** Set while the answer is still being worked out on the server. */
   progress: { done: number; parts: number; minutes_left: number | null } | null;
+  /** Options that change the answer (where the plots come from); picking one is sent to href. */
+  choices: {
+    label: string;
+    options: { id: string; label: string; detail: string; selected: boolean }[];
+    href: string;
+  } | null;
 }
 
 /** Errors the server explains in words (a photo still processing, not a colour photo). */
@@ -63,17 +69,20 @@ export class DroneCardsError extends Error {
   }
 }
 
+/** The server's own words for a failed request, or its status. */
+async function failure(res: Response): Promise<DroneCardsError> {
+  let detail = `Request failed (${res.status})`;
+  try {
+    detail = (await res.json()).detail ?? detail;
+  } catch {
+    /* not JSON: keep the status */
+  }
+  return new DroneCardsError(res.status, detail);
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const res = await apiFetch(url);
-  if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    try {
-      detail = (await res.json()).detail ?? detail;
-    } catch {
-      /* not JSON: keep the status */
-    }
-    throw new DroneCardsError(res.status, detail);
-  }
+  if (!res.ok) throw await failure(res);
   return res.json();
 }
 
@@ -105,5 +114,24 @@ export function useDroneCardAnswer(layerId: string | null, cardId: string | null
     staleTime: 10 * 60 * 1000,
     retry: false,
     refetchInterval: (query) => (query.state.data?.progress ? WORKING_REFRESH_MS : false),
+  });
+}
+
+/** Pick where a photo's plots come from; every card of that photo is asked again. */
+export function useChoosePlotSource(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<void, DroneCardsError, { href: string; source: string }>({
+    mutationFn: async ({ href, source }) => {
+      const res = await apiFetch(href, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+      if (!res.ok) throw await failure(res);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
+      queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
+    },
   });
 }

@@ -26,11 +26,11 @@ import threading
 import time
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, NamedTuple, Optional
 
 import numpy as np
 import rasterio
@@ -39,8 +39,9 @@ from pyproj import Geod, Transformer
 from rasterio.enums import Resampling
 from rasterio.features import rasterize
 from rasterio.warp import transform_bounds
+from rasterio.windows import from_bounds
 from shapely import STRtree
-from shapely.geometry import MultiPolygon, Polygon, mapping, shape
+from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as reproject, unary_union
 
 from src.services.grvi import BARE_PIXEL, grvi
@@ -82,8 +83,41 @@ BETWEEN = "between"
 GREENEST = "greenest"
 UNKNOWN = "unknown"
 
+# --- The reader's own plot map ----------------------------------------------------------
+
+# Columns that name a plot in a map, most specific first (UPI: Rwanda's land parcel number).
+PLOT_NAME_COLUMNS = ("upi", "plot_id", "plotid", "plot_no", "plot_name", "plot", "parcel_id", "parcel", "field_id",
+                     "field", "block", "name", "label", "code", "id")
+TAG_CHARS = 10  # a plot's own name shows on the photo when it is this short; otherwise its number does
+MAX_MAP_COLUMNS = 20  # columns of the reader's map carried into the spreadsheet
+
 _GEOD = Geod(ellps="WGS84")
 _STORE_PREFIX = "drone_plots/v1"
+
+
+@dataclass(frozen=True)
+class MapPlot:
+    """One plot from the reader's own map: its outline in WGS84, its name there, and its other columns."""
+
+    geometry: Any
+    name: Optional[str] = None
+    attributes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PlotMap:
+    """A map layer the reader can choose as this photo's plots."""
+
+    layer_id: str
+    name: str
+    shapes: Optional[int]  # features in the layer, when known
+
+
+class _Outline(NamedTuple):
+    polygon: Any  # Polygon or MultiPolygon in the photo's CRS
+    confidence: Optional[float] = None
+    name: Optional[str] = None
+    attributes: Optional[dict[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -224,7 +258,7 @@ def _area_ha(geom_wgs84: Any) -> float:
     return abs(_GEOD.geometry_area_perimeter(geom_wgs84)[0]) / 10_000
 
 
-def _north_west_order(outlines: list[Polygon]) -> list[int]:
+def _north_west_order(outlines: list[Any]) -> list[int]:
     """Indexes in plot-number order: rows from north to south, west to east inside a row (rows about one plot tall)."""
     if not outlines:
         return []
@@ -234,16 +268,31 @@ def _north_west_order(outlines: list[Polygon]) -> list[int]:
     return order
 
 
-def _measure(ds: Any, outlines: list[Polygon]) -> list[tuple[Optional[float], Optional[float]]]:
-    """Mean greenness and bare share of each outline (in the photo's CRS); None where too little is readable."""
-    m_per_px = _photo_m_per_px(ds)
-    factor = max(1.0, STATS_M_PER_PX / m_per_px)
-    rows, cols = max(1, int(ds.height / factor)), max(1, int(ds.width / factor))
-    bands = ds.read([1, 2], out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
+def _measure(ds: Any, outlines: list[Any]) -> list[tuple[Optional[float], Optional[float]]]:
+    """Mean greenness and bare share of each outline (in the photo's CRS); None where too little is readable.
+    Only the part of the photo around the outlines is read."""
+    if not outlines:
+        return []
+    left = max(min(p.bounds[0] for p in outlines), ds.bounds.left)
+    bottom = max(min(p.bounds[1] for p in outlines), ds.bounds.bottom)
+    right = min(max(p.bounds[2] for p in outlines), ds.bounds.right)
+    top = min(max(p.bounds[3] for p in outlines), ds.bounds.top)
+    if right <= left or top <= bottom:
+        return [(None, None)] * len(outlines)
+    w = from_bounds(left, bottom, right, top, ds.transform)
+    col0, row0 = max(0, int(np.floor(w.col_off))), max(0, int(np.floor(w.row_off)))
+    col1 = min(ds.width, int(np.ceil(w.col_off + w.width)))
+    row1 = min(ds.height, int(np.ceil(w.row_off + w.height)))
+    if col1 <= col0 or row1 <= row0:
+        return [(None, None)] * len(outlines)
+    window = rasterio.windows.Window(col0, row0, col1 - col0, row1 - row0)
+    factor = max(1.0, STATS_M_PER_PX / _photo_m_per_px(ds))
+    rows, cols = max(1, int(window.height / factor)), max(1, int(window.width / factor))
+    bands = ds.read([1, 2], window=window, out_shape=(2, rows, cols), resampling=Resampling.average, masked=True)
     green = grvi(bands[0], bands[1])  # NaN where the photo is empty
     readable = ~np.isnan(green)
     green = np.where(readable, green, 0).astype("float32")
-    transform = ds.transform * Affine.scale(ds.width / cols, ds.height / rows)
+    transform = ds.window_transform(window) * Affine.scale(window.width / cols, window.height / rows)
     labels = rasterize(((p, i + 1) for i, p in enumerate(outlines)), out_shape=(rows, cols),
                        transform=transform, fill=0, dtype="int32")
     n = len(outlines) + 1
@@ -285,28 +334,33 @@ def plot_groups(measures: list[tuple[Optional[float], Optional[float]]]) -> list
     return [group(g, bare) for g, bare in measures]
 
 
-def _plot_set(ds: Any, found: list[tuple[float, Polygon]], source: str, seconds: float) -> PlotSet:
+def _plot_set(ds: Any, found: list[_Outline], source: str, seconds: float) -> PlotSet:
     """Measure, number and describe outlines given in the photo's CRS."""
     to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
-    outlines = [p for _, p in found]
+    outlines = [o.polygon for o in found]
     measures = _measure(ds, outlines)
     groups = plot_groups(measures)
     features = []
     for number, i in enumerate(_north_west_order(outlines), start=1):
-        conf, outline = found[i]
-        wgs84 = reproject(to_wgs84, outline)
+        outline = found[i]
+        wgs84 = reproject(to_wgs84, outline.polygon)
         greenness, bare = measures[i]
         centre = wgs84.representative_point()
-        features.append({"type": "Feature", "geometry": mapping(wgs84), "properties": {
+        props: dict[str, Any] = {
             "number": number,
+            "name": outline.name,
+            "tag": outline.name if outline.name and len(outline.name) <= TAG_CHARS else str(number),
             "area_ha": round(_area_ha(wgs84), 3),
             "greenness": None if greenness is None else round(greenness, 4),
             "bare_share": None if bare is None else round(bare, 3),
             "group": groups[i],
-            "confidence": None if conf is None else round(conf, 2),
+            "confidence": None if outline.confidence is None else round(outline.confidence, 2),
             "lon": round(centre.x, 6),
             "lat": round(centre.y, 6),
-        }})
+        }
+        if outline.attributes:
+            props["attributes"] = outline.attributes
+        features.append({"type": "Feature", "geometry": mapping(wgs84), "properties": props})
     return PlotSet(geojson={"type": "FeatureCollection", "features": features},
                    found_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                    seconds=round(seconds, 1), source=source, read_m_per_px=READ_M_PER_PX)
@@ -346,7 +400,7 @@ def find_plots(cog_url: str, progress: Callable[[int, int], None] = lambda done,
             progress(done + 1, len(tiles))
         on_photo = [(conf, p) for conf, p in candidates if _photo_cover(p, readable) >= MIN_PHOTO_COVER]
         kept = _keep_distinct(on_photo)
-        found = [(conf, reproject(lambda x, y, z=None: to_photo * (x, y), p)) for conf, p in kept]
+        found = [_Outline(reproject(lambda x, y, z=None: to_photo * (x, y), p), conf) for conf, p in kept]
         return _plot_set(ds, found, "found", time.perf_counter() - started)
 
 
@@ -364,17 +418,50 @@ def _photo_cover(polygon: Polygon, readable: np.ndarray) -> float:
     return float(window[inside].mean()) if inside.any() else 0.0
 
 
-def measure_own_plots(cog_url: str, plots_wgs84: list[Any], source: str) -> PlotSet:
-    """Number and measure the reader's own plot outlines (WGS84 shapes) on this photo."""
+def _text(value: Any) -> Optional[str]:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _name_column(columns: list[str]) -> Optional[str]:
+    by_lower = {c.lower(): c for c in columns}
+    return next((by_lower[name] for name in PLOT_NAME_COLUMNS if name in by_lower), None)
+
+
+def read_plot_map(path: str) -> list[MapPlot]:
+    """The polygons of a map file (GeoParquet, GeoPackage, Shapefile, KML, GeoJSON) in WGS84, with their names."""
+    import geopandas as gpd
+
+    frame = gpd.read_parquet(path) if path.endswith(".parquet") else gpd.read_file(path, engine="pyogrio")
+    if frame.crs is None:
+        frame = frame.set_crs("EPSG:4326")
+    frame = frame.to_crs("EPSG:4326")
+    columns = [str(c) for c in frame.columns if c != frame.geometry.name]
+    name_column = _name_column(columns)
+    kept_columns = columns[:MAX_MAP_COLUMNS]
+    plots = []
+    for geometry, record in zip(frame.geometry, frame[columns].to_dict("records")):
+        if geometry is None or geometry.is_empty or geometry.geom_type not in ("Polygon", "MultiPolygon"):
+            continue
+        attributes = {c: t for c in kept_columns if (t := _text(record.get(c))) is not None}
+        plots.append(MapPlot(geometry, _text(record.get(name_column)) if name_column else None, attributes))
+    return plots
+
+
+def measure_own_plots(cog_url: str, plots: list[MapPlot], source: str) -> PlotSet:
+    """Number and measure the reader's own plots that lie on this photo (others are left out)."""
     started = time.perf_counter()
     with rasterio.open(cog_url) as ds:
         to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
+        footprint = box(*ds.bounds)
         found = []
-        for geom in plots_wgs84:
-            polygon = reproject(to_photo, geom)
-            for part in getattr(polygon, "geoms", [polygon]):
-                if isinstance(part, Polygon) and not part.is_empty:
-                    found.append((None, part))
+        for plot in plots:
+            outline = reproject(to_photo, plot.geometry)
+            if outline.is_empty or outline.area == 0 or not outline.intersects(footprint):
+                continue
+            found.append(_Outline(outline, None, plot.name, plot.attributes))
         return _plot_set(ds, found, source, time.perf_counter() - started)
 
 
@@ -412,6 +499,22 @@ async def load_plots(s3: Any, bucket: str, photo_key: str) -> Optional[PlotSet]:
         plots = _from_json(await body.read())
     _results[photo_key] = plots
     return plots
+
+
+_map_locks: dict[str, asyncio.Lock] = {}
+
+
+async def load_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str, cog_url: str, source: str,
+                         read: Callable[[], Awaitable[list[MapPlot]]]) -> PlotSet:
+    """The reader's own plots on this photo, measured once per version of their map (map_key) and kept."""
+    key = f"{photo_key}|map:{map_key}"
+    async with _map_locks.setdefault(key, asyncio.Lock()):
+        plots = await load_plots(s3, bucket, key)
+        if plots is None:
+            plots = await asyncio.to_thread(measure_own_plots, cog_url, await read(), source)
+            await s3.put_object(Bucket=bucket, Key=_store_key(key), Body=_to_json(plots), ContentType="application/json")
+            _results[key] = plots
+        return plots
 
 
 def job(photo_key: str) -> Optional[PlotJob]:
@@ -458,6 +561,7 @@ GROUP_LABELS = {MOSTLY_SOIL: "Mostly soil showing", LEAST_GREEN: "Least green fi
 
 _COLUMNS = [  # (heading, property, Shapefile field of 10 characters at most)
     ("Plot", "number", "plot"),
+    ("Name on your map", "name", "name"),
     ("Area (ha)", "area_ha", "area_ha"),
     ("Greenness (GRVI)", "greenness", "grvi"),
     ("Bare ground (share)", "bare_share", "bare_share"),
@@ -480,18 +584,22 @@ def to_xlsx(plots: PlotSet, photo_name: str) -> bytes:
     book = xlsxwriter.Workbook(out, {"in_memory": True})
     bold = book.add_format({"bold": True})
     sheet = book.add_worksheet("Plots")
-    for col, (heading, _, _) in enumerate(_COLUMNS):
+    # The reader's own columns follow ours, in the order their map has them.
+    own_columns = list(dict.fromkeys(c for p in plots.plots() for c in (p.get("attributes") or {})))
+    for col, heading in enumerate([h for h, _, _ in _COLUMNS] + own_columns):
         sheet.write(0, col, heading, bold)
     for r, props in enumerate(plots.plots(), start=1):
-        for col, value in enumerate(_row(props)):
+        own = props.get("attributes") or {}
+        for col, value in enumerate(_row(props) + [own.get(c) for c in own_columns]):
             if value is not None:
                 sheet.write(r, col, value)
-    sheet.set_column(0, len(_COLUMNS) - 1, 18)
+    sheet.set_column(0, len(_COLUMNS) + len(own_columns) - 1, 18)
     sheet.freeze_panes(1, 0)
     about = book.add_worksheet("How it was made")
     lines = [
         ("Photo", photo_name),
-        ("Plots", "found in the photo by Ingabe" if plots.source == "found" else f"from your map: {plots.source}"),
+        ("Plots", "found in the photo by Ingabe" if plots.source == "found" else f"from your map: {plots.source}. "
+                  "Columns after 'Longitude' are your map's own."),
         ("Found on", plots.found_at),
         ("Outlines", f"{FIELD_MODEL_NAME}, a field-outlining model, reading the photo at {plots.read_m_per_px} m "
                      "per pixel. Checked by eye, not against surveyed edges: some plots are missed or joined."

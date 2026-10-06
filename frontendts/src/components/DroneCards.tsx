@@ -14,7 +14,14 @@ import {
 } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { type DroneCard, type DroneCardAnswer, type DroneDeck, useDroneCardAnswer, useDroneDeck } from '@/hooks/useDroneCards';
+import {
+  type DroneCard,
+  type DroneCardAnswer,
+  type DroneDeck,
+  useChoosePlotSource,
+  useDroneCardAnswer,
+  useDroneDeck,
+} from '@/hooks/useDroneCards';
 import type { MapLayer } from '@/lib/types';
 
 // The question cards for a drone photo, over the map. Everything shown comes
@@ -167,12 +174,50 @@ function Progress({ progress }: { progress: NonNullable<DroneCardAnswer['progres
   );
 }
 
+function Choices({ layerId, choices }: { layerId: string; choices: NonNullable<DroneCardAnswer['choices']> }) {
+  const choose = useChoosePlotSource(layerId);
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[13px] font-semibold text-[#B8A99B]">{choices.label}</span>
+      <div className="flex flex-col rounded-[16px] bg-[#1E1612] border border-white/[0.06]" role="radiogroup" aria-label={choices.label}>
+        {choices.options.map((option) => {
+          const busy = choose.isPending && choose.variables?.source === option.id;
+          return (
+            <button
+              key={option.id}
+              type="button"
+              role="radio"
+              aria-checked={option.selected}
+              disabled={choose.isPending || option.selected}
+              onClick={() => choose.mutate({ href: choices.href, source: option.id })}
+              className="flex items-center justify-between gap-3 min-h-12 px-4 py-2 text-left border-b border-white/[0.07] last:border-b-0 hover:bg-white/[0.03] disabled:cursor-default cursor-pointer"
+            >
+              <span className="flex flex-col">
+                <span className="text-[15px] font-semibold text-[#F3EDE6]">{option.label}</span>
+                <span className="text-[13px] text-[#B8A99B]">{option.detail}</span>
+              </span>
+              {busy ? (
+                <LoaderCircle className="size-4 shrink-0 text-[#D9A066] animate-spin" />
+              ) : (
+                option.selected && <Check className="size-4 shrink-0 text-[#D9A066]" strokeWidth={2.5} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {choose.error && <p className="m-0 text-[13px] text-[#E9B987]">{choose.error.message}</p>}
+    </div>
+  );
+}
+
 function AnswerView({
   answer,
+  layerId,
   onBack,
   onGoTo,
 }: {
   answer: DroneCardAnswer;
+  layerId: string;
   onBack: () => void;
   onGoTo: (lon: number, lat: number) => void;
 }) {
@@ -209,6 +254,8 @@ function AnswerView({
           {answer.overlay.legend}
         </span>
       )}
+
+      {answer.choices && <Choices layerId={layerId} choices={answer.choices} />}
 
       <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
         <Section label="What and where">
@@ -441,7 +488,7 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
             source: SOURCE,
             minzoom: LABEL_MIN_ZOOM,
             layout: {
-              'text-field': ['to-string', ['get', 'number']],
+              'text-field': ['coalesce', ['get', 'tag'], ['to-string', ['get', 'number']]],
               'text-font': LABEL_FONT,
               'text-size': 12,
               'symbol-placement': 'point',
@@ -609,6 +656,7 @@ export function DroneCards({
         {openCard && answer.data && (
           <AnswerView
             answer={answer.data}
+            layerId={layerId}
             onBack={() => setOpenCard(null)}
             onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, padding: panelPadding(), duration: 900 })}
           />

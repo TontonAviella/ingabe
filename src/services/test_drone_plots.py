@@ -50,7 +50,9 @@ def _outlines_wgs84():
 
 @pytest.fixture
 def plots(photo):
-    return drone_plots.measure_own_plots(str(photo), _outlines_wgs84(), "Test plots")
+    names = ["A-01", "A-02", "A-03", "B-01", "B-02", "Plot with a very long name"]
+    own = [drone_plots.MapPlot(g, name, {"Farmer": f"Farmer {i}"}) for i, (g, name) in enumerate(zip(_outlines_wgs84(), names))]
+    return drone_plots.measure_own_plots(str(photo), own, "Test plots")
 
 
 def test_plots_are_numbered_from_the_north_west_with_true_areas(plots):
@@ -80,11 +82,48 @@ def test_groups_compare_only_plots_with_a_crop():
     assert few == [drone_plots.BETWEEN, drone_plots.BETWEEN, drone_plots.MOSTLY_SOIL]
 
 
-def test_a_plot_off_the_photo_is_not_measured(photo):
+def test_plots_off_the_photo_are_left_out_and_half_off_is_not_measured(photo):
     to_wgs84 = Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True).transform
     outside = reproject(to_wgs84, box(X0 + 400, Y0 - 100, X0 + 480, Y0 - 20))  # east of the 300 m photo
-    result = drone_plots.measure_own_plots(str(photo), [outside], "Test plots")
-    assert result.plots()[0]["greenness"] is None and result.plots()[0]["group"] == drone_plots.UNKNOWN
+    half_off = reproject(to_wgs84, box(X0 + 260, Y0 - 200, X0 + 340, Y0 - 120))  # 40 of its 80 m on the photo
+    result = drone_plots.measure_own_plots(
+        str(photo), [drone_plots.MapPlot(outside, "out"), drone_plots.MapPlot(half_off, "half")], "Test plots")
+    assert [p["name"] for p in result.plots()] == ["half"]
+    assert result.plots()[0]["greenness"] is not None  # exactly half on the photo is still measured
+
+
+def test_own_plot_names_and_columns_are_kept(plots):
+    by_number = {p["number"]: p for p in plots.plots()}
+    assert by_number[1]["name"] == "A-01" and by_number[1]["tag"] == "A-01"
+    assert by_number[6]["tag"] == "6"  # a long name shows as the plot's number on the photo
+    assert by_number[1]["attributes"] == {"Farmer": "Farmer 0"}
+    rows = list(openpyxl.load_workbook(io.BytesIO(drone_plots.to_xlsx(plots, "Test photo")))["Plots"].values)
+    assert rows[0][1] == "Name on your map" and rows[0][-1] == "Farmer"
+    assert rows[1][1] == "A-01" and rows[1][-1] == "Farmer 0"
+
+
+def test_a_plot_map_file_is_read_with_its_names(tmp_path):
+    import geopandas as gpd
+
+    to_wgs84 = Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True).transform
+    frame = gpd.GeoDataFrame(
+        {"UPI": ["1/02/03/04/1", "1/02/03/04/2", None], "Name": ["north", "south", "well"], "Crop": ["maize", None, None]},
+        geometry=[reproject(to_wgs84, box(X0, Y0 - 50, X0 + 50, Y0)), reproject(to_wgs84, box(X0, Y0 - 100, X0 + 50, Y0 - 50)),
+                  reproject(to_wgs84, box(X0, Y0, X0 + 1, Y0 + 1)).centroid],
+        crs="EPSG:4326",
+    ).to_crs("EPSG:32735")
+    path = tmp_path / "plots.gpkg"
+    frame.to_file(path, driver="GPKG")
+    plots = drone_plots.read_plot_map(str(path))
+    assert [p.name for p in plots] == ["1/02/03/04/1", "1/02/03/04/2"]  # UPI wins over Name; the point is not a plot
+    assert plots[0].attributes == {"UPI": "1/02/03/04/1", "Name": "north", "Crop": "maize"}
+    assert plots[1].attributes == {"UPI": "1/02/03/04/2", "Name": "south"}
+    assert -2 < plots[0].geometry.centroid.y < -1  # back in WGS84 over Rwanda
+
+
+def test_the_plot_name_column_is_found_whatever_its_case():
+    assert drone_plots._name_column(["geometry", "Farmer", "PLOT_ID", "name"]) == "PLOT_ID"
+    assert drone_plots._name_column(["Farmer", "Crop"]) is None
 
 
 def test_duplicates_from_overlapping_tiles_are_dropped_and_small_overlaps_cut():
