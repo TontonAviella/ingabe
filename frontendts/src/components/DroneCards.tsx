@@ -11,7 +11,8 @@ import type { MapLayer } from '@/lib/types';
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif";
 const COLLAPSED_KEY = 'ingabe.droneCards.collapsed';
 
-// On phones the panel is a sheet over the lower part of the map, above the chat box.
+// On phones the panel is a sheet over the lower part of the map, above the chat box. On larger screens it
+// stops 280px above the bottom: the chat box and Sage's reply above it take about 260px there.
 const PHONE_SHEET_SHARE = 0.52;
 
 const SOURCE = 'drone-card-overlay';
@@ -367,7 +368,18 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
   }, [map, answer]);
 }
 
-export function DroneCards({ map, layers, hiddenLayerIDs }: { map: MLMap | null; layers: MapLayer[]; hiddenLayerIDs: string[] }) {
+export function DroneCards({
+  map,
+  layers,
+  hiddenLayerIDs,
+  historyOpen,
+}: {
+  map: MLMap | null;
+  layers: MapLayer[];
+  hiddenLayerIDs: string[];
+  /** "Previous chats" is open; below xl it covers the right side of the map, so the cards step aside. */
+  historyOpen: boolean;
+}) {
   const photos = useMemo(() => layers.filter((l) => l.type === 'raster' && !hiddenLayerIDs.includes(l.id)), [layers, hiddenLayerIDs]);
   const [layerId, setLayerId] = useState<string | null>(null);
   const [audience, setAudience] = useState<string | null>(null);
@@ -400,7 +412,7 @@ export function DroneCards({ map, layers, hiddenLayerIDs }: { map: MLMap | null;
         type="button"
         onClick={() => setCollapsedAndSave(false)}
         style={{ fontFamily: FONT }}
-        className="absolute top-16 right-4 sm:top-4 sm:right-14 z-30 min-h-11 px-4 rounded-full bg-[#110C0A]/85 backdrop-blur-xl border border-white/10 text-[14px] font-semibold text-[#F3EDE6] shadow-lg cursor-pointer"
+        className={`absolute top-16 right-4 sm:right-14 xl:top-4 z-30 min-h-11 px-4 rounded-full bg-[#110C0A]/85 backdrop-blur-xl border border-white/10 text-[14px] font-semibold text-[#F3EDE6] shadow-lg cursor-pointer ${historyOpen ? 'max-xl:hidden' : ''}`}
       >
         Questions{deck.data ? ` · ${deck.data.for_you.length}` : ''}
       </button>
@@ -411,7 +423,7 @@ export function DroneCards({ map, layers, hiddenLayerIDs }: { map: MLMap | null;
     <section
       aria-label="Questions for this drone photo"
       style={{ fontFamily: FONT }}
-      className="absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto sm:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-180px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6]"
+      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto sm:top-16 xl:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] xl:max-h-[calc(100%-280px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6] ${historyOpen ? 'max-xl:hidden' : ''}`}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-1">
         <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Questions</span>

@@ -1711,7 +1711,13 @@ export default function MapLibreMap({
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
         <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
-        <DroneCards key={`cards-${mapInstanceId}`} map={mapRef.current} layers={mapData?.layers ?? []} hiddenLayerIDs={hiddenLayerIDs} />
+        <DroneCards
+          key={`cards-${mapInstanceId}`}
+          map={mapRef.current}
+          layers={mapData?.layers ?? []}
+          hiddenLayerIDs={hiddenLayerIDs}
+          historyOpen={mobileWorkspacePanel === 'history'}
+        />
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (
