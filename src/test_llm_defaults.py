@@ -18,8 +18,8 @@ def test_default_chat_model_is_local_gemma4_brain():
     assert endpoint.is_local_ollama is True
 
 
-def test_cloud_brain_model_is_nemotron_super3():
-    assert DEFAULT_CLOUD_BRAIN_MODEL == "nvidia/nemotron-3-super-120b-a12b:free"
+def test_cloud_brain_model_is_gpt6_luna():
+    assert DEFAULT_CLOUD_BRAIN_MODEL == "openai/gpt-6-luna"
 
 
 def test_resolve_chat_endpoint_preserves_hosted_nemotron_config():
@@ -49,4 +49,6 @@ def test_supported_brain_models_preserve_strict_tool_schemas():
     assert supports_strict_tool_schema("google/gemma-4-31b-it") is True
     assert supports_strict_tool_schema(DEFAULT_CLOUD_BRAIN_MODEL) is True
     assert supports_strict_tool_schema("gpt-4.1") is True
+    assert supports_strict_tool_schema("openai/gpt-6-luna") is True  # OpenAI models through OpenRouter
+    assert supports_strict_tool_schema("nvidia/nemotron-3-super-120b-a12b:free") is True
     assert supports_strict_tool_schema("deepseek-chat") is False

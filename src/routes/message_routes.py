@@ -514,11 +514,13 @@ async def label_conversation_inline(conversation_id: int):
                     },
                     {"role": "user", "content": f"Conversation:\n{content_summary}"},
                 ],
-                max_tokens=20,
+                # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                max_tokens=150,
                 temperature=0.3,
             )
 
-            title = response.choices[0].message.content.strip()
+            title = (response.choices[0].message.content or "").strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
