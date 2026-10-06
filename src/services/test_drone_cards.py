@@ -10,7 +10,7 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from src.services import drone_cards, drone_first_look, isdasoil_service, wapor_service
+from src.services import drone_cards, drone_first_look, drone_plots, isdasoil_service, wapor_service
 
 PIXEL_M = 0.5
 SIZE = 600  # 300 m x 300 m = 9 ha
@@ -73,7 +73,7 @@ def test_zones_follow_the_first_look_order(photo):
 
 
 def test_deck_shows_every_service_and_ends_with_a_lesson(photo):
-    deck = drone_cards.build_deck(_analysis(photo), "farmer", photos_here=1)
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", drone_cards.Here(photos=1))
     assert [s["service"] for s in deck["services"]] == list(range(1, 12))
     assert all(s["cards"] for s in deck["services"])
     assert len(deck["for_you"]) == drone_cards.FOR_YOU_COUNT
@@ -82,15 +82,15 @@ def test_deck_shows_every_service_and_ends_with_a_lesson(photo):
 
 
 def test_ready_answers_come_first(photo):
-    deck = drone_cards.build_deck(_analysis(photo), "farmer", photos_here=1)
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", drone_cards.Here(photos=1))
     statuses = [card["status"] for card in deck["for_you"][:-1]]
     assert statuses[:2] == [drone_cards.READY, drone_cards.READY]
 
 
 def test_insurer_sees_planted_or_never_planted(photo):
     analysis = _analysis(photo)
-    insurer = drone_cards.answer_card("bare_ground", analysis, "insurer", photos_here=1)
-    farmer = drone_cards.answer_card("bare_ground", analysis, "farmer", photos_here=1)
+    insurer = drone_cards.answer_card("bare_ground", analysis, "insurer", drone_cards.Here(photos=1))
+    farmer = drone_cards.answer_card("bare_ground", analysis, "farmer", drone_cards.Here(photos=1))
     assert "never planted" in insurer["why"]
     assert insurer["why"] != farmer["why"]
     assert insurer["overlay"]["kind"] == "bare"
@@ -99,20 +99,20 @@ def test_insurer_sees_planted_or_never_planted(photo):
 
 def test_fertilizer_asks_for_a_special_camera_on_a_colour_photo(photo):
     analysis = _analysis(photo)
-    assert drone_cards.answer_card("fertilizer", analysis, "agronomist", 1)["status"] == drone_cards.NEEDS_CAMERA
+    assert drone_cards.answer_card("fertilizer", analysis, "agronomist", drone_cards.Here(photos=1))["status"] == drone_cards.NEEDS_CAMERA
     multispectral = _analysis(photo, band_count=5)
-    assert drone_cards.answer_card("fertilizer", multispectral, "agronomist", 1)["status"] == drone_cards.TO_BUILD
+    assert drone_cards.answer_card("fertilizer", multispectral, "agronomist", drone_cards.Here(photos=1))["status"] == drone_cards.TO_BUILD
 
 
 def test_growth_needs_a_second_flight_until_there_is_one(photo):
     analysis = _analysis(photo)
-    assert drone_cards.answer_card("growth", analysis, "farmer", 1)["status"] == drone_cards.NEEDS_FLIGHT
-    assert drone_cards.answer_card("growth", analysis, "farmer", 2)["status"] == drone_cards.TO_BUILD
+    assert drone_cards.answer_card("growth", analysis, "farmer", drone_cards.Here(photos=1))["status"] == drone_cards.NEEDS_FLIGHT
+    assert drone_cards.answer_card("growth", analysis, "farmer", drone_cards.Here(photos=2))["status"] == drone_cards.TO_BUILD
 
 
 def test_missing_water_data_is_said_not_shown_as_zero(photo, monkeypatch):
     monkeypatch.setattr(wapor_service, "query_et", lambda *a, **k: {"status": "error", "error": "no data"})
-    answer = drone_cards.answer_card("water", _analysis(photo), "farmer", 1)
+    answer = drone_cards.answer_card("water", _analysis(photo), "farmer", drone_cards.Here(photos=1))
     assert answer["facts"] == []
     assert "no satellite reading" in answer["what"]
 
@@ -122,7 +122,7 @@ def test_soil_values_without_a_false_spread(photo, monkeypatch):
         "nitrogen_total": {"value": 1.44, "uncertainty": 0.13, "unit": "g/kg", "label": "Total Nitrogen"},
         "ph": {"value": 5.81, "uncertainty": 0.1, "unit": "", "label": "Soil pH"},
     }})
-    answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", 1)
+    answer = drone_cards.answer_card("soil", _analysis(photo), "farmer", drone_cards.Here(photos=1))
     assert {"label": "Total Nitrogen", "value": "1.44 g/kg"} in answer["facts"]
     assert "±" not in json.dumps(answer["facts"])  # the service's spread is not a real range yet
     assert answer["how_sure"]["level"] == "low"
@@ -130,7 +130,7 @@ def test_soil_values_without_a_false_spread(photo, monkeypatch):
 
 def test_unknown_card(photo):
     with pytest.raises(KeyError):
-        drone_cards.answer_card("nonsense", _analysis(photo), "farmer", 1)
+        drone_cards.answer_card("nonsense", _analysis(photo), "farmer", drone_cards.Here(photos=1))
 
 
 MONEY = re.compile(r"\b(RWF|FRW|USD|dollars?|francs?|money|price|cost|costs|profit|revenue|savings?)\b|\$", re.I)
@@ -141,8 +141,64 @@ def test_no_card_talks_about_money(photo, monkeypatch, audience):
     monkeypatch.setattr(isdasoil_service, "query_soil_point", lambda *a, **k: {"status": "error", "error": "offline"})
     monkeypatch.setattr(wapor_service, "query_et", lambda *a, **k: {"status": "error", "error": "offline"})
     analysis = _analysis(photo)
-    deck = drone_cards.build_deck(analysis, audience, 1)
-    answers = [drone_cards.answer_card(card["id"], analysis, audience, 1)
+    deck = drone_cards.build_deck(analysis, audience, drone_cards.Here(photos=1))
+    answers = [drone_cards.answer_card(card["id"], analysis, audience, drone_cards.Here(photos=1))
                for service in deck["services"] for card in service["cards"]]
     text = json.dumps([deck["for_you"], [{k: a[k] for k in ("what", "why", "todo", "terms")} for a in answers]])
+    assert not MONEY.search(text)
+
+
+def _plot_set(n=10):
+    """n square plots in a row over Rwanda; plot 3 is the least green."""
+    features = []
+    for i in range(n):
+        lon = 30.0 + i * 0.001
+        greenness = 0.02 if i == 2 else 0.1 + i * 0.01
+        features.append({"type": "Feature",
+                         "geometry": {"type": "Polygon", "coordinates": [[[lon, -1.5], [lon + 0.0008, -1.5],
+                                                                          [lon + 0.0008, -1.5008], [lon, -1.5008],
+                                                                          [lon, -1.5]]]},
+                         "properties": {"number": i + 1, "area_ha": 0.79, "greenness": greenness,
+                                        "bare_share": 0.4 if i == 2 else 0.0, "confidence": 0.5,
+                                        "lon": lon + 0.0004, "lat": -1.5004}})
+    groups = drone_plots._groups([f["properties"]["greenness"] for f in features])
+    for f, group in zip(features, groups):
+        f["properties"]["group"] = group
+    return drone_plots.PlotSet(geojson={"type": "FeatureCollection", "features": features},
+                               found_at="2026-10-06T12:00:00+00:00", seconds=1.0, source="found", read_m_per_px=0.5)
+
+
+def test_plot_cards_wait_while_the_plots_are_found(photo):
+    job = drone_plots.PlotJob(state="running", parts_done=2, parts=8, started=0.0)
+    here = drone_cards.Here(photos=1, plot_job=job)
+    answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.WORKING
+    assert answer["progress"] == {"done": 2, "parts": 8, "minutes_left": job.minutes_left}
+    assert answer["downloads"] == []
+
+
+def test_least_green_plots_are_named_and_drawn(photo):
+    here = drone_cards.Here(photos=1, plots=_plot_set())
+    answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.READY
+    assert answer["items"][0]["title"] == "Plot 3"
+    assert "plots 3 and 1" in answer["what"]
+    assert answer["overlay"]["kind"] == "plot_groups"
+    assert {d["label"] for d in answer["downloads"]} == {"Excel table", "Shapefile", "GeoJSON"}
+
+
+def test_field_outlines_count_and_measure_the_plots(photo):
+    here = drone_cards.Here(photos=1, plots=_plot_set())
+    answer = drone_cards.answer_card("field_outlines", _analysis(photo), "insurer", here)
+    assert answer["what"].startswith("Ingabe found 10 plots")
+    assert answer["overlay"]["kind"] == "plots"
+    assert answer["overlay"]["geojson"]["features"][0]["properties"]["label"] == "Plot 1 · 0.79 ha"
+
+
+@pytest.mark.parametrize("audience", ["farmer", "insurer", "agronomist", "scientist"])
+def test_no_plot_card_talks_about_money(photo, audience):
+    here = drone_cards.Here(photos=1, plots=_plot_set())
+    analysis = _analysis(photo)
+    answers = [drone_cards.answer_card(card_id, analysis, audience, here) for card_id in ("plots_green", "field_outlines")]
+    text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
     assert not MONEY.search(text)

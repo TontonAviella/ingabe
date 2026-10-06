@@ -35,7 +35,7 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping, shape
 from shapely.ops import transform as reproject
 
-from src.services import drone_first_look, isdasoil_service, wapor_service
+from src.services import drone_first_look, drone_plots, isdasoil_service, wapor_service
 from src.services.grvi import BARE_PIXEL, LOW_GREEN, grvi
 from src.services.insurance_engine import AUDIENCE_LABELS, normalize_audience
 
@@ -63,6 +63,7 @@ NEEDS_FLIGHT = "needs_flight"
 NEEDS_CAMERA = "needs_camera"
 TO_BUILD = "to_build"
 LEARN = "learn"
+WORKING = "working"
 
 STATUS_LABELS = {
     READY: "Answer ready",
@@ -71,15 +72,16 @@ STATUS_LABELS = {
     NEEDS_CAMERA: "Needs a special camera",
     TO_BUILD: "Coming soon",
     LEARN: "Learn · 1 minute",
+    WORKING: "Working on it",
 }
 
 # How the cards are ranked: readiness first, then the situation, then the reader.
-_BASE_SCORE = {READY: 100, PARTLY: 60, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, TO_BUILD: 10, LEARN: 0}
+_BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, TO_BUILD: 10, LEARN: 0}
 _READER_BOOST = {
-    "farmer": {"weak_spots": 15, "plant_count": 10, "bare_ground": 5},
-    "agronomist": {"weak_spots": 15, "soil": 20, "fertilizer": 10, "water": 10},
-    "insurance": {"bare_ground": 25, "history": 20, "growth": 10},
-    "scientist": {"weak_spots": 10, "soil": 10, "field_outlines": 10},
+    "farmer": {"plots_green": 20, "weak_spots": 15, "plant_count": 10, "bare_ground": 5},
+    "agronomist": {"plots_green": 20, "weak_spots": 15, "soil": 20, "fertilizer": 10, "water": 10},
+    "insurance": {"bare_ground": 25, "history": 20, "field_outlines": 15, "growth": 10},
+    "scientist": {"field_outlines": 20, "plots_green": 15, "weak_spots": 10, "soil": 10},
 }
 _SITUATION_BOOST = 30
 BARE_SHARE_WORTH_ASKING = 0.03  # bare ground on 3% of the photo or more moves its card up
@@ -121,6 +123,15 @@ class PhotoAnalysis:
     def centre(self) -> tuple[float, float]:
         west, south, east, north = self.bounds
         return (west + east) / 2, (south + north) / 2
+
+
+@dataclass(frozen=True)
+class Here:
+    """What else is known about the photo's place: how many photos of it, and its plots."""
+
+    photos: int = 1
+    plots: Optional[drone_plots.PlotSet] = None
+    plot_job: Optional[drone_plots.PlotJob] = None
 
 
 def _to_wgs84(crs: Any) -> Callable[..., Any]:
@@ -332,12 +343,13 @@ class _CardDef:
 
 
 _CARDS = [
+    _CardDef("plots_green", 1, "Which plots are the least green?"),
     _CardDef("weak_spots", 1, "Which parts of my crop look weak?"),
     _CardDef("bare_ground", 1, "Which fields are bare right now?"),
     _CardDef("fertilizer", 2, "Which zones need more fertilizer?"),
     _CardDef("water", 3, "Is water reaching every part of the field?"),
     _CardDef("pests", 4, "Where might pests or disease be starting?"),
-    _CardDef("field_outlines", 5, "Where exactly are my fields, and how big is each?"),
+    _CardDef("field_outlines", 5, "Where exactly are my plots, and how big is each?"),
     _CardDef("growth", 6, "Is the crop growing on schedule?"),
     _CardDef("plant_count", 7, "How many plants came up, and where are the gaps?"),
     _CardDef("yield", 8, "How much will this field yield?"),
@@ -349,22 +361,52 @@ _CARDS = [
 _CARD_BY_ID = {card.id: card for card in _CARDS}
 
 
-def _status(card_id: str, analysis: PhotoAnalysis, photos_here: int) -> str:
+_PLOT_CARDS = ("field_outlines", "plots_green")
+
+
+def _plot_status(here: Here) -> str:
+    if here.plots is not None:
+        return READY
+    if here.plot_job is not None and here.plot_job.state == "running":
+        return WORKING
+    return PARTLY
+
+
+def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in ("weak_spots", "bare_ground"):
         return READY
-    if card_id in ("water", "field_outlines", "history", "soil"):
+    if card_id in _PLOT_CARDS:
+        return _plot_status(here)
+    if card_id in ("water", "history", "soil"):
         return PARTLY
     if card_id == "fertilizer":
         return NEEDS_CAMERA if analysis.camera == "colour" else TO_BUILD
     if card_id == "growth":
-        return NEEDS_FLIGHT if photos_here < 2 else TO_BUILD
+        return NEEDS_FLIGHT if here.photos < 2 else TO_BUILD
     if card_id == "learn_camera":
         return LEARN
     return TO_BUILD
 
 
-def _preview(card_id: str, analysis: PhotoAnalysis, photos_here: int) -> str:
-    look, bare = analysis.look, analysis.bare
+def _plot_job_words(job: Optional[drone_plots.PlotJob]) -> str:
+    if job is None:
+        return "Ingabe has not looked for the plots in this photo yet."
+    if job.state == "failed":
+        return "Finding the plots did not work this time."
+    left = job.minutes_left
+    return ("Finding the plots in this photo" + (f": about {left} minute{'s' if left != 1 else ''} left."
+                                                 if left is not None else ". It takes a few minutes."))
+
+
+def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
+    look, bare, plots = analysis.look, analysis.bare, here.plots
+    if card_id in _PLOT_CARDS and plots is None:
+        return _plot_job_words(here.plot_job)
+    if card_id == "plots_green" and plots is not None:
+        least = _least_green(plots)
+        if not least:
+            return f"{plots.count} plots found; too few measured to compare."
+        return f"Plots {_numbers(least[:3])} are the least green of {plots.count}."
     if card_id == "weak_spots":
         hot = look.green.hotspots
         if hot:
@@ -382,12 +424,11 @@ def _preview(card_id: str, analysis: PhotoAnalysis, photos_here: int) -> str:
         return "Satellite water use for this area; dry patches on the photo are coming."
     if card_id == "pests":
         return "Spots that look different, ranked; a leaf close-up names the cause."
-    if card_id == "field_outlines":
-        area = look.area_ha
-        return f"This photo covers about {_ha(area)}." if area is not None else "The photo's area and place."
+    if card_id == "field_outlines" and plots is not None:
+        return f"{plots.count} plots, numbered and measured, {_ha(plots.total_ha)} in all."
     if card_id == "growth":
         return ("This is the only photo of this place. Fly again to compare."
-                if photos_here < 2 else "Height and greenness against the last flight.")
+                if here.photos < 2 else "Height and greenness against the last flight.")
     if card_id == "plant_count":
         return "Every plant counted, gaps marked, checked against 3 hand counts."
     if card_id == "yield":
@@ -395,21 +436,21 @@ def _preview(card_id: str, analysis: PhotoAnalysis, photos_here: int) -> str:
     if card_id == "spray":
         return "Spray zones and the area to treat, from the pest map."
     if card_id == "history":
-        return f"{photos_here} photo{'s' if photos_here != 1 else ''} of this place kept so far."
+        return f"{here.photos} photo{'s' if here.photos != 1 else ''} of this place kept so far."
     if card_id == "soil":
         return "A first estimate of N, P and K here; lab tests decide."
     return "Your camera sees colour, not health. See what a special camera adds."
 
 
-def _card(card_id: str, analysis: PhotoAnalysis, photos_here: int) -> dict[str, Any]:
+def _card(card_id: str, analysis: PhotoAnalysis, here: Here) -> dict[str, Any]:
     definition = _CARD_BY_ID[card_id]
-    status = _status(card_id, analysis, photos_here)
+    status = _status(card_id, analysis, here)
     return {
         "id": card_id,
         "service": definition.service,
         "service_name": SERVICES[definition.service],
         "question": definition.question,
-        "preview": _preview(card_id, analysis, photos_here),
+        "preview": _preview(card_id, analysis, here),
         "status": status,
         "status_label": STATUS_LABELS[status],
     }
@@ -426,10 +467,21 @@ def _score(card: dict[str, Any], analysis: PhotoAnalysis, audience: str) -> int:
     return score
 
 
-def build_deck(analysis: PhotoAnalysis, audience: Optional[str], photos_here: int) -> dict[str, Any]:
+def _least_green(plots: drone_plots.PlotSet) -> list[dict[str, Any]]:
+    """The least green fifth of the plots, least green first."""
+    least = [p for p in plots.plots() if p["group"] == drone_plots.LEAST_GREEN]
+    return sorted(least, key=lambda p: p["greenness"])
+
+
+def _numbers(plots: list[dict[str, Any]]) -> str:
+    numbers = [str(p["number"]) for p in plots]
+    return numbers[0] if len(numbers) == 1 else ", ".join(numbers[:-1]) + " and " + numbers[-1]
+
+
+def build_deck(analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
     """The photo's summary, the cards to show first, and every card grouped by service."""
     reader = normalize_audience(audience)
-    cards = [_card(card.id, analysis, photos_here) for card in _CARDS]
+    cards = [_card(card.id, analysis, here) for card in _CARDS]
     learn = next(card for card in cards if card["status"] == LEARN)
     ranked = sorted((card for card in cards if card is not learn),
                     key=lambda card: _score(card, analysis, reader), reverse=True)
@@ -447,7 +499,7 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], photos_here: in
             "camera": analysis.camera,
             "camera_label": _camera_label(analysis),
             "bounds": analysis.bounds,
-            "photos_here": photos_here,
+            "photos_here": here.photos,
         },
         "audience": reader,
         "audience_label": AUDIENCE_LABELS[reader],
@@ -462,15 +514,19 @@ def build_deck(analysis: PhotoAnalysis, audience: Optional[str], photos_here: in
 
 # --- The answers -----------------------------------------------------------------------
 
-def _answer(card_id: str, analysis: PhotoAnalysis, photos_here: int, *, what: str, why: str, todo: str,
+def _answer(card_id: str, analysis: PhotoAnalysis, here: Here, *, what: str, why: str, todo: str,
             how_sure: dict[str, Any], terms: list[str], audience: str,
-            overlay: Optional[dict[str, Any]] = None, facts: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
-    card = _card(card_id, analysis, photos_here)
+            overlay: Optional[dict[str, Any]] = None, facts: Optional[list[dict[str, str]]] = None,
+            items: Optional[list[dict[str, Any]]] = None, downloads: Optional[list[dict[str, str]]] = None,
+            progress: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """One answer. items: places to go, each with a point; progress: set while the answer is still being worked out."""
+    card = _card(card_id, analysis, here)
     return {**card, "what": what, "why": why, "todo": todo, "how_sure": how_sure,
-            "overlay": overlay, "facts": facts or [], "terms": _terms(terms, audience)}
+            "overlay": overlay, "facts": facts or [], "terms": _terms(terms, audience),
+            "items": items or [], "downloads": downloads or [], "progress": progress}
 
 
-def _weak_spots(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _weak_spots(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     green = analysis.look.green
     technical = _tone(audience) == "technical"
     hot = green.hotspots
@@ -503,11 +559,11 @@ def _weak_spots(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dic
         "Not checked on the ground",
         "Roofs, roads and paths count as low green",
     ], "Check one weak part on foot and mark what you see.")
-    return _answer("weak_spots", analysis, photos_here, what=what, why=why, todo=todo, how_sure=how_sure,
+    return _answer("weak_spots", analysis, here, what=what, why=why, todo=todo, how_sure=how_sure,
                    terms=["greenness", "colour_camera"], audience=audience, overlay=overlay)
 
 
-def _bare_ground(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _bare_ground(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     bare, area = analysis.bare, analysis.look.area_ha
     if not bare.patches:
         what = f"No bare patches larger than {MIN_PATCH_HA} ha in this photo."
@@ -531,11 +587,11 @@ def _bare_ground(analysis: PhotoAnalysis, audience: str, photos_here: int) -> di
         "Not checked on the ground",
         "The cut between bare and green was checked by eye on one photo",
     ], "Mark what you find at 3 patches.")
-    return _answer("bare_ground", analysis, photos_here, what=what, why=why, todo=todo, how_sure=how_sure,
+    return _answer("bare_ground", analysis, here, what=what, why=why, todo=todo, how_sure=how_sure,
                    terms=["bare_ground", "hectare", "colour_camera"], audience=audience, overlay=overlay)
 
 
-def _soil(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _soil(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     lon, lat = analysis.centre
     result = isdasoil_service.query_soil_point(
         lon, lat, properties=["nitrogen_total", "phosphorous_extractable", "potassium_extractable", "ph"])
@@ -555,7 +611,7 @@ def _soil(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str,
         logger.warning("soil estimate unavailable for %s: %s", analysis.layer_id, result.get("error"))
         what = "The soil estimate could not be read right now. Try again in a moment."
     return _answer(
-        "soil", analysis, photos_here, what=what,
+        "soil", analysis, here, what=what,
         why="It shows what the soil may be short of before you test, and where testing matters most.",
         todo=("Take soil samples in the parts of the photo that look different and test them in a lab. "
               "Ingabe will then show nitrogen, phosphorus and potassium zone by zone."),
@@ -566,7 +622,7 @@ def _soil(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str,
         terms=["soil_estimate"], audience=audience, facts=facts)
 
 
-def _water(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _water(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     lon, lat = analysis.centre
     today = date.today()
     result = wapor_service.query_et(lat, lon, date_from=today - timedelta(days=45), date_to=today - timedelta(days=5))
@@ -581,7 +637,7 @@ def _water(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str
         logger.warning("water use unavailable for %s: %s", analysis.layer_id, result.get("error"))
         what = "There is no satellite reading of water use for this place yet."
     return _answer(
-        "water", analysis, photos_here, what=what,
+        "water", analysis, here, what=what,
         why="Water use that drops while the crop is growing can mean it is short of water.",
         todo=("Compare with when the field was irrigated or rained on. To find dry patches inside a field, "
               "a drone with a heat (thermal) camera works best."),
@@ -592,40 +648,160 @@ def _water(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str
         terms=["water_use"], audience=audience, facts=facts)
 
 
-def _field_outlines(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
-    look = analysis.look
-    place = f" around {look.place}" if look.place else ""
-    area = f"about {_ha(look.area_ha)}" if look.area_ha is not None else "an area"
-    facts = [{"label": "Camera", "value": _camera_label(analysis)}]
-    if look.resolution_cm is not None:
-        facts.append({"label": "Detail", "value": f"{look.resolution_cm:.1f} cm per pixel"})
-    return _answer(
-        "field_outlines", analysis, photos_here,
-        what=f"This photo covers {area}{place}. Outlining each field with its own size is coming.",
-        why="Every answer can then be given field by field, with each field's own size.",
-        todo=("If you already have a map of your fields (Shapefile, GeoJSON or GeoPackage), add it to this "
-              "project and Ingabe will use it."),
-        how_sure=_how_sure("medium", ["The area is the photo's outline less its empty edges"], None),
-        terms=["hectare"], audience=audience, facts=facts,
-        overlay={"kind": "outline", "legend": "This photo",
-                 "geojson": {"type": "FeatureCollection", "features": [
-                     {"type": "Feature", "geometry": mapping(box(*analysis.bounds)), "properties": {}}]}})
+def _photo_outline(analysis: PhotoAnalysis) -> dict[str, Any]:
+    west, south, east, north = analysis.bounds
+    return {"kind": "outline", "legend": "This photo",
+            "geojson": {"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": mapping(box(west, south, east, north)), "properties": {}}]}}
 
 
-def _history(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _plots_pending(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    """A plot card while the plots are still being found, or after finding them failed."""
+    job = here.plot_job
+    failed = job is not None and job.state == "failed"
+    progress = None if job is None or failed else {
+        "done": job.parts_done, "parts": job.parts, "minutes_left": job.minutes_left}
     return _answer(
-        "history", analysis, photos_here,
-        what=f"Ingabe keeps {photos_here} photo{'s' if photos_here != 1 else ''} of this place in this project.",
+        card_id, analysis, here,
+        what=_plot_job_words(job) + ("" if failed else " This answer fills in by itself."),
+        why="Every answer can then be given plot by plot, each with its own size, greenness and bare ground.",
+        todo=("Open this question again to try once more." if failed
+              else "Keep the photo open, or come back later: the plots are kept once found."),
+        how_sure=_how_sure("low", ["Not answered yet"], None),
+        terms=["hectare"], audience=audience, overlay=_photo_outline(analysis), progress=progress)
+
+
+def _plot_downloads(analysis: PhotoAnalysis) -> list[dict[str, str]]:
+    base = f"/api/layer/{analysis.layer_id}/plots"
+    return [{"label": "Excel table", "href": f"{base}.xlsx"},
+            {"label": "Shapefile", "href": f"{base}.zip"},
+            {"label": "GeoJSON", "href": f"{base}.geojson"}]
+
+
+def _plot_source(plots: drone_plots.PlotSet) -> str:
+    return (f"Outlined by {drone_plots.FIELD_MODEL_NAME}, a field-outlining model, at {plots.read_m_per_px:g} m "
+            "per pixel" if plots.source == "found" else f"Your own plot map: {plots.source}")
+
+
+def _field_outlines(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    plots = here.plots
+    if plots is None:
+        return _plots_pending("field_outlines", analysis, audience, here)
+    areas = sorted(p["area_ha"] for p in plots.plots())
+    found = plots.source == "found"
+    what = (f"Ingabe found {plots.count} plots in this photo, {_ha(plots.total_ha)} in all, numbered from the "
+            "north-west." if found else f"Your map {plots.source} has {plots.count} plots on this photo, "
+            f"{_ha(plots.total_ha)} in all.")
+    facts = [{"label": "Plots", "value": str(plots.count)}, {"label": "All plots together", "value": _ha(plots.total_ha)}]
+    if areas:
+        median = areas[len(areas) // 2]
+        what += f" Half the plots are smaller than {_ha(median)}."
+        facts += [{"label": "Middle plot size", "value": _ha(median)},
+                  {"label": "Smallest and largest", "value": f"{_ha(areas[0])} and {_ha(areas[-1])}"}]
+    facts.append({"label": "Outlines", "value": _plot_source(plots)})
+    features = [{**f, "properties": {**f["properties"],
+                                     "label": f"Plot {f['properties']['number']} · {_ha(f['properties']['area_ha'])}"}}
+                for f in plots.geojson["features"]]
+    because = [_plot_source(plots), "Areas measured from the outlines"]
+    if found:
+        because += ["Checked by eye on one photo, not against surveyed edges",
+                    "Some plots are missed or joined, mostly where neighbours look alike"]
+    if audience == "insurance":
+        why = "A claim or a policy can then name the plot, its size and its place, from the same photo."
+    elif _tone(audience) == "technical":
+        why = "Every measurement can then be given per plot, with its own area, and joined to your records by number."
+    else:
+        why = "Every answer can then be given plot by plot, each with its own size."
+    return _answer(
+        "field_outlines", analysis, here, what=what, why=why,
+        todo=("Tap a plot to see its number and size. Check the outlines of plots you know, then download the "
+              "table or the map to share it."),
+        how_sure=_how_sure("medium" if found else "high", because,
+                           "Walk the edges of a few plots with a phone GPS and compare." if found else None),
+        terms=["hectare"], audience=audience, facts=facts, downloads=_plot_downloads(analysis),
+        overlay={"kind": "plots", "legend": "Plots, numbered from the north-west",
+                 "geojson": {"type": "FeatureCollection", "features": features}})
+
+
+def _plots_green(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    plots = here.plots
+    if plots is None:
+        return _plots_pending("plots_green", analysis, audience, here)
+    technical = _tone(audience) == "technical"
+    least = _least_green(plots)
+    measured = [p for p in plots.plots() if p["greenness"] is not None]
+    group_label = {drone_plots.LEAST_GREEN: "least green", drone_plots.GREENEST: "greenest",
+                   drone_plots.BETWEEN: "in between", drone_plots.UNKNOWN: "not measured"}
+
+    def label(p: dict[str, Any]) -> str:
+        text = f"Plot {p['number']} · {_ha(p['area_ha'])} · {group_label[p['group']]}"
+        return text + (f" · GRVI {p['greenness']:.3f}" if technical and p["greenness"] is not None else "")
+
+    features = [{**f, "properties": {**f["properties"], "label": label(f["properties"])}}
+                for f in plots.geojson["features"]]
+    overlay = {"kind": "plot_groups", "legend": "Least green fifth of the plots",
+               "geojson": {"type": "FeatureCollection", "features": features}}
+    if not least:
+        return _answer(
+            "plots_green", analysis, here,
+            what=f"{plots.count} plots found, but too few could be measured to compare them.",
+            why="Comparing needs at least 5 plots that lie fully on the photo.",
+            todo="Fly a wider area, or ask about the whole photo instead.",
+            how_sure=_how_sure("low", ["Too few plots measured"], None),
+            terms=["greenness"], audience=audience, overlay=overlay)
+    first = least[:3]
+    least_ha = sum(p["area_ha"] for p in least)
+    what = (f"Of the {len(measured)} plots measured, {len(least)} are the least green ({_ha(least_ha)}), "
+            f"filled on the photo. Least green first: plots {_numbers(least[:5])}.")
+    if technical:
+        greenness = sorted(p["greenness"] for p in measured)
+        what += (f" Mean GRVI of the least green plot {least[0]['greenness']:.3f}; middle plot "
+                 f"{greenness[len(greenness) // 2]:.3f}.")
+    if audience == "insurance":
+        why = ("Least green can be damage, but also a crop planted later or just harvested. One photo cannot "
+               "tell them apart.")
+        todo = (f"Before judging a claim on plots {_numbers(first)}, compare with an earlier flight or the "
+                "planting dates.")
+    elif technical:
+        why = ("Low greenness can mean water or nutrient stress, gaps, weeds cleared, or a different stage. "
+               "It is relative to the other plots in this photo.")
+        todo = f"Scout plots {_numbers(first)} first: check the stage, gaps, water, nutrients and pests."
+    else:
+        why = ("Less green can mean plants short of water or food, missing plants, or bare soil. A plot just "
+               "planted or just harvested is also less green, so look before acting.")
+        todo = f"Walk to plots {_numbers(first)} first and look at the plants and the soil. Tap a plot to see its number."
+    items = [{"id": str(p["number"]), "title": f"Plot {p['number']}",
+              "detail": f"{_ha(p['area_ha'])}" + (f" · {_pct(p['bare_share'])} bare" if p["bare_share"] else ""),
+              "lon": p["lon"], "lat": p["lat"]} for p in least[:5]]
+    facts = [{"label": "Plots measured", "value": str(len(measured))},
+             {"label": "Least green fifth", "value": f"{len(least)} plots, {_ha(least_ha)}"},
+             {"label": "Compared with", "value": "the other plots in this photo"},
+             {"label": "Outlines", "value": _plot_source(plots)}]
+    return _answer(
+        "plots_green", analysis, here, what=what, why=why, todo=todo,
+        how_sure=_how_sure("medium", [
+            "Greenness from a colour camera, not health",
+            "Compared only with the other plots in this photo",
+            "Not checked on the ground",
+        ], f"Look at plots {_numbers(first)} on foot and note what you find."),
+        terms=["greenness", "colour_camera"], audience=audience, overlay=overlay, facts=facts, items=items,
+        downloads=_plot_downloads(analysis))
+
+
+def _history(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    return _answer(
+        "history", analysis, here,
+        what=f"Ingabe keeps {here.photos} photo{'s' if here.photos != 1 else ''} of this place in this project.",
         why="Comparing seasons shows which fields keep doing well or badly, and why.",
         todo="Add each new flight to this project. A timeline for each field, with findings and harvests, is coming.",
         how_sure=_how_sure("high", ["Counted from the photos in this project"], None),
         terms=[], audience=audience)
 
 
-def _learn_camera(analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _learn_camera(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     colour = analysis.camera == "colour"
     return _answer(
-        "learn_camera", analysis, photos_here,
+        "learn_camera", analysis, here,
         what=("Your photo comes from a normal colour camera. It sees green, but a leaf can be stressed and still look "
               "green." if colour else "Your photo comes from a multispectral camera, which also sees near-infrared light."),
         why="Healthy leaves send back a light our eyes cannot see. It drops before the leaves change colour.",
@@ -660,19 +836,20 @@ _COMING = {
 }
 
 
-def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, photos_here: int) -> dict[str, Any]:
+def _coming(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
     shows, why, needs = _COMING[card_id]
-    status = _status(card_id, analysis, photos_here)
+    status = _status(card_id, analysis, here)
     prefix = ("This is the only photo of this place, so there is nothing to compare yet. "
               if card_id == "growth" and status == NEEDS_FLIGHT else "")
     return _answer(
-        card_id, analysis, photos_here, what=f"{prefix}When this is ready, Ingabe will show {shows}.",
+        card_id, analysis, here, what=f"{prefix}When this is ready, Ingabe will show {shows}.",
         why=why, todo=f"What it needs: {needs}.",
         how_sure=_how_sure("low", [f"Not answered yet: {STATUS_LABELS[status].lower()}"], None),
         terms=["near_infrared"] if card_id == "fertilizer" else [], audience=audience)
 
 
-_ANSWERS: dict[str, Callable[[PhotoAnalysis, str, int], dict[str, Any]]] = {
+_ANSWERS: dict[str, Callable[[PhotoAnalysis, str, Here], dict[str, Any]]] = {
+    "plots_green": _plots_green,
     "weak_spots": _weak_spots,
     "bare_ground": _bare_ground,
     "soil": _soil,
@@ -683,11 +860,11 @@ _ANSWERS: dict[str, Callable[[PhotoAnalysis, str, int], dict[str, Any]]] = {
 }
 
 
-def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], photos_here: int) -> dict[str, Any]:
+def answer_card(card_id: str, analysis: PhotoAnalysis, audience: Optional[str], here: Here) -> dict[str, Any]:
     """The answer to one card; KeyError for an unknown card. Soil and water read external data (blocking)."""
     if card_id not in _CARD_BY_ID:
         raise KeyError(card_id)
     reader = normalize_audience(audience)
     if card_id in _ANSWERS:
-        return _ANSWERS[card_id](analysis, reader, photos_here)
-    return _coming(card_id, analysis, reader, photos_here)
+        return _ANSWERS[card_id](analysis, reader, here)
+    return _coming(card_id, analysis, reader, here)

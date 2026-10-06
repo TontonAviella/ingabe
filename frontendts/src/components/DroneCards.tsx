@@ -1,5 +1,18 @@
-import { BookOpen, Camera, Check, ChevronDown, ChevronLeft, CircleDashed, Hammer, Plane, X } from 'lucide-react';
-import { type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
+import {
+  BookOpen,
+  Camera,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleDashed,
+  Download,
+  Hammer,
+  LoaderCircle,
+  Plane,
+  X,
+} from 'lucide-react';
+import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { type DroneCard, type DroneCardAnswer, type DroneDeck, useDroneCardAnswer, useDroneDeck } from '@/hooks/useDroneCards';
 import type { MapLayer } from '@/lib/types';
@@ -16,19 +29,57 @@ const COLLAPSED_KEY = 'ingabe.droneCards.collapsed';
 const PHONE_SHEET_SHARE = 0.52;
 
 const SOURCE = 'drone-card-overlay';
-const LAYERS = { fill: 'drone-card-fill', casing: 'drone-card-casing', line: 'drone-card-line' };
+const LAYERS = { fill: 'drone-card-fill', casing: 'drone-card-casing', line: 'drone-card-line', label: 'drone-card-label' };
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
+// The satellite basemap's glyph server has this font; plot numbers show from this zoom on.
+const LABEL_FONT = ['Open Sans Semibold'];
+const LABEL_MIN_ZOOM = 15.5;
+
+type Paint<T> = T | ExpressionSpecification;
+type OverlayStyle = {
+  fill: Paint<string>;
+  fillOpacity: Paint<number>;
+  line: Paint<string>;
+  width: Paint<number>;
+  /** Plot numbers on the photo. */
+  numbers: boolean;
+  /** The legend's swatch. */
+  swatch: { fill: string; line: string };
+};
+
+// Plots in the least green fifth are filled; the server sets each plot's group.
+const LEAST_GREEN: ExpressionSpecification = ['==', ['get', 'group'], 'least_green'];
 
 // How each kind of answer is drawn on the photo (styling only; the kind comes from the server).
-const OVERLAY_STYLE: Record<
-  NonNullable<DroneCardAnswer['overlay']>['kind'],
-  { fill: string; fillOpacity: number; line: string; width: number }
-> = {
-  bare: { fill: '#F0C896', fillOpacity: 0.32, line: '#FFF7EC', width: 2 },
-  attention: { fill: '#D9A066', fillOpacity: 0.22, line: '#D9A066', width: 3 },
-  good: { fill: '#F3EDE6', fillOpacity: 0.1, line: '#F3EDE6', width: 2.5 },
-  outline: { fill: '#F3EDE6', fillOpacity: 0, line: '#F3EDE6', width: 2 },
+const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], OverlayStyle> = {
+  bare: { fill: '#F0C896', fillOpacity: 0.32, line: '#FFF7EC', width: 2, numbers: false, swatch: { fill: '#F0C89655', line: '#FFF7EC' } },
+  attention: {
+    fill: '#D9A066',
+    fillOpacity: 0.22,
+    line: '#D9A066',
+    width: 3,
+    numbers: false,
+    swatch: { fill: '#D9A06655', line: '#D9A066' },
+  },
+  good: { fill: '#F3EDE6', fillOpacity: 0.1, line: '#F3EDE6', width: 2.5, numbers: false, swatch: { fill: '#F3EDE622', line: '#F3EDE6' } },
+  outline: { fill: '#F3EDE6', fillOpacity: 0, line: '#F3EDE6', width: 2, numbers: false, swatch: { fill: '#00000000', line: '#F3EDE6' } },
+  plots: { fill: '#F3EDE6', fillOpacity: 0.04, line: '#F3EDE6', width: 1.5, numbers: true, swatch: { fill: '#F3EDE611', line: '#F3EDE6' } },
+  plot_groups: {
+    fill: '#E8743B',
+    fillOpacity: ['case', LEAST_GREEN, 0.5, 0.03],
+    line: ['case', LEAST_GREEN, '#FFF1E6', '#F3EDE6'],
+    width: ['case', LEAST_GREEN, 2.5, 1],
+    numbers: true,
+    swatch: { fill: '#E8743B88', line: '#FFF1E6' },
+  },
 };
+
+/** Room the panel takes on the map, so what an answer points at stays in view beside or above it. */
+function panelPadding() {
+  return window.innerWidth >= 640
+    ? { top: 70, bottom: 170, left: 60, right: 440 }
+    : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
+}
 
 function readCollapsed(): boolean {
   try {
@@ -54,6 +105,7 @@ function StatusLine({ card }: { card: DroneCard }) {
     needs_camera: <Camera className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />,
     to_build: <Hammer className="size-3.5 text-[#8C7B6E]" strokeWidth={2.2} />,
     learn: <BookOpen className="size-3.5 text-[#D9A066]" strokeWidth={2.2} />,
+    working: <LoaderCircle className="size-3.5 text-[#D9A066] animate-spin" strokeWidth={2.5} />,
   }[card.status];
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D8CCBF]">
@@ -96,7 +148,33 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () => void }) {
+function Progress({ progress }: { progress: NonNullable<DroneCardAnswer['progress']> }) {
+  const share = progress.parts ? progress.done / progress.parts : 0;
+  return (
+    <div className="flex flex-col gap-1.5" role="status">
+      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+        <div
+          className="h-full rounded-full bg-[#D9A066] transition-[width] duration-700"
+          style={{ width: `${Math.max(4, share * 100)}%` }}
+        />
+      </div>
+      <span className="text-[12px] text-[#B8A99B] tabular-nums">
+        Part {progress.done} of {progress.parts}
+        {progress.minutes_left !== null && ` · about ${progress.minutes_left} min left`}
+      </span>
+    </div>
+  );
+}
+
+function AnswerView({
+  answer,
+  onBack,
+  onGoTo,
+}: {
+  answer: DroneCardAnswer;
+  onBack: () => void;
+  onGoTo: (lon: number, lat: number) => void;
+}) {
   const [openTerm, setOpenTerm] = useState<string | null>(null);
   const termRef = useRef<HTMLDivElement>(null);
   const style = answer.overlay ? OVERLAY_STYLE[answer.overlay.kind] : null;
@@ -125,7 +203,7 @@ function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () =>
         <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
           <span
             className="inline-block h-3 w-4 rounded-[3px]"
-            style={{ border: `2px solid ${style.line}`, background: `${style.fill}${style.fillOpacity ? '55' : '00'}` }}
+            style={{ border: `2px solid ${style.swatch.line}`, background: style.swatch.fill }}
           />
           {answer.overlay.legend}
         </span>
@@ -134,7 +212,31 @@ function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () =>
       <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
         <Section label="What and where">
           <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.what}</p>
+          {answer.progress && (
+            <div className="mt-2">
+              <Progress progress={answer.progress} />
+            </div>
+          )}
         </Section>
+        {answer.items.length > 0 && (
+          <div className="flex flex-col py-1 border-b border-white/[0.07]">
+            <span className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">Go here first</span>
+            {answer.items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onGoTo(item.lon, item.lat)}
+                className="flex items-center justify-between gap-3 min-h-11 px-4 text-left hover:bg-white/[0.04] cursor-pointer"
+              >
+                <span className="flex flex-col">
+                  <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
+                  <span className="text-[13px] text-[#B8A99B] tabular-nums">{item.detail}</span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
+              </button>
+            ))}
+          </div>
+        )}
         {answer.facts.length > 0 && (
           <div className="flex flex-col px-4 py-2 border-b border-white/[0.07]">
             {answer.facts.map((fact) => (
@@ -166,6 +268,25 @@ function AnswerView({ answer, onBack }: { answer: DroneCardAnswer; onBack: () =>
           )}
         </Section>
       </div>
+
+      {answer.downloads.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-[13px] font-semibold text-[#B8A99B]">Take it with you</span>
+          <div className="flex flex-wrap gap-2">
+            {answer.downloads.map((d) => (
+              <a
+                key={d.href}
+                href={d.href}
+                download
+                className="inline-flex items-center gap-1.5 min-h-9 px-3.5 rounded-full text-[13px] font-semibold bg-white/[0.06] text-[#F3EDE6] border border-white/10 hover:bg-white/10 no-underline"
+              >
+                <Download className="size-3.5 text-[#D9A066]" />
+                {d.label}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {answer.terms.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -312,6 +433,21 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
         if (!map.getLayer(LAYERS.fill)) map.addLayer({ id: LAYERS.fill, type: 'fill', source: SOURCE, paint: {} });
         if (!map.getLayer(LAYERS.casing)) map.addLayer({ id: LAYERS.casing, type: 'line', source: SOURCE, paint: {} });
         if (!map.getLayer(LAYERS.line)) map.addLayer({ id: LAYERS.line, type: 'line', source: SOURCE, paint: {} });
+        if (!map.getLayer(LAYERS.label))
+          map.addLayer({
+            id: LAYERS.label,
+            type: 'symbol',
+            source: SOURCE,
+            minzoom: LABEL_MIN_ZOOM,
+            layout: {
+              'text-field': ['to-string', ['get', 'number']],
+              'text-font': LABEL_FONT,
+              'text-size': 12,
+              'symbol-placement': 'point',
+              visibility: 'none',
+            },
+            paint: { 'text-color': '#FFF7EC', 'text-halo-color': '#0B0908', 'text-halo-width': 1.6 },
+          });
       } catch {
         map.once('idle', apply);
         return;
@@ -320,10 +456,11 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       map.setPaintProperty(LAYERS.fill, 'fill-color', style.fill);
       map.setPaintProperty(LAYERS.fill, 'fill-opacity', overlay ? style.fillOpacity : 0);
       map.setPaintProperty(LAYERS.casing, 'line-color', '#0B0908');
-      map.setPaintProperty(LAYERS.casing, 'line-width', style.width + 2.5);
+      map.setPaintProperty(LAYERS.casing, 'line-width', typeof style.width === 'number' ? style.width + 2.5 : ['+', style.width, 2.5]);
       map.setPaintProperty(LAYERS.casing, 'line-opacity', 0.45);
       map.setPaintProperty(LAYERS.line, 'line-color', style.line);
       map.setPaintProperty(LAYERS.line, 'line-width', style.width);
+      map.setLayoutProperty(LAYERS.label, 'visibility', overlay && style.numbers ? 'visible' : 'none');
       (map.getSource(SOURCE) as GeoJSONSource).setData(overlay?.geojson ?? EMPTY);
     };
     apply();
@@ -339,15 +476,13 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
     };
   }, [map, answer]);
 
-  // Bring the photo into view when an answer with outlines opens.
+  // Bring the photo into view when an answer with outlines opens (not again when the same answer refreshes).
+  const hasOverlay = !!answer?.overlay;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the card id decides when to move the map
   useEffect(() => {
-    if (!map || !answer?.overlay || !bounds) return;
-    const padding =
-      window.innerWidth >= 640
-        ? { top: 70, bottom: 170, left: 60, right: 440 }
-        : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
-    map.fitBounds(bounds, { padding, maxZoom: 18, duration: 800 });
-  }, [map, answer, bounds]);
+    if (!map || !hasOverlay || !bounds) return;
+    map.fitBounds(bounds, { padding: panelPadding(), maxZoom: 18, duration: 800 });
+  }, [map, answer?.id, hasOverlay, bounds]);
 
   // Click a patch: its own label, written by the server. A new answer closes it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: answer only resets the label
@@ -470,7 +605,13 @@ export function DroneCards({
             </button>
           </div>
         )}
-        {openCard && answer.data && <AnswerView answer={answer.data} onBack={() => setOpenCard(null)} />}
+        {openCard && answer.data && (
+          <AnswerView
+            answer={answer.data}
+            onBack={() => setOpenCard(null)}
+            onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, padding: panelPadding(), duration: 900 })}
+          />
+        )}
       </div>
     </section>
   );

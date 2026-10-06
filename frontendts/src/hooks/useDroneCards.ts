@@ -10,7 +10,7 @@ export interface DroneCard {
   service_name: string;
   question: string;
   preview: string;
-  status: 'ready' | 'partly' | 'needs_flight' | 'needs_camera' | 'to_build' | 'learn';
+  status: 'ready' | 'partly' | 'working' | 'needs_flight' | 'needs_camera' | 'to_build' | 'learn';
   status_label: string;
 }
 
@@ -39,9 +39,18 @@ export interface DroneCardAnswer extends DroneCard {
   why: string;
   todo: string;
   how_sure: { level: 'low' | 'medium' | 'high'; label: string; bars: number; because: string[]; surer: string | null };
-  overlay: { kind: 'bare' | 'attention' | 'good' | 'outline'; legend: string; geojson: GeoJSON.FeatureCollection } | null;
+  overlay: {
+    kind: 'bare' | 'attention' | 'good' | 'outline' | 'plots' | 'plot_groups';
+    legend: string;
+    geojson: GeoJSON.FeatureCollection;
+  } | null;
   facts: { label: string; value: string }[];
   terms: { id: string; word: string; simple: string; why: string }[];
+  /** Places to go first, each with a point to fly to. */
+  items: { id: string; title: string; detail: string; lon: number; lat: number }[];
+  downloads: { label: string; href: string }[];
+  /** Set while the answer is still being worked out on the server. */
+  progress: { done: number; parts: number; minutes_left: number | null } | null;
 }
 
 /** Errors the server explains in words (a photo still processing, not a colour photo). */
@@ -72,6 +81,9 @@ function audienceParam(audience: string | null) {
   return audience ? `?audience=${encodeURIComponent(audience)}` : '';
 }
 
+// While a card is still being worked out on the server, ask again at this pace.
+const WORKING_REFRESH_MS = 15_000;
+
 export function useDroneDeck(layerId: string | null, audience: string | null) {
   return useQuery<DroneDeck, DroneCardsError>({
     queryKey: ['drone-cards', layerId, audience],
@@ -80,6 +92,8 @@ export function useDroneDeck(layerId: string | null, audience: string | null) {
     staleTime: 10 * 60 * 1000,
     retry: (count, error) => error.status === 409 && count < 20,
     retryDelay: 15_000,
+    refetchInterval: (query) =>
+      query.state.data?.services.some((service) => service.cards.some((card) => card.status === 'working')) ? WORKING_REFRESH_MS : false,
   });
 }
 
@@ -90,5 +104,6 @@ export function useDroneCardAnswer(layerId: string | null, cardId: string | null
     enabled: !!layerId && !!cardId,
     staleTime: 10 * 60 * 1000,
     retry: false,
+    refetchInterval: (query) => (query.state.data?.progress ? WORKING_REFRESH_MS : false),
   });
 }
