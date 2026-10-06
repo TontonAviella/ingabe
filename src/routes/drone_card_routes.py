@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
-from src.services import drone_cards, drone_plots
+from src.services import background_jobs, drone_cards, drone_plots, drone_vision
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
 from src.utils import get_async_s3_client, get_bucket_name
@@ -72,7 +72,7 @@ def _photo_key(metadata: dict[str, Any]) -> str:
 
 
 async def _plots(s3: Any, layer: MapLayer, metadata: dict[str, Any], *,
-                 retry_failed: bool) -> tuple[Optional[drone_plots.PlotSet], Optional[drone_plots.PlotJob]]:
+                 retry_failed: bool) -> tuple[Optional[drone_plots.PlotSet], Optional[background_jobs.Job]]:
     """The photo's plots if found; otherwise the search is started (or retried when asked) in the background."""
     key = _photo_key(metadata)
     bucket = get_bucket_name()
@@ -121,6 +121,20 @@ async def _plots_from_chosen_map(
     return plots, plot_map.layer_id, None
 
 
+async def _survey(s3: Any, metadata: dict[str, Any], plots: drone_plots.PlotSet, place: Optional[str], *,
+                  retry_failed: bool) -> tuple[Optional[drone_vision.Survey], Optional[background_jobs.Job]]:
+    """The vision model's look at each plot if done; otherwise it is started (or retried when asked)."""
+    bucket = get_bucket_name()
+    key = drone_vision.survey_key(_photo_key(metadata), plots)
+    survey = await drone_vision.load_survey(s3, bucket, key)
+    job = drone_vision.job(key)
+    if survey is None and (job is None or (retry_failed and job.state == "failed")):
+        url = await s3.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": metadata["cog_key"]}, ExpiresIn=_PLOT_SEARCH_URL_SECONDS)
+        job = drone_vision.start_survey(s3, bucket, key, url, plots, place)
+    return survey, (None if survey is not None else job)
+
+
 async def _cog_url(s3: Any, metadata: dict[str, Any]) -> str:
     return await s3.generate_presigned_url(
         "get_object", Params={"Bucket": get_bucket_name(), "Key": metadata["cog_key"]}, ExpiresIn=900)
@@ -145,8 +159,12 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
     plot_job = None
     if plots is None:
         plots, plot_job = await _plots(s3, layer, metadata, retry_failed=retry_plots)
+    survey, survey_job = None, None
+    if plots is not None:
+        survey, survey_job = await _survey(s3, metadata, plots, analysis.look.place, retry_failed=retry_plots)
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
-                            plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error)
+                            plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
+                            survey=survey, survey_job=survey_job)
     return analysis, here, reader
 
 

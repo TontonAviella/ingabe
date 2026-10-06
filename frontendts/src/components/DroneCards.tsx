@@ -58,6 +58,33 @@ type OverlayStyle = {
 const BY_GROUP = <T,>(leastGreen: T, mostlySoil: T, other: T): ExpressionSpecification =>
   ['match', ['get', 'group'], 'least_green', leastGreen, 'mostly_soil', mostlySoil, other] as ExpressionSpecification;
 
+// Crop colours on the crop map: warm, told apart, and no green (the photo is green). Unknown crops are grey.
+const CROP_COLOURS: Record<string, string> = {
+  maize: '#F2C14E',
+  beans: '#C2410C',
+  cassava: '#F0C896',
+  banana: '#B5651D',
+  sorghum: '#8E3B2F',
+  pineapple: '#E8743B',
+  rice: '#FFF1E6',
+  irish_potato: '#A0785A',
+  sweet_potato: '#D97757',
+  soybean: '#E9B987',
+  groundnut: '#C9A27E',
+  coffee: '#6B3E26',
+  tea: '#9C6B4E',
+  sugarcane: '#D4A373',
+  vegetables: '#E07A5F',
+  fruit_trees: '#B56576',
+  grass_or_pasture: '#BFB5A8',
+  woodlot: '#7A6A5E',
+  fallow_or_bare: '#5C4A3E',
+  other: '#9E9188',
+};
+const UNSURE_COLOUR = '#8C7B6E';
+const BY_CROP = ['match', ['get', 'crop'], ...Object.entries(CROP_COLOURS).flat(), UNSURE_COLOUR] as unknown as ExpressionSpecification;
+const FLAGGED: ExpressionSpecification = ['==', ['get', 'flag'], true];
+
 // How each kind of answer is drawn on the photo (styling only; the kind comes from the server).
 const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], OverlayStyle> = {
   bare: { fill: '#F0C896', fillOpacity: 0.32, line: '#FFF7EC', width: 2, numbers: false, swatch: { fill: '#F0C89655', line: '#FFF7EC' } },
@@ -77,6 +104,22 @@ const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], Ove
     fillOpacity: BY_GROUP(0.5, 0.18, 0.03),
     line: BY_GROUP('#FFF1E6', '#F0C896', '#F3EDE6'),
     width: BY_GROUP(2.5, 1, 1),
+    numbers: true,
+    swatch: { fill: '#E8743B88', line: '#FFF1E6' },
+  },
+  crop_map: {
+    fill: BY_CROP,
+    fillOpacity: ['case', ['==', ['get', 'crop'], 'unsure'], 0.06, 0.45],
+    line: BY_CROP,
+    width: 1.5,
+    numbers: true,
+    swatch: { fill: '#F2C14E88', line: '#F2C14E' },
+  },
+  plot_flags: {
+    fill: '#E8743B',
+    fillOpacity: ['case', FLAGGED, 0.5, 0.03],
+    line: ['case', FLAGGED, '#FFF1E6', '#F3EDE6'],
+    width: ['case', FLAGGED, 2.5, 1],
     numbers: true,
     swatch: { fill: '#E8743B88', line: '#FFF1E6' },
   },
@@ -245,7 +288,7 @@ function AnswerView({
         <StatusLine card={answer} />
       </div>
 
-      {answer.overlay && style && (
+      {answer.overlay && style && !answer.overlay.legend_items && (
         <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
           <span
             className="inline-block h-3 w-4 rounded-[3px]"
@@ -253,6 +296,26 @@ function AnswerView({
           />
           {answer.overlay.legend}
         </span>
+      )}
+      {answer.overlay?.legend_items && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[13px] font-semibold text-[#B8A99B]">{answer.overlay.legend}</span>
+          <div className="flex flex-wrap gap-1.5">
+            {answer.overlay.legend_items.map((item) => {
+              const colour = CROP_COLOURS[item.key] ?? UNSURE_COLOUR;
+              return (
+                <span
+                  key={item.key}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] border border-white/10 px-2.5 py-1 text-[12px] font-semibold text-[#F3EDE6]"
+                >
+                  <span className="inline-block size-2.5 rounded-full" style={{ background: colour }} />
+                  {item.label}
+                  <span className="text-[#B8A99B] tabular-nums">{item.count}</span>
+                </span>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {answer.choices && <Choices layerId={layerId} choices={answer.choices} />}

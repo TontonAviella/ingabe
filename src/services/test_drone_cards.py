@@ -10,7 +10,15 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from src.services import drone_cards, drone_first_look, drone_plots, isdasoil_service, wapor_service
+from src.services import (
+    background_jobs,
+    drone_cards,
+    drone_first_look,
+    drone_plots,
+    drone_vision,
+    isdasoil_service,
+    wapor_service,
+)
 
 PIXEL_M = 0.5
 SIZE = 600  # 300 m x 300 m = 9 ha
@@ -169,7 +177,7 @@ def _plot_set(n=10):
 
 
 def test_plot_cards_wait_while_the_plots_are_found(photo):
-    job = drone_plots.PlotJob(state="running", parts_done=2, parts=8, started=0.0)
+    job = background_jobs.Job(state="running", parts_done=2, parts=8, started=0.0)
     here = drone_cards.Here(photos=1, plot_job=job)
     answer = drone_cards.answer_card("plots_green", _analysis(photo), "farmer", here)
     assert answer["status"] == drone_cards.WORKING
@@ -238,5 +246,76 @@ def test_no_plot_card_talks_about_money(photo, audience):
     here = drone_cards.Here(photos=1, plots=_plot_set())
     analysis = _analysis(photo)
     answers = [drone_cards.answer_card(card_id, analysis, audience, here) for card_id in ("plots_green", "field_outlines")]
+    text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
+    assert not MONEY.search(text)
+
+
+def _survey(plots, crops, overrides=None):
+    """A vision survey of the test plots: crops[i] for plot i + 1, every plot young unless overridden."""
+    looks = {}
+    for i, crop in enumerate(crops):
+        n = i + 1
+        answer = {"main_crop": crop, "other_crops": [], "stage": "young", "crop_cover_percent": 40, "weeds": "few",
+                  "problems": [], "note": f"Plot {n} note.", "confidence": "medium"} | (overrides or {}).get(n, {})
+        looks[n] = drone_vision._look(n, answer)
+    return drone_vision.Survey(looks=looks, plots=len(crops), model="openai/gpt-6-luna",
+                               done_at="2026-10-06T17:00:00+00:00", cost_usd=0.002)
+
+
+def test_vision_cards_wait_for_the_plots_and_the_looks(photo):
+    job = background_jobs.Job(state="running", parts_done=3, parts=10, started=0.0)
+    here = drone_cards.Here(plots=_plot_set(), survey_job=job)
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.WORKING and answer["progress"]["done"] == 3
+    assert "3 of 10 done" in answer["what"]
+
+
+def test_crop_types_name_the_crops_and_count_what_is_not_sure(photo):
+    plots = _plot_set()
+    crops = ["maize"] * 5 + ["beans"] * 3 + ["unsure"] * 2
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, crops, {1: {"other_crops": ["beans"]}}))
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "insurer", here)
+    assert answer["status"] == drone_cards.READY
+    assert answer["what"].startswith("The AI vision model named what grows in 8 of 10 plots: maize in 5 plots")
+    assert "not sure about 2 plots" in answer["what"] and "1 plot looks intercropped" in answer["what"]
+    assert [i["key"] for i in answer["overlay"]["legend_items"]] == ["maize", "beans", "unsure"]
+    assert answer["how_sure"]["level"] == "low"
+
+
+def test_plots_behind_their_crop_are_found(photo):
+    plots = _plot_set()
+    crops = ["maize"] * 6 + ["beans"] * 2 + ["unsure"] * 2
+    overrides = {n: {"stage": "growing"} for n in range(1, 7)} | {4: {"stage": "just_planted"}}
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, crops, overrides))
+    answer = drone_cards.answer_card("plot_stage", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("Of 6 plots compared within their crop, 1 look younger")
+    assert answer["items"][0]["title"] == "Plot 4"
+    flags = {f["properties"]["number"]: f["properties"]["flag"] for f in answer["overlay"]["geojson"]["features"]}
+    assert flags[4] is True and flags[1] is False
+
+
+def test_weedy_plots_are_listed_largest_first(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {2: {"weeds": "many"}, 7: {"weeds": "many"}}))
+    answer = drone_cards.answer_card("weeds", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("2 of 10 plots look weedy")
+    assert {i["title"] for i in answer["items"]} == {"Plot 2", "Plot 7"}
+
+
+def test_problems_seen_from_the_air_are_ranked(photo):
+    plots = _plot_set()
+    overrides = {3: {"problems": ["gaps", "yellowing"]}, 5: {"problems": ["standing_water"]}}
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, overrides))
+    answer = drone_cards.answer_card("plot_problems", _analysis(photo), "agronomist", here)
+    assert "possible problems in 2 of 10 plots" in answer["what"]
+    assert answer["items"][0]["title"] == "Plot 3"
+
+
+@pytest.mark.parametrize("audience", ["farmer", "insurer", "agronomist", "scientist"])
+def test_no_vision_card_talks_about_money(photo, audience):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {2: {"weeds": "many", "problems": ["gaps"]}}))
+    answers = [drone_cards.answer_card(c, _analysis(photo), audience, here)
+               for c in ("crop_types", "plot_problems", "plot_stage", "weeds")]
     text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
     assert not MONEY.search(text)

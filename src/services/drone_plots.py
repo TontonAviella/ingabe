@@ -44,6 +44,7 @@ from shapely import STRtree
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as reproject, unary_union
 
+from src.services import background_jobs
 from src.services.grvi import BARE_PIXEL, grvi
 
 logger = logging.getLogger(__name__)
@@ -143,22 +144,6 @@ class PlotSet:
 
     def plots(self) -> list[dict[str, Any]]:
         return [f["properties"] for f in self.geojson["features"]]
-
-
-@dataclass(frozen=True)
-class PlotJob:
-    state: str  # "running" or "failed"
-    parts_done: int
-    parts: int
-    started: float
-    error: Optional[str] = None
-
-    @property
-    def minutes_left(self) -> Optional[int]:
-        if self.state != "running" or self.parts_done == 0:
-            return None
-        per_part = (time.time() - self.started) / self.parts_done
-        return max(1, round(per_part * (self.parts - self.parts_done) / 60))
 
 
 # --- Model ---------------------------------------------------------------------------------
@@ -472,7 +457,6 @@ def measure_own_plots(cog_url: str, plots: list[MapPlot], source: str) -> PlotSe
 
 # --- Kept results and running jobs --------------------------------------------------------
 
-_jobs: dict[str, PlotJob] = {}
 _results: dict[str, PlotSet] = {}
 _job_lock = threading.Lock()  # one plot search at a time: it uses the CPU for minutes
 
@@ -522,41 +506,29 @@ async def load_map_plots(s3: Any, bucket: str, photo_key: str, map_key: str, cog
         return plots
 
 
-def job(photo_key: str) -> Optional[PlotJob]:
-    return _jobs.get(photo_key)
+def _job_key(photo_key: str) -> str:
+    return f"plots:{photo_key}"
 
 
-def start_finding(s3: Any, bucket: str, photo_key: str, cog_url: str) -> PlotJob:
+def job(photo_key: str) -> Optional[background_jobs.Job]:
+    return background_jobs.status(_job_key(photo_key))
+
+
+def start_finding(s3: Any, bucket: str, photo_key: str, cog_url: str) -> background_jobs.Job:
     """Start the plot search for a photo in the background, once; the running or failed job is returned."""
-    current = _jobs.get(photo_key)
-    if current is not None and current.state == "running":
-        return current
-    _jobs[photo_key] = PlotJob(state="running", parts_done=0, parts=1, started=time.time())
 
-    def progress(done: int, parts: int) -> None:
-        _jobs[photo_key] = PlotJob(state="running", parts_done=done, parts=parts, started=_jobs[photo_key].started)
-
-    def run() -> PlotSet:
+    def run(progress: background_jobs.Progress) -> PlotSet:
         with _job_lock:
             return find_plots(cog_url, progress)
 
-    async def work() -> None:
-        try:
-            plots = await asyncio.to_thread(run)
-            await s3.put_object(Bucket=bucket, Key=_store_key(photo_key), Body=_to_json(plots),
-                                ContentType="application/json")
-            _results[photo_key] = plots
-            _jobs.pop(photo_key, None)
-            logger.info("found %d plots for %s in %.0f s", plots.count, photo_key, plots.seconds)
-        except Exception as exc:  # the card shows the failure; the next request may try again
-            logger.exception("plot search failed for %s", photo_key)
-            previous = _jobs.get(photo_key)
-            _jobs[photo_key] = PlotJob(state="failed", parts_done=previous.parts_done if previous else 0,
-                                       parts=previous.parts if previous else 1, started=time.time(),
-                                       error=str(exc)[:200])
+    async def work(progress: background_jobs.Progress) -> None:
+        plots = await asyncio.to_thread(run, progress)
+        await s3.put_object(Bucket=bucket, Key=_store_key(photo_key), Body=_to_json(plots),
+                            ContentType="application/json")
+        _results[photo_key] = plots
+        logger.info("found %d plots for %s in %.0f s", plots.count, photo_key, plots.seconds)
 
-    asyncio.get_running_loop().create_task(work())
-    return _jobs[photo_key]
+    return background_jobs.start(_job_key(photo_key), work)
 
 
 # --- Files to download ----------------------------------------------------------------------

@@ -40,8 +40,10 @@ export interface DroneCardAnswer extends DroneCard {
   todo: string;
   how_sure: { level: 'low' | 'medium' | 'high'; label: string; bars: number; because: string[]; surer: string | null };
   overlay: {
-    kind: 'bare' | 'attention' | 'good' | 'outline' | 'plots' | 'plot_groups';
+    kind: 'bare' | 'attention' | 'good' | 'outline' | 'plots' | 'plot_groups' | 'crop_map' | 'plot_flags';
     legend: string;
+    /** One entry per class drawn (a crop map); the key picks its colour. */
+    legend_items?: { key: string; label: string; count: number }[];
     geojson: GeoJSON.FeatureCollection;
   } | null;
   facts: { label: string; value: string }[];
