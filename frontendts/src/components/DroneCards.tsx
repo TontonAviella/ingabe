@@ -47,8 +47,13 @@ const SPOTLIGHT = { source: 'drone-card-spotlight', fill: 'drone-card-spotlight-
 // Exact spots measured inside those plots (bare soil), drawn bright above everything else.
 const SPOTS = { source: 'drone-card-spots', fill: 'drone-card-spots-fill', line: 'drone-card-spots-line' };
 // A short word on each plot that matters ("Gaps", "Weeds", "Maize"), dark on caramel so it reads like a tag.
+// Only once plots are big enough to carry one: further out, dozens of tags hide the photo.
 const BADGE_LAYER = 'drone-card-badge';
-const BADGE_MIN_ZOOM = 13.5;
+const BADGE_MIN_ZOOM = 16;
+// Far out, a plot is a few pixels wide: it shows as a solid patch of colour with a hairline edge. Close in,
+// the colour fades so the crop inside shows, and the edge carries the plot.
+const FAR_ZOOM = 14;
+const NEAR_ZOOM = 18;
 const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 // The satellite basemap's glyph server has this font; plot numbers show from this zoom on.
 const LABEL_FONT = ['Open Sans Semibold'];
@@ -57,7 +62,9 @@ const LABEL_MIN_ZOOM = 15.5;
 type Paint<T> = T | ExpressionSpecification;
 type OverlayStyle = {
   fill: Paint<string>;
+  /** Fill close in; `farFill` is the fill zoomed out (the same when not given). */
   fillOpacity: Paint<number>;
+  farFill?: Paint<number>;
   line: Paint<string>;
   width: Paint<number>;
   /** Plot numbers on the photo. */
@@ -113,7 +120,8 @@ const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], Ove
   plots: { fill: '#F3EDE6', fillOpacity: 0.04, line: '#F3EDE6', width: 1.5, numbers: true, swatch: { fill: '#F3EDE611', line: '#F3EDE6' } },
   plot_groups: {
     fill: BY_GROUP('#E8743B', '#F0C896', '#F3EDE6'),
-    fillOpacity: BY_GROUP(0.5, 0.18, 0.03),
+    fillOpacity: BY_GROUP(0.3, 0.12, 0.02),
+    farFill: BY_GROUP(0.8, 0.4, 0.03),
     line: BY_GROUP('#FFF1E6', '#F0C896', '#F3EDE6'),
     width: BY_GROUP(2.5, 1, 1),
     numbers: true,
@@ -121,21 +129,31 @@ const OVERLAY_STYLE: Record<NonNullable<DroneCardAnswer['overlay']>['kind'], Ove
   },
   crop_map: {
     fill: BY_CROP,
-    fillOpacity: ['case', ['==', ['get', 'crop'], 'unsure'], 0.06, 0.45],
+    fillOpacity: ['case', ['==', ['get', 'crop'], 'unsure'], 0.04, 0.3],
+    farFill: ['case', ['==', ['get', 'crop'], 'unsure'], 0.08, 0.85],
     line: BY_CROP,
-    width: 1.5,
+    width: 2,
     numbers: true,
     swatch: { fill: '#F2C14E88', line: '#F2C14E' },
   },
+  // Plots with a problem are lit caramel far out; close in they stay lit (the rest of the photo is dimmed)
+  // and the bare spots inside show red-orange, a colour nothing else on the photo uses.
   plot_flags: {
-    fill: '#E8743B',
-    fillOpacity: ['case', FLAGGED, 0.5, 0.03],
+    fill: '#F2C14E',
+    fillOpacity: ['case', FLAGGED, 0.05, 0.02],
+    farFill: ['case', FLAGGED, 0.8, 0.03],
     line: ['case', FLAGGED, '#FFF1E6', '#F3EDE6'],
     width: ['case', FLAGGED, 2.5, 1],
     numbers: true,
-    swatch: { fill: '#E8743B88', line: '#FFF1E6' },
+    swatch: { fill: '#F2C14ECC', line: '#FFF1E6' },
   },
 };
+const SPOT_COLOUR = '#FF4D1A';
+
+/** A paint value that goes from `far` (zoomed out) to `near` (zoomed in). */
+function byZoom<T>(far: Paint<T>, near: Paint<T>): ExpressionSpecification {
+  return ['interpolate', ['linear'], ['zoom'], FAR_ZOOM, far, NEAR_ZOOM, near] as ExpressionSpecification;
+}
 
 /** Room the panel takes on the map, so what an answer points at stays in view beside or above it. */
 function panelPadding() {
@@ -396,7 +414,7 @@ function AnswerView({
 
       {answer.overlay?.spots && answer.overlay.spots.features.length > 0 && (
         <span className="self-start inline-flex items-center gap-2 rounded-full bg-white/[0.06] border border-white/10 px-3 py-1.5 text-[13px] font-semibold text-[#F3EDE6]">
-          <span className="inline-block h-3 w-4 rounded-[3px] bg-[#FF6B3D]" />
+          <span className="inline-block h-3 w-4 rounded-[3px] bg-[#FF4D1A] border border-[#FFF1E6]" />
           {answer.overlay.spots_legend}
         </span>
       )}
@@ -684,14 +702,14 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
             id: SPOTS.fill,
             type: 'fill',
             source: SPOTS.source,
-            paint: { 'fill-color': '#FF6B3D', 'fill-opacity': 0.85 },
+            paint: { 'fill-color': SPOT_COLOUR, 'fill-opacity': 0.9 },
           });
         if (!map.getLayer(SPOTS.line))
           map.addLayer({
             id: SPOTS.line,
             type: 'line',
             source: SPOTS.source,
-            paint: { 'line-color': '#FFF1E6', 'line-width': 1.2 },
+            paint: { 'line-color': '#FFF1E6', 'line-width': byZoom(0.4, 1.5) },
           });
         if (!map.getLayer(BADGE_LAYER))
           map.addLayer({
@@ -715,12 +733,12 @@ function useAnswerOverlay(map: MLMap | null, answer: DroneCardAnswer | null, bou
       }
       const style = overlay ? OVERLAY_STYLE[overlay.kind] : OVERLAY_STYLE.outline;
       map.setPaintProperty(LAYERS.fill, 'fill-color', style.fill);
-      map.setPaintProperty(LAYERS.fill, 'fill-opacity', overlay ? style.fillOpacity : 0);
+      map.setPaintProperty(LAYERS.fill, 'fill-opacity', overlay ? byZoom(style.farFill ?? style.fillOpacity, style.fillOpacity) : 0);
       map.setPaintProperty(LAYERS.casing, 'line-color', '#0B0908');
-      map.setPaintProperty(LAYERS.casing, 'line-width', typeof style.width === 'number' ? style.width + 2.5 : ['+', style.width, 2.5]);
+      map.setPaintProperty(LAYERS.casing, 'line-width', byZoom(0, ['+', style.width, 2.5]));
       map.setPaintProperty(LAYERS.casing, 'line-opacity', 0.45);
       map.setPaintProperty(LAYERS.line, 'line-color', style.line);
-      map.setPaintProperty(LAYERS.line, 'line-width', style.width);
+      map.setPaintProperty(LAYERS.line, 'line-width', byZoom(['*', style.width, 0.3], style.width));
       map.setLayoutProperty(LAYERS.label, 'visibility', overlay && style.numbers ? 'visible' : 'none');
       (map.getSource(SOURCE) as GeoJSONSource).setData(overlay?.geojson ?? EMPTY);
       (map.getSource(SPOTLIGHT.source) as GeoJSONSource).setData(overlay?.spotlight ?? EMPTY);
