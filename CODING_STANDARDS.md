@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** Failed Sentinel-2 searches return `{"error": ...}`; SAR→NDVI training read `.get("observations", [])` and logged "0 observations",
+  and two satellite tools said "No Sentinel-2 scenes found", so an outage read as no data. Rule: check a returned `"error"` before reading the data
+  (Fail fast; Missing is not zero). Gate: review only (needs to know which functions return error dicts); `test_sar_ndvi_search_errors.py`.
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
