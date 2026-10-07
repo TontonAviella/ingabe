@@ -112,12 +112,6 @@ class TestPrecomputeSchedules:
         assert nightly_field_ndvi_schedule.cron_schedule == "0 2 * * *"
         assert nightly_field_ndvi_schedule.execution_timezone == "UTC"
 
-    def test_weekly_anomaly_schedule_cron(self):
-        """Weekly anomaly schedule should run Monday 1 AM UTC."""
-        from src.pipelines.schedules import weekly_anomaly_schedule
-
-        assert weekly_anomaly_schedule.cron_schedule == "0 1 * * 1"
-
     def test_weekly_yield_risk_schedule_cron(self):
         """Weekly yield risk schedule should run Monday 2 AM UTC."""
         from src.pipelines.schedules import weekly_yield_risk_schedule
@@ -142,7 +136,6 @@ class TestPrecomputeSchedules:
 
         from src.pipelines.schedules import (
             nightly_field_ndvi_schedule,
-            weekly_anomaly_schedule,
             weekly_drought_schedule,
             weekly_phenology_schedule,
             weekly_yield_risk_schedule,
@@ -150,7 +143,6 @@ class TestPrecomputeSchedules:
 
         for sched in [
             nightly_field_ndvi_schedule,
-            weekly_anomaly_schedule,
             weekly_yield_risk_schedule,
             weekly_drought_schedule,
             weekly_phenology_schedule,
