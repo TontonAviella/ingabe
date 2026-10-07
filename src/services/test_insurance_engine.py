@@ -1201,10 +1201,31 @@ class TestComputeInsuranceIntelligence:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        # Slug format is now `insurance-{location}-{season}-{YYYYMMDD}`
-        # (insurance_engine.py:1826) — crop was removed because reports are
+        # Slug format is `insurance-{location}-{season}-{YYYYMMDD}[-{owner}]`
+        # (insurance_page_slug) — crop was removed because reports are
         # location-based, not crop-specific.
         assert result["slug"].startswith("insurance-musanze-")
+
+    def test_slug_names_the_owner_in_the_form_the_brain_stores(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+                season="A", owner_uuid="6D900EAE-ca15-55df-8b9c-eb547876165d",
+            ))
+        assert result["slug"] == "insurance-musanze-a-20251115-6d900eae"
+
+    def test_two_users_same_place_same_day_get_two_slugs(self):
+        from src.services.insurance_engine import insurance_page_slug
+        day = date(2026, 10, 6)
+        a = insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+        b = insurance_page_slug("Gatsibo", "A", day, "2dd65169-166c-4192-89d5-c7de02cc91a3")
+        assert a != b
+        assert a == insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+
+    def test_slug_without_an_owner_has_no_owner_part(self):
+        from src.services.insurance_engine import insurance_page_slug
+        assert insurance_page_slug("Kiyovu Cell", "B", date(2026, 3, 1)) == "insurance-kiyovu-cell-b-20260301"
 
     def test_accuracy_result_used_when_available(self):
         conn = self._mock_conn()
@@ -1759,7 +1780,7 @@ class TestBrainServicePutPageParams:
         assert geom in positional
 
     def test_coalesce_on_conflict_preserves_existing_scope(self):
-        """ON CONFLICT UPDATE uses COALESCE so NULL excluded doesn't overwrite existing."""
+        """No scope given: a new page is private, an existing page keeps its scope."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()
@@ -1768,11 +1789,13 @@ class TestBrainServicePutPageParams:
         page = PageInput(type="t", title="t", compiled_truth="c")
         _run(brain.put_page(conn, "test-page", page, owner_uuid="o"))
         sql = conn.fetchrow.call_args[0][0]
-        assert "COALESCE(EXCLUDED.access_scope, brain_pages.access_scope)" in sql
+        assert "COALESCE($11::text, 'private')" in sql
+        assert "COALESCE($11::text, brain_pages.access_scope)" in sql
         assert "COALESCE(EXCLUDED.partner_id, brain_pages.partner_id)" in sql
 
     def test_default_scope_is_none(self):
-        """When access_scope/partner_id not provided, None should be passed."""
+        """When access_scope/partner_id not provided, None is passed (the SQL
+        makes a new page private and keeps an existing page's scope)."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()
@@ -1785,18 +1808,18 @@ class TestBrainServicePutPageParams:
         assert positional[11] is None  # partner_id ($12)
 
     def test_partner_filter_constant_structure(self):
-        """_PARTNER_FILTER SQL constant must check access_scope and partner_id via GUC."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "access_scope" in _PARTNER_FILTER
-        assert "partner_id" in _PARTNER_FILTER
-        assert "current_setting('app.partner_id'" in _PARTNER_FILTER
-        assert "partner_internal" in _PARTNER_FILTER
+        """PAGE_SCOPE_FILTER SQL constant must check access_scope and partner_id via GUC."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "access_scope" in PAGE_SCOPE_FILTER
+        assert "partner_id" in PAGE_SCOPE_FILTER
+        assert "current_setting('app.partner_id'" in PAGE_SCOPE_FILTER
+        assert "partner_internal" in PAGE_SCOPE_FILTER
 
     def test_partner_filter_alias_placeholder(self):
-        """_PARTNER_FILTER should use {a} placeholder for table alias."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "{a}" in _PARTNER_FILTER
-        formatted = _PARTNER_FILTER.format(a="p.")
+        """PAGE_SCOPE_FILTER should use {a} placeholder for table alias."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "{a}" in PAGE_SCOPE_FILTER
+        formatted = PAGE_SCOPE_FILTER.format(a="p.")
         assert "p.access_scope" in formatted
         assert "p.partner_id" in formatted
 

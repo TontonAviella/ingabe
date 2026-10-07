@@ -1838,11 +1838,13 @@ async def compute_insurance_intelligence(
     audience: Optional[str] = None,
     ref_date: Optional[date] = None,
     compare_level: Optional[str] = None,
+    owner_uuid: Optional[str] = None,
 ) -> dict[str, Any]:
     """One call, all signals, any audience, any admin level.
 
     Returns dict with 'status', 'report' (formatted string), 'data' (raw dict),
-    and 'geometry' (GeoJSON for Brain persistence).
+    'geometry' (GeoJSON for Brain persistence) and 'slug' (the Brain page the
+    report is saved under: pass owner_uuid, the user it is saved for).
 
     When compare_level is set (e.g. "sector", "cell", "district"), discovers all
     child admin units at that level within the parent area and returns a
@@ -2200,8 +2202,24 @@ async def compute_insurance_intelligence(
         "data": report.to_dict(),
         "audience": audience,
         "geometry": geometry,
-        "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
+        "slug": insurance_page_slug(location_name, season, today, owner_uuid),
     }
+
+def insurance_page_slug(
+    location_name: str, season: str, day: date, owner_uuid: Optional[str] = None
+) -> str:
+    """Slug of the Brain page that keeps one user's report on a location for a day.
+
+    Brain slugs are unique across all users and their pages are private, so a
+    slug without its owner made the second user to ask about the same place
+    on the same day fail to save their report (2026-10-07). Lower case, as the
+    Brain stores it, so Sage can look the page up by the slug it is shown.
+    """
+    slug = f"insurance-{location_name.replace(' ', '-')}-{season}-{day.strftime('%Y%m%d')}"
+    if owner_uuid:
+        slug += "-" + owner_uuid.replace("-", "")[:8]
+    return slug.lower()
+
 
 async def compute_insurance_accuracy_safe(
     conn: asyncpg.Connection,
