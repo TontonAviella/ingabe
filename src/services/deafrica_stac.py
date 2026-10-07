@@ -34,16 +34,18 @@ Environment:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import numpy as np
 
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 from src.services.stac_service import stac_datetime_interval
 
 logger = logging.getLogger(__name__)
@@ -239,13 +241,16 @@ def _search_collection_items(
     collection: str,
     bbox: Tuple[float, float, float, float],
     limit: int = 1,
+    datetime_range: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Search a DE Africa STAC collection for the most recent item covering bbox."""
+    """Search a DE Africa STAC collection for items covering bbox (within datetime_range when given)."""
     url = f"{_STAC_ROOT}/collections/{collection}/items"
     params = {
         "bbox": ",".join(str(x) for x in bbox),
         "limit": str(limit),
     }
+    if datetime_range:
+        params["datetime"] = datetime_range
     try:
         r = httpx.get(
             url,
@@ -324,6 +329,92 @@ def _cached_cropland(bbox: Tuple[float, float, float, float]) -> Optional[Tuple[
     except (ValueError, IndexError):
         data_year = datetime.utcnow().year
     return (fraction, data_year)
+
+
+# --- Monthly NDVI anomaly -------------------------------------------------------
+# Digital Earth Africa's `ndvi_anomaly`: per 30 m pixel and calendar month, the mean NDVI of the
+# month's clear Landsat 8/9 and Sentinel-2 views as a standardised anomaly against that month in the
+# 1984-2020 Landsat NDVI climatology (`ndvi_climatology_ls`). A month is published a few days after it
+# ends (September 2026 on 2026-10-05). Bands: ndvi_mean, ndvi_std_anomaly, clear_count.
+NDVI_ANOMALY_SOURCE = "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+# Below this share of an area's pixels with a clear view in the month, the area's anomaly is unknown:
+# the clear part need not look like the rest (missing is not zero).
+NDVI_ANOMALY_MIN_CLEAR = 0.3
+# How far back to look for the latest published month: two months and the publication delay.
+_NDVI_ANOMALY_LOOKBACK_DAYS = 70
+
+
+def area_ndvi_anomaly(geometry: Dict[str, Any], not_after: date) -> Optional[Dict[str, Any]]:
+    """NDVI anomaly of an area (GeoJSON, WGS84) for the latest published month ended by `not_after`.
+
+    Returns {"month": "YYYY-MM", "z": mean standardised anomaly of the area's clear pixels (None
+    below NDVI_ANOMALY_MIN_CLEAR), "ndvi": their mean NDVI (None likewise), "clear_fraction",
+    "source"}, or None when no month ended in the last ~two is published for the area.
+    """
+    start = not_after - timedelta(days=_NDVI_ANOMALY_LOOKBACK_DAYS)
+    items = _search_collection_items(
+        "ndvi_anomaly", _bbox_from_geojson(geometry), limit=50,
+        datetime_range=stac_datetime_interval(f"{start.isoformat()}/{not_after.isoformat()}"),
+    )
+    by_month: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        props = item.get("properties", {})
+        ended = (props.get("end_datetime") or "")[:10]
+        if ended and ended <= not_after.isoformat():
+            by_month.setdefault(props.get("datetime", "")[:7], []).append(item)
+    if not by_month:
+        return None
+    month = max(by_month)
+    hrefs = tuple(sorted(
+        tuple(item["assets"][band]["href"] for band in ("ndvi_std_anomaly", "ndvi_mean", "clear_count"))
+        for item in by_month[month]
+    ))
+    return {"month": month, **_area_month_anomaly(json.dumps(geometry, sort_keys=True), hrefs),
+            "source": NDVI_ANOMALY_SOURCE}
+
+
+@lru_cache(maxsize=256)  # a published month does not change
+def _area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], ...]) -> Dict[str, Any]:
+    """z, ndvi and clear_fraction of one area over one month's tiles ((anomaly, ndvi, count) hrefs)."""
+    import rasterio  # lazy: rasterio/GDAL stack, as _read_window
+    from rasterio.errors import WindowError  # lazy: rasterio/GDAL stack
+    from rasterio.features import geometry_mask  # lazy: rasterio/GDAL stack
+    from rasterio.warp import transform_geom  # lazy: rasterio/GDAL stack
+    from rasterio.windows import Window, from_bounds  # lazy: rasterio/GDAL stack
+    from shapely.geometry import shape  # lazy: as _bbox_from_geojson
+
+    geometry = json.loads(geometry_json)
+    z_px, ndvi_px, area_pixels = [], [], None
+    with rasterio.Env(**GDAL_HTTP_TIMEOUTS):
+        for tile in hrefs:
+            bands = []
+            for href in tile:
+                with rasterio.open(href) as src:
+                    geom = transform_geom("EPSG:4326", src.crs, geometry)
+                    if area_pixels is None:  # the tiles share one grid
+                        area_pixels = shape(geom).area / abs(src.res[0] * src.res[1])
+                    win = from_bounds(*shape(geom).bounds, transform=src.transform).round_offsets().round_lengths()
+                    try:
+                        win = win.intersection(Window(0, 0, src.width, src.height))
+                    except WindowError:  # the area misses this tile
+                        break
+                    arr = src.read(1, window=win).astype("float64")
+                    inside = geometry_mask([geom], out_shape=arr.shape, transform=src.window_transform(win), invert=True)
+                    bands.append(arr[inside])
+            if len(bands) == 3:
+                z, ndvi, clear = bands
+                ok = np.isfinite(z) & np.isfinite(ndvi) & (clear > 0)
+                z_px.append(z[ok])
+                ndvi_px.append(ndvi[ok])
+    z_all = np.concatenate(z_px) if z_px else np.array([])
+    ndvi_all = np.concatenate(ndvi_px) if ndvi_px else np.array([])
+    clear_fraction = min(1.0, z_all.size / area_pixels) if area_pixels else 0.0
+    known = clear_fraction >= NDVI_ANOMALY_MIN_CLEAR and z_all.size > 0
+    return {
+        "z": round(float(z_all.mean()), 2) if known else None,
+        "ndvi": round(float(ndvi_all.mean()), 3) if known else None,
+        "clear_fraction": round(clear_fraction, 2),
+    }
 
 
 def enrich_with_validation(
