@@ -55,10 +55,19 @@ from __future__ import annotations
 import gzip
 import io
 import logging
+import os
+import threading
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import numpy as np
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +92,132 @@ _CORRECTABLE_VARS = {
 }
 
 
-def _chirps_pixel(url: str, lat: float, lon: float) -> Optional[float]:
-    """The pixel value at (lat, lon) of one gzipped CHIRPS GeoTIFF; HTTPError propagates."""
-    import rasterio  # type: ignore[import-untyped]
+# A report reads one pixel from each of up to ~100 CHIRPS files of 2-3 MB that
+# take ~5 s each to download, ten at a time (2026-10-07: 61 s of a 384 s
+# insurance report). Published days do not change, so the Rwanda part of every
+# file read is kept on disk (~12 KB a day) and any later read in Rwanda comes
+# from there. The default directory is the ingabe-cache volume, which outlives
+# container restarts.
+_CHIRPS_CACHE_DIR = Path(os.environ.get("CHIRPS_CACHE_DIR", "/tmp/ingabe_cache/chirps"))
+_CHIRPS_KEPT_BOUNDS = (28.5, -3.2, 31.5, -0.7)  # west, south, east, north: Rwanda with a margin
+_CHIRPS_PRELIM_MAX_AGE_S = 7 * 86400  # preliminary days are read again after a week, in case CHC revises one
+# A day the server does not have yet (404) is asked for again after this long.
+_chirps_unpublished: TTLCache[str, bool] = TTLCache(maxsize=4096, ttl=3 * 3600)
+_chirps_unpublished_lock = threading.Lock()
+# One download per file at a time: the season fetch and the forecast's bias
+# correction ask for the same recent days at once.
+_chirps_file_locks: dict[str, threading.Lock] = {}
+_chirps_file_locks_guard = threading.Lock()
+# The CHIRPS server answers 429 from about 30 parallel downloads (2026-10-07).
+_CHIRPS_WORKERS = 10
 
+
+@dataclass(frozen=True)
+class _ChirpsKept:
+    """The pixels of one CHIRPS file over _CHIRPS_KEPT_BOUNDS, placed in the file's own grid."""
+
+    values: np.ndarray  # float32, as stored in the file
+    row_off: int
+    col_off: int
+    transform: tuple[float, ...]  # the whole file's affine transform (a, b, c, d, e, f)
+
+    def raw_at(self, lat: float, lon: float) -> Optional[float]:
+        """The stored value of the pixel holding (lat, lon), or None when it lies outside the kept part."""
+        from affine import Affine  # lazy: rasterio's dependency, like the rasterio imports below
+        from rasterio.transform import rowcol  # type: ignore[import-untyped]  # lazy: rasterio/GDAL stack
+
+        row, col = rowcol(Affine(*self.transform), lon, lat)  # the pixel src.index(lon, lat) picks
+        r, c = row - self.row_off, col - self.col_off
+        if 0 <= r < self.values.shape[0] and 0 <= c < self.values.shape[1]:
+            return float(self.values[r, c])
+        return None
+
+
+def _chirps_download(url: str) -> bytes:
+    """The decompressed GeoTIFF bytes of one CHIRPS file; HTTPError propagates."""
     req = urllib.request.Request(url, headers={"User-Agent": "mundi.ai/1.0"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        gz_bytes = resp.read()
-    with rasterio.open(io.BytesIO(gzip.decompress(gz_bytes))) as src:
-        row, col = src.index(lon, lat)
-        val = float(src.read(1)[row, col])
+        return gzip.decompress(resp.read())
+
+
+def _chirps_cache_path(url: str) -> Path:
+    product = "prelim" if url.startswith(_CHIRPS_PRELIM_BASE) else "final"
+    return _CHIRPS_CACHE_DIR / f"{product}-{url.rsplit('/', 1)[-1].removesuffix('.tif.gz')}.npz"
+
+
+def _chirps_kept_from_disk(url: str) -> Optional[_ChirpsKept]:
+    path = _chirps_cache_path(url)
+    try:
+        if url.startswith(_CHIRPS_PRELIM_BASE) and time.time() - path.stat().st_mtime > _CHIRPS_PRELIM_MAX_AGE_S:
+            return None
+        with np.load(path) as kept:
+            row_off, col_off = (int(v) for v in kept["offsets"])
+            return _ChirpsKept(kept["values"], row_off, col_off, tuple(float(v) for v in kept["transform"]))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.warning("CHIRPS: unreadable kept file %s; downloading the day again", path, exc_info=True)
+        return None
+
+
+def _chirps_keep(url: str, tif: bytes) -> _ChirpsKept:
+    """Cut the kept part out of a downloaded file and store it; a store that fails is logged and skipped."""
+    import rasterio  # type: ignore[import-untyped]  # lazy: rasterio/GDAL stack
+
+    west, south, east, north = _CHIRPS_KEPT_BOUNDS
+    with rasterio.open(io.BytesIO(tif)) as src:
+        top, left = src.index(west, north)
+        bottom, right = src.index(east, south)
+        top, left = max(top, 0), max(left, 0)
+        bottom, right = min(bottom, src.height - 1), min(right, src.width - 1)
+        kept = _ChirpsKept(src.read(1)[top:bottom + 1, left:right + 1].copy(), top, left, tuple(src.transform)[:6])
+    path = _chirps_cache_path(url)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}.part.npz")
+        np.savez(part, values=kept.values, offsets=np.array([kept.row_off, kept.col_off]),
+                 transform=np.array(kept.transform))
+        os.replace(part, path)
+    except OSError:
+        logger.warning("CHIRPS: could not keep %s on disk; it will be downloaded again", url, exc_info=True)
+    return kept
+
+
+def _chirps_kept(url: str) -> tuple[_ChirpsKept, Optional[bytes]]:
+    """The kept part of one CHIRPS file, from disk or downloaded now (then also the file itself).
+
+    A 404 is remembered for a while and raised again without asking; other
+    HTTP errors and network failures are not remembered.
+    """
+    with _chirps_unpublished_lock:
+        if url in _chirps_unpublished:
+            raise urllib.error.HTTPError(url, 404, "Not Found (asked recently)", hdrs=None, fp=None)  # type: ignore[arg-type]
+    with _chirps_file_locks_guard:
+        file_lock = _chirps_file_locks.setdefault(url, threading.Lock())
+    with file_lock:
+        kept = _chirps_kept_from_disk(url)
+        if kept is not None:
+            return kept, None
+        try:
+            tif = _chirps_download(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                with _chirps_unpublished_lock:
+                    _chirps_unpublished[url] = True
+            raise
+        return _chirps_keep(url, tif), tif
+
+
+def _chirps_pixel(url: str, lat: float, lon: float) -> Optional[float]:
+    """The pixel value at (lat, lon) of one gzipped CHIRPS GeoTIFF; HTTPError propagates."""
+    kept, tif = _chirps_kept(url)
+    val = kept.raw_at(lat, lon)
+    if val is None:  # outside Rwanda: read the file itself
+        import rasterio  # type: ignore[import-untyped]  # lazy: rasterio/GDAL stack
+
+        with rasterio.open(io.BytesIO(tif if tif is not None else _chirps_download(url))) as src:
+            row, col = src.index(lon, lat)
+            val = float(src.read(1)[row, col])
     return None if val < -9000 else round(max(0.0, val), 1)
 
 
@@ -116,13 +241,14 @@ def _fetch_chirps_one(
 
 
 def fetch_chirps_daily(
-    lat: float, lon: float, dates: List[str],
+    lat: float, lon: float, dates: List[str], timeout_s: Optional[float] = None,
 ) -> tuple[Dict[str, Optional[float]], set[str]]:
     """Daily CHIRPS rainfall at (lat, lon) for ``dates``, and which days are preliminary.
 
     Returns ({date_str: mm or None}, {dates read from the preliminary product}).
-    A day neither product has yet is None, never 0. Uses a thread pool
-    (10 workers) so 90 days completes in ~12s instead of ~120s.
+    A day neither product has yet is None, never 0. With ``timeout_s``, the
+    days not read by then are None too (missing, not dry): their downloads
+    finish in the background and are kept for the next read.
     """
     try:
         import rasterio  # type: ignore[import-untyped]  # noqa: F401
@@ -130,22 +256,26 @@ def fetch_chirps_daily(
         logger.info("rasterio not available — skipping CHIRPS")
         return {}, set()
 
-    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=_CHIRPS_WORKERS)
+    futures = [pool.submit(_fetch_chirps_one, lat, lon, d) for d in dates]
+    done, not_done = wait(futures, timeout=timeout_s)
+    pool.shutdown(wait=False, cancel_futures=True)
 
     result: Dict[str, Optional[float]] = {}
     prelim: set[str] = set()
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = [pool.submit(_fetch_chirps_one, lat, lon, d) for d in dates]
-        for f in futures:
-            date_str, val, is_prelim = f.result()
-            result[date_str] = val
-            if is_prelim and val is not None:
-                prelim.add(date_str)
+    for d, f in zip(dates, futures):
+        date_str, val, is_prelim = f.result() if f in done else (d, None, False)
+        result[date_str] = val
+        if is_prelim and val is not None:
+            prelim.add(date_str)
 
     fetched = sum(1 for v in result.values() if v is not None)
     if fetched:
         logger.info("CHIRPS: got %d/%d days of precip data (%d preliminary)",
                     fetched, len(dates), len(prelim))
+    if not_done:
+        logger.warning("CHIRPS: %d of %d days not read within %.0f s; they count as missing",
+                       len(not_done), len(dates), timeout_s)
     return result, prelim
 
 
