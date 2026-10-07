@@ -167,6 +167,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** The STAC raw HTTP fallback posted bare dates ("2026-09-07/2026-10-07"); Earth Search and CDSE answer 400, so every fallback
+  search found nothing, and its only payload test mocked `post` and asserted the bare range. Rule: a request to an external API has one test
+  against a server that answers like the real one (its validation, a recorded response). Gate: `test_stac_http_search.py`; review only elsewhere.
 - **2026-10-07** `asyncio.to_thread` did not keep the app answering during remote raster reads: rasterio 1.4.4 holds the GIL during part of a
   read of a remote COG, so one WaPOR point read stalled the event loop ~2.5 s and a report's reads 10-24 s. Rule: reads of remote rasters go
   through `src/services/raster_process.py` (worker processes), not a thread. Gate: `test_raster_process.py` (loop delay); review only for new readers.

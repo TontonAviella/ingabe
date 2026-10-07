@@ -44,6 +44,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import numpy as np
 
+from src.services.stac_service import stac_datetime_interval
+
 logger = logging.getLogger(__name__)
 
 # Public bucket is anonymous; make sure rasterio's GDAL doesn't try to sign.
@@ -136,12 +138,12 @@ def _search_s2_items(
     Cloud-cover filter is applied client-side after the response lands.
     """
     url = f"{_STAC_ROOT}/collections/s2_l2a/items"
-    params = {
-        "bbox": ",".join(str(x) for x in bbox),
-        "datetime": f"{date_from}T00:00:00Z/{date_to}T23:59:59Z",
-        "limit": str(limit),
-    }
     try:
+        params = {
+            "bbox": ",".join(str(x) for x in bbox),
+            "datetime": stac_datetime_interval(f"{date_from}/{date_to}"),
+            "limit": str(limit),
+        }
         r = httpx.get(
             url,
             params=params,
