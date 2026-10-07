@@ -79,13 +79,6 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
-    weekly_anomaly_scan_job = define_asset_job(
-        name="weekly_anomaly_scan_job",
-        description="Weekly NDVI anomaly detection → DuckDB alerts",
-        selection=AssetSelection.assets(rwanda_assets.weekly_anomaly_scan),
-        tags={"category": "rwanda", "precompute": "true"},
-    )
-
     weekly_yield_risk_job = define_asset_job(
         name="weekly_yield_risk_job",
         description="Weekly yield risk prediction → DuckDB cache",
@@ -139,7 +132,6 @@ if HAS_DAGSTER:
         rwanda_bootstrap_job,
         h3_admin_index_job,
         nightly_field_ndvi_job,
-        weekly_anomaly_scan_job,
         weekly_yield_risk_job,
         weekly_drought_scan_job,
         weekly_phenology_job,
@@ -150,7 +142,6 @@ if HAS_DAGSTER:
 
     all_schedules = [
         schedules.nightly_field_ndvi_schedule,
-        schedules.weekly_anomaly_schedule,
         schedules.weekly_yield_risk_schedule,
         schedules.weekly_drought_schedule,
         schedules.weekly_phenology_schedule,

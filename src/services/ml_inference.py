@@ -46,7 +46,7 @@ class CropClassifier:
     """Crop type classification from satellite imagery bands.
 
     Uses spectral index thresholds (baseline), KMeans clustering (sklearn),
-    Mann-Kendall trend test, z-score anomaly detection, and temporal crop
+    Mann-Kendall trend test, and temporal crop
     signature matching for parcel-level crop identification.
     """
 
@@ -593,81 +593,6 @@ class CropClassifier:
             result["z_score"] = round(float(z_score), 4)
 
         return result
-
-    def detect_anomalies(
-        self, ndvi_timeseries: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Detect anomalies in NDVI time series using z-score approach.
-
-        Identifies dates where NDVI is >2 standard deviations below the running mean.
-        This indicates potential crop stress events, drought, or disease outbreaks.
-
-        Args:
-            ndvi_timeseries: List of dicts with 'date' and 'mean_ndvi' keys
-
-        Returns:
-            Dictionary with anomaly dates, severity scores, and summary statistics
-        """
-        if not ndvi_timeseries:
-            return {"error": "No NDVI data provided"}
-
-        # Extract data
-        dates = []
-        ndvi_values = []
-        for entry in ndvi_timeseries:
-            if entry.get("mean_ndvi") is not None:
-                dates.append(entry.get("date", "unknown"))
-                ndvi_values.append(entry["mean_ndvi"])
-
-        if len(ndvi_values) < 3:
-            return {"error": "Need at least 3 observations for anomaly detection"}
-
-        arr = np.array(ndvi_values)
-        n = len(arr)
-
-        # Compute running statistics (using expanding window)
-        anomalies = []
-        for i in range(2, n):  # Start after first 2 observations
-            # Use all previous observations for mean/std
-            window = arr[: i + 1]
-            mean = window.mean()
-            std = window.std()
-
-            # Z-score for current observation
-            z_score = (arr[i] - mean) / (std + 1e-8)
-
-            # Flag as anomaly if >2 std below mean
-            if z_score < -2.0:
-                severity = "high" if z_score < -3.0 else "moderate"
-                anomalies.append(
-                    {
-                        "date": dates[i],
-                        "ndvi": round(float(arr[i]), 4),
-                        "expected_ndvi": round(float(mean), 4),
-                        "z_score": round(float(z_score), 4),
-                        "severity": severity,
-                        "deviation_percent": round(
-                            float((arr[i] - mean) / mean * 100), 2
-                        ),
-                    }
-                )
-
-        # Summary statistics
-        mean_ndvi = float(arr.mean())
-        std_ndvi = float(arr.std())
-        anomaly_rate = len(anomalies) / n * 100
-
-        return {
-            "method": "z_score_anomaly_detection",
-            "observations": n,
-            "anomalies_detected": len(anomalies),
-            "anomaly_rate_percent": round(anomaly_rate, 2),
-            "mean_ndvi": round(mean_ndvi, 4),
-            "std_ndvi": round(std_ndvi, 4),
-            "threshold": "2 standard deviations below running mean",
-            "anomalies": anomalies,
-        }
-
 
     def detect_drought(
         self, ndvi_ndwi_timeseries: List[Dict[str, Any]]
@@ -1216,16 +1141,6 @@ class MLInferenceService:
         """
         return self.crop_classifier.predict_yield_risk(ndvi_timeseries)
 
-    def detect_anomalies(
-        self, ndvi_timeseries: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Detect anomalies in NDVI time series using z-score analysis.
-
-        Identifies dates where NDVI drops >2 standard deviations below normal,
-        indicating potential crop stress, drought, or disease.
-        """
-        return self.crop_classifier.detect_anomalies(ndvi_timeseries)
-
     def detect_drought(
         self, ndvi_ndwi_timeseries: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -1254,7 +1169,6 @@ class MLInferenceService:
         available_methods = [
             "spectral_threshold",
             "mann_kendall_trend",
-            "z_score_anomaly",
             "vci_drought",
             "ndvi_phenology",
             "crop_identification",
@@ -1271,7 +1185,6 @@ class MLInferenceService:
                 "spectral_threshold": "NDVI-based land cover classification (standard remote sensing)",
                 "kmeans_clustering": "Unsupervised multispectral classification using KMeans",
                 "mann_kendall_trend": "Non-parametric trend analysis with Theil-Sen slope",
-                "z_score_anomaly": "Statistical anomaly detection in time series",
                 "vci_drought": "Vegetation Condition Index + NDWI drought detection (WMO standard)",
                 "ndvi_phenology": "Crop growth stage identification from NDVI curve inflection points",
                 "crop_identification": "Temporal signature matching for parcel-level crop identification (12 single crops + 6 intercrop combos)",

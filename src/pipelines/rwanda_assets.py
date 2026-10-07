@@ -17,10 +17,10 @@
 
 Asset groups:
   - rwanda_bootstrap:    Load admin boundaries (district, sector, cell) into PostGIS
-  - rwanda_precompute:   Scheduled pre-computation (NDVI cache, anomalies, drought, weather)
+  - rwanda_precompute:   Scheduled pre-computation (NDVI cache, drought, weather)
   - rwanda_admin_index:  H3 <-> admin unit index
 
-Cache tables (agri_indices, ndvi_field, anomaly_alerts, etc.) are stored in
+Cache tables (agri_indices, ndvi_field, drought, etc.) are stored in
 PostgreSQL for shared multi-session access. DuckDB is still used for
 analytical workloads (worldcover_admin_stats).
 """
@@ -417,7 +417,7 @@ def nightly_field_ndvi(
     Results written to:
       - agri_indices_cache: for the cache-first get_agri_indices tool
       - ndvi_field_cache: backward compat for weekly analytics jobs
-        (anomaly scan, yield risk, drought, phenology)
+        (yield risk, drought, phenology)
 
     Sectors and cells are NOT pre-warmed here — they use cache-on-first-
     request in the get_agri_indices handler to stay within API limits.
@@ -584,7 +584,6 @@ def nightly_cache_cleanup(
                 ("agri_indices_cache", "computed_at"),
                 ("ndvi_field_cache", "computed_at"),
                 ("weather_daily_cache", "computed_at"),
-                ("anomaly_alerts_cache", "computed_at"),
                 ("yield_risk_cache", "computed_at"),
                 ("drought_cache", "computed_at"),
                 ("phenology_cache", "computed_at"),
@@ -820,134 +819,6 @@ def nightly_parcel_ndvi(
         "errors": errors[:10],
         "date_range": f"{date_from}/{date_to}",
     }
-
-
-@asset(
-    group_name="rwanda_precompute",
-    description="Weekly: scan NDVI cache for anomalies → PostgreSQL alerts cache",
-)
-@observed_dagster_asset(
-    asset_name="weekly_anomaly_scan",
-    pipeline_family="satellite_ndvi_anomaly",
-    source_category="satellite",
-    analysis_domain="agriculture",
-    evidence_kind="ndvi_anomaly_cache",
-)
-def weekly_anomaly_scan(
-    context: AssetExecutionContext,
-    postgres: PostgresResource,
-) -> dict[str, Any]:
-    """Detect NDVI anomalies across Rwanda using z-score analysis.
-
-    Runs Monday 1 AM UTC.  Reads recent NDVI observations from the
-    ndvi_field_cache (populated by nightly_field_ndvi), runs z-score
-    anomaly detection per district, and writes alerts to the
-    anomaly_alerts_cache table.
-
-    Sage reads this table via the get_anomaly_alerts tool — users see
-    results instantly.
-    """
-    from src.services.ml_inference import get_ml_service
-
-    ml = get_ml_service()
-
-    try:
-        # Read recent NDVI cache data from PostgreSQL
-        with postgres.get_sync_connection() as pg_conn:
-            with pg_conn.cursor() as cur:
-                # Get NDVI time series per district (last 8 weeks)
-                cur.execute("""
-                    SELECT district, week_start, mean_ndvi
-                    FROM ndvi_field_cache
-                    WHERE week_start >= CURRENT_DATE - INTERVAL '56 days'
-                    ORDER BY district, week_start
-                """)
-                rows = cur.fetchall()
-
-        if not rows:
-            context.log.info("No NDVI cache data available — skipping anomaly scan")
-            return {"status": "no_data", "alerts_created": 0}
-
-        # Group by district
-        district_series: Dict[str, List[Dict[str, Any]]] = {}
-        for district, week_start, mean_ndvi in rows:
-            if district not in district_series:
-                district_series[district] = []
-            district_series[district].append({
-                "date": str(week_start),
-                "mean_ndvi": float(mean_ndvi),
-            })
-
-        total_alerts = 0
-        district_results = []
-
-        for district, timeseries in district_series.items():
-            if len(timeseries) < 3:
-                context.log.debug(
-                    "Skipping %s — only %d data points", district, len(timeseries)
-                )
-                continue
-
-            # Run z-score anomaly detection
-            anomaly_result = ml.detect_anomalies(timeseries)
-
-            if "error" in anomaly_result:
-                context.log.warning(
-                    "Anomaly detection failed for %s: %s",
-                    district, anomaly_result["error"],
-                )
-                continue
-
-            anomalies = anomaly_result.get("anomalies", [])
-            if not anomalies:
-                continue
-
-            # Write alerts to PostgreSQL cache
-            with postgres.get_sync_connection() as pg_conn:
-                with pg_conn.cursor() as cur:
-                    for anomaly in anomalies:
-                        severity = "high" if anomaly.get("z_score", 0) < -3.0 else "moderate"
-                        cur.execute(
-                            """
-                            INSERT INTO anomaly_alerts_cache
-                                (district, anomaly_date, observed_ndvi, expected_ndvi,
-                                 z_score, severity)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                district,
-                                anomaly.get("date"),
-                                anomaly.get("value"),
-                                anomaly.get("running_mean"),
-                                anomaly.get("z_score"),
-                                severity,
-                            ),
-                        )
-                pg_conn.commit()
-
-            alert_count = len(anomalies)
-            total_alerts += alert_count
-            district_results.append({
-                "district": district,
-                "alerts": alert_count,
-                "severity_high": sum(
-                    1 for a in anomalies if a.get("z_score", 0) < -3.0
-                ),
-            })
-            context.log.info(
-                "District %s: %d anomalies detected", district, alert_count
-            )
-
-        return {
-            "status": "ok",
-            "districts_scanned": len(district_series),
-            "total_alerts": total_alerts,
-            "district_results": district_results,
-        }
-
-    except Exception as e:
-        context.log.exception("Weekly anomaly scan failed: %s", e)
-        return {"status": "error", "error": str(e)}
 
 
 @asset(

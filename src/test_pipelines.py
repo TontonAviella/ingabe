@@ -35,7 +35,6 @@ class TestPipelineDefinitions:
             "rwanda_bootstrap_job",
             "h3_admin_index_job",
             "nightly_field_ndvi_job",
-            "weekly_anomaly_scan_job",
             "weekly_yield_risk_job",
             "weekly_drought_scan_job",
             "weekly_phenology_job",
@@ -49,7 +48,6 @@ class TestPipelineDefinitions:
         schedule_names = {schedule.name for schedule in defs.schedules}
         assert schedule_names == {
             "nightly_field_ndvi",
-            "weekly_anomaly_scan",
             "weekly_yield_risk",
             "weekly_drought_scan",
             "weekly_phenology",

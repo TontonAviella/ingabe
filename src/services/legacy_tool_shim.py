@@ -15,12 +15,14 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
+from src.services import district_ndvi_anomaly
 from src.services import ndvi_classes
 from src.services import satellite_analytics
 
@@ -2150,47 +2152,24 @@ async def _handle_get_agri_indices(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Read anomaly_alerts_cache filtered by severity/district.
+    """Each district's NDVI anomaly for the latest published month, worst first, and the alerts.
 
-    Returns z-score-sorted alerts (most negative first = worst anomalies).
-    Auto-provisions PostGIS connection so Sage can colour districts by severity.
-
+    The values and alert classes come from district_ndvi_anomaly (Digital Earth Africa's monthly
+    ndvi_anomaly). Auto-provisions PostGIS connection so Sage can colour districts by severity.
     """
     args = ctx.arguments
     try:
         from src.routes.message_routes import _ensure_rwanda_postgis_connection
 
-        _where: list[str] = []
-        _params: list[Any] = []
-        _pidx = 1
-        if args.get("severity"):
-            _where.append(f"severity = ${_pidx}")
-            _params.append(args["severity"])
-            _pidx += 1
-        if args.get("district"):
-            _where.append(f"district = ${_pidx}")
-            _params.append(args["district"])
-            _pidx += 1
-        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
-        _rows = await ctx.conn.fetch(
-            f"SELECT district, anomaly_date, observed_ndvi, expected_ndvi, "
-            f"z_score, severity FROM anomaly_alerts_cache {_where_sql} "
-            f"ORDER BY z_score ASC LIMIT 30",
-            *_params,
-        )
-
-        if _rows:
-            tool_result: Dict[str, Any] = {
-                "status": "success",
-                "source": "postgres_cache",
-                "count": len(_rows),
-                "alerts": [
-                    {"district": r["district"], "date": str(r["anomaly_date"]) if r["anomaly_date"] else None,
-                     "observed_ndvi": r["observed_ndvi"], "expected_ndvi": r["expected_ndvi"],
-                     "z_score": round_or_none(r["z_score"], 3), "severity": r["severity"]}
-                    for r in _rows
-                ],
-            }
+        try:
+            result = await district_ndvi_anomaly.district_ndvi_anomalies(
+                ctx.conn, date.today(),
+                district=args.get("district") or "", severity=args.get("severity") or "",
+            )
+        except ValueError as e:
+            return {"status": "error", "error": str(e)}
+        tool_result: Dict[str, Any] = {"status": "success", **result}
+        if result["districts"]:
             _pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -2204,13 +2183,7 @@ async def _handle_get_anomaly_alerts(ctx: LegacyToolContext) -> Dict[str, Any]:
                     "Then add_layer_to_map and set_layer_style to colour districts by severity. "
                     "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
                 )
-            return tool_result
-        return {
-            "status": "success",
-            "source": "postgres_cache",
-            "alerts": [],
-            "message": "No anomaly alerts yet — Dagster weekly schedule populates this cache",
-        }
+        return tool_result
     except Exception as e:
         logger.exception("get_anomaly_alerts tool failed")
         return {"status": "error", "error": str(e)}

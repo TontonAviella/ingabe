@@ -77,7 +77,7 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Domain | Owner | Status |
 |---|---|---|
 | Insurance triggers, indices, payouts | `src/services/insurance_engine.py` | Scattered: logic also in `src/routes/message_routes.py`, `src/tools/raster_interpret.py`, `src/services/legacy_tool_shim.py`, `src/dependencies/system_prompt.py` |
-| Vegetation-index classes (NDVI/EVI breaks, labels, colours, expected NDVI per crop stage) | **none yet** | Scattered across 13 files with conflicting breaks (0.15/0.2/0.3/0.35/0.4/0.6…), plus a crop-stage NDVI table living in the adapter `src/tools/raster_interpret.py`. Create one owner before any new NDVI rule. |
+| Vegetation-index classes (NDVI/EVI breaks, labels, colours, expected NDVI per crop stage, NDVI anomaly alert classes) | `src/services/ndvi_classes.py` | Partly consolidated: the NDVI classes, legend and anomaly alert classes live there. Still scattered across 13 files with conflicting breaks (0.15/0.2/0.3/0.35/0.4/0.6…), plus a crop-stage NDVI table living in the adapter `src/tools/raster_interpret.py`. New NDVI rules go in the owner; move the scattered ones there before reusing them. |
 | Weather forecast + fusion | `src/services/forecast_service.py`, `forecast_fusion.py` | |
 | Forecast accuracy metrics (POD/FAR/HSS/CSI) | `src/services/weather_accuracy.py` | |
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
