@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -234,17 +237,63 @@ def _enrich_ndvi_with_cropland(
     return result
 
 
+# A model is trained for the area asked about and reused only there (until 2026-10-07 the first
+# area's model answered for every area). It is retrained after a week. A failed training reads
+# ~70 scenes for nothing, so its reason is returned for 6 hours before training is tried again.
+_MODEL_MAX_AGE_S = 7 * 24 * 3600
+_FAILED_RETRY_S = 6 * 3600
+_MAX_AREAS = 64
+
+AreaKey = Tuple[float, ...]
+
+
+def _area_key(bbox: Tuple[float, float, float, float]) -> AreaKey:
+    """Areas within ~1 km of each other share a model: the bbox rounded to 0.01 degree."""
+    return tuple(round(v, 2) for v in bbox)
+
+
+@dataclass
+class _AreaModel:
+    model: Any
+    rmse: Optional[float]
+    r2: float
+    n_samples: int
+    trained_at: float  # time.monotonic()
+
+
 class SARNDVIPredictor:
     """Predict NDVI from SAR backscatter when optical imagery is cloudy."""
 
     def __init__(self) -> None:
-        self._model: Any = None
-        self._model_rmse: Optional[float] = None
-        self._model_r2: Optional[float] = None
-        self._n_training_samples: int = 0
-        # Training reads a few minutes of imagery. A caller that stops waiting leaves it running
-        # in its thread; the next caller waits for that run instead of starting a second one.
-        self._train_lock = threading.Lock()
+        self._models: "OrderedDict[AreaKey, _AreaModel]" = OrderedDict()
+        self._failures: Dict[AreaKey, Tuple[str, float]] = {}
+        self._lock = threading.Lock()  # guards the two dicts
+        # Training reads minutes of imagery: one run per area at a time, and callers that
+        # wait reuse its result (a fixed set of locks, so it does not grow with areas).
+        self._train_locks = [threading.Lock() for _ in range(16)]
+
+    def _cached(self, key: AreaKey) -> Tuple[Optional[_AreaModel], Optional[str]]:
+        """The area's fresh model, or why its recent training failed; (None, None) means train."""
+        now = time.monotonic()
+        with self._lock:
+            area = self._models.get(key)
+            if area is not None and now - area.trained_at < _MODEL_MAX_AGE_S:
+                self._models.move_to_end(key)
+                return area, None
+            failure = self._failures.get(key)
+            if failure is not None and now - failure[1] < _FAILED_RETRY_S:
+                return None, failure[0]
+        return None, None
+
+    def _model_for(self, bbox: Tuple[float, float, float, float]) -> Tuple[Optional[_AreaModel], Optional[str]]:
+        """The model for this area, training it if missing or stale, or why there is none."""
+        key = _area_key(bbox)
+        with self._train_locks[hash(key) % len(self._train_locks)]:
+            area, why_not = self._cached(key)
+            if area is None and why_not is None:
+                self.train_model(bbox)
+                area, why_not = self._cached(key)
+        return area, why_not
 
     def predict_ndvi(
         self,
@@ -297,22 +346,16 @@ class SARNDVIPredictor:
                 "error": "Could not extract features from S1 time series",
             }
 
-        # Train model if needed
-        if self._model is None:
-            with self._train_lock:
-                train_result = self.train_model(bbox) if self._model is None else {"status": "success"}
-            if train_result.get("status") == "error":
-                # Fall back to simple empirical relationship, and say why the model is not used
-                return {**self._empirical_prediction(ts), "model_unavailable_reason": train_result["error"]}
-
-        if self._model is None:
-            return self._empirical_prediction(ts)
+        area, why_not = self._model_for(bbox)
+        if area is None:
+            # Fall back to simple empirical relationship, and say why the model is not used
+            return {**self._empirical_prediction(ts), "model_unavailable_reason": why_not}
 
         # Predict
         try:
             features_2d = features.reshape(1, -1)
             # Ensure feature count matches model
-            n_expected = self._model.n_features_in_
+            n_expected = area.model.n_features_in_
             if features_2d.shape[1] != n_expected:
                 # Pad or truncate
                 if features_2d.shape[1] < n_expected:
@@ -322,20 +365,20 @@ class SARNDVIPredictor:
                 else:
                     features_2d = features_2d[:, :n_expected]
 
-            predicted = float(self._model.predict(features_2d)[0])
+            predicted = float(area.model.predict(features_2d)[0])
             # Clamp to valid NDVI range
             predicted = max(-1.0, min(1.0, predicted))
 
-            confidence = self._compute_confidence(ts)
+            confidence = self._compute_confidence(ts, area)
 
             result = {
                 "status": "success",
                 "predicted_ndvi": round(predicted, 4),
                 "confidence": round(confidence, 2),
                 "sar_dates_used": len(ts["dates"]),
-                "model_rmse": self._model_rmse,
-                "model_r2": self._model_r2,
-                "n_training_samples": self._n_training_samples,
+                "model_rmse": area.rmse,
+                "model_r2": area.r2,
+                "n_training_samples": area.n_samples,
                 "target_date": end,
                 "method": "gradient_boosting",
                 "source": "Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction",
@@ -350,15 +393,21 @@ class SARNDVIPredictor:
         bbox: Tuple[float, float, float, float],
         days_back: int = 180,
     ) -> Dict[str, Any]:
-        """Train GBR model from historical S1+S2 paired observations."""
+        """Train a GBR model for this area from historical S1+S2 pairs, and keep it for the area."""
         from sklearn.ensemble import GradientBoostingRegressor
         from sklearn.model_selection import cross_val_score
 
+        key = _area_key(bbox)
         try:
             X, y = _generate_training_data(bbox, days_back)
         except TrainingDataUnavailable as e:
             logger.warning("SAR->NDVI model not trained for %s: %s", bbox, e)
-            return {"status": "error", "error": f"Model not trained: {e}"}
+            reason = f"Model not trained: {e}"
+            now = time.monotonic()
+            with self._lock:
+                self._failures = {k: f for k, f in self._failures.items() if now - f[1] < _FAILED_RETRY_S}
+                self._failures[key] = (reason, now)
+            return {"status": "error", "error": reason}
 
         model = GradientBoostingRegressor(**_GBR_PARAMS)
 
@@ -375,21 +424,24 @@ class SARNDVIPredictor:
         # R² on training data (not ideal but indicates fit)
         r2 = float(model.score(X, y))
 
-        self._model = model
-        self._model_rmse = round_or_none(rmse, 4)
-        self._model_r2 = round(r2, 4)
-        self._n_training_samples = len(y)
+        area = _AreaModel(model, round_or_none(rmse, 4), round(r2, 4), len(y), time.monotonic())
+        with self._lock:
+            self._models[key] = area
+            self._models.move_to_end(key)
+            while len(self._models) > _MAX_AREAS:
+                self._models.popitem(last=False)
+            self._failures.pop(key, None)
 
         logger.info(
-            "SAR→NDVI model trained: %d samples, RMSE=%.4f, R²=%.4f",
-            len(y), rmse or 0, r2,
+            "SAR→NDVI model trained for %s: %d samples, RMSE=%s, R²=%.4f",
+            key, len(y), area.rmse, r2,
         )
 
         return {
             "status": "success",
-            "n_samples": len(y),
-            "rmse": self._model_rmse,
-            "r2": self._model_r2,
+            "n_samples": area.n_samples,
+            "rmse": area.rmse,
+            "r2": area.r2,
         }
 
     def _empirical_prediction(self, ts: Dict[str, Any], bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, Any]:
@@ -446,7 +498,7 @@ class SARNDVIPredictor:
             return _enrich_ndvi_with_cropland(result, bbox)
         return result
 
-    def _compute_confidence(self, ts: Dict[str, Any]) -> float:
+    def _compute_confidence(self, ts: Dict[str, Any], area: Optional[_AreaModel] = None) -> float:
         """Compute prediction confidence from data quality indicators."""
         confidence = 0.5
 
@@ -458,16 +510,17 @@ class SARNDVIPredictor:
             confidence += 0.1
 
         # Model quality
-        if self._model_rmse is not None:
-            if self._model_rmse < 0.10:
+        if area is not None and area.rmse is not None:
+            if area.rmse < 0.10:
                 confidence += 0.2
-            elif self._model_rmse < 0.15:
+            elif area.rmse < 0.15:
                 confidence += 0.1
 
         # Training data size
-        if self._n_training_samples >= 20:
+        n_samples = area.n_samples if area is not None else 0
+        if n_samples >= 20:
             confidence += 0.1
-        elif self._n_training_samples >= 10:
+        elif n_samples >= 10:
             confidence += 0.05
 
         return min(0.95, confidence)
