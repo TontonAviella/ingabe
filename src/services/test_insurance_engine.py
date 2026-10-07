@@ -1785,18 +1785,18 @@ class TestBrainServicePutPageParams:
         assert positional[11] is None  # partner_id ($12)
 
     def test_partner_filter_constant_structure(self):
-        """_PARTNER_FILTER SQL constant must check access_scope and partner_id via GUC."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "access_scope" in _PARTNER_FILTER
-        assert "partner_id" in _PARTNER_FILTER
-        assert "current_setting('app.partner_id'" in _PARTNER_FILTER
-        assert "partner_internal" in _PARTNER_FILTER
+        """PAGE_SCOPE_FILTER SQL constant must check access_scope and partner_id via GUC."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "access_scope" in PAGE_SCOPE_FILTER
+        assert "partner_id" in PAGE_SCOPE_FILTER
+        assert "current_setting('app.partner_id'" in PAGE_SCOPE_FILTER
+        assert "partner_internal" in PAGE_SCOPE_FILTER
 
     def test_partner_filter_alias_placeholder(self):
-        """_PARTNER_FILTER should use {a} placeholder for table alias."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "{a}" in _PARTNER_FILTER
-        formatted = _PARTNER_FILTER.format(a="p.")
+        """PAGE_SCOPE_FILTER should use {a} placeholder for table alias."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "{a}" in PAGE_SCOPE_FILTER
+        formatted = PAGE_SCOPE_FILTER.format(a="p.")
         assert "p.access_scope" in formatted
         assert "p.partner_id" in formatted
 

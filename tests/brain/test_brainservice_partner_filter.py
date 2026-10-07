@@ -1,6 +1,6 @@
 """BrainService application-layer partner filter tests (P1-4).
 
-Validates that _PARTNER_FILTER is applied to ALL BrainService read methods,
+Validates that PAGE_SCOPE_FILTER is applied to ALL BrainService read methods,
 not just search. Each method is tested with cross-partner data: partner A's
 pages must be invisible when queried from partner B's session.
 
