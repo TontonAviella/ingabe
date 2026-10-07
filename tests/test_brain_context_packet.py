@@ -143,3 +143,50 @@ async def test_brain_context_keeps_only_visible_layer_memories():
     assert packet is not None
     assert "Old demo layer" in packet
     assert "Old demo feature" in packet
+
+
+class OrthophotoBrain:
+    """The 2026-10-07 turn: the question matched no page, and the only page in
+    the viewport was the user's own orthophoto, a layer on the current map."""
+
+    async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
+        return []
+
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+        return [
+            _page(
+                "raster-lrrlzvhe5zj1",
+                "Raster: Cyampirita_Orthophoto",
+                "Raster layer: Cyampirita_Orthophoto. Bounds: [30.4175, -1.7009, 30.4315, -1.6929].",
+            )
+        ]
+
+    async def list_pages(self, conn, limit=100, offset=0, type=None, tag=None):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_brain_context_keeps_the_raster_page_of_a_visible_layer():
+    packet = await build_brain_context_packet(
+        FakeConn(),
+        OrthophotoBrain(),
+        query_text="How is cassava doing this season around this photo?",
+        viewport_bounds=[30.41, -1.71, 30.44, -1.69],
+        visible_layer_ids=["LrrLzvhE5zj1", "LQmvuX9mQavb"],
+    )
+
+    assert packet is not None
+    assert "source=spatial; slug=raster-lrrlzvhe5zj1" in packet
+
+
+@pytest.mark.asyncio
+async def test_brain_context_drops_the_raster_page_of_a_layer_not_on_the_map():
+    packet = await build_brain_context_packet(
+        FakeConn(),
+        OrthophotoBrain(),
+        query_text="How is cassava doing this season around this photo?",
+        viewport_bounds=[30.41, -1.71, 30.44, -1.69],
+        visible_layer_ids=["LQmvuX9mQavb"],
+    )
+
+    assert packet is None

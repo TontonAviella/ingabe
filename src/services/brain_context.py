@@ -33,7 +33,10 @@ class _MemoryEntry:
 
 
 def _layer_id_from_slug(slug: str) -> str | None:
-    """Best-effort layer id extraction for Brain pages named layer-<id>[-fN]."""
+    """Layer id of a Brain page about one layer, as brain_hook_processor names
+    them: layer-<id>[-fN] (a vector layer and its features) or raster-<id>."""
+    if slug.startswith("raster-"):
+        return slug[len("raster-") :] or None
     if not slug.startswith("layer-"):
         return None
     rest = slug[len("layer-") :]
@@ -43,7 +46,7 @@ def _layer_id_from_slug(slug: str) -> str | None:
 
 
 def _is_layer_scoped_entry(entry: _MemoryEntry) -> bool:
-    return _layer_id_from_slug(entry.slug) is not None or entry.slug.startswith("raster-")
+    return entry.slug.startswith(("layer-", "raster-"))
 
 
 def _entry_matches_visible_layers(
