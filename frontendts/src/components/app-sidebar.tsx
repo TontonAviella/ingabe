@@ -2,10 +2,7 @@ import { AccountMenu, OrgSwitcher } from '@mundi/ee';
 import { House, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import MDarkSvg from '@/assets/M-dark.svg';
-import MLightSvg from '@/assets/M-light.svg';
-import MundiDarkSvg from '@/assets/Mundi-dark.svg';
-import MundiLightSvg from '@/assets/Mundi-light.svg';
+import { IngabeIcon, IngabeWordmark } from '@/components/Brand';
 import { Button } from '@/components/ui/button';
 import {
   Sidebar,
@@ -41,8 +38,7 @@ export function AppSidebar() {
         {state === 'collapsed' ? (
           <>
             <a href="/" className="w-8 h-8">
-              <img src={MLightSvg} alt="M" className="w-full h-full dark:hidden" />
-              <img src={MDarkSvg} alt="M" className="w-full h-full hidden dark:block" />
+              <IngabeIcon className="w-full h-full" />
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -57,9 +53,9 @@ export function AppSidebar() {
           </>
         ) : (
           <div className="flex items-center justify-between w-full">
-            <a href="/" className="h-8 flex items-center">
-              <img src={MundiLightSvg} alt="Ingabe" className="h-full dark:hidden" />
-              <img src={MundiDarkSvg} alt="Ingabe" className="h-full hidden dark:block" />
+            <a href="/" className="h-8 flex items-center gap-2.5">
+              <IngabeIcon className="h-7 w-7" />
+              <IngabeWordmark className="text-[19px]" />
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -116,12 +112,11 @@ export function AppSidebar() {
         <div className="text-center">
           <span className="text-muted-foreground text-xs">
             {state === 'collapsed' ? (
-              <>
-                <img src={MLightSvg} alt="Ingabe" className="w-6 h-6 mx-auto my-2 dark:hidden" />
-                <img src={MDarkSvg} alt="Ingabe" className="w-6 h-6 mx-auto my-2 hidden dark:block" />
-              </>
+              <IngabeIcon className="w-6 h-6 mx-auto my-2" />
             ) : (
-              '© Ingabe 2025'
+              <a href={import.meta.env.VITE_NOZA_SITE_URL || 'https://nozalabs.rw'} className="hover:text-foreground">
+                © {new Date().getFullYear()} Noza Labs
+              </a>
             )}
           </span>
         </div>
