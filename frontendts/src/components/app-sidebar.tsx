@@ -111,7 +111,13 @@ export function AppSidebar() {
       <SidebarFooter className="p-1 border-t border-border border-gray-700">
         <div className="text-center">
           <span className="text-muted-foreground text-xs">
-            {state === 'collapsed' ? <IngabeIcon className="w-6 h-6 mx-auto my-2" /> : <>© {new Date().getFullYear()} Noza Labs</>}
+            {state === 'collapsed' ? (
+              <IngabeIcon className="w-6 h-6 mx-auto my-2" />
+            ) : (
+              <a href={import.meta.env.VITE_NOZA_SITE_URL || 'https://nozalabs.rw'} className="hover:text-foreground">
+                © {new Date().getFullYear()} Noza Labs
+              </a>
+            )}
           </span>
         </div>
       </SidebarFooter>
