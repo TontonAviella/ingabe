@@ -56,8 +56,9 @@ STAC_CATALOGS = {
 
 # Seconds to connect and to read for pystac-client requests: it sets none by default, so a stalled
 # catalog held the calling thread for as long as the server kept the connection open. A read that
-# times out is tried again, so the retries are capped too: at most 3 x 30 s.
-STAC_HTTP_TIMEOUT = (10, 30)
+# times out is tried again, so the retries are capped too: at most 3 x 30 s. Connecting gets 20 s, as
+# in gdal_http.GDAL_HTTP_TIMEOUTS.
+STAC_HTTP_TIMEOUT = (20, 30)
 STAC_HTTP_RETRIES = 2
 
 # Rwanda bounding box (approximate)

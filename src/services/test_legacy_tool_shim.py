@@ -304,5 +304,6 @@ async def test_insurance_report_tells_sage_which_sources_did_not_arrive_in_time(
 
     assert result["status"] == "ok"
     assert result["coverage"] == note
+    assert "say plainly which are missing" in result["instruction"]
     assert "data" not in result
     json.dumps(result)

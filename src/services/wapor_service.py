@@ -103,8 +103,9 @@ GDAL_COG_ENV = {
 _points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
 _unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
 _cache_lock = threading.Lock()
-# One round for the 12 dekads a query reads at most.
-_READ_WORKERS = 12
+# Part of each read holds the GIL for seconds (2026-10-07: a single point read delayed the
+# app's event loop by ~2.5 s), so reads stay 6 at a time rather than all 12 dekads at once.
+_READ_WORKERS = 6
 
 
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:

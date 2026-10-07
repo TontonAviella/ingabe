@@ -10,8 +10,9 @@ also cut long but progressing downloads, such as ogr2ogr importing a large remot
 """
 
 # Seconds: to connect, and for one HTTP request in all. A COG read is a few small range requests;
-# a healthy one takes well under a second each (WaPOR, Planetary Computer, Earth Search).
+# a healthy one takes well under a second each (WaPOR, Planetary Computer, Earth Search). Connecting
+# from mundi-app took up to 6.9 s with 44 connections opening at once (2026-10-07), so 10 s was too tight.
 GDAL_HTTP_TIMEOUTS = {
-    "GDAL_HTTP_CONNECTTIMEOUT": "10",
+    "GDAL_HTTP_CONNECTTIMEOUT": "20",
     "GDAL_HTTP_TIMEOUT": "30",
 }

@@ -41,8 +41,10 @@ _STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
 _COLLECTION = "sentinel-1-rtc"
 # Window reads of a time series run this many at a time. One read takes ~2 s, and a
 # SAR-predicted NDVI read 20 to 100 of them one after another (2026-10-07: 47 s and
-# 205 s of an insurance report).
-_PARALLEL_READS = 8
+# 205 s of an insurance report). Part of each read holds the GIL, so more at once
+# delays the app's event loop: worst wake-up 0.33 s at 1, 0.45 s at 3, 1.4 s at 8
+# (90 s of training, measured in mundi-app on 2026-10-07).
+_PARALLEL_READS = 3
 
 
 # Planetary Computer assets are read with a SAS token for their storage container.
@@ -51,7 +53,7 @@ _PARALLEL_READS = 8
 # (2026-10-07); the token is fetched here, with a time limit, and reused until a
 # minute before it expires.
 _SAS_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token"
-_SAS_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_SAS_TIMEOUT = httpx.Timeout(30.0, connect=20.0)  # connecting gets 20 s, as in gdal_http.GDAL_HTTP_TIMEOUTS
 _sas_tokens: Dict[Tuple[str, str], Tuple[str, datetime]] = {}
 _sas_lock = threading.Lock()  # held while fetching, so parallel reads share one request
 
