@@ -1,6 +1,7 @@
 import { HeroWorld, WorldTile } from "@/components/MiniWorld";
 import { MotionProvider, PauseButton } from "@/components/MotionProvider";
 import { Arrow, Nav, Wordmark } from "@/components/Nav";
+import { Parallax } from "@/components/Parallax";
 import { Reveal } from "@/components/Reveal";
 import { SageExample } from "@/components/SageExample";
 import { TwoLooks } from "@/components/TwoLooks";
@@ -73,8 +74,8 @@ export default function Home() {
       <Nav />
       <main id="top">
         {/* ---------- Hero ---------- */}
-        <section className="relative overflow-hidden pt-[72px]">
-          <div className="relative mx-auto max-w-page px-5 sm:px-8 lg:flex lg:min-h-[calc(100vh-72px-146px)] lg:items-center lg:px-12">
+        <section className="relative overflow-hidden pt-16">
+          <div className="relative mx-auto max-w-page px-5 sm:px-8 lg:flex lg:min-h-[calc(100vh-64px-146px)] lg:items-center lg:px-12">
             <div className="relative z-10 pt-10 lg:max-w-[36rem] lg:pb-16 lg:pt-0">
               <p className="arrive font-mono text-[12px] uppercase tracking-label text-mocha">Noza Labs · Kigali</p>
               <h1 className="mt-6 font-display text-[clamp(3rem,6.4vw,6.4rem)] leading-[0.93] tracking-[-0.02em] text-bitter">
@@ -97,12 +98,13 @@ export default function Home() {
               </div>
             </div>
           </div>
-          <div
-            className="arrive relative -mt-4 aspect-[1.05] w-full lg:absolute lg:bottom-[96px] lg:left-[33%] lg:right-[-6%] lg:[mask-image:linear-gradient(to_right,transparent_0,black_12%)] lg:top-[72px] lg:mt-0 lg:aspect-auto lg:w-auto"
-            style={{ animationDelay: "300ms" }}
+          <Parallax
+            className="relative -mt-4 aspect-[1.05] w-full lg:absolute lg:bottom-[96px] lg:left-[33%] lg:right-[-6%] lg:[mask-image:linear-gradient(to_right,transparent_0,black_12%)] lg:top-16 lg:mt-0 lg:aspect-auto lg:w-auto"
           >
-            <HeroWorld className="absolute inset-0 h-full w-full" />
-          </div>
+            <div className="arrive absolute inset-0" style={{ animationDelay: "300ms" }}>
+              <HeroWorld className="absolute inset-0 h-full w-full" />
+            </div>
+          </Parallax>
           <div className="relative z-10 mx-auto hidden h-[50px] max-w-page items-center gap-5 px-12 lg:flex">
             <span className="h-px w-12 bg-bitter/40" />
             <p className="font-mono text-[11px] uppercase leading-[1.7] tracking-[0.16em] text-mocha">
@@ -336,7 +338,7 @@ function Group({ label, note, cards }: { label: string; note: string; cards: Car
             as="article"
             key={c.model}
             delay={k * 90}
-            className={`group relative flex min-h-[440px] flex-col overflow-hidden rounded-[6px] bg-espresso p-7 ring-1 ring-white/[0.04] transition-colors duration-500 hover:bg-chocolate ${
+            className={`group relative flex min-h-[460px] flex-col overflow-hidden rounded-[22px] bg-espresso p-7 ring-1 ring-inset ring-white/[0.05] transition-[background-color,transform] duration-500 hover:-translate-y-0.5 hover:bg-chocolate ${
               c.wide ? "lg:col-span-2" : ""
             }`}
           >

@@ -10,18 +10,13 @@ const LINKS = [
   { href: "#how", label: "How it works" },
 ];
 
+/** The mark: the name, a small caramel point (the place we read), and "labs" in a lighter weight. */
 export function Wordmark({ light = false }: { light?: boolean }) {
   return (
-    <span className={`flex items-center gap-3 ${light ? "text-sand" : "text-bitter"}`}>
-      <svg viewBox="0 0 24 24" className="h-6 w-6" aria-hidden>
-        <circle cx="12" cy="12" r="11" fill="none" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M6 15.5c2.5-1.8 4.2-5.6 6-8 1.8 2.4 3.5 6.2 6 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        <circle cx="12" cy="7.5" r="1.6" fill="#D9A066" />
-      </svg>
-      <span className="text-[17px] font-semibold tracking-tight">noza</span>
-      <span className={`border-l pl-3 font-mono text-[11px] uppercase tracking-label ${light ? "border-sand/25 text-latte" : "border-bitter/20 text-mocha"}`}>
-        Labs
-      </span>
+    <span className={`inline-flex items-baseline text-[19px] tracking-[-0.03em] ${light ? "text-sand" : "text-bitter"}`}>
+      <span className="font-semibold">noza</span>
+      <span aria-hidden className="mx-[3px] inline-block h-[5px] w-[5px] translate-y-[-1px] rounded-full bg-caramel" />
+      <span className={`font-normal ${light ? "text-latte" : "text-mocha"}`}>labs</span>
     </span>
   );
 }
@@ -39,14 +34,14 @@ export function Nav() {
   return (
     <header
       className={`arrive fixed inset-x-0 top-0 z-50 transition-colors duration-500 ${
-        scrolled || open ? "border-b border-bitter/10 bg-cream/85 backdrop-blur-md" : "border-b border-transparent"
+        scrolled || open ? "border-b border-bitter/[0.08] bg-cream/75 backdrop-blur-xl backdrop-saturate-150" : "border-b border-transparent"
       }`}
     >
-      <div className="mx-auto flex h-[72px] max-w-page items-center justify-between px-5 sm:px-8 lg:px-12">
+      <div className="mx-auto flex h-16 max-w-page items-center justify-between px-5 sm:px-8 lg:px-12">
         <a href="#top" aria-label="Noza Labs, back to top">
           <Wordmark />
         </a>
-        <nav className="hidden items-center gap-9 text-[14px] text-bitter/80 md:flex">
+        <nav className="hidden items-center gap-8 text-[13.5px] text-bitter/70 md:flex">
           {LINKS.map((l) => (
             <a key={l.href} href={l.href} className="transition-colors hover:text-bitter">
               {l.label}
@@ -56,7 +51,7 @@ export function Nav() {
         <div className="flex items-center gap-3">
           <a
             href={INGABE_URL}
-            className="group hidden items-center gap-3 rounded-full bg-bitter py-3 pl-6 pr-5 text-[14px] font-medium text-cream transition-colors hover:bg-bark sm:inline-flex"
+            className="group hidden items-center gap-2.5 rounded-full bg-bitter py-2 pl-4 pr-3.5 text-[13.5px] font-medium text-cream transition-colors hover:bg-bark sm:inline-flex"
           >
             Open Ingabe
             <Arrow className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" diagonal />

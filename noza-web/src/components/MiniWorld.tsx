@@ -21,8 +21,10 @@ export function HeroWorld({ className = "" }: { className?: string }) {
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
-    const scene = buildScene("hero", 11);
-    let world: Rendered | null = null;
+    // Three worlds take turns, like a reel: farms with a line and a mast, a line corridor, terraced hills.
+    const scenes = [buildScene("hero", 11), buildScene("corridor", 8), buildScene("hills", 3)];
+    let worlds: (Rendered | null)[] = scenes.map(() => null);
+    let pending: ReturnType<typeof setTimeout> | undefined;
     let raf = 0;
     let visible = true;
     let clock = 0;
@@ -34,12 +36,28 @@ export function HeroWorld({ className = "" }: { className?: string }) {
       if (r.width < 10) return;
       el.width = Math.round(r.width * dpr);
       el.height = Math.round(r.height * dpr);
-      world = renderWorld(scene, r.width, r.height, dpr, 0.04);
+      worlds = scenes.map(() => null);
+      worlds[0] = renderWorld(scenes[0], r.width, r.height, dpr, 0.04);
       draw();
+      // The other worlds are drawn a moment later, one at a time, so the page stays responsive.
+      clearTimeout(pending);
+      const next = (n: number) => {
+        if (n >= scenes.length) return;
+        pending = setTimeout(() => {
+          worlds[n] = renderWorld(scenes[n], r.width, r.height, dpr, 0.04);
+          next(n + 1);
+        }, 400);
+      };
+      next(1);
     };
 
     const draw = () => {
+      const ready = worlds.filter(Boolean).length;
+      const idx = state.current.reduced ? 0 : Math.floor(clock / CYCLE) % Math.max(1, ready);
+      const world = worlds[idx] ?? worlds[0];
       if (!world) return;
+      const upcoming = worlds[(idx + 1) % Math.max(1, ready)] ?? world;
+      const scene = world.scene;
       const ctx = el.getContext("2d")!;
       const { solid, wire, bounds, boxes, project } = world;
       const W = el.width;
@@ -66,8 +84,9 @@ export function HeroWorld({ className = "" }: { className?: string }) {
       ctx.drawImage(solid, 0, 0);
       ctx.restore();
       if (back > 0) {
+        // Cross-fade into the next world as it looks.
         ctx.globalAlpha = ease(back);
-        ctx.drawImage(solid, 0, 0);
+        ctx.drawImage(upcoming.solid, 0, 0);
         ctx.globalAlpha = 1;
       }
 
@@ -132,6 +151,7 @@ export function HeroWorld({ className = "" }: { className?: string }) {
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
+      clearTimeout(pending);
       ro.disconnect();
       io.disconnect();
     };
