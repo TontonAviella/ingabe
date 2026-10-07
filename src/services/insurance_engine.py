@@ -642,39 +642,6 @@ async def _fetch_ndvi_anomaly(
         logger.debug("anomaly_alerts_cache query failed", exc_info=True)
     return None
 
-async def _fetch_sar_backscatter(
-    lat: float,
-    lon: float,
-    date_from: str,
-    date_to: str,
-) -> Optional[float]:
-    """Get mean VH/VV ratio from Sentinel-1 SAR. Cloud-penetrating."""
-    try:
-        from src.services.sentinel1_service import get_sentinel1_service
-        svc = get_sentinel1_service()
-        buf = 0.05
-        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-        result = await asyncio.to_thread(
-            svc.get_backscatter,
-            bbox=bbox,
-            date_range=f"{date_from}/{date_to}",
-        )
-        if result and result.get("status") == "success":
-            stats = result.get("statistics", {})
-            vh_mean = stats.get("vh", {}).get("mean")
-            vv_mean = stats.get("vv", {}).get("mean")
-            if vh_mean is not None and vv_mean is not None and vv_mean != 0:
-                # Reject NoData sentinels and implausible values.
-                # Plausible SAR backscatter: -50 to +10 dB, or 0 to ~10 in linear.
-                if vv_mean < -50 or vv_mean > 10 or vh_mean < -50 or vh_mean > 10:
-                    return None
-                if vv_mean < 0:
-                    return 10 ** ((vh_mean - vv_mean) / 10)
-                return vh_mean / vv_mean
-    except Exception:
-        logger.debug("SAR backscatter fetch failed", exc_info=True)
-    return None
-
 async def _fetch_ndvi_with_sar_fallback(
     conn: asyncpg.Connection,
     lat: float,
@@ -1506,15 +1473,6 @@ async def _fetch_area_signals(
         except Exception:
             return None
 
-    async def _sar():
-        try:
-            return await _fetch_sar_backscatter(
-                lat, lon,
-                planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-            )
-        except Exception:
-            return None
-
     async def _weather():
         try:
             from src.services.forecast_fusion import _fetch_observed
@@ -1524,15 +1482,14 @@ async def _fetch_area_signals(
 
     async with _COMPARE_SEMAPHORE:
         results = await asyncio.gather(
-            _chirps(), _wapor_et(), _wapor_soil(), _sar(), _weather(),
+            _chirps(), _wapor_et(), _wapor_soil(), _weather(),
             return_exceptions=True,
         )
 
     chirps_daily, _ = results[0] if not isinstance(results[0], BaseException) else ({}, set())
     et_result = results[1] if not isinstance(results[1], BaseException) else None
     soil_result = results[2] if not isinstance(results[2], BaseException) else None
-    sar_result = results[3] if not isinstance(results[3], BaseException) else None
-    weather_result = results[4] if not isinstance(results[4], BaseException) else None
+    weather_result = results[3] if not isinstance(results[3], BaseException) else None
 
     # Rainfall + SPI-1 + SPI-3
     if chirps_daily:
@@ -1571,10 +1528,6 @@ async def _fetch_area_signals(
     drought_state = _classify_drought_state(spi3_val, sm_val)
     signals["drought_diagnostic"] = drought_state
     signals["drought_diagnostic_label"] = _DROUGHT_STATE_LABELS.get(drought_state, "")
-
-    # SAR backscatter
-    if isinstance(sar_result, (int, float)):
-        signals["sar_vh_vv_ratio"] = round(float(sar_result), 3)
 
     # Weather (temperature, precipitation from recent observations)
     if weather_result and isinstance(weather_result, dict):
@@ -1909,12 +1862,6 @@ async def compute_insurance_intelligence(
     # DB-dependent fetches run sequentially on `conn` — asyncpg connections
     # are not safe for concurrent use (raises InterfaceError).
 
-    async def fetch_sar_backscatter():
-        return await _fetch_sar_backscatter(
-            lat, lon,
-            planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-        )
-
     async def fetch_chirps():
         try:
             return await _fetch_season_chirps(lat, lon, planting_date, today)
@@ -1959,22 +1906,20 @@ async def compute_insurance_intelligence(
     # Network-only fetches: safe to parallelize (return_exceptions prevents
     # one failure from cancelling the others)
     network_results = await asyncio.gather(
-        fetch_sar_backscatter(),
         fetch_chirps(),
         fetch_wapor_et(),
         fetch_wapor_soil(),
         fetch_forecast(),
         return_exceptions=True,
     )
-    sar_result = network_results[0] if not isinstance(network_results[0], BaseException) else None
     chirps_daily, chirps_prelim_days = (
-        network_results[1] if not isinstance(network_results[1], BaseException) else ({}, set())
+        network_results[0] if not isinstance(network_results[0], BaseException) else ({}, set())
     )
-    et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
-    soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
-    forecast_result = network_results[4] if not isinstance(network_results[4], BaseException) else None
-    if isinstance(network_results[4], BaseException):
-        logger.warning("forecast fetch raised: %s", network_results[4])
+    et_result = network_results[1] if not isinstance(network_results[1], BaseException) else None
+    soil_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
+    forecast_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
+    if isinstance(network_results[3], BaseException):
+        logger.warning("forecast fetch raised: %s", network_results[3])
     elif forecast_result is None:
         logger.info("forecast fetch returned None")
     else:
@@ -2066,13 +2011,6 @@ async def compute_insurance_intelligence(
     if ndvi_z is not None:
         sources.append("Sentinel-2/SAR NDVI")
 
-    # SAR backscatter (VH/VV ratio) — cloud-penetrating vegetation signal
-    sar_vh_vv_ratio: Optional[float] = None
-    if isinstance(sar_result, (int, float)):
-        sar_vh_vv_ratio = float(sar_result)
-        if "Sentinel-1 SAR" not in sources:
-            sources.append("Sentinel-1 SAR")
-
     # ET and soil moisture
     et_anomaly = _et_anomaly_pct(et_result)
     if et_anomaly is not None:
@@ -2106,7 +2044,9 @@ async def compute_insurance_intelligence(
         "spi": spi,
         "dry_spell_days": None if max_dry_spell is None else float(max_dry_spell),
         "ndvi_z_score": ndvi_z,
-        "sar_backscatter": sar_vh_vv_ratio,
+        # No VH/VV source yet: the read this used to make got scenes, never the statistics it looked
+        # for, so it was always None (2026-10-07); a trigger with no value is left out, as before.
+        "sar_backscatter": None,
         "et_anomaly": et_anomaly,
         "soil_moisture": soil_moisture,
     }

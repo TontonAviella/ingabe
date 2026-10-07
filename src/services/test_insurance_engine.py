@@ -29,7 +29,6 @@ from src.services.insurance_engine import (
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
-    _fetch_sar_backscatter,
     _flatten_coords,
     _generate_recommendation,
     _load_triggers,
@@ -855,72 +854,6 @@ class TestFetchNdviAnomaly:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_sar_backscatter (mock sentinel1_service)
-# ---------------------------------------------------------------------------
-
-class TestFetchSarBackscatter:
-    def test_linear_power_values(self):
-        """VH=0.05, VV=0.3 in linear power → ratio 0.167"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result == pytest.approx(0.05 / 0.3, rel=1e-4)
-
-    def test_db_values_converted_to_linear_ratio(self):
-        """VH=-20dB, VV=-12dB → linear ratio = 10^((-20-(-12))/10) ≈ 0.158"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -20.0}, "vv": {"mean": -12.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-20.0 - (-12.0)) / 10)  # ≈ 0.158
-        assert result == pytest.approx(expected, rel=1e-4)
-        assert 0.1 < result < 0.3  # sanity: within expected VH/VV range
-
-    def test_db_values_typical_vegetation(self):
-        """VH=-15dB, VV=-8dB → healthy vegetation, ratio ≈ 0.2"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -15.0}, "vv": {"mean": -8.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-15.0 - (-8.0)) / 10)  # ≈ 0.2
-        assert result == pytest.approx(expected, rel=1e-4)
-
-    def test_service_error_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.side_effect = Exception("service down")
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_missing_stats_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {}}
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_vv_zero_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # _VALID_AUDIENCES
 # ---------------------------------------------------------------------------
 
@@ -942,9 +875,6 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc))
         pred = MagicMock()
         pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
@@ -1052,7 +982,7 @@ class TestComputeInsuranceIntelligence:
         conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
-    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None, sar=None):
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
         """Return a contextlib.ExitStack context manager with all external deps patched."""
         from contextlib import ExitStack
         stack = ExitStack()
@@ -1063,10 +993,7 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        # SAR services — cloud-penetrating fallback
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = sar or {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
+        # SAR-predicted NDVI — the fallback when the NDVI anomaly cache is empty
         sar_ndvi_pred = MagicMock()
         sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
@@ -1098,6 +1025,19 @@ class TestComputeInsuranceIntelligence:
             ))
         assert result["status"] == "ok"
         assert result["data"]["season"] == "B"
+
+    def test_a_report_reads_no_sentinel1_backscatter(self):
+        """The VH/VV read fetched up to 20 scenes and was always discarded (get_backscatter returns scenes,
+        never statistics): 34 s of a report for nothing. The SAR trigger stays out until there is a source."""
+        conn = self._mock_conn()
+        conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the SAR trigger
+        with self._patches(), patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        s1.assert_not_called()
+        assert "sar_backscatter" in {t["signal"] for t in _default_triggers("full_season")}
+        assert "sar_backscatter" not in {t["signal"] for t in result["data"]["triggers"]}
 
     def test_geometry_used_for_centroid(self):
         conn = self._mock_conn()
@@ -1438,9 +1378,6 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
         sar_ndvi_pred = MagicMock()
         sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
