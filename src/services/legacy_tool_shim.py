@@ -995,6 +995,9 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
         from src.services.insurance_engine import compute_insurance_intelligence, resolve_audience
 
         compare_level = ctx.arguments.get("compare_level")
+        # Who the report's Brain page belongs to; a turn without a user
+        # saves under the nil uuid.
+        owner = ctx.user_id or "00000000-0000-0000-0000-000000000000"
         result = await compute_insurance_intelligence(
             ctx.conn,
             crop=ctx.arguments.get("crop", ""),
@@ -1100,7 +1103,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 )
                 await brain.put_page(
                     ctx.conn, slug, page_input,
-                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                    owner_uuid=owner,
                 )
                 timeline_input = TimelineInput(
                     date=_date_cls.today(),
@@ -1116,7 +1119,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 )
                 await brain.add_timeline_entry(
                     ctx.conn, slug, timeline_input,
-                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                    owner_uuid=owner,
                 )
             except Exception:
                 logger.warning("insurance brain save failed", exc_info=True)

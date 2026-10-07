@@ -2200,8 +2200,13 @@ async def compute_insurance_intelligence(
         "data": report.to_dict(),
         "audience": audience,
         "geometry": geometry,
-        "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
+        "slug": insurance_page_slug(location_name, season, today),
     }
+
+def insurance_page_slug(location_name: str, season: str, day: date) -> str:
+    """Slug of the Brain page that keeps one location's report for a day."""
+    return f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{day.strftime('%Y%m%d')}"
+
 
 async def compute_insurance_accuracy_safe(
     conn: asyncpg.Connection,
