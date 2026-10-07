@@ -697,11 +697,19 @@ class STACService:
             return ts_result
 
         observations = ts_result.get("observations", [])
+        # Too few scenes is a result, not an error: "error" here means the search failed.
         if len(observations) < 2:
             return {
-                "error": "Insufficient cloud-free scenes for drought analysis",
-                "scene_count": len(observations),
                 "source": "stac_cog_realtime",
+                "drought_status": "insufficient_data",
+                "current_vci": None,
+                "latest_ndvi": round(observations[-1]["mean_ndvi"], 4) if observations else None,
+                "description": (
+                    f"Only {len(observations)} cloud-free scenes available — "
+                    f"need at least 8 for reliable VCI drought detection."
+                ),
+                "scene_count": len(observations),
+                "observations": observations,
             }
 
         # Extract NDVI values

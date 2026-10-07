@@ -1275,6 +1275,11 @@ _NDVI_VIS_INSTRUCTIONS = (
 )
 
 
+def _search_failed_text(failed: Dict[str, str]) -> str:
+    """One line naming the districts whose Sentinel-2 search failed, with the first error (an outage repeats it)."""
+    return f"Sentinel-2 search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
+
+
 async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """District-level NDVI stats with 3-tier fallback (cache → DE Africa
     real-time → STAC COG).
@@ -1445,8 +1450,11 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
 
-        # Tier 3: STAC COG fallback (free, no API key).
+        # Tier 3: STAC COG fallback (free, no API key). A failed search is reported,
+        # never read as "no scenes" (2026-10-07).
         stac_stats: list = []
+        stac_failed: Dict[str, str] = {}
+        stac_crash: Optional[str] = None
         try:
             from src.services.stac_service import get_stac_service as _get_stac
 
@@ -1474,6 +1482,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     lambda bb=bbox: stac.compute_admin_ndvi(bb, days=30, max_scenes=4),
                 )
                 if "error" in stac_ts:
+                    logger.warning("STAC NDVI search failed for %s: %s", sbr["district"], stac_ts["error"])
+                    stac_failed[sbr["district"]] = stac_ts["error"]
                     continue
                 for obs in stac_ts.get("observations", []):
                     stac_stats.append({
@@ -1487,7 +1497,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "source": "stac_cog_realtime",
                     })
         except Exception as e:
-            logger.warning("STAC NDVI fallback failed: %s", e)
+            logger.exception("STAC NDVI fallback failed")
+            stac_crash = str(e)
 
         if stac_stats:
             result = {
@@ -1502,6 +1513,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 ),
                 "ndvi_stats": stac_stats,
             }
+            if stac_failed:
+                result["search_failed"] = stac_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1509,6 +1522,11 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["postgis_connection_id"] = pgc_id
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
+
+        if stac_failed:
+            return {"status": "error", "error": _search_failed_text(stac_failed)}
+        if stac_crash:
+            return {"status": "error", "error": f"Sentinel-2 NDVI fallback failed: {stac_crash}"}
 
         # All three tiers empty.
         return {
@@ -2358,13 +2376,18 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                 )
 
             _stac_districts: list[Dict[str, Any]] = []
+            _search_failed: Dict[str, str] = {}
             for _br in _bbox_rows:
                 _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
                            float(_br["bbox_east"]), float(_br["bbox_north"])]
                 _drought_result = await asyncio.get_event_loop().run_in_executor(
                     None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
                 )
-                if "error" not in _drought_result:
+                if "error" in _drought_result:
+                    # Too few scenes comes back as insufficient_data; an error is a failed search.
+                    logger.warning("STAC drought search failed for %s: %s", _br["district"], _drought_result["error"])
+                    _search_failed[_br["district"]] = _drought_result["error"]
+                else:
                     _stac_districts.append({
                         "district": _br["district"],
                         "drought_status": _drought_result.get("drought_status"),
@@ -2376,9 +2399,7 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "trend_slope": _drought_result.get("trend_slope"),
                         "scene_count": _drought_result.get("scene_count"),
                     })
-                else:
-                    logger.debug("STAC drought failed for %s: %s", _br["district"], _drought_result.get("error"))
-                if not _drought_district and len(_stac_districts) >= 3:
+                if not _drought_district and len(_stac_districts) + len(_search_failed) >= 3:
                     break
 
             if _stac_districts:
@@ -2407,6 +2428,8 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                     "note": _stac_note,
                     "districts": _stac_districts,
                 }
+                if _search_failed:
+                    tool_result["search_failed"] = _search_failed
                 _pgc_id = await _ensure_rwanda_postgis_connection(
                     ctx.conn, ctx.project_id, ctx.user_id,
                 )
@@ -2421,23 +2444,17 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
                     )
                 return tool_result
+            if _search_failed:
+                return {"status": "error", "error": _search_failed_text(_search_failed)}
+            # Every boundary row yields a district or a failure, so nothing here means no row matched.
             return {
-                "status": "success",
-                "source": "stac_cog_realtime",
-                "districts": [],
-                "message": (
-                    "Could not compute drought indicators — insufficient cloud-free "
-                    "Sentinel-2 scenes in the last 90 days for this area."
-                ),
+                "status": "error",
+                "error": f"No Rwanda district boundary matches {_drought_district!r}"
+                if _drought_district else "No Rwanda district boundaries are loaded",
             }
         except Exception as _stac_err:
-            logger.warning("STAC drought fallback failed: %s", _stac_err)
-            return {
-                "status": "success",
-                "source": "postgres_cache",
-                "districts": [],
-                "message": "No drought data yet — Dagster weekly schedule populates this cache",
-            }
+            logger.exception("STAC drought fallback failed")
+            return {"status": "error", "error": f"Sentinel-2 drought fallback failed: {_stac_err}"}
     except Exception as e:
         logger.exception("get_drought_status tool failed")
         return {"status": "error", "error": str(e)}

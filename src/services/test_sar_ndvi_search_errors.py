@@ -3,7 +3,9 @@
 SAR->NDVI training read `compute_admin_ndvi(...).get("observations", [])`, so a search that failed
 (every Earth Search request was a 400 that day) was logged as "Insufficient S2 observations: 0",
 and predict_ndvi fell back to its empirical guess without saying why. The satellite display and
-spectral-index tools said "No Sentinel-2 scenes found" for the same failure.
+spectral-index tools said "No Sentinel-2 scenes found", the NDVI-stats fallback "found no
+cloud-free Sentinel-2 scenes", and the drought fallback "insufficient cloud-free Sentinel-2 scenes"
+for the same failure.
 
 The failure here is real: STACService searches a local port nothing listens on, so the error dict
 is the one STACService itself returns. Earth Search's empty answer is copied from a real response
@@ -12,6 +14,7 @@ is the one STACService itself returns. Earth Search's empty answer is copied fro
 
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -23,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from src.services import sar_ndvi, sentinel1_service, stac_service
+from src.services.legacy_tool_shim import LEGACY_HANDLERS, LegacyToolContext
 from src.services.sar_ndvi import SARNDVIPredictor
 from src.tools.display_layer import DisplaySatelliteLayerArgs, display_satellite_layer
 from src.tools.pyd import IngabeToolCallMetaArgs
@@ -141,3 +145,80 @@ async def test_compute_spectral_index_reports_a_failed_search(dead_catalog):
     assert result["status"] == "error"
     assert result["error"].startswith("Satellite imagery search failed:")
     assert dead_catalog in result["error"]
+
+
+GASABO = {"district": "Gasabo", "bbox_west": 29.3, "bbox_south": -2.0, "bbox_east": 29.4, "bbox_north": -1.9}
+
+
+class Conn:
+    """Answers the handlers' SQL as an empty NDVI and drought cache would, with no geometry for Digital
+    Earth Africa and `boundaries` for the district bbox query (rows read by key, like asyncpg Records)."""
+
+    def __init__(self, boundaries):
+        self.boundaries = boundaries
+
+    async def fetch(self, sql, *params):
+        if "FROM ndvi_field_cache" in sql or "FROM drought_cache" in sql or "ST_AsGeoJSON" in sql:
+            return []
+        if "bbox_west" in sql:
+            return self.boundaries
+        raise AssertionError(f"unexpected query: {sql}")
+
+    def transaction(self):
+        return contextlib.nullcontext()
+
+
+async def _call(tool: str, boundaries, **arguments) -> Dict[str, Any]:
+    ctx = LegacyToolContext(
+        user_id="user-test", partner_id="partner-test", conversation_id=1, map_id="MTESTAAAAAAA",
+        project_id="PTESTBBBBBBB", conn=Conn(boundaries), arguments=arguments,
+    )
+    return await LEGACY_HANDLERS[tool](ctx)
+
+
+@pytest.fixture
+def no_postgis_connection(monkeypatch) -> None:
+    async def none(*args):
+        return None
+
+    monkeypatch.setattr("src.routes.message_routes._ensure_rwanda_postgis_connection", none)
+
+
+def test_too_few_scenes_for_drought_is_a_result_not_an_error(empty_catalog):
+    result = stac_service.get_stac_service().compute_drought_indicators(list(BBOX))
+    assert "error" not in result
+    assert result["drought_status"] == "insufficient_data"
+    assert result["scene_count"] == 0
+
+
+async def test_drought_fallback_reports_a_failed_search(dead_catalog):
+    result = await _call("get_drought_status", [GASABO], district="Gasabo")
+    assert result["status"] == "error"
+    assert result["error"].startswith("Sentinel-2 search failed for Gasabo:")
+    assert dead_catalog in result["error"]
+
+
+async def test_drought_fallback_shows_a_district_without_enough_scenes(empty_catalog, no_postgis_connection):
+    result = await _call("get_drought_status", [GASABO], district="Gasabo")
+    assert result["status"] == "success"
+    assert [d["drought_status"] for d in result["districts"]] == ["insufficient_data"]
+    assert "Do NOT report drought status" in result["note"]
+
+
+async def test_drought_fallback_names_an_unknown_district(empty_catalog):
+    result = await _call("get_drought_status", [], district="Nowhere")
+    assert result == {"status": "error", "error": "No Rwanda district boundary matches 'Nowhere'"}
+
+
+async def test_ndvi_stats_fallback_reports_a_failed_search(dead_catalog):
+    result = await _call("get_ndvi_stats", [GASABO], district="Gasabo")
+    assert result["status"] == "error"
+    assert result["error"].startswith("Sentinel-2 search failed for Gasabo:")
+    assert dead_catalog in result["error"]
+
+
+async def test_ndvi_stats_without_scenes_still_says_no_data(empty_catalog):
+    result = await _call("get_ndvi_stats", [GASABO], district="Gasabo")
+    assert result["status"] == "success"
+    assert result["ndvi_stats"] == []
+    assert result["message"].startswith("No NDVI data available.")
