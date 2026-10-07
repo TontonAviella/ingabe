@@ -22,6 +22,7 @@ import asyncpg
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
+from src.services import satellite_analytics
 
 
 logger = logging.getLogger(__name__)
@@ -1274,6 +1275,76 @@ _NDVI_VIS_INSTRUCTIONS = (
     "— always create a NEW layer from PostGIS."
 )
 
+# A live satellite read takes about 40 s an area and blocks (HTTP, rasterio). Run on the event loop it
+# froze the whole app: a district with 14 sectors held every request for ten minutes. So reads run in
+# threads, a few at a time, for a limited number of areas, and the answer goes out at a deadline.
+LIVE_NDVI_MAX_AREAS = 12
+LIVE_NDVI_AT_ONCE = 4
+LIVE_NDVI_DEADLINE_S = 75.0
+
+
+@dataclass
+class LiveNdvi:
+    """Live NDVI summaries for the areas read in time, keyed by row, and how many were not read."""
+
+    read: list[tuple[Any, Dict[str, Any]]]
+    total: int
+    not_read: int
+
+    def note(self) -> Optional[str]:
+        if not self.not_read:
+            return None
+        return (f"Live satellite NDVI was read for {self.total - self.not_read} of {self.total} areas; "
+                f"{self.not_read} were left out (too many to read live, or not read in time). "
+                "Say so, and offer to look at fewer areas.")
+
+
+def _ndvi_summary(stats: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Mean, spread and pixel count of NDVI over a field-stats result, or None when it has no clear pixels."""
+    import numpy as _np
+
+    if "error" in stats:
+        return None
+    intervals = stats.get("intervals", [])
+    means = [iv["ndvi"]["mean"] for iv in intervals if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0]
+    if not means:
+        return None
+    return {
+        "mean_ndvi": round(float(_np.mean(means)), 4),
+        "std_ndvi": round(float(_np.std(means)), 4),
+        "min_ndvi": round(float(_np.min(means)), 4),
+        "max_ndvi": round(float(_np.max(means)), 4),
+        "valid_pixels": sum(iv["ndvi"].get("valid_pixels", 0) for iv in intervals if "ndvi" in iv),
+        "backend": stats.get("backend", "satellite"),
+    }
+
+
+async def _live_ndvi(rows: list[Any], date_from: str, date_to: str) -> LiveNdvi:
+    """Reads NDVI for each row's `geom` (GeoJSON text) off the event loop, within the limits above."""
+    chosen = rows[:LIVE_NDVI_MAX_AREAS]
+    gate = asyncio.Semaphore(LIVE_NDVI_AT_ONCE)
+
+    async def one(row: Any) -> tuple[Any, Optional[Dict[str, Any]]]:
+        async with gate:
+            stats = await asyncio.to_thread(satellite_analytics.get_field_stats, geometry=json.loads(row["geom"]),
+                                            date_from=date_from, date_to=date_to, index="ndvi")
+        return row, _ndvi_summary(stats)
+
+    tasks = [asyncio.create_task(one(row)) for row in chosen]
+    done, pending = await asyncio.wait(tasks, timeout=LIVE_NDVI_DEADLINE_S) if tasks else (set(), set())
+    for task in pending:
+        task.cancel()  # a read already in its thread finishes there; its result is dropped
+    read: list[tuple[Any, Dict[str, Any]]] = []
+    for task in done:
+        if task.exception() is not None:
+            logger.debug("Live NDVI read failed: %s", task.exception())
+            continue
+        row, summary = task.result()
+        if summary is not None:
+            read.append((row, summary))
+    unread = len(rows) - len(done) + sum(1 for t in done if t.exception() is not None)
+    return LiveNdvi(read=read, total=len(rows), not_read=unread)
+
 
 async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """District-level NDVI stats with 3-tier fallback (cache → DE Africa
@@ -1349,11 +1420,9 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 need_realtime = True
 
         realtime_stats: list = []
+        live_note: Optional[str] = None
         if need_realtime:
             try:
-                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
-                import numpy as _np
-
                 dfilter = ctx.arguments.get("district")
                 where_clause = "WHERE district = $1" if dfilter else ""
                 query_params: list = [dfilter] if dfilter else []
@@ -1369,43 +1438,12 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 rt_from = (now - _td(days=7)).strftime("%Y-%m-%d")
                 rt_to = now.strftime("%Y-%m-%d")
 
-                for dr in dist_rows:
-                    try:
-                        geom = _json.loads(dr["geom"])
-                        stats = _sa_get_field_stats(
-                            geometry=geom, date_from=rt_from,
-                            date_to=rt_to, index="ndvi",
-                        )
-                        if "error" in stats:
-                            continue
-                        intervals = stats.get("intervals", [])
-                        if not intervals:
-                            continue
-                        means = [
-                            iv["ndvi"]["mean"]
-                            for iv in intervals
-                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
-                        ]
-                        if not means:
-                            continue
-                        backend_tag = stats.get("backend", "satellite")
-                        realtime_stats.append({
-                            "district": dr["district"],
-                            "week_start": rt_from,
-                            "mean_ndvi": round(float(_np.mean(means)), 4),
-                            "std_ndvi": round(float(_np.std(means)), 4),
-                            "min_ndvi": round(float(_np.min(means)), 4),
-                            "max_ndvi": round(float(_np.max(means)), 4),
-                            "valid_pixels": sum(
-                                iv["ndvi"].get("valid_pixels", 0)
-                                for iv in intervals if "ndvi" in iv
-                            ),
-                            "source": f"{backend_tag}_realtime",
-                        })
-                    except Exception as e:
-                        logger.debug(
-                            "Satellite realtime failed for %s: %s", dr["district"], e
-                        )
+                live = await _live_ndvi(list(dist_rows), rt_from, rt_to)
+                live_note = live.note()
+                for dr, summary in sorted(live.read, key=lambda t: t[0]["district"]):
+                    backend_tag = summary.pop("backend")
+                    realtime_stats.append({"district": dr["district"], "week_start": rt_from, **summary,
+                                           "source": f"{backend_tag}_realtime"})
             except Exception as e:
                 logger.warning("Satellite real-time NDVI failed: %s", e)
 
@@ -1437,6 +1475,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 ),
                 "ndvi_stats": all_stats,
             }
+            if live_note:
+                result["coverage"] = live_note
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1599,10 +1639,8 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             # Tier 2: sector-level real-time fallback. Note: drops to sector
             # granularity since cell-level DE Africa pulls would be too slow.
             realtime_stats: list = []
+            live_note: Optional[str] = None
             try:
-                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
-                import numpy as _np
-
                 now = _datetime.utcnow()
                 rt_from = (now - _td(days=10)).strftime("%Y-%m-%d")
                 rt_to = now.strftime("%Y-%m-%d")
@@ -1628,43 +1666,12 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     *sec_params,
                 )
 
-                for sr in sec_rows:
-                    try:
-                        geom = _json.loads(sr["geom"])
-                        stats = _sa_get_field_stats(
-                            geometry=geom, date_from=rt_from,
-                            date_to=rt_to, index="ndvi",
-                        )
-                        if "error" in stats:
-                            continue
-                        intervals = stats.get("intervals", [])
-                        if not intervals:
-                            continue
-                        means = [
-                            iv["ndvi"]["mean"]
-                            for iv in intervals
-                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
-                        ]
-                        if not means:
-                            continue
-                        realtime_stats.append({
-                            "sector_name": sr["sector_name"],
-                            "district_name": sr["district_name"],
-                            "week_start": rt_from,
-                            "mean_ndvi": round(float(_np.mean(means)), 4),
-                            "std_ndvi": round(float(_np.std(means)), 4),
-                            "min_ndvi": round(float(_np.min(means)), 4),
-                            "max_ndvi": round(float(_np.max(means)), 4),
-                            "valid_pixels": sum(
-                                iv["ndvi"].get("valid_pixels", 0)
-                                for iv in intervals if "ndvi" in iv
-                            ),
-                        })
-                    except Exception as e:
-                        logger.debug(
-                            "Sector realtime NDVI failed for %s: %s",
-                            sr["sector_name"], e,
-                        )
+                live = await _live_ndvi(list(sec_rows), rt_from, rt_to)
+                live_note = live.note()
+                for sr, summary in sorted(live.read, key=lambda t: t[0]["sector_name"]):
+                    summary.pop("backend")
+                    realtime_stats.append({"sector_name": sr["sector_name"], "district_name": sr["district_name"],
+                                           "week_start": rt_from, **summary})
             except Exception as e:
                 logger.warning("Sector real-time NDVI fallback failed: %s", e)
 
@@ -1680,6 +1687,8 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     ),
                     "sector_ndvi_stats": realtime_stats,
                 }
+                if live_note:
+                    result["coverage"] = live_note
             else:
                 result = {
                     "status": "success",
