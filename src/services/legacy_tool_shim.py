@@ -1300,6 +1300,8 @@ class LiveNdvi:
     read: list[tuple[Any, Dict[str, Any]]]
     total: int
     not_read: int
+    # Areas whose read failed, with the error: reported, never read as "no scenes" (2026-10-07).
+    failed: list[tuple[Any, str]] = field(default_factory=list)
 
     def note(self) -> Optional[str]:
         if not self.not_read:
@@ -1334,31 +1336,39 @@ async def _live_ndvi(rows: list[Any], date_from: str, date_to: str) -> LiveNdvi:
     chosen = rows[:LIVE_NDVI_MAX_AREAS]
     gate = asyncio.Semaphore(LIVE_NDVI_AT_ONCE)
 
-    async def one(row: Any) -> tuple[Any, Optional[Dict[str, Any]]]:
+    async def one(row: Any) -> tuple[Any, Dict[str, Any]]:
         async with gate:
             stats = await asyncio.to_thread(satellite_analytics.get_field_stats, geometry=json.loads(row["geom"]),
                                             date_from=date_from, date_to=date_to, index="ndvi")
-        return row, _ndvi_summary(stats)
+        return row, stats
 
     tasks = [asyncio.create_task(one(row)) for row in chosen]
     done, pending = await asyncio.wait(tasks, timeout=LIVE_NDVI_DEADLINE_S) if tasks else (set(), set())
     for task in pending:
         task.cancel()  # a read already in its thread finishes there; its result is dropped
     read: list[tuple[Any, Dict[str, Any]]] = []
-    for task in done:
-        if task.exception() is not None:
-            logger.debug("Live NDVI read failed: %s", task.exception())
+    failed: list[tuple[Any, str]] = []
+    for task, row in zip(tasks, chosen):
+        if task not in done:
             continue
-        row, summary = task.result()
+        if task.exception() is not None:
+            logger.warning("Live NDVI read failed: %s", task.exception())
+            failed.append((row, str(task.exception())))
+            continue
+        _, stats = task.result()
+        if "error" in stats:
+            logger.warning("Live NDVI read failed: %s", stats["error"])
+            failed.append((row, stats["error"]))
+            continue
+        summary = _ndvi_summary(stats)
         if summary is not None:
             read.append((row, summary))
-    unread = len(rows) - len(done) + sum(1 for t in done if t.exception() is not None)
-    return LiveNdvi(read=read, total=len(rows), not_read=unread)
+    return LiveNdvi(read=read, total=len(rows), not_read=len(rows) - len(done), failed=failed)
 
 
-def _search_failed_text(failed: Dict[str, str]) -> str:
-    """One line naming the districts whose Sentinel-2 search failed, with the first error (an outage repeats it)."""
-    return f"Sentinel-2 search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
+def _search_failed_text(failed: Dict[str, str], source: str = "Sentinel-2") -> str:
+    """One line naming the areas whose search failed, with the first error (an outage repeats it)."""
+    return f"{source} search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
 
 
 async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
@@ -1436,6 +1446,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
 
         realtime_stats: list = []
         live_note: Optional[str] = None
+        realtime_failed: Dict[str, str] = {}
         if need_realtime:
             try:
                 dfilter = ctx.arguments.get("district")
@@ -1459,8 +1470,11 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     backend_tag = summary.pop("backend")
                     realtime_stats.append({"district": dr["district"], "week_start": rt_from, **summary,
                                            "source": f"{backend_tag}_realtime"})
+                for dr, error in live.failed:
+                    realtime_failed[dr["district"]] = error
             except Exception as e:
                 logger.warning("Satellite real-time NDVI failed: %s", e)
+                realtime_failed["all districts"] = str(e)
 
         # Merge + sort by week descending.
         all_stats = ndvi_stats + realtime_stats
@@ -1492,6 +1506,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             }
             if live_note:
                 result["coverage"] = live_note
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1565,6 +1581,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             }
             if stac_failed:
                 result["search_failed"] = stac_failed
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1573,10 +1591,15 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
 
+        failures = []
+        if realtime_failed:
+            failures.append(_search_failed_text(realtime_failed, "Digital Earth Africa"))
         if stac_failed:
-            return {"status": "error", "error": _search_failed_text(stac_failed)}
+            failures.append(_search_failed_text(stac_failed))
         if stac_crash:
-            return {"status": "error", "error": f"Sentinel-2 NDVI fallback failed: {stac_crash}"}
+            failures.append(f"Sentinel-2 NDVI fallback failed: {stac_crash}")
+        if failures:
+            return {"status": "error", "error": "; ".join(failures)}
 
         # All three tiers empty.
         return {
@@ -1668,6 +1691,7 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             # granularity since cell-level DE Africa pulls would be too slow.
             realtime_stats: list = []
             live_note: Optional[str] = None
+            sector_failed: Dict[str, str] = {}
             try:
                 now = _datetime.utcnow()
                 rt_from = (now - _td(days=10)).strftime("%Y-%m-%d")
@@ -1700,8 +1724,11 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     summary.pop("backend")
                     realtime_stats.append({"sector_name": sr["sector_name"], "district_name": sr["district_name"],
                                            "week_start": rt_from, **summary})
+                for sr, error in live.failed:
+                    sector_failed[sr["sector_name"]] = error
             except Exception as e:
                 logger.warning("Sector real-time NDVI fallback failed: %s", e)
+                sector_failed["all sectors"] = str(e)
 
             if realtime_stats:
                 result = {
@@ -1717,6 +1744,10 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 }
                 if live_note:
                     result["coverage"] = live_note
+                if sector_failed:
+                    result["realtime_failed"] = sector_failed
+            elif sector_failed:
+                result = {"status": "error", "error": _search_failed_text(sector_failed, "Digital Earth Africa")}
             else:
                 result = {
                     "status": "success",

@@ -128,6 +128,10 @@ def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
     raise ValueError(f"Unsupported index '{index}' for DE Africa service")
 
 
+class DEAfricaSearchError(Exception):
+    """The DE Africa scene search failed, which is not the same as finding no scenes."""
+
+
 def _search_s2_items(
     bbox: Tuple[float, float, float, float],
     date_from: str,
@@ -140,6 +144,8 @@ def _search_s2_items(
     Uses GET against the collection /items endpoint — DE Africa's STAC
     server rejects POST /search with 403, but GET with query params works.
     Cloud-cover filter is applied client-side after the response lands.
+    Raises DEAfricaSearchError when the search fails (2026-10-07: it returned
+    [], which callers reported as "no scenes matched").
     """
     url = f"{_STAC_ROOT}/collections/s2_l2a/items"
     try:
@@ -159,8 +165,7 @@ def _search_s2_items(
         r.raise_for_status()
         features = r.json().get("features", [])
     except Exception as e:
-        logger.warning("DE Africa STAC search failed: %s", e)
-        return []
+        raise DEAfricaSearchError(f"DE Africa scene search failed: {e}") from e
     # Client-side cloud filter (collection /items endpoint does not
     # support CQL query params reliably across STAC servers).
     features = [
@@ -531,7 +536,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
@@ -630,7 +639,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
