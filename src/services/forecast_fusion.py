@@ -189,12 +189,12 @@ def _chirps_kept(url: str) -> tuple[_ChirpsKept, Optional[bytes]]:
     A 404 is remembered for a while and raised again without asking; other
     HTTP errors and network failures are not remembered.
     """
-    with _chirps_unpublished_lock:
-        if url in _chirps_unpublished:
-            raise urllib.error.HTTPError(url, 404, "Not Found (asked recently)", hdrs=None, fp=None)  # type: ignore[arg-type]
     with _chirps_file_locks_guard:
         file_lock = _chirps_file_locks.setdefault(url, threading.Lock())
-    with file_lock:
+    with file_lock:  # a reader that waited here sees what the one before it found, a 404 included
+        with _chirps_unpublished_lock:
+            if url in _chirps_unpublished:
+                raise urllib.error.HTTPError(url, 404, "Not Found (asked recently)", hdrs=None, fp=None)  # type: ignore[arg-type]
         kept = _chirps_kept_from_disk(url)
         if kept is not None:
             return kept, None

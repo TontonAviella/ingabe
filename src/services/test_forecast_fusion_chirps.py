@@ -197,6 +197,26 @@ def test_parallel_reads_of_one_file_download_it_once(chirps_server):
     assert calls == [FINAL]
 
 
+def test_parallel_readers_of_a_day_not_published_ask_once(chirps_server):
+    _, calls, errors = chirps_server
+    errors[FINAL] = _http_404(FINAL)
+    codes: list = []
+
+    def read():
+        try:
+            ff._chirps_pixel(FINAL, -1.95, 30.06)
+        except urllib.error.HTTPError as e:
+            codes.append(e.code)
+
+    threads = [threading.Thread(target=read) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert codes == [404] * 8
+    assert calls == [FINAL]
+
+
 def test_days_not_read_in_time_are_missing_not_dry():
     slow = {"2026-09-02"}
 
