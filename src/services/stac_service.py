@@ -27,8 +27,12 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import requests
 
+from src.services import raster_process
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+
 try:
     from pystac_client import Client as PystacClient
+    from pystac_client.stac_api_io import StacApiIO
 
     _PYSTAC_CLIENT_AVAILABLE = True
 except ImportError:
@@ -50,6 +54,13 @@ STAC_CATALOGS = {
     "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
     "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
+
+# Seconds to connect and to read for pystac-client requests: it sets none by default, so a stalled
+# catalog held the calling thread for as long as the server kept the connection open. A read that
+# times out is tried again, so the retries are capped too: at most 3 x 30 s. Connecting gets 20 s, as
+# in gdal_http.GDAL_HTTP_TIMEOUTS.
+STAC_HTTP_TIMEOUT = (20, 30)
+STAC_HTTP_RETRIES = 2
 
 # Rwanda bounding box (approximate)
 RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
@@ -78,6 +89,42 @@ _USEFUL_ASSETS = {
     "coastal", "rededge1", "rededge2", "rededge3",
     "nir08", "nir09", "swir16", "swir22",
 }
+
+
+_BBOX_READ_ENV = {
+    "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+    "GDAL_HTTP_MAX_RETRY": "3",
+    "GDAL_HTTP_RETRY_DELAY": "1",
+    **GDAL_HTTP_TIMEOUTS,
+}
+
+
+def _read_bbox_bands(
+    b04_href: str, b08_href: str, bbox: List[float], max_pixels: int, env: Dict[str, str],
+) -> tuple[str, Any]:
+    """In a raster worker (raster_process): ("bands", (red, nir)) over bbox, ("outside", None) or ("error", message)."""
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import from_bounds
+
+    try:
+        with RasterioEnv(**env):
+            with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
+                # Transform bbox from WGS84 to the raster's CRS
+                left, bottom, right, top = transform_bounds("EPSG:4326", b04_src.crs, *bbox)
+                window = from_bounds(left, bottom, right, top, b04_src.transform)
+                # Clamp to raster extent
+                window = window.intersection(Window(0, 0, b04_src.width, b04_src.height))
+                if window.width <= 0 or window.height <= 0:
+                    return "outside", None
+                # Determine output size (downsample large areas)
+                out_shape = (min(int(window.height), max_pixels), min(int(window.width), max_pixels))
+                b04_data = b04_src.read(1, window=window, out_shape=out_shape).astype(np.float32)
+                b08_data = b08_src.read(1, window=window, out_shape=out_shape).astype(np.float32)
+                return "bands", (b04_data, b08_data)
+    except Exception as e:
+        return "error", str(e)
 
 
 class STACService:
@@ -145,7 +192,13 @@ class STACService:
 
         if _PYSTAC_CLIENT_AVAILABLE:
             try:
-                self._pystac_client = PystacClient.open(self.catalog_url)
+                # pystac-client 0.7.7 drops a timeout given to Client.open alone (StacApiIO.__init__
+                # resets it to None); passed with our own StacApiIO it is applied to every request.
+                self._pystac_client = PystacClient.open(
+                    self.catalog_url,
+                    stac_io=StacApiIO(max_retries=STAC_HTTP_RETRIES),
+                    timeout=STAC_HTTP_TIMEOUT,
+                )
                 logger.info("Using pystac-client for %s", catalog_name)
             except Exception as e:
                 logger.warning(
@@ -329,50 +382,17 @@ class STACService:
         if red_key is None or nir_key is None:
             return {"error": "Missing red/B04 or nir/B08 bands in STAC item"}
 
-        from rasterio.warp import transform_bounds
-        from rasterio.windows import from_bounds
-
         b04_href = assets[red_key]["href"]
         b08_href = assets[nir_key]["href"]
         start_time = time.time()
 
         try:
-            with RasterioEnv(
-                GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
-                GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-                CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
-                GDAL_HTTP_MAX_RETRY="3",
-                GDAL_HTTP_RETRY_DELAY="1",
-            ):
-                with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
-                    # Transform bbox from WGS84 to the raster's CRS
-                    dst_crs = b04_src.crs
-                    left, bottom, right, top = transform_bounds(
-                        "EPSG:4326", dst_crs, *bbox,
-                    )
-
-                    # Compute window from projected bounds
-                    window = from_bounds(left, bottom, right, top, b04_src.transform)
-
-                    # Clamp to raster extent
-                    window = window.intersection(
-                        Window(0, 0, b04_src.width, b04_src.height)
-                    )
-                    if window.width <= 0 or window.height <= 0:
-                        return {"error": "Bbox does not intersect this scene"}
-
-                    # Determine output size (downsample large areas)
-                    out_height = min(int(window.height), max_pixels)
-                    out_width = min(int(window.width), max_pixels)
-
-                    b04_data = b04_src.read(
-                        1, window=window,
-                        out_shape=(out_height, out_width),
-                    ).astype(np.float32)
-                    b08_data = b08_src.read(
-                        1, window=window,
-                        out_shape=(out_height, out_width),
-                    ).astype(np.float32)
+            kind, got = raster_process.run(_read_bbox_bands, b04_href, b08_href, bbox, max_pixels, _BBOX_READ_ENV)
+            if kind == "outside":
+                return {"error": "Bbox does not intersect this scene"}
+            if kind == "error":
+                raise RuntimeError(got)
+            b04_data, b08_data = got
 
             stats = self._compute_ndvi_stats(b04_data, b08_data, exclude_zero_reflectance=True)
 

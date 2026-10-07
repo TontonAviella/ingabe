@@ -115,19 +115,28 @@ def pytest_sessionstart(session):
     asyncio.run(run_migrations())
 
 
+_LIVE_DATABASE = "mundidb"
+
+
 def _refuse_the_live_database() -> None:
     """Never run the suite against the live local database (mundidb).
 
     Until 2026-10 local runs used mundidb itself and left 4,727 test projects and
     ~431,000 brain pages (Barcelona shops, US counties, re-ingested every run)
-    mixed in with real data. CI's database is a fresh container and says so with
-    MUNDI_TEST_DB_IS_DISPOSABLE=1 (cicd.yml). Locally, point POSTGRES_DB at a
-    copy, e.g. `createdb -T mundidb_pytest_wos mundidb_pytest_x`.
+    mixed in with real data; 76 leftover test pages still reached Sage's memory
+    packet on 2026-10-07. There is no override: an environment flag that let CI
+    through also let a local copy of the CI command through. CI runs on its own
+    database name (POSTGRES_DB=mundidb_ci in cicd.yml). An unset POSTGRES_DB is
+    refused too, because several modules fall back to mundidb when it is unset.
+    Locally, point POSTGRES_DB at a copy, e.g.
+    `createdb -T mundidb_pytest_wos mundidb_pytest_x`.
     """
-    if os.environ.get("POSTGRES_DB") == "mundidb" and os.environ.get("MUNDI_TEST_DB_IS_DISPOSABLE") != "1":
+    database = os.environ.get("POSTGRES_DB", "")
+    if database in ("", _LIVE_DATABASE):
         pytest.exit(
-            "POSTGRES_DB=mundidb is the live database: refusing to run tests against it. "
-            "Use a copy (POSTGRES_DB=mundidb_pytest_...), see conftest._refuse_the_live_database.",
+            f"POSTGRES_DB={database or '(unset)'} means the live database ({_LIVE_DATABASE}): "
+            "refusing to run tests against it. Use a copy (POSTGRES_DB=mundidb_pytest_...), "
+            "see conftest._refuse_the_live_database.",
             returncode=2,
         )
 

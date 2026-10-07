@@ -269,7 +269,7 @@ async def run_attempt(
         calls = getattr(message, "tool_calls", None) or []
         step_tools = plan.tools
         if not calls and step == 0 and guard is not None:
-            from src.dependencies.sage_turn_request import guard_tools, is_abdication
+            from src.dependencies.sage_turn_request import guard_tool_calls, guard_tools, is_abdication
 
             if is_abdication(plan, guard["text"], message.content, False):
                 guard_fired = True
@@ -280,7 +280,7 @@ async def run_attempt(
                 try:
                     retry = await _complete(client, {**kwargs, "tools": step_tools,
                                                      "tool_choice": "required"}, retries)
-                    retry_calls = getattr(retry.choices[0].message, "tool_calls", None) or []
+                    retry_calls = guard_tool_calls(getattr(retry.choices[0].message, "tool_calls", None) or [])
                     guard_step.end(output=_calls_output(retry.choices[0].message),
                                    level=None if retry_calls else "WARNING")
                     if retry_calls:
