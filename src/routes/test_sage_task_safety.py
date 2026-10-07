@@ -146,3 +146,19 @@ def test_only_the_newest_map_state_is_replayed():
     assert [m["content"] for m in kept] == [
         "first question", "first answer", "<MapState>new map</MapState>", "<CurrentAOI>new view</CurrentAOI>",
         "<BrainContext>memory</BrainContext>", "second question"]
+
+
+def test_old_tool_results_are_shortened_and_this_turns_are_kept_whole():
+    big = "x" * 20_000
+    history = [
+        {"role": "user", "content": "rain?"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": big},
+        {"role": "assistant", "content": "58 mm."},
+        {"role": "user", "content": "and the forecast?"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("b")]},
+        {"role": "tool", "tool_call_id": "b", "content": big},
+    ]
+    replayed = message_routes._shorten_old_tool_results(history)
+    assert len(replayed[2]["content"]) < 1_700 and "shortened" in replayed[2]["content"]
+    assert replayed[6]["content"] == big

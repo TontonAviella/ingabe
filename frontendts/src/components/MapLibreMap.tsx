@@ -1833,6 +1833,7 @@ export default function MapLibreMap({
         )}
         <SageReply
           reply={lastAssistantMsg}
+          waiting={!!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))}
           streamingText={streamingText}
           actions={activeActions}
           errors={criticalErrors}

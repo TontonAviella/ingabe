@@ -78,6 +78,7 @@ function Sources({ sources }: { sources: string[] }) {
 
 export function SageReply({
   reply,
+  waiting,
   streamingText,
   actions,
   errors,
@@ -87,6 +88,8 @@ export function SageReply({
   actionIcon,
 }: {
   reply?: string;
+  /** The chat's last message still waits for Sage's answer (a question, or tools running). */
+  waiting?: boolean;
   streamingText?: string;
   actions: { action_id: string; action: string }[];
   errors: SageError[];
@@ -99,7 +102,8 @@ export function SageReply({
   const [overflows, setOverflows] = useState(false);
   const [hidden, setHidden] = useState(false);
   const body = useRef<HTMLDivElement>(null);
-  const working = !!streamingText || actions.length > 0;
+  // An error ends the wait: without it a failed turn would say 'Thinking…' for ever.
+  const working = !!streamingText || actions.length > 0 || (!!waiting && errors.length === 0);
   // While Sage works, the last answer gives way to what it is doing (it would read as the new answer).
   const text = streamingText || (working ? '' : reply || '');
   const { body: answer, sources } = streamingText ? { body: streamingText, sources: [] } : splitSources(text);

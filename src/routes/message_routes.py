@@ -1736,6 +1736,23 @@ def _latest_context_only(messages: list[Any]) -> list[Any]:
     return [m for i, m in enumerate(messages) if i not in stale]
 
 
+OLD_TOOL_RESULT_CHARS = 1_500  # a tool result from an earlier turn is replayed this long at most
+
+
+def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
+    """Tool results from earlier turns, cut to their first OLD_TOOL_RESULT_CHARS: their substance is already in
+    the answers given then, and a forecast alone was 20,000 characters replayed on every later call."""
+    last_user = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"), default=-1)
+    shortened = []
+    for i, m in enumerate(messages):
+        content = m.get("content") if isinstance(m, dict) else None
+        if i < last_user and m.get("role") == "tool" and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = {**m, "content": content[:OLD_TOOL_RESULT_CHARS] + " … [shortened: this result was used in an earlier "
+                                                                     "answer; call the tool again for all of it]"}
+        shortened.append(m)
+    return shortened
+
+
 def _pair_tool_results(messages: list[Any]) -> list[Any]:
     """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
     conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
@@ -2393,7 +2410,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
-            openai_messages = _latest_context_only(_pair_tool_results(openai_messages))
+            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(openai_messages)))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
