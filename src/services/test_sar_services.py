@@ -21,12 +21,44 @@ class TestSentinel1Service:
         svc2 = get_sentinel1_service()
         assert svc1 is svc2
 
-    def test_sign_href_without_planetary_computer(self, monkeypatch):
-        """_sign_href should return href unchanged if signing fails."""
+    def test_sign_href_leaves_other_urls_alone(self):
         from src.services.sentinel1_service import _sign_href
-        # Even if planetary_computer is installed, test the fallback
-        result = _sign_href("https://example.com/test.tif")
-        assert result.startswith("https://")
+        assert _sign_href("https://example.com/test.tif") == "https://example.com/test.tif"
+
+    def test_sign_href_fetches_one_token_per_container_with_a_time_limit(self, monkeypatch):
+        """planetary_computer.sign fetched the token with no timeout; a stalled request held a thread for minutes."""
+        from datetime import datetime, timedelta, timezone
+        from src.services import sentinel1_service as s1
+
+        calls = []
+
+        def get(url, timeout, headers):
+            calls.append((url, timeout))
+            expiry = (datetime.now(timezone.utc) + timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return type("R", (), {"raise_for_status": lambda self: None,
+                                  "json": lambda self: {"msft:expiry": expiry, "token": "st=a&se=b&sig=c"}})()
+
+        monkeypatch.setattr(s1, "_sas_tokens", {})
+        monkeypatch.setattr(s1.httpx, "get", get)
+        blob = "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/2026/9/30/x/measurement/vv.tif"
+        assert s1._sign_href(blob) == f"{blob}?st=a&se=b&sig=c"
+        assert s1._sign_href(blob.replace("vv.tif", "vh.tif")).endswith("?st=a&se=b&sig=c")
+        assert s1._sign_href(f"{blob}?st=a&se=b&sig=c") == f"{blob}?st=a&se=b&sig=c"  # already signed
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/sentinel1euwestrtc/sentinel1-grd-rtc")
+        assert calls[0][1].read is not None and calls[0][1].connect is not None
+
+    def test_sign_href_returns_the_url_unsigned_when_the_token_fails(self, monkeypatch):
+        import httpx
+        from src.services import sentinel1_service as s1
+
+        def get(*args, **kwargs):
+            raise httpx.ReadTimeout("token endpoint stalled")
+
+        monkeypatch.setattr(s1, "_sas_tokens", {})
+        monkeypatch.setattr(s1.httpx, "get", get)
+        blob = "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/vv.tif"
+        assert s1._sign_href(blob) == blob
 
 
 # ── sar_water tests ──

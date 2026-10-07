@@ -24,9 +24,11 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 import numpy as np
@@ -43,14 +45,40 @@ _COLLECTION = "sentinel-1-rtc"
 _PARALLEL_READS = 8
 
 
+# Planetary Computer assets are read with a SAS token for their storage container.
+# planetary_computer.sign fetches it with no timeout and ten retries with growing
+# pauses, so one stalled token request held a reading thread for minutes
+# (2026-10-07); the token is fetched here, with a time limit, and reused until a
+# minute before it expires.
+_SAS_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token"
+_SAS_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_sas_tokens: Dict[Tuple[str, str], Tuple[str, datetime]] = {}
+_sas_lock = threading.Lock()  # held while fetching, so parallel reads share one request
+
+
+def _sas_token(account: str, container: str) -> str:
+    with _sas_lock:
+        cached = _sas_tokens.get((account, container))
+        if cached and (cached[1] - datetime.now(timezone.utc)).total_seconds() > 60:
+            return cached[0]
+        r = httpx.get(f"{_SAS_TOKEN_URL}/{account}/{container}", timeout=_SAS_TIMEOUT,
+                      headers={"User-Agent": "mundi.ai/1.0"})
+        r.raise_for_status()
+        body = r.json()
+        expiry = datetime.fromisoformat(body["msft:expiry"].replace("Z", "+00:00"))
+        _sas_tokens[(account, container)] = (body["token"], expiry)
+        return body["token"]
+
+
 def _sign_href(href: str) -> str:
-    """Sign a Planetary Computer asset URL for access."""
-    try:
-        import planetary_computer
-        return planetary_computer.sign(href)
-    except ImportError:
-        logger.warning("planetary-computer package not available, using unsigned URL")
+    """Sign a Planetary Computer blob URL for reading; other URLs are returned unchanged."""
+    parsed = urlparse(href)
+    if not parsed.netloc.endswith(".blob.core.windows.net") or "se=" in parsed.query:
         return href
+    account = parsed.netloc.split(".")[0]
+    container = parsed.path.lstrip("/").split("/")[0]
+    try:
+        return f"{href}?{_sas_token(account, container)}"
     except Exception as e:
         logger.warning("Failed to sign URL %s: %s", href, e)
         return href
