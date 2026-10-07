@@ -19,10 +19,12 @@ Uses pystac-client when available (preferred), falls back to raw HTTP requests.
 Supports Earth Search, Planetary Computer, and CDSE catalogs.
 """
 
+import calendar
 import logging
+import re
 import time
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from datetime import date, datetime, timedelta
+from typing import Optional, List, Dict, Any, Tuple
 
 import numpy as np
 import requests
@@ -78,6 +80,52 @@ _USEFUL_ASSETS = {
     "coastal", "rededge1", "rededge2", "rededge3",
     "nir08", "nir09", "swir16", "swir22",
 }
+
+# One end of a STAC datetime range, as pystac-client 0.7.7 parses it: a year, a month, a day,
+# or a date-time with an optional zone.
+_STAC_DATETIME = re.compile(
+    r"^(?P<year>\d{4})(-(?P<month>\d{2})(-(?P<day>\d{2})"
+    r"(?P<time>[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?(?P<zone>[Zz]|[-+]\d{2}:\d{2})?)?)?)?$"
+)
+
+
+def _stac_datetime_bounds(component: str) -> Tuple[str, Optional[str]]:
+    """First and last second one end of a range covers; no last second for an exact date-time."""
+    if component in ("", ".."):
+        return "..", None
+    match = _STAC_DATETIME.match(component)
+    if not match:
+        raise ValueError(f"invalid STAC datetime: {component!r}")
+    if match.group("time"):
+        return (component if match.group("zone") else f"{component}Z"), None
+    year = int(match.group("year"))
+    if match.group("day"):
+        first = last = date(year, int(match.group("month")), int(match.group("day")))
+    elif match.group("month"):
+        month = int(match.group("month"))
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+    else:
+        first, last = date(year, 1, 1), date(year, 12, 31)
+    return f"{first.isoformat()}T00:00:00Z", f"{last.isoformat()}T23:59:59Z"
+
+
+def stac_datetime_interval(datetime_range: str) -> str:
+    """RFC 3339 form of a STAC datetime or range, e.g. "2026-09-07/2026-10-07".
+
+    Earth Search and CDSE reject bare dates with a 400. Same rules as pystac-client 0.7.7, so a raw
+    HTTP search asks for the same scenes as a pystac-client one: a year, month or day covers all of
+    it in UTC, a date-time without a zone is UTC, and ".." or an empty end is open.
+    """
+    components = datetime_range.split("/")
+    if len(components) == 1:
+        start, end = _stac_datetime_bounds(components[0])
+        return f"{start}/{end}" if end else start
+    if len(components) == 2:
+        start, _ = _stac_datetime_bounds(components[0])
+        instant_end, span_end = _stac_datetime_bounds(components[1])
+        return f"{start}/{span_end or instant_end}"
+    raise ValueError(f"invalid STAC datetime range (more than one '/'): {datetime_range!r}")
 
 
 class STACService:
