@@ -16,7 +16,7 @@
 """STAC satellite imagery discovery service for Rwanda agriculture.
 
 Uses pystac-client when available (preferred), falls back to raw HTTP requests.
-Supports Earth Search, Planetary Computer, and CDSE catalogs.
+Supports Earth Search and Planetary Computer catalogs.
 """
 
 import logging
@@ -48,8 +48,9 @@ logger = logging.getLogger(__name__)
 STAC_CATALOGS = {
     "earth_search": "https://earth-search.aws.element84.com/v1",
     "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
-    "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
+# CDSE is not offered: its band files are JPEG 2000 on s3://eodata, readable only with CDSE
+# credentials (401 / InvalidAccessKeyId anonymously, checked 2026-10-07), so NDVI got nothing.
 
 # Rwanda bounding box (approximate)
 RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
@@ -58,7 +59,6 @@ RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
 SENTINEL2_COLLECTIONS = {
     "earth_search": "sentinel-2-l2a",
     "planetary_computer": "sentinel-2-l2a",
-    "cdse": "sentinel-2-l2a",
 }
 
 # Drought status constants (WMO VCI thresholds)

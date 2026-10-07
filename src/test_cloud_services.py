@@ -33,21 +33,13 @@ import pytest
 class TestSTACServiceUpgrade:
     """Tests for stac_service.py pystac-client integration."""
 
-    def test_cdse_catalog_available(self):
-        """Verify CDSE catalog endpoint is registered."""
+    def test_two_catalogs_available(self):
+        """Two STAC catalogs should be registered."""
         from src.services.stac_service import STAC_CATALOGS
 
-        assert "cdse" in STAC_CATALOGS
-        assert "copernicus" in STAC_CATALOGS["cdse"]
-
-    def test_three_catalogs_available(self):
-        """Three STAC catalogs should be registered."""
-        from src.services.stac_service import STAC_CATALOGS
-
-        assert len(STAC_CATALOGS) == 3
+        assert len(STAC_CATALOGS) == 2
         assert "earth_search" in STAC_CATALOGS
         assert "planetary_computer" in STAC_CATALOGS
-        assert "cdse" in STAC_CATALOGS
 
     def test_sentinel2_collection_per_catalog(self):
         """Each catalog should have a Sentinel-2 collection ID."""
@@ -55,7 +47,6 @@ class TestSTACServiceUpgrade:
 
         assert "earth_search" in SENTINEL2_COLLECTIONS
         assert "planetary_computer" in SENTINEL2_COLLECTIONS
-        assert "cdse" in SENTINEL2_COLLECTIONS
 
     def test_search_imagery_delegates_to_http_without_pystac(self):
         """When pystac-client is unavailable, search should use HTTP."""

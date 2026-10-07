@@ -239,7 +239,7 @@ layer list to add a remote source. Sage cannot add remote sources for the user.
 
 <AgricultureCapabilities>
 Sage has access to agriculture and remote sensing tools for Rwanda:
-- Search satellite imagery via STAC catalogs (Earth Search, Planetary Computer, CDSE)
+- Search satellite imagery via STAC catalogs (Earth Search, Planetary Computer)
 - Read field NDVI/NDWI/BSI statistics computed nightly from Sentinel-2 L2A (Digital Earth Africa)
 - Read pre-computed anomaly alerts
 - Classify land cover from NDVI values or multispectral bands
