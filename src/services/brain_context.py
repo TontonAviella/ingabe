@@ -55,8 +55,9 @@ def _entry_on_visible_map(
     entry: _MemoryEntry,
     visible_layer_ids: set[str] | None,
 ) -> bool:
-    """A page about a layer on the map the user is looking at: in their scope
-    whoever uploaded the layer."""
+    """A page about a layer on the map the user is looking at. Retrieval only
+    returns pages the user may read, so a teammate's layer page arrives here
+    only when it is public or shared with the user (private since 2026-10-07)."""
     if visible_layer_ids is None:
         return False
     layer_id = _layer_id_from_slug(entry.slug)
@@ -208,6 +209,9 @@ async def build_brain_context_packet(
                 conn,
                 tuple(float(v) for v in viewport_bounds),
                 limit=8,
+                layer_ids=(
+                    sorted(visible_layer_id_set) if visible_layer_id_set is not None else None
+                ),
             )
             entries.extend(
                 entry
