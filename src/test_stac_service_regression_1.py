@@ -1,4 +1,4 @@
-"""Regression coverage for current Copernicus Data Space STAC discovery."""
+"""Regression coverage for STAC discovery across the offered catalogs."""
 
 from unittest.mock import Mock
 
@@ -9,15 +9,16 @@ import src.services.stac_service as stac_module
 from src.services.stac_service import SENTINEL2_COLLECTIONS, STAC_CATALOGS, STACService
 
 
-# Regression: ISSUE-001 - CDSE searches used its retired endpoint and collection ID.
-# Found by /qa on 2026-07-09
-# Report: .gstack/qa-reports/qa-report-localhost-2026-07-09.md
-def test_cdse_uses_current_stac_endpoint_and_sentinel_collection() -> None:
-    assert STAC_CATALOGS["cdse"] == "https://stac.dataspace.copernicus.eu/v1"
-    assert SENTINEL2_COLLECTIONS["cdse"] == "sentinel-2-l2a"
+# Dropped on 2026-10-07 because NDVI could never read their band files: CDSE's need CDSE credentials
+# (ISSUE-001 of 2026-07-09 had fixed its endpoint), Planetary Computer's a signed URL. Re-adding one
+# needs that access in the band readers first.
+@pytest.mark.parametrize("catalog", ["cdse", "planetary_computer"])
+def test_catalogs_whose_bands_we_cannot_read_are_not_offered(catalog) -> None:
+    assert catalog not in STAC_CATALOGS
+    assert catalog not in SENTINEL2_COLLECTIONS
 
 
-@pytest.mark.parametrize("provider", ["earth_search", "planetary_computer", "cdse"])
+@pytest.mark.parametrize("provider", ["earth_search"])
 def test_each_stac_provider_posts_and_normalizes_results(provider, monkeypatch) -> None:
     monkeypatch.setattr(stac_module, "_PYSTAC_CLIENT_AVAILABLE", False)
     service = STACService(provider)
@@ -73,7 +74,7 @@ def test_each_stac_provider_posts_and_normalizes_results(provider, monkeypatch) 
     ]
 
 
-@pytest.mark.parametrize("provider", ["earth_search", "planetary_computer", "cdse"])
+@pytest.mark.parametrize("provider", ["earth_search"])
 def test_each_stac_provider_returns_scoped_errors(provider, monkeypatch) -> None:
     monkeypatch.setattr(stac_module, "_PYSTAC_CLIENT_AVAILABLE", False)
     service = STACService(provider)

@@ -16,7 +16,7 @@
 """STAC satellite imagery discovery service for Rwanda agriculture.
 
 Uses pystac-client when available (preferred), falls back to raw HTTP requests.
-Supports Earth Search, Planetary Computer, and CDSE catalogs.
+Searches Sentinel-2 L2A on Earth Search (COGs, no credentials needed).
 """
 
 import calendar
@@ -53,9 +53,10 @@ logger = logging.getLogger(__name__)
 # Public STAC endpoints for satellite imagery
 STAC_CATALOGS = {
     "earth_search": "https://earth-search.aws.element84.com/v1",
-    "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
-    "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
+# Not offered, because NDVI cannot read their band files (checked 2026-10-07): CDSE's are JPEG 2000
+# on s3://eodata behind CDSE credentials (401 / InvalidAccessKeyId); Planetary Computer's need a
+# signed URL (409 unsigned). sentinel1_service signs its own Sentinel-1 reads from Planetary Computer.
 
 # Seconds to connect and to read for pystac-client requests: it sets none by default, so a stalled
 # catalog held the calling thread for as long as the server kept the connection open. A read that
@@ -70,8 +71,6 @@ RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
 # Sentinel-2 collection IDs per catalog
 SENTINEL2_COLLECTIONS = {
     "earth_search": "sentinel-2-l2a",
-    "planetary_computer": "sentinel-2-l2a",
-    "cdse": "sentinel-2-l2a",
 }
 
 # Drought status constants (WMO VCI thresholds)
