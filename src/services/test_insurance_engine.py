@@ -1201,10 +1201,31 @@ class TestComputeInsuranceIntelligence:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        # Slug format is now `insurance-{location}-{season}-{YYYYMMDD}`
-        # (insurance_engine.py:1826) — crop was removed because reports are
+        # Slug format is `insurance-{location}-{season}-{YYYYMMDD}[-{owner}]`
+        # (insurance_page_slug) — crop was removed because reports are
         # location-based, not crop-specific.
         assert result["slug"].startswith("insurance-musanze-")
+
+    def test_slug_names_the_owner_in_the_form_the_brain_stores(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+                season="A", owner_uuid="6D900EAE-ca15-55df-8b9c-eb547876165d",
+            ))
+        assert result["slug"] == "insurance-musanze-a-20251115-6d900eae"
+
+    def test_two_users_same_place_same_day_get_two_slugs(self):
+        from src.services.insurance_engine import insurance_page_slug
+        day = date(2026, 10, 6)
+        a = insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+        b = insurance_page_slug("Gatsibo", "A", day, "2dd65169-166c-4192-89d5-c7de02cc91a3")
+        assert a != b
+        assert a == insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+
+    def test_slug_without_an_owner_has_no_owner_part(self):
+        from src.services.insurance_engine import insurance_page_slug
+        assert insurance_page_slug("Kiyovu Cell", "B", date(2026, 3, 1)) == "insurance-kiyovu-cell-b-20260301"
 
     def test_accuracy_result_used_when_available(self):
         conn = self._mock_conn()
