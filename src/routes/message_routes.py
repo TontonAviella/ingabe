@@ -96,6 +96,7 @@ from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
     apply_tool_shortlist,
     build_sage_tools_payload,
+    guard_tool_calls,
     guard_tools,
     RATE_LIMIT_RETRIES,
     is_abdication,
@@ -514,11 +515,13 @@ async def label_conversation_inline(conversation_id: int):
                     },
                     {"role": "user", "content": f"Conversation:\n{content_summary}"},
                 ],
-                max_tokens=20,
+                # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                max_tokens=150,
                 temperature=0.3,
             )
 
-            title = response.choices[0].message.content.strip()
+            title = (response.choices[0].message.content or "").strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
@@ -1163,7 +1166,7 @@ async def _run_abdication_guard(
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
-    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    calls = guard_tool_calls(getattr(response.choices[0].message, "tool_calls", None) or [])
     logger.info(
         "sage_routing: abdication guard fired (tools=%s) -> %s",
         ",".join(t["function"]["name"] for t in tools),
@@ -1695,6 +1698,59 @@ def _fast_raster_object_turn_timeout_seconds() -> float:
         return max(15.0, float(raw))
     except (TypeError, ValueError):
         return 600.0
+
+
+def _tool_timeout_seconds() -> float:
+    raw = os.environ.get("SAGE_TOOL_TIMEOUT_SECONDS", "120")
+    try:
+        return max(15.0, float(raw))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _pair_tool_results(messages: list[Any]) -> list[Any]:
+    """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
+    conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
+    without results; a call dropped while cleaning the history can leave a result without its call."""
+    def calls(m: Any) -> list[str]:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            return []
+        return [tc["id"] for tc in m.get("tool_calls") or [] if isinstance(tc, dict) and tc.get("id")]
+
+    called = {call_id for m in messages for call_id in calls(m)}
+    answered = {m.get("tool_call_id") for m in messages if isinstance(m, dict) and m.get("role") == "tool"}
+    unfinished = json.dumps({"status": "error", "error": "This tool did not finish: the turn was interrupted."})
+    out: list[Any] = []
+    missing: list[str] = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            if m.get("tool_call_id") in called:
+                out.append(m)
+            else:
+                logger.warning("Dropped a tool result with no call before it: %s", m.get("tool_call_id"))
+            continue
+        out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+        out.append(m)
+        missing = [call_id for call_id in calls(m) if call_id not in answered]
+        if missing:
+            logger.warning("Gave %d unfinished tool call(s) a result: %s", len(missing), missing)
+    out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+    return out
+
+
+async def _within_tool_limit(function_name: str, call: Any) -> Any:
+    """Runs one tool call. A tool that never returns (a stalled download, say) must not hold the
+    person's turn for ever: it is stopped and the model told, so it answers with what it has."""
+    limit = _tool_timeout_seconds()
+    try:
+        return await asyncio.wait_for(call, timeout=limit)
+    except TimeoutError:
+        logger.warning("Sage tool %s stopped after %.0f s", function_name, limit)
+        return {
+            "status": "error",
+            "error": (f"{function_name} did not finish within {limit:.0f} seconds and was stopped. "
+                      "Answer with what the other tools found, and say plainly which part is missing."),
+        }
 
 
 async def _maybe_run_fast_raster_object_turn(
@@ -2309,6 +2365,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
+            openai_messages = _pair_tool_results(openai_messages)
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
@@ -2924,7 +2981,7 @@ async def process_chat_interaction_task(
                                     project_id=current_project_id,
                                     session=session,
                                 )
-                                tool_result = await fn(parsed_args, mundi_args)
+                                tool_result = await _within_tool_limit(function_name, fn(parsed_args, mundi_args))
 
                             except Exception as e:
                                 logger.exception("Tool execution failed for %s", tool_call.function.name)
@@ -2952,7 +3009,7 @@ async def process_chat_interaction_task(
                             # handlers /internal/tool-call (Hermes) uses, on this
                             # loop's tool connection (handlers that read the Brain
                             # open their own user- and partner-scoped connection).
-                            tool_result = await execute_legacy_tool(
+                            tool_result = await _within_tool_limit(function_name, execute_legacy_tool(
                                 function_name,
                                 LegacyToolContext(
                                     user_id=user_id,
@@ -2963,7 +3020,7 @@ async def process_chat_interaction_task(
                                     conn=conn,
                                     arguments=tool_args,
                                 ),
-                            )
+                            ))
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
                                     role="tool",

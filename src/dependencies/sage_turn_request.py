@@ -378,6 +378,31 @@ def rate_limit_user_message(error: Exception) -> str | None:
 
 
 GUARD_TOOL_COUNT = 5
+# The forced retry may also choose this: no tool can do what was asked (thanks, "what can you do",
+# a request Ingabe has no tool for), so the prose answer stands. Without it the retry forced a tool
+# onto 34 of 278 eval cases whose right answer was prose (GPT-6 Luna, 2026-10-07).
+KEEP_ANSWER_TOOL = "keep_answer_in_words"
+_KEEP_ANSWER = {
+    "type": "function",
+    "function": {
+        "name": KEEP_ANSWER_TOOL,
+        "description": (
+            "Call this only when none of the other tools can do what the user asked: they thanked you or "
+            "chatted, asked what you can do, or asked for something these tools cannot do. Your written "
+            "answer is then kept. If any other tool can answer the request, call that tool instead."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"reason": {"type": "string", "description": "Why no tool fits, in a few words."}},
+            "required": ["reason"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+}
+_ACKNOWLEDGEMENT_RE = re.compile(
+    r"(?i)^\s*(?:thanks?|thank\s+you|ok(?:ay)?|great|cool|nice|perfect|good|got\s+it|merci|murakoze)\b[\s!.,]*\w{0,12}[\s!.]*$"
+)
 # A clarifying question asks the user for missing input; keep it.
 _CLARIFY_MAX_CHARS = 400
 _EXPLAIN_REQUEST_RE = re.compile(
@@ -395,7 +420,7 @@ def is_abdication(plan: SageTurnPlan, last_user_text: str, content: str | None, 
     """True when a first-step answer is prose although the turn needs a tool."""
     if has_tool_calls or not plan.tools or plan.routing.is_small_talk:
         return False
-    if _EXPLAIN_REQUEST_RE.search(last_user_text or ""):
+    if _EXPLAIN_REQUEST_RE.search(last_user_text or "") or _ACKNOWLEDGEMENT_RE.search(last_user_text or ""):
         return False
     text = (content or "").strip()
     if text.endswith("?") and len(text) <= _CLARIFY_MAX_CHARS:
@@ -415,4 +440,11 @@ async def guard_tools(
     shortlist = await hybrid_shortlist(
         last_user_text, history, full_tools, k=k, embed=embed, cache=_TOOL_EMBEDDINGS,
     )
-    return shortlist.tools
+    return shortlist.tools + [_KEEP_ANSWER]
+
+
+def guard_tool_calls(calls: list[Any]) -> list[Any]:
+    """The retry's tool calls, or none when it chose to keep the written answer."""
+    if any(getattr(getattr(call, "function", None), "name", None) == KEEP_ANSWER_TOOL for call in calls):
+        return []
+    return calls
