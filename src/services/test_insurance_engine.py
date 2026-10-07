@@ -2,7 +2,7 @@
 
 Part 1: Pure function tests (no DB/API required).
 Part 2: Mocked async tests for DB/API functions:
-  _load_triggers, _fetch_ndvi_anomaly, compute_insurance_intelligence,
+  _load_triggers, compute_insurance_intelligence,
   _resolve_location_name, compute_insurance_accuracy_safe
 """
 
@@ -28,7 +28,7 @@ from src.services.insurance_engine import (
     _climatology_rainfall,
     _default_triggers,
     _evaluate_triggers,
-    _fetch_ndvi_anomaly,
+    _season_ndvi_anomaly,
     _flatten_coords,
     _generate_recommendation,
     _load_triggers,
@@ -813,44 +813,23 @@ class TestResolveLocationName:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_ndvi_anomaly (mock conn)
+# _season_ndvi_anomaly
 # ---------------------------------------------------------------------------
 
-class TestFetchNdviAnomaly:
-    def test_with_district(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": -0.85}
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result == pytest.approx(-0.85)
-        conn.fetchrow.assert_called_once()
-        call_sql = conn.fetchrow.call_args[0][0]
-        assert "LOWER(district)" in call_sql
+class TestSeasonNdviAnomaly:
+    ANOMALY = {"month": "2026-09", "z": -0.76, "ndvi": 0.38, "clear_fraction": 0.99, "source": "DEA"}
 
-    def test_without_district(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": 0.3}
-        result = _run(_fetch_ndvi_anomaly(conn, district=None))
-        assert result == pytest.approx(0.3)
-        call_sql = conn.fetchrow.call_args[0][0]
-        assert "LOWER(district)" not in call_sql
+    def test_a_month_mostly_in_the_season_is_the_seasons_anomaly(self):
+        assert _season_ndvi_anomaly(self.ANOMALY, date(2026, 9, 15)) == (-0.76, "2026-09")  # 16 days
 
-    def test_no_data_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": None}
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result is None
+    def test_a_month_mostly_before_planting_says_nothing_about_the_crop(self):
+        assert _season_ndvi_anomaly(self.ANOMALY, date(2026, 9, 17)) == (None, None)  # 14 days
 
-    def test_no_rows_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = None
-        result = _run(_fetch_ndvi_anomaly(conn))
-        assert result is None
+    def test_a_month_too_cloudy_to_tell_is_missing_not_zero(self):
+        assert _season_ndvi_anomaly({**self.ANOMALY, "z": None}, date(2026, 9, 1)) == (None, None)
 
-    def test_exception_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.side_effect = Exception("connection lost")
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result is None
+    def test_no_published_month_is_missing(self):
+        assert _season_ndvi_anomaly(None, date(2026, 9, 1)) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -863,7 +842,6 @@ class TestValidAudiences:
 
     def test_invalid_audience_clamped_to_farmer(self):
         conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         conn.fetch.return_value = []
 
         from contextlib import ExitStack
@@ -877,6 +855,7 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
 
         with stack:
             result = _run(compute_insurance_intelligence(
@@ -978,7 +957,6 @@ class TestComputeInsuranceIntelligence:
             {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
             {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8, "description": "Drought"},
         ]
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
     def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
@@ -994,6 +972,7 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
         return stack
 
     def test_returns_ok_with_district(self):
@@ -1125,6 +1104,25 @@ class TestComputeInsuranceIntelligence:
         assert "WaPOR soil moisture" in result["coverage"] and "not zero" in result["coverage"]
         assert result["coverage"] in result["report"]
 
+    def test_a_slow_ndvi_anomaly_read_is_missing_and_named(self, monkeypatch):
+        import time as _time
+        import src.services.insurance_engine as engine
+
+        monkeypatch.setattr(engine, "_FETCH_DEADLINE_S", 0.6)
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+
+        def slow_anomaly(*args, **kwargs):
+            _time.sleep(2)
+            return {"month": "2025-10", "z": -2.0, "ndvi": 0.3, "clear_fraction": 0.9, "source": "DEA"}
+
+        with self._patches(geom=geom), patch("src.services.deafrica_stac.area_ndvi_anomaly", side_effect=slow_anomaly):
+            result, took = self._timed(compute_insurance_intelligence(
+                self._mock_conn(), crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 1.5
+        assert result["data"]["ndvi_z_score"] is None
+        assert result["data"]["not_read_in_time"] == ["Digital Earth Africa NDVI anomaly"]
+
     def test_a_report_with_every_read_in_time_has_no_coverage_note(self):
         conn = self._mock_conn()
         with self._patches():
@@ -1186,23 +1184,30 @@ class TestComputeInsuranceIntelligence:
                 patch("src.services.wapor_service.query_et", side_effect=slow_et):
             assert _run(stop_early()) == []
 
-    def test_the_ndvi_z_score_is_the_districts_optical_anomaly(self):
-        conn = self._mock_conn()  # the anomaly cache has a z-score
-        with self._patches():
+    def test_the_ndvi_z_score_is_the_areas_monthly_anomaly(self):
+        conn = self._mock_conn()
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+        anomaly = {"month": "2025-10", "z": -0.5, "ndvi": 0.41, "clear_fraction": 0.9,
+                   "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"}
+        with self._patches(geom=geom), \
+                patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=anomaly) as read:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
+        assert read.call_args.args == (geom, date(2025, 11, 15))  # the area itself, months ended by the report date
         assert result["data"]["ndvi_z_score"] == -0.5
-        assert "Sentinel-2 NDVI anomaly (district)" in result["data"]["sources"]
+        assert result["data"]["ndvi_month"] == "2025-10"
+        assert "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2025-10" in result["data"]["sources"]
+        assert "NDVI z-score: -0.50 (2025-10, against 1984-2020)" in result["report"]
 
     def test_without_an_optical_anomaly_the_ndvi_z_score_is_missing(self):
-        """2026-10-07: an empty anomaly cache used to be filled with a Sentinel-1 prediction scored against
+        """2026-10-07: a missing NDVI anomaly used to be filled with a Sentinel-1 prediction scored against
         invented constants (0.45 +/- 0.15), which did not follow optical NDVI (docs/SAR_NDVI_SKILL.md) and
         could fire the NDVI trigger. Now the z-score is missing and its trigger is left out."""
         conn = self._mock_conn()
         conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the NDVI trigger
-        conn.fetchrow.return_value = {"mean_z": None}
-        with self._patches(), patch("src.services.sar_ndvi.get_sar_ndvi_predictor") as sar_ndvi, \
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+        with self._patches(geom=geom), patch("src.services.sar_ndvi.get_sar_ndvi_predictor") as sar_ndvi, \
                 patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
@@ -1509,7 +1514,6 @@ class TestOrchestratorEdgeCases:
         conn.fetch.return_value = [
             {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
         ]
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
     def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
@@ -1524,6 +1528,7 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
         return stack
 
     def test_dap_negative_correction(self):

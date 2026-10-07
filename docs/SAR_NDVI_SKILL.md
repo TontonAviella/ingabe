@@ -97,16 +97,15 @@ proving one would need several seasons, including a real drought.
 
 ## What changed
 
-`compute_insurance_intelligence` no longer reads the radar predictor. The NDVI z-score is
-the district's optical anomaly (`anomaly_alerts_cache`) or missing; a missing signal's
-trigger is left out and the report's confidence counts it as missing, as for the other
-signals. Before/after on fixed inputs: `docs/evidence/insurance_ndvi_z_before_after.json`.
+`compute_insurance_intelligence` no longer reads the radar predictor (#147). Since the next change
+its NDVI z-score is Digital Earth Africa's monthly `ndvi_anomaly` for the report's own area
+(`deafrica_stac.area_ndvi_anomaly`): the latest published month with at least 15 days in the
+season, missing when under 30% of the area had a clear view. It replaced `anomaly_alerts_cache`,
+whose weekly scan stored only alerts (z < -2 against an 8-week mean), so its average fired the
+trigger whenever any alert existed. Before/after on fixed inputs:
+`docs/evidence/insurance_ndvi_z_before_after.json` (radar removed) and
+`docs/evidence/insurance_ndvi_z_deafrica_before_after.json` (the new source).
 
 ## Still open
 
-- `anomaly_alerts_cache` itself is not a climatology z-score: `weekly_anomaly_scan` writes
-  only alerts (z < -2 against the mean of the last 8 weeks), so its 30-day average is
-  always below the trigger once any alert exists, and the Dagster pipeline is stale.
-- Digital Earth Africa's monthly `ndvi_anomaly` is a real, published NDVI z-score (about a
-  week after each month ends) and is the obvious candidate source.
 - Sage's `predict_ndvi_from_sar` still answers from the same predictor.
