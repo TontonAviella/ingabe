@@ -3,9 +3,9 @@
 SAR->NDVI training read `compute_admin_ndvi(...).get("observations", [])`, so a search that failed
 (every Earth Search request was a 400 that day) was logged as "Insufficient S2 observations: 0",
 and predict_ndvi fell back to its empirical guess without saying why. The satellite display and
-spectral-index tools said "No Sentinel-2 scenes found", the NDVI-stats fallback "found no
-cloud-free Sentinel-2 scenes", and the drought fallback "insufficient cloud-free Sentinel-2 scenes"
-for the same failure.
+spectral-index tools said "No Sentinel-2 scenes found", and the NDVI-stats fallback "found no
+cloud-free Sentinel-2 scenes" for the same failure. (The drought satellite fallback, which said
+"insufficient cloud-free Sentinel-2 scenes", was removed instead.)
 
 The failure here is real: STACService searches a local port nothing listens on, so the error dict
 is the one STACService itself returns. Earth Search's empty answer is copied from a real response
@@ -176,38 +176,15 @@ async def _call(tool: str, boundaries, **arguments) -> Dict[str, Any]:
     return await LEGACY_HANDLERS[tool](ctx)
 
 
-@pytest.fixture
-def no_postgis_connection(monkeypatch) -> None:
-    async def none(*args):
-        return None
+async def test_drought_with_an_empty_cache_says_there_is_no_assessment(monkeypatch):
+    def no_satellite_fallback(*args, **kwargs):
+        raise AssertionError("drought must not be computed from a few satellite scenes")
 
-    monkeypatch.setattr("src.routes.message_routes._ensure_rwanda_postgis_connection", none)
-
-
-def test_too_few_scenes_for_drought_is_a_result_not_an_error(empty_catalog):
-    result = stac_service.get_stac_service().compute_drought_indicators(list(BBOX))
-    assert "error" not in result
-    assert result["drought_status"] == "insufficient_data"
-    assert result["scene_count"] == 0
-
-
-async def test_drought_fallback_reports_a_failed_search(dead_catalog):
-    result = await _call("get_drought_status", [GASABO], district="Gasabo")
-    assert result["status"] == "error"
-    assert result["error"].startswith("Sentinel-2 search failed for Gasabo:")
-    assert dead_catalog in result["error"]
-
-
-async def test_drought_fallback_shows_a_district_without_enough_scenes(empty_catalog, no_postgis_connection):
+    monkeypatch.setattr(stac_service, "get_stac_service", no_satellite_fallback)
     result = await _call("get_drought_status", [GASABO], district="Gasabo")
     assert result["status"] == "success"
-    assert [d["drought_status"] for d in result["districts"]] == ["insufficient_data"]
-    assert "Do NOT report drought status" in result["note"]
-
-
-async def test_drought_fallback_names_an_unknown_district(empty_catalog):
-    result = await _call("get_drought_status", [], district="Nowhere")
-    assert result == {"status": "error", "error": "No Rwanda district boundary matches 'Nowhere'"}
+    assert result["districts"] == []
+    assert "Do NOT report a drought status" in result["note"]
 
 
 async def test_ndvi_stats_fallback_reports_a_failed_search(dead_catalog):

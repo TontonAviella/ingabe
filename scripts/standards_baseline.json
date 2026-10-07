@@ -61,7 +61,6 @@
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_cell_ndvi_stats->src.routes.message_routes": 1,
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_crop_growth_stage->src.routes.message_routes": 1,
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_drought_status->src.routes.message_routes": 1,
-    "lazy-import|src/services/legacy_tool_shim.py|_handle_get_drought_status->src.services.stac_service": 1,
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_entity->src.database.pool": 1,
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_entity->src.dependencies.brain_dep": 1,
     "lazy-import|src/services/legacy_tool_shim.py|_handle_get_field_health->src.services.satellite_analytics": 1,

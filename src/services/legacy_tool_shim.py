@@ -2291,10 +2291,10 @@ async def _handle_get_yield_risk(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Read drought_cache OR fall back to real-time STAC COG computation.
+    """Read drought_cache, which the weekly_drought_scan pipeline fills.
 
-    Two-tier: postgres cache (fast) → STAC Sentinel-2 COG (60-80s/district,
-    capped at 3 districts when no specific district requested).
+    There is no live fallback: an empty cache is reported as "no drought
+    assessment yet", never computed from a few satellite scenes.
 
     Hardens against fabrication: marks insufficient_data districts explicitly
     AND adds a top-level note when ALL districts are insufficient, so the
@@ -2375,105 +2375,20 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                 )
             return tool_result
 
-        # ── STAC COG real-time fallback ──
-        try:
-            from src.services.stac_service import get_stac_service as _get_stac
-
-            _stac = _get_stac()
-            _drought_district = args.get("district")
-
-            if _drought_district:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
-                    _drought_district,
-                )
-            else:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries ORDER BY district"
-                )
-
-            _stac_districts: list[Dict[str, Any]] = []
-            _search_failed: Dict[str, str] = {}
-            for _br in _bbox_rows:
-                _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
-                           float(_br["bbox_east"]), float(_br["bbox_north"])]
-                _drought_result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
-                )
-                if "error" in _drought_result:
-                    # Too few scenes comes back as insufficient_data; an error is a failed search.
-                    logger.warning("STAC drought search failed for %s: %s", _br["district"], _drought_result["error"])
-                    _search_failed[_br["district"]] = _drought_result["error"]
-                else:
-                    _stac_districts.append({
-                        "district": _br["district"],
-                        "drought_status": _drought_result.get("drought_status"),
-                        "vci": _drought_result.get("current_vci"),
-                        "latest_ndvi": _drought_result.get("latest_ndvi"),
-                        "latest_ndwi": None,
-                        "drought_period_count": None,
-                        "description": _drought_result.get("description"),
-                        "trend_slope": _drought_result.get("trend_slope"),
-                        "scene_count": _drought_result.get("scene_count"),
-                    })
-                if not _drought_district and len(_stac_districts) + len(_search_failed) >= 3:
-                    break
-
-            if _stac_districts:
-                _all_insufficient = all(
-                    d["drought_status"] == "insufficient_data"
-                    for d in _stac_districts
-                )
-                if _all_insufficient:
-                    _stac_note = (
-                        "Not enough cloud-free Sentinel-2 scenes to compute "
-                        "a reliable drought index. Do NOT report drought "
-                        "status — tell the user there is insufficient data. "
-                        "The weekly Dagster pipeline will accumulate enough "
-                        "history over time for accurate VCI analysis."
-                    )
-                else:
-                    _stac_note = (
-                        "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
-                        "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
-                        "20-35=moderate, 35-50=mild, >50=no drought."
-                    )
-                tool_result = {
-                    "status": "success",
-                    "source": "stac_cog_realtime",
-                    "count": len(_stac_districts),
-                    "note": _stac_note,
-                    "districts": _stac_districts,
-                }
-                if _search_failed:
-                    tool_result["search_failed"] = _search_failed
-                _pgc_id = await _ensure_rwanda_postgis_connection(
-                    ctx.conn, ctx.project_id, ctx.user_id,
-                )
-                if _pgc_id:
-                    tool_result["postgis_connection_id"] = _pgc_id
-                    tool_result["kue_instructions"] = (
-                        "To visualise drought status on the map, call new_layer_from_postgis with "
-                        f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                        "Available tables: rwanda_district_boundaries (district, geom). "
-                        "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
-                        "Then add_layer_to_map and set_layer_style to colour by drought status. "
-                        "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                    )
-                return tool_result
-            if _search_failed:
-                return {"status": "error", "error": _search_failed_text(_search_failed)}
-            # Every boundary row yields a district or a failure, so nothing here means no row matched.
-            return {
-                "status": "error",
-                "error": f"No Rwanda district boundary matches {_drought_district!r}"
-                if _drought_district else "No Rwanda district boundaries are loaded",
-            }
-        except Exception as _stac_err:
-            logger.exception("STAC drought fallback failed")
-            return {"status": "error", "error": f"Sentinel-2 drought fallback failed: {_stac_err}"}
+        # No cached assessment, and no live fallback: a drought index needs a seasonal baseline
+        # of weekly district NDVI, which only the weekly pipeline builds. The satellite fallback
+        # removed on 2026-10-07 read 4 tiles per district in ~140 s, with no cloud mask, and could
+        # only ever answer "insufficient data".
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "districts": [],
+            "note": (
+                "No drought assessment is available for this request: the drought cache, filled "
+                "weekly by the weekly_drought_scan pipeline from district NDVI, has no matching rows. "
+                "Do NOT report a drought status; tell the user there is no drought assessment yet."
+            ),
+        }
     except Exception as e:
         logger.exception("get_drought_status tool failed")
         return {"status": "error", "error": str(e)}
