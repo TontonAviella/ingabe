@@ -50,9 +50,6 @@ def _engine_data_stubbed() -> ExitStack:
     sar = MagicMock()
     sar.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
     stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar))
-    sar_ndvi = MagicMock()
-    sar_ndvi.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-    stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi))
 
     engine_conn = AsyncMock()
     engine_conn.fetch.return_value = [

@@ -24,6 +24,10 @@ engine's: the polygon's vertex mean +/- 0.05 degrees.
 
     PYTHONPATH=. python -u scripts/sar_ndvi_skill.py --cache-dir /tmp/sar_ndvi_cache \
         --out docs/evidence/sar_ndvi_skill.json
+
+The predictor (src/services/sar_ndvi.py) and Sage's predict_ndvi_from_sar were
+deleted after this measurement; run this script from the parent of the commit
+that deleted them (git log --diff-filter=D -- src/services/sar_ndvi.py).
 """
 
 from __future__ import annotations

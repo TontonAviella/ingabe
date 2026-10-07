@@ -52,8 +52,6 @@ from src.tools.wapor import (
     GetEvapotranspirationArgs,
 )
 from src.tools.sar import (
-    predict_ndvi_from_sar,
-    PredictNdviFromSarArgs,
     detect_flood_extent,
     DetectFloodExtentArgs,
 )
@@ -151,11 +149,6 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "get_evapotranspiration": (
             get_evapotranspiration,
             GetEvapotranspirationArgs,
-            IngabeToolCallMetaArgs,
-        ),
-        "predict_ndvi_from_sar": (
-            predict_ndvi_from_sar,
-            PredictNdviFromSarArgs,
             IngabeToolCallMetaArgs,
         ),
         "detect_flood_extent": (

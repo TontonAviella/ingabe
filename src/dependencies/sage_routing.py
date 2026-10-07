@@ -146,7 +146,6 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "detect_dry_spells": AGRICULTURE,
     "get_insurance_accuracy": AGRICULTURE,
     "get_insurance_intelligence": AGRICULTURE,
-    "predict_ndvi_from_sar": AGRICULTURE,
     "detect_flood_extent": AGRICULTURE,
     # --- User-uploaded raster (drone, COG) analysis ---
     "describe_user_raster": USER_RASTER,

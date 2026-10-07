@@ -82,7 +82,7 @@
 {"id": "cov-sat-02", "intent": "cov-sat-02", "text": "compute the NDWI water index for Rugezi wetland", "category": "satellite", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["compute_spectral_index"]}}
 {"id": "cov-sat-03", "intent": "cov-sat-03", "text": "detect fish ponds in Bugesera using radar", "category": "unsupported", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
 {"id": "cov-sat-04", "intent": "cov-sat-04", "text": "map the flood extent after the May rains in Nyabihu", "category": "satellite", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["detect_flood_extent"]}}
-{"id": "cov-sat-05", "intent": "cov-sat-05", "text": "estimate NDVI under the clouds for Musanze using SAR", "category": "satellite", "stratum": "coverage", "lang": "en", "expect": {"any_of": ["predict_ndvi_from_sar"]}}
+{"id": "cov-sat-05", "intent": "cov-sat-05", "text": "estimate NDVI under the clouds for Musanze using SAR", "category": "unsupported", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
 {"id": "cov-sat-06", "intent": "cov-sat-06", "text": "L-band backscatter for this area from 2020 to 2024", "category": "unsupported", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
 {"id": "cov-sat-07", "intent": "cov-sat-07", "text": "is CYGNSS data available over Akagera?", "category": "unsupported", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}
 {"id": "cov-sat-08", "intent": "cov-sat-08", "text": "flood damage to houses if the water reaches 1 m", "category": "unsupported", "stratum": "coverage", "lang": "en", "expect": {"no_tool": true}}

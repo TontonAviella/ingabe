@@ -1,0 +1,515 @@
+{
+ "source": "docs/evidence/sar_ndvi_skill.json clean_label_models.leave_one_place_out",
+ "all": {
+  "n": 69,
+  "last_clear_mae": 0.056,
+  "radar_mae": 0.057,
+  "radar_closer": 32
+ },
+ "median_gap_days": 17,
+ "by_gap_days": {
+  "0-20": {
+   "n": 41,
+   "last_clear_mae": 0.034,
+   "radar_mae": 0.059,
+   "radar_closer": 13
+  },
+  "20-40": {
+   "n": 23,
+   "last_clear_mae": 0.079,
+   "radar_mae": 0.047,
+   "radar_closer": 15
+  },
+  "40-": {
+   "n": 5,
+   "last_clear_mae": 0.139,
+   "radar_mae": 0.091,
+   "radar_closer": 4
+  }
+ },
+ "pairs": [
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-06-10",
+   "gap_days": 30,
+   "last_clear_error": 0.1977,
+   "radar_error": 0.0505
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-06-30",
+   "gap_days": 20,
+   "last_clear_error": 0.0511,
+   "radar_error": 0.0231
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-07-25",
+   "gap_days": 25,
+   "last_clear_error": 0.0455,
+   "radar_error": 0.0232
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-08-09",
+   "gap_days": 15,
+   "last_clear_error": 0.0493,
+   "radar_error": 0.036
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-08-29",
+   "gap_days": 20,
+   "last_clear_error": 0.068,
+   "radar_error": 0.0056
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-09-18",
+   "gap_days": 20,
+   "last_clear_error": 0.0011,
+   "radar_error": 0.0402
+  },
+  {
+   "place": "Bukomeye (Huye)",
+   "date": "2026-10-03",
+   "gap_days": 15,
+   "last_clear_error": 0.0045,
+   "radar_error": 0.0254
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-07-05",
+   "gap_days": 53,
+   "last_clear_error": 0.2039,
+   "radar_error": 0.0811
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-07-22",
+   "gap_days": 17,
+   "last_clear_error": 0.0783,
+   "radar_error": 0.0356
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-08-09",
+   "gap_days": 18,
+   "last_clear_error": 0.018,
+   "radar_error": 0.064
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-08-11",
+   "gap_days": 2,
+   "last_clear_error": 0.0066,
+   "radar_error": 0.0079
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-08-29",
+   "gap_days": 18,
+   "last_clear_error": 0.0293,
+   "radar_error": 0.019
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-08-31",
+   "gap_days": 2,
+   "last_clear_error": 0.0053,
+   "radar_error": 0.0027
+  },
+  {
+   "place": "Butunzi (Rulindo)",
+   "date": "2026-09-08",
+   "gap_days": 8,
+   "last_clear_error": 0.0725,
+   "radar_error": 0.0565
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-07-25",
+   "gap_days": 73,
+   "last_clear_error": 0.15,
+   "radar_error": 0.0756
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-08-11",
+   "gap_days": 17,
+   "last_clear_error": 0.0036,
+   "radar_error": 0.0354
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-08-14",
+   "gap_days": 3,
+   "last_clear_error": 0.0342,
+   "radar_error": 0.0367
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-08-29",
+   "gap_days": 15,
+   "last_clear_error": 0.1059,
+   "radar_error": 0.0459
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-09-03",
+   "gap_days": 5,
+   "last_clear_error": 0.035,
+   "radar_error": 0.0082
+  },
+  {
+   "place": "Gisesero (Musanze)",
+   "date": "2026-09-08",
+   "gap_days": 5,
+   "last_clear_error": 0.013,
+   "radar_error": 0.0158
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-06-05",
+   "gap_days": 25,
+   "last_clear_error": 0.0917,
+   "radar_error": 0.0018
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-06-25",
+   "gap_days": 20,
+   "last_clear_error": 0.0933,
+   "radar_error": 0.0014
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-07-22",
+   "gap_days": 27,
+   "last_clear_error": 0.1334,
+   "radar_error": 0.0685
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-08-04",
+   "gap_days": 13,
+   "last_clear_error": 0.0378,
+   "radar_error": 0.0397
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-08-21",
+   "gap_days": 17,
+   "last_clear_error": 0.01,
+   "radar_error": 0.0381
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-08-31",
+   "gap_days": 10,
+   "last_clear_error": 0.018,
+   "radar_error": 0.0101
+  },
+  {
+   "place": "Kabarore (Gatsibo)",
+   "date": "2026-09-28",
+   "gap_days": 28,
+   "last_clear_error": 0.0142,
+   "radar_error": 0.0189
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-06-12",
+   "gap_days": 32,
+   "last_clear_error": 0.1991,
+   "radar_error": 0.09
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-07-02",
+   "gap_days": 20,
+   "last_clear_error": 0.1658,
+   "radar_error": 0.043
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-07-25",
+   "gap_days": 23,
+   "last_clear_error": 0.0033,
+   "radar_error": 0.0249
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-08-04",
+   "gap_days": 10,
+   "last_clear_error": 0.0386,
+   "radar_error": 0.0705
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-08-21",
+   "gap_days": 17,
+   "last_clear_error": 0.01,
+   "radar_error": 0.0715
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-09-03",
+   "gap_days": 13,
+   "last_clear_error": 0.0074,
+   "radar_error": 0.0674
+  },
+  {
+   "place": "Kamate (Nyagatare)",
+   "date": "2026-09-28",
+   "gap_days": 25,
+   "last_clear_error": 0.0485,
+   "radar_error": 0.0384
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-06-05",
+   "gap_days": 25,
+   "last_clear_error": 0.1211,
+   "radar_error": 0.0405
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-06-25",
+   "gap_days": 20,
+   "last_clear_error": 0.0445,
+   "radar_error": 0.0441
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-07-05",
+   "gap_days": 10,
+   "last_clear_error": 0.0809,
+   "radar_error": 0.0185
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-08-04",
+   "gap_days": 30,
+   "last_clear_error": 0.0852,
+   "radar_error": 0.0116
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-08-14",
+   "gap_days": 10,
+   "last_clear_error": 0.022,
+   "radar_error": 0.0032
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-08-31",
+   "gap_days": 17,
+   "last_clear_error": 0.0287,
+   "radar_error": 0.0087
+  },
+  {
+   "place": "Kanyangese (Gatsibo)",
+   "date": "2026-10-03",
+   "gap_days": 33,
+   "last_clear_error": 0.0175,
+   "radar_error": 0.0227
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-06-25",
+   "gap_days": 43,
+   "last_clear_error": 0.1291,
+   "radar_error": 0.0666
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-07-05",
+   "gap_days": 10,
+   "last_clear_error": 0.0933,
+   "radar_error": 0.1547
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-08-01",
+   "gap_days": 27,
+   "last_clear_error": 0.0446,
+   "radar_error": 0.1338
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-08-09",
+   "gap_days": 8,
+   "last_clear_error": 0.0047,
+   "radar_error": 0.0801
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-08-14",
+   "gap_days": 5,
+   "last_clear_error": 0.0206,
+   "radar_error": 0.0922
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-08-29",
+   "gap_days": 15,
+   "last_clear_error": 0.0208,
+   "radar_error": 0.0717
+  },
+  {
+   "place": "Kayumba (Bugesera)",
+   "date": "2026-09-03",
+   "gap_days": 5,
+   "last_clear_error": 0.0114,
+   "radar_error": 0.1229
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-06-30",
+   "gap_days": 48,
+   "last_clear_error": 0.1047,
+   "radar_error": 0.1443
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-07-05",
+   "gap_days": 5,
+   "last_clear_error": 0.0565,
+   "radar_error": 0.1294
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-07-25",
+   "gap_days": 20,
+   "last_clear_error": 0.024,
+   "radar_error": 0.2292
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-08-09",
+   "gap_days": 15,
+   "last_clear_error": 0.0286,
+   "radar_error": 0.2057
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-08-14",
+   "gap_days": 5,
+   "last_clear_error": 0.0216,
+   "radar_error": 0.1898
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-08-29",
+   "gap_days": 15,
+   "last_clear_error": 0.0897,
+   "radar_error": 0.1124
+  },
+  {
+   "place": "Mujuga (Nyamagabe)",
+   "date": "2026-09-03",
+   "gap_days": 5,
+   "last_clear_error": 0.0504,
+   "radar_error": 0.1519
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-06-22",
+   "gap_days": 40,
+   "last_clear_error": 0.1078,
+   "radar_error": 0.0885
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-06-30",
+   "gap_days": 8,
+   "last_clear_error": 0.0371,
+   "radar_error": 0.043
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-07-25",
+   "gap_days": 25,
+   "last_clear_error": 0.0614,
+   "radar_error": 0.0748
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-08-04",
+   "gap_days": 10,
+   "last_clear_error": 0.0326,
+   "radar_error": 0.1068
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-08-14",
+   "gap_days": 10,
+   "last_clear_error": 0.002,
+   "radar_error": 0.0304
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-08-29",
+   "gap_days": 15,
+   "last_clear_error": 0.0316,
+   "radar_error": 0.0623
+  },
+  {
+   "place": "Nyarubuye (Kamonyi)",
+   "date": "2026-09-03",
+   "gap_days": 5,
+   "last_clear_error": 0.001,
+   "radar_error": 0.0293
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-06-05",
+   "gap_days": 25,
+   "last_clear_error": 0.206,
+   "radar_error": 0.0394
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-07-05",
+   "gap_days": 30,
+   "last_clear_error": 0.0811,
+   "radar_error": 0.0268
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-07-25",
+   "gap_days": 20,
+   "last_clear_error": 0.0092,
+   "radar_error": 0.0387
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-08-11",
+   "gap_days": 17,
+   "last_clear_error": 0.0591,
+   "radar_error": 0.0207
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-08-24",
+   "gap_days": 13,
+   "last_clear_error": 0.0884,
+   "radar_error": 0.0225
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-09-10",
+   "gap_days": 17,
+   "last_clear_error": 0.0188,
+   "radar_error": 0.0318
+  },
+  {
+   "place": "Pera (Rusizi)",
+   "date": "2026-09-20",
+   "gap_days": 10,
+   "last_clear_error": 0.0061,
+   "radar_error": 0.044
+  }
+ ]
+}

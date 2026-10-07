@@ -1207,12 +1207,10 @@ class TestComputeInsuranceIntelligence:
         conn = self._mock_conn()
         conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the NDVI trigger
         geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
-        with self._patches(geom=geom), patch("src.services.sar_ndvi.get_sar_ndvi_predictor") as sar_ndvi, \
-                patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+        with self._patches(geom=geom), patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        sar_ndvi.assert_not_called()
         s1.assert_not_called()
         assert result["data"]["ndvi_z_score"] is None
         assert "ndvi_z_score" in {t["signal"] for t in _default_triggers("full_season")}
