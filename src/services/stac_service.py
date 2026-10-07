@@ -126,7 +126,6 @@ class STACService:
             "min_ndvi": round(float(np.min(valid_ndvi)), 4),
             "max_ndvi": round(float(np.max(valid_ndvi)), 4),
             "valid_pixel_count": int(len(valid_ndvi)),
-            "_valid_ndvi": valid_ndvi,  # for downstream classification
         }
 
     @staticmethod
@@ -299,212 +298,6 @@ class STACService:
             logger.exception("STAC HTTP search failed: %s", e)
             return {"error": str(e), "catalog": self.catalog_name}
 
-    def compute_ndvi_from_item(self, item_result: dict) -> Dict[str, Any]:
-        """Compute NDVI statistics from a STAC item with B04 and B08 bands.
-
-        Downloads a windowed subset (center 512x512) from both bands via HTTP,
-        computes NDVI, and returns statistics with land cover classification.
-
-        Args:
-            item_result: STAC item dict with assets.B04.href and assets.B08.href
-
-        Returns:
-            Dict with mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixel_count,
-            classification, bbox_computed, source_item_id, download_time_sec
-        """
-        if not _RASTERIO_AVAILABLE:
-            return {
-                "error": "rasterio not available — install with `pip install rasterio`",
-                "source_item_id": item_result.get("id"),
-            }
-
-        assets = item_result.get("assets", {})
-        red_key, nir_key = self._resolve_band_keys(assets)
-        if red_key is None or nir_key is None:
-            return {
-                "error": "Missing red/B04 or nir/B08 bands in STAC item",
-                "source_item_id": item_result.get("id"),
-            }
-
-        b04_href = assets[red_key]["href"]
-        b08_href = assets[nir_key]["href"]
-
-        start_time = time.time()
-
-        try:
-            # Use GDAL environment settings for optimal HTTP performance
-            with RasterioEnv(
-                GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
-                GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-                CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
-            ):
-                # Open both bands via HTTP (rasterio handles /vsicurl/ automatically)
-                with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
-                    # Calculate window to read center 512x512 pixels
-                    height, width = b04_src.height, b04_src.width
-                    window_size = min(512, height, width)
-
-                    col_off = (width - window_size) // 2
-                    row_off = (height - window_size) // 2
-
-                    window = Window(col_off, row_off, window_size, window_size)
-
-                    # Read windowed data
-                    b04_data = b04_src.read(1, window=window).astype(np.float32)
-                    b08_data = b08_src.read(1, window=window).astype(np.float32)
-
-                    # Get transform for the window to compute actual bbox
-                    window_transform = b04_src.window_transform(window)
-                    bbox_computed = None
-                    try:
-                        # Compute bounds in source CRS
-                        left = window_transform.c
-                        top = window_transform.f
-                        right = left + window_transform.a * window_size
-                        bottom = top + window_transform.e * window_size
-                        bbox_computed = [left, bottom, right, top]
-                    except Exception:
-                        pass
-
-            stats = self._compute_ndvi_stats(b04_data, b08_data)
-
-            if stats is None:
-                return {
-                    "error": "No valid NDVI pixels found",
-                    "source_item_id": item_result.get("id"),
-                    "download_time_sec": round(time.time() - start_time, 2),
-                }
-
-            # Classify using ml_inference thresholds
-            classification = self._classify_ndvi_pixels(stats.pop("_valid_ndvi"))
-
-            download_time = time.time() - start_time
-
-            return {
-                **stats,
-                "classification": classification,
-                "bbox_computed": bbox_computed,
-                "source_item_id": item_result.get("id"),
-                "datetime": item_result.get("datetime"),
-                "cloud_cover": item_result.get("cloud_cover"),
-                "download_time_sec": round(download_time, 2),
-            }
-
-        except Exception as e:
-            logger.exception("NDVI computation failed for item %s", item_result.get("id"))
-            return {
-                "error": str(e),
-                "source_item_id": item_result.get("id"),
-                "download_time_sec": round(time.time() - start_time, 2),
-            }
-
-    def _classify_ndvi_pixels(self, ndvi_array: np.ndarray) -> Dict[str, Any]:
-        """Classify NDVI pixels using ml_inference thresholds."""
-        # Import thresholds from ml_inference
-        from src.services.ml_inference import CropClassifier
-
-        thresholds = CropClassifier.CROP_THRESHOLDS
-        classification = {}
-        total = len(ndvi_array)
-
-        for class_name, thresh in thresholds.items():
-            mask = (ndvi_array >= thresh["ndvi_min"]) & (ndvi_array < thresh["ndvi_max"])
-            count = int(mask.sum())
-            classification[class_name] = {
-                "count": count,
-                "percentage": round(count / total * 100, 2) if total > 0 else 0,
-            }
-
-        return classification
-
-    def compute_ndvi_timeseries(
-        self,
-        bbox: Optional[List[float]] = None,
-        datetime_range: Optional[str] = None,
-        max_cloud_cover: float = 10.0,
-    ) -> Dict[str, Any]:
-        """Compute NDVI time-series from multiple satellite scenes.
-
-        This is the key method that makes STAC actually useful — it searches
-        for imagery and computes real NDVI statistics for each scene.
-
-        Args:
-            bbox: Bounding box [west, south, east, north]
-            datetime_range: ISO 8601 range like "2024-01-01/2024-06-30"
-            max_cloud_cover: Maximum cloud cover percentage
-
-        Returns:
-            Dict with time-ordered list of NDVI stats per scene
-        """
-        # Search for imagery
-        search_results = self.search_imagery(
-            bbox=bbox,
-            datetime_range=datetime_range,
-            max_cloud_cover=max_cloud_cover,
-            limit=20,
-        )
-
-        if "error" in search_results:
-            return search_results
-
-        # Compute NDVI for each scene with red+NIR bands
-        ndvi_timeseries = []
-        for item in search_results.get("items", []):
-            assets = item.get("assets", {})
-            red_key, nir_key = self._resolve_band_keys(assets)
-            if red_key and nir_key:
-                ndvi_result = self.compute_ndvi_from_item(item)
-                if "error" not in ndvi_result:
-                    ndvi_timeseries.append(ndvi_result)
-                else:
-                    logger.warning(
-                        "NDVI computation failed for %s: %s",
-                        item.get("id"),
-                        ndvi_result.get("error"),
-                    )
-
-        # Sort by datetime
-        ndvi_timeseries.sort(key=lambda x: x.get("datetime", ""))
-
-        return {
-            "catalog": self.catalog_name,
-            "bbox": bbox or RWANDA_BBOX,
-            "datetime_range": datetime_range,
-            "max_cloud_cover": max_cloud_cover,
-            "scene_count": len(ndvi_timeseries),
-            "timeseries": ndvi_timeseries,
-            "summary": {
-                "mean_ndvi_avg": (
-                    round(np.mean([x["mean_ndvi"] for x in ndvi_timeseries]), 4)
-                    if ndvi_timeseries
-                    else None
-                ),
-                "mean_ndvi_std": (
-                    round(np.std([x["mean_ndvi"] for x in ndvi_timeseries]), 4)
-                    if ndvi_timeseries
-                    else None
-                ),
-            },
-        }
-
-    def get_ndvi_data(
-        self,
-        bbox: Optional[List[float]] = None,
-        datetime_range: Optional[str] = None,
-        max_cloud_cover: float = 10.0,
-    ) -> Dict[str, Any]:
-        """Get NDVI data with actual computation.
-
-        Computes NDVI statistics from satellite imagery bands.
-        Alias for compute_ndvi_timeseries().
-        """
-        return self.compute_ndvi_timeseries(
-            bbox=bbox,
-            datetime_range=datetime_range,
-            max_cloud_cover=max_cloud_cover,
-        )
-
-
     # ------------------------------------------------------------------
     # Bbox-windowed NDVI from COG bands (for admin boundary analysis)
     # ------------------------------------------------------------------
@@ -517,8 +310,8 @@ class STACService:
     ) -> Dict[str, Any]:
         """Compute NDVI statistics for a specific bounding box from a STAC item.
 
-        Unlike compute_ndvi_from_item (center 512x512), this reads only the
-        pixels inside the given bbox, making it efficient for admin boundaries.
+        Reads only the pixels inside the given bbox, at most max_pixels a side,
+        making it efficient for admin boundaries.
 
         Args:
             item_result: STAC item dict with assets.B04.href and assets.B08.href
@@ -590,7 +383,6 @@ class STACService:
                     "download_time_sec": round(time.time() - start_time, 2),
                 }
 
-            stats.pop("_valid_ndvi", None)
             return {
                 **stats,
                 "source_item_id": item_result.get("id"),

@@ -70,14 +70,6 @@ class TestSTACServiceUpgrade:
                 mock_http.assert_called_once()
                 assert result["matched"] == 0
 
-    def test_compute_ndvi_from_item_missing_bands(self):
-        """compute_ndvi_from_item should return error if B04/B08 missing."""
-        from src.services.stac_service import STACService
-
-        service = STACService()
-        result = service.compute_ndvi_from_item({"id": "test", "assets": {"visual": {}}})
-        assert "error" in result
-        assert "B04" in result["error"] or "B08" in result["error"]
 
 
 
