@@ -15,7 +15,7 @@ import calendar
 import json
 import logging
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1791,7 +1791,7 @@ _SAR_NDVI_READ = "SAR-predicted NDVI"
 
 
 async def _collect_reads(
-    reads: dict[str, asyncio.Future[Any]], timeout_s: float,
+    reads: Mapping[str, asyncio.Future[Any]], timeout_s: float,
 ) -> tuple[dict[str, Any], list[str]]:
     """The results of the reads done within ``timeout_s``, by name, and the names of the rest.
 

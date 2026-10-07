@@ -68,6 +68,42 @@ def test_a_sentinel1_window_read_gives_up(silent_server, monkeypatch):
     assert time.monotonic() - started < 20
 
 
+@pytest.fixture
+def stac_server() -> Iterator[str]:
+    """Base URL of a server that answers a minimal STAC API landing page."""
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Landing(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({
+                "type": "Catalog", "id": "local", "description": "test", "stac_version": "1.0.0",
+                "conformsTo": ["https://api.stacspec.org/v1.0.0/core"], "links": [],
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Landing)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_stac_catalog_that_answers_is_opened_with_the_limits(stac_server, monkeypatch):
+    monkeypatch.setitem(stac_service.STAC_CATALOGS, "local", stac_server)
+    svc = stac_service.STACService("local")
+    assert svc._pystac_client is not None
+    assert svc._pystac_client._stac_io.timeout == stac_service.STAC_HTTP_TIMEOUT
+
+
 def test_a_stac_catalog_that_never_answers_is_given_up(silent_server, monkeypatch):
     monkeypatch.setitem(stac_service.STAC_CATALOGS, "silent", silent_server)
     monkeypatch.setattr(stac_service, "STAC_HTTP_TIMEOUT", (2, 2))

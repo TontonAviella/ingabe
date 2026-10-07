@@ -102,7 +102,7 @@ _CHIRPS_CACHE_DIR = Path(os.environ.get("CHIRPS_CACHE_DIR", "/tmp/ingabe_cache/c
 _CHIRPS_KEPT_BOUNDS = (28.5, -3.2, 31.5, -0.7)  # west, south, east, north: Rwanda with a margin
 _CHIRPS_PRELIM_MAX_AGE_S = 7 * 86400  # preliminary days are read again after a week, in case CHC revises one
 # A day the server does not have yet (404) is asked for again after this long.
-_chirps_unpublished: TTLCache[str, bool] = TTLCache(maxsize=4096, ttl=3 * 3600)
+_chirps_unpublished: TTLCache = TTLCache(maxsize=4096, ttl=3 * 3600)  # url -> True
 _chirps_unpublished_lock = threading.Lock()
 # One download per file at a time: the season fetch and the forecast's bias
 # correction ask for the same recent days at once.

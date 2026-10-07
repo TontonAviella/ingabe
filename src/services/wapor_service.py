@@ -100,8 +100,8 @@ GDAL_COG_ENV = {
 # process (a report asks for the same cell and dekads again, and every read takes
 # ~6-10 s). A dekad not published yet (404) is asked for again after a while;
 # other failures are not kept.
-_points: LRUCache[tuple[str, float, float], int | None] = LRUCache(maxsize=8192)
-_unpublished: TTLCache[str, bool] = TTLCache(maxsize=1024, ttl=3 * 3600)
+_points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
+_unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
 _cache_lock = threading.Lock()
 # One round for the 12 dekads a query reads at most.
 _READ_WORKERS = 12
