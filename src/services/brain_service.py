@@ -600,6 +600,35 @@ class BrainService:
             )
         return [_row_to_page(r) for r in rows]
 
+    async def slugs_in_user_scope(
+        self, conn: asyncpg.Connection, slugs: list[str]
+    ) -> set[str]:
+        """The slugs among `slugs` that are in the session user's own scope.
+
+        In scope: pages the user owns or was shared on, public pages, and their
+        partner's internal pages. RLS also shows every page with no
+        access_scope (legacy "NULL is public") whoever owns it; those are left
+        out here. Test pages written under random owners reached every user's
+        Sage memory packet that way (2026-10-07).
+        """
+        if not slugs:
+            return set()
+        rows = await conn.fetch(
+            f"""
+            SELECT slug FROM brain_pages
+            WHERE slug = ANY($1::text[])
+            {_PARTNER_FILTER.format(a="")}
+            AND (
+                access_scope IN ('public', 'partner_internal')
+                OR owner_uuid::text = coalesce(current_setting('app.user_id', true), '')
+                OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY(viewer_uuids)
+                OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY(editor_uuids)
+            )
+            """,
+            slugs,
+        )
+        return {r["slug"] for r in rows}
+
     async def resolve_slugs(self, conn: asyncpg.Connection, partial: str) -> list[str]:
         pf = _PARTNER_FILTER.format(a="")
         exact = await conn.fetch(
