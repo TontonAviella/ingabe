@@ -52,11 +52,6 @@ class TestSTACServiceInstantiation:
         with pytest.raises(KeyError):
             STACService(catalog_name="invalid_catalog")
 
-    def test_custom_catalog(self):
-        """Verify custom catalog initialization."""
-        service = STACService(catalog_name="planetary_computer")
-        assert service.catalog_name == "planetary_computer"
-        assert service.catalog_url == STAC_CATALOGS["planetary_computer"]
 
 
 class TestSearchImagery:
@@ -196,9 +191,3 @@ class TestGetSTACServiceSingleton:
         service2 = get_stac_service("earth_search")
         assert service1 is service2
 
-    def test_get_stac_service_different_catalog_returns_new_instance(self):
-        """Verify different instance for different catalog."""
-        service1 = get_stac_service("earth_search")
-        service2 = get_stac_service("planetary_computer")
-        assert service1 is not service2
-        assert service1.catalog_name != service2.catalog_name

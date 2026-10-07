@@ -9,14 +9,16 @@ import src.services.stac_service as stac_module
 from src.services.stac_service import SENTINEL2_COLLECTIONS, STAC_CATALOGS, STACService
 
 
-# CDSE was dropped on 2026-10-07 (ISSUE-001 of 2026-07-09 had fixed its endpoint): its band files
-# need CDSE credentials, so its scenes could never feed NDVI. Re-adding it needs that access first.
-def test_cdse_is_not_offered() -> None:
-    assert "cdse" not in STAC_CATALOGS
-    assert "cdse" not in SENTINEL2_COLLECTIONS
+# Dropped on 2026-10-07 because NDVI could never read their band files: CDSE's need CDSE credentials
+# (ISSUE-001 of 2026-07-09 had fixed its endpoint), Planetary Computer's a signed URL. Re-adding one
+# needs that access in the band readers first.
+@pytest.mark.parametrize("catalog", ["cdse", "planetary_computer"])
+def test_catalogs_whose_bands_we_cannot_read_are_not_offered(catalog) -> None:
+    assert catalog not in STAC_CATALOGS
+    assert catalog not in SENTINEL2_COLLECTIONS
 
 
-@pytest.mark.parametrize("provider", ["earth_search", "planetary_computer"])
+@pytest.mark.parametrize("provider", ["earth_search"])
 def test_each_stac_provider_posts_and_normalizes_results(provider, monkeypatch) -> None:
     monkeypatch.setattr(stac_module, "_PYSTAC_CLIENT_AVAILABLE", False)
     service = STACService(provider)
@@ -72,7 +74,7 @@ def test_each_stac_provider_posts_and_normalizes_results(provider, monkeypatch) 
     ]
 
 
-@pytest.mark.parametrize("provider", ["earth_search", "planetary_computer"])
+@pytest.mark.parametrize("provider", ["earth_search"])
 def test_each_stac_provider_returns_scoped_errors(provider, monkeypatch) -> None:
     monkeypatch.setattr(stac_module, "_PYSTAC_CLIENT_AVAILABLE", False)
     service = STACService(provider)
