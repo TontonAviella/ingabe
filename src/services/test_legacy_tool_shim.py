@@ -307,3 +307,37 @@ async def test_insurance_report_tells_sage_which_sources_did_not_arrive_in_time(
     assert "say plainly which are missing" in result["instruction"]
     assert "data" not in result
     json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_anomaly_alerts_show_the_districts_monthly_anomaly(monkeypatch):
+    """get_anomaly_alerts passes district_ndvi_anomaly's answer through and offers the district map."""
+    from src.services import district_ndvi_anomaly
+
+    row = {"district": "Gasabo", "month": "2026-09", "month_ended_days_ago": 7, "z": -1.27, "ndvi": 0.335,
+           "clear_fraction": 1.0, "alert": "moderate", "alert_label": "Vegetation below normal for the month"}
+    answer = {"source": "DE Africa", "scale": "...", "checked": 30, "districts": [row], "alerts": [row],
+              "missing": [{"district": "Rubavu", "reason": "not read within 90 s; ask again shortly"}]}
+    reads = AsyncMock(return_value=answer)
+    monkeypatch.setattr(district_ndvi_anomaly, "district_ndvi_anomalies", reads)
+    monkeypatch.setattr("src.routes.message_routes._ensure_rwanda_postgis_connection", AsyncMock(return_value="C1"))
+
+    result = await execute_legacy_tool("get_anomaly_alerts", _make_ctx({"district": "gasabo"}))
+
+    assert result["status"] == "success"
+    assert {k: result[k] for k in answer} == answer
+    assert result["postgis_connection_id"] == "C1"
+    assert reads.await_args.kwargs == {"district": "gasabo", "severity": ""}
+    json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_anomaly_alerts_unknown_district_is_an_error_for_the_model(monkeypatch):
+    from src.services import district_ndvi_anomaly
+
+    monkeypatch.setattr(district_ndvi_anomaly, "district_ndvi_anomalies",
+                        AsyncMock(side_effect=ValueError("no district named 'Kigali'")))
+
+    result = await execute_legacy_tool("get_anomaly_alerts", _make_ctx({"district": "Kigali"}))
+
+    assert result == {"status": "error", "error": "no district named 'Kigali'"}

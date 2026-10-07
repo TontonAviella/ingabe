@@ -63,8 +63,8 @@ GENERATED_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
     'get_anomaly_alerts': {
         'name': 'get_anomaly_alerts',
-        'description': 'Read the latest vegetation anomaly alerts. Returns locations where NDVI dropped significantly below normal, indicating crop stress, drought, or disease. Use alongside get_insurance_intelligence for situation overviews — it adds spatial hotspot detail. Also use standalone when the user asks specifically about crop problems, stress alerts, or anomalies.',
-        'parameters': {'type': 'object', 'properties': {'severity': {'type': 'string', 'enum': ['high', 'moderate'], 'description': 'Filter by severity level'}, 'district': {'type': 'string', 'description': 'Filter to a specific district'}}, 'required': []},
+        'description': "Each Rwanda district's vegetation (NDVI) compared with the normal for the month: Digital Earth Africa's monthly NDVI anomaly against the 1984-2020 Landsat climatology, averaged over the district's clear pixels. A month is published about a week after it ends; each result gives its month and how many days ago that month ended. Returns every district worst first, the districts below normal enough to be alerts (the scale is in the result), and the districts with no value and why. District averages, not field detail. Use alongside get_insurance_intelligence for situation overviews, and when the user asks where vegetation or crops are below normal, about crop stress, or about anomalies. The first request after a month is published can take about 90 s and list some districts as not read yet; asking again fills them in.",
+        'parameters': {'type': 'object', 'properties': {'severity': {'type': 'string', 'enum': ['high', 'moderate'], 'description': 'Only alerts of this class (the scale is in the result)'}, 'district': {'type': 'string', 'description': 'Filter to a specific district'}}, 'required': []},
     },
     'get_yield_risk': {
         'name': 'get_yield_risk',
