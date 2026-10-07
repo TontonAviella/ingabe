@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** The STAC raw HTTP fallback posted bare dates ("2026-09-07/2026-10-07"); Earth Search and CDSE answer 400, so every fallback
+  search found nothing, and its only payload test mocked `post` and asserted the bare range. Rule: a request to an external API has one test
+  against a server that answers like the real one (its validation, a recorded response). Gate: `test_stac_http_search.py`; review only elsewhere.
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
