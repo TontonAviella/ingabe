@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** Sage's memory packet padded an empty result with the 8 newest Brain pages RLS showed: 7 were other owners' test pages
+  ("Rwanda has two rainy seasons"), and the user's own orthophoto page had been dropped by a filter that parsed only `layer-` slugs. Rule: context
+  put into a turn matches the question or the viewport and is in the user's scope; never pad it. Gate: `test_brain_context_packet.py`, `test_brain_user_scope.py`.
 - **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
   command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
   can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
