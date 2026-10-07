@@ -260,3 +260,20 @@ def test_number_tested_for_truth_before_rounding_is_flagged(repo):
     assert [(v.rule, v.line) for v in found] == [
         ("zero-as-missing", 3), ("zero-as-missing", 4), ("zero-as-missing", 5),
     ]
+
+
+def test_openai_client_built_outside_llm_loop_is_flagged(repo):
+    repo("src/services/llm_loop.py", "from openai import AsyncOpenAI\nc = AsyncOpenAI(api_key='k')\n")
+    repo("src/routes/r.py", """
+        import openai
+        from openai import AsyncOpenAI
+        from src.services.llm_loop import ModelClient
+        a = AsyncOpenAI(api_key="k")
+        b = openai.OpenAI(api_key="k")
+        ok = ModelClient(base_url="u", api_key="k")
+    """)
+    repo("src/services/test_x.py", "from openai import AsyncOpenAI\nc = AsyncOpenAI(api_key='k')\n")
+    found = cs.check_llm_clients()
+    assert [(v.rule, v.path, v.line, v.detail) for v in found] == [
+        ("llm-client", "src/routes/r.py", 5, "AsyncOpenAI"), ("llm-client", "src/routes/r.py", 6, "OpenAI"),
+    ]

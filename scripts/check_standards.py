@@ -29,6 +29,9 @@ Checks (rule id -> invariant in CODING_STANDARDS.md):
   shadow-package    HW  a module directly under src/ named like a dependency in
                         requirements.txt; src/ has no __init__.py, so pytest puts
                         it on sys.path and `import <dependency>` loads ours
+  llm-client        HW  an OpenAI SDK client built outside src/services/llm_loop.py;
+                        the SDK's per-call work then runs on the app's event loop
+                        and every request waits (use ModelClient)
 
 Existing debt is listed in scripts/standards_baseline.json. The baseline is a
 ratchet:
@@ -633,6 +636,35 @@ def check_shadowed_packages() -> list[Violation]:
     return out
 
 
+LLM_CLIENT_OWNER = "src/services/llm_loop.py"
+SDK_CLIENTS = {"AsyncOpenAI", "OpenAI"}
+
+
+def check_llm_clients() -> list[Violation]:
+    """OpenAI SDK clients are built only in llm_loop.py, which runs them off the app's event loop.
+
+    Building one per call and letting the SDK prepare requests on the loop held it 0.2-1.9 s per
+    Sage model call (2026-10-07)."""
+    out: list[Violation] = []
+    for p in _iter_files(("src",), (".py",)):
+        if _rel(p) == LLM_CLIENT_OWNER:
+            continue
+        tree = _parse(p)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in SDK_CLIENTS:
+                out.append(Violation(
+                    "llm-client", _rel(p), node.lineno, name,
+                    f"`{name}(...)` runs the SDK's request building on the app's event loop; "
+                    f"use src.services.llm_loop.ModelClient",
+                ))
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -646,6 +678,7 @@ def collect() -> list[Violation]:
         + check_compose_restart_policies()
         + check_agents_md_sync()
         + check_shadowed_packages()
+        + check_llm_clients()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 

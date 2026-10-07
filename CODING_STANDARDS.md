@@ -167,6 +167,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** Every Sage model call held the app's event loop with Python work: a new AsyncOpenAI per call (SSL context, TLS handshake), the SDK's walk
+  over every message and tool schema, and on the first call after a restart its import of `openai.resources` (12.6 s in a copy of mundi-app). Rule: model
+  calls go through `src/services/llm_loop.ModelClient` (its own loop thread, one client per endpoint). Gate: `llm-client`, `test_llm_loop.py` (loop delay).
 - **2026-10-07** The STAC raw HTTP fallback posted bare dates ("2026-09-07/2026-10-07"); Earth Search and CDSE answer 400, so every fallback
   search found nothing, and its only payload test mocked `post` and asserted the bare range. Rule: a request to an external API has one test
   against a server that answers like the real one (its validation, a recorded response). Gate: `test_stac_http_search.py`; review only elsewhere.
