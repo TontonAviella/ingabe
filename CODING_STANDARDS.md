@@ -160,6 +160,10 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** The drone crop map shipped a vision model's labels unmeasured: on unmistakable plots it was wrong 4 times in 9
+  (maize read as cassava). Rule: a model's labels are measured against checked examples before they show, abstain ("not sure")
+  when two independent looks disagree, and say the measured rate. Gate: review only (needs labelled examples per domain).
+
 - **2026-10-07** `get_cell_ndvi_stats` ran a blocking 40 s satellite read per sector inside `async def`: one Sage question froze
   every request (one uvicorn worker) for ~10 min, and no `wait_for` limit could fire. Rule: blocking I/O in async code goes
   through `asyncio.to_thread` with a cap and a deadline. Gate: review only (blocking calls hide behind library functions).
