@@ -108,8 +108,7 @@ async def brain_conn():
 
     url = _build_postgres_url()
     c = await asyncpg.connect(url)
-    await c.execute("SELECT set_config('app.user_id', '', false)")
-    await c.execute("DELETE FROM brain_pages WHERE slug LIKE 'test-%'")
+    await _delete_this_modules_pages(c)
     await c.execute("SELECT set_config('app.user_id', $1, false)", TEST_OWNER)
 
     # Seed one page for tests that need an existing page. Use ON CONFLICT
@@ -129,7 +128,17 @@ async def brain_conn():
     try:
         yield c
     finally:
+        await _delete_this_modules_pages(c)
         await c.close()
+
+
+async def _delete_this_modules_pages(c: asyncpg.Connection) -> None:
+    """Delete the pages this module wrote, and only those: every slug here ends
+    in -RUN_TAG. A `test-%` pattern deleted other workers' pages mid-run, and
+    with no delete at teardown the last run's pages stayed in the database
+    (some reached Sage's memory packet on 2026-10-07)."""
+    await c.execute("SELECT set_config('app.user_id', '', false)")
+    await c.execute("DELETE FROM brain_pages WHERE slug LIKE $1", f"%-{RUN_TAG}")
 
 
 @pytest.fixture
@@ -463,11 +472,11 @@ async def test_slug_validation(conn, brain):
     # Verify put_page normalizes the slug
     page = await brain.put_page(
         conn,
-        "UPPER Case Slug!",
+        f"UPPER Case Slug {RUN_TAG}!",
         PageInput(type="field", title="Slug Test", compiled_truth="Testing."),
         owner_uuid=TEST_OWNER,
     )
-    assert page.slug == "upper-case-slug"
+    assert page.slug == f"upper-case-slug-{RUN_TAG}"
 
 
 # ---------------------------------------------------------------------------

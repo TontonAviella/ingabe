@@ -160,6 +160,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
+  command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
+  can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.
@@ -168,7 +171,7 @@ lines; promote a lesson that recurs into the sections above.
   or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
 - **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
   US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
-  them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
+  them on a copy. Gate: conftest `_refuse_the_live_database` (no override; CI runs on its own database, mundidb_ci).
 - **2026-10-04** Migration b2c3d4e5f6a7 downloaded Rwanda boundaries from geoboundaries.org and raised on
   failure; the API timed out and CI failed on unchanged code. Rule: migrations read seed data from vendored
   files, never the network. Gate: `tests/test_rwanda_boundary_seed_offline.py` (network blocked).

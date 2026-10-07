@@ -50,7 +50,7 @@ Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert 
 ```bash
 docker compose up                              # Start all services (app, postgres+pgvector, redis, minio, rasterd, dagster-daemon, monitoring)
 docker compose build                           # Rebuild images
-docker compose run app pytest -xvs -n auto     # Run all tests in Docker
+docker compose run -e POSTGRES_DB=mundidb_pytest_x app pytest -xvs -n auto  # Run all tests in Docker, on a copy (conftest refuses mundidb)
 ```
 
 ### Dep upgrades — Dockerfile installs from requirements.txt, NOT pyproject.toml
