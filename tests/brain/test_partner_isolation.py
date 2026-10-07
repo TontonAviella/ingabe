@@ -16,6 +16,12 @@ Covers the five assertions that gate onboarding of customer N:
      acting_partner_id = P_A; writing a row claiming a different partner_id
      from a non-admin session fails RLS.
 
+Plus the private scope (alembic b8d4f0a2c6e1): a page written without a
+scope is 'private', read only by its owner, viewers and editors (and
+workers and admins), never by other users or by its owner's partner, and
+neither are its chunks, timeline or versions. Until 2026-10-07 such pages
+had access_scope NULL, which partner_isolation granted to everyone.
+
 The policy under test lives in:
     alembic/versions/d4e5f6a7b8c9_brain_ingestion_schema.py
         :: CREATE POLICY partner_isolation_brain_pages ON brain_pages
@@ -24,6 +30,7 @@ Style mirrors src/services/test_brain_service.py (asyncpg + set_config GUC).
 """
 
 import uuid
+from datetime import date as date_type
 
 import asyncpg
 import pytest
@@ -46,6 +53,8 @@ PARTNER_B = str(uuid.uuid4())
 USER_A = str(uuid.uuid4())
 USER_B = str(uuid.uuid4())
 USER_ADMIN = str(uuid.uuid4())
+USER_VIEWER = str(uuid.uuid4())
+USER_EDITOR = str(uuid.uuid4())
 
 # Unique slug prefix so parallel test runs don't collide.
 RUN_TAG = uuid.uuid4().hex[:8]
@@ -401,3 +410,217 @@ async def test_adversarial_queries_never_leak(conn_a, seeded_db):
         f"{leaks}/{probes} adversarial queries leaked partner B's slug to partner "
         "A's session. RLS policy regression — block merge."
     )
+
+
+# ---------------------------------------------------------------------------
+# Private scope — a page written without a scope is its owner's
+# ---------------------------------------------------------------------------
+
+_SCOPED_CHILDREN = (
+    "brain_content_chunks",
+    "brain_timeline_entries",
+    "brain_page_versions",
+)
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def private_page(seeded_db):
+    """USER_A's page, written by a worker (empty app.user_id, like the hook
+    processor) without naming a scope, shared with a viewer and an editor,
+    with one chunk, one timeline entry and one version."""
+    from src.services.brain_service import BrainService, ChunkInput, TimelineInput
+
+    slug = f"iso-private-{RUN_TAG}"
+    worker = await _open("", None)
+    brain = BrainService()
+    await worker.execute(
+        """
+        INSERT INTO brain_pages
+            (slug, type, title, compiled_truth, owner_uuid, viewer_uuids, editor_uuids)
+        VALUES ($1, 'field', 'Cyampirita orthophoto', 'Raster layer: Cyampirita.',
+                $2::uuid, ARRAY[$3::uuid], ARRAY[$4::uuid])
+        """,
+        slug, USER_A, USER_VIEWER, USER_EDITOR,
+    )
+    await brain.upsert_chunks(worker, slug, [
+        ChunkInput(chunk_index=0, chunk_text="Raster layer: Cyampirita."),
+    ])
+    await brain.add_timeline_entry(
+        worker, slug,
+        TimelineInput(date=date_type(2026, 10, 7), summary="Raster uploaded"),
+        owner_uuid=USER_A,
+    )
+    await brain.create_version(worker, slug)
+
+    yield slug
+
+    await worker.execute("DELETE FROM brain_pages WHERE slug = $1", slug)
+    await worker.close()
+
+
+async def _what_session_sees(conn, slug: str) -> dict[str, int]:
+    """Rows of the page and of each scoped child table the session can read.
+    Children are looked up by the page id a worker sees, so a session that
+    cannot see the page is still asked about its rows directly."""
+    page_id = await _page_id(slug)
+    seen = {
+        "brain_pages": await conn.fetchval(
+            "SELECT count(*) FROM brain_pages WHERE slug = $1", slug
+        )
+    }
+    for table in _SCOPED_CHILDREN:
+        seen[table] = await conn.fetchval(
+            f"SELECT count(*) FROM {table} WHERE page_id = $1", page_id
+        )
+    return seen
+
+
+async def _page_id(slug: str) -> int:
+    worker = await _open("", None)
+    try:
+        return await worker.fetchval("SELECT id FROM brain_pages WHERE slug = $1", slug)
+    finally:
+        await worker.close()
+
+
+@pytest.mark.postgres
+async def test_page_written_without_a_scope_is_private(private_page):
+    worker = await _open("", None)
+    try:
+        scopes = {
+            table: await worker.fetchval(
+                f"SELECT access_scope FROM {table} WHERE page_id = $1",
+                await _page_id(private_page),
+            )
+            for table in _SCOPED_CHILDREN
+        }
+        scopes["brain_pages"] = await worker.fetchval(
+            "SELECT access_scope FROM brain_pages WHERE slug = $1", private_page
+        )
+    finally:
+        await worker.close()
+
+    assert scopes == {table: "private" for table in (*_SCOPED_CHILDREN, "brain_pages")}
+
+
+@pytest.mark.postgres
+async def test_a_page_scope_can_never_be_missing(seeded_db):
+    """NULL used to mean public; it can no longer be stored at all."""
+    worker = await _open("", None)
+    try:
+        with pytest.raises(asyncpg.NotNullViolationError):
+            await worker.execute(
+                """
+                INSERT INTO brain_pages (slug, type, title, owner_uuid, access_scope)
+                VALUES ($1, 'field', 'no scope', $2::uuid, NULL)
+                """,
+                f"iso-null-scope-{RUN_TAG}", USER_A,
+            )
+    finally:
+        await worker.close()
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "user, partner",
+    [
+        (USER_B, PARTNER_B),  # another partner's user
+        (USER_B, PARTNER_A),  # a colleague at the owner's partner
+        (USER_B, None),  # a user with no partner
+    ],
+    ids=["other-partner", "owners-partner", "no-partner"],
+)
+async def test_private_page_and_its_children_hidden_from_other_users(
+    private_page, user, partner
+):
+    conn = await _open(user, partner)
+    try:
+        seen = await _what_session_sees(conn, private_page)
+    finally:
+        await conn.close()
+
+    assert seen == {"brain_pages": 0, **{t: 0 for t in _SCOPED_CHILDREN}}, (
+        f"RLS LEAK: another user's session read a private page or its rows: {seen}"
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize(
+    "user, partner, role",
+    [
+        (USER_A, PARTNER_A, None),  # owner
+        (USER_VIEWER, None, None),
+        (USER_EDITOR, PARTNER_B, None),
+        ("", None, None),  # worker: hook processor, embeddings backfill
+        (USER_ADMIN, None, "admin"),
+    ],
+    ids=["owner", "viewer", "editor", "worker", "admin"],
+)
+async def test_private_page_and_its_children_visible_to_its_members(
+    private_page, user, partner, role
+):
+    conn = await _open(user, partner, role=role)
+    try:
+        seen = await _what_session_sees(conn, private_page)
+    finally:
+        await conn.close()
+
+    assert seen == {"brain_pages": 1, **{t: 1 for t in _SCOPED_CHILDREN}}
+
+
+@pytest.mark.postgres
+async def test_another_user_cannot_overwrite_a_private_page(private_page):
+    """put_page upserts by slug. While NULL was public, another user's upsert
+    on the same slug silently replaced the owner's content."""
+    conn_b = await _open(USER_B, PARTNER_B)
+    try:
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await conn_b.execute(
+                """
+                INSERT INTO brain_pages (slug, type, title, owner_uuid)
+                VALUES ($1, 'field', 'overwritten', $2::uuid)
+                ON CONFLICT (slug) DO UPDATE SET title = EXCLUDED.title
+                """,
+                private_page, USER_B,
+            )
+        assert await conn_b.execute(
+            "UPDATE brain_pages SET title = 'overwritten' WHERE slug = $1", private_page
+        ) == "UPDATE 0"
+    finally:
+        await conn_b.close()
+
+    owner = await _open(USER_A, PARTNER_A)
+    try:
+        title = await owner.fetchval("SELECT title FROM brain_pages WHERE slug = $1", private_page)
+    finally:
+        await owner.close()
+    assert title == "Cyampirita orthophoto"
+
+
+@pytest.mark.postgres
+async def test_no_policy_grants_a_page_by_its_missing_scope(seeded_db):
+    """Gate on the policy text itself, so a new or edited partner_isolation
+    policy cannot bring back "NULL is public" on any scoped Brain table."""
+    worker = await _open("", None)
+    try:
+        rows = await worker.fetch(
+            """
+            SELECT tablename, qual FROM pg_policies
+            WHERE tablename = ANY($1::text[]) AND policyname LIKE 'partner_isolation_%'
+            """,
+            ["brain_pages", *_SCOPED_CHILDREN, "brain_tables", "brain_entity_refs"],
+        )
+        column = await worker.fetchrow(
+            """
+            SELECT is_nullable, column_default FROM information_schema.columns
+            WHERE table_name = 'brain_pages' AND column_name = 'access_scope'
+            """
+        )
+    finally:
+        await worker.close()
+
+    assert len(rows) == 6
+    for row in rows:
+        assert "access_scope IS NULL" not in row["qual"], row["tablename"]
+    assert column["is_nullable"] == "NO"
+    assert column["column_default"].startswith("'private'")

@@ -55,8 +55,9 @@ def _entry_on_visible_map(
     entry: _MemoryEntry,
     visible_layer_ids: set[str] | None,
 ) -> bool:
-    """A page about a layer on the map the user is looking at: in their scope
-    whoever uploaded the layer."""
+    """A page about a layer on the map the user is looking at. Retrieval only
+    returns pages the user may read, so a teammate's layer page arrives here
+    only when it is public or shared with the user (private since 2026-10-07)."""
     if visible_layer_ids is None:
         return False
     layer_id = _layer_id_from_slug(entry.slug)
