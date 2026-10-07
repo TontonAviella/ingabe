@@ -166,6 +166,10 @@ def _read_bbox_bands(
     except Exception as e:
         return "error", str(e)
 
+# Sentinel-2 L2A scene classes (SCL) a vegetation index must not use:
+# 0=nodata, 1=saturated, 3=cloud shadow, 8=cloud medium, 9=cloud high, 10=cirrus, 11=snow.
+SCL_UNUSABLE = frozenset({0, 1, 3, 8, 9, 10, 11})
+
 
 class STACService:
     """Service for discovering satellite imagery via STAC API.

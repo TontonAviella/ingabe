@@ -48,7 +48,7 @@ import numpy as np
 
 from src.services import raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
-from src.services.stac_service import stac_datetime_interval
+from src.services.stac_service import SCL_UNUSABLE, stac_datetime_interval
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +68,6 @@ MAX_WINDOW_PIXELS = 4_000_000
 
 _STAC_ROOT = "https://explorer.digitalearth.africa/stac"
 _STAC_SEARCH = f"{_STAC_ROOT}/search"
-
-# SCL values that should be masked as invalid (matches EVALSCRIPT_AGRI_INDICES).
-# 0=nodata, 1=saturated, 3=cloudShadow, 8=cloudMed, 9=cloudHigh, 10=cirrus, 11=snow
-_SCL_INVALID = {0, 1, 3, 8, 9, 10, 11}
 
 # Index → required bands. B08 NIR, B04 Red, B03 Green, B02 Blue, B05 RedEdge, B11 SWIR1.
 _INDEX_BANDS: Dict[str, Tuple[str, ...]] = {
@@ -589,7 +585,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays[next(iter(needed_bands))] > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays[next(iter(needed_bands))] > 0)
             idx_arr = _compute_index(band_arrays, index)
             stats = _stats_from_array(idx_arr, valid)
 
@@ -707,7 +703,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(max_shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
 
             dt = item["properties"].get("datetime", "")
             parsed: Dict[str, Any] = {
