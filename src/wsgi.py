@@ -30,7 +30,7 @@ from src.routes.cog_tile_router import cog_tile_router
 from src.routes.partner_routes import router as partner_router
 from src.routes.profile_routes import router as profile_router
 from src.routes import auth_routes, companies_routes
-from src.services import workos_auth
+from src.services import sage_flight_recorder, workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
 from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
@@ -202,6 +202,9 @@ async def lifespan(app: FastAPI):
             logging.getLogger("src.services.workos_auth").exception("WorkOS is misconfigured: sign-in will fail")
 
     workos_warm_task = asyncio.create_task(_warm_workos())
+    # The first Sage turn after a restart built the Langfuse tracer on the event loop, and importing
+    # its OTLP exporter held the loop ~0.7 s (measured 2026-10-07). Build it now, in a thread.
+    tracer_warm_task = asyncio.create_task(asyncio.to_thread(sage_flight_recorder.get_tracer))
 
     # Start brain hook processor as a background task (processes upload hooks)
     import asyncio
@@ -243,6 +246,7 @@ async def lifespan(app: FastAPI):
     yield
 
     workos_warm_task.cancel()
+    tracer_warm_task.cancel()
     if hook_task is not None:
         hook_task.cancel()
         with suppress(asyncio.CancelledError):
