@@ -149,6 +149,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `MUNDI_USE_HERMES` | `0` (default) → existing hand-rolled chat loop in `process_chat_interaction_task`. `1` → route through `src/services/hermes_runtime.py` (Hermes Agent runtime). Toggle this flag for the Phase 2 cutover. Rollback = back to `0` + restart. |
 | `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
 | `SAGE_TOOL_TIMEOUT_SECONDS` | Longest one tool call may run in the hand-rolled loop (default 120, at least 15). Past it the tool is stopped and the model told to answer with what it has. Blocking work inside a tool must still run off the event loop (`asyncio.to_thread`), or it freezes every request and this limit cannot fire. |
+| `CHIRPS_CACHE_DIR` | Where the Rwanda part of each downloaded CHIRPS day is kept (default `/tmp/ingabe_cache/chirps`, the `ingabe-cache` volume; ~12 KB a day). Delete a file to force a fresh download of that day. |
 | `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
 | `BRAIN_EMBEDDINGS_BASE_URL` | Embeddings endpoint (empty = `OLLAMA_BASE_URL`). On a Mac use `http://host.docker.internal:11434`: the native Ollama has the same `nomic-embed-text` model and answers in ~40 ms vs ~3 s on the CPU-only container. |

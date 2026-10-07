@@ -27,8 +27,11 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import requests
 
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+
 try:
     from pystac_client import Client as PystacClient
+    from pystac_client.stac_api_io import StacApiIO
 
     _PYSTAC_CLIENT_AVAILABLE = True
 except ImportError:
@@ -50,6 +53,13 @@ STAC_CATALOGS = {
     "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
     "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
+
+# Seconds to connect and to read for pystac-client requests: it sets none by default, so a stalled
+# catalog held the calling thread for as long as the server kept the connection open. A read that
+# times out is tried again, so the retries are capped too: at most 3 x 30 s. Connecting gets 20 s, as
+# in gdal_http.GDAL_HTTP_TIMEOUTS.
+STAC_HTTP_TIMEOUT = (20, 30)
+STAC_HTTP_RETRIES = 2
 
 # Rwanda bounding box (approximate)
 RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
@@ -146,7 +156,13 @@ class STACService:
 
         if _PYSTAC_CLIENT_AVAILABLE:
             try:
-                self._pystac_client = PystacClient.open(self.catalog_url)
+                # pystac-client 0.7.7 drops a timeout given to Client.open alone (StacApiIO.__init__
+                # resets it to None); passed with our own StacApiIO it is applied to every request.
+                self._pystac_client = PystacClient.open(
+                    self.catalog_url,
+                    stac_io=StacApiIO(max_retries=STAC_HTTP_RETRIES),
+                    timeout=STAC_HTTP_TIMEOUT,
+                )
                 logger.info("Using pystac-client for %s", catalog_name)
             except Exception as e:
                 logger.warning(
@@ -337,6 +353,7 @@ class STACService:
                 GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
                 GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
                 CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+                **GDAL_HTTP_TIMEOUTS,
             ):
                 # Open both bands via HTTP (rasterio handles /vsicurl/ automatically)
                 with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
@@ -550,6 +567,7 @@ class STACService:
                 CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
                 GDAL_HTTP_MAX_RETRY="3",
                 GDAL_HTTP_RETRY_DELAY="1",
+                **GDAL_HTTP_TIMEOUTS,
             ):
                 with rasterio.open(b04_href) as b04_src, rasterio.open(b08_href) as b08_src:
                     # Transform bbox from WGS84 to the raster's CRS

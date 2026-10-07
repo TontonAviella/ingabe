@@ -24,26 +24,63 @@ Usage:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import httpx
 import numpy as np
+
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
 _STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
 _COLLECTION = "sentinel-1-rtc"
+# Window reads of a time series run this many at a time. One read takes ~2 s, and a
+# SAR-predicted NDVI read 20 to 100 of them one after another (2026-10-07: 47 s and
+# 205 s of an insurance report). Part of each read holds the GIL, so more at once
+# delays the app's event loop: worst wake-up 0.33 s at 1, 0.45 s at 3, 1.4 s at 8
+# (90 s of training, measured in mundi-app on 2026-10-07).
+_PARALLEL_READS = 3
+
+
+# Planetary Computer assets are read with a SAS token for their storage container.
+# planetary_computer.sign fetches it with no timeout and ten retries with growing
+# pauses, so one stalled token request held a reading thread for minutes
+# (2026-10-07); the token is fetched here, with a time limit, and reused until a
+# minute before it expires.
+_SAS_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token"
+_SAS_TIMEOUT = httpx.Timeout(30.0, connect=20.0)  # connecting gets 20 s, as in gdal_http.GDAL_HTTP_TIMEOUTS
+_sas_tokens: Dict[Tuple[str, str], Tuple[str, datetime]] = {}
+_sas_lock = threading.Lock()  # held while fetching, so parallel reads share one request
+
+
+def _sas_token(account: str, container: str) -> str:
+    with _sas_lock:
+        cached = _sas_tokens.get((account, container))
+        if cached and (cached[1] - datetime.now(timezone.utc)).total_seconds() > 60:
+            return cached[0]
+        r = httpx.get(f"{_SAS_TOKEN_URL}/{account}/{container}", timeout=_SAS_TIMEOUT,
+                      headers={"User-Agent": "mundi.ai/1.0"})
+        r.raise_for_status()
+        body = r.json()
+        expiry = datetime.fromisoformat(body["msft:expiry"].replace("Z", "+00:00"))
+        _sas_tokens[(account, container)] = (body["token"], expiry)
+        return body["token"]
 
 
 def _sign_href(href: str) -> str:
-    """Sign a Planetary Computer asset URL for access."""
-    try:
-        import planetary_computer
-        return planetary_computer.sign(href)
-    except ImportError:
-        logger.warning("planetary-computer package not available, using unsigned URL")
+    """Sign a Planetary Computer blob URL for reading; other URLs are returned unchanged."""
+    parsed = urlparse(href)
+    if not parsed.netloc.endswith(".blob.core.windows.net") or "se=" in parsed.query:
         return href
+    account = parsed.netloc.split(".")[0]
+    container = parsed.path.lstrip("/").split("/")[0]
+    try:
+        return f"{href}?{_sas_token(account, container)}"
     except Exception as e:
         logger.warning("Failed to sign URL %s: %s", href, e)
         return href
@@ -92,7 +129,7 @@ def _read_band_window(
 
     signed = _sign_href(href)
     try:
-        with rasterio.open(signed) as src:
+        with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(signed) as src:
             proj_bounds = transform_bounds("EPSG:4326", src.crs, *bounds)
             win = from_bounds(*proj_bounds, transform=src.transform)
             # Clamp to raster extent
@@ -193,13 +230,17 @@ class Sentinel1Service:
         vh_means: List[float] = []
         vh_stds: List[float] = []
 
-        for item in items:
-            assets = item.get("assets", {})
-            if "vv" not in assets or "vh" not in assets:
-                continue
+        usable = [item for item in items if "vv" in item.get("assets", {}) and "vh" in item.get("assets", {})]
+        with ThreadPoolExecutor(max_workers=_PARALLEL_READS) as pool:
+            reads = [
+                (pool.submit(_read_band_window, item["assets"]["vv"]["href"], bbox),
+                 pool.submit(_read_band_window, item["assets"]["vh"]["href"], bbox))
+                for item in usable
+            ]
 
-            vv_result = _read_band_window(assets["vv"]["href"], bbox)
-            vh_result = _read_band_window(assets["vh"]["href"], bbox)
+        for item, (vv_read, vh_read) in zip(usable, reads):
+            vv_result = vv_read.result()
+            vh_result = vh_read.result()
             if vv_result is None or vh_result is None:
                 continue
 

@@ -29,7 +29,6 @@ from src.services.insurance_engine import (
     _default_triggers,
     _evaluate_triggers,
     _fetch_ndvi_anomaly,
-    _fetch_sar_backscatter,
     _flatten_coords,
     _generate_recommendation,
     _load_triggers,
@@ -855,72 +854,6 @@ class TestFetchNdviAnomaly:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_sar_backscatter (mock sentinel1_service)
-# ---------------------------------------------------------------------------
-
-class TestFetchSarBackscatter:
-    def test_linear_power_values(self):
-        """VH=0.05, VV=0.3 in linear power → ratio 0.167"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result == pytest.approx(0.05 / 0.3, rel=1e-4)
-
-    def test_db_values_converted_to_linear_ratio(self):
-        """VH=-20dB, VV=-12dB → linear ratio = 10^((-20-(-12))/10) ≈ 0.158"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -20.0}, "vv": {"mean": -12.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-20.0 - (-12.0)) / 10)  # ≈ 0.158
-        assert result == pytest.approx(expected, rel=1e-4)
-        assert 0.1 < result < 0.3  # sanity: within expected VH/VV range
-
-    def test_db_values_typical_vegetation(self):
-        """VH=-15dB, VV=-8dB → healthy vegetation, ratio ≈ 0.2"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -15.0}, "vv": {"mean": -8.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-15.0 - (-8.0)) / 10)  # ≈ 0.2
-        assert result == pytest.approx(expected, rel=1e-4)
-
-    def test_service_error_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.side_effect = Exception("service down")
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_missing_stats_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {}}
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_vv_zero_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # _VALID_AUDIENCES
 # ---------------------------------------------------------------------------
 
@@ -942,12 +875,11 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc))
         pred = MagicMock()
         pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
 
         with stack:
             result = _run(compute_insurance_intelligence(
@@ -1052,7 +984,7 @@ class TestComputeInsuranceIntelligence:
         conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
-    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None, sar=None):
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
         """Return a contextlib.ExitStack context manager with all external deps patched."""
         from contextlib import ExitStack
         stack = ExitStack()
@@ -1063,13 +995,12 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        # SAR services — cloud-penetrating fallback
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = sar or {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
+        # SAR-predicted NDVI — the fallback when the NDVI anomaly cache is empty
         sar_ndvi_pred = MagicMock()
         sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
         return stack
 
     def test_returns_ok_with_district(self):
@@ -1098,6 +1029,19 @@ class TestComputeInsuranceIntelligence:
             ))
         assert result["status"] == "ok"
         assert result["data"]["season"] == "B"
+
+    def test_a_report_reads_no_sentinel1_backscatter(self):
+        """The VH/VV read fetched up to 20 scenes and was always discarded (get_backscatter returns scenes,
+        never statistics): 34 s of a report for nothing. The SAR trigger stays out until there is a source."""
+        conn = self._mock_conn()
+        conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the SAR trigger
+        with self._patches(), patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        s1.assert_not_called()
+        assert "sar_backscatter" in {t["signal"] for t in _default_triggers("full_season")}
+        assert "sar_backscatter" not in {t["signal"] for t in result["data"]["triggers"]}
 
     def test_geometry_used_for_centroid(self):
         conn = self._mock_conn()
@@ -1151,6 +1095,118 @@ class TestComputeInsuranceIntelligence:
             assert result["data"]["season_rainfall_mm"] is None
             assert "rainfall_cumulative" not in [t["signal"] for t in result["data"]["triggers"]]
             assert "do not cover the season yet" in result["report"]
+
+    @staticmethod
+    def _timed(coro):
+        """(result, seconds the coroutine took), timed inside the loop."""
+        import time as _time
+
+        async def timed():
+            started = _time.monotonic()
+            result = await coro
+            return result, _time.monotonic() - started
+        return _run(timed())
+
+    def test_a_read_that_misses_the_deadline_is_missing_and_named(self, monkeypatch):
+        """2026-10-07: slow sources held one report past Sage's 120 s tool limit, so Sage answered without
+        any of it. The report now goes out at the deadline with what arrived and names what it left out."""
+        import time as _time
+        import src.services.insurance_engine as engine
+
+        monkeypatch.setattr(engine, "_FETCH_DEADLINE_S", 0.6)
+        soil = {"status": "success", "time_series": [{"relative_soil_moisture_pct": 40.0}]}
+        conn = self._mock_conn()
+
+        def slow_soil(*args, **kwargs):
+            _time.sleep(2)
+            return soil
+
+        with self._patches(soil=soil), patch("src.services.wapor_service.query_soil_moisture", side_effect=slow_soil):
+            result, took = self._timed(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 1.5
+        assert result["status"] == "ok"
+        assert result["data"]["soil_moisture_pct"] is None
+        assert result["data"]["not_read_in_time"] == ["WaPOR soil moisture"]
+        assert "WaPOR soil moisture" in result["coverage"] and "not zero" in result["coverage"]
+        assert result["coverage"] in result["report"]
+
+    def test_a_report_with_every_read_in_time_has_no_coverage_note(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["not_read_in_time"] == []
+        assert "coverage" not in result
+        assert "Left out of this report" not in result["report"]
+
+    def test_network_reads_run_together_and_alongside_the_database(self):
+        """They used to queue: the SAR-predicted NDVI started only after the others and the database reads."""
+        import time as _time
+
+        def slow(value):
+            def read(*args, **kwargs):
+                _time.sleep(0.4)
+                return value
+            return read
+
+        async def slow_db(*args, **kwargs):
+            await asyncio.sleep(0.4)
+            return None
+
+        conn = self._mock_conn()
+        conn.fetchrow.return_value = {"mean_z": None}  # no optical anomaly: the SAR-predicted NDVI is read
+        pred = MagicMock()
+        pred.predict_ndvi.side_effect = slow({"status": "success", "predicted_ndvi": 0.3})
+        with self._patches(), \
+                patch("src.services.forecast_fusion.fetch_chirps_daily", side_effect=slow(({}, set()))), \
+                patch("src.services.wapor_service.query_et", side_effect=slow(None)), \
+                patch("src.services.wapor_service.query_soil_moisture", side_effect=slow(None)), \
+                patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", side_effect=slow(None)), \
+                patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred), \
+                patch("src.services.weather_accuracy.detect_dry_spells", side_effect=slow_db):
+            result, took = self._timed(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 0.75  # five 0.4 s reads and a 0.4 s query at once, not 2.4 s in a row
+        assert result["data"]["ndvi_z_score"] == pytest.approx((0.3 - 0.45) / 0.15, abs=0.01)
+        assert result["data"]["not_read_in_time"] == []
+
+    def test_a_report_stopped_early_leaves_no_read_waiting(self):
+        """Sage stops a tool at its time limit; the reads the report started must not be left pending."""
+        async def stuck_db(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        async def stop_early():
+            report = asyncio.ensure_future(compute_insurance_intelligence(
+                self._mock_conn(), crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+            await asyncio.sleep(0.2)
+            report.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await report
+            await asyncio.sleep(0)
+            return [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+
+        def slow_et(*args, **kwargs):
+            import time as _time
+            _time.sleep(1)  # still running when the report is stopped
+
+        with self._patches(), patch("src.services.weather_accuracy.detect_dry_spells", side_effect=stuck_db), \
+                patch("src.services.wapor_service.query_et", side_effect=slow_et):
+            assert _run(stop_early()) == []
+
+    def test_the_sar_predicted_ndvi_is_read_only_without_an_optical_anomaly(self):
+        conn = self._mock_conn()  # the anomaly cache has a z-score
+        pred = MagicMock()
+        with self._patches(), patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred):
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        pred.predict_ndvi.assert_not_called()
+        assert result["data"]["ndvi_z_score"] == -0.5
 
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
@@ -1459,12 +1515,11 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
         sar_ndvi_pred = MagicMock()
         sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
         stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
         return stack
 
     def test_dap_negative_correction(self):

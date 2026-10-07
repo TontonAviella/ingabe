@@ -1074,6 +1074,12 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 "3-5 sentences. No bullet points, no tables, no metric dumps. "
                 "End with sources in parentheses."
             )
+            if result.get("coverage"):
+                # Tried in Sage on 2026-10-07: with only the note in the result, the answer never said NDVI was missing.
+                result["instruction"] += (
+                    " Some sources did not arrive in time and 'coverage' names them: say plainly which are missing,"
+                    " and that they are missing, not zero."
+                )
 
         # Brain save — best-effort audit trail. Failure here MUST NOT
         # propagate; the user still gets their briefing.

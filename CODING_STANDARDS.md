@@ -114,6 +114,13 @@ or a hook. When you add a rule here, add or extend its gate in
 `scripts/check_standards.py` or a test, or write in the rule why it cannot be
 checked mechanically.
 
+**Mocks match the real thing.** A mock returns the shape the real function
+returns: copy it from the function's code or a recorded real call, never from
+what the caller expects. A path that tests only meet through mocks keeps one
+test against the real function or library. Three bugs hid behind mocks of a
+contract the real code never had (Lessons log 2026-10-05, 2026-10-06,
+2026-10-07). Gate: review only (whether a mock matches needs the real code).
+
 **The Docker VM is a shared memory budget.** The local stack runs in one
 Docker VM (12 GB with 4 GB of swap since 2026-10-04; it was 7.7 GB with 1 GB
 when Postgres crashed), and Postgres is the first thing to fail
@@ -160,6 +167,12 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** `get_insurance_intelligence` took 384 s (104 s warm), so Sage's 120 s limit cut it: SAR-predicted NDVI waited for the other reads,
+  ~100 CHIRPS files were downloaded per report for one pixel each, and GDAL, pystac-client and planetary_computer had no network timeout. Rule: a tool's
+  remote reads run together under one deadline below the tool limit, name what missed it, keep what does not change, and each call has its own timeout
+  (a deadline abandons a thread, it does not stop it). Gate: `test_gdal_http.py` (silent server), engine deadline tests; review only elsewhere.
+- **2026-10-07** `_fetch_sar_backscatter` read up to 20 Sentinel-1 scenes per insurance report and returned None every time since #17: it looked for
+  a `statistics` key `get_backscatter` never returns, and its tests mocked that key. Promoted: "Mocks match the real thing" (How to work). Gate: review only.
 - **2026-10-07** A Brain page with no access_scope was public: RLS granted NULL ("legacy rows pre-backfill"; the backfill never came) and put_page wrote
   NULL by default, so one user's 33 pages (orthophotos, an insurance report) were readable by every user and partner through search_brain. Rule: a missing
   value never grants access; access columns are NOT NULL with a fail-closed default. Gate: NOT NULL + `test_no_policy_grants_a_page_by_its_missing_scope`.

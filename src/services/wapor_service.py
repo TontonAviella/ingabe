@@ -26,6 +26,7 @@ Layers:
 """
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Any
@@ -33,6 +34,9 @@ from typing import Any
 import httpx
 import numpy as np
 import rasterio
+from cachetools import LRUCache, TTLCache
+
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
 
@@ -83,25 +87,52 @@ def raster_url(layer_code: str, dekad: str) -> str:
     return f"{GCS_BASE}/{layer_code}/WAPOR-3.{layer_code}.{dekad}.tif"
 
 
-# Without this, GDAL lists the bucket directory (thousands of files) on every
-# open: ~11 s per point read instead of ~6 s (measured 2026-10-04).
-GDAL_COG_ENV = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif"}
+# Without the first two, GDAL lists the bucket directory (thousands of files)
+# on every open: ~11 s per point read instead of ~6 s (measured 2026-10-04).
+GDAL_COG_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+    **GDAL_HTTP_TIMEOUTS,
+}
+
+
+# Published dekads do not change, so a point read is kept for the life of the
+# process (a report asks for the same cell and dekads again, and every read takes
+# ~6-10 s). A dekad not published yet (404) is asked for again after a while;
+# other failures are not kept.
+_points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
+_unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
+_cache_lock = threading.Lock()
+# Part of each read holds the GIL for seconds (2026-10-07: a single point read delayed the
+# app's event loop by ~2.5 s), so reads stay 6 at a time rather than all 12 dekads at once.
+_READ_WORKERS = 6
 
 
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:
     """Read a single pixel value from a COG at given coordinates."""
-    try:
-        with rasterio.Env(**GDAL_COG_ENV), rasterio.open(url) as ds:
-            row, col = ds.index(lon, lat)
-            window = rasterio.windows.Window(col, row, 1, 1)
-            data = ds.read(1, window=window)
-            raw = int(data[0, 0])
-            if raw == NODATA:
-                return None
-            return raw * scale + offset
-    except Exception as e:
-        logger.warning("WaPOR read failed for %s: %s", url, e)
-        return None
+    key = (url, lat, lon)
+    with _cache_lock:
+        if url in _unpublished:
+            return None
+        known = key in _points
+        raw = _points.get(key)
+    if not known:
+        try:
+            with rasterio.Env(**GDAL_COG_ENV), rasterio.open(url) as ds:
+                row, col = ds.index(lon, lat)
+                window = rasterio.windows.Window(col, row, 1, 1)
+                data = ds.read(1, window=window)
+                raw = int(data[0, 0])
+        except Exception as e:
+            logger.warning("WaPOR read failed for %s: %s", url, e)
+            if "HTTP response code: 404" in str(e):
+                with _cache_lock:
+                    _unpublished[url] = True
+            return None
+        raw = None if raw == NODATA else raw
+        with _cache_lock:
+            _points[key] = raw
+    return None if raw is None else raw * scale + offset
 
 
 def query_et(
@@ -151,7 +182,7 @@ def query_et(
 
     # Parallel COG reads (each is a single HTTP range request, fast)
     results: dict[str, dict[str, float | None]] = {lc: {} for lc in layers_to_query}
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=_READ_WORKERS) as executor:
         futures = {}
         for layer_code, dk, url, scale, offset, unit in tasks:
             f = executor.submit(_read_point, url, lat, lon, scale, offset)
@@ -227,7 +258,7 @@ def query_soil_moisture(
 
     scale, offset, unit, desc = LAYERS["L2-RSM-D"]
 
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=_READ_WORKERS) as executor:
         futures = {}
         for dk in dekads:
             url = raster_url("L2-RSM-D", dk)
