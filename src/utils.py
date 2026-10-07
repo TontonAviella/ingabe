@@ -10,9 +10,9 @@ import secrets
 
 logger = logging.getLogger(__name__)
 from functools import lru_cache
-from openai import AsyncOpenAI
 from fastapi import HTTPException, Request, status
 from src.llm_defaults import DEFAULT_CHAT_MODEL, resolve_chat_endpoint
+from src.services.llm_loop import ModelClient
 
 
 def generate_id(length=12, prefix=""):
@@ -257,7 +257,7 @@ def _uses_only_local_ollama_models() -> bool:
     return bool(model_chain) and all(model.startswith("ollama:") for model in model_chain)
 
 
-def get_openai_client(request: Request) -> AsyncOpenAI:
+def get_openai_client(request: Request) -> ModelClient:
     base_url = os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     api_key = os.environ.get("OPENAI_API_KEY") or None
     local_openai_compatible = any(
@@ -284,10 +284,10 @@ def get_openai_client(request: Request) -> AsyncOpenAI:
     if "openrouter.ai" in base_url:
         extra_headers["HTTP-Referer"] = "https://mundi.ai"
         extra_headers["X-Title"] = "Mundi.ai"
-    return AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=extra_headers)
+    return ModelClient(api_key=api_key, base_url=base_url, default_headers=extra_headers)
 
 
-def get_chat_client_for_model(request: Request, model: str | None = None) -> tuple[AsyncOpenAI, str]:
+def get_chat_client_for_model(request: Request, model: str | None = None) -> tuple[ModelClient, str]:
     """Return an OpenAI-compatible client and provider-native model name."""
 
     endpoint = resolve_chat_endpoint(
@@ -298,7 +298,7 @@ def get_chat_client_for_model(request: Request, model: str | None = None) -> tup
     )
     if endpoint.is_local_ollama:
         return (
-            AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key),
+            ModelClient(base_url=endpoint.base_url, api_key=endpoint.api_key),
             endpoint.model,
         )
     return get_openai_client(request), endpoint.model

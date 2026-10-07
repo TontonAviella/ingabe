@@ -38,6 +38,7 @@ from src.services.brain_service import (
     BrainService,
     ChunkInput,
 )
+from src.services.llm_loop import ModelClient
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,7 @@ async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
         return list(embeddings), cfg["model"]
 
     # OpenAI provider path (kept for the eventual cloud-tier swap)
-    from openai import AsyncOpenAI, AuthenticationError
+    from openai import AuthenticationError
 
     if not cfg["api_key"]:
         raise RuntimeError(
@@ -392,7 +393,7 @@ async def _get_embeddings(texts: list[str]) -> tuple[list[list[float]], str]:
             "back to the local Ollama default."
         )
 
-    client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+    client = ModelClient(api_key=cfg["api_key"], base_url=cfg["base_url"])
     try:
         response = await client.embeddings.create(
             model=cfg["model"], input=texts, dimensions=cfg["dims"],
@@ -424,7 +425,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
         if (time.monotonic() - ts) < _EXPAND_CACHE_TTL:
             return variants
 
-    from openai import AsyncOpenAI, AuthenticationError
+    from openai import AuthenticationError
 
     if _auth_failed_at and (time.monotonic() - _auth_failed_at) < _AUTH_BACKOFF_SECONDS:
         return [query]
@@ -435,7 +436,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
     if not endpoint.api_key:
         return [query]
 
-    client = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url)
+    client = ModelClient(api_key=endpoint.api_key, base_url=endpoint.base_url)
     try:
         resp = await client.chat.completions.create(
             model=endpoint.model,

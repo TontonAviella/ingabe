@@ -9,7 +9,7 @@ from src.dependencies.postgres_connection import PostgresConnectionManager
 from src.dependencies.chat_completions import ChatArgsProvider
 from src.dependencies.redis_client import get_redis_client
 from src.utils import generate_id
-from openai import AsyncOpenAI
+from src.services.llm_loop import ModelClient
 
 redis = get_redis_client()
 
@@ -22,7 +22,7 @@ class DatabaseDocumenter(ABC):
         connection_uri: str,
         connection_name: str,
         connection_manager: PostgresConnectionManager,
-        openai_client: Optional[AsyncOpenAI],
+        openai_client: Optional[ModelClient],
         chat_args_provider: ChatArgsProvider,
         user_id: str,
     ) -> Tuple[Optional[str], Optional[str]]:
@@ -40,7 +40,7 @@ class DefaultDatabaseDocumenter(DatabaseDocumenter):
         connection_uri: str,
         connection_name: str,
         connection_manager: PostgresConnectionManager,
-        openai_client: Optional[AsyncOpenAI],
+        openai_client: Optional[ModelClient],
         chat_args_provider: ChatArgsProvider,
         user_id: str,
     ) -> Tuple[Optional[str], Optional[str]]:

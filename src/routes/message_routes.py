@@ -50,6 +50,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_chat_client_for_model, get_openai_client
+from src.services.llm_loop import ModelClient
 from src.llm_defaults import supports_strict_tool_schema
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
@@ -2602,9 +2603,8 @@ async def process_chat_interaction_task(
                         # endpoint). Everything else uses the configured cloud
                         # client (OpenRouter / Vercel / OpenAI / etc).
                         if _model_name.startswith("ollama:"):
-                            from openai import AsyncOpenAI
                             _attempt_kwargs["model"] = _model_name.split(":", 1)[1]
-                            _attempt_client = AsyncOpenAI(
+                            _attempt_client = ModelClient(
                                 base_url=os.environ.get(
                                     "OLLAMA_BASE_URL", "http://ollama:11434/v1"
                                 ),
