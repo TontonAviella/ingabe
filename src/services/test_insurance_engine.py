@@ -1358,6 +1358,19 @@ class TestMigrationIntegrity:
         assert "ck_insurance_triggers_signal" in content
         assert "ck_insurance_triggers_direction" in content
 
+    def test_ndvi_trigger_source_is_the_engines_ndvi_source(self):
+        """The seed said 'Sentinel-2/SAR'; the radar stand-in is gone (docs/SAR_NDVI_SKILL.md)."""
+        import importlib.util
+        from src.services.deafrica_stac import NDVI_ANOMALY_SOURCE
+        spec = importlib.util.spec_from_file_location(
+            "ndvi_trigger_source", "alembic/versions/f2b9c4d1a7e3_ndvi_trigger_source_deafrica.py")
+        assert spec and spec.loader
+        migration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(migration)
+        assert migration.SOURCE == NDVI_ANOMALY_SOURCE
+        with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
+            assert f"'ndvi_z_score', 'below', -1.5, 0.8, 'NDVI anomaly indicates severe vegetation stress', '{migration.SEEDED}'" in f.read()
+
     def test_downgrade_drops_table(self):
         with open("alembic/versions/a1b2c3d4e5f7_insurance_triggers.py") as f:
             content = f.read()
