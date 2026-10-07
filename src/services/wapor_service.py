@@ -34,6 +34,8 @@ import httpx
 import numpy as np
 import rasterio
 
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+
 logger = logging.getLogger(__name__)
 
 GCS_BASE = "https://storage.googleapis.com/fao-gismgr-wapor-3-data/DATA/WAPOR-3/MAPSET"
@@ -83,9 +85,13 @@ def raster_url(layer_code: str, dekad: str) -> str:
     return f"{GCS_BASE}/{layer_code}/WAPOR-3.{layer_code}.{dekad}.tif"
 
 
-# Without this, GDAL lists the bucket directory (thousands of files) on every
-# open: ~11 s per point read instead of ~6 s (measured 2026-10-04).
-GDAL_COG_ENV = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR", "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif"}
+# Without the first two, GDAL lists the bucket directory (thousands of files)
+# on every open: ~11 s per point read instead of ~6 s (measured 2026-10-04).
+GDAL_COG_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
+    **GDAL_HTTP_TIMEOUTS,
+}
 
 
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:

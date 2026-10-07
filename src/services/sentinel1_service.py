@@ -30,6 +30,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import numpy as np
 
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+
 logger = logging.getLogger(__name__)
 
 _STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -92,7 +94,7 @@ def _read_band_window(
 
     signed = _sign_href(href)
     try:
-        with rasterio.open(signed) as src:
+        with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(signed) as src:
             proj_bounds = transform_bounds("EPSG:4326", src.crs, *bounds)
             win = from_bounds(*proj_bounds, transform=src.transform)
             # Clamp to raster extent
