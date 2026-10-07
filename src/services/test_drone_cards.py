@@ -374,10 +374,34 @@ def test_problem_answers_show_bare_spots_inside_plots_with_gaps(photo):
     here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {3: {"problems": ["gaps"]}, 5: {"problems": ["yellowing"]}}))
     assert [f["properties"]["number"] for f in drone_cards.plots_to_measure_spots("plot_problems", here)] == [3]
     assert drone_cards.plots_to_measure_spots("weeds", here) == []
-    spots = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"number": 3},
-                                                        "geometry": plots.geojson["features"][2]["geometry"]}]}
+    spots = {"type": "FeatureCollection", "measured_plots": [3],
+             "features": [{"type": "Feature", "properties": {"number": 3, "area_m2": 900.0},
+                           "geometry": plots.geojson["features"][2]["geometry"]}]}
     answer = drone_cards.answer_card("plot_problems", _analysis(photo), "farmer", _replace(here, spots))
-    assert answer["overlay"]["spots"] == spots and "1 spots of 1 m² or more" in answer["what"]
+    assert answer["overlay"]["spots"]["features"] == spots["features"] and "1 spots of 1 m² or more" in answer["what"]
+    assert "open soil covers 10% or more of 1 of them" in answer["what"]
+
+
+def test_gaps_count_only_where_measured_open_soil_confirms_them(photo):
+    """Seeing the photo at full detail, the model called the soil between young plants 'gaps'."""
+    plots = _plot_set()
+    gaps = {3: {"problems": ["gaps"]}, 4: {"problems": ["gaps"]}, 5: {"problems": ["yellowing"]}}
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, gaps))
+    spots = {"type": "FeatureCollection", "measured_plots": [3, 4], "features": [
+        {"type": "Feature", "properties": {"number": 3, "area_m2": 900.0}, "geometry": plots.geojson["features"][2]["geometry"]},
+        {"type": "Feature", "properties": {"number": 4, "area_m2": 20.0}, "geometry": plots.geojson["features"][3]["geometry"]}]}
+    answer = drone_cards.answer_card("plot_problems", _analysis(photo), "farmer", _replace(here, spots))
+    assert [i["title"] for i in answer["items"]] == ["Plot 3", "Plot 5"]  # plot 4: 20 m² of 7,900 is not a gap
+    assert "flagged gaps in 2 plots; measured open soil covers 10% or more of 1 of them" in answer["what"]
+    assert [f["properties"]["number"] for f in answer["overlay"]["spots"]["features"]] == [3]
+
+
+def test_while_open_soil_is_measured_the_problems_answer_says_so(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {3: {"problems": ["gaps"]}}),
+                            spots_job=background_jobs.Job(state="running", parts_done=40, parts=222, started=0.0))
+    answer = drone_cards.answer_card("plot_problems", _analysis(photo), "farmer", here)
+    assert answer["progress"]["done"] == 40 and "being measured to confirm them" in answer["what"]
 
 
 def _replace(here, spots):

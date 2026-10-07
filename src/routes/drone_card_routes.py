@@ -44,8 +44,11 @@ def _photo_ready(layer: MapLayer) -> dict[str, Any]:
     return metadata
 
 
-async def _cog_url(s3: Any, metadata: dict[str, Any]) -> str:
-    return await photo_context.cog_url(s3, get_bucket_name(), metadata)
+_LONG_URL_SECONDS = 3600  # measuring spots in a few hundred plots reads the photo for minutes
+
+
+async def _cog_url(s3: Any, metadata: dict[str, Any], seconds: int = 900) -> str:
+    return await photo_context.cog_url(s3, get_bucket_name(), metadata, seconds)
 
 
 async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str], *,
@@ -86,10 +89,14 @@ async def get_drone_card_answer(
     spot_plots = drone_cards.plots_to_measure_spots(card_id, here)
     if spot_plots and here.plots is not None:
         metadata = _photo_ready(layer)
-        s3 = await get_async_s3_client()
-        key = f"{drone_vision.survey_key(photo_plots.photo_key(metadata), here.plots)}|{','.join(str(f['properties']['number']) for f in spot_plots)}"
-        spots = await drone_plots.load_spots(s3, get_bucket_name(), key, await _cog_url(s3, metadata), spot_plots)
-        here = dataclasses.replace(here, spots=spots)
+        s3, bucket = await get_async_s3_client(), get_bucket_name()
+        key = (f"{drone_vision.survey_key(photo_plots.photo_key(metadata), here.plots)}|"
+               f"{','.join(str(f['properties']['number']) for f in spot_plots)}")
+        spots = await drone_plots.kept_spots(s3, bucket, key)
+        job = drone_plots.spots_job(key)
+        if spots is None and (job is None or job.state == "failed"):
+            job = drone_plots.start_spots(s3, bucket, key, await _cog_url(s3, metadata, _LONG_URL_SECONDS), spot_plots)
+        here = dataclasses.replace(here, spots=spots, spots_job=None if spots is not None else job)
     try:
         return await asyncio.to_thread(drone_cards.answer_card, card_id, analysis, reader, here)
     except KeyError:

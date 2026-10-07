@@ -18,6 +18,7 @@ this domain (brief agreed with Roger, 2026-10-06):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import random
 import zlib
@@ -153,6 +154,7 @@ class Here:
     survey: Optional[drone_vision.Survey] = None  # the vision model's look at each plot
     survey_job: Optional[background_jobs.Job] = None
     spots: Optional[dict[str, Any]] = None  # bare soil inside plots seen with gaps (GeoJSON), when measured
+    spots_job: Optional[background_jobs.Job] = None  # measuring those spots, while it runs
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
     checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground (already in `survey`)
     record: Optional[field_checks.Record] = None  # how the model did on those plots
@@ -1136,13 +1138,35 @@ def _plot_item(analysis: PhotoAnalysis, plot: dict[str, Any], detail: str) -> di
             "lon": plot["lon"], "lat": plot["lat"]}
 
 
-MAX_SPOT_PLOTS = 60  # plots whose bare spots are measured for the problems answer, most problems first
+MAX_SPOT_PLOTS = 300  # plots whose bare spots are measured for the problems answer, most problems first
+# A plot the model flagged for gaps counts as gappy only where open soil (patches of 1 m² or more, measured)
+# covers this share of it, and at least GAP_MIN_M2. Seeing the photo at full detail, the model also called the
+# soil between young plants "gaps": 222 of 445 Cyampirita plots, half of them under 5% open soil; 89 at 10%+.
+GAP_CONFIRM_SHARE = 0.10
+GAP_MIN_M2 = 2.0
 
 
 def _problem_plots(plots: drone_plots.PlotSet, survey: drone_vision.Survey) -> list[tuple[dict[str, Any], drone_vision.PlotLook]]:
     """Plots where the model saw a problem, most problems first."""
     return sorted([(p, look) for p, look in _looked(plots, survey) if look.problems],
                   key=lambda t: (len(t[1].problems), t[1].confidence != "low"), reverse=True)
+
+
+@dataclass(frozen=True)
+class _Bare:
+    measured: frozenset[int]  # plots whose bare soil was measured
+    m2: dict[int, float]  # measured bare soil per plot, m²
+
+
+def _bare_by_plot(spots: Optional[dict[str, Any]]) -> Optional[_Bare]:
+    """Measured bare soil per plot from the spots GeoJSON (each spot keeps its plot's number); None if not measured."""
+    if spots is None:
+        return None
+    m2: dict[int, float] = {}
+    for feature in spots.get("features", []):
+        number = feature["properties"]["number"]
+        m2[number] = m2.get(number, 0.0) + feature["properties"]["area_m2"]
+    return _Bare(measured=frozenset(spots.get("measured_plots") or m2), m2=m2)
 
 
 def plots_to_measure_spots(card_id: str, here: Here) -> list[dict[str, Any]]:
@@ -1218,7 +1242,16 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     if plots is None or survey is None:
         return _survey_pending("plot_problems", analysis, audience, here)
     pairs = _looked(plots, survey)
-    seen = _problem_plots(plots, survey)
+    bare = _bare_by_plot(here.spots)
+    flagged_gaps = [p["number"] for p, look in pairs if "gaps" in look.problems]
+    area_m2 = {p["number"]: p["area_ha"] * 10_000 for p, _ in pairs}
+    unconfirmed = {n for n in flagged_gaps if bare is not None and n in bare.measured
+                   and (bare.m2.get(n, 0) < GAP_MIN_M2 or bare.m2.get(n, 0) < GAP_CONFIRM_SHARE * area_m2[n])}
+    seen = [(p, dataclasses.replace(look, problems=[x for x in look.problems
+                                                   if not (x == "gaps" and p["number"] in unconfirmed)]))
+            for p, look in _problem_plots(plots, survey)]
+    seen = sorted([(p, look) for p, look in seen if look.problems],
+                  key=lambda t: (len(t[1].problems), bare.m2.get(t[0]["number"], 0) if bare else 0), reverse=True)
     counts: dict[str, int] = {}
     for _, look in seen:
         for problem in look.problems:
@@ -1236,17 +1269,29 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     items = [_plot_item(analysis, p, flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
     overlay = _flag_overlay(analysis, plots, flagged, "Possible problems seen from the air",
                             {p["number"]: PROBLEM_BADGES[look.problems[0]] for p, look in seen})
-    if here.spots and here.spots.get("features"):
-        overlay["spots"] = here.spots
+    progress = None
+    if bare is None and flagged_gaps and here.spots_job is not None and here.spots_job.state != "failed":
+        job = here.spots_job
+        progress = {"done": job.parts_done, "parts": job.parts, "minutes_left": job.minutes_left}
+        what += (f" The open soil in the {len(flagged_gaps)} plots flagged for gaps is being measured to confirm them; "
+                 "this answer updates by itself.")
+    if bare is not None and flagged_gaps:
+        confirmed = len(flagged_gaps) - len(unconfirmed)
+        what += (f" The model flagged gaps in {len(flagged_gaps)} plots; measured open soil covers "
+                 f"{GAP_CONFIRM_SHARE:.0%} or more of {confirmed} of them, so only those count as gaps (in the rest it "
+                 "is likely the normal soil between young plants).")
+    shown = {p["number"] for p, _ in seen}
+    spots = [f for f in (here.spots or {}).get("features", []) if f["properties"]["number"] in shown]
+    if spots:
+        overlay["spots"] = {"type": "FeatureCollection", "features": spots}
         overlay["spots_legend"] = "Bare soil inside those plots, measured from the photo"
-        what += (f" The bare soil inside them is filled in bright on the photo "
-                 f"({len(here.spots['features'])} spots of 1 m² or more).")
+        what += f" The bare soil inside them is filled in bright on the photo ({len(spots)} spots of 1 m² or more)."
     return _answer(
         "plot_problems", analysis, here, what=what,
         why="Gaps, yellowing or standing water found early can still be fixed this season.",
         todo=todo, how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"], here),
         terms=["vision_model", "colour_camera"], audience=audience,
-        overlay=overlay, items=items,
+        overlay=overlay, items=items, progress=progress,
         facts=[{"label": drone_vision.PROBLEM_LABELS[k].capitalize(), "value": f"{n} plots"} for k, n in counts.items()],
         choices=_plot_choices(analysis, here))
 
