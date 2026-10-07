@@ -173,6 +173,9 @@ lines; promote a lesson that recurs into the sections above.
   (a deadline abandons a thread, it does not stop it). Gate: `test_gdal_http.py` (silent server), engine deadline tests; review only elsewhere.
 - **2026-10-07** `_fetch_sar_backscatter` read up to 20 Sentinel-1 scenes per insurance report and returned None every time since #17: it looked for
   a `statistics` key `get_backscatter` never returns, and its tests mocked that key. Promoted: "Mocks match the real thing" (How to work). Gate: review only.
+- **2026-10-07** A Brain page with no access_scope was public: RLS granted NULL ("legacy rows pre-backfill"; the backfill never came) and put_page wrote
+  NULL by default, so one user's 33 pages (orthophotos, an insurance report) were readable by every user and partner through search_brain. Rule: a missing
+  value never grants access; access columns are NOT NULL with a fail-closed default. Gate: NOT NULL + `test_no_policy_grants_a_page_by_its_missing_scope`.
 - **2026-10-07** Sage's memory packet padded an empty result with the 8 newest Brain pages RLS showed: 7 were other owners' test pages
   ("Rwanda has two rainy seasons"), and the user's own orthophoto page had been dropped by a filter that parsed only `layer-` slugs. Rule: context
   put into a turn matches the question or the viewport and is in the user's scope; never pad it. Gate: `test_brain_context_packet.py`, `test_brain_user_scope.py`.

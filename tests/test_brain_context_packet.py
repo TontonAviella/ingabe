@@ -48,7 +48,7 @@ class LayerOnlyBrain(AllInScope):
             )
         ]
 
-    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
         return [
             _page(
                 "layer-lold123-f0",
@@ -75,7 +75,7 @@ class FakeBrain(AllInScope):
             )
         ]
 
-    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
         return [_page("field-gasabo", "Gasabo maize field", "Field is inside the active viewport.")]
 
     async def list_pages(self, conn, limit=100, offset=0, type=None, tag=None):
@@ -174,7 +174,7 @@ class OrthophotoBrain:
     async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
         return []
 
-    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
         return [
             _page(
                 "raster-lrrlzvhe5zj1",
@@ -221,7 +221,7 @@ class NothingMatchesBrain(AllInScope):
     async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
         return []
 
-    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
         return []
 
     async def list_pages(self, conn, limit=100, offset=0, type=None, tag=None):
@@ -266,7 +266,7 @@ class MixedOwnersBrain:
             ),
         ]
 
-    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None):
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
         return [_page("test-spatial-kigali-c955b58a", "Kigali Spatial Field", "A test field in Kigali.")]
 
     async def slugs_in_user_scope(self, conn, slugs):
@@ -294,3 +294,28 @@ async def test_brain_context_keeps_only_pages_in_the_users_scope():
         "test-field-001-c955b58a",
         "test-spatial-kigali-c955b58a",
     }
+
+
+class RecordingBrain(AllInScope):
+    async def search_hybrid(self, conn, query, embedding=None, limit=None, type=None):
+        return []
+
+    async def get_pages_in_bbox(self, conn, bbox, limit=50, type=None, layer_ids=None):
+        self.layer_ids = layer_ids
+        return []
+
+
+@pytest.mark.asyncio
+async def test_brain_context_asks_the_viewport_query_for_this_maps_layers_only():
+    brain = RecordingBrain()
+    await build_brain_context_packet(
+        FakeConn(), brain, query_text="q", viewport_bounds=[30.4, -1.7, 30.5, -1.6],
+        visible_layer_ids=["LrrLzvhE5zj1", "LQmvuX9mQavb"],
+    )
+    assert brain.layer_ids == ["lqmvux9mqavb", "lrrlzvhe5zj1"]
+
+    unknown_map = RecordingBrain()
+    await build_brain_context_packet(
+        FakeConn(), unknown_map, query_text="q", viewport_bounds=[30.4, -1.7, 30.5, -1.6],
+    )
+    assert unknown_map.layer_ids is None
