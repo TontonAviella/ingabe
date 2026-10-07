@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.session import UserContext, verify_session_required
-from src.services import background_jobs, drone_cards, drone_plots, drone_vision, farm_records
+from src.services import background_jobs, drone_cards, drone_plots, drone_vision, farm_records, field_checks
 from src.services.insurance_engine import resolve_audience
 from src.structures import async_read_conn, get_async_db_connection
 from src.utils import get_async_s3_client, get_bucket_name
@@ -171,9 +171,12 @@ async def _photo(layer: MapLayer, session: UserContext, audience: Optional[str],
     survey, survey_job = None, None
     if plots is not None:
         survey, survey_job = await _survey(s3, metadata, plots, analysis.look.place, retry_failed=retry_plots)
+    checks = await field_checks.load_checks(s3, get_bucket_name(), _photo_key(metadata))
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
-                            survey=survey, survey_job=survey_job, seed=seed, records=tuple(records))
+                            survey=field_checks.apply(survey, checks), survey_job=survey_job, seed=seed,
+                            records=tuple(records), checked=frozenset(checks),
+                            record=field_checks.model_record(survey, checks) if checks else None)
     return analysis, here, reader
 
 
@@ -292,6 +295,35 @@ async def add_farm_record(
         raise HTTPException(400, str(exc)) from None
     return {"id": document.id, "kind": document.kind, "title": document.title,
             "soil_samples": len(document.soil_samples), "harvests": len(document.harvests), "warnings": document.warnings}
+
+
+class FieldCheck(BaseModel):
+    crop: str
+
+
+@router.post("/layer/{layer_id}/plots/{number}/check", operation_id="check_drone_plot")
+async def check_drone_plot(
+    number: int,
+    check: FieldCheck,
+    layer: MapLayer = Depends(edit_layer),
+    session: UserContext = Depends(verify_session_required),
+) -> dict[str, Any]:
+    """Record the crop someone found in a plot on the ground. It replaces the model's answer in every card, counts
+    toward how often the model is right, and a square of the plot becomes a reference for later surveys."""
+    metadata = _photo_ready(layer)
+    s3 = await get_async_s3_client()
+    plots = await _current_plots(s3, layer, metadata, session)
+    feature = next((f for f in (plots.geojson["features"] if plots else []) if f["properties"]["number"] == number), None)
+    if feature is None:
+        raise HTTPException(404, f"No plot {number} on this photo")
+    try:
+        checks = await field_checks.add_check(s3, get_bucket_name(), _photo_key(metadata), number, check.crop)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if check.crop not in ("fallow_or_bare", "other", "grass_or_pasture", "woodlot"):
+        square = await asyncio.to_thread(drone_vision.closeup_of_plot, await _cog_url(s3, metadata), feature)
+        await drone_vision.add_reference(s3, get_bucket_name(), check.crop, square, "checked in the field")
+    return {"number": number, "crop": check.crop, "checks": len(checks)}
 
 
 _EXPORTS = {

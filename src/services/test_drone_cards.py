@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 
@@ -276,8 +277,8 @@ def test_crop_types_name_the_crops_and_count_what_is_not_sure(photo):
     here = drone_cards.Here(plots=plots, survey=_survey(plots, crops, {1: {"other_crops": ["beans"]}}))
     answer = drone_cards.answer_card("crop_types", _analysis(photo), "insurer", here)
     assert answer["status"] == drone_cards.READY
-    assert answer["what"].startswith("The AI vision model named the crop in 8 of 10 plots: maize in 5 plots")
-    assert "not sure about 2 plots" in answer["what"] and "1 plot looks intercropped" in answer["what"]
+    assert answer["what"].startswith("The crop is named in 8 of 10 plots: maize in 5 plots")
+    assert "2 plots are 'not sure' rather than a guess" in answer["what"] and "1 plot looks intercropped" in answer["what"]
     assert [i["key"] for i in answer["overlay"]["legend_items"]] == ["maize", "beans", "unsure"]
     assert answer["how_sure"]["level"] == "low"
 
@@ -441,3 +442,32 @@ def test_soil_and_history_only_promise_a_test_or_harvests_once_documents_are_add
         assert "harvest" not in wordings["history"]
         assert doc_wordings["soil"] in ("What does the soil test say?", "What does my lab report show?")
         assert "harvest" in doc_wordings["history"]
+
+
+def test_disputed_plots_are_offered_for_a_field_check_first(photo):
+    plots = _plot_set()
+    survey = _survey(plots, ["maize"] * 6 + ["beans"] * 2 + ["unsure"] * 2)
+    disputed = dataclasses.replace(survey.looks[9], candidates=("cassava", "maize"))
+    survey = dataclasses.replace(survey, looks={**survey.looks, 9: disputed})
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", drone_cards.Here(plots=plots, survey=survey))
+    check = answer["field_check"]
+    assert check["plots"][0]["number"] == 9 and check["plots"][0]["detail"].startswith("Cassava or maize?")
+    assert {p["number"] for p in check["plots"][1:]} >= {1, 7}  # the largest plot of each named crop
+    assert check["href"].endswith("/plots/{number}/check")
+    assert "Not yet checked against what is really in the plots" in answer["how_sure"]["because"]
+
+
+def test_field_checks_replace_the_model_and_say_how_often_it_was_right(photo):
+    from src.services import field_checks
+
+    plots = _plot_set()
+    survey = _survey(plots, ["maize"] * 10)
+    checks = {n: field_checks.Check(number=n, crop="maize" if n <= 9 else "cassava", at="2026-10-07") for n in range(1, 11)}
+    here = drone_cards.Here(plots=plots, survey=field_checks.apply(survey, checks), checked=frozenset(checks),
+                            record=field_checks.model_record(survey, checks))
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    assert "Checked on the ground: the model was right in 9 of 10 plots" in answer["how_sure"]["because"]
+    assert answer["how_sure"]["level"] == "medium"  # 10 checks, 90% right
+    badges = {f["properties"]["number"]: f["properties"].get("badge") for f in answer["overlay"]["geojson"]["features"]}
+    assert badges[10] == "✓ Cassava" and badges[1] == "✓ Maize"
+    assert answer["field_check"] is None  # every plot checked
