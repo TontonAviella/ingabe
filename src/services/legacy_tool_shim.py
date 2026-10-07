@@ -1008,6 +1008,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             village=ctx.arguments.get("village"),
             audience=await resolve_audience(ctx.conn, ctx.arguments.get("audience"), ctx.user_id, ctx.partner_id),
             compare_level=compare_level,
+            owner_uuid=owner,
         )
 
         # Comparison mode carries its own presentation instruction; we're done.
