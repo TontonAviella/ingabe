@@ -15,13 +15,17 @@ NDVI the Sentinel-1 predictor returns (the SAR-predicted NDVIs measured for
 these cells on 2026-10-07 by scripts/sar_ndvi_skill.py, model trained on the
 first cell).
 
-    PYTHONPATH=. python scripts/insurance_report_dump.py > after.json
+    PYTHONPATH=. python scripts/insurance_report_dump.py [sar|deafrica] > after.json
+
+Scenario sets: "sar" (default) for the removal of the Sentinel-1 stand-in (#147), "deafrica" for the
+switch to Digital Earth Africa's monthly NDVI anomaly; each gives the remote reads fixed answers.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from contextlib import ExitStack
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -47,10 +51,11 @@ MAIZE_A_TRIGGERS = [  # insurance_triggers WHERE crop='maize' AND season='A' AND
      "description": "SPI indicates moderate drought"},
 ]
 
-# (label, cell, district, centre lon, centre lat, NDVI z in anomaly_alerts_cache, SAR-predicted NDVI).
+# (label, cell, district, centre lon, centre lat, NDVI z in anomaly_alerts_cache, SAR-predicted NDVI)
+# and, for "deafrica", the area's Digital Earth Africa NDVI anomaly answer.
 # SAR NDVIs: today's predictions in docs/evidence/sar_ndvi_skill.json (model trained at Kanyangese,
 # Roger's Cyampirita field; the two Kayumba variants are the models that put it below the trigger).
-SCENARIOS: list[tuple[str, str, str, float, float, float | None, float | None]] = [
+SAR_SCENARIOS: list[tuple[str, str, str, float, float, float | None, float | None]] = [
     ("Kanyangese", "Kanyangese", "Gatsibo", 30.42769, -1.70407, None, 0.3143),
     ("Nyarubuye", "Nyarubuye", "Kamonyi", 29.96406, -2.05292, None, 0.3422),
     ("Kamate", "Kamate", "Nyagatare", 30.45351, -1.37083, None, 0.3004),
@@ -68,7 +73,27 @@ SCENARIOS: list[tuple[str, str, str, float, float, float | None, float | None]] 
 ]
 
 
-def _patches(stack: ExitStack, lon: float, lat: float, sar_ndvi: float | None) -> MagicMock:
+def _dea(month: str, z: float | None, ndvi: float | None, clear: float) -> dict:
+    return {"month": month, "z": z, "ndvi": ndvi, "clear_fraction": clear,
+            "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"}
+
+
+# The cells' September 2026 answers were read live on 2026-10-07 (area_ndvi_anomaly); the others are
+# set to show each rule: a trigger-level anomaly, a cloudy month, a month mostly before planting, and an
+# anomaly cache that held an alert (which the old engine averaged and the new one no longer reads).
+DEAFRICA_SCENARIOS = [
+    ("Kayumba, Sep -1.16", "Kayumba", "Bugesera", 30.07456, -2.13123, None, None, _dea("2026-09", -1.16, 0.326, 1.0)),
+    ("Kanyangese, Sep -0.79", "Kanyangese", "Gatsibo", 30.42769, -1.70407, None, None, _dea("2026-09", -0.79, 0.371, 0.99)),
+    ("Kamate, Sep -1.8 (set)", "Kamate", "Nyagatare", 30.45351, -1.37083, None, None, _dea("2026-09", -1.8, 0.25, 0.95)),
+    ("Kamate, Sep too cloudy (set)", "Kamate", "Nyagatare", 30.45351, -1.37083, None, None, _dea("2026-09", None, None, 0.12)),
+    ("Kamate, latest month Aug: before planting (set)", "Kamate", "Nyagatare", 30.45351, -1.37083, None, None,
+     _dea("2026-08", -1.8, 0.25, 0.95)),
+    ("Kayumba, cache alert -2.4, Sep -1.16", "Kayumba", "Bugesera", 30.07456, -2.13123, -2.4, None,
+     _dea("2026-09", -1.16, 0.326, 1.0)),
+]
+
+
+def _patches(stack: ExitStack, lon: float, lat: float, sar_ndvi: float | None, dea: dict | None) -> MagicMock:
     def chirps(_lat, _lon, dates, timeout_s=None):
         return {d: RAIN_MM_PER_DAY for d in dates}, set()
 
@@ -87,13 +112,15 @@ def _patches(stack: ExitStack, lon: float, lat: float, sar_ndvi: float | None) -
         ("src.services.wapor_service.query_soil_moisture", {"return_value": None}),
         ("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", {"return_value": None}),
         ("src.services.sar_ndvi.get_sar_ndvi_predictor", {"return_value": predictor}),
+        # create: code from before the switch has no such reader
+        ("src.services.deafrica_stac.area_ndvi_anomaly", {"return_value": dea, "create": True}),
     ):
         stack.enter_context(patch(target, **kwargs))
     return predictor
 
 
 async def _report(cell: str, district: str, lon: float, lat: float,
-                  cached_z: float | None, sar_ndvi: float | None) -> dict:
+                  cached_z: float | None, sar_ndvi: float | None, dea: dict | None = None) -> dict:
     from src.services.insurance_engine import compute_insurance_intelligence
 
     async def fetch(sql, *args):  # the trigger rows; no other table has rows (no ET normals)
@@ -103,16 +130,17 @@ async def _report(cell: str, district: str, lon: float, lat: float,
     conn.fetch.side_effect = fetch
     conn.fetchrow.return_value = {"mean_z": cached_z}
     with ExitStack() as stack:
-        predictor = _patches(stack, lon, lat, sar_ndvi)
+        predictor = _patches(stack, lon, lat, sar_ndvi, dea)
         farmer = await compute_insurance_intelligence(
             conn, crop="maize", season="A", district=district, cell=cell, audience="farmer", ref_date=REF_DATE)
         insurer = await compute_insurance_intelligence(
             conn, crop="maize", season="A", district=district, cell=cell, audience="insurance", ref_date=REF_DATE)
     d = farmer["data"]
     return {
-        "inputs": {"anomaly_cache_ndvi_z": cached_z, "sar_predicted_ndvi": sar_ndvi},
+        "inputs": {"anomaly_cache_ndvi_z": cached_z, "sar_predicted_ndvi": sar_ndvi, "deafrica_anomaly": dea},
         "sar_predictor_called": predictor.predict_ndvi.called,
         "ndvi_z_score": d["ndvi_z_score"],
+        "ndvi_month": d.get("ndvi_month"),
         "sources": d["sources"],
         "triggers": [f"{t['signal']}/{t['phase']}: {t['current_value']} vs {t['threshold']} "
                      f"{'TRIGGERED' if t['triggered'] else 'pass'}" for t in d["triggers"]],
@@ -126,10 +154,13 @@ async def _report(cell: str, district: str, lon: float, lat: float,
     }
 
 
-async def _all() -> dict:
+async def _all(which: str) -> dict:
+    if which == "deafrica":
+        return {label: await _report(cell, district, lon, lat, z, sar, dea)
+                for label, cell, district, lon, lat, z, sar, dea in DEAFRICA_SCENARIOS}
     return {label: await _report(cell, district, lon, lat, z, sar)
-            for label, cell, district, lon, lat, z, sar in SCENARIOS}
+            for label, cell, district, lon, lat, z, sar in SAR_SCENARIOS}
 
 
 if __name__ == "__main__":
-    print(json.dumps(asyncio.run(_all()), indent=1, default=str))
+    print(json.dumps(asyncio.run(_all(sys.argv[1] if len(sys.argv) > 1 else "sar")), indent=1, default=str))
