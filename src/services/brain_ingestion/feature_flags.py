@@ -8,7 +8,7 @@ BRAIN_PARTNER_INTERNAL_ENABLED:
        access_scope=partner_internal.
 
   Retrieval is NOT gated by this flag. Instead, the app.partner_id GUC
-  and _PARTNER_FILTER in brain_service.py handle read-path isolation
+  and PAGE_SCOPE_FILTER in brain_service.py handle read-path isolation
   (defense-in-depth alongside RLS policies).
 
   Gate defaults to OFF. Partner onboarding flips it on only after the
