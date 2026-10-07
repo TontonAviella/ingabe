@@ -308,15 +308,14 @@ class STACService:
     ) -> Dict[str, Any]:
         """Search using raw HTTP POST (fallback)."""
         search_url = f"{self.catalog_url}/search"
-        payload: Dict[str, Any] = {
-            "collections": collections,
-            "bbox": bbox,
-            "datetime": datetime_range,
-            "limit": limit,
-            "query": {"eo:cloud_cover": {"lt": max_cloud_cover}},
-        }
-
         try:
+            payload: Dict[str, Any] = {
+                "collections": collections,
+                "bbox": bbox,
+                "datetime": stac_datetime_interval(datetime_range),
+                "limit": limit,
+                "query": {"eo:cloud_cover": {"lt": max_cloud_cover}},
+            }
             resp = self._session.post(search_url, json=payload, timeout=30)
             resp.raise_for_status()
             data = resp.json()
