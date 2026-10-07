@@ -107,13 +107,26 @@ export function Arrow({ className = "", diagonal = false }: { className?: string
   );
 }
 
-/** Ingabe's app icon, the same mark the app shows: a lowercase i with a caramel dot. */
+/** Ingabe's mark, the same as in the app: the horns of an Inyambo (a sign of richness and calm) with the
+ * caramel sun between them, on a dark rounded square. */
 export function IngabeIcon({ className = "h-6 w-6" }: { className?: string }) {
   return (
     <svg viewBox="0 0 64 64" className={className} aria-hidden>
       <rect width="64" height="64" rx="15" fill="#0B0908" stroke="#F3EDE6" strokeOpacity="0.18" strokeWidth="2" />
-      <rect x="27.5" y="27" width="9" height="25" rx="4.5" fill="#F3EDE6" />
-      <circle cx="32" cy="16.5" r="5.5" fill="#D9A066" />
+      <g transform="translate(8.3 12) scale(0.74)">
+        <Horns color="#F3EDE6" />
+      </g>
     </svg>
+  );
+}
+
+/** The Inyambo's horns and the sun on a 64 grid. */
+export function Horns({ color }: { color: string }) {
+  return (
+    <>
+      <circle cx="32" cy="27" r="5.6" fill="#D9A066" />
+      <path fill={color} d="M26 51 C14 51.4 6 43.6 5.2 31 C4.5 19.6 8.2 9.6 16.6 2.6 C12 9.8 10.4 18.8 11 28.6 C11.7 38.6 17.4 46 26.8 46.6 Z" />
+      <path fill={color} d="M38 51 C50 51.4 58 43.6 58.8 31 C59.5 19.6 55.8 9.6 47.4 2.6 C52 9.8 53.6 18.8 53 28.6 C52.3 38.6 46.6 46 37.2 46.6 Z" />
+    </>
   );
 }

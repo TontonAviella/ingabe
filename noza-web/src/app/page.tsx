@@ -1,6 +1,6 @@
 import { HeroWorld, WorldTile } from "@/components/MiniWorld";
 import { MotionProvider, PauseButton } from "@/components/MotionProvider";
-import { Arrow, IngabeIcon, Nav, Wordmark } from "@/components/Nav";
+import { Arrow, Horns, IngabeIcon, Nav, Wordmark } from "@/components/Nav";
 import { Parallax } from "@/components/Parallax";
 import { Reveal } from "@/components/Reveal";
 import { SageExample } from "@/components/SageExample";
@@ -285,6 +285,15 @@ export default function Home() {
                 <br />
                 Answer it on the ground.
               </p>
+              <div className="mt-10 flex max-w-xs items-start gap-4">
+                <svg viewBox="0 0 64 54" className="h-10 w-12 shrink-0" aria-hidden>
+                  <Horns color="#F3EDE6" />
+                </svg>
+                <p className="text-[13px] leading-relaxed text-latte">
+                  Ingabe&apos;s mark is the horns of the Inyambo, Rwanda&apos;s long-horned cattle: a sign of richness and calm, with the
+                  sun between them.
+                </p>
+              </div>
             </div>
             <FooterCol
               title="What we read"
