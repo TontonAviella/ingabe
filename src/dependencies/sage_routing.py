@@ -327,12 +327,15 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({AGRICULTURE}),
     ),
-    # User-uploaded raster (drone ortho, custom COG)
+    # User-uploaded raster (drone ortho, custom COG). Layer names join words with "_" ("Cyampirita_Orthophoto"),
+    # so "ortho" and "drone" match inside a name; plots, plants and weeds are only seen on drone photos.
     (
         re.compile(
+            r"(?<![A-Za-z0-9])(?:ortho(?:photo|mosaic)?|drone)|"
             r"\b(my\s+(field|raster|cog|drone|ortho|image)|"
-            r"this\s+(raster|drone|ortho|image|cog)|"
-            r"uploaded|drone|ortho(photo|mosaic)?|tiff|geotiff|"
+            r"this\s+(raster|drone|ortho|image|cog|photo)|"
+            r"uploaded|tiff|geotiff|plots?|umurima|imirima|plants?|weed(?:s|ing|y)?|stand\s+count|"
+            r"what\s+is\s+growing|"
             r"stress\s+zone|pixel|histogram|distribution|"
             r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"

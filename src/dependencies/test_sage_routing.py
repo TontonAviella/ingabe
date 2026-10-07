@@ -968,3 +968,15 @@ def test_plot_and_plant_questions_skip_the_fast_paths(text):
 def test_house_counts_on_a_drone_photo_still_take_the_fast_path():
     call = build_fast_tool_call("count the houses in Farm_A_Orthophoto")
     assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+@pytest.mark.parametrize("text", [
+    "How is the maize doing on Cyampirita_Orthophoto?",
+    "Count the plants in plot 175",
+    "Which plots should I weed first?",
+    "what's on this photo",
+])
+def test_drone_photo_questions_keep_the_drone_tools(text):
+    """Layer names join words with '_': 'Cyampirita_Orthophoto' did not match the drone keywords, so the drone
+    tools were filtered out and Sage answered a question about the photo from satellites only."""
+    assert USER_RASTER in classify_intent(text)
