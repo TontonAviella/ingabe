@@ -659,26 +659,6 @@ class BrainService:
         )
         return {r["slug"] for r in rows}
 
-    async def resolve_slugs(self, conn: asyncpg.Connection, partial: str) -> list[str]:
-        pf = PAGE_SCOPE_FILTER.format(a="")
-        exact = await conn.fetch(
-            f"SELECT slug FROM brain_pages WHERE slug = $1 {pf}", partial
-        )
-        if exact:
-            return [exact[0]["slug"]]
-
-        fuzzy = await conn.fetch(
-            f"""
-            SELECT slug, similarity(title, $1) AS sim
-            FROM brain_pages
-            WHERE (title %% $1 OR slug ILIKE '%' || $1 || '%')
-            {pf}
-            ORDER BY sim DESC LIMIT 5
-            """,
-            partial,
-        )
-        return [r["slug"] for r in fuzzy]
-
     # ── Search ──────────────────────────────────────────────────
 
     async def search_keyword(
