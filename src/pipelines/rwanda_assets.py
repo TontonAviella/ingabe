@@ -567,22 +567,17 @@ def nightly_cache_cleanup(
 ) -> dict[str, Any]:
     """Purge stale cache entries to keep PostgreSQL lean.
 
-    Runs nightly at 2:30 AM UTC.  Deletes rows older than their retention
-    period.  ndvi_field_cache and agri_indices_cache use 365-day retention
-    because VCI drought detection requires a multi-year baseline for
-    accurate min/max NDVI (~30 districts × 52 weeks = 1,560 rows/year).
-    Other caches use 30-day retention.
+    Runs nightly at 2:30 AM UTC.  Deletes rows older than 30 days.
+    ndvi_field_cache and agri_indices_cache are never purged: the seasonal
+    drought index compares each week with the same weeks of earlier years
+    (~30 districts × 52 weeks = 1,560 rows a year). Until 2026-10-07 they were
+    purged after 365 days, so no earlier year could ever exist.
     """
     tables_purged: dict = {}
-
-    # Tables with 365-day retention (needed for VCI historical baseline)
-    long_retention = {"ndvi_field_cache", "agri_indices_cache"}
 
     with postgres.get_sync_connection() as pg_conn:
         with pg_conn.cursor() as cur:
             for table, ts_col in [
-                ("agri_indices_cache", "computed_at"),
-                ("ndvi_field_cache", "computed_at"),
                 ("weather_daily_cache", "computed_at"),
                 ("anomaly_alerts_cache", "computed_at"),
                 ("yield_risk_cache", "computed_at"),
@@ -590,7 +585,7 @@ def nightly_cache_cleanup(
                 ("phenology_cache", "computed_at"),
             ]:
                 try:
-                    purge_days = 365 if table in long_retention else 30
+                    purge_days = 30
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
                     before = cur.fetchone()[0]
                     cur.execute(
@@ -610,7 +605,8 @@ def nightly_cache_cleanup(
     context.log.info("Cache cleanup done: %s", tables_purged)
     return {
         "status": "ok",
-        "purge_threshold_days": {"default": 30, "ndvi_field_cache": 365, "agri_indices_cache": 365},
+        "purge_threshold_days": {"default": 30},
+        "kept_forever": ["ndvi_field_cache", "agri_indices_cache"],
         "tables_purged": tables_purged,
     }
 
@@ -1084,7 +1080,6 @@ def weekly_drought_scan(
                       ON a.admin_level = 'district'
                       AND n.district = a.admin_name
                       AND n.week_start = a.week_start
-                    WHERE n.week_start >= CURRENT_DATE - INTERVAL '365 days'
                     ORDER BY n.district, n.week_start
                 """)
                 rows = cur.fetchall()
@@ -1137,8 +1132,8 @@ def weekly_drought_scan(
 
             scanned += 1
             results.append({"district": district, "status": drought.get("drought_status")})
-            context.log.info("Drought: %s → %s (VCI=%.1f)",
-                             district, drought.get("drought_status"), drought.get("current_vci", 0))
+            context.log.info("Drought: %s → %s (VCI=%s)",
+                             district, drought.get("drought_status"), drought.get("current_vci"))
 
         return {"status": "ok", "districts_scanned": scanned, "results": results}
 

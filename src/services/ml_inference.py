@@ -20,11 +20,17 @@ if it is not installed, returning informative error messages.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Seasonal VCI: "the same time of year" is within three weeks either side, and a drought index
+# needs that time of year in at least two earlier years.
+_SEASON_WINDOW_DAYS = 21
+_MIN_BASELINE_YEARS = 2
 
 # Check for optional ML dependencies
 _SKLEARN_AVAILABLE = False
@@ -684,8 +690,11 @@ class CropClassifier:
                 and optionally 'mean_ndwi' keys.
 
         Returns:
-            Dictionary with drought status, severity, affected periods, and
-            a Vegetation Condition Index (VCI).
+            Dictionary with drought status, severity, affected periods, and a
+            seasonal Vegetation Condition Index (VCI): each week against the same
+            time of year in earlier years; insufficient_data until there are
+            _MIN_BASELINE_YEARS of them. Values are plain floats (numpy floats
+            broke the cache write on 2026-10-05).
         """
         if not ndvi_ndwi_timeseries:
             return {"error": "No data provided"}
@@ -700,83 +709,91 @@ class CropClassifier:
         if len(ndvi_vals) < 3:
             return {"error": "Need at least 3 observations for drought detection"}
 
-        ndvi = np.array(ndvi_vals)
-        ndwi = np.array(ndwi_vals)
+        days = [date.fromisoformat(str(d)[:10]) for d in dates]
+        latest_ndwi = round(ndwi_vals[-1], 4) if any(v != 0.0 for v in ndwi_vals) else None
+        has_ndwi = latest_ndwi is not None
 
-        # ── Minimum-history safeguard ──
-        # VCI requires a multi-year baseline to be meaningful. With <8 weeks
-        # the min/max are local extremes, causing false positives (e.g.
-        # VCI=0% when current week happens to be the local minimum).
-        if len(ndvi) < 8:
+        # ── Seasonal VCI ──
+        # VCI compares NDVI with the same time of year in earlier years (WMO). Min/max over a
+        # single year compares the dry season with the rains and reads every dry season as
+        # drought (2026-10-05: "Bugesera severe drought" from 13 weeks of history).
+        def seasonal_vci(i: int) -> Tuple[Optional[float], int, Optional[Tuple[float, float]]]:
+            """(VCI or None if the range is too narrow, earlier years found, (min, max)) for observation i."""
+            baseline: Dict[int, List[float]] = {}
+            for j in range(len(days)):
+                apart = (days[i] - days[j]).days
+                if apart < 300:
+                    continue
+                gap = abs(days[i].timetuple().tm_yday - days[j].timetuple().tm_yday)
+                if min(gap, 365 - gap) <= _SEASON_WINDOW_DAYS:
+                    baseline.setdefault(round(apart / 365.25), []).append(ndvi_vals[j])
+            if len(baseline) < _MIN_BASELINE_YEARS:
+                return None, len(baseline), None
+            values = [v for year in baseline.values() for v in year] + [ndvi_vals[i]]
+            low, high = min(values), max(values)
+            if high - low < 0.05:
+                return None, len(baseline), (low, high)
+            return (ndvi_vals[i] - low) / (high - low) * 100.0, len(baseline), (low, high)
+
+        latest = len(ndvi_vals) - 1
+        vci, baseline_years, ndvi_range = seasonal_vci(latest)
+        common = {
+            "method": "seasonal_vci_ndwi_drought",
+            "observations": len(ndvi_vals),
+            "baseline_years": baseline_years,
+            "latest_ndvi": round(ndvi_vals[-1], 4),
+            "latest_ndwi": latest_ndwi,
+        }
+        if ndvi_range is None:
             return {
-                "method": "vci_ndwi_drought",
-                "observations": len(ndvi),
+                **common,
                 "drought_status": "insufficient_data",
                 "description": (
-                    f"Only {len(ndvi)} weeks of NDVI history available — need "
-                    f"at least 8 weeks for reliable VCI drought detection"
+                    f"NDVI for this time of year exists for {baseline_years} earlier year(s); a drought "
+                    f"index needs at least {_MIN_BASELINE_YEARS} (history starts {days[0].isoformat()})"
                 ),
-                "latest_ndvi": round(float(ndvi[-1]), 4),
-                "latest_ndwi": round(float(ndwi[-1]), 4) if np.any(ndwi != 0) else None,
                 "current_vci": None,
                 "drought_periods": [],
                 "drought_period_count": 0,
             }
-
-        # ── Vegetation Condition Index (VCI) ──
-        # VCI = (NDVI_current - NDVI_min) / (NDVI_max - NDVI_min) × 100
-        # VCI < 35 → drought, VCI < 20 → severe drought (standard WMO threshold)
-        ndvi_min, ndvi_max = float(ndvi.min()), float(ndvi.max())
-        ndvi_range = ndvi_max - ndvi_min if ndvi_max != ndvi_min else 1e-8
-
-        # ── Narrow-range safeguard ──
-        # If NDVI variation is <0.05 across the window, there's no meaningful
-        # seasonal signal — VCI becomes noise. Classify as normal.
-        if (ndvi_max - ndvi_min) < 0.05:
+        if vci is None:
             return {
-                "method": "vci_ndwi_drought",
-                "observations": len(ndvi),
+                **common,
                 "drought_status": "normal",
                 "description": (
-                    f"NDVI range too narrow ({ndvi_min:.4f}–{ndvi_max:.4f}) "
-                    f"for meaningful VCI — vegetation is stable"
+                    f"NDVI at this time of year varies too little ({ndvi_range[0]:.4f}–{ndvi_range[1]:.4f}) "
+                    f"for a meaningful VCI — vegetation is stable"
                 ),
                 "current_vci": None,
-                "latest_ndvi": round(float(ndvi[-1]), 4),
-                "latest_ndwi": round(float(ndwi[-1]), 4) if np.any(ndwi != 0) else None,
-                "ndvi_range": {"min": round(ndvi_min, 4), "max": round(ndvi_max, 4)},
+                "ndvi_range": {"min": round(ndvi_range[0], 4), "max": round(ndvi_range[1], 4)},
                 "drought_periods": [],
                 "drought_period_count": 0,
             }
 
-        vci = ((ndvi[-1] - ndvi_min) / ndvi_range) * 100.0
-
-        # ── Drought severity classification ──
-        # Combine VCI with NDWI water-stress indicator
-        has_ndwi = np.any(ndwi != 0)
+        # ── Drought periods over the last year, each against its own season ──
         drought_periods = []
-
-        for i in range(len(ndvi)):
-            period_vci = ((ndvi[i] - ndvi_min) / ndvi_range) * 100.0
-            water_stressed = ndwi[i] < 0.0 if has_ndwi else False
-
+        evaluated = 0
+        for i in range(len(days)):
+            if (days[latest] - days[i]).days > 365:
+                continue
+            period_vci, _, _ = seasonal_vci(i)
+            if period_vci is None:
+                continue
+            evaluated += 1
+            water_stressed = ndwi_vals[i] < 0.0 if has_ndwi else False
             if period_vci < 20 or (period_vci < 35 and water_stressed):
                 severity = "severe" if period_vci < 20 else "moderate"
-                drought_periods.append({
-                    "date": dates[i],
-                    "vci": round(period_vci, 2),
-                    "ndvi": round(float(ndvi[i]), 4),
-                    "ndwi": round(float(ndwi[i]), 4) if has_ndwi else None,
-                    "severity": severity,
-                })
             elif period_vci < 35:
-                drought_periods.append({
-                    "date": dates[i],
-                    "vci": round(period_vci, 2),
-                    "ndvi": round(float(ndvi[i]), 4),
-                    "ndwi": round(float(ndwi[i]), 4) if has_ndwi else None,
-                    "severity": "mild",
-                })
+                severity = "mild"
+            else:
+                continue
+            drought_periods.append({
+                "date": dates[i],
+                "vci": round(period_vci, 2),
+                "ndvi": round(ndvi_vals[i], 4),
+                "ndwi": round(ndwi_vals[i], 4) if has_ndwi else None,
+                "severity": severity,
+            })
 
         # Overall drought status
         if vci < 20:
@@ -791,19 +808,17 @@ class CropClassifier:
         else:
             drought_status = "normal"
             description = "VCI ≥ 50 — adequate vegetation condition"
+        description += f" for this time of year ({baseline_years} earlier years)"
 
         return {
-            "method": "vci_ndwi_drought",
-            "observations": len(ndvi),
+            **common,
             "current_vci": round(vci, 2),
             "drought_status": drought_status,
             "description": description,
-            "ndvi_range": {"min": round(ndvi_min, 4), "max": round(ndvi_max, 4)},
-            "latest_ndvi": round(float(ndvi[-1]), 4),
-            "latest_ndwi": round(float(ndwi[-1]), 4) if has_ndwi else None,
+            "ndvi_range": {"min": round(ndvi_range[0], 4), "max": round(ndvi_range[1], 4)},
             "drought_periods": drought_periods,
             "drought_period_count": len(drought_periods),
-            "drought_rate_percent": round(len(drought_periods) / len(ndvi) * 100, 2),
+            "drought_rate_percent": round(len(drought_periods) / evaluated * 100, 2) if evaluated > 0 else None,
         }
 
     def analyze_crop_phenology(

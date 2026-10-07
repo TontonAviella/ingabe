@@ -2336,22 +2336,23 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
     try:
         from src.routes.message_routes import _ensure_rwanda_postgis_connection
 
-        _where: list[str] = []
+        # The weekly scan appends a row per district each week: read each district's latest,
+        # then filter by status, so an older status never stands in for the current one.
         _params: list[Any] = []
-        _pidx = 1
+        _district_sql = ""
+        _status_sql = ""
         if args.get("district"):
-            _where.append(f"district = ${_pidx}")
             _params.append(args["district"])
-            _pidx += 1
+            _district_sql = f"WHERE district = ${len(_params)}"
         if args.get("status"):
-            _where.append(f"drought_status = ${_pidx}")
             _params.append(args["status"])
-            _pidx += 1
-        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+            _status_sql = f"WHERE drought_status = ${len(_params)}"
         _rows = await ctx.conn.fetch(
-            f"SELECT district, drought_status, current_vci, latest_ndvi, "
+            f"SELECT * FROM ("
+            f"SELECT DISTINCT ON (district) district, drought_status, current_vci, latest_ndvi, "
             f"latest_ndwi, drought_period_count, description "
-            f"FROM drought_cache {_where_sql} "
+            f"FROM drought_cache {_district_sql} ORDER BY district, computed_at DESC"
+            f") latest {_status_sql} "
             f"ORDER BY current_vci ASC LIMIT 50",
             *_params,
         )
@@ -2386,8 +2387,8 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
             ):
                 tool_result["note"] = (
                     "All queried districts have insufficient "
-                    "historical NDVI data (<8 weeks) to compute "
-                    "a reliable drought index. Do NOT report "
+                    "NDVI history: a drought index compares this time "
+                    "of year with at least 2 earlier years. Do NOT report "
                     "drought status — instead tell the user that "
                     "not enough data has been collected yet."
                 )

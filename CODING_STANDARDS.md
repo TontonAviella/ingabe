@@ -174,6 +174,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** drought_cache was empty: detect_drought returned numpy floats, psycopg2 wrote them as `np.float64(...)` and the weekly scan failed;
+  fixed as-is it would have published "Bugesera severe drought" from 13 weeks, VCI over one year reading the dry season as drought. Rules: values
+  leaving numpy for SQL or JSON are plain Python; an anomaly index compares the same season across years. Gate: `test_drought_seasonal_vci.py`.
 - **2026-10-07** Failed Sentinel-2 searches return `{"error": ...}`; SAR→NDVI training logged "0 observations" and four Sage tools said "no (cloud-free)
   scenes", so an outage read as no data; drought also used `"error"` for "too few scenes". Rule: check a returned `"error"` first, and keep `"error"`
   for failures (Fail fast; Missing is not zero). Gate: review only (needs to know which functions return error dicts); `test_sar_ndvi_search_errors.py`.
