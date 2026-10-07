@@ -1089,8 +1089,10 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
         return None
 
     def guess(look: drone_vision.PlotLook) -> str:
-        if look.candidates:
+        if len(look.candidates) > 1:
             return " or ".join(_crop_words(c) for c in look.candidates).capitalize() + "? The two looks disagreed."
+        if look.candidates:
+            return f"{_crop_words(look.candidates[0]).capitalize()}? Only one of the two looks could name it."
         if look.main_crop == "unsure":
             return "The model could not tell."
         return f"The model says {_crop_words(look.main_crop)}."
