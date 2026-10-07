@@ -64,7 +64,7 @@ from src.services.life_harness import (
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage
+from src.services import data_coverage, llm_cache
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -506,22 +506,30 @@ async def label_conversation_inline(conversation_id: int):
             request = Request({"type": "http", "method": "POST", "headers": []})
             openai_client, title_model = get_chat_client_for_model(request)
 
-            response = await openai_client.chat.completions.create(
-                model=title_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
-                    },
-                    {"role": "user", "content": f"Conversation:\n{content_summary}"},
-                ],
-                # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
-                # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
-                max_tokens=150,
-                temperature=0.3,
-            )
+            title_messages = [
+                {
+                    "role": "system",
+                    "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
+                },
+                {"role": "user", "content": f"Conversation:\n{content_summary}"},
+            ]
 
-            title = (response.choices[0].message.content or "").strip()
+            async def name_it() -> dict:
+                response = await openai_client.chat.completions.create(
+                    model=title_model,
+                    messages=title_messages,
+                    # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                    # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                    max_tokens=150,
+                    temperature=0.3,
+                    extra_body={"usage": {"include": True}},
+                )
+                llm_cache.record("chat_title", response.usage)
+                return {"title": response.choices[0].message.content or ""}
+
+            # Chats that start the same way (an Ask Sage question from a card) get their title for free.
+            named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
+            title = named["title"].strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
@@ -1161,8 +1169,10 @@ async def _run_abdication_guard(
             tool.get("function", {}).pop("strict", None)
     try:
         response = await client.chat.completions.create(
-            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
         )
+        llm_cache.record("sage_guard", getattr(response, "usage", None))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
@@ -2629,10 +2639,18 @@ async def process_chat_interaction_task(
                             # `<tool_call>...</tool_call>` text emissions don't
                             # leak into the user-visible chat. See class docstring.
                             _xml_scrub = _ToolCallTextScrubber()
+                            if not _model_name.startswith("ollama:"):
+                                # The last chunk carries the call's tokens and cost, and how much of the prompt
+                                # the provider served from its cache (llm_cache.record logs it).
+                                _attempt_kwargs["stream_options"] = {"include_usage": True}
+                                _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
+                                                                 "usage": {"include": True}}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
                             async for chunk in stream:
+                                if getattr(chunk, "usage", None):
+                                    llm_cache.record("sage", chunk.usage)
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()

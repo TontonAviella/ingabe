@@ -42,7 +42,7 @@ from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
 from src.llm_defaults import resolve_chat_endpoint
-from src.services import background_jobs, drone_plots
+from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
 
@@ -263,16 +263,19 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
                schema: dict[str, Any], name: str) -> tuple[dict[str, Any], float]:
     """The model's answers, and what the call cost in USD. The fixed instructions come first, as text, so the
     provider can serve them from its prompt cache; the pictures come last."""
-    response = await client.chat.completions.create(
-        model=model, reasoning_effort=EFFORT,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-        response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-        extra_body={"usage": {"include": True}},
-    )
-    content_text = response.choices[0].message.content or ""
-    usage = response.usage
-    cost = float(getattr(usage, "cost", None) or ((usage.model_extra or {}).get("cost") if usage else 0) or 0)
-    return json.loads(content_text), cost
+    async def look() -> dict[str, Any]:
+        response = await client.chat.completions.create(
+            model=model, reasoning_effort=EFFORT,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
+            response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
+            extra_body={"usage": {"include": True}},
+        )
+        cost = llm_cache.record(f"vision_{name}", response.usage)
+        return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}
+
+    # The same pictures with the same instructions (a survey run again, plots found again) cost nothing.
+    kept, reused = await llm_cache.answer("vision", llm_cache.key_of(model, EFFORT, system, content, schema), look)
+    return kept["answer"], 0.0 if reused else kept["cost"]
 
 
 def _look_content(overview: bytes, metres: float, cm: float, squares: list[bytes], place: Optional[str]) -> list[dict[str, Any]]:
