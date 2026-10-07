@@ -16,13 +16,15 @@
 """STAC satellite imagery discovery service for Rwanda agriculture.
 
 Uses pystac-client when available (preferred), falls back to raw HTTP requests.
-Supports Earth Search, Planetary Computer, and CDSE catalogs.
+Searches Sentinel-2 L2A on Earth Search (COGs, no credentials needed).
 """
 
+import calendar
 import logging
+import re
 import time
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from datetime import date, datetime, timedelta
+from typing import Optional, List, Dict, Any, Tuple
 
 import numpy as np
 import requests
@@ -51,9 +53,10 @@ logger = logging.getLogger(__name__)
 # Public STAC endpoints for satellite imagery
 STAC_CATALOGS = {
     "earth_search": "https://earth-search.aws.element84.com/v1",
-    "planetary_computer": "https://planetarycomputer.microsoft.com/api/stac/v1",
-    "cdse": "https://stac.dataspace.copernicus.eu/v1",
 }
+# Not offered, because NDVI cannot read their band files (checked 2026-10-07): CDSE's are JPEG 2000
+# on s3://eodata behind CDSE credentials (401 / InvalidAccessKeyId); Planetary Computer's need a
+# signed URL (409 unsigned). sentinel1_service signs its own Sentinel-1 reads from Planetary Computer.
 
 # Seconds to connect and to read for pystac-client requests: it sets none by default, so a stalled
 # catalog held the calling thread for as long as the server kept the connection open. A read that
@@ -68,8 +71,6 @@ RWANDA_BBOX = [28.86, -2.84, 30.90, -1.04]
 # Sentinel-2 collection IDs per catalog
 SENTINEL2_COLLECTIONS = {
     "earth_search": "sentinel-2-l2a",
-    "planetary_computer": "sentinel-2-l2a",
-    "cdse": "sentinel-2-l2a",
 }
 
 # Drought status constants (WMO VCI thresholds)
@@ -89,6 +90,52 @@ _USEFUL_ASSETS = {
     "coastal", "rededge1", "rededge2", "rededge3",
     "nir08", "nir09", "swir16", "swir22",
 }
+
+# One end of a STAC datetime range, as pystac-client 0.7.7 parses it: a year, a month, a day,
+# or a date-time with an optional zone.
+_STAC_DATETIME = re.compile(
+    r"^(?P<year>\d{4})(-(?P<month>\d{2})(-(?P<day>\d{2})"
+    r"(?P<time>[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?(?P<zone>[Zz]|[-+]\d{2}:\d{2})?)?)?)?$"
+)
+
+
+def _stac_datetime_bounds(component: str) -> Tuple[str, Optional[str]]:
+    """First and last second one end of a range covers; no last second for an exact date-time."""
+    if component in ("", ".."):
+        return "..", None
+    match = _STAC_DATETIME.match(component)
+    if not match:
+        raise ValueError(f"invalid STAC datetime: {component!r}")
+    if match.group("time"):
+        return (component if match.group("zone") else f"{component}Z"), None
+    year = int(match.group("year"))
+    if match.group("day"):
+        first = last = date(year, int(match.group("month")), int(match.group("day")))
+    elif match.group("month"):
+        month = int(match.group("month"))
+        first = date(year, month, 1)
+        last = date(year, month, calendar.monthrange(year, month)[1])
+    else:
+        first, last = date(year, 1, 1), date(year, 12, 31)
+    return f"{first.isoformat()}T00:00:00Z", f"{last.isoformat()}T23:59:59Z"
+
+
+def stac_datetime_interval(datetime_range: str) -> str:
+    """RFC 3339 form of a STAC datetime or range, e.g. "2026-09-07/2026-10-07".
+
+    Earth Search and CDSE reject bare dates with a 400. Same rules as pystac-client 0.7.7, so a raw
+    HTTP search asks for the same scenes as a pystac-client one: a year, month or day covers all of
+    it in UTC, a date-time without a zone is UTC, and ".." or an empty end is open.
+    """
+    components = datetime_range.split("/")
+    if len(components) == 1:
+        start, end = _stac_datetime_bounds(components[0])
+        return f"{start}/{end}" if end else start
+    if len(components) == 2:
+        start, _ = _stac_datetime_bounds(components[0])
+        instant_end, span_end = _stac_datetime_bounds(components[1])
+        return f"{start}/{span_end or instant_end}"
+    raise ValueError(f"invalid STAC datetime range (more than one '/'): {datetime_range!r}")
 
 
 _BBOX_READ_ENV = {
@@ -312,15 +359,14 @@ class STACService:
     ) -> Dict[str, Any]:
         """Search using raw HTTP POST (fallback)."""
         search_url = f"{self.catalog_url}/search"
-        payload: Dict[str, Any] = {
-            "collections": collections,
-            "bbox": bbox,
-            "datetime": datetime_range,
-            "limit": limit,
-            "query": {"eo:cloud_cover": {"lt": max_cloud_cover}},
-        }
-
         try:
+            payload: Dict[str, Any] = {
+                "collections": collections,
+                "bbox": bbox,
+                "datetime": stac_datetime_interval(datetime_range),
+                "limit": limit,
+                "query": {"eo:cloud_cover": {"lt": max_cloud_cover}},
+            }
             resp = self._session.post(search_url, json=payload, timeout=30)
             resp.raise_for_status()
             data = resp.json()

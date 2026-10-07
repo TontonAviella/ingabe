@@ -52,11 +52,6 @@ class TestSTACServiceInstantiation:
         with pytest.raises(KeyError):
             STACService(catalog_name="invalid_catalog")
 
-    def test_custom_catalog(self):
-        """Verify custom catalog initialization."""
-        service = STACService(catalog_name="planetary_computer")
-        assert service.catalog_name == "planetary_computer"
-        assert service.catalog_url == STAC_CATALOGS["planetary_computer"]
 
 
 class TestSearchImagery:
@@ -153,7 +148,8 @@ class TestSearchImagery:
         payload = call_args[1]["json"]
 
         assert payload["bbox"] == custom_bbox
-        assert payload["datetime"] == custom_datetime
+        # Earth Search rejects bare dates (400): the range goes out in RFC 3339.
+        assert payload["datetime"] == "2024-01-01T00:00:00Z/2024-01-31T23:59:59Z"
         assert payload["collections"] == [SENTINEL2_COLLECTIONS["earth_search"]]
 
     @patch("src.services.stac_service._PYSTAC_CLIENT_AVAILABLE", False)
@@ -196,9 +192,3 @@ class TestGetSTACServiceSingleton:
         service2 = get_stac_service("earth_search")
         assert service1 is service2
 
-    def test_get_stac_service_different_catalog_returns_new_instance(self):
-        """Verify different instance for different catalog."""
-        service1 = get_stac_service("earth_search")
-        service2 = get_stac_service("planetary_computer")
-        assert service1 is not service2
-        assert service1.catalog_name != service2.catalog_name
