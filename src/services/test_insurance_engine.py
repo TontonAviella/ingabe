@@ -1759,7 +1759,7 @@ class TestBrainServicePutPageParams:
         assert geom in positional
 
     def test_coalesce_on_conflict_preserves_existing_scope(self):
-        """ON CONFLICT UPDATE uses COALESCE so NULL excluded doesn't overwrite existing."""
+        """No scope given: a new page is private, an existing page keeps its scope."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()
@@ -1768,11 +1768,13 @@ class TestBrainServicePutPageParams:
         page = PageInput(type="t", title="t", compiled_truth="c")
         _run(brain.put_page(conn, "test-page", page, owner_uuid="o"))
         sql = conn.fetchrow.call_args[0][0]
-        assert "COALESCE(EXCLUDED.access_scope, brain_pages.access_scope)" in sql
+        assert "COALESCE($11::text, 'private')" in sql
+        assert "COALESCE($11::text, brain_pages.access_scope)" in sql
         assert "COALESCE(EXCLUDED.partner_id, brain_pages.partner_id)" in sql
 
     def test_default_scope_is_none(self):
-        """When access_scope/partner_id not provided, None should be passed."""
+        """When access_scope/partner_id not provided, None is passed (the SQL
+        makes a new page private and keeps an existing page's scope)."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()

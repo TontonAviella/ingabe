@@ -1,9 +1,10 @@
 """Sage's memory packet holds only Brain pages in the user's own scope.
 
 On 2026-10-07 the packet for a question about a drone photo carried seven test
-pages written by other (random) owners: RLS shows every page with no
+pages written by other (random) owners: RLS then showed every page with no
 access_scope to everyone ("NULL is public"), and the packet padded an empty
-result with the newest of those. These tests run the real SQL:
+result with the newest of those. Such pages are now private to their owner
+(alembic b8d4f0a2c6e1). These tests run the real SQL:
 BrainService.slugs_in_user_scope, and build_brain_context_packet end to end.
 """
 
@@ -25,11 +26,15 @@ STRANGER = str(uuid.uuid4())
 PARTNER = str(uuid.uuid4())
 OTHER_PARTNER = str(uuid.uuid4())
 
-# A layer on the user's map that a teammate uploaded: its Brain page belongs
-# to the teammate but is about what the user is looking at.
+# The user's own orthophoto on their map, and a stranger's layer that is also
+# on it: the stranger's page is private to the stranger and stays out.
 LAYER_ID = f"L{RUN_TAG}Ab"
+STRANGER_LAYER_ID = f"L{RUN_TAG}St"
 VIEWPORT = (30.41, -1.71, 30.44, -1.69)
-IN_VIEWPORT = '{"type":"Point","coordinates":[30.42,-1.70]}'
+# In VIEWPORT, east of the orthophoto footprint; the second viewport sees it
+# and nothing of the user's.
+IN_VIEWPORT = '{"type":"Point","coordinates":[30.435,-1.705]}'
+STRANGER_ONLY_VIEWPORT = (30.433, -1.707, 30.437, -1.703)
 ORTHO_FOOTPRINT = (
     '{"type":"Polygon","coordinates":[[[30.4175,-1.7009],[30.4315,-1.7009],'
     '[30.4315,-1.6929],[30.4175,-1.6929],[30.4175,-1.7009]]]}'
@@ -53,6 +58,7 @@ PAGES = {
 }
 STRANGER_TEST_FIELD = _slug("test-field")
 ORTHO_SLUG = f"raster-{LAYER_ID.lower()}"
+STRANGER_ORTHO_SLUG = f"raster-{STRANGER_LAYER_ID.lower()}"
 
 
 async def _as(conn: asyncpg.Connection, user_id: str, partner_id: str) -> None:
@@ -94,6 +100,15 @@ async def seeded():
             compiled_truth="Raster layer: Cyampirita_Orthophoto. Bands: 4.",
             geom_geojson=ORTHO_FOOTPRINT,
         ),
+        owner_uuid=USER,
+    )
+    await brain.put_page(
+        conn, STRANGER_ORTHO_SLUG,
+        PageInput(
+            type="field", title="Raster: Kabarama_Orthophoto",
+            compiled_truth="Raster layer: Kabarama_Orthophoto. Bands: 4.",
+            geom_geojson=ORTHO_FOOTPRINT,
+        ),
         owner_uuid=STRANGER,
     )
 
@@ -102,7 +117,7 @@ async def seeded():
     await _as(conn, "", "")
     await conn.execute(
         "DELETE FROM brain_pages WHERE slug = ANY($1::text[])",
-        [*PAGES, STRANGER_TEST_FIELD, ORTHO_SLUG],
+        [*PAGES, STRANGER_TEST_FIELD, ORTHO_SLUG, STRANGER_ORTHO_SLUG],
     )
     await conn.close()
 
@@ -134,11 +149,12 @@ async def test_packet_skips_a_strangers_test_page_that_matches_the_question(seed
         conn, brain,
         query_text="cassava field Gatsibo",
         viewport_bounds=VIEWPORT,
-        visible_layer_ids=[LAYER_ID, "LQmvuX9mQavb"],
+        visible_layer_ids=[LAYER_ID, STRANGER_LAYER_ID, "LQmvuX9mQavb"],
     )
 
     assert packet is not None
-    assert f"slug={ORTHO_SLUG}" in packet  # on the map, so in scope
+    assert f"slug={ORTHO_SLUG}" in packet  # the user's own, on the map
+    assert STRANGER_ORTHO_SLUG not in packet  # on the map, but private to the stranger
     assert STRANGER_TEST_FIELD not in packet
     assert "source=recent" not in packet
 
@@ -151,7 +167,7 @@ async def test_packet_is_empty_when_only_strangers_pages_match(seeded):
     packet = await build_brain_context_packet(
         conn, brain,
         query_text="cassava field Gatsibo",
-        viewport_bounds=VIEWPORT,
+        viewport_bounds=STRANGER_ONLY_VIEWPORT,
         visible_layer_ids=[],
     )
 

@@ -29,18 +29,40 @@ import asyncpg
 MAX_SEARCH_LIMIT = 100
 _DEFAULT_LIMIT = 20
 
+# The session's user owns the page or was shared on it. NULLIF: an empty
+# app.user_id (worker context) must never be cast to uuid
+# (feedback_rls_nullif_uuid_cast); NULL = ANY(...) is not a match.
+_SESSION_USER_IS_MEMBER = """(
+            {a}owner_uuid::text = current_setting('app.user_id', true)
+            OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY({a}viewer_uuids)
+            OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY({a}editor_uuids)
+        )"""
+
 # Application-layer scope filter (defense-in-depth alongside RLS): the one
 # definition of which Brain pages a session may read; other modules format it
 # instead of copying it. {a} is the brain_pages alias prefix, e.g. "p." or ""
 # for unaliased brain_pages.
-PAGE_SCOPE_FILTER = """
-    AND (
-        {a}access_scope IS NULL
-        OR {a}access_scope = 'public'
-        OR ({a}access_scope = 'partner_internal'
-            AND {a}partner_id::text = coalesce(
-                current_setting('app.partner_id', true), ''))
-    )
+#
+# Scopes (migration b8d4f0a2c6e1): 'private' pages are read by their owner,
+# viewers and editors, and by workers (empty app.user_id: the hook processor
+# and the embeddings backfill must still reach them); 'public' by everyone;
+# 'partner_internal' by the session's partner; 'mundi_only' through admin
+# tools only. Until 2026-10-07 a page with no scope counted as public here
+# and in RLS, so every user's pages reached every other user.
+#
+# A CASE, like the partner_isolation policy: written as an OR of scope
+# equalities, the planner answered it with a BitmapOr over
+# idx_brain_pages_scope_partner covering ~98% of the table (search_keyword,
+# 100k pages, 2026-10-07).
+PAGE_SCOPE_FILTER = f"""
+    AND CASE {{a}}access_scope
+        WHEN 'public' THEN true
+        WHEN 'partner_internal' THEN {{a}}partner_id::text = coalesce(
+            current_setting('app.partner_id', true), '')
+        WHEN 'private' THEN coalesce(current_setting('app.user_id', true), '') = ''
+            OR {_SESSION_USER_IS_MEMBER}
+        ELSE false
+    END
 """
 
 # Agricultural page types for Rwanda insurance
@@ -317,6 +339,13 @@ class BrainService:
         access_scope: Optional[str] = None,
         partner_id: Optional[str] = None,
     ) -> Page:
+        """Create or update a page.
+
+        access_scope: None makes a new page 'private' (its owner, viewers and
+        editors) and leaves an existing page's scope as it is. Pass 'public'
+        or 'partner_internal' (with partner_id) to share it. Until 2026-10-07
+        None meant NULL, which RLS read as public.
+        """
         slug = _validate_slug(slug)
         content_hash = page.content_hash or _content_hash(page)
         frontmatter = json.dumps(page.frontmatter or {})
@@ -332,7 +361,7 @@ class BrainService:
                      access_scope, partner_id,
                      geom, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                        $11, $12::uuid,
+                        COALESCE($11::text, 'private'), $12::uuid,
                         ST_SetSRID(ST_GeomFromGeoJSON($13), 4326), now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
@@ -341,7 +370,7 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
-                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    access_scope = COALESCE($11::text, brain_pages.access_scope),
                     partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     geom = EXCLUDED.geom,
                     updated_at = now()
@@ -364,7 +393,7 @@ class BrainService:
                      access_scope, partner_id,
                      updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                        $11, $12::uuid,
+                        COALESCE($11::text, 'private'), $12::uuid,
                         now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
@@ -373,7 +402,7 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
-                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    access_scope = COALESCE($11::text, brain_pages.access_scope),
                     partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     updated_at = now()
                 RETURNING id, slug, type, title, compiled_truth, timeline, frontmatter,
@@ -608,10 +637,11 @@ class BrainService:
         """The slugs among `slugs` that are in the session user's own scope.
 
         In scope: pages the user owns or was shared on, public pages, and their
-        partner's internal pages. RLS also shows every page with no
-        access_scope (legacy "NULL is public") whoever owns it; those are left
-        out here. Test pages written under random owners reached every user's
-        Sage memory packet that way (2026-10-07).
+        partner's internal pages. In a user's session that is exactly
+        PAGE_SCOPE_FILTER; in a session with no user (worker context) the
+        filter shows every private page, and this leaves them out. Test pages
+        of random owners reached Sage's memory packet on 2026-10-07, when a
+        page with no scope still counted as public.
         """
         if not slugs:
             return set()
@@ -622,9 +652,7 @@ class BrainService:
             {PAGE_SCOPE_FILTER.format(a="")}
             AND (
                 access_scope IN ('public', 'partner_internal')
-                OR owner_uuid::text = coalesce(current_setting('app.user_id', true), '')
-                OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY(viewer_uuids)
-                OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY(editor_uuids)
+                OR {_SESSION_USER_IS_MEMBER.format(a="")}
             )
             """,
             slugs,
