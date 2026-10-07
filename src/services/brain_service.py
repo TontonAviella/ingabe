@@ -210,6 +210,11 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards: slugs may contain `_`."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
 _FRONTMATTER_REF_KEYS = {"related", "see_also", "links", "references", "parent", "children"}
 
@@ -1446,37 +1451,52 @@ class BrainService:
         bbox: tuple[float, float, float, float],
         limit: int = 50,
         type: Optional[str] = None,
+        layer_ids: Optional[list[str]] = None,
     ) -> list[Page]:
         """Get brain pages whose geometry intersects a bounding box.
 
         Args:
             bbox: (lon_min, lat_min, lon_max, lat_max)
+            layer_ids: when given, pages about a layer (`raster-<id>`,
+                `layer-<id>`, `layer-<id>-fN`, as brain_hook_processor names
+                them) are returned only for these layers; other pages are
+                unaffected. The filter runs before the LIMIT, so pages of
+                layers elsewhere cannot crowd these out (on 2026-10-07 twenty
+                copies of one orthophoto on other maps hid the copy on the
+                user's map).
         """
         lon_min, lat_min, lon_max, lat_max = bbox
-        pf = PAGE_SCOPE_FILTER.format(a="")
+        args: list[Any] = [lon_min, lat_min, lon_max, lat_max]
+        type_filter = ""
         if type:
-            rows = await conn.fetch(
-                f"""
-                SELECT * FROM brain_pages
-                WHERE geom IS NOT NULL
-                  AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
-                  AND type = $5
-                {pf}
-                ORDER BY updated_at DESC LIMIT $6
-                """,
-                lon_min, lat_min, lon_max, lat_max, type, limit,
-            )
-        else:
-            rows = await conn.fetch(
-                f"""
-                SELECT * FROM brain_pages
-                WHERE geom IS NOT NULL
-                  AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
-                {pf}
-                ORDER BY updated_at DESC LIMIT $5
-                """,
-                lon_min, lat_min, lon_max, lat_max, limit,
-            )
+            args.append(type)
+            type_filter = f"AND type = ${len(args)}"
+        layer_filter = ""
+        if layer_ids is not None:
+            ids = [_validate_slug(i) for i in layer_ids if i and i.strip()]
+            args.append([f"{kind}-{i}" for i in ids for kind in ("raster", "layer")])
+            exact = len(args)
+            args.append([_like_escape(f"layer-{i}-f") + "%" for i in ids])
+            prefix = len(args)
+            layer_filter = f"""
+                  AND (
+                      NOT (slug LIKE 'layer-%' OR slug LIKE 'raster-%')
+                      OR slug = ANY(${exact}::text[])
+                      OR slug LIKE ANY(${prefix}::text[])
+                  )"""
+        args.append(limit)
+        rows = await conn.fetch(
+            f"""
+            SELECT * FROM brain_pages
+            WHERE geom IS NOT NULL
+              AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
+              {type_filter}
+              {layer_filter}
+            {PAGE_SCOPE_FILTER.format(a="")}
+            ORDER BY updated_at DESC LIMIT ${len(args)}
+            """,
+            *args,
+        )
         return [_row_to_page(r) for r in rows]
 
     # ── Pending Hooks ───────────────────────────────────────────
