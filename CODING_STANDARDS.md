@@ -51,6 +51,13 @@ message. H1–H3 below are the hard, CI-enforced form of these.
   data". A total over days, pixels or areas with gaps is unknown below its
   coverage threshold, never the sum of what arrived; a real 0 is a value.
   Both mistakes are in the Lessons log (2026-10-04).
+- **Numbers shown to users come from a real source.** A normal, baseline,
+  climatology or z-score that a reader sees or a trigger fires on is computed
+  by committed code from a named dataset, and says which. A model that stands
+  in for a missing signal is used only after it was measured against that
+  signal; until then the value is missing. Hand-entered "normals" and a
+  z-score against invented constants both reached insurance reports (Lessons
+  log 2026-10-04, 2026-10-07).
 - **Optimise for deletion.** Prefer code that is easy to remove over code
   that is easy to extend.
 - **Boring tech.** Reuse the stack already in the repo before adding a
@@ -167,6 +174,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** With the NDVI cache empty, every insurance report's NDVI z-score was a Sentinel-1 prediction (model fitted on the first place asked)
+  scored against invented constants 0.45 +/- 0.15; it did not follow the real anomaly (r -0.01, docs/SAR_NDVI_SKILL.md) and fired a 0.8 trigger
+  in rainy weeks. Second invented baseline after 2026-10-04: promoted to "Numbers shown to users come from a real source". Gate: engine test; review only elsewhere.
 - **2026-10-07** The STAC raw HTTP fallback posted bare dates ("2026-09-07/2026-10-07"); Earth Search and CDSE answer 400, so every fallback
   search found nothing, and its only payload test mocked `post` and asserted the bare range. Rule: a request to an external API has one test
   against a server that answers like the real one (its validation, a recorded response). Gate: `test_stac_http_search.py`; review only elsewhere.

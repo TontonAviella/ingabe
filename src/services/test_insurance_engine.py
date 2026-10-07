@@ -875,9 +875,6 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
-        pred = MagicMock()
-        pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
 
@@ -995,10 +992,6 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        # SAR-predicted NDVI — the fallback when the NDVI anomaly cache is empty
-        sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
         return stack
@@ -1143,7 +1136,7 @@ class TestComputeInsuranceIntelligence:
         assert "Left out of this report" not in result["report"]
 
     def test_network_reads_run_together_and_alongside_the_database(self):
-        """They used to queue: the SAR-predicted NDVI started only after the others and the database reads."""
+        """They used to queue: each started only after the one before and the database reads."""
         import time as _time
 
         def slow(value):
@@ -1157,21 +1150,16 @@ class TestComputeInsuranceIntelligence:
             return None
 
         conn = self._mock_conn()
-        conn.fetchrow.return_value = {"mean_z": None}  # no optical anomaly: the SAR-predicted NDVI is read
-        pred = MagicMock()
-        pred.predict_ndvi.side_effect = slow({"status": "success", "predicted_ndvi": 0.3})
         with self._patches(), \
                 patch("src.services.forecast_fusion.fetch_chirps_daily", side_effect=slow(({}, set()))), \
                 patch("src.services.wapor_service.query_et", side_effect=slow(None)), \
                 patch("src.services.wapor_service.query_soil_moisture", side_effect=slow(None)), \
                 patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", side_effect=slow(None)), \
-                patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred), \
                 patch("src.services.weather_accuracy.detect_dry_spells", side_effect=slow_db):
             result, took = self._timed(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        assert took < 0.75  # five 0.4 s reads and a 0.4 s query at once, not 2.4 s in a row
-        assert result["data"]["ndvi_z_score"] == pytest.approx((0.3 - 0.45) / 0.15, abs=0.01)
+        assert took < 0.75  # four 0.4 s reads and a 0.4 s query at once, not 2.0 s in a row
         assert result["data"]["not_read_in_time"] == []
 
     def test_a_report_stopped_early_leaves_no_read_waiting(self):
@@ -1198,15 +1186,34 @@ class TestComputeInsuranceIntelligence:
                 patch("src.services.wapor_service.query_et", side_effect=slow_et):
             assert _run(stop_early()) == []
 
-    def test_the_sar_predicted_ndvi_is_read_only_without_an_optical_anomaly(self):
+    def test_the_ndvi_z_score_is_the_districts_optical_anomaly(self):
         conn = self._mock_conn()  # the anomaly cache has a z-score
-        pred = MagicMock()
-        with self._patches(), patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred):
+        with self._patches():
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        pred.predict_ndvi.assert_not_called()
         assert result["data"]["ndvi_z_score"] == -0.5
+        assert "Sentinel-2 NDVI anomaly (district)" in result["data"]["sources"]
+
+    def test_without_an_optical_anomaly_the_ndvi_z_score_is_missing(self):
+        """2026-10-07: an empty anomaly cache used to be filled with a Sentinel-1 prediction scored against
+        invented constants (0.45 +/- 0.15), which did not follow optical NDVI (docs/SAR_NDVI_SKILL.md) and
+        could fire the NDVI trigger. Now the z-score is missing and its trigger is left out."""
+        conn = self._mock_conn()
+        conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the NDVI trigger
+        conn.fetchrow.return_value = {"mean_z": None}
+        with self._patches(), patch("src.services.sar_ndvi.get_sar_ndvi_predictor") as sar_ndvi, \
+                patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        sar_ndvi.assert_not_called()
+        s1.assert_not_called()
+        assert result["data"]["ndvi_z_score"] is None
+        assert "ndvi_z_score" in {t["signal"] for t in _default_triggers("full_season")}
+        assert "ndvi_z_score" not in {t["signal"] for t in result["data"]["triggers"]}
+        assert not any("NDVI" in s for s in result["data"]["sources"])
+        assert "NDVI z-score" not in result["report"]  # the agronomist report's NDVI line
 
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
@@ -1515,9 +1522,6 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
         # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
         stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
         return stack
