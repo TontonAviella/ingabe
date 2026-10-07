@@ -607,6 +607,37 @@ class STACService:
                 "download_time_sec": round(time.time() - start_time, 2),
             }
 
+    @staticmethod
+    def _bbox_share_in_scene(bbox: List[float], scene_bbox: Optional[List[float]]) -> Optional[float]:
+        """Share of `bbox` (by area in degrees) inside a scene's bounding box; None if it has none."""
+        if not scene_bbox:
+            return None
+        west, south, east, north = bbox
+        width = min(east, scene_bbox[2]) - max(west, scene_bbox[0])
+        height = min(north, scene_bbox[3]) - max(south, scene_bbox[1])
+        if width <= 0 or height <= 0:
+            return 0.0
+        return width * height / ((east - west) * (north - south))
+
+    def compute_ndvi_sample(self, items: List[Dict[str, Any]], bbox: List[float]) -> Dict[str, Any]:
+        """NDVI over `bbox` from the search result that covers most of it (the first one on a tie).
+
+        One scene, no cloud mask, read through compute_ndvi_for_bbox. `bbox_share_in_scene` is the
+        share of `bbox` inside that scene's bounding box: the NDVI describes that part only.
+        """
+        west, south, east, north = bbox
+        if west >= east or south >= north:
+            return {"error": f"bbox must be west,south,east,north with west < east and south < north: {bbox}"}
+        shares = [self._bbox_share_in_scene(bbox, item.get("bbox")) for item in items]
+        overlapping = [(share, i) for i, share in enumerate(shares) if share is not None and share > 0]
+        if not overlapping:
+            return {"error": "No scene in the search results overlaps the requested area"}
+        share, best = max(overlapping, key=lambda pair: pair[0])
+        result = self.compute_ndvi_for_bbox(items[best], bbox)
+        if "error" in result:
+            return result
+        return {**result, "bbox_share_in_scene": round(share, 2)}
+
     def compute_admin_ndvi(
         self,
         bbox: List[float],
