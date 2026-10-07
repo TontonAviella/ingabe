@@ -1062,13 +1062,10 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 
             del result["data"]
             result["instruction"] = (
-                "You are briefing someone who cares about this area. "
-                "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
-                "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
-                "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
-                "If the forecast is present, weave it in — don't list it separately. "
-                "3-5 sentences. No bullet points, no tables, no metric dumps. "
-                "End with sources in parentheses."
+                "Brief someone who cares about this area, in the answer shape of the system prompt: a bold first line "
+                "with the headline (what matters most, or 'nothing unusual'), then 2-4 short points, one signal each "
+                "with its number and what area it covers (the 'situation' field pairs SPI, NDVI and ET with plain "
+                "words), the forecast as one of the points if present, and a last 'Sources:' line."
             )
 
         # Brain save — best-effort audit trail. Failure here MUST NOT
