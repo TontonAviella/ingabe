@@ -1300,6 +1300,8 @@ class LiveNdvi:
     read: list[tuple[Any, Dict[str, Any]]]
     total: int
     not_read: int
+    # Areas whose read failed, with the error: reported, never read as "no scenes" (2026-10-07).
+    failed: list[tuple[Any, str]] = field(default_factory=list)
 
     def note(self) -> Optional[str]:
         if not self.not_read:
@@ -1334,31 +1336,39 @@ async def _live_ndvi(rows: list[Any], date_from: str, date_to: str) -> LiveNdvi:
     chosen = rows[:LIVE_NDVI_MAX_AREAS]
     gate = asyncio.Semaphore(LIVE_NDVI_AT_ONCE)
 
-    async def one(row: Any) -> tuple[Any, Optional[Dict[str, Any]]]:
+    async def one(row: Any) -> tuple[Any, Dict[str, Any]]:
         async with gate:
             stats = await asyncio.to_thread(satellite_analytics.get_field_stats, geometry=json.loads(row["geom"]),
                                             date_from=date_from, date_to=date_to, index="ndvi")
-        return row, _ndvi_summary(stats)
+        return row, stats
 
     tasks = [asyncio.create_task(one(row)) for row in chosen]
     done, pending = await asyncio.wait(tasks, timeout=LIVE_NDVI_DEADLINE_S) if tasks else (set(), set())
     for task in pending:
         task.cancel()  # a read already in its thread finishes there; its result is dropped
     read: list[tuple[Any, Dict[str, Any]]] = []
-    for task in done:
-        if task.exception() is not None:
-            logger.debug("Live NDVI read failed: %s", task.exception())
+    failed: list[tuple[Any, str]] = []
+    for task, row in zip(tasks, chosen):
+        if task not in done:
             continue
-        row, summary = task.result()
+        if task.exception() is not None:
+            logger.warning("Live NDVI read failed: %s", task.exception())
+            failed.append((row, str(task.exception())))
+            continue
+        _, stats = task.result()
+        if "error" in stats:
+            logger.warning("Live NDVI read failed: %s", stats["error"])
+            failed.append((row, stats["error"]))
+            continue
+        summary = _ndvi_summary(stats)
         if summary is not None:
             read.append((row, summary))
-    unread = len(rows) - len(done) + sum(1 for t in done if t.exception() is not None)
-    return LiveNdvi(read=read, total=len(rows), not_read=unread)
+    return LiveNdvi(read=read, total=len(rows), not_read=len(rows) - len(done), failed=failed)
 
 
-def _search_failed_text(failed: Dict[str, str]) -> str:
-    """One line naming the districts whose Sentinel-2 search failed, with the first error (an outage repeats it)."""
-    return f"Sentinel-2 search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
+def _search_failed_text(failed: Dict[str, str], source: str = "Sentinel-2") -> str:
+    """One line naming the areas whose search failed, with the first error (an outage repeats it)."""
+    return f"{source} search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
 
 
 async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
@@ -1436,6 +1446,7 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
 
         realtime_stats: list = []
         live_note: Optional[str] = None
+        realtime_failed: Dict[str, str] = {}
         if need_realtime:
             try:
                 dfilter = ctx.arguments.get("district")
@@ -1459,8 +1470,11 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     backend_tag = summary.pop("backend")
                     realtime_stats.append({"district": dr["district"], "week_start": rt_from, **summary,
                                            "source": f"{backend_tag}_realtime"})
+                for dr, error in live.failed:
+                    realtime_failed[dr["district"]] = error
             except Exception as e:
                 logger.warning("Satellite real-time NDVI failed: %s", e)
+                realtime_failed["all districts"] = str(e)
 
         # Merge + sort by week descending.
         all_stats = ndvi_stats + realtime_stats
@@ -1492,6 +1506,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             }
             if live_note:
                 result["coverage"] = live_note
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1565,6 +1581,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             }
             if stac_failed:
                 result["search_failed"] = stac_failed
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1573,10 +1591,15 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
 
+        failures = []
+        if realtime_failed:
+            failures.append(_search_failed_text(realtime_failed, "Digital Earth Africa"))
         if stac_failed:
-            return {"status": "error", "error": _search_failed_text(stac_failed)}
+            failures.append(_search_failed_text(stac_failed))
         if stac_crash:
-            return {"status": "error", "error": f"Sentinel-2 NDVI fallback failed: {stac_crash}"}
+            failures.append(f"Sentinel-2 NDVI fallback failed: {stac_crash}")
+        if failures:
+            return {"status": "error", "error": "; ".join(failures)}
 
         # All three tiers empty.
         return {
@@ -1668,6 +1691,7 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             # granularity since cell-level DE Africa pulls would be too slow.
             realtime_stats: list = []
             live_note: Optional[str] = None
+            sector_failed: Dict[str, str] = {}
             try:
                 now = _datetime.utcnow()
                 rt_from = (now - _td(days=10)).strftime("%Y-%m-%d")
@@ -1700,8 +1724,11 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     summary.pop("backend")
                     realtime_stats.append({"sector_name": sr["sector_name"], "district_name": sr["district_name"],
                                            "week_start": rt_from, **summary})
+                for sr, error in live.failed:
+                    sector_failed[sr["sector_name"]] = error
             except Exception as e:
                 logger.warning("Sector real-time NDVI fallback failed: %s", e)
+                sector_failed["all sectors"] = str(e)
 
             if realtime_stats:
                 result = {
@@ -1717,6 +1744,10 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 }
                 if live_note:
                     result["coverage"] = live_note
+                if sector_failed:
+                    result["realtime_failed"] = sector_failed
+            elif sector_failed:
+                result = {"status": "error", "error": _search_failed_text(sector_failed, "Digital Earth Africa")}
             else:
                 result = {
                     "status": "success",
@@ -2291,10 +2322,10 @@ async def _handle_get_yield_risk(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Read drought_cache OR fall back to real-time STAC COG computation.
+    """Read drought_cache, which the weekly_drought_scan pipeline fills.
 
-    Two-tier: postgres cache (fast) → STAC Sentinel-2 COG (60-80s/district,
-    capped at 3 districts when no specific district requested).
+    There is no live fallback: an empty cache is reported as "no drought
+    assessment yet", never computed from a few satellite scenes.
 
     Hardens against fabrication: marks insufficient_data districts explicitly
     AND adds a top-level note when ALL districts are insufficient, so the
@@ -2375,105 +2406,20 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                 )
             return tool_result
 
-        # ── STAC COG real-time fallback ──
-        try:
-            from src.services.stac_service import get_stac_service as _get_stac
-
-            _stac = _get_stac()
-            _drought_district = args.get("district")
-
-            if _drought_district:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
-                    _drought_district,
-                )
-            else:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries ORDER BY district"
-                )
-
-            _stac_districts: list[Dict[str, Any]] = []
-            _search_failed: Dict[str, str] = {}
-            for _br in _bbox_rows:
-                _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
-                           float(_br["bbox_east"]), float(_br["bbox_north"])]
-                _drought_result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
-                )
-                if "error" in _drought_result:
-                    # Too few scenes comes back as insufficient_data; an error is a failed search.
-                    logger.warning("STAC drought search failed for %s: %s", _br["district"], _drought_result["error"])
-                    _search_failed[_br["district"]] = _drought_result["error"]
-                else:
-                    _stac_districts.append({
-                        "district": _br["district"],
-                        "drought_status": _drought_result.get("drought_status"),
-                        "vci": _drought_result.get("current_vci"),
-                        "latest_ndvi": _drought_result.get("latest_ndvi"),
-                        "latest_ndwi": None,
-                        "drought_period_count": None,
-                        "description": _drought_result.get("description"),
-                        "trend_slope": _drought_result.get("trend_slope"),
-                        "scene_count": _drought_result.get("scene_count"),
-                    })
-                if not _drought_district and len(_stac_districts) + len(_search_failed) >= 3:
-                    break
-
-            if _stac_districts:
-                _all_insufficient = all(
-                    d["drought_status"] == "insufficient_data"
-                    for d in _stac_districts
-                )
-                if _all_insufficient:
-                    _stac_note = (
-                        "Not enough cloud-free Sentinel-2 scenes to compute "
-                        "a reliable drought index. Do NOT report drought "
-                        "status — tell the user there is insufficient data. "
-                        "The weekly Dagster pipeline will accumulate enough "
-                        "history over time for accurate VCI analysis."
-                    )
-                else:
-                    _stac_note = (
-                        "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
-                        "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
-                        "20-35=moderate, 35-50=mild, >50=no drought."
-                    )
-                tool_result = {
-                    "status": "success",
-                    "source": "stac_cog_realtime",
-                    "count": len(_stac_districts),
-                    "note": _stac_note,
-                    "districts": _stac_districts,
-                }
-                if _search_failed:
-                    tool_result["search_failed"] = _search_failed
-                _pgc_id = await _ensure_rwanda_postgis_connection(
-                    ctx.conn, ctx.project_id, ctx.user_id,
-                )
-                if _pgc_id:
-                    tool_result["postgis_connection_id"] = _pgc_id
-                    tool_result["kue_instructions"] = (
-                        "To visualise drought status on the map, call new_layer_from_postgis with "
-                        f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                        "Available tables: rwanda_district_boundaries (district, geom). "
-                        "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
-                        "Then add_layer_to_map and set_layer_style to colour by drought status. "
-                        "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                    )
-                return tool_result
-            if _search_failed:
-                return {"status": "error", "error": _search_failed_text(_search_failed)}
-            # Every boundary row yields a district or a failure, so nothing here means no row matched.
-            return {
-                "status": "error",
-                "error": f"No Rwanda district boundary matches {_drought_district!r}"
-                if _drought_district else "No Rwanda district boundaries are loaded",
-            }
-        except Exception as _stac_err:
-            logger.exception("STAC drought fallback failed")
-            return {"status": "error", "error": f"Sentinel-2 drought fallback failed: {_stac_err}"}
+        # No cached assessment, and no live fallback: a drought index needs a seasonal baseline
+        # of weekly district NDVI, which only the weekly pipeline builds. The satellite fallback
+        # removed on 2026-10-07 read 4 tiles per district in ~140 s, with no cloud mask, and could
+        # only ever answer "insufficient data".
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "districts": [],
+            "note": (
+                "No drought assessment is available for this request: the drought cache, filled "
+                "weekly by the weekly_drought_scan pipeline from district NDVI, has no matching rows. "
+                "Do NOT report a drought status; tell the user there is no drought assessment yet."
+            ),
+        }
     except Exception as e:
         logger.exception("get_drought_status tool failed")
         return {"status": "error", "error": str(e)}

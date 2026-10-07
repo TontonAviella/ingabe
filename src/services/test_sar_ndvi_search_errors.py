@@ -3,9 +3,9 @@
 SAR->NDVI training read `compute_admin_ndvi(...).get("observations", [])`, so a search that failed
 (every Earth Search request was a 400 that day) was logged as "Insufficient S2 observations: 0",
 and predict_ndvi fell back to its empirical guess without saying why. The satellite display and
-spectral-index tools said "No Sentinel-2 scenes found", the NDVI-stats fallback "found no
-cloud-free Sentinel-2 scenes", and the drought fallback "insufficient cloud-free Sentinel-2 scenes"
-for the same failure.
+spectral-index tools said "No Sentinel-2 scenes found", and the NDVI-stats fallback "found no
+cloud-free Sentinel-2 scenes" for the same failure. (The drought satellite fallback, which said
+"insufficient cloud-free Sentinel-2 scenes", was removed instead.)
 
 The failure here is real: STACService searches a local port nothing listens on, so the error dict
 is the one STACService itself returns. Earth Search's empty answer is copied from a real response
@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.services import sar_ndvi, sentinel1_service, stac_service
+from src.services import deafrica_stac, sar_ndvi, sentinel1_service, stac_service
 from src.services.legacy_tool_shim import LEGACY_HANDLERS, LegacyToolContext
 from src.services.sar_ndvi import SARNDVIPredictor
 from src.tools.display_layer import DisplaySatelliteLayerArgs, display_satellite_layer
@@ -154,11 +154,14 @@ class Conn:
     """Answers the handlers' SQL as an empty NDVI and drought cache would, with no geometry for Digital
     Earth Africa and `boundaries` for the district bbox query (rows read by key, like asyncpg Records)."""
 
-    def __init__(self, boundaries):
+    def __init__(self, boundaries, geometries=()):
         self.boundaries = boundaries
+        self.geometries = list(geometries)
 
     async def fetch(self, sql, *params):
-        if "FROM ndvi_field_cache" in sql or "FROM drought_cache" in sql or "ST_AsGeoJSON" in sql:
+        if "ST_AsGeoJSON" in sql:
+            return self.geometries
+        if "FROM ndvi_field_cache" in sql or "FROM ndvi_cell_cache" in sql or "FROM drought_cache" in sql:
             return []
         if "bbox_west" in sql:
             return self.boundaries
@@ -168,46 +171,23 @@ class Conn:
         return contextlib.nullcontext()
 
 
-async def _call(tool: str, boundaries, **arguments) -> Dict[str, Any]:
+async def _call(tool: str, boundaries, geometries=(), **arguments) -> Dict[str, Any]:
     ctx = LegacyToolContext(
         user_id="user-test", partner_id="partner-test", conversation_id=1, map_id="MTESTAAAAAAA",
-        project_id="PTESTBBBBBBB", conn=Conn(boundaries), arguments=arguments,
+        project_id="PTESTBBBBBBB", conn=Conn(boundaries, geometries), arguments=arguments,
     )
     return await LEGACY_HANDLERS[tool](ctx)
 
 
-@pytest.fixture
-def no_postgis_connection(monkeypatch) -> None:
-    async def none(*args):
-        return None
+async def test_drought_with_an_empty_cache_says_there_is_no_assessment(monkeypatch):
+    def no_satellite_fallback(*args, **kwargs):
+        raise AssertionError("drought must not be computed from a few satellite scenes")
 
-    monkeypatch.setattr("src.routes.message_routes._ensure_rwanda_postgis_connection", none)
-
-
-def test_too_few_scenes_for_drought_is_a_result_not_an_error(empty_catalog):
-    result = stac_service.get_stac_service().compute_drought_indicators(list(BBOX))
-    assert "error" not in result
-    assert result["drought_status"] == "insufficient_data"
-    assert result["scene_count"] == 0
-
-
-async def test_drought_fallback_reports_a_failed_search(dead_catalog):
-    result = await _call("get_drought_status", [GASABO], district="Gasabo")
-    assert result["status"] == "error"
-    assert result["error"].startswith("Sentinel-2 search failed for Gasabo:")
-    assert dead_catalog in result["error"]
-
-
-async def test_drought_fallback_shows_a_district_without_enough_scenes(empty_catalog, no_postgis_connection):
+    monkeypatch.setattr(stac_service, "get_stac_service", no_satellite_fallback)
     result = await _call("get_drought_status", [GASABO], district="Gasabo")
     assert result["status"] == "success"
-    assert [d["drought_status"] for d in result["districts"]] == ["insufficient_data"]
-    assert "Do NOT report drought status" in result["note"]
-
-
-async def test_drought_fallback_names_an_unknown_district(empty_catalog):
-    result = await _call("get_drought_status", [], district="Nowhere")
-    assert result == {"status": "error", "error": "No Rwanda district boundary matches 'Nowhere'"}
+    assert result["districts"] == []
+    assert "Do NOT report a drought status" in result["note"]
 
 
 async def test_ndvi_stats_fallback_reports_a_failed_search(dead_catalog):
@@ -222,3 +202,72 @@ async def test_ndvi_stats_without_scenes_still_says_no_data(empty_catalog):
     assert result["status"] == "success"
     assert result["ndvi_stats"] == []
     assert result["message"].startswith("No NDVI data available.")
+
+
+# Digital Earth Africa (2026-10-07): its scene search returned [] on failure, which read as
+# "No Sentinel-2 scenes matched" and, in the NDVI handlers, as "no cloud-free scenes".
+GASABO_POLYGON = {
+    "type": "Polygon",
+    "coordinates": [[[30.10, -1.95], [30.12, -1.95], [30.12, -1.93], [30.10, -1.93], [30.10, -1.95]]],
+}
+# DE Africa's answer for an area with no scenes (recorded 2026-10-07, open-ocean bbox).
+DEAFRICA_EMPTY = {"type": "FeatureCollection", "features": [], "numberReturned": 0, "numberMatched": 0}
+
+
+@pytest.fixture
+def dead_deafrica(monkeypatch) -> None:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    monkeypatch.setattr(deafrica_stac, "_STAC_ROOT", f"http://127.0.0.1:{port}/stac")
+
+
+@pytest.fixture
+def empty_deafrica(monkeypatch) -> Iterator[None]:
+    body = json.dumps(DEAFRICA_EMPTY).encode()
+
+    class Items(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path.startswith("/stac/collections/s2_l2a/items") else 404)
+            self.send_header("Content-Type", "application/geo+json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Items)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(deafrica_stac, "_STAC_ROOT", f"http://127.0.0.1:{server.server_port}/stac")
+    yield
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+def test_a_failed_deafrica_search_is_an_error(dead_deafrica):
+    result = deafrica_stac.get_deafrica_service().get_field_stats(geometry=GASABO_POLYGON)
+    assert result["error"].startswith("DE Africa scene search failed:")
+
+
+def test_deafrica_with_no_scenes_is_not_an_error(empty_deafrica):
+    result = deafrica_stac.get_deafrica_service().get_field_stats(geometry=GASABO_POLYGON)
+    assert "error" not in result
+    assert result["intervals"] == []
+
+
+async def test_ndvi_stats_names_the_failed_deafrica_search(dead_deafrica, empty_catalog):
+    geometries = [{"district": "Gasabo", "geom": json.dumps(GASABO_POLYGON)}]
+    result = await _call("get_ndvi_stats", [GASABO], geometries, district="Gasabo")
+    assert result["status"] == "error"
+    assert result["error"].startswith("Digital Earth Africa search failed for Gasabo: DE Africa scene search failed:")
+
+
+async def test_cell_ndvi_stats_names_the_failed_deafrica_search(dead_deafrica):
+    geometries = [{"sector_name": "Kimironko", "district_name": "Gasabo", "geom": json.dumps(GASABO_POLYGON)}]
+    result = await _call("get_cell_ndvi_stats", [], geometries, district="Gasabo")
+    assert result["status"] == "error"
+    assert result["error"].startswith("Digital Earth Africa search failed for Kimironko: DE Africa scene search failed:")
