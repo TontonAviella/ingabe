@@ -174,6 +174,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** Failed Sentinel-2 searches return `{"error": ...}`; SAR→NDVI training logged "0 observations" and four Sage tools said "no (cloud-free)
+  scenes", so an outage read as no data; drought also used `"error"` for "too few scenes". Rule: check a returned `"error"` first, and keep `"error"`
+  for failures (Fail fast; Missing is not zero). Gate: review only (needs to know which functions return error dicts); `test_sar_ndvi_search_errors.py`.
 - **2026-10-07** With the NDVI cache empty, every insurance report's NDVI z-score was a Sentinel-1 prediction (model fitted on the first place asked)
   scored against invented constants 0.45 +/- 0.15; it did not follow the real anomaly (r -0.01, docs/SAR_NDVI_SKILL.md) and fired a 0.8 trigger
   in rainy weeks. Second invented baseline after 2026-10-04: promoted to "Numbers shown to users come from a real source". Gate: engine test; review only elsewhere.

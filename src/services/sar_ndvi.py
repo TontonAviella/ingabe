@@ -101,16 +101,22 @@ def _extract_features(
     return features
 
 
+class TrainingDataUnavailable(Exception):
+    """Why no S1+S2 training pairs could be built: too little data, or a search that failed."""
+
+
 def _generate_training_data(
     bbox: Tuple[float, float, float, float],
     days_back: int = 180,
-) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """Generate training data from historical S1+S2 paired observations.
 
     For each cloud-free S2 observation, extract the corresponding S1
     time series features for the preceding 30 days.
 
-    Returns (X, y) arrays or (None, None) if insufficient data.
+    Returns (X, y) arrays. Raises TrainingDataUnavailable saying why when the
+    data is insufficient or the Sentinel-2 search failed (2026-10-07: a failed
+    search used to read as "0 observations").
     """
     from src.services.sentinel1_service import get_sentinel1_service
 
@@ -122,24 +128,29 @@ def _generate_training_data(
     # Get full S1 time series
     ts = s1.get_time_series(bbox, date_range, limit=50)
     if ts.get("status") != "success" or len(ts["dates"]) < 5:
-        logger.warning("Insufficient S1 data for training: %d scenes", len(ts.get("dates", [])))
-        return None, None
+        raise TrainingDataUnavailable(
+            f"{len(ts.get('dates', []))} Sentinel-1 scenes in the last {days_back} days, need at least 5"
+        )
 
-    # Try to get S2 NDVI observations from STAC
+    # S2 NDVI observations from STAC
     try:
         from src.services.stac_service import get_stac_service
         stac = get_stac_service("earth_search")
         ndvi_result = stac.compute_admin_ndvi(
             bbox=list(bbox), days=days_back, max_cloud_cover=30.0, max_scenes=20
         )
-        observations = ndvi_result.get("observations", [])
     except Exception as e:
-        logger.warning("Failed to get S2 NDVI for training: %s", e)
-        return None, None
+        raise TrainingDataUnavailable(f"Sentinel-2 NDVI search failed: {e}") from e
+    if "error" in ndvi_result:
+        raise TrainingDataUnavailable(
+            f"Sentinel-2 NDVI search failed ({ndvi_result.get('catalog', 'STAC')}): {ndvi_result['error']}"
+        )
+    observations = ndvi_result.get("observations", [])
 
     if len(observations) < 5:
-        logger.warning("Insufficient S2 observations for training: %d", len(observations))
-        return None, None
+        raise TrainingDataUnavailable(
+            f"{len(observations)} Sentinel-2 NDVI observations in the last {days_back} days, need at least 5"
+        )
 
     X_list: List[np.ndarray] = []
     y_list: List[float] = []
@@ -195,8 +206,9 @@ def _generate_training_data(
             y_list.append(ndvi)
 
     if len(X_list) < 5:
-        logger.warning("Insufficient paired samples for training: %d", len(X_list))
-        return None, None
+        raise TrainingDataUnavailable(
+            f"{len(X_list)} Sentinel-2 observations with 2+ Sentinel-1 scenes in the 30 days before, need at least 5"
+        )
 
     return np.array(X_list), np.array(y_list)
 
@@ -290,8 +302,8 @@ class SARNDVIPredictor:
             with self._train_lock:
                 train_result = self.train_model(bbox) if self._model is None else {"status": "success"}
             if train_result.get("status") == "error":
-                # Fall back to simple empirical relationship
-                return self._empirical_prediction(ts)
+                # Fall back to simple empirical relationship, and say why the model is not used
+                return {**self._empirical_prediction(ts), "model_unavailable_reason": train_result["error"]}
 
         if self._model is None:
             return self._empirical_prediction(ts)
@@ -342,9 +354,11 @@ class SARNDVIPredictor:
         from sklearn.ensemble import GradientBoostingRegressor
         from sklearn.model_selection import cross_val_score
 
-        X, y = _generate_training_data(bbox, days_back)
-        if X is None or y is None:
-            return {"status": "error", "error": "Insufficient training data"}
+        try:
+            X, y = _generate_training_data(bbox, days_back)
+        except TrainingDataUnavailable as e:
+            logger.warning("SAR->NDVI model not trained for %s: %s", bbox, e)
+            return {"status": "error", "error": f"Model not trained: {e}"}
 
         model = GradientBoostingRegressor(**_GBR_PARAMS)
 
