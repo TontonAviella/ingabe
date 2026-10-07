@@ -167,6 +167,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** `asyncio.to_thread` did not keep the app answering during remote raster reads: rasterio 1.4.4 holds the GIL during part of a
+  read of a remote COG, so one WaPOR point read stalled the event loop ~2.5 s and a report's reads 10-24 s. Rule: reads of remote rasters go
+  through `src/services/raster_process.py` (worker processes), not a thread. Gate: `test_raster_process.py` (loop delay); review only for new readers.
 - **2026-10-07** `get_insurance_intelligence` took 384 s (104 s warm), so Sage's 120 s limit cut it: SAR-predicted NDVI waited for the other reads,
   ~100 CHIRPS files were downloaded per report for one pixel each, and GDAL, pystac-client and planetary_computer had no network timeout. Rule: a tool's
   remote reads run together under one deadline below the tool limit, name what missed it, keep what does not change, and each call has its own timeout
