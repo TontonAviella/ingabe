@@ -129,3 +129,20 @@ def test_a_result_without_its_call_is_dropped_and_whole_turns_are_untouched():
     ]
     paired = message_routes._pair_tool_results(history)
     assert paired == [history[0], history[1], history[3]]
+
+
+def test_only_the_newest_map_state_is_replayed():
+    history = [
+        {"role": "system", "content": "<MapState>old map</MapState>"},
+        {"role": "system", "content": "<CurrentAOI>old view</CurrentAOI>"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "system", "content": "<MapState>new map</MapState>"},
+        {"role": "system", "content": "<CurrentAOI>new view</CurrentAOI>"},
+        {"role": "system", "content": "<BrainContext>memory</BrainContext>"},
+        {"role": "user", "content": "second question"},
+    ]
+    kept = message_routes._latest_context_only(history)
+    assert [m["content"] for m in kept] == [
+        "first question", "first answer", "<MapState>new map</MapState>", "<CurrentAOI>new view</CurrentAOI>",
+        "<BrainContext>memory</BrainContext>", "second question"]

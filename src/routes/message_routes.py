@@ -1718,6 +1718,24 @@ def _tool_timeout_seconds() -> float:
         return 120.0
 
 
+# System blocks added on every turn (the map, the view, the selected feature, Brain memory). Each turn stores a
+# fresh copy; replaying the old ones re-sent ~2,700 stale tokens a turn (39k-token prompts after 4 turns).
+_PER_TURN_CONTEXT = ("<MapState>", "<CurrentAOI>", "<NoSelectedFeature", "<SelectedFeature", "<BrainContext")
+
+
+def _latest_context_only(messages: list[Any]) -> list[Any]:
+    """The replayed history with only the newest copy of each per-turn context block: older copies describe a
+    map that has changed since, cost tokens on every call, and can mislead the model."""
+    kinds = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "system" and isinstance(m.get("content"), str):
+            kind = next((k for k in _PER_TURN_CONTEXT if m["content"].lstrip().startswith(k)), None)
+            if kind:
+                kinds.setdefault(kind, []).append(i)
+    stale = {i for positions in kinds.values() for i in positions[:-1]}
+    return [m for i, m in enumerate(messages) if i not in stale]
+
+
 def _pair_tool_results(messages: list[Any]) -> list[Any]:
     """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
     conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
@@ -2375,7 +2393,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
-            openai_messages = _pair_tool_results(openai_messages)
+            openai_messages = _latest_context_only(_pair_tool_results(openai_messages))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
