@@ -158,6 +158,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_stress_zones": USER_RASTER,
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
+    "get_drone_photo_findings": USER_RASTER,
+    "count_plants_in_plot": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_raster_object_candidates": SPATIAL_INSIGHT,
@@ -1198,12 +1200,30 @@ def select_fast_raster_layer(question: str, rows: list) -> dict | None:
         return dict(rows[0])
     return None
 
+# Questions about the plots, plants and crops on a drone photo go to the model, which reads what the
+# question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
+# masks and cells cannot answer them: "count the plants in plot 42" used to draw house masks.
+_DRONE_PLOT_QUESTION = re.compile(
+    r"\b(plots?|umurima|imirima|stand\s+count|weed(?:s|ing|y)?|gaps?|per\s+hectare|"
+    r"(?:how\s+many|count(?:\s+the)?)\s+(?:\w+\s+)?plants|plants?\s+(?:per|in|on)\b|"
+    r"what\s+(?:is|'s)\s+growing|which\s+crops?|"
+    r"how\s+(?:is|are)\s+(?:my|the)\s+(?:crops?|maize|cassava|beans|bananas?|farm|field))\b",
+    re.IGNORECASE,
+)
+
+
+def is_drone_plot_question(text: str) -> bool:
+    return bool(_DRONE_PLOT_QUESTION.search(str(text or "")))
+
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     decision = choose_geospatial_evidence_path(text)
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
+    if is_drone_plot_question(text):
+        return None
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
     if (

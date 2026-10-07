@@ -89,6 +89,12 @@ from src.tools.raster_object_candidates import (
     analyze_raster_object_candidates,
     AnalyzeRasterObjectCandidatesArgs,
 )
+from src.tools.drone_photo_tools import (
+    count_plants_in_plot,
+    CountPlantsArgs,
+    get_drone_photo_findings,
+    DronePhotoArgs,
+)
 
 
 ToolFn = Callable[[Any, Any], Awaitable[dict]]
@@ -216,6 +222,16 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "analyze_raster_object_candidates": (
             analyze_raster_object_candidates,
             AnalyzeRasterObjectCandidatesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_drone_photo_findings": (
+            get_drone_photo_findings,
+            DronePhotoArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "count_plants_in_plot": (
+            count_plants_in_plot,
+            CountPlantsArgs,
             IngabeToolCallMetaArgs,
         ),
     }
