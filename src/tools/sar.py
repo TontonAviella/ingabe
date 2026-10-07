@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
@@ -11,10 +11,6 @@ def _parse_bbox(bbox_str: str) -> tuple[float, float, float, float]:
     if len(parts) != 4:
         raise ValueError(f"bbox must have 4 values, got {len(parts)}")
     return (parts[0], parts[1], parts[2], parts[3])
-
-
-def _none_if_empty(s: Optional[str]) -> Optional[str]:
-    return s.strip() if s and s.strip() else None
 
 
 def _enrich_with_displayable_geojson(
@@ -46,31 +42,10 @@ def _enrich_with_displayable_geojson(
     return result
 
 
-class PredictNdviFromSarArgs(BaseModel):
-    bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
-    target_date: str = Field(
-        ...,
-        description="Target date YYYY-MM-DD, OR empty string '' to use the most recent SAR scene.",
-    )
-
-
 class DetectFloodExtentArgs(BaseModel):
     bbox: str = Field(..., description="Bounding box as 'minLon,minLat,maxLon,maxLat'.")
     date_before: str = Field(..., description="Pre-flood date YYYY-MM-DD.")
     date_after: str = Field(..., description="Post-flood date YYYY-MM-DD.")
-
-
-async def predict_ndvi_from_sar(
-    args: PredictNdviFromSarArgs, meta: IngabeToolCallMetaArgs
-) -> dict:
-    """Predict NDVI from Sentinel-1 SAR backscatter using ML model."""
-    from src.services.sar_ndvi import get_sar_ndvi_predictor
-
-    svc = get_sar_ndvi_predictor()
-    bbox = _parse_bbox(args.bbox)
-    return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: svc.predict_ndvi(bbox, _none_if_empty(args.target_date))
-    )
 
 
 async def detect_flood_extent(

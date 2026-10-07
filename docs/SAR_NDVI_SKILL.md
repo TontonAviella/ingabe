@@ -106,6 +106,26 @@ trigger whenever any alert existed. Before/after on fixed inputs:
 `docs/evidence/insurance_ndvi_z_before_after.json` (radar removed) and
 `docs/evidence/insurance_ndvi_z_deafrica_before_after.json` (the new source).
 
-## Still open
+## Sage's `predict_ndvi_from_sar` (removed)
 
-- Sage's `predict_ndvi_from_sar` still answers from the same predictor.
+Sage's tool answered "NDVI under the clouds" from the same predictor, so its answers had the
+faults above: the first box asked trained the model for the whole country (mean error 0.120 away
+from it, worse than the constant 0.45 at 0.107), hand-made VH/VV thresholds when training failed
+(0.109), the oldest radar scenes, and a "confidence" of 0.5-0.95 counted from scenes and training
+size, never measured. Roger chose (2026-10-07) to remove the tool rather than rebuild it, because
+even a rebuilt model would not have added much. With clean labels and one pooled model, the radar
+is no closer to the next clear Sentinel-2 NDVI than that place's previous clear date
+(`scripts/sar_ndvi_vs_last_clear.py`, `docs/evidence/sar_ndvi_vs_last_clear.json`):
+
+| Days since the previous clear date | Dates | Previous clear NDVI, mean error | Radar, mean error |
+|---|---|---|---|
+| All | 69 | 0.056 | 0.057 |
+| Under 20 (median 17) | 41 | 0.034 | 0.059 |
+| 20-40 | 23 | 0.079 | 0.047 |
+| Over 40 | 5 | 0.139 | 0.091 |
+
+Radar is closer only after long cloudy gaps, and those samples are small. It still does not show
+the departure from normal that a crop-stress question needs. All of this is dry-season data
+(Apr-Oct 2026); the cloudy season, when the tool would be used, was never measured. The tool,
+the predictor and its tests are deleted; the routing eval keeps the request as an
+"unsupported" case.

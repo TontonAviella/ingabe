@@ -13,7 +13,6 @@ terrain-corrected in COG format, no calibration needed.
 
 Used by:
     - sar_water.py (water detection + flood delineation)
-    - sar_ndvi.py  (SAR → NDVI cloud gap filler)
 
 Usage:
     from src.services.sentinel1_service import get_sentinel1_service

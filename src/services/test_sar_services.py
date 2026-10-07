@@ -1,5 +1,5 @@
 # Copyright (C) 2025 Ingabe Ltd.
-# Tests for SAR services: sentinel1_service, sar_water, sar_ndvi.
+# Tests for SAR services: sentinel1_service, sar_water.
 
 """Unit tests for SAR service pure-computation functions.
 
@@ -205,114 +205,6 @@ class TestMaskToGeojson:
         assert len(geojson["features"]) == 0
 
 
-# ── sar_ndvi tests ──
-
-
-class TestExtractFeatures:
-    def test_basic_feature_extraction(self):
-        from src.services.sar_ndvi import _extract_features
-        dates = ["2025-01-01", "2025-01-07", "2025-01-13", "2025-01-19", "2025-01-25"]
-        vv = [-10.0, -9.5, -9.0, -8.5, -8.0]
-        vh = [-18.0, -17.5, -17.0, -16.5, -16.0]
-        vv_std = [1.0, 1.1, 1.2, 1.3, 1.4]
-        vh_std = [0.8, 0.9, 1.0, 1.1, 1.2]
-
-        features = _extract_features(dates, vv, vh, vv_std, vh_std)
-        assert features is not None
-        assert features.shape == (120,)  # 30 days × 4 stats
-
-    def test_feature_extraction_with_ndvi_anchor(self):
-        from src.services.sar_ndvi import _extract_features
-        dates = ["2025-01-01", "2025-01-07", "2025-01-13"]
-        vv = [-10.0, -9.5, -9.0]
-        vh = [-18.0, -17.5, -17.0]
-        vv_std = [1.0, 1.1, 1.2]
-        vh_std = [0.8, 0.9, 1.0]
-
-        features = _extract_features(dates, vv, vh, vv_std, vh_std, last_known_ndvi=0.65)
-        assert features is not None
-        assert features.shape == (121,)  # 120 + 1 anchor
-        assert features[-1] == pytest.approx(0.65)
-
-    def test_insufficient_dates_returns_none(self):
-        from src.services.sar_ndvi import _extract_features
-        features = _extract_features(["2025-01-01"], [-10.0], [-18.0], [1.0], [0.8])
-        assert features is None
-
-    def test_iso_datetime_format(self):
-        """Should handle ISO datetime strings with T and Z."""
-        from src.services.sar_ndvi import _extract_features
-        dates = ["2025-01-01T00:00:00Z", "2025-01-07T12:30:00Z", "2025-01-13T06:15:00Z"]
-        vv = [-10.0, -9.5, -9.0]
-        vh = [-18.0, -17.5, -17.0]
-        vv_std = [1.0, 1.1, 1.2]
-        vh_std = [0.8, 0.9, 1.0]
-
-        features = _extract_features(dates, vv, vh, vv_std, vh_std)
-        assert features is not None
-        assert features.shape == (120,)
-
-
-class TestEmpiricalPrediction:
-    def test_bare_soil_prediction(self):
-        """Low VH/VV ratio (bare soil) should give low NDVI."""
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred = get_sar_ndvi_predictor()
-        # VV=-8 dB, VH=-20 dB → linear ratio ≈ 10^(-20/10) / 10^(-8/10) ≈ 0.063
-        ts = {
-            "dates": ["2025-01-01", "2025-01-07"],
-            "vv_means": [-8.0, -8.0],
-            "vh_means": [-20.0, -20.0],
-            "vv_stds": [1.0, 1.0],
-            "vh_stds": [0.8, 0.8],
-        }
-        result = pred._empirical_prediction(ts)
-        assert result["status"] == "success"
-        assert result["predicted_ndvi"] < 0.25  # bare soil range
-
-    def test_dense_vegetation_prediction(self):
-        """High VH/VV ratio (dense veg) should give high NDVI."""
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred = get_sar_ndvi_predictor()
-        # VV=-10 dB, VH=-13 dB → linear ratio ≈ 0.05 / 0.1 = 0.5
-        ts = {
-            "dates": ["2025-01-01", "2025-01-07"],
-            "vv_means": [-10.0, -10.0],
-            "vh_means": [-13.0, -13.0],
-            "vv_stds": [1.0, 1.0],
-            "vh_stds": [0.8, 0.8],
-        }
-        result = pred._empirical_prediction(ts)
-        assert result["status"] == "success"
-        assert result["predicted_ndvi"] > 0.5  # vegetation range
-
-    def test_empty_time_series(self):
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred = get_sar_ndvi_predictor()
-        result = pred._empirical_prediction({"vv_means": [], "vh_means": [], "dates": []})
-        assert result["status"] == "error"
-
-
-class TestConfidence:
-    def test_confidence_increases_with_scenes(self):
-        from src.services.sar_ndvi import SARNDVIPredictor
-        pred = SARNDVIPredictor()
-        ts_few = {"dates": ["a", "b"]}
-        ts_many = {"dates": ["a", "b", "c", "d", "e"]}
-        c_few = pred._compute_confidence(ts_few)
-        c_many = pred._compute_confidence(ts_many)
-        assert c_many > c_few
-
-    def test_confidence_capped(self):
-        from src.services.sar_ndvi import SARNDVIPredictor
-        pred = SARNDVIPredictor()
-        pred._model_rmse = 0.05
-        pred._n_training_samples = 50
-        ts = {"dates": list(range(10))}
-        confidence = pred._compute_confidence(ts)
-        assert confidence <= 0.95
-
-
 # ── Integration-level tests (still no network) ──
 
 
@@ -322,42 +214,6 @@ class TestSARWaterService:
         svc1 = get_sar_water_service()
         svc2 = get_sar_water_service()
         assert svc1 is svc2
-
-
-class TestSARNDVIPredictor:
-    def test_singleton(self):
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred1 = get_sar_ndvi_predictor()
-        pred2 = get_sar_ndvi_predictor()
-        assert pred1 is pred2
-
-    def test_a_training_already_running_is_waited_for_not_started_again(self, monkeypatch):
-        """A report that stops waiting leaves the training running; the next one must not start another."""
-        import threading
-        import time
-        from src.services import sar_ndvi
-
-        series = {"status": "success", "dates": ["2026-09-01T03:00:00Z", "2026-09-13T03:00:00Z"],
-                  "vv_means": [-9.0, -8.5], "vh_means": [-15.0, -14.5], "vv_stds": [1.0, 1.0], "vh_stds": [1.0, 1.0]}
-        s1 = type("S1", (), {"get_time_series": lambda self, *a, **k: series})()
-        monkeypatch.setattr("src.services.sentinel1_service.get_sentinel1_service", lambda: s1)
-        pred = sar_ndvi.SARNDVIPredictor()
-        trainings = []
-
-        def train(bbox, days_back=180):
-            trainings.append(bbox)
-            time.sleep(0.3)
-            return {"status": "error", "error": "Insufficient training data"}
-
-        monkeypatch.setattr(pred, "train_model", train)
-        threads = [threading.Thread(target=pred.predict_ndvi, args=((30.0, -2.0, 30.1, -1.9),)) for _ in range(2)]
-        for t in threads:
-            t.start()
-        time.sleep(0.05)
-        pred._model = object()  # the first training succeeded while the second caller waited
-        for t in threads:
-            t.join()
-        assert len(trainings) == 1
 
 
 class TestSentinel1TimeSeries:
@@ -395,7 +251,7 @@ class TestToolsJsonIntegrity:
         assert isinstance(tools, list)
 
         tool_names = [t["function"]["name"] for t in tools]
-        assert "predict_ndvi_from_sar" in tool_names
+        assert "predict_ndvi_from_sar" not in tool_names  # removed: docs/SAR_NDVI_SKILL.md
         assert "detect_flood_extent" in tool_names
 
     def test_new_tools_have_required_fields(self):

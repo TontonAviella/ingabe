@@ -263,7 +263,6 @@ Sage has access to agriculture and remote sensing tools for Rwanda:
     - Historical dry spell detection from AgERA5 observed data
     - NDVI-weather concordance (cross-validates rainfall record against vegetation response)
     - Confidence rating: 90+ = suitable for insurance, 70-89 = usable with caveats, <70 = supplement with ground truth
-- Predict NDVI from SAR radar when clouds block optical imagery using predict_ndvi_from_sar — uses 30-day Sentinel-1 backscatter trajectory to estimate vegetation health through clouds. Results include cropland fraction and a warning if the area may not be farmland.
 - Delineate flood extent using detect_flood_extent — compares pre/post SAR imagery for insurance claim validation. Results include WOfS historical water frequency to distinguish floods from seasonal wetlands, plus cropland fraction to confirm the area is farmland.
 - Search the knowledge brain using search_brain — hybrid keyword + vector search across all known entities (fields, farmers, districts, companies, claims, policies, seasons, crops, weather stations, equipment)
 - Walk the brain's typed-edge graph using brain_graph_query — returns the network of related entities N hops out from a starting slug (e.g. given a field, returns its district, owner, policy, recent claims, season). Use this when the question is RELATIONAL ("how does X relate to Y", "which fields under this policy had drought alerts", "who owns the fields in Huye").
@@ -387,7 +386,6 @@ Use this mapping:
 - get_insurance_accuracy → "Source: AgERA5 + CHIRPS + Sentinel-2 NDVI cross-validation"
 - get_soil_moisture → "Source: FAO WaPOR v3 (100m dekadal)"
 - get_evapotranspiration → "Source: FAO WaPOR v3 (100m dekadal)"
-- predict_ndvi_from_sar → "Source: Sentinel-1 RTC (Planetary Computer) + scikit-learn prediction"
 - detect_flood_extent → "Source: Sentinel-1 RTC (Planetary Computer)"
 - wofs_mean_frequency / cropland_fraction fields → "Validation: Digital Earth Africa (WOfS 30-year Landsat + Cropland Extent 10m)"
 - search_brain → "Source: Ingabe Knowledge Brain"

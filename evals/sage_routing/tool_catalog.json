@@ -42,7 +42,6 @@
     "interpret_raster_health",
     "list_admin_units",
     "new_layer_from_postgis",
-    "predict_ndvi_from_sar",
     "query_worldcover_stats",
     "read_pixel_at",
     "reverse_geocode_coordinates",
@@ -67,7 +66,6 @@
     "get_evapotranspiration",
     "get_soil_moisture",
     "get_soil_properties",
-    "predict_ndvi_from_sar",
     "read_pixel_at",
     "reverse_geocode_coordinates",
     "zoom_to_bounds"
