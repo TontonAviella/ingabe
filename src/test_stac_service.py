@@ -148,7 +148,8 @@ class TestSearchImagery:
         payload = call_args[1]["json"]
 
         assert payload["bbox"] == custom_bbox
-        assert payload["datetime"] == custom_datetime
+        # Earth Search rejects bare dates (400): the range goes out in RFC 3339.
+        assert payload["datetime"] == "2024-01-01T00:00:00Z/2024-01-31T23:59:59Z"
         assert payload["collections"] == [SENTINEL2_COLLECTIONS["earth_search"]]
 
     @patch("src.services.stac_service._PYSTAC_CLIENT_AVAILABLE", False)

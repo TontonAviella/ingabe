@@ -21,12 +21,44 @@ class TestSentinel1Service:
         svc2 = get_sentinel1_service()
         assert svc1 is svc2
 
-    def test_sign_href_without_planetary_computer(self, monkeypatch):
-        """_sign_href should return href unchanged if signing fails."""
+    def test_sign_href_leaves_other_urls_alone(self):
         from src.services.sentinel1_service import _sign_href
-        # Even if planetary_computer is installed, test the fallback
-        result = _sign_href("https://example.com/test.tif")
-        assert result.startswith("https://")
+        assert _sign_href("https://example.com/test.tif") == "https://example.com/test.tif"
+
+    def test_sign_href_fetches_one_token_per_container_with_a_time_limit(self, monkeypatch):
+        """planetary_computer.sign fetched the token with no timeout; a stalled request held a thread for minutes."""
+        from datetime import datetime, timedelta, timezone
+        from src.services import sentinel1_service as s1
+
+        calls = []
+
+        def get(url, timeout, headers):
+            calls.append((url, timeout))
+            expiry = (datetime.now(timezone.utc) + timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return type("R", (), {"raise_for_status": lambda self: None,
+                                  "json": lambda self: {"msft:expiry": expiry, "token": "st=a&se=b&sig=c"}})()
+
+        monkeypatch.setattr(s1, "_sas_tokens", {})
+        monkeypatch.setattr(s1.httpx, "get", get)
+        blob = "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/2026/9/30/x/measurement/vv.tif"
+        assert s1._sign_href(blob) == f"{blob}?st=a&se=b&sig=c"
+        assert s1._sign_href(blob.replace("vv.tif", "vh.tif")).endswith("?st=a&se=b&sig=c")
+        assert s1._sign_href(f"{blob}?st=a&se=b&sig=c") == f"{blob}?st=a&se=b&sig=c"  # already signed
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/sentinel1euwestrtc/sentinel1-grd-rtc")
+        assert calls[0][1].read is not None and calls[0][1].connect is not None
+
+    def test_sign_href_returns_the_url_unsigned_when_the_token_fails(self, monkeypatch):
+        import httpx
+        from src.services import sentinel1_service as s1
+
+        def get(*args, **kwargs):
+            raise httpx.ReadTimeout("token endpoint stalled")
+
+        monkeypatch.setattr(s1, "_sas_tokens", {})
+        monkeypatch.setattr(s1.httpx, "get", get)
+        blob = "https://sentinel1euwestrtc.blob.core.windows.net/sentinel1-grd-rtc/GRD/vv.tif"
+        assert s1._sign_href(blob) == blob
 
 
 # ── sar_water tests ──
@@ -298,6 +330,59 @@ class TestSARNDVIPredictor:
         pred1 = get_sar_ndvi_predictor()
         pred2 = get_sar_ndvi_predictor()
         assert pred1 is pred2
+
+    def test_a_training_already_running_is_waited_for_not_started_again(self, monkeypatch):
+        """A report that stops waiting leaves the training running; the next one must not start another."""
+        import threading
+        import time
+        from src.services import sar_ndvi
+
+        series = {"status": "success", "dates": ["2026-09-01T03:00:00Z", "2026-09-13T03:00:00Z"],
+                  "vv_means": [-9.0, -8.5], "vh_means": [-15.0, -14.5], "vv_stds": [1.0, 1.0], "vh_stds": [1.0, 1.0]}
+        s1 = type("S1", (), {"get_time_series": lambda self, *a, **k: series})()
+        monkeypatch.setattr("src.services.sentinel1_service.get_sentinel1_service", lambda: s1)
+        pred = sar_ndvi.SARNDVIPredictor()
+        trainings = []
+
+        def train(bbox, days_back=180):
+            trainings.append(bbox)
+            time.sleep(0.3)
+            return {"status": "error", "error": "Insufficient training data"}
+
+        monkeypatch.setattr(pred, "train_model", train)
+        threads = [threading.Thread(target=pred.predict_ndvi, args=((30.0, -2.0, 30.1, -1.9),)) for _ in range(2)]
+        for t in threads:
+            t.start()
+        time.sleep(0.05)
+        pred._model = object()  # the first training succeeded while the second caller waited
+        for t in threads:
+            t.join()
+        assert len(trainings) == 1
+
+
+class TestSentinel1TimeSeries:
+    def test_parallel_reads_keep_each_scene_with_its_own_bands(self, monkeypatch):
+        import time
+        from src.services import sentinel1_service as s1
+
+        items = [{"properties": {"datetime": f"2026-09-{d:02d}T03:00:00Z"},
+                  "assets": {"vv": {"href": f"vv-{d}"}, "vh": {"href": f"vh-{d}"}}} for d in (1, 7, 13, 19, 25)]
+        del items[2]["assets"]["vh"]  # a scene without VH is left out, as before
+        linear = {f"{band}-{d}": 10 ** (db / 10) for d, (vv, vh) in zip((1, 7, 13, 19, 25), [(-8, -14), (-9, -15), (-7, -13), (-10, -16), (-6, -12)])
+                  for band, db in (("vv", vv), ("vh", vh))}
+
+        def read(href, bbox):
+            time.sleep(0.2 if href.endswith("-1") else 0.05)  # the first scene finishes last
+            return np.full((4, 4), linear[href], dtype=np.float32), None, "EPSG:32735"
+
+        monkeypatch.setattr(s1, "_search_items", lambda *a, **k: items)
+        monkeypatch.setattr(s1, "_read_band_window", read)
+        started = time.monotonic()
+        ts = s1.Sentinel1Service().get_time_series((30.0, -2.0, 30.1, -1.9), "2026-09-01/2026-09-30")
+        assert time.monotonic() - started < 0.6  # 8 reads of 0.05-0.2 s, not one after another
+        assert ts["dates"] == ["2026-09-01T03:00:00Z", "2026-09-07T03:00:00Z", "2026-09-19T03:00:00Z", "2026-09-25T03:00:00Z"]
+        assert ts["vv_means"] == pytest.approx([-8, -9, -10, -6], abs=1e-4)
+        assert ts["vh_means"] == pytest.approx([-14, -15, -16, -12], abs=1e-4)
 
 
 class TestToolsJsonIntegrity:
