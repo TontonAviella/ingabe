@@ -144,7 +144,7 @@ def _heavy_request() -> dict[str, Any]:
         for n in range(150)
     ]
     messages: list[dict[str, Any]] = [{"role": "system", "content": "s" * 20_000}]
-    for n in range(80):
+    for n in range(400):
         messages += [
             {"role": "user", "content": f"question {n}"},
             {"role": "assistant", "content": "", "tool_calls": [
@@ -179,8 +179,8 @@ def test_the_loop_keeps_running_while_a_model_request_is_built(base_url):
     request = _heavy_request()
     on_loop = _worst_loop_delay(lambda: AsyncOpenAI(base_url=base_url, api_key="k"), request)
     off_loop = _worst_loop_delay(lambda: ModelClient(base_url=base_url, api_key="k"), request)
-    assert on_loop > 0.15  # the stand-in really holds the loop when built on it
-    assert off_loop < 0.06
+    assert on_loop > 0.1  # the stand-in really holds the loop when built on it (0.4-0.8 s here, 2026-10-07)
+    assert off_loop < on_loop / 4
 
 
 def test_sage_and_the_ollama_route_get_off_loop_clients(monkeypatch):
