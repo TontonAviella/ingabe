@@ -14,6 +14,8 @@ import asyncio
 import calendar
 import json
 import logging
+import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -23,6 +25,9 @@ import asyncpg
 
 from src.services import crop_stages
 from src.services import et_normals
+from src.services import forecast_openmeteo
+from src.services import sar_ndvi
+from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
 
@@ -194,6 +199,7 @@ class InsuranceReport:
     forecast_outlook: Optional[dict] = None
 
     sources: list[str] = field(default_factory=list)
+    late_sources: list[str] = field(default_factory=list)  # reads that did not arrive in time: missing
     period_start: str = ""
     period_end: str = ""
     computed_at: str = ""
@@ -242,6 +248,7 @@ class InsuranceReport:
             "accuracy_components": self.accuracy_components,
             "forecast_outlook": self.forecast_outlook,
             "sources": self.sources,
+            "not_read_in_time": self.late_sources,
             "period_start": self.period_start,
             "period_end": self.period_end,
             "computed_at": self.computed_at,
@@ -361,13 +368,15 @@ def _chirps_dates_to_fetch(planting_date: date, today: date) -> list[str]:
 
 
 async def _fetch_season_chirps(
-    lat: float, lon: float, planting_date: date, today: date,
+    lat: float, lon: float, planting_date: date, today: date, timeout_s: Optional[float] = None,
 ) -> tuple[dict[str, Optional[float]], set[str]]:
-    """Daily CHIRPS for a report's dates, and the days read from the preliminary product."""
+    """Daily CHIRPS for a report's dates, and the days read from the preliminary product.
+
+    With ``timeout_s``, days not read by then are None (missing)."""
     from src.services.forecast_fusion import fetch_chirps_daily  # lazy: rasterio/GDAL stack
 
     return await asyncio.to_thread(
-        fetch_chirps_daily, lat, lon, _chirps_dates_to_fetch(planting_date, today),
+        fetch_chirps_daily, lat, lon, _chirps_dates_to_fetch(planting_date, today), timeout_s,
     )
 
 
@@ -642,32 +651,19 @@ async def _fetch_ndvi_anomaly(
         logger.debug("anomaly_alerts_cache query failed", exc_info=True)
     return None
 
-async def _fetch_ndvi_with_sar_fallback(
-    conn: asyncpg.Connection,
-    lat: float,
-    lon: float,
-    date_from: str,
-    date_to: str,
-    district: Optional[str] = None,
-) -> Optional[float]:
-    """Get NDVI z-score from optical first, fall back to SAR-predicted NDVI."""
-    ndvi_z = await _fetch_ndvi_anomaly(conn, district)
-    if ndvi_z is not None:
-        return ndvi_z
-    try:
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred = get_sar_ndvi_predictor()
-        buf = 0.05
-        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-        result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
-        if result and result.get("status") == "success":
-            predicted = result.get("predicted_ndvi")
-            if predicted is not None:
-                mean_ndvi = 0.45
-                std_ndvi = 0.15
-                return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
-    except Exception:
-        logger.debug("SAR-predicted NDVI fallback failed", exc_info=True)
+async def _sar_predicted_ndvi_z(lat: float, lon: float) -> Optional[float]:
+    """NDVI z-score from SAR-predicted NDVI around (lat, lon): the fallback when the optical
+    anomaly cache has nothing for the district."""
+    pred = sar_ndvi.get_sar_ndvi_predictor()
+    buf = 0.05
+    bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
+    result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
+    if result and result.get("status") == "success":
+        predicted = result.get("predicted_ndvi")
+        if predicted is not None:
+            mean_ndvi = 0.45
+            std_ndvi = 0.15
+            return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
     return None
 
 # ---------------------------------------------------------------------------
@@ -1199,15 +1195,15 @@ def _generate_recommendation(
 
 def format_for_audience(report: InsuranceReport, audience: str) -> str:
     """Format the same report for different audiences."""
-    if audience == "farmer":
-        return _format_farmer(report)
-    if audience == "insurance":
-        return _format_insurance(report)
-    if audience == "agronomist":
-        return _format_agronomist(report)
-    if audience == "scientist":
-        return _format_scientist(report)
-    return _format_insurance(report)
+    formatter = {
+        "farmer": _format_farmer,
+        "insurance": _format_insurance,
+        "agronomist": _format_agronomist,
+        "scientist": _format_scientist,
+    }.get(audience, _format_insurance)
+    text = formatter(report)
+    note = late_sources_note(report.late_sources)
+    return f"{text}\n\n{note}" if note else text
 
 def _format_farmer(r: InsuranceReport) -> str:
     """WhatsApp-ready, <200 chars per section, clear and simple."""
@@ -1461,15 +1457,13 @@ async def _fetch_area_signals(
 
     async def _wapor_et():
         try:
-            from src.services.wapor_service import query_et
-            return await asyncio.to_thread(query_et, lat, lon, planting_date, today)
+            return await asyncio.to_thread(wapor_service.query_et, lat, lon, planting_date, today)
         except Exception:
             return None
 
     async def _wapor_soil():
         try:
-            from src.services.wapor_service import query_soil_moisture
-            return await asyncio.to_thread(query_soil_moisture, lat, lon, planting_date, today)
+            return await asyncio.to_thread(wapor_service.query_soil_moisture, lat, lon, planting_date, today)
         except Exception:
             return None
 
@@ -1780,6 +1774,58 @@ def _rank_by_rainfall(areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
+# A report's network reads (CHIRPS, WaPOR, the forecast, SAR-predicted NDVI) get
+# this long, all together. What has not arrived by then is missing, never zero,
+# and the report names it; reads still running finish in their threads and fill
+# the caches for the next report. Sage stops a tool after SAGE_TOOL_TIMEOUT_SECONDS
+# (120 s by default), and the tool still saves the report after this.
+_FETCH_DEADLINE_S = 60.0
+# CHIRPS hands back the days it has read this much before the deadline, so a
+# slow last download does not lose the season's rainfall with it.
+_CHIRPS_MARGIN_S = 5.0
+_CHIRPS_READ = "CHIRPS rainfall"
+_ET_READ = "WaPOR evapotranspiration"
+_SOIL_READ = "WaPOR soil moisture"
+_FORECAST_READ = "multi-model weather forecast"
+_SAR_NDVI_READ = "SAR-predicted NDVI"
+
+
+async def _collect_reads(
+    reads: dict[str, asyncio.Future[Any]], timeout_s: float,
+) -> tuple[dict[str, Any], list[str]]:
+    """The results of the reads done within ``timeout_s``, by name, and the names of the rest.
+
+    A read that failed is there with None (and logged). The rest are cancelled:
+    one already running in a thread finishes there and its result is dropped.
+    """
+    if not reads:
+        return {}, []
+    done, pending = await asyncio.wait(reads.values(), timeout=max(0.0, timeout_s))
+    for task in pending:
+        task.cancel()
+    arrived: dict[str, Any] = {}
+    for name, task in reads.items():
+        if task not in done:
+            continue
+        if task.exception() is not None:
+            logger.warning("insurance report: %s read failed: %r", name, task.exception())
+            arrived[name] = None
+        else:
+            arrived[name] = task.result()
+    late = [name for name, task in reads.items() if task in pending]
+    if late:
+        logger.warning("insurance report: %s not read within %.0f s", ", ".join(late), _FETCH_DEADLINE_S)
+    return arrived, late
+
+
+def late_sources_note(late: list[str]) -> Optional[str]:
+    """One sentence naming the sources a report left out because they did not arrive in time."""
+    if not late:
+        return None
+    return (f"Left out of this report because they did not arrive within {_FETCH_DEADLINE_S:.0f} seconds: "
+            f"{', '.join(late)}. They are missing, not zero; asking again shortly usually includes them.")
+
+
 async def compute_insurance_intelligence(
     conn: asyncpg.Connection,
     crop: str = "maize",
@@ -1857,117 +1903,84 @@ async def compute_insurance_intelligence(
     else:
         lat, lon = _RWANDA_CENTER
 
-    # --- PARALLEL DATA FETCH ---
-    # Network-only fetches (no shared conn) run in parallel.
-    # DB-dependent fetches run sequentially on `conn` — asyncpg connections
-    # are not safe for concurrent use (raises InterfaceError).
-
-    async def fetch_chirps():
+    # --- DATA FETCH ---
+    # The network reads run together, in threads, while the database reads run
+    # on `conn` one at a time (an asyncpg connection is not safe for concurrent
+    # use). The network reads get _FETCH_DEADLINE_S in all; what has not arrived
+    # by then is missing, and the report names it.
+    started = time.monotonic()
+    ndvi_z = await _fetch_ndvi_anomaly(conn, district)
+    forecast_days = min(max(0, harvest_dap - dap), 16)
+    network: dict[str, Awaitable[Any]] = {
+        _CHIRPS_READ: _fetch_season_chirps(
+            lat, lon, planting_date, today, timeout_s=_FETCH_DEADLINE_S - _CHIRPS_MARGIN_S,
+        ),
+        _ET_READ: asyncio.to_thread(wapor_service.query_et, lat, lon, planting_date, today),
+        _SOIL_READ: asyncio.to_thread(wapor_service.query_soil_moisture, lat, lon, planting_date, today),
+    }
+    if forecast_days >= 1:
+        network[_FORECAST_READ] = asyncio.to_thread(
+            forecast_openmeteo.fetch_openmeteo_multimodel, lat, lon, forecast_days,
+        )
+    if ndvi_z is None:
+        network[_SAR_NDVI_READ] = _sar_predicted_ndvi_z(lat, lon)
+    reads = {name: asyncio.ensure_future(read) for name, read in network.items()}
+    try:
         try:
-            return await _fetch_season_chirps(lat, lon, planting_date, today)
+            et_cell = et_normals.cell_for(lat, lon)
+            et_normals_for_cell: Optional[dict[int, float]] = (await et_normals.normals_by_cell(
+                conn, [et_cell], et_normals.dekads_between(planting_date, today),
+            )).get(et_cell, {})
         except Exception:
-            logger.debug("chirps fetch failed", exc_info=True)
-            return {}, set()
-
-    async def fetch_wapor_et():
+            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
+            et_normals_for_cell = None
         try:
-            from src.services.wapor_service import query_et
-            return await asyncio.to_thread(
-                query_et, lat, lon, planting_date, today,
+            accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
+        except Exception:
+            logger.debug("insurance_accuracy fetch failed", exc_info=True)
+            accuracy_result = None
+
+        try:
+            from src.services.weather_accuracy import detect_dry_spells
+            dry_spells_result = await detect_dry_spells(
+                conn, district=district,
+                date_from=planting_date.strftime("%Y-%m-%d"),
+                date_to=today.strftime("%Y-%m-%d"),
             )
         except Exception:
-            logger.debug("wapor ET fetch failed", exc_info=True)
-            return None
+            logger.debug("dry_spells fetch failed", exc_info=True)
+            dry_spells_result = None
 
-    async def fetch_wapor_soil():
         try:
-            from src.services.wapor_service import query_soil_moisture
-            return await asyncio.to_thread(
-                query_soil_moisture, lat, lon, planting_date, today,
+            from src.services.weather_accuracy import compute_ndvi_concordance
+            ndvi_conc_result = await compute_ndvi_concordance(
+                conn, district=district,
+                date_from=planting_date.strftime("%Y-%m-%d"),
+                date_to=today.strftime("%Y-%m-%d"),
             )
         except Exception:
-            logger.debug("wapor soil moisture fetch failed", exc_info=True)
-            return None
+            logger.debug("ndvi_concordance fetch failed", exc_info=True)
+            ndvi_conc_result = None
 
-    async def fetch_forecast():
-        try:
-            from src.services.forecast_openmeteo import fetch_openmeteo_multimodel
-            days_left = max(0, harvest_dap - dap)
-            forecast_days = min(days_left, 16)
-            if forecast_days < 1:
-                return None
-            return await asyncio.to_thread(
-                fetch_openmeteo_multimodel, lat, lon, forecast_days,
-            )
-        except Exception:
-            logger.debug("forecast fetch failed", exc_info=True)
-            return None
+        arrived, late = await _collect_reads(reads, _FETCH_DEADLINE_S - (time.monotonic() - started))
+    finally:
+        for task in reads.values():
+            task.cancel()  # does nothing to finished reads; stops the rest if the turn was stopped first
 
-    # Network-only fetches: safe to parallelize (return_exceptions prevents
-    # one failure from cancelling the others)
-    network_results = await asyncio.gather(
-        fetch_chirps(),
-        fetch_wapor_et(),
-        fetch_wapor_soil(),
-        fetch_forecast(),
-        return_exceptions=True,
-    )
-    chirps_daily, chirps_prelim_days = (
-        network_results[0] if not isinstance(network_results[0], BaseException) else ({}, set())
-    )
-    et_result = network_results[1] if not isinstance(network_results[1], BaseException) else None
-    soil_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
-    forecast_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
-    if isinstance(network_results[3], BaseException):
-        logger.warning("forecast fetch raised: %s", network_results[3])
-    elif forecast_result is None:
+    chirps_daily, chirps_prelim_days = arrived.get(_CHIRPS_READ) or ({}, set())
+    et_result = arrived.get(_ET_READ)
+    soil_result = arrived.get(_SOIL_READ)
+    forecast_result = arrived.get(_FORECAST_READ)
+    if _SAR_NDVI_READ in arrived:
+        ndvi_z = arrived[_SAR_NDVI_READ]
+    if forecast_result is None:
         logger.info("forecast fetch returned None")
     else:
         logger.info("forecast fetch OK: %d daily entries, models=%s",
                      len(forecast_result.get("daily", [])),
                      forecast_result.get("models_used", []))
-
-    # DB-dependent fetches: sequential on the shared connection
-    if et_result and et_result.get("status") == "success":
-        try:
-            cell = et_normals.cell_for(lat, lon)
-            normals = await et_normals.normals_by_cell(conn, [cell], et_normals.dekads_between(planting_date, today))
-            et_normals.attach(et_result, normals.get(cell, {}))
-        except Exception:
-            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
-    try:
-        accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
-    except Exception:
-        logger.debug("insurance_accuracy fetch failed", exc_info=True)
-        accuracy_result = None
-
-    try:
-        from src.services.weather_accuracy import detect_dry_spells
-        dry_spells_result = await detect_dry_spells(
-            conn, district=district,
-            date_from=planting_date.strftime("%Y-%m-%d"),
-            date_to=today.strftime("%Y-%m-%d"),
-        )
-    except Exception:
-        logger.debug("dry_spells fetch failed", exc_info=True)
-        dry_spells_result = None
-
-    try:
-        from src.services.weather_accuracy import compute_ndvi_concordance
-        ndvi_conc_result = await compute_ndvi_concordance(
-            conn, district=district,
-            date_from=planting_date.strftime("%Y-%m-%d"),
-            date_to=today.strftime("%Y-%m-%d"),
-        )
-    except Exception:
-        logger.debug("ndvi_concordance fetch failed", exc_info=True)
-        ndvi_conc_result = None
-
-    ndvi_z = await _fetch_ndvi_with_sar_fallback(
-        conn, lat, lon,
-        planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-        district,
-    )
+    if et_result and et_result.get("status") == "success" and et_normals_for_cell is not None:
+        et_normals.attach(et_result, et_normals_for_cell)
 
     # --- PROCESS RESULTS ---
     sources = []
@@ -2126,6 +2139,7 @@ async def compute_insurance_intelligence(
         accuracy_components=accuracy_components,
         forecast_outlook=forecast_outlook,
         sources=sources,
+        late_sources=late,
         period_start=planting_date.strftime("%Y-%m-%d"),
         period_end=today.strftime("%Y-%m-%d"),
         computed_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2134,7 +2148,7 @@ async def compute_insurance_intelligence(
 
     formatted = format_for_audience(report, audience)
 
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "report": formatted,
         "data": report.to_dict(),
@@ -2142,6 +2156,10 @@ async def compute_insurance_intelligence(
         "geometry": geometry,
         "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
     }
+    coverage = late_sources_note(late)
+    if coverage:
+        result["coverage"] = coverage
+    return result
 
 async def compute_insurance_accuracy_safe(
     conn: asyncpg.Connection,
