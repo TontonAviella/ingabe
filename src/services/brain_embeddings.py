@@ -33,7 +33,12 @@ from src.llm_defaults import (
     resolve_chat_endpoint,
 )
 from src.services import llm_cache
-from src.services.brain_service import BrainPageNotFoundError, BrainService, ChunkInput
+from src.services.brain_service import (
+    PAGE_SCOPE_FILTER,
+    BrainPageNotFoundError,
+    BrainService,
+    ChunkInput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -545,7 +550,7 @@ async def embed_all_stale(
         return {"embedded": 0, "skipped": 0, "errors": 0, "auth_disabled": True}
 
     # Find pages that have content but no chunks with embeddings.
-    # Match brain_service.get_page's partner-aware filter so this SELECT only
+    # Use brain_service.get_page's scope filter so this SELECT only
     # returns rows the same connection can actually resolve. Without this,
     # partner_internal pages slip through to embed_page() where get_page
     # filters them out and we log "page not found" forever (the rows never
@@ -560,16 +565,10 @@ async def embed_all_stale(
     async with conn.transaction():
         await conn.execute("SET LOCAL enable_nestloop = off")
         rows = await conn.fetch(
-            """
+            f"""
             SELECT p.slug FROM brain_pages p
             WHERE (p.compiled_truth != '' OR p.timeline != '')
-              AND (
-                  p.access_scope IS NULL
-                  OR p.access_scope = 'public'
-                  OR (p.access_scope = 'partner_internal'
-                      AND p.partner_id IS NOT NULL
-                      AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
-              )
+              {PAGE_SCOPE_FILTER.format(a="p.")}
               AND NOT EXISTS (
                   SELECT 1 FROM brain_content_chunks cc
                   WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL

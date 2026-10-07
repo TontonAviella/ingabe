@@ -89,10 +89,11 @@ async def write_page(
     )
 
     # One transaction across all three writes. Without this, a crash between
-    # put_page and the UPDATE leaves access_scope/partner_id NULL, which RLS
-    # treats as public — a partner_internal row would be readable by anyone
-    # until the next re-fetch. That's the exact isolation guarantee the
-    # brain_pages schema exists to enforce.
+    # put_page and the UPDATE leaves a new page 'private' to the ingest
+    # service account (put_page's default), so a public source would stay
+    # invisible to users until the next re-fetch. (Before 2026-10-07 the
+    # scope was left NULL, which RLS read as public: a partner_internal row
+    # was readable by anyone.)
     async with conn.transaction():
         await brain.put_page(conn, slug, page_input, owner_uuid=owner_uuid)
 

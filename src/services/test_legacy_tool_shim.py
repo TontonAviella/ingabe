@@ -281,3 +281,29 @@ async def test_cell_ndvi_falls_back_to_live_sectors_with_a_coverage_note(monkeyp
     assert result["source"] == "deafrica_realtime" and result["count"] == 2
     assert result["sector_ndvi_stats"][0]["mean_ndvi"] == 0.5
     assert "3 were left out" in result["coverage"]
+
+
+@pytest.mark.asyncio
+async def test_insurance_report_tells_sage_which_sources_did_not_arrive_in_time(monkeypatch):
+    """The engine's coverage note reaches the model next to the briefing, so Sage says what is missing."""
+    from src.services import insurance_engine
+
+    note = insurance_engine.late_sources_note(["WaPOR soil moisture"])
+    engine_result = {
+        "status": "ok", "report": "AGRONOMIC ASSESSMENT ...", "audience": "agronomist", "geometry": None,
+        "slug": "insurance-kanyangese-A-20261007", "coverage": note,
+        "data": {"location": "Kanyangese", "season": "A", "triggers": [], "not_read_in_time": ["WaPOR soil moisture"]},
+    }
+    monkeypatch.setattr(insurance_engine, "compute_insurance_intelligence", AsyncMock(return_value=engine_result))
+    monkeypatch.setattr(insurance_engine, "resolve_audience", AsyncMock(return_value="agronomist"))
+    brain = MagicMock(put_page=AsyncMock(), add_timeline_entry=AsyncMock())
+    monkeypatch.setattr("src.dependencies.brain_dep.get_brain_service", lambda: brain)
+
+    result = await execute_legacy_tool("get_insurance_intelligence", _make_ctx(
+        {"cell": "Kanyangese", "district": "Gatsibo", "crop": "cassava", "audience": "agronomist"}))
+
+    assert result["status"] == "ok"
+    assert result["coverage"] == note
+    assert "say plainly which are missing" in result["instruction"]
+    assert "data" not in result
+    json.dumps(result)
