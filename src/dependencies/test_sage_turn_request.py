@@ -150,6 +150,8 @@ def _plan_for(text: str):
         ("what is NDVI?", "NDVI is a vegetation index...", False, False),              # explanation
         ("explain the payout trigger", "A payout trigger is ...", False, False),
         ("create management zones for this field", "Which field should I use?", False, False),  # clarify
+        ("thanks!", "You're welcome. Anything else?", False, False),                     # acknowledgement
+        ("ok great", "Glad it helped.", False, False),
     ],
 )
 def test_is_abdication(text: str, reply: str, has_tools: bool, expected: bool) -> None:
@@ -169,12 +171,22 @@ def test_abdication_guard_flag(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_guard_tools_are_a_short_ranked_list() -> None:
-    from src.dependencies.sage_turn_request import GUARD_TOOL_COUNT, guard_tools
+    from src.dependencies.sage_turn_request import GUARD_TOOL_COUNT, KEEP_ANSWER_TOOL, guard_tools
 
     tools = build_sage_tools_payload(get_pydantic_tool_calls(), {})
     picked = await guard_tools("will it rain in Musanze next week?", [], tools, embed=None)
-    assert len(picked) == GUARD_TOOL_COUNT
-    assert "get_forecast" in _names(picked)
+    assert len(picked) == GUARD_TOOL_COUNT + 1  # the best tools, and the way to keep a written answer
+    assert "get_forecast" in _names(picked) and _names(picked)[-1] == KEEP_ANSWER_TOOL
+
+
+def test_the_guard_keeps_the_written_answer_when_the_retry_says_no_tool_fits() -> None:
+    from types import SimpleNamespace as NS
+
+    from src.dependencies.sage_turn_request import KEEP_ANSWER_TOOL, guard_tool_calls
+
+    forecast = NS(function=NS(name="get_forecast"))
+    assert guard_tool_calls([forecast]) == [forecast]
+    assert guard_tool_calls([NS(function=NS(name=KEEP_ANSWER_TOOL))]) == []
 
 
 class _RateLimitError(Exception):

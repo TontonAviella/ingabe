@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 
 DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b-it-qat"
-DEFAULT_CLOUD_BRAIN_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+# Roger's choice, 2026-10-06: GPT-6 Luna through OpenRouter (paid credits; vision, tools, structured output).
+DEFAULT_CLOUD_BRAIN_MODEL = "openai/gpt-6-luna"
 DEFAULT_CHAT_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
 DEFAULT_SMALL_TALK_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
 DEFAULT_BRAIN_QUERY_EXPANSION_MODEL = DEFAULT_LOCAL_BRAIN_MODEL
@@ -66,7 +67,7 @@ def supports_strict_tool_schema(model: str | None) -> bool:
     provider families that may reject OpenAI-specific schema extensions.
     """
 
-    model_name = (model or DEFAULT_CHAT_MODEL).strip().lower()
+    model_name = (model or DEFAULT_CHAT_MODEL).strip().lower().removeprefix("openai/")
     if model_name.startswith(("gpt-", "o1", "o3", "o4")):
         return True
     if model_name.startswith("ollama:"):

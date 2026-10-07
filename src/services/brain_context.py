@@ -209,6 +209,9 @@ async def build_brain_context_packet(
                 conn,
                 tuple(float(v) for v in viewport_bounds),
                 limit=8,
+                layer_ids=(
+                    sorted(visible_layer_id_set) if visible_layer_id_set is not None else None
+                ),
             )
             entries.extend(
                 entry
