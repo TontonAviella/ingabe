@@ -1,7 +1,9 @@
 """Compact Brain context packets for Hermes/Sage turns.
 
 The goal is to keep gbrain-style memory as the control-plane spine without
-dumping recent pages or full GeoJSON into every turn.
+dumping recent pages or full GeoJSON into every turn. A page enters the packet
+only when it matches the question or sits in the viewport, and is in the
+user's own scope; an empty packet beats unrelated memory.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from typing import Any, Mapping, Optional
 
 import asyncpg
 
-from src.services.brain_service import BrainService, Page, SearchResult, _PARTNER_FILTER
+from src.services.brain_service import BrainService, Page, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,10 @@ class _MemoryEntry:
 
 
 def _layer_id_from_slug(slug: str) -> str | None:
-    """Best-effort layer id extraction for Brain pages named layer-<id>[-fN]."""
+    """Layer id of a Brain page about one layer, as brain_hook_processor names
+    them: layer-<id>[-fN] (a vector layer and its features) or raster-<id>."""
+    if slug.startswith("raster-"):
+        return slug[len("raster-") :] or None
     if not slug.startswith("layer-"):
         return None
     rest = slug[len("layer-") :]
@@ -43,19 +48,28 @@ def _layer_id_from_slug(slug: str) -> str | None:
 
 
 def _is_layer_scoped_entry(entry: _MemoryEntry) -> bool:
-    return _layer_id_from_slug(entry.slug) is not None or entry.slug.startswith("raster-")
+    return entry.slug.startswith(("layer-", "raster-"))
+
+
+def _entry_on_visible_map(
+    entry: _MemoryEntry,
+    visible_layer_ids: set[str] | None,
+) -> bool:
+    """A page about a layer on the map the user is looking at: in their scope
+    whoever uploaded the layer."""
+    if visible_layer_ids is None:
+        return False
+    layer_id = _layer_id_from_slug(entry.slug)
+    return layer_id is not None and layer_id.lower() in visible_layer_ids
 
 
 def _entry_matches_visible_layers(
     entry: _MemoryEntry,
     visible_layer_ids: set[str] | None,
 ) -> bool:
-    if visible_layer_ids is None:
+    if visible_layer_ids is None or not _is_layer_scoped_entry(entry):
         return True
-    layer_id = _layer_id_from_slug(entry.slug)
-    if layer_id is None:
-        return not _is_layer_scoped_entry(entry)
-    return layer_id.lower() in visible_layer_ids
+    return _entry_on_visible_map(entry, visible_layer_ids)
 
 
 def extract_user_message_text(message: Any) -> str:
@@ -155,7 +169,10 @@ async def build_brain_context_packet(
     """Build a small, query-aware Brain packet for one chat turn.
 
     The packet combines keyword/hybrid Brain retrieval for the user's actual
-    question with spatial Brain pages intersecting the visible map viewport.
+    question with spatial Brain pages intersecting the visible map viewport,
+    kept only when they are in the user's scope (`slugs_in_user_scope`) or
+    describe a layer on the current map. Nothing else is added when both come
+    back empty: no packet is returned rather than unrelated pages.
     """
     query = _clip(query_text, 500)
     visible_layer_id_set = (
@@ -182,7 +199,7 @@ async def build_brain_context_packet(
                 gaps.append("No query-matching Brain pages found.")
         except Exception:
             logger.debug("Brain query retrieval failed", exc_info=True)
-            gaps.append("Query Brain retrieval failed; using spatial/recent memory only.")
+            gaps.append("Query Brain retrieval failed; using spatial memory only.")
 
     spatial_pages: list[Page] = []
     if viewport_bounds and len(viewport_bounds) == 4:
@@ -204,21 +221,6 @@ async def build_brain_context_packet(
             logger.debug("Brain spatial retrieval failed", exc_info=True)
             gaps.append("Spatial Brain retrieval failed for the current viewport.")
 
-    if not entries:
-        try:
-            recent_pages = await brain.list_pages(conn, limit=8)
-            entries.extend(
-                entry
-                for p in recent_pages
-                for entry in [_page_entry(p, "recent")]
-                if _entry_matches_visible_layers(entry, visible_layer_id_set)
-            )
-            if not recent_pages:
-                gaps.append("Brain has no visible pages for this user/context yet.")
-        except Exception:
-            logger.debug("Brain recent retrieval failed", exc_info=True)
-            gaps.append("Recent Brain retrieval failed.")
-
     deduped: list[_MemoryEntry] = []
     seen_slugs: set[str] = set()
     for entry in entries:
@@ -227,7 +229,13 @@ async def build_brain_context_packet(
         seen_slugs.add(entry.slug)
         deduped.append(entry)
 
-    if not deduped:
+    on_map = {e.slug for e in deduped if _entry_on_visible_map(e, visible_layer_id_set)}
+    in_scope = await brain.slugs_in_user_scope(
+        conn, [e.slug for e in deduped if e.slug not in on_map]
+    )
+    memory = [e for e in deduped if e.slug in on_map or e.slug in in_scope]
+
+    if not memory:
         return None
 
     lines = [
@@ -242,9 +250,9 @@ async def build_brain_context_packet(
     if query:
         lines.append(f"User query: {_clip(query, 220)}")
 
-    if deduped:
+    if memory:
         lines.append("Memory:")
-        for entry in deduped:
+        for entry in memory:
             score = f", score={entry.score:.3f}" if entry.score is not None else ""
             lines.append(
                 f"- source={entry.source}{score}; slug={entry.slug}; type={entry.type}; "
