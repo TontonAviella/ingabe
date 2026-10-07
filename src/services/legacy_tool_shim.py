@@ -3182,11 +3182,11 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """STAC search + opportunistic NDVI compute for the first item with B04+B08.
+    """STAC search, plus an NDVI sample of the searched area.
 
-    NDVI sample fails silently to None so the search results are still useful
-    when the first scene happens to be missing bands.
-
+    The sample reads the searched bbox from the scene that covers most of it
+    (STACService.compute_ndvi_sample). A failed sample comes back as its error,
+    so the answer can say why there is no NDVI; the scenes are returned either way.
     """
     args = ctx.arguments
     try:
@@ -3210,30 +3210,23 @@ async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, 
         if "error" in result_data:
             return {"status": "error", "error": result_data["error"]}
 
-        ndvi_computed = None
+        ndvi_sample = None
         items = result_data.get("items", [])
         if items:
-            first_item = items[0]
-            assets = first_item.get("assets", {})
-            if "B04" in assets and "B08" in assets:
-                try:
-                    ndvi_computed = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: service.compute_ndvi_from_item(first_item)
-                    )
-                    if "error" in ndvi_computed:
-                        logger.warning(
-                            "NDVI computation failed for first item: %s",
-                            ndvi_computed.get("error")
-                        )
-                        ndvi_computed = None
-                except Exception as e:
-                    logger.warning("NDVI computation failed: %s", e)
-                    ndvi_computed = None
+            try:
+                ndvi_sample = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: service.compute_ndvi_sample(items, result_data["bbox"])
+                )
+            except Exception as e:
+                logger.exception("NDVI sample failed")
+                ndvi_sample = {"error": str(e)}
+            if "error" in ndvi_sample:
+                logger.warning("NDVI sample unavailable: %s", ndvi_sample["error"])
 
         return {
             "status": "success",
             "search_results": result_data,
-            "ndvi_sample": ndvi_computed,
+            "ndvi_sample": ndvi_sample,
         }
     except Exception as e:
         logger.exception("STAC search tool failed")
