@@ -36,6 +36,7 @@ import numpy as np
 import rasterio
 from cachetools import LRUCache, TTLCache
 
+from src.services import raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
@@ -103,9 +104,20 @@ GDAL_COG_ENV = {
 _points: LRUCache = LRUCache(maxsize=8192)  # (url, lat, lon) -> raw value, None for NODATA
 _unpublished: TTLCache = TTLCache(maxsize=1024, ttl=3 * 3600)  # url -> True
 _cache_lock = threading.Lock()
-# Part of each read holds the GIL for seconds (2026-10-07: a single point read delayed the
-# app's event loop by ~2.5 s), so reads stay 6 at a time rather than all 12 dekads at once.
+# Reads stay 6 at a time rather than all 12 dekads at once; each runs in a raster worker process
+# (raster_process: rasterio holds the GIL during part of a remote read).
 _READ_WORKERS = 6
+
+
+def _read_point_raw(url: str, lat: float, lon: float, env: dict[str, str]) -> tuple[str, int | str]:
+    """In a raster worker: ("value", the stored pixel value) or ("error", what went wrong)."""
+    try:
+        with rasterio.Env(**env), rasterio.open(url) as ds:
+            row, col = ds.index(lon, lat)
+            data = ds.read(1, window=rasterio.windows.Window(col, row, 1, 1))
+            return "value", int(data[0, 0])
+    except Exception as e:
+        return "error", str(e)
 
 
 def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -> float | None:
@@ -118,18 +130,16 @@ def _read_point(url: str, lat: float, lon: float, scale: float, offset: float) -
         raw = _points.get(key)
     if not known:
         try:
-            with rasterio.Env(**GDAL_COG_ENV), rasterio.open(url) as ds:
-                row, col = ds.index(lon, lat)
-                window = rasterio.windows.Window(col, row, 1, 1)
-                data = ds.read(1, window=window)
-                raw = int(data[0, 0])
-        except Exception as e:
-            logger.warning("WaPOR read failed for %s: %s", url, e)
-            if "HTTP response code: 404" in str(e):
+            kind, got = raster_process.run(_read_point_raw, url, lat, lon, GDAL_COG_ENV)
+        except Exception as e:  # the worker died or never answered
+            kind, got = "error", f"raster worker: {e!r}"
+        if kind == "error":
+            logger.warning("WaPOR read failed for %s: %s", url, got)
+            if "HTTP response code: 404" in str(got):
                 with _cache_lock:
                     _unpublished[url] = True
             return None
-        raw = None if raw == NODATA else raw
+        raw = None if got == NODATA else got
         with _cache_lock:
             _points[key] = raw
     return None if raw is None else raw * scale + offset

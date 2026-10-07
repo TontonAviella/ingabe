@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 import httpx
 import numpy as np
 
+from src.services import raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
@@ -41,10 +42,9 @@ _STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
 _COLLECTION = "sentinel-1-rtc"
 # Window reads of a time series run this many at a time. One read takes ~2 s, and a
 # SAR-predicted NDVI read 20 to 100 of them one after another (2026-10-07: 47 s and
-# 205 s of an insurance report). Part of each read holds the GIL, so more at once
-# delays the app's event loop: worst wake-up 0.33 s at 1, 0.45 s at 3, 1.4 s at 8
-# (90 s of training, measured in mundi-app on 2026-10-07).
-_PARALLEL_READS = 3
+# 205 s of an insurance report). Each read runs in a raster worker process
+# (raster_process), so as many as there are workers.
+_PARALLEL_READS = raster_process.WORKERS
 
 
 # Planetary Computer assets are read with a SAS token for their storage container.
@@ -114,37 +114,51 @@ def _search_items(
         return []
 
 
-def _read_band_window(
+def _read_window_raw(
     href: str,
     bounds: Tuple[float, float, float, float],
-    max_pixels: int = 512,
-) -> Optional[Tuple[np.ndarray, Any, Any]]:
-    """Read a COG band window covering the given WGS84 bounds.
-
-    Returns (array, transform, crs) or None on failure.
-    """
+    max_pixels: int,
+    env: Dict[str, str],
+) -> Tuple[str, Any]:
+    """In a raster worker: ("window", (array, transform, crs)), ("outside", None) or ("error", message)."""
     import rasterio
     from rasterio.warp import transform_bounds
     from rasterio.windows import from_bounds, Window
 
-    signed = _sign_href(href)
     try:
-        with rasterio.Env(**GDAL_HTTP_TIMEOUTS), rasterio.open(signed) as src:
+        with rasterio.Env(**env), rasterio.open(href) as src:
             proj_bounds = transform_bounds("EPSG:4326", src.crs, *bounds)
             win = from_bounds(*proj_bounds, transform=src.transform)
             # Clamp to raster extent
             win = win.intersection(Window(0, 0, src.width, src.height))
             if win.width <= 0 or win.height <= 0:
-                return None
+                return "outside", None
 
             out_h = min(int(win.height), max_pixels)
             out_w = min(int(win.width), max_pixels)
             arr = src.read(1, window=win, out_shape=(out_h, out_w)).astype(np.float32)
-            win_transform = src.window_transform(win)
-            return arr, win_transform, src.crs
+            return "window", (arr, src.window_transform(win), src.crs)
     except Exception as e:
-        logger.warning("S1 RTC COG read failed for %s: %s", href[:80], e)
+        return "error", str(e)
+
+
+def _read_band_window(
+    href: str,
+    bounds: Tuple[float, float, float, float],
+    max_pixels: int = 512,
+) -> Optional[Tuple[np.ndarray, Any, Any]]:
+    """Read a COG band window covering the given WGS84 bounds, in a raster worker process.
+
+    Returns (array, transform, crs) or None on failure.
+    """
+    try:
+        kind, got = raster_process.run(_read_window_raw, _sign_href(href), bounds, max_pixels, GDAL_HTTP_TIMEOUTS)
+    except Exception as e:  # the worker died or never answered
+        kind, got = "error", f"raster worker: {e!r}"
+    if kind == "error":
+        logger.warning("S1 RTC COG read failed for %s: %s", href[:80], got)
         return None
+    return got
 
 
 class Sentinel1Service:

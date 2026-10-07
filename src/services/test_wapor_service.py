@@ -16,7 +16,10 @@ URL = ws.raster_url("L2-AETI-D", "2026-09-D1")
 
 @pytest.fixture
 def cog(monkeypatch):
-    """rasterio.open replaced by a one-pixel dataset whose value the test sets; opens are counted."""
+    """rasterio.open replaced by a one-pixel dataset whose value the test sets; opens are counted.
+
+    The read runs here, not in a raster worker process, so the replacement applies to it."""
+    monkeypatch.setattr(ws.raster_process, "run", lambda fn, *args: fn(*args))
     monkeypatch.setattr(ws, "_points", LRUCache(maxsize=64))
     now = [0.0]
     monkeypatch.setattr(ws, "_unpublished", TTLCache(maxsize=64, ttl=3 * 3600, timer=lambda: now[0]))
