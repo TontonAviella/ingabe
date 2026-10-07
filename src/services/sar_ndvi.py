@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -229,6 +230,9 @@ class SARNDVIPredictor:
         self._model_rmse: Optional[float] = None
         self._model_r2: Optional[float] = None
         self._n_training_samples: int = 0
+        # Training reads a few minutes of imagery. A caller that stops waiting leaves it running
+        # in its thread; the next caller waits for that run instead of starting a second one.
+        self._train_lock = threading.Lock()
 
     def predict_ndvi(
         self,
@@ -283,7 +287,8 @@ class SARNDVIPredictor:
 
         # Train model if needed
         if self._model is None:
-            train_result = self.train_model(bbox)
+            with self._train_lock:
+                train_result = self.train_model(bbox) if self._model is None else {"status": "success"}
             if train_result.get("status") == "error":
                 # Fall back to simple empirical relationship
                 return self._empirical_prediction(ts)

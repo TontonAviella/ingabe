@@ -299,6 +299,59 @@ class TestSARNDVIPredictor:
         pred2 = get_sar_ndvi_predictor()
         assert pred1 is pred2
 
+    def test_a_training_already_running_is_waited_for_not_started_again(self, monkeypatch):
+        """A report that stops waiting leaves the training running; the next one must not start another."""
+        import threading
+        import time
+        from src.services import sar_ndvi
+
+        series = {"status": "success", "dates": ["2026-09-01T03:00:00Z", "2026-09-13T03:00:00Z"],
+                  "vv_means": [-9.0, -8.5], "vh_means": [-15.0, -14.5], "vv_stds": [1.0, 1.0], "vh_stds": [1.0, 1.0]}
+        s1 = type("S1", (), {"get_time_series": lambda self, *a, **k: series})()
+        monkeypatch.setattr("src.services.sentinel1_service.get_sentinel1_service", lambda: s1)
+        pred = sar_ndvi.SARNDVIPredictor()
+        trainings = []
+
+        def train(bbox, days_back=180):
+            trainings.append(bbox)
+            time.sleep(0.3)
+            return {"status": "error", "error": "Insufficient training data"}
+
+        monkeypatch.setattr(pred, "train_model", train)
+        threads = [threading.Thread(target=pred.predict_ndvi, args=((30.0, -2.0, 30.1, -1.9),)) for _ in range(2)]
+        for t in threads:
+            t.start()
+        time.sleep(0.05)
+        pred._model = object()  # the first training succeeded while the second caller waited
+        for t in threads:
+            t.join()
+        assert len(trainings) == 1
+
+
+class TestSentinel1TimeSeries:
+    def test_parallel_reads_keep_each_scene_with_its_own_bands(self, monkeypatch):
+        import time
+        from src.services import sentinel1_service as s1
+
+        items = [{"properties": {"datetime": f"2026-09-{d:02d}T03:00:00Z"},
+                  "assets": {"vv": {"href": f"vv-{d}"}, "vh": {"href": f"vh-{d}"}}} for d in (1, 7, 13, 19, 25)]
+        del items[2]["assets"]["vh"]  # a scene without VH is left out, as before
+        linear = {f"{band}-{d}": 10 ** (db / 10) for d, (vv, vh) in zip((1, 7, 13, 19, 25), [(-8, -14), (-9, -15), (-7, -13), (-10, -16), (-6, -12)])
+                  for band, db in (("vv", vv), ("vh", vh))}
+
+        def read(href, bbox):
+            time.sleep(0.2 if href.endswith("-1") else 0.05)  # the first scene finishes last
+            return np.full((4, 4), linear[href], dtype=np.float32), None, "EPSG:32735"
+
+        monkeypatch.setattr(s1, "_search_items", lambda *a, **k: items)
+        monkeypatch.setattr(s1, "_read_band_window", read)
+        started = time.monotonic()
+        ts = s1.Sentinel1Service().get_time_series((30.0, -2.0, 30.1, -1.9), "2026-09-01/2026-09-30")
+        assert time.monotonic() - started < 0.6  # 8 reads of 0.05-0.2 s, not one after another
+        assert ts["dates"] == ["2026-09-01T03:00:00Z", "2026-09-07T03:00:00Z", "2026-09-19T03:00:00Z", "2026-09-25T03:00:00Z"]
+        assert ts["vv_means"] == pytest.approx([-8, -9, -10, -6], abs=1e-4)
+        assert ts["vh_means"] == pytest.approx([-14, -15, -16, -12], abs=1e-4)
+
 
 class TestToolsJsonIntegrity:
     def test_tools_json_valid(self):

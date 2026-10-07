@@ -24,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 _STAC_ENDPOINT = "https://planetarycomputer.microsoft.com/api/stac/v1"
 _COLLECTION = "sentinel-1-rtc"
+# Window reads of a time series run this many at a time. One read takes ~2 s, and a
+# SAR-predicted NDVI read 20 to 100 of them one after another (2026-10-07: 47 s and
+# 205 s of an insurance report).
+_PARALLEL_READS = 8
 
 
 def _sign_href(href: str) -> str:
@@ -195,13 +200,17 @@ class Sentinel1Service:
         vh_means: List[float] = []
         vh_stds: List[float] = []
 
-        for item in items:
-            assets = item.get("assets", {})
-            if "vv" not in assets or "vh" not in assets:
-                continue
+        usable = [item for item in items if "vv" in item.get("assets", {}) and "vh" in item.get("assets", {})]
+        with ThreadPoolExecutor(max_workers=_PARALLEL_READS) as pool:
+            reads = [
+                (pool.submit(_read_band_window, item["assets"]["vv"]["href"], bbox),
+                 pool.submit(_read_band_window, item["assets"]["vh"]["href"], bbox))
+                for item in usable
+            ]
 
-            vv_result = _read_band_window(assets["vv"]["href"], bbox)
-            vh_result = _read_band_window(assets["vh"]["href"], bbox)
+        for item, (vv_read, vh_read) in zip(usable, reads):
+            vv_result = vv_read.result()
+            vh_result = vh_read.result()
             if vv_result is None or vh_result is None:
                 continue
 
