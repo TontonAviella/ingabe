@@ -79,3 +79,12 @@ def test_a_month_with_no_clear_view_of_the_area_is_unknown_not_zero(tmp_path, mo
 def test_no_published_month_is_none(monkeypatch):
     monkeypatch.setattr(deafrica_stac, "_search_collection_items", lambda *a, **k: [])
     assert deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7)) is None
+
+
+def test_a_tile_that_could_not_be_read_fails_the_read_and_is_not_kept(tmp_path, monkeypatch):
+    sep = _item("2026-09", "2026-09-30", _tile(tmp_path, "sep", (-1.2, 0.33), 2))
+    monkeypatch.setattr(deafrica_stac, "_search_collection_items", lambda *a, **k: [sep])
+    monkeypatch.setattr(deafrica_stac.raster_process, "run", lambda *a: ("error", "HTTP 503"))
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        deafrica_stac.area_ndvi_anomaly(AREA, date(2026, 10, 7))
+    assert deafrica_stac._area_month_anomaly.cache_info().currsize == 0  # the next report reads again

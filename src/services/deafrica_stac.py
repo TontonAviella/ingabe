@@ -38,6 +38,7 @@ import json
 import logging
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
@@ -45,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import numpy as np
 
+from src.services import raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 logger = logging.getLogger(__name__)
@@ -372,10 +374,44 @@ def area_ndvi_anomaly(geometry: Dict[str, Any], not_after: date) -> Optional[Dic
             "source": NDVI_ANOMALY_SOURCE}
 
 
-@lru_cache(maxsize=256)  # a published month does not change
+@lru_cache(maxsize=256)  # a published month does not change; a failed read raises and is not kept
 def _area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], ...]) -> Dict[str, Any]:
     """z, ndvi and clear_fraction of one area over one month's tiles ((anomaly, ndvi, count) hrefs)."""
-    import rasterio  # lazy: rasterio/GDAL stack, as _read_window
+    def read(tile: Tuple[str, str, str]) -> Tuple[str, Any]:
+        try:
+            return raster_process.run(_area_tile_raw, geometry_json, tile, GDAL_HTTP_TIMEOUTS)
+        except Exception as e:  # the worker died or never answered
+            return "error", f"raster worker: {e!r}"
+
+    z_sum = ndvi_sum = 0.0
+    clear_pixels, area_pixels = 0, None
+    with ThreadPoolExecutor(max_workers=raster_process.WORKERS) as pool:  # a large district spans several tiles
+        answers = list(pool.map(read, hrefs))
+    for tile, (kind, got) in zip(hrefs, answers):
+        if kind == "error":
+            logger.warning("DE Africa NDVI anomaly read failed for %s: %s", tile[0], got)
+            raise RuntimeError(f"NDVI anomaly tile not read: {got}")
+        if kind == "sums":
+            tile_z, tile_ndvi, tile_clear, area_pixels = got
+            z_sum, ndvi_sum, clear_pixels = z_sum + tile_z, ndvi_sum + tile_ndvi, clear_pixels + tile_clear
+    clear_fraction = min(1.0, clear_pixels / area_pixels) if area_pixels else 0.0
+    known = clear_fraction >= NDVI_ANOMALY_MIN_CLEAR and clear_pixels > 0
+    return {
+        "z": round(z_sum / clear_pixels, 2) if known else None,
+        "ndvi": round(ndvi_sum / clear_pixels, 3) if known else None,
+        "clear_fraction": round(clear_fraction, 2),
+    }
+
+
+def _area_tile_raw(geometry_json: str, tile: Tuple[str, str, str], env: Dict[str, str]) -> Tuple[str, Any]:
+    """In a raster worker (raster_process): the area's clear pixels in one tile, summed.
+
+    ("sums", (sum of anomaly, sum of NDVI, clear pixels, area in pixels)) over the area's pixels with
+    a clear view, ("outside", None) when the area misses the tile, or ("error", message). Sums, not
+    arrays: a district is ~2 million pixels a band, too much to send back between processes.
+    No logging here: the caller logs.
+    """
+    import rasterio  # lazy: rasterio/GDAL stack, loaded in the raster worker
     from rasterio.errors import WindowError  # lazy: rasterio/GDAL stack
     from rasterio.features import geometry_mask  # lazy: rasterio/GDAL stack
     from rasterio.warp import transform_geom  # lazy: rasterio/GDAL stack
@@ -383,37 +419,26 @@ def _area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], .
     from shapely.geometry import shape  # lazy: as _bbox_from_geojson
 
     geometry = json.loads(geometry_json)
-    z_px, ndvi_px, area_pixels = [], [], None
-    with rasterio.Env(**GDAL_HTTP_TIMEOUTS):
-        for tile in hrefs:
-            bands = []
+    bands, area_pixels = [], 0.0
+    try:
+        with rasterio.Env(**env):
             for href in tile:
                 with rasterio.open(href) as src:
                     geom = transform_geom("EPSG:4326", src.crs, geometry)
-                    if area_pixels is None:  # the tiles share one grid
-                        area_pixels = shape(geom).area / abs(src.res[0] * src.res[1])
+                    area_pixels = shape(geom).area / abs(src.res[0] * src.res[1])
                     win = from_bounds(*shape(geom).bounds, transform=src.transform).round_offsets().round_lengths()
                     try:
                         win = win.intersection(Window(0, 0, src.width, src.height))
-                    except WindowError:  # the area misses this tile
-                        break
+                    except WindowError:
+                        return "outside", None
                     arr = src.read(1, window=win).astype("float64")
                     inside = geometry_mask([geom], out_shape=arr.shape, transform=src.window_transform(win), invert=True)
                     bands.append(arr[inside])
-            if len(bands) == 3:
-                z, ndvi, clear = bands
-                ok = np.isfinite(z) & np.isfinite(ndvi) & (clear > 0)
-                z_px.append(z[ok])
-                ndvi_px.append(ndvi[ok])
-    z_all = np.concatenate(z_px) if z_px else np.array([])
-    ndvi_all = np.concatenate(ndvi_px) if ndvi_px else np.array([])
-    clear_fraction = min(1.0, z_all.size / area_pixels) if area_pixels else 0.0
-    known = clear_fraction >= NDVI_ANOMALY_MIN_CLEAR and z_all.size > 0
-    return {
-        "z": round(float(z_all.mean()), 2) if known else None,
-        "ndvi": round(float(ndvi_all.mean()), 3) if known else None,
-        "clear_fraction": round(clear_fraction, 2),
-    }
+    except Exception as e:
+        return "error", str(e)
+    z, ndvi, clear = bands
+    ok = np.isfinite(z) & np.isfinite(ndvi) & (clear > 0)
+    return "sums", (float(z[ok].sum()), float(ndvi[ok].sum()), int(ok.sum()), area_pixels)
 
 
 def enrich_with_validation(
