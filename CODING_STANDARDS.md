@@ -176,6 +176,9 @@ lines; promote a lesson that recurs into the sections above.
   (a deadline abandons a thread, it does not stop it). Gate: `test_gdal_http.py` (silent server), engine deadline tests; review only elsewhere.
 - **2026-10-07** `_fetch_sar_backscatter` read up to 20 Sentinel-1 scenes per insurance report and returned None every time since #17: it looked for
   a `statistics` key `get_backscatter` never returns, and its tests mocked that key. Promoted: "Mocks match the real thing" (How to work). Gate: review only.
+- **2026-10-07** Migration b8d4f0a2c6e1 said "updated_at is left alone", but copying a page's scope to its timeline entries fired a trigger that
+  stamped all 34 live pages with the same updated_at, and the packet's viewport query (ORDER BY updated_at) lost the user's orthophoto. Rule: a
+  migration's claim about side effects is tested on a copy, including triggers it sets off. Gate: `tests/brain/test_brain_timeline_trigger.py`.
 - **2026-10-07** A Brain page with no access_scope was public: RLS granted NULL ("legacy rows pre-backfill"; the backfill never came) and put_page wrote
   NULL by default, so one user's 33 pages (orthophotos, an insurance report) were readable by every user and partner through search_brain. Rule: a missing
   value never grants access; access columns are NOT NULL with a fail-closed default. Gate: NOT NULL + `test_no_policy_grants_a_page_by_its_missing_scope`.
