@@ -100,7 +100,8 @@ export function SageReply({
   const [hidden, setHidden] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const working = !!streamingText || actions.length > 0;
-  const text = streamingText || reply || '';
+  // While Sage works, the last answer gives way to what it is doing (it would read as the new answer).
+  const text = streamingText || (working ? '' : reply || '');
   const { body: answer, sources } = streamingText ? { body: streamingText, sources: [] } : splitSources(text);
 
   // A new reply opens folded, and shows again if the last one was closed.

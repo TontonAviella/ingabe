@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import uuid
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+from shapely.geometry import shape
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services import drone_cards, drone_vision, field_checks, photo_context, photo_plots, plant_counts
@@ -130,8 +132,9 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         await plant_counts.save_count(s3, bucket, key, feature, count)
     look = await _crop_seen(s3, bucket, key, plots, args.plot_number)
     name = feature["properties"].get("name") or f"Plot {args.plot_number}"
+    # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
     async with kue_ephemeral_action(meta.conversation_id, f"Drawing the {count.plants:,} plants counted in {name}",
-                                    bounds=_bounds(feature)) as payload:
+                                    bounds=_close_view(feature)) as payload:
         payload.updates["add_geojson_layer"] = geojson_layer_update(
             source_id=f"plants-{args.plot_number}-{uuid.uuid4().hex[:6]}",
             geojson=count.points, name=f"Plants counted in {name}", bounds=_bounds(feature),
@@ -166,6 +169,17 @@ async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: i
     if look is None or look.main_crop == "unsure":
         return None
     return drone_vision.CROP_LABELS[look.main_crop]
+
+
+CLOSE_VIEW_M = 30.0  # the square the map opens on, inside the plot
+
+
+def _close_view(feature: dict[str, Any]) -> list[float]:
+    """A CLOSE_VIEW_M square around a point inside the plot (WGS84 bounds)."""
+    point = shape(feature["geometry"]).representative_point()
+    half_lat = CLOSE_VIEW_M / 2 / 111_320
+    half_lon = half_lat / max(0.1, math.cos(math.radians(point.y)))
+    return [point.x - half_lon, point.y - half_lat, point.x + half_lon, point.y + half_lat]
 
 
 def _bounds(feature: dict[str, Any]) -> list[float]:

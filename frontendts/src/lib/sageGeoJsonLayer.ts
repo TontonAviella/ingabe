@@ -29,11 +29,12 @@ export function addSageGeoJsonLayer(map: MLMap, gl: GeoJsonLayerUpdate, data: un
       metadata,
       paint: {
         'circle-color': colour,
-        'circle-opacity': 0.95,
-        // A plant is about half a metre across: a dot that stays visible far out and sits on the plant close in.
-        'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 15, 1.2, 19, 4, 22, 22],
+        'circle-opacity': 0.9,
+        // Plants stand about half a metre apart: far out the dots are pinpricks (a field of them shows where
+        // the plants are); from zoom 20 each dot sits on its plant, small enough to see the plant around it.
+        'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 16, 0.6, 18, 1, 20, 2.6, 22, 7],
         'circle-stroke-color': strokeColour,
-        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 16, 0, 19, 1, 22, 2],
+        'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 19, 0, 20.5, 1, 22, 1.5],
       },
     });
     return;
