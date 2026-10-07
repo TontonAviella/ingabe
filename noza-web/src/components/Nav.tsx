@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { INGABE_URL } from "@/lib/site";
+import { INGABE_URL, SIGN_IN_URL } from "@/lib/site";
 
 const LINKS = [
   { href: "#read", label: "What we read" },
@@ -48,11 +48,15 @@ export function Nav() {
             </a>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-5">
+          <a href={SIGN_IN_URL} className="hidden text-[13.5px] text-bitter/70 transition-colors hover:text-bitter sm:inline">
+            Sign in
+          </a>
           <a
             href={INGABE_URL}
             className="group hidden items-center gap-2.5 rounded-full bg-bitter py-2 pl-4 pr-3.5 text-[13.5px] font-medium text-cream transition-colors hover:bg-bark sm:inline-flex"
           >
+            <IngabeIcon className="-ml-1.5 h-[22px] w-[22px]" />
             Open Ingabe
             <Arrow className="transition-transform duration-300 group-hover:-translate-y-0.5 group-hover:translate-x-0.5" diagonal />
           </a>
@@ -76,6 +80,9 @@ export function Nav() {
               {l.label}
             </a>
           ))}
+          <a href={SIGN_IN_URL} className="block border-b border-bitter/10 py-4 text-[17px]">
+            Sign in
+          </a>
           <a href={INGABE_URL} className="mt-5 inline-flex items-center gap-3 rounded-full bg-bitter px-6 py-3 text-[15px] text-cream">
             Open Ingabe <Arrow diagonal />
           </a>
@@ -96,6 +103,17 @@ export function Arrow({ className = "", diagonal = false }: { className?: string
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+/** Ingabe's app icon, the same mark the app shows: a lowercase i with a caramel dot. */
+export function IngabeIcon({ className = "h-6 w-6" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" className={className} aria-hidden>
+      <rect width="64" height="64" rx="15" fill="#0B0908" stroke="#F3EDE6" strokeOpacity="0.18" strokeWidth="2" />
+      <rect x="27.5" y="27" width="9" height="25" rx="4.5" fill="#F3EDE6" />
+      <circle cx="32" cy="16.5" r="5.5" fill="#D9A066" />
     </svg>
   );
 }

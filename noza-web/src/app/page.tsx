@@ -1,6 +1,6 @@
 import { HeroWorld, WorldTile } from "@/components/MiniWorld";
 import { MotionProvider, PauseButton } from "@/components/MotionProvider";
-import { Arrow, Nav, Wordmark } from "@/components/Nav";
+import { Arrow, IngabeIcon, Nav, Wordmark } from "@/components/Nav";
 import { Parallax } from "@/components/Parallax";
 import { Reveal } from "@/components/Reveal";
 import { SageExample } from "@/components/SageExample";
@@ -261,8 +261,9 @@ export default function Home() {
                 </a>
                 <a
                   href={INGABE_URL}
-                  className="inline-flex items-center gap-3 rounded-full border border-bitter/20 px-7 py-4 text-[15px] text-bitter transition-colors hover:border-bitter"
+                  className="inline-flex items-center gap-3 rounded-full border border-bitter/20 py-3.5 pl-4 pr-7 text-[15px] text-bitter transition-colors hover:border-bitter"
                 >
+                  <IngabeIcon className="h-7 w-7" />
                   Open Ingabe <Arrow diagonal />
                 </a>
               </div>
@@ -294,7 +295,7 @@ export default function Home() {
               ]}
             />
             <FooterCol
-              title="Ingabe"
+              title="Ingabe app"
               links={[
                 ["Open the app", INGABE_URL],
                 ["Sign in", SIGN_IN_URL],
