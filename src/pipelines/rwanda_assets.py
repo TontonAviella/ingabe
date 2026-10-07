@@ -584,7 +584,6 @@ def nightly_cache_cleanup(
                 ("agri_indices_cache", "computed_at"),
                 ("ndvi_field_cache", "computed_at"),
                 ("weather_daily_cache", "computed_at"),
-                ("anomaly_alerts_cache", "computed_at"),
                 ("yield_risk_cache", "computed_at"),
                 ("drought_cache", "computed_at"),
                 ("phenology_cache", "computed_at"),

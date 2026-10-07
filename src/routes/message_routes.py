@@ -142,7 +142,6 @@ INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
         "ndvi_field_cache",
         "ndvi_parcel_cache",
         "agri_indices_cache",
-        "anomaly_alerts_cache",
         "crop_classification_cache",
         "drought_cache",
         "emissions_annual_cache",
