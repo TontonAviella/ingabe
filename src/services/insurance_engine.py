@@ -26,7 +26,6 @@ import asyncpg
 from src.services import crop_stages
 from src.services import et_normals
 from src.services import forecast_openmeteo
-from src.services import sar_ndvi
 from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
@@ -649,21 +648,6 @@ async def _fetch_ndvi_anomaly(
             return float(row["mean_z"])
     except Exception:
         logger.debug("anomaly_alerts_cache query failed", exc_info=True)
-    return None
-
-async def _sar_predicted_ndvi_z(lat: float, lon: float) -> Optional[float]:
-    """NDVI z-score from SAR-predicted NDVI around (lat, lon): the fallback when the optical
-    anomaly cache has nothing for the district."""
-    pred = sar_ndvi.get_sar_ndvi_predictor()
-    buf = 0.05
-    bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-    result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
-    if result and result.get("status") == "success":
-        predicted = result.get("predicted_ndvi")
-        if predicted is not None:
-            mean_ndvi = 0.45
-            std_ndvi = 0.15
-            return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
     return None
 
 # ---------------------------------------------------------------------------
@@ -1399,7 +1383,7 @@ def _format_scientist(r: InsuranceReport) -> str:
         "season_vs_normal": "Observed CHIRPS rainfall since planting (scaled up for missing days, as for the season SPI) over the sum of per-district monthly CHIRPS normals (2000-2023) prorated to the same calendar dates.",
         "spi": "SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS against per-district monthly normals (CHIRPS 2000-2023). Z-score approximation; gamma fit deferred.",
         "drought_diagnostic": "SPI-SM divergence classification: consistent_drought (SPI<-1, SM<35%), flash_drought (SPI normal, SM<35%), carryover_storage (SPI<-1, SM>=35%), runoff_dominated (SPI>1, SM<35%)",
-        "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
+        "ndvi": "Sentinel-2 L2A NDVI per district (Digital Earth Africa, cloud-masked); z-score from the weekly anomaly scan (anomaly_alerts_cache, last 30 days); missing when the scan has none for the district",
         "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
         "et": "WaPOR v3 AETI dekadal, 100m resolution",
@@ -1774,7 +1758,7 @@ def _rank_by_rainfall(areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
-# A report's network reads (CHIRPS, WaPOR, the forecast, SAR-predicted NDVI) get
+# A report's network reads (CHIRPS, WaPOR, the forecast) get
 # this long, all together. What has not arrived by then is missing, never zero,
 # and the report names it; reads still running finish in their threads and fill
 # the caches for the next report. Sage stops a tool after SAGE_TOOL_TIMEOUT_SECONDS
@@ -1787,7 +1771,6 @@ _CHIRPS_READ = "CHIRPS rainfall"
 _ET_READ = "WaPOR evapotranspiration"
 _SOIL_READ = "WaPOR soil moisture"
 _FORECAST_READ = "multi-model weather forecast"
-_SAR_NDVI_READ = "SAR-predicted NDVI"
 
 
 async def _collect_reads(
@@ -1911,6 +1894,9 @@ async def compute_insurance_intelligence(
     # use). The network reads get _FETCH_DEADLINE_S in all; what has not arrived
     # by then is missing, and the report names it.
     started = time.monotonic()
+    # No substitute when the district has no optical NDVI anomaly: the z-score is then missing. The
+    # Sentinel-1 prediction that stood in (2026-10-07) did not follow optical NDVI and was scored
+    # against invented constants (docs/SAR_NDVI_SKILL.md).
     ndvi_z = await _fetch_ndvi_anomaly(conn, district)
     forecast_days = min(max(0, harvest_dap - dap), 16)
     network: dict[str, Awaitable[Any]] = {
@@ -1924,8 +1910,6 @@ async def compute_insurance_intelligence(
         network[_FORECAST_READ] = asyncio.to_thread(
             forecast_openmeteo.fetch_openmeteo_multimodel, lat, lon, forecast_days,
         )
-    if ndvi_z is None:
-        network[_SAR_NDVI_READ] = _sar_predicted_ndvi_z(lat, lon)
     reads = {name: asyncio.ensure_future(read) for name, read in network.items()}
     try:
         try:
@@ -1973,8 +1957,6 @@ async def compute_insurance_intelligence(
     et_result = arrived.get(_ET_READ)
     soil_result = arrived.get(_SOIL_READ)
     forecast_result = arrived.get(_FORECAST_READ)
-    if _SAR_NDVI_READ in arrived:
-        ndvi_z = arrived[_SAR_NDVI_READ]
     if forecast_result is None:
         logger.info("forecast fetch returned None")
     else:
@@ -2024,7 +2006,7 @@ async def compute_insurance_intelligence(
     if ndvi_conc_result and ndvi_conc_result.get("status") == "success":
         ndvi_concordance_score = ndvi_conc_result.get("concordance_score")
     if ndvi_z is not None:
-        sources.append("Sentinel-2/SAR NDVI")
+        sources.append("Sentinel-2 NDVI anomaly (district)")
 
     # ET and soil moisture
     et_anomaly = _et_anomaly_pct(et_result)
