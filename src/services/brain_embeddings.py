@@ -32,7 +32,13 @@ from src.llm_defaults import (
     DEFAULT_CHAT_MODEL,
     resolve_chat_endpoint,
 )
-from src.services.brain_service import BrainPageNotFoundError, BrainService, ChunkInput
+from src.services import llm_cache
+from src.services.brain_service import (
+    PAGE_SCOPE_FILTER,
+    BrainPageNotFoundError,
+    BrainService,
+    ChunkInput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -431,26 +437,30 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
         return [query]
 
     client = AsyncOpenAI(api_key=endpoint.api_key, base_url=endpoint.base_url)
-    try:
+    system = (
+        f"Generate {n_variants} alternative search queries for a knowledge base. "
+        "Each should capture a different angle or phrasing of the same intent. "
+        "Return ONLY the queries, one per line, no numbering or bullets."
+    )
+
+    async def expand() -> dict:
         resp = await client.chat.completions.create(
             model=endpoint.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        f"Generate {n_variants} alternative search queries for a knowledge base. "
-                        "Each should capture a different angle or phrasing of the same intent. "
-                        "Return ONLY the queries, one per line, no numbering or bullets."
-                    ),
-                },
-                {"role": "user", "content": query},
-            ],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": query}],
             temperature=0.7,
             # 400 (not 200) to accommodate reasoning-model overhead.
             # Thinking models can emit reasoning tokens that count toward this
             # budget; tight caps truncate the alternative-query list.
             max_tokens=400,
+            extra_body={"usage": {"include": True}},
         )
+        llm_cache.record("brain_query_expansion", resp.usage)
+        return {"text": resp.choices[0].message.content or ""}
+
+    try:
+        # The same query asked again, in any chat or after a restart, costs nothing.
+        expanded, _ = await llm_cache.answer("brain_query_expansion",
+                                             llm_cache.key_of(endpoint.model, system, query), expand)
     except AuthenticationError:
         _auth_failed_at = time.monotonic()
         return [query]
@@ -458,7 +468,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
         logger.debug("Multi-query expansion failed, using original query")
         return [query]
 
-    raw = (resp.choices[0].message.content or "").strip()
+    raw = expanded["text"].strip()
     variants = [line.strip() for line in raw.splitlines() if line.strip()]
     result = [query] + variants[:n_variants]
     _EXPAND_CACHE[cache_key] = (time.monotonic(), result)
@@ -540,7 +550,7 @@ async def embed_all_stale(
         return {"embedded": 0, "skipped": 0, "errors": 0, "auth_disabled": True}
 
     # Find pages that have content but no chunks with embeddings.
-    # Match brain_service.get_page's partner-aware filter so this SELECT only
+    # Use brain_service.get_page's scope filter so this SELECT only
     # returns rows the same connection can actually resolve. Without this,
     # partner_internal pages slip through to embed_page() where get_page
     # filters them out and we log "page not found" forever (the rows never
@@ -555,16 +565,10 @@ async def embed_all_stale(
     async with conn.transaction():
         await conn.execute("SET LOCAL enable_nestloop = off")
         rows = await conn.fetch(
-            """
+            f"""
             SELECT p.slug FROM brain_pages p
             WHERE (p.compiled_truth != '' OR p.timeline != '')
-              AND (
-                  p.access_scope IS NULL
-                  OR p.access_scope = 'public'
-                  OR (p.access_scope = 'partner_internal'
-                      AND p.partner_id IS NOT NULL
-                      AND p.partner_id::text = coalesce(current_setting('app.partner_id', true), ''))
-              )
+              {PAGE_SCOPE_FILTER.format(a="p.")}
               AND NOT EXISTS (
                   SELECT 1 FROM brain_content_chunks cc
                   WHERE cc.page_id = p.id AND cc.embedded_at IS NOT NULL

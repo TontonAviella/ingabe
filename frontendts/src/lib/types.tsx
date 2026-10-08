@@ -79,6 +79,8 @@ export interface TileLayerUpdate {
 }
 
 export interface GeoJsonLayerStyle {
+  /** 'point' draws dots that grow with the zoom (e.g. counted plants); polygons otherwise. */
+  geometry?: 'point' | 'polygon';
   color_property?: string | null;
   stops?: Array<{ max: number; color: string }>;
   fill_opacity?: number;

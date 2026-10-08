@@ -269,7 +269,7 @@ async def run_attempt(
         calls = getattr(message, "tool_calls", None) or []
         step_tools = plan.tools
         if not calls and step == 0 and guard is not None:
-            from src.dependencies.sage_turn_request import guard_tools, is_abdication
+            from src.dependencies.sage_turn_request import guard_tool_calls, guard_tools, is_abdication
 
             if is_abdication(plan, guard["text"], message.content, False):
                 guard_fired = True
@@ -280,7 +280,7 @@ async def run_attempt(
                 try:
                     retry = await _complete(client, {**kwargs, "tools": step_tools,
                                                      "tool_choice": "required"}, retries)
-                    retry_calls = getattr(retry.choices[0].message, "tool_calls", None) or []
+                    retry_calls = guard_tool_calls(getattr(retry.choices[0].message, "tool_calls", None) or [])
                     guard_step.end(output=_calls_output(retry.choices[0].message),
                                    level=None if retry_calls else "WARNING")
                     if retry_calls:
@@ -437,8 +437,8 @@ async def run(args: argparse.Namespace) -> Path:
                              categories=list(plan.routing.selected_categories),
                              small_talk=plan.routing.is_small_talk, tools=plan.tools,
                              shortlist=shortlist_method, model=model)
-                map_msgs = await map_provider.get_system_messages(
-                    history + [user_msg], map_description(case), None, None)
+                map_msgs = await map_provider.get_system_messages(  # a case may give the map's view (w, s, e, n)
+                    history + [user_msg], map_description(case), None, (case.get("map_state") or {}).get("viewport"))
                 messages = [{"role": "system", "content": plan.system_prompt}, *history,
                             *map_msgs, user_msg]
                 source, tools_sent, attempts = "model", len(plan.tools), []

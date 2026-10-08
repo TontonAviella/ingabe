@@ -64,7 +64,7 @@ from src.services.life_harness import (
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage
+from src.services import data_coverage, llm_cache
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -96,6 +96,7 @@ from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
     apply_tool_shortlist,
     build_sage_tools_payload,
+    guard_tool_calls,
     guard_tools,
     RATE_LIMIT_RETRIES,
     is_abdication,
@@ -505,20 +506,30 @@ async def label_conversation_inline(conversation_id: int):
             request = Request({"type": "http", "method": "POST", "headers": []})
             openai_client, title_model = get_chat_client_for_model(request)
 
-            response = await openai_client.chat.completions.create(
-                model=title_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
-                    },
-                    {"role": "user", "content": f"Conversation:\n{content_summary}"},
-                ],
-                max_tokens=20,
-                temperature=0.3,
-            )
+            title_messages = [
+                {
+                    "role": "system",
+                    "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
+                },
+                {"role": "user", "content": f"Conversation:\n{content_summary}"},
+            ]
 
-            title = response.choices[0].message.content.strip()
+            async def name_it() -> dict:
+                response = await openai_client.chat.completions.create(
+                    model=title_model,
+                    messages=title_messages,
+                    # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                    # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                    max_tokens=150,
+                    temperature=0.3,
+                    extra_body={"usage": {"include": True}},
+                )
+                llm_cache.record("chat_title", response.usage)
+                return {"title": response.choices[0].message.content or ""}
+
+            # Chats that start the same way (an Ask Sage question from a card) get their title for free.
+            named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
+            title = named["title"].strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
@@ -1158,12 +1169,14 @@ async def _run_abdication_guard(
             tool.get("function", {}).pop("strict", None)
     try:
         response = await client.chat.completions.create(
-            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
         )
+        llm_cache.record("sage_guard", getattr(response, "usage", None))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
-    calls = getattr(response.choices[0].message, "tool_calls", None) or []
+    calls = guard_tool_calls(getattr(response.choices[0].message, "tool_calls", None) or [])
     logger.info(
         "sage_routing: abdication guard fired (tools=%s) -> %s",
         ",".join(t["function"]["name"] for t in tools),
@@ -1695,6 +1708,94 @@ def _fast_raster_object_turn_timeout_seconds() -> float:
         return max(15.0, float(raw))
     except (TypeError, ValueError):
         return 600.0
+
+
+def _tool_timeout_seconds() -> float:
+    raw = os.environ.get("SAGE_TOOL_TIMEOUT_SECONDS", "120")
+    try:
+        return max(15.0, float(raw))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+# System blocks added on every turn (the map, the view, the selected feature, Brain memory). Each turn stores a
+# fresh copy; replaying the old ones re-sent ~2,700 stale tokens a turn (39k-token prompts after 4 turns).
+_PER_TURN_CONTEXT = ("<MapState>", "<CurrentAOI>", "<NoSelectedFeature", "<SelectedFeature", "<BrainContext")
+
+
+def _latest_context_only(messages: list[Any]) -> list[Any]:
+    """The replayed history with only the newest copy of each per-turn context block: older copies describe a
+    map that has changed since, cost tokens on every call, and can mislead the model."""
+    kinds = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "system" and isinstance(m.get("content"), str):
+            kind = next((k for k in _PER_TURN_CONTEXT if m["content"].lstrip().startswith(k)), None)
+            if kind:
+                kinds.setdefault(kind, []).append(i)
+    stale = {i for positions in kinds.values() for i in positions[:-1]}
+    return [m for i, m in enumerate(messages) if i not in stale]
+
+
+OLD_TOOL_RESULT_CHARS = 1_500  # a tool result from an earlier turn is replayed this long at most
+
+
+def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
+    """Tool results from earlier turns, cut to their first OLD_TOOL_RESULT_CHARS: their substance is already in
+    the answers given then, and a forecast alone was 20,000 characters replayed on every later call."""
+    last_user = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"), default=-1)
+    shortened = []
+    for i, m in enumerate(messages):
+        content = m.get("content") if isinstance(m, dict) else None
+        if i < last_user and m.get("role") == "tool" and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = {**m, "content": content[:OLD_TOOL_RESULT_CHARS] + " … [shortened: this result was used in an earlier "
+                                                                     "answer; call the tool again for all of it]"}
+        shortened.append(m)
+    return shortened
+
+
+def _pair_tool_results(messages: list[Any]) -> list[Any]:
+    """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
+    conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
+    without results; a call dropped while cleaning the history can leave a result without its call."""
+    def calls(m: Any) -> list[str]:
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            return []
+        return [tc["id"] for tc in m.get("tool_calls") or [] if isinstance(tc, dict) and tc.get("id")]
+
+    called = {call_id for m in messages for call_id in calls(m)}
+    answered = {m.get("tool_call_id") for m in messages if isinstance(m, dict) and m.get("role") == "tool"}
+    unfinished = json.dumps({"status": "error", "error": "This tool did not finish: the turn was interrupted."})
+    out: list[Any] = []
+    missing: list[str] = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool":
+            if m.get("tool_call_id") in called:
+                out.append(m)
+            else:
+                logger.warning("Dropped a tool result with no call before it: %s", m.get("tool_call_id"))
+            continue
+        out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+        out.append(m)
+        missing = [call_id for call_id in calls(m) if call_id not in answered]
+        if missing:
+            logger.warning("Gave %d unfinished tool call(s) a result: %s", len(missing), missing)
+    out.extend({"role": "tool", "tool_call_id": call_id, "content": unfinished} for call_id in missing)
+    return out
+
+
+async def _within_tool_limit(function_name: str, call: Any) -> Any:
+    """Runs one tool call. A tool that never returns (a stalled download, say) must not hold the
+    person's turn for ever: it is stopped and the model told, so it answers with what it has."""
+    limit = _tool_timeout_seconds()
+    try:
+        return await asyncio.wait_for(call, timeout=limit)
+    except TimeoutError:
+        logger.warning("Sage tool %s stopped after %.0f s", function_name, limit)
+        return {
+            "status": "error",
+            "error": (f"{function_name} did not finish within {limit:.0f} seconds and was stopped. "
+                      "Answer with what the other tools found, and say plainly which part is missing."),
+        }
 
 
 async def _maybe_run_fast_raster_object_turn(
@@ -2309,6 +2410,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
+            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(openai_messages)))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
@@ -2572,10 +2674,18 @@ async def process_chat_interaction_task(
                             # `<tool_call>...</tool_call>` text emissions don't
                             # leak into the user-visible chat. See class docstring.
                             _xml_scrub = _ToolCallTextScrubber()
+                            if not _model_name.startswith("ollama:"):
+                                # The last chunk carries the call's tokens and cost, and how much of the prompt
+                                # the provider served from its cache (llm_cache.record logs it).
+                                _attempt_kwargs["stream_options"] = {"include_usage": True}
+                                _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
+                                                                 "usage": {"include": True}}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
                             async for chunk in stream:
+                                if getattr(chunk, "usage", None):
+                                    llm_cache.record("sage", chunk.usage)
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()
@@ -2924,7 +3034,7 @@ async def process_chat_interaction_task(
                                     project_id=current_project_id,
                                     session=session,
                                 )
-                                tool_result = await fn(parsed_args, mundi_args)
+                                tool_result = await _within_tool_limit(function_name, fn(parsed_args, mundi_args))
 
                             except Exception as e:
                                 logger.exception("Tool execution failed for %s", tool_call.function.name)
@@ -2952,7 +3062,7 @@ async def process_chat_interaction_task(
                             # handlers /internal/tool-call (Hermes) uses, on this
                             # loop's tool connection (handlers that read the Brain
                             # open their own user- and partner-scoped connection).
-                            tool_result = await execute_legacy_tool(
+                            tool_result = await _within_tool_limit(function_name, execute_legacy_tool(
                                 function_name,
                                 LegacyToolContext(
                                     user_id=user_id,
@@ -2963,7 +3073,7 @@ async def process_chat_interaction_task(
                                     conn=conn,
                                     arguments=tool_args,
                                 ),
-                            )
+                            ))
                             await add_chat_completion_message(
                                 ChatCompletionToolMessageParam(
                                     role="tool",

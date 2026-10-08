@@ -22,6 +22,7 @@ import asyncpg
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
 from src.services import ndvi_classes
+from src.services import satellite_analytics
 
 
 logger = logging.getLogger(__name__)
@@ -995,6 +996,9 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
         from src.services.insurance_engine import compute_insurance_intelligence, resolve_audience
 
         compare_level = ctx.arguments.get("compare_level")
+        # Who the report's Brain page belongs to; a turn without a user
+        # saves under the nil uuid.
+        owner = ctx.user_id or "00000000-0000-0000-0000-000000000000"
         result = await compute_insurance_intelligence(
             ctx.conn,
             crop=ctx.arguments.get("crop", ""),
@@ -1005,6 +1009,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
             village=ctx.arguments.get("village"),
             audience=await resolve_audience(ctx.conn, ctx.arguments.get("audience"), ctx.user_id, ctx.partner_id),
             compare_level=compare_level,
+            owner_uuid=owner,
         )
 
         # Comparison mode carries its own presentation instruction; we're done.
@@ -1061,14 +1066,17 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 
             del result["data"]
             result["instruction"] = (
-                "You are briefing someone who cares about this area. "
-                "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
-                "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
-                "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
-                "If the forecast is present, weave it in — don't list it separately. "
-                "3-5 sentences. No bullet points, no tables, no metric dumps. "
-                "End with sources in parentheses."
+                "Brief someone who cares about this area, in the answer shape of the system prompt: a bold first line "
+                "with the headline (what matters most, or 'nothing unusual'), then 2-4 short points, one signal each "
+                "with its number and what area it covers (the 'situation' field pairs SPI, NDVI and ET with plain "
+                "words), the forecast as one of the points if present, and a last 'Sources:' line."
             )
+            if result.get("coverage"):
+                # Tried in Sage on 2026-10-07: with only the note in the result, the answer never said NDVI was missing.
+                result["instruction"] += (
+                    " Some sources did not arrive in time and 'coverage' names them: say plainly which are missing,"
+                    " and that they are missing, not zero."
+                )
 
         # Brain save — best-effort audit trail. Failure here MUST NOT
         # propagate; the user still gets their briefing.
@@ -1100,7 +1108,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 )
                 await brain.put_page(
                     ctx.conn, slug, page_input,
-                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                    owner_uuid=owner,
                 )
                 timeline_input = TimelineInput(
                     date=_date_cls.today(),
@@ -1116,7 +1124,7 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
                 )
                 await brain.add_timeline_entry(
                     ctx.conn, slug, timeline_input,
-                    owner_uuid=ctx.user_id or "00000000-0000-0000-0000-000000000000",
+                    owner_uuid=owner,
                 )
             except Exception:
                 logger.warning("insurance brain save failed", exc_info=True)
@@ -1274,6 +1282,91 @@ _NDVI_VIS_INSTRUCTIONS = (
     "— always create a NEW layer from PostGIS."
 )
 
+# A live satellite read takes about 40 s an area and blocks (HTTP, rasterio). Run on the event loop it
+# froze the whole app: a district with 14 sectors held every request for ten minutes. So reads run in
+# threads, a few at a time, for a limited number of areas, and the answer goes out at a deadline.
+LIVE_NDVI_MAX_AREAS = 12
+LIVE_NDVI_AT_ONCE = 4
+LIVE_NDVI_DEADLINE_S = 75.0
+
+
+@dataclass
+class LiveNdvi:
+    """Live NDVI summaries for the areas read in time, keyed by row, and how many were not read."""
+
+    read: list[tuple[Any, Dict[str, Any]]]
+    total: int
+    not_read: int
+    # Areas whose read failed, with the error: reported, never read as "no scenes" (2026-10-07).
+    failed: list[tuple[Any, str]] = field(default_factory=list)
+
+    def note(self) -> Optional[str]:
+        if not self.not_read:
+            return None
+        return (f"Live satellite NDVI was read for {self.total - self.not_read} of {self.total} areas; "
+                f"{self.not_read} were left out (too many to read live, or not read in time). "
+                "Say so, and offer to look at fewer areas.")
+
+
+def _ndvi_summary(stats: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Mean, spread and pixel count of NDVI over a field-stats result, or None when it has no clear pixels."""
+    import numpy as _np
+
+    if "error" in stats:
+        return None
+    intervals = stats.get("intervals", [])
+    means = [iv["ndvi"]["mean"] for iv in intervals if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0]
+    if not means:
+        return None
+    return {
+        "mean_ndvi": round(float(_np.mean(means)), 4),
+        "std_ndvi": round(float(_np.std(means)), 4),
+        "min_ndvi": round(float(_np.min(means)), 4),
+        "max_ndvi": round(float(_np.max(means)), 4),
+        "valid_pixels": sum(iv["ndvi"].get("valid_pixels", 0) for iv in intervals if "ndvi" in iv),
+        "backend": stats.get("backend", "satellite"),
+    }
+
+
+async def _live_ndvi(rows: list[Any], date_from: str, date_to: str) -> LiveNdvi:
+    """Reads NDVI for each row's `geom` (GeoJSON text) off the event loop, within the limits above."""
+    chosen = rows[:LIVE_NDVI_MAX_AREAS]
+    gate = asyncio.Semaphore(LIVE_NDVI_AT_ONCE)
+
+    async def one(row: Any) -> tuple[Any, Dict[str, Any]]:
+        async with gate:
+            stats = await asyncio.to_thread(satellite_analytics.get_field_stats, geometry=json.loads(row["geom"]),
+                                            date_from=date_from, date_to=date_to, index="ndvi")
+        return row, stats
+
+    tasks = [asyncio.create_task(one(row)) for row in chosen]
+    done, pending = await asyncio.wait(tasks, timeout=LIVE_NDVI_DEADLINE_S) if tasks else (set(), set())
+    for task in pending:
+        task.cancel()  # a read already in its thread finishes there; its result is dropped
+    read: list[tuple[Any, Dict[str, Any]]] = []
+    failed: list[tuple[Any, str]] = []
+    for task, row in zip(tasks, chosen):
+        if task not in done:
+            continue
+        if task.exception() is not None:
+            logger.warning("Live NDVI read failed: %s", task.exception())
+            failed.append((row, str(task.exception())))
+            continue
+        _, stats = task.result()
+        if "error" in stats:
+            logger.warning("Live NDVI read failed: %s", stats["error"])
+            failed.append((row, stats["error"]))
+            continue
+        summary = _ndvi_summary(stats)
+        if summary is not None:
+            read.append((row, summary))
+    return LiveNdvi(read=read, total=len(rows), not_read=len(rows) - len(done), failed=failed)
+
+
+def _search_failed_text(failed: Dict[str, str], source: str = "Sentinel-2") -> str:
+    """One line naming the areas whose search failed, with the first error (an outage repeats it)."""
+    return f"{source} search failed for {', '.join(failed)}: {next(iter(failed.values()))}"
+
 
 async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
     """District-level NDVI stats with 3-tier fallback (cache → DE Africa
@@ -1349,11 +1442,10 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 need_realtime = True
 
         realtime_stats: list = []
+        live_note: Optional[str] = None
+        realtime_failed: Dict[str, str] = {}
         if need_realtime:
             try:
-                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
-                import numpy as _np
-
                 dfilter = ctx.arguments.get("district")
                 where_clause = "WHERE district = $1" if dfilter else ""
                 query_params: list = [dfilter] if dfilter else []
@@ -1369,45 +1461,17 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 rt_from = (now - _td(days=7)).strftime("%Y-%m-%d")
                 rt_to = now.strftime("%Y-%m-%d")
 
-                for dr in dist_rows:
-                    try:
-                        geom = _json.loads(dr["geom"])
-                        stats = _sa_get_field_stats(
-                            geometry=geom, date_from=rt_from,
-                            date_to=rt_to, index="ndvi",
-                        )
-                        if "error" in stats:
-                            continue
-                        intervals = stats.get("intervals", [])
-                        if not intervals:
-                            continue
-                        means = [
-                            iv["ndvi"]["mean"]
-                            for iv in intervals
-                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
-                        ]
-                        if not means:
-                            continue
-                        backend_tag = stats.get("backend", "satellite")
-                        realtime_stats.append({
-                            "district": dr["district"],
-                            "week_start": rt_from,
-                            "mean_ndvi": round(float(_np.mean(means)), 4),
-                            "std_ndvi": round(float(_np.std(means)), 4),
-                            "min_ndvi": round(float(_np.min(means)), 4),
-                            "max_ndvi": round(float(_np.max(means)), 4),
-                            "valid_pixels": sum(
-                                iv["ndvi"].get("valid_pixels", 0)
-                                for iv in intervals if "ndvi" in iv
-                            ),
-                            "source": f"{backend_tag}_realtime",
-                        })
-                    except Exception as e:
-                        logger.debug(
-                            "Satellite realtime failed for %s: %s", dr["district"], e
-                        )
+                live = await _live_ndvi(list(dist_rows), rt_from, rt_to)
+                live_note = live.note()
+                for dr, summary in sorted(live.read, key=lambda t: t[0]["district"]):
+                    backend_tag = summary.pop("backend")
+                    realtime_stats.append({"district": dr["district"], "week_start": rt_from, **summary,
+                                           "source": f"{backend_tag}_realtime"})
+                for dr, error in live.failed:
+                    realtime_failed[dr["district"]] = error
             except Exception as e:
                 logger.warning("Satellite real-time NDVI failed: %s", e)
+                realtime_failed["all districts"] = str(e)
 
         # Merge + sort by week descending.
         all_stats = ndvi_stats + realtime_stats
@@ -1437,6 +1501,10 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 ),
                 "ndvi_stats": all_stats,
             }
+            if live_note:
+                result["coverage"] = live_note
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1445,8 +1513,11 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
 
-        # Tier 3: STAC COG fallback (free, no API key).
+        # Tier 3: STAC COG fallback (free, no API key). A failed search is reported,
+        # never read as "no scenes" (2026-10-07).
         stac_stats: list = []
+        stac_failed: Dict[str, str] = {}
+        stac_crash: Optional[str] = None
         try:
             from src.services.stac_service import get_stac_service as _get_stac
 
@@ -1474,6 +1545,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     lambda bb=bbox: stac.compute_admin_ndvi(bb, days=30, max_scenes=4),
                 )
                 if "error" in stac_ts:
+                    logger.warning("STAC NDVI search failed for %s: %s", sbr["district"], stac_ts["error"])
+                    stac_failed[sbr["district"]] = stac_ts["error"]
                     continue
                 for obs in stac_ts.get("observations", []):
                     stac_stats.append({
@@ -1487,7 +1560,8 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                         "source": "stac_cog_realtime",
                     })
         except Exception as e:
-            logger.warning("STAC NDVI fallback failed: %s", e)
+            logger.exception("STAC NDVI fallback failed")
+            stac_crash = str(e)
 
         if stac_stats:
             result = {
@@ -1502,6 +1576,10 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 ),
                 "ndvi_stats": stac_stats,
             }
+            if stac_failed:
+                result["search_failed"] = stac_failed
+            if realtime_failed:
+                result["realtime_failed"] = realtime_failed
             pgc_id = await _ensure_rwanda_postgis_connection(
                 ctx.conn, ctx.project_id, ctx.user_id,
             )
@@ -1509,6 +1587,16 @@ async def _handle_get_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                 result["postgis_connection_id"] = pgc_id
                 result["kue_instructions"] = _NDVI_VIS_INSTRUCTIONS.format(pgc_id=pgc_id)
             return result
+
+        failures = []
+        if realtime_failed:
+            failures.append(_search_failed_text(realtime_failed, "Digital Earth Africa"))
+        if stac_failed:
+            failures.append(_search_failed_text(stac_failed))
+        if stac_crash:
+            failures.append(f"Sentinel-2 NDVI fallback failed: {stac_crash}")
+        if failures:
+            return {"status": "error", "error": "; ".join(failures)}
 
         # All three tiers empty.
         return {
@@ -1599,10 +1687,9 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             # Tier 2: sector-level real-time fallback. Note: drops to sector
             # granularity since cell-level DE Africa pulls would be too slow.
             realtime_stats: list = []
+            live_note: Optional[str] = None
+            sector_failed: Dict[str, str] = {}
             try:
-                from src.services.satellite_analytics import get_field_stats as _sa_get_field_stats
-                import numpy as _np
-
                 now = _datetime.utcnow()
                 rt_from = (now - _td(days=10)).strftime("%Y-%m-%d")
                 rt_to = now.strftime("%Y-%m-%d")
@@ -1628,45 +1715,17 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     *sec_params,
                 )
 
-                for sr in sec_rows:
-                    try:
-                        geom = _json.loads(sr["geom"])
-                        stats = _sa_get_field_stats(
-                            geometry=geom, date_from=rt_from,
-                            date_to=rt_to, index="ndvi",
-                        )
-                        if "error" in stats:
-                            continue
-                        intervals = stats.get("intervals", [])
-                        if not intervals:
-                            continue
-                        means = [
-                            iv["ndvi"]["mean"]
-                            for iv in intervals
-                            if "ndvi" in iv and iv["ndvi"].get("valid_pixels", 0) > 0
-                        ]
-                        if not means:
-                            continue
-                        realtime_stats.append({
-                            "sector_name": sr["sector_name"],
-                            "district_name": sr["district_name"],
-                            "week_start": rt_from,
-                            "mean_ndvi": round(float(_np.mean(means)), 4),
-                            "std_ndvi": round(float(_np.std(means)), 4),
-                            "min_ndvi": round(float(_np.min(means)), 4),
-                            "max_ndvi": round(float(_np.max(means)), 4),
-                            "valid_pixels": sum(
-                                iv["ndvi"].get("valid_pixels", 0)
-                                for iv in intervals if "ndvi" in iv
-                            ),
-                        })
-                    except Exception as e:
-                        logger.debug(
-                            "Sector realtime NDVI failed for %s: %s",
-                            sr["sector_name"], e,
-                        )
+                live = await _live_ndvi(list(sec_rows), rt_from, rt_to)
+                live_note = live.note()
+                for sr, summary in sorted(live.read, key=lambda t: t[0]["sector_name"]):
+                    summary.pop("backend")
+                    realtime_stats.append({"sector_name": sr["sector_name"], "district_name": sr["district_name"],
+                                           "week_start": rt_from, **summary})
+                for sr, error in live.failed:
+                    sector_failed[sr["sector_name"]] = error
             except Exception as e:
                 logger.warning("Sector real-time NDVI fallback failed: %s", e)
+                sector_failed["all sectors"] = str(e)
 
             if realtime_stats:
                 result = {
@@ -1680,6 +1739,12 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
                     ),
                     "sector_ndvi_stats": realtime_stats,
                 }
+                if live_note:
+                    result["coverage"] = live_note
+                if sector_failed:
+                    result["realtime_failed"] = sector_failed
+            elif sector_failed:
+                result = {"status": "error", "error": _search_failed_text(sector_failed, "Digital Earth Africa")}
             else:
                 result = {
                     "status": "success",
@@ -2254,10 +2319,10 @@ async def _handle_get_yield_risk(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """Read drought_cache OR fall back to real-time STAC COG computation.
+    """Read drought_cache, which the weekly_drought_scan pipeline fills.
 
-    Two-tier: postgres cache (fast) → STAC Sentinel-2 COG (60-80s/district,
-    capped at 3 districts when no specific district requested).
+    There is no live fallback: an empty cache is reported as "no drought
+    assessment yet", never computed from a few satellite scenes.
 
     Hardens against fabrication: marks insufficient_data districts explicitly
     AND adds a top-level note when ALL districts are insufficient, so the
@@ -2268,22 +2333,23 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
     try:
         from src.routes.message_routes import _ensure_rwanda_postgis_connection
 
-        _where: list[str] = []
+        # The weekly scan appends a row per district each week: read each district's latest,
+        # then filter by status, so an older status never stands in for the current one.
         _params: list[Any] = []
-        _pidx = 1
+        _district_sql = ""
+        _status_sql = ""
         if args.get("district"):
-            _where.append(f"district = ${_pidx}")
             _params.append(args["district"])
-            _pidx += 1
+            _district_sql = f"WHERE district = ${len(_params)}"
         if args.get("status"):
-            _where.append(f"drought_status = ${_pidx}")
             _params.append(args["status"])
-            _pidx += 1
-        _where_sql = f"WHERE {' AND '.join(_where)}" if _where else ""
+            _status_sql = f"WHERE drought_status = ${len(_params)}"
         _rows = await ctx.conn.fetch(
-            f"SELECT district, drought_status, current_vci, latest_ndvi, "
+            f"SELECT * FROM ("
+            f"SELECT DISTINCT ON (district) district, drought_status, current_vci, latest_ndvi, "
             f"latest_ndwi, drought_period_count, description "
-            f"FROM drought_cache {_where_sql} "
+            f"FROM drought_cache {_district_sql} ORDER BY district, computed_at DESC"
+            f") latest {_status_sql} "
             f"ORDER BY current_vci ASC LIMIT 50",
             *_params,
         )
@@ -2318,8 +2384,8 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
             ):
                 tool_result["note"] = (
                     "All queried districts have insufficient "
-                    "historical NDVI data (<8 weeks) to compute "
-                    "a reliable drought index. Do NOT report "
+                    "NDVI history: a drought index compares this time "
+                    "of year with at least 2 earlier years. Do NOT report "
                     "drought status — instead tell the user that "
                     "not enough data has been collected yet."
                 )
@@ -2338,106 +2404,20 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                 )
             return tool_result
 
-        # ── STAC COG real-time fallback ──
-        try:
-            from src.services.stac_service import get_stac_service as _get_stac
-
-            _stac = _get_stac()
-            _drought_district = args.get("district")
-
-            if _drought_district:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries WHERE LOWER(district) = LOWER($1)",
-                    _drought_district,
-                )
-            else:
-                _bbox_rows = await ctx.conn.fetch(
-                    "SELECT district, bbox_west, bbox_south, bbox_east, bbox_north "
-                    "FROM rwanda_district_boundaries ORDER BY district"
-                )
-
-            _stac_districts: list[Dict[str, Any]] = []
-            for _br in _bbox_rows:
-                _d_bbox = [float(_br["bbox_west"]), float(_br["bbox_south"]),
-                           float(_br["bbox_east"]), float(_br["bbox_north"])]
-                _drought_result = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda bb=_d_bbox: _stac.compute_drought_indicators(bb),
-                )
-                if "error" not in _drought_result:
-                    _stac_districts.append({
-                        "district": _br["district"],
-                        "drought_status": _drought_result.get("drought_status"),
-                        "vci": _drought_result.get("current_vci"),
-                        "latest_ndvi": _drought_result.get("latest_ndvi"),
-                        "latest_ndwi": None,
-                        "drought_period_count": None,
-                        "description": _drought_result.get("description"),
-                        "trend_slope": _drought_result.get("trend_slope"),
-                        "scene_count": _drought_result.get("scene_count"),
-                    })
-                else:
-                    logger.debug("STAC drought failed for %s: %s", _br["district"], _drought_result.get("error"))
-                if not _drought_district and len(_stac_districts) >= 3:
-                    break
-
-            if _stac_districts:
-                _all_insufficient = all(
-                    d["drought_status"] == "insufficient_data"
-                    for d in _stac_districts
-                )
-                if _all_insufficient:
-                    _stac_note = (
-                        "Not enough cloud-free Sentinel-2 scenes to compute "
-                        "a reliable drought index. Do NOT report drought "
-                        "status — tell the user there is insufficient data. "
-                        "The weekly Dagster pipeline will accumulate enough "
-                        "history over time for accurate VCI analysis."
-                    )
-                else:
-                    _stac_note = (
-                        "Drought status computed in real-time from Sentinel-2 COGs via STAC. "
-                        "VCI (Vegetation Condition Index): <10=extreme, 10-20=severe, "
-                        "20-35=moderate, 35-50=mild, >50=no drought."
-                    )
-                tool_result = {
-                    "status": "success",
-                    "source": "stac_cog_realtime",
-                    "count": len(_stac_districts),
-                    "note": _stac_note,
-                    "districts": _stac_districts,
-                }
-                _pgc_id = await _ensure_rwanda_postgis_connection(
-                    ctx.conn, ctx.project_id, ctx.user_id,
-                )
-                if _pgc_id:
-                    tool_result["postgis_connection_id"] = _pgc_id
-                    tool_result["kue_instructions"] = (
-                        "To visualise drought status on the map, call new_layer_from_postgis with "
-                        f"postgis_connection_id='{_pgc_id}'. IMPORTANT: query MUST return 'id' and 'geom' columns. "
-                        "Available tables: rwanda_district_boundaries (district, geom). "
-                        "Example: SELECT ROW_NUMBER() OVER() AS id, district AS district_name, geom FROM rwanda_district_boundaries "
-                        "Then add_layer_to_map and set_layer_style to colour by drought status. "
-                        "DO NOT reuse an existing layer — always create a NEW layer from PostGIS."
-                    )
-                return tool_result
-            return {
-                "status": "success",
-                "source": "stac_cog_realtime",
-                "districts": [],
-                "message": (
-                    "Could not compute drought indicators — insufficient cloud-free "
-                    "Sentinel-2 scenes in the last 90 days for this area."
-                ),
-            }
-        except Exception as _stac_err:
-            logger.warning("STAC drought fallback failed: %s", _stac_err)
-            return {
-                "status": "success",
-                "source": "postgres_cache",
-                "districts": [],
-                "message": "No drought data yet — Dagster weekly schedule populates this cache",
-            }
+        # No cached assessment, and no live fallback: a drought index needs a seasonal baseline
+        # of weekly district NDVI, which only the weekly pipeline builds. The satellite fallback
+        # removed on 2026-10-07 read 4 tiles per district in ~140 s, with no cloud mask, and could
+        # only ever answer "insufficient data".
+        return {
+            "status": "success",
+            "source": "postgres_cache",
+            "districts": [],
+            "note": (
+                "No drought assessment is available for this request: the drought cache, filled "
+                "weekly by the weekly_drought_scan pipeline from district NDVI, has no matching rows. "
+                "Do NOT report a drought status; tell the user there is no drought assessment yet."
+            ),
+        }
     except Exception as e:
         logger.exception("get_drought_status tool failed")
         return {"status": "error", "error": str(e)}
@@ -3163,11 +3143,11 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
 
 
 async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:
-    """STAC search + opportunistic NDVI compute for the first item with B04+B08.
+    """STAC search, plus an NDVI sample of the searched area.
 
-    NDVI sample fails silently to None so the search results are still useful
-    when the first scene happens to be missing bands.
-
+    The sample reads the searched bbox from the scene that covers most of it
+    (STACService.compute_ndvi_sample). A failed sample comes back as its error,
+    so the answer can say why there is no NDVI; the scenes are returned either way.
     """
     args = ctx.arguments
     try:
@@ -3191,30 +3171,23 @@ async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, 
         if "error" in result_data:
             return {"status": "error", "error": result_data["error"]}
 
-        ndvi_computed = None
+        ndvi_sample = None
         items = result_data.get("items", [])
         if items:
-            first_item = items[0]
-            assets = first_item.get("assets", {})
-            if "B04" in assets and "B08" in assets:
-                try:
-                    ndvi_computed = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: service.compute_ndvi_from_item(first_item)
-                    )
-                    if "error" in ndvi_computed:
-                        logger.warning(
-                            "NDVI computation failed for first item: %s",
-                            ndvi_computed.get("error")
-                        )
-                        ndvi_computed = None
-                except Exception as e:
-                    logger.warning("NDVI computation failed: %s", e)
-                    ndvi_computed = None
+            try:
+                ndvi_sample = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: service.compute_ndvi_sample(items, result_data["bbox"])
+                )
+            except Exception as e:
+                logger.exception("NDVI sample failed")
+                ndvi_sample = {"error": str(e)}
+            if "error" in ndvi_sample:
+                logger.warning("NDVI sample unavailable: %s", ndvi_sample["error"])
 
         return {
             "status": "success",
             "search_results": result_data,
-            "ndvi_sample": ndvi_computed,
+            "ndvi_sample": ndvi_sample,
         }
     except Exception as e:
         logger.exception("STAC search tool failed")

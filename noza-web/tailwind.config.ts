@@ -1,33 +1,42 @@
 import type { Config } from "tailwindcss";
 
+// The Ingabe palette (Roger, 2026-10-06): black, chocolate and caramel; no green in the interface,
+// crops are the only green. Night side for dark bands, cream side for daylight bands.
 const config: Config = {
-  content: [
-    "./src/pages/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/components/**/*.{js,ts,jsx,tsx,mdx}",
-    "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
-  ],
+  content: ["./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        primary: {
-          50: "#f0fdf4",
-          100: "#dcfce7",
-          200: "#bbf7d0",
-          300: "#86efac",
-          400: "#4ade80",
-          500: "#22c55e",
-          600: "#16a34a",
-          700: "#15803d",
-          800: "#166534",
-          900: "#14532d",
-        },
-        agricultural: {
-          healthy: "#22c55e",
-          moderate: "#eab308",
-          stressed: "#ef4444",
-          water: "#3b82f6",
-          soil: "#92400e",
-        },
+        night: "#0B0908",
+        espresso: "#17110E",
+        chocolate: "#221813",
+        cocoa: "#4A3326",
+        caramel: "#D9A066",
+        sand: "#F3EDE6",
+        latte: "#B8A99B",
+        cream: "#F6F1EB",
+        bitter: "#1A1310",
+        mocha: "#6B5A4E",
+        bark: "#4A2E1F",
+      },
+      fontFamily: {
+        display: ["var(--font-display)", "Georgia", "serif"],
+        sans: [
+          "-apple-system",
+          "BlinkMacSystemFont",
+          '"SF Pro Text"',
+          '"Helvetica Neue"',
+          "Inter",
+          "Arial",
+          "sans-serif",
+        ],
+        mono: ["var(--font-mono)", "SFMono-Regular", "Menlo", "monospace"],
+      },
+      letterSpacing: {
+        label: "0.22em",
+      },
+      maxWidth: {
+        page: "86rem",
       },
     },
   },

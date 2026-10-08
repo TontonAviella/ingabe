@@ -226,4 +226,102 @@ async def test_get_soil_properties_gives_sage_the_likely_range(monkeypatch):
     assert (phosphorus["value"], phosphorus["likely_range"]) == (10.59, [9.27, 12.08])
     assert "uncertainty" not in phosphorus
     assert "68%" in result["spread_note"]
+
+
+def _areas(n: int) -> list[dict[str, Any]]:
+    square = {"type": "Polygon", "coordinates": [[[30, -2], [30.1, -2], [30.1, -1.9], [30, -1.9], [30, -2]]]}
+    return [{"sector_name": f"Sector {i}", "district_name": "Gatsibo", "geom": json.dumps(square)} for i in range(n)]
+
+
+def _slow_field_stats(seconds: float):
+    import time
+
+    def read(**_: Any) -> dict[str, Any]:
+        time.sleep(seconds)  # a blocking read, like the real HTTP + rasterio one
+        return {"backend": "deafrica", "intervals": [{"ndvi": {"mean": 0.5, "valid_pixels": 100}}]}
+
+    return read
+
+
+@pytest.mark.asyncio
+async def test_live_ndvi_reads_leave_the_app_free_to_answer(monkeypatch):
+    """The reads used to run on the event loop: a district froze every request for ten minutes."""
+    import asyncio
+
+    from src.services import legacy_tool_shim, satellite_analytics
+
+    monkeypatch.setattr(satellite_analytics, "get_field_stats", _slow_field_stats(0.3))
+    ticks = 0
+
+    async def other_requests() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.02)
+            ticks += 1
+
+    ticker = asyncio.create_task(other_requests())
+    live = await legacy_tool_shim._live_ndvi(_areas(4), "2026-10-01", "2026-10-07")
+    ticker.cancel()
+    assert len(live.read) == 4 and live.note() is None
+    assert ticks >= 8  # the loop kept running while the four reads were in their threads
+
+
+@pytest.mark.asyncio
+async def test_live_ndvi_reads_few_areas_and_says_what_it_left_out(monkeypatch):
+    from src.services import legacy_tool_shim, satellite_analytics
+
+    monkeypatch.setattr(satellite_analytics, "get_field_stats", _slow_field_stats(0.01))
+    monkeypatch.setattr(legacy_tool_shim, "LIVE_NDVI_MAX_AREAS", 3)
+    live = await legacy_tool_shim._live_ndvi(_areas(14), "2026-10-01", "2026-10-07")
+    assert len(live.read) == 3
+    assert "read for 3 of 14 areas; 11 were left out" in (live.note() or "")
+
+
+@pytest.mark.asyncio
+async def test_live_ndvi_answers_at_the_deadline(monkeypatch):
+    from src.services import legacy_tool_shim, satellite_analytics
+
+    monkeypatch.setattr(satellite_analytics, "get_field_stats", _slow_field_stats(1.0))
+    monkeypatch.setattr(legacy_tool_shim, "LIVE_NDVI_DEADLINE_S", 0.2)
+    live = await legacy_tool_shim._live_ndvi(_areas(2), "2026-10-01", "2026-10-07")
+    assert live.read == [] and live.not_read == 2
+
+
+@pytest.mark.asyncio
+async def test_cell_ndvi_falls_back_to_live_sectors_with_a_coverage_note(monkeypatch):
+    from src.services import legacy_tool_shim, satellite_analytics
+
+    monkeypatch.setattr(satellite_analytics, "get_field_stats", _slow_field_stats(0.01))
+    monkeypatch.setattr(legacy_tool_shim, "LIVE_NDVI_MAX_AREAS", 2)
+    ctx = _make_ctx({"district": "Gatsibo"})
+    ctx.conn.fetch = AsyncMock(side_effect=[[], _areas(5)])  # empty cell cache, then the district's sectors
+    result = await execute_legacy_tool("get_cell_ndvi_stats", ctx)
+    assert result["source"] == "deafrica_realtime" and result["count"] == 2
+    assert result["sector_ndvi_stats"][0]["mean_ndvi"] == 0.5
+    assert "3 were left out" in result["coverage"]
+
+
+@pytest.mark.asyncio
+async def test_insurance_report_tells_sage_which_sources_did_not_arrive_in_time(monkeypatch):
+    """The engine's coverage note reaches the model next to the briefing, so Sage says what is missing."""
+    from src.services import insurance_engine
+
+    note = insurance_engine.late_sources_note(["WaPOR soil moisture"])
+    engine_result = {
+        "status": "ok", "report": "AGRONOMIC ASSESSMENT ...", "audience": "agronomist", "geometry": None,
+        "slug": "insurance-kanyangese-A-20261007", "coverage": note,
+        "data": {"location": "Kanyangese", "season": "A", "triggers": [], "not_read_in_time": ["WaPOR soil moisture"]},
+    }
+    monkeypatch.setattr(insurance_engine, "compute_insurance_intelligence", AsyncMock(return_value=engine_result))
+    monkeypatch.setattr(insurance_engine, "resolve_audience", AsyncMock(return_value="agronomist"))
+    brain = MagicMock(put_page=AsyncMock(), add_timeline_entry=AsyncMock())
+    monkeypatch.setattr("src.dependencies.brain_dep.get_brain_service", lambda: brain)
+
+    result = await execute_legacy_tool("get_insurance_intelligence", _make_ctx(
+        {"cell": "Kanyangese", "district": "Gatsibo", "crop": "cassava", "audience": "agronomist"}))
+
+    assert result["status"] == "ok"
+    assert result["coverage"] == note
+    assert "say plainly which are missing" in result["instruction"]
+    assert "data" not in result
     json.dumps(result)

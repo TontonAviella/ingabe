@@ -14,6 +14,8 @@ import asyncio
 import calendar
 import json
 import logging
+import time
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +24,10 @@ from typing import Any, Optional
 import asyncpg
 
 from src.services import crop_stages
+from src.services import deafrica_stac
 from src.services import et_normals
+from src.services import forecast_openmeteo
+from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
 
@@ -173,6 +178,7 @@ class InsuranceReport:
     drought_diagnostic_label: str = ""
 
     ndvi_z_score: Optional[float] = None
+    ndvi_month: Optional[str] = None  # "YYYY-MM": the month the NDVI z-score describes
     ndvi_concordance_score: Optional[float] = None
 
     et_anomaly_pct: Optional[float] = None
@@ -194,6 +200,7 @@ class InsuranceReport:
     forecast_outlook: Optional[dict] = None
 
     sources: list[str] = field(default_factory=list)
+    late_sources: list[str] = field(default_factory=list)  # reads that did not arrive in time: missing
     period_start: str = ""
     period_end: str = ""
     computed_at: str = ""
@@ -228,6 +235,7 @@ class InsuranceReport:
                 for p in self.phase_rainfall
             ],
             "ndvi_z_score": round(self.ndvi_z_score, 2) if self.ndvi_z_score is not None else None,
+            "ndvi_month": self.ndvi_month,
             "ndvi_concordance_score": round(self.ndvi_concordance_score, 2) if self.ndvi_concordance_score is not None else None,
             "et_anomaly_pct": round(self.et_anomaly_pct, 1) if self.et_anomaly_pct is not None else None,
             "soil_moisture_pct": round(self.soil_moisture_pct, 1) if self.soil_moisture_pct is not None else None,
@@ -242,6 +250,7 @@ class InsuranceReport:
             "accuracy_components": self.accuracy_components,
             "forecast_outlook": self.forecast_outlook,
             "sources": self.sources,
+            "not_read_in_time": self.late_sources,
             "period_start": self.period_start,
             "period_end": self.period_end,
             "computed_at": self.computed_at,
@@ -361,13 +370,15 @@ def _chirps_dates_to_fetch(planting_date: date, today: date) -> list[str]:
 
 
 async def _fetch_season_chirps(
-    lat: float, lon: float, planting_date: date, today: date,
+    lat: float, lon: float, planting_date: date, today: date, timeout_s: Optional[float] = None,
 ) -> tuple[dict[str, Optional[float]], set[str]]:
-    """Daily CHIRPS for a report's dates, and the days read from the preliminary product."""
+    """Daily CHIRPS for a report's dates, and the days read from the preliminary product.
+
+    With ``timeout_s``, days not read by then are None (missing)."""
     from src.services.forecast_fusion import fetch_chirps_daily  # lazy: rasterio/GDAL stack
 
     return await asyncio.to_thread(
-        fetch_chirps_daily, lat, lon, _chirps_dates_to_fetch(planting_date, today),
+        fetch_chirps_daily, lat, lon, _chirps_dates_to_fetch(planting_date, today), timeout_s,
     )
 
 
@@ -615,93 +626,27 @@ def rainfall_vs_usual(pct_of_normal: Optional[float]) -> Optional[str]:
     return f"about {diff}% more than usual for this time of year"
 
 # ---------------------------------------------------------------------------
-# 3. NDVI anomaly from database cache
+# 3. NDVI anomaly (Digital Earth Africa, monthly)
 # ---------------------------------------------------------------------------
 
-async def _fetch_ndvi_anomaly(
-    conn: asyncpg.Connection,
-    district: Optional[str] = None,
-) -> Optional[float]:
-    """Get latest mean NDVI z-score from anomaly_alerts_cache."""
-    try:
-        if district:
-            row = await conn.fetchrow(
-                "SELECT AVG(z_score) as mean_z FROM anomaly_alerts_cache "
-                "WHERE LOWER(district) = LOWER($1) "
-                "AND computed_at > NOW() - INTERVAL '30 days'",
-                district,
-            )
-        else:
-            row = await conn.fetchrow(
-                "SELECT AVG(z_score) as mean_z FROM anomaly_alerts_cache "
-                "WHERE computed_at > NOW() - INTERVAL '30 days'",
-            )
-        if row and row["mean_z"] is not None:
-            return float(row["mean_z"])
-    except Exception:
-        logger.debug("anomaly_alerts_cache query failed", exc_info=True)
-    return None
+# A month's NDVI anomaly speaks for the season only when this many of its days fell after planting;
+# an earlier month describes the vegetation before the crop.
+_NDVI_MIN_SEASON_DAYS = 15
 
-async def _fetch_sar_backscatter(
-    lat: float,
-    lon: float,
-    date_from: str,
-    date_to: str,
-) -> Optional[float]:
-    """Get mean VH/VV ratio from Sentinel-1 SAR. Cloud-penetrating."""
-    try:
-        from src.services.sentinel1_service import get_sentinel1_service
-        svc = get_sentinel1_service()
-        buf = 0.05
-        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-        result = await asyncio.to_thread(
-            svc.get_backscatter,
-            bbox=bbox,
-            date_range=f"{date_from}/{date_to}",
-        )
-        if result and result.get("status") == "success":
-            stats = result.get("statistics", {})
-            vh_mean = stats.get("vh", {}).get("mean")
-            vv_mean = stats.get("vv", {}).get("mean")
-            if vh_mean is not None and vv_mean is not None and vv_mean != 0:
-                # Reject NoData sentinels and implausible values.
-                # Plausible SAR backscatter: -50 to +10 dB, or 0 to ~10 in linear.
-                if vv_mean < -50 or vv_mean > 10 or vh_mean < -50 or vh_mean > 10:
-                    return None
-                if vv_mean < 0:
-                    return 10 ** ((vh_mean - vv_mean) / 10)
-                return vh_mean / vv_mean
-    except Exception:
-        logger.debug("SAR backscatter fetch failed", exc_info=True)
-    return None
 
-async def _fetch_ndvi_with_sar_fallback(
-    conn: asyncpg.Connection,
-    lat: float,
-    lon: float,
-    date_from: str,
-    date_to: str,
-    district: Optional[str] = None,
-) -> Optional[float]:
-    """Get NDVI z-score from optical first, fall back to SAR-predicted NDVI."""
-    ndvi_z = await _fetch_ndvi_anomaly(conn, district)
-    if ndvi_z is not None:
-        return ndvi_z
-    try:
-        from src.services.sar_ndvi import get_sar_ndvi_predictor
-        pred = get_sar_ndvi_predictor()
-        buf = 0.05
-        bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-        result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
-        if result and result.get("status") == "success":
-            predicted = result.get("predicted_ndvi")
-            if predicted is not None:
-                mean_ndvi = 0.45
-                std_ndvi = 0.15
-                return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
-    except Exception:
-        logger.debug("SAR-predicted NDVI fallback failed", exc_info=True)
-    return None
+def _season_ndvi_anomaly(anomaly: Optional[dict], planting_date: date) -> tuple[Optional[float], Optional[str]]:
+    """(z-score, "YYYY-MM") of the season's latest published NDVI anomaly month, or (None, None).
+
+    ``anomaly`` is deafrica_stac.area_ndvi_anomaly's answer for the area; its z is None when too
+    little of the area had a clear view that month (unknown, never 0).
+    """
+    if not anomaly or anomaly.get("z") is None:
+        return None, None
+    year, month = (int(v) for v in anomaly["month"].split("-"))
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    if (month_end - planting_date).days + 1 < _NDVI_MIN_SEASON_DAYS:
+        return None, None
+    return anomaly["z"], anomaly["month"]
 
 # ---------------------------------------------------------------------------
 # 4. Centroid from GeoJSON geometry
@@ -1232,15 +1177,15 @@ def _generate_recommendation(
 
 def format_for_audience(report: InsuranceReport, audience: str) -> str:
     """Format the same report for different audiences."""
-    if audience == "farmer":
-        return _format_farmer(report)
-    if audience == "insurance":
-        return _format_insurance(report)
-    if audience == "agronomist":
-        return _format_agronomist(report)
-    if audience == "scientist":
-        return _format_scientist(report)
-    return _format_insurance(report)
+    formatter = {
+        "farmer": _format_farmer,
+        "insurance": _format_insurance,
+        "agronomist": _format_agronomist,
+        "scientist": _format_scientist,
+    }.get(audience, _format_insurance)
+    text = formatter(report)
+    note = late_sources_note(report.late_sources)
+    return f"{text}\n\n{note}" if note else text
 
 def _format_farmer(r: InsuranceReport) -> str:
     """WhatsApp-ready, <200 chars per section, clear and simple."""
@@ -1397,7 +1342,7 @@ def _format_agronomist(r: InsuranceReport) -> str:
     lines.append("")
     lines.append("VEGETATION:")
     if r.ndvi_z_score is not None:
-        lines.append(f"  NDVI z-score: {r.ndvi_z_score:.2f}")
+        lines.append(f"  NDVI z-score: {r.ndvi_z_score:.2f} ({r.ndvi_month}, against 1984-2020)")
     if r.ndvi_concordance_score is not None:
         lines.append(f"  Rainfall-NDVI concordance: {r.ndvi_concordance_score:.2f}")
 
@@ -1436,7 +1381,7 @@ def _format_scientist(r: InsuranceReport) -> str:
         "season_vs_normal": "Observed CHIRPS rainfall since planting (scaled up for missing days, as for the season SPI) over the sum of per-district monthly CHIRPS normals (2000-2023) prorated to the same calendar dates.",
         "spi": "SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS against per-district monthly normals (CHIRPS 2000-2023). Z-score approximation; gamma fit deferred.",
         "drought_diagnostic": "SPI-SM divergence classification: consistent_drought (SPI<-1, SM<35%), flash_drought (SPI normal, SM<35%), carryover_storage (SPI<-1, SM>=35%), runoff_dominated (SPI>1, SM<35%)",
-        "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
+        "ndvi": "Digital Earth Africa ndvi_anomaly: the month's NDVI standardised against the 1984-2020 Landsat climatology for that month, averaged over the area's clear 30 m pixels; the latest published month with at least 15 days in the season; missing when under 30% of the area was clear",
         "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
         "et": "WaPOR v3 AETI dekadal, 100m resolution",
@@ -1494,24 +1439,13 @@ async def _fetch_area_signals(
 
     async def _wapor_et():
         try:
-            from src.services.wapor_service import query_et
-            return await asyncio.to_thread(query_et, lat, lon, planting_date, today)
+            return await asyncio.to_thread(wapor_service.query_et, lat, lon, planting_date, today)
         except Exception:
             return None
 
     async def _wapor_soil():
         try:
-            from src.services.wapor_service import query_soil_moisture
-            return await asyncio.to_thread(query_soil_moisture, lat, lon, planting_date, today)
-        except Exception:
-            return None
-
-    async def _sar():
-        try:
-            return await _fetch_sar_backscatter(
-                lat, lon,
-                planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-            )
+            return await asyncio.to_thread(wapor_service.query_soil_moisture, lat, lon, planting_date, today)
         except Exception:
             return None
 
@@ -1524,15 +1458,14 @@ async def _fetch_area_signals(
 
     async with _COMPARE_SEMAPHORE:
         results = await asyncio.gather(
-            _chirps(), _wapor_et(), _wapor_soil(), _sar(), _weather(),
+            _chirps(), _wapor_et(), _wapor_soil(), _weather(),
             return_exceptions=True,
         )
 
     chirps_daily, _ = results[0] if not isinstance(results[0], BaseException) else ({}, set())
     et_result = results[1] if not isinstance(results[1], BaseException) else None
     soil_result = results[2] if not isinstance(results[2], BaseException) else None
-    sar_result = results[3] if not isinstance(results[3], BaseException) else None
-    weather_result = results[4] if not isinstance(results[4], BaseException) else None
+    weather_result = results[3] if not isinstance(results[3], BaseException) else None
 
     # Rainfall + SPI-1 + SPI-3
     if chirps_daily:
@@ -1571,10 +1504,6 @@ async def _fetch_area_signals(
     drought_state = _classify_drought_state(spi3_val, sm_val)
     signals["drought_diagnostic"] = drought_state
     signals["drought_diagnostic_label"] = _DROUGHT_STATE_LABELS.get(drought_state, "")
-
-    # SAR backscatter
-    if isinstance(sar_result, (int, float)):
-        signals["sar_vh_vv_ratio"] = round(float(sar_result), 3)
 
     # Weather (temperature, precipitation from recent observations)
     if weather_result and isinstance(weather_result, dict):
@@ -1827,6 +1756,58 @@ def _rank_by_rainfall(areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
+# A report's network reads (CHIRPS, WaPOR, the forecast) get
+# this long, all together. What has not arrived by then is missing, never zero,
+# and the report names it; reads still running finish in their threads and fill
+# the caches for the next report. Sage stops a tool after SAGE_TOOL_TIMEOUT_SECONDS
+# (120 s by default), and the tool still saves the report after this.
+_FETCH_DEADLINE_S = 60.0
+# CHIRPS hands back the days it has read this much before the deadline, so a
+# slow last download does not lose the season's rainfall with it.
+_CHIRPS_MARGIN_S = 5.0
+_CHIRPS_READ = "CHIRPS rainfall"
+_ET_READ = "WaPOR evapotranspiration"
+_SOIL_READ = "WaPOR soil moisture"
+_FORECAST_READ = "multi-model weather forecast"
+_NDVI_READ = "Digital Earth Africa NDVI anomaly"
+
+
+async def _collect_reads(
+    reads: Mapping[str, asyncio.Future[Any]], timeout_s: float,
+) -> tuple[dict[str, Any], list[str]]:
+    """The results of the reads done within ``timeout_s``, by name, and the names of the rest.
+
+    A read that failed is there with None (and logged). The rest are cancelled:
+    one already running in a thread finishes there and its result is dropped.
+    """
+    if not reads:
+        return {}, []
+    done, pending = await asyncio.wait(reads.values(), timeout=max(0.0, timeout_s))
+    for task in pending:
+        task.cancel()
+    arrived: dict[str, Any] = {}
+    for name, task in reads.items():
+        if task not in done:
+            continue
+        if task.exception() is not None:
+            logger.warning("insurance report: %s read failed: %r", name, task.exception())
+            arrived[name] = None
+        else:
+            arrived[name] = task.result()
+    late = [name for name, task in reads.items() if task in pending]
+    if late:
+        logger.warning("insurance report: %s not read within %.0f s", ", ".join(late), _FETCH_DEADLINE_S)
+    return arrived, late
+
+
+def late_sources_note(late: list[str]) -> Optional[str]:
+    """One sentence naming the sources a report left out because they did not arrive in time."""
+    if not late:
+        return None
+    return (f"Left out of this report because they did not arrive within {_FETCH_DEADLINE_S:.0f} seconds: "
+            f"{', '.join(late)}. They are missing, not zero; asking again shortly usually includes them.")
+
+
 async def compute_insurance_intelligence(
     conn: asyncpg.Connection,
     crop: str = "maize",
@@ -1838,11 +1819,13 @@ async def compute_insurance_intelligence(
     audience: Optional[str] = None,
     ref_date: Optional[date] = None,
     compare_level: Optional[str] = None,
+    owner_uuid: Optional[str] = None,
 ) -> dict[str, Any]:
     """One call, all signals, any audience, any admin level.
 
     Returns dict with 'status', 'report' (formatted string), 'data' (raw dict),
-    and 'geometry' (GeoJSON for Brain persistence).
+    'geometry' (GeoJSON for Brain persistence) and 'slug' (the Brain page the
+    report is saved under: pass owner_uuid, the user it is saved for).
 
     When compare_level is set (e.g. "sector", "cell", "district"), discovers all
     child admin units at that level within the parent area and returns a
@@ -1904,125 +1887,83 @@ async def compute_insurance_intelligence(
     else:
         lat, lon = _RWANDA_CENTER
 
-    # --- PARALLEL DATA FETCH ---
-    # Network-only fetches (no shared conn) run in parallel.
-    # DB-dependent fetches run sequentially on `conn` — asyncpg connections
-    # are not safe for concurrent use (raises InterfaceError).
-
-    async def fetch_sar_backscatter():
-        return await _fetch_sar_backscatter(
-            lat, lon,
-            planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
+    # --- DATA FETCH ---
+    # The network reads run together, in threads, while the database reads run
+    # on `conn` one at a time (an asyncpg connection is not safe for concurrent
+    # use). The network reads get _FETCH_DEADLINE_S in all; what has not arrived
+    # by then is missing, and the report names it.
+    started = time.monotonic()
+    forecast_days = min(max(0, harvest_dap - dap), 16)
+    network: dict[str, Awaitable[Any]] = {
+        _CHIRPS_READ: _fetch_season_chirps(
+            lat, lon, planting_date, today, timeout_s=_FETCH_DEADLINE_S - _CHIRPS_MARGIN_S,
+        ),
+        _ET_READ: asyncio.to_thread(wapor_service.query_et, lat, lon, planting_date, today),
+        _SOIL_READ: asyncio.to_thread(wapor_service.query_soil_moisture, lat, lon, planting_date, today),
+    }
+    if forecast_days >= 1:
+        network[_FORECAST_READ] = asyncio.to_thread(
+            forecast_openmeteo.fetch_openmeteo_multimodel, lat, lon, forecast_days,
         )
-
-    async def fetch_chirps():
+    if geometry:
+        # The area's own monthly NDVI anomaly; no stand-in when there is none (the Sentinel-1
+        # prediction that stood in did not follow NDVI, docs/SAR_NDVI_SKILL.md).
+        network[_NDVI_READ] = asyncio.to_thread(deafrica_stac.area_ndvi_anomaly, geometry, today)
+    reads = {name: asyncio.ensure_future(read) for name, read in network.items()}
+    try:
         try:
-            return await _fetch_season_chirps(lat, lon, planting_date, today)
+            et_cell = et_normals.cell_for(lat, lon)
+            et_normals_for_cell: Optional[dict[int, float]] = (await et_normals.normals_by_cell(
+                conn, [et_cell], et_normals.dekads_between(planting_date, today),
+            )).get(et_cell, {})
         except Exception:
-            logger.debug("chirps fetch failed", exc_info=True)
-            return {}, set()
-
-    async def fetch_wapor_et():
+            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
+            et_normals_for_cell = None
         try:
-            from src.services.wapor_service import query_et
-            return await asyncio.to_thread(
-                query_et, lat, lon, planting_date, today,
+            accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
+        except Exception:
+            logger.debug("insurance_accuracy fetch failed", exc_info=True)
+            accuracy_result = None
+
+        try:
+            from src.services.weather_accuracy import detect_dry_spells
+            dry_spells_result = await detect_dry_spells(
+                conn, district=district,
+                date_from=planting_date.strftime("%Y-%m-%d"),
+                date_to=today.strftime("%Y-%m-%d"),
             )
         except Exception:
-            logger.debug("wapor ET fetch failed", exc_info=True)
-            return None
+            logger.debug("dry_spells fetch failed", exc_info=True)
+            dry_spells_result = None
 
-    async def fetch_wapor_soil():
         try:
-            from src.services.wapor_service import query_soil_moisture
-            return await asyncio.to_thread(
-                query_soil_moisture, lat, lon, planting_date, today,
+            from src.services.weather_accuracy import compute_ndvi_concordance
+            ndvi_conc_result = await compute_ndvi_concordance(
+                conn, district=district,
+                date_from=planting_date.strftime("%Y-%m-%d"),
+                date_to=today.strftime("%Y-%m-%d"),
             )
         except Exception:
-            logger.debug("wapor soil moisture fetch failed", exc_info=True)
-            return None
+            logger.debug("ndvi_concordance fetch failed", exc_info=True)
+            ndvi_conc_result = None
 
-    async def fetch_forecast():
-        try:
-            from src.services.forecast_openmeteo import fetch_openmeteo_multimodel
-            days_left = max(0, harvest_dap - dap)
-            forecast_days = min(days_left, 16)
-            if forecast_days < 1:
-                return None
-            return await asyncio.to_thread(
-                fetch_openmeteo_multimodel, lat, lon, forecast_days,
-            )
-        except Exception:
-            logger.debug("forecast fetch failed", exc_info=True)
-            return None
+        arrived, late = await _collect_reads(reads, _FETCH_DEADLINE_S - (time.monotonic() - started))
+    finally:
+        for task in reads.values():
+            task.cancel()  # does nothing to finished reads; stops the rest if the turn was stopped first
 
-    # Network-only fetches: safe to parallelize (return_exceptions prevents
-    # one failure from cancelling the others)
-    network_results = await asyncio.gather(
-        fetch_sar_backscatter(),
-        fetch_chirps(),
-        fetch_wapor_et(),
-        fetch_wapor_soil(),
-        fetch_forecast(),
-        return_exceptions=True,
-    )
-    sar_result = network_results[0] if not isinstance(network_results[0], BaseException) else None
-    chirps_daily, chirps_prelim_days = (
-        network_results[1] if not isinstance(network_results[1], BaseException) else ({}, set())
-    )
-    et_result = network_results[2] if not isinstance(network_results[2], BaseException) else None
-    soil_result = network_results[3] if not isinstance(network_results[3], BaseException) else None
-    forecast_result = network_results[4] if not isinstance(network_results[4], BaseException) else None
-    if isinstance(network_results[4], BaseException):
-        logger.warning("forecast fetch raised: %s", network_results[4])
-    elif forecast_result is None:
+    chirps_daily, chirps_prelim_days = arrived.get(_CHIRPS_READ) or ({}, set())
+    et_result = arrived.get(_ET_READ)
+    soil_result = arrived.get(_SOIL_READ)
+    forecast_result = arrived.get(_FORECAST_READ)
+    if forecast_result is None:
         logger.info("forecast fetch returned None")
     else:
         logger.info("forecast fetch OK: %d daily entries, models=%s",
                      len(forecast_result.get("daily", [])),
                      forecast_result.get("models_used", []))
-
-    # DB-dependent fetches: sequential on the shared connection
-    if et_result and et_result.get("status") == "success":
-        try:
-            cell = et_normals.cell_for(lat, lon)
-            normals = await et_normals.normals_by_cell(conn, [cell], et_normals.dekads_between(planting_date, today))
-            et_normals.attach(et_result, normals.get(cell, {}))
-        except Exception:
-            logger.warning("ET normals lookup failed; ET anomaly unavailable", exc_info=True)
-    try:
-        accuracy_result = await compute_insurance_accuracy_safe(conn, district, season)
-    except Exception:
-        logger.debug("insurance_accuracy fetch failed", exc_info=True)
-        accuracy_result = None
-
-    try:
-        from src.services.weather_accuracy import detect_dry_spells
-        dry_spells_result = await detect_dry_spells(
-            conn, district=district,
-            date_from=planting_date.strftime("%Y-%m-%d"),
-            date_to=today.strftime("%Y-%m-%d"),
-        )
-    except Exception:
-        logger.debug("dry_spells fetch failed", exc_info=True)
-        dry_spells_result = None
-
-    try:
-        from src.services.weather_accuracy import compute_ndvi_concordance
-        ndvi_conc_result = await compute_ndvi_concordance(
-            conn, district=district,
-            date_from=planting_date.strftime("%Y-%m-%d"),
-            date_to=today.strftime("%Y-%m-%d"),
-        )
-    except Exception:
-        logger.debug("ndvi_concordance fetch failed", exc_info=True)
-        ndvi_conc_result = None
-
-    ndvi_z = await _fetch_ndvi_with_sar_fallback(
-        conn, lat, lon,
-        planting_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"),
-        district,
-    )
+    if et_result and et_result.get("status") == "success" and et_normals_for_cell is not None:
+        et_normals.attach(et_result, et_normals_for_cell)
 
     # --- PROCESS RESULTS ---
     sources = []
@@ -2063,15 +2004,9 @@ async def compute_insurance_intelligence(
     ndvi_concordance_score = None
     if ndvi_conc_result and ndvi_conc_result.get("status") == "success":
         ndvi_concordance_score = ndvi_conc_result.get("concordance_score")
+    ndvi_z, ndvi_month = _season_ndvi_anomaly(arrived.get(_NDVI_READ), planting_date)
     if ndvi_z is not None:
-        sources.append("Sentinel-2/SAR NDVI")
-
-    # SAR backscatter (VH/VV ratio) — cloud-penetrating vegetation signal
-    sar_vh_vv_ratio: Optional[float] = None
-    if isinstance(sar_result, (int, float)):
-        sar_vh_vv_ratio = float(sar_result)
-        if "Sentinel-1 SAR" not in sources:
-            sources.append("Sentinel-1 SAR")
+        sources.append(f"{deafrica_stac.NDVI_ANOMALY_SOURCE}, {ndvi_month}")
 
     # ET and soil moisture
     et_anomaly = _et_anomaly_pct(et_result)
@@ -2106,7 +2041,9 @@ async def compute_insurance_intelligence(
         "spi": spi,
         "dry_spell_days": None if max_dry_spell is None else float(max_dry_spell),
         "ndvi_z_score": ndvi_z,
-        "sar_backscatter": sar_vh_vv_ratio,
+        # No VH/VV source yet: the read this used to make got scenes, never the statistics it looked
+        # for, so it was always None (2026-10-07); a trigger with no value is left out, as before.
+        "sar_backscatter": None,
         "et_anomaly": et_anomaly,
         "soil_moisture": soil_moisture,
     }
@@ -2172,6 +2109,7 @@ async def compute_insurance_intelligence(
         drought_diagnostic=drought_diagnostic,
         drought_diagnostic_label=drought_diagnostic_label,
         ndvi_z_score=ndvi_z,
+        ndvi_month=ndvi_month,
         ndvi_concordance_score=ndvi_concordance_score,
         et_anomaly_pct=et_anomaly,
         soil_moisture_pct=soil_moisture,
@@ -2186,6 +2124,7 @@ async def compute_insurance_intelligence(
         accuracy_components=accuracy_components,
         forecast_outlook=forecast_outlook,
         sources=sources,
+        late_sources=late,
         period_start=planting_date.strftime("%Y-%m-%d"),
         period_end=today.strftime("%Y-%m-%d"),
         computed_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -2194,14 +2133,34 @@ async def compute_insurance_intelligence(
 
     formatted = format_for_audience(report, audience)
 
-    return {
+    result: dict[str, Any] = {
         "status": "ok",
         "report": formatted,
         "data": report.to_dict(),
         "audience": audience,
         "geometry": geometry,
-        "slug": f"insurance-{location_name.lower().replace(' ', '-')}-{season}-{today.strftime('%Y%m%d')}",
+        "slug": insurance_page_slug(location_name, season, today, owner_uuid),
     }
+    coverage = late_sources_note(late)
+    if coverage:
+        result["coverage"] = coverage
+    return result
+
+def insurance_page_slug(
+    location_name: str, season: str, day: date, owner_uuid: Optional[str] = None
+) -> str:
+    """Slug of the Brain page that keeps one user's report on a location for a day.
+
+    Brain slugs are unique across all users and their pages are private, so a
+    slug without its owner made the second user to ask about the same place
+    on the same day fail to save their report (2026-10-07). Lower case, as the
+    Brain stores it, so Sage can look the page up by the slug it is shown.
+    """
+    slug = f"insurance-{location_name.replace(' ', '-')}-{season}-{day.strftime('%Y%m%d')}"
+    if owner_uuid:
+        slug += "-" + owner_uuid.replace("-", "")[:8]
+    return slug.lower()
+
 
 async def compute_insurance_accuracy_safe(
     conn: asyncpg.Connection,

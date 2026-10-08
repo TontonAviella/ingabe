@@ -15,6 +15,7 @@ import pytest
 
 from src.dependencies.sage_routing import (
     AGRICULTURE,
+    RASTER_OBJECT_CANDIDATES_TOOL,
     BRAIN,
     MAP_EDIT,
     SATELLITE,
@@ -125,6 +126,9 @@ def test_detect_small_talk_negative(msg: str) -> None:
         ("compute the spectral index for January 2025", {SATELLITE}),
         ("what is the soil moisture in Kigali", {AGRICULTURE}),
         ("dry spell in Nyagatare last month", {AGRICULTURE}),
+        # "rained" alone used to miss the weather tools: Sage then said rainfall was not available (2026-10-08).
+        ("has it rained enough here this season?", {AGRICULTURE}),
+        ("will it rain in Huye tomorrow", {AGRICULTURE}),
         ("analyze my drone ortho", {USER_RASTER}),
         ("what is happening in this drone image", {USER_RASTER, SPATIAL_INSIGHT}),
         (
@@ -161,6 +165,11 @@ def test_classify_intent_known_domains(msg: str, expected: set[str]) -> None:
 )
 def test_classify_intent_uncertain_returns_empty(msg: str) -> None:
     assert classify_intent(msg) == frozenset()
+
+
+@pytest.mark.parametrize("msg", ["show the terrain around Kigali", "the marsh drained after the dam"])
+def test_rain_words_do_not_match_inside_other_words(msg: str) -> None:
+    assert AGRICULTURE not in classify_intent(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -950,3 +959,32 @@ def test_raster_fast_path_new_phrasings(msg: str, tool: str) -> None:
 def test_admin_fast_path_still_ignores_non_displays(msg: str) -> None:
     fast = build_fast_tool_call(msg)
     assert fast is None or fast.tool_name != "show_admin_boundary"
+
+
+@pytest.mark.parametrize("text", [
+    "count the plants in plot 42 of my drone photo",
+    "How many maize plants are in plot 175 on Farm_Orthophoto?",
+    "How many plots are on this photo and how big are they?",
+    "How is my crop doing on Farm_Orthophoto?",
+    "Which plots should I weed first?",
+])
+def test_plot_and_plant_questions_skip_the_fast_paths(text):
+    """They need the drone tools; the fast paths drew house masks or screening cells for them."""
+    assert build_fast_tool_call(text) is None
+
+
+def test_house_counts_on_a_drone_photo_still_take_the_fast_path():
+    call = build_fast_tool_call("count the houses in Farm_A_Orthophoto")
+    assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+@pytest.mark.parametrize("text", [
+    "How is the maize doing on Cyampirita_Orthophoto?",
+    "Count the plants in plot 175",
+    "Which plots should I weed first?",
+    "what's on this photo",
+])
+def test_drone_photo_questions_keep_the_drone_tools(text):
+    """Layer names join words with '_': 'Cyampirita_Orthophoto' did not match the drone keywords, so the drone
+    tools were filtered out and Sage answered a question about the photo from satellites only."""
+    assert USER_RASTER in classify_intent(text)

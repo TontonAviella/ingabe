@@ -64,8 +64,12 @@ services:
       - BRAIN_EMBEDDINGS_BASE_URL=${BRAIN_EMBEDDINGS_BASE_URL:-}
       - BRAIN_EMBEDDINGS_KEEP_ALIVE=${BRAIN_EMBEDDINGS_KEEP_ALIVE:-24h}
       - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b-it-qat}
+      # Looks at each drone plot for the question cards (src/services/drone_vision.py).
+      - DRONE_VISION_MODEL=${DRONE_VISION_MODEL:-openai/gpt-6-luna}
       # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
       - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
+      # Retry once with a tool when Sage answers in prose but a tool fits (src/dependencies/sage_turn_request.py).
+      - SAGE_ABDICATION_GUARD=${SAGE_ABDICATION_GUARD:-0}
       - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}

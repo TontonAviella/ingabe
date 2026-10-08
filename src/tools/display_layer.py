@@ -516,6 +516,10 @@ async def display_satellite_layer(
     except Exception as e:
         logger.exception("STAC search failed for display_satellite_layer")
         return {"status": "error", "error": f"Satellite imagery search failed: {e}"}
+    if "error" in result:
+        # A failed search is not "no scenes found" (2026-10-07).
+        logger.warning("STAC search failed for display_satellite_layer: %s", result["error"])
+        return {"status": "error", "error": f"Satellite imagery search failed: {result['error']}"}
 
     items = result.get("items", [])
     if not items:

@@ -20,8 +20,9 @@ Six assertions across the three tables:
   2. User A's brain_ingest_log INSERT auto-populates owner_uuid=A; user B
      cannot SELECT it.
   3. User A's brain_entity_refs (page owned by A) is invisible to user B.
-     This is the RESTRICTIVE policy — partner_isolation is PERMISSIVE and
-     would otherwise OR-grant via access_scope=NULL.
+     The page has no scope given, so it is private (b8d4f0a2c6e1); while
+     partner_isolation granted access_scope=NULL to everyone, the tenant
+     policy had to be RESTRICTIVE (c1d2e3f4a5bb) to stop that.
   4. Mutation isolation: User A's UPDATE/DELETE against user B's brain_pending_hooks
      row affects zero rows.
   5. Admin (empty GUC) sees all rows — preserves migration/cron bypass.
@@ -320,17 +321,16 @@ async def test_ingest_log_select_isolation(conn_a, conn_b, seeded):
 
 @pytest.mark.postgres
 async def test_entity_refs_select_isolation(conn_a, conn_b, seeded):
-    """RESTRICTIVE policy test: partner_isolation_brain_entity_refs is
-    PERMISSIVE and grants access when access_scope IS NULL. Without the
-    RESTRICTIVE tenant_isolation policy AND'd in, user B would see user A's
-    refs to user A's private pages."""
+    """User B must not see user A's refs to user A's private page, and A must
+    still see them. partner_isolation_brain_entity_refs once granted every
+    access_scope=NULL row; a RESTRICTIVE tenant policy cancelled that until
+    b8d4f0a2c6e1 made unscoped pages private and the policy PERMISSIVE."""
     row_a_sees_b = await conn_a.fetchrow(
         "SELECT id FROM brain_entity_refs WHERE id = $1", seeded["ref_b"],
     )
     assert row_a_sees_b is None, (
-        "RLS LEAK: user A read user B's brain_entity_refs row. The "
-        "tenant_isolation policy is probably PERMISSIVE again — it must be "
-        "RESTRICTIVE to AND with the access_scope-based partner_isolation."
+        "RLS LEAK: user A read user B's brain_entity_refs row. Check that "
+        "partner_isolation_brain_entity_refs does not grant private rows."
     )
 
     row_b_sees_a = await conn_b.fetchrow(
