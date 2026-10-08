@@ -51,6 +51,13 @@ message. H1–H3 below are the hard, CI-enforced form of these.
   data". A total over days, pixels or areas with gaps is unknown below its
   coverage threshold, never the sum of what arrived; a real 0 is a value.
   Both mistakes are in the Lessons log (2026-10-04).
+- **Numbers shown to users come from a real source.** A normal, baseline,
+  climatology or z-score that a reader sees or a trigger fires on is computed
+  by committed code from a named dataset, and says which. A model that stands
+  in for a missing signal is used only after it was measured against that
+  signal; until then the value is missing. Hand-entered "normals" and a
+  z-score against invented constants both reached insurance reports (Lessons
+  log 2026-10-04, 2026-10-07).
 - **Optimise for deletion.** Prefer code that is easy to remove over code
   that is easy to extend.
 - **Boring tech.** Reuse the stack already in the repo before adding a
@@ -114,6 +121,13 @@ or a hook. When you add a rule here, add or extend its gate in
 `scripts/check_standards.py` or a test, or write in the rule why it cannot be
 checked mechanically.
 
+**Mocks match the real thing.** A mock returns the shape the real function
+returns: copy it from the function's code or a recorded real call, never from
+what the caller expects. A path that tests only meet through mocks keeps one
+test against the real function or library. Three bugs hid behind mocks of a
+contract the real code never had (Lessons log 2026-10-05, 2026-10-06,
+2026-10-07). Gate: review only (whether a mock matches needs the real code).
+
 **The Docker VM is a shared memory budget.** The local stack runs in one
 Docker VM (12 GB with 4 GB of swap since 2026-10-04; it was 7.7 GB with 1 GB
 when Postgres crashed), and Postgres is the first thing to fail
@@ -160,6 +174,42 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-07** drought_cache was empty: detect_drought returned numpy floats, psycopg2 wrote them as `np.float64(...)` and the weekly scan failed;
+  fixed as-is it would have published "Bugesera severe drought" from 13 weeks, VCI over one year reading the dry season as drought. Rules: values
+  leaving numpy for SQL or JSON are plain Python; an anomaly index compares the same season across years. Gate: `test_drought_seasonal_vci.py`.
+- **2026-10-07** Failed Sentinel-2 searches return `{"error": ...}`; SAR→NDVI training logged "0 observations" and four Sage tools said "no (cloud-free)
+  scenes", so an outage read as no data; drought also used `"error"` for "too few scenes". Rule: check a returned `"error"` first, and keep `"error"`
+  for failures (Fail fast; Missing is not zero). Gate: review only (needs to know which functions return error dicts); `test_sar_ndvi_search_errors.py`.
+- **2026-10-07** With the NDVI cache empty, every insurance report's NDVI z-score was a Sentinel-1 prediction (model fitted on the first place asked)
+  scored against invented constants 0.45 +/- 0.15; it did not follow the real anomaly (r -0.01, docs/SAR_NDVI_SKILL.md) and fired a 0.8 trigger
+  in rainy weeks. Second invented baseline after 2026-10-04: promoted to "Numbers shown to users come from a real source". Gate: engine test; review only elsewhere.
+- **2026-10-07** The STAC raw HTTP fallback posted bare dates ("2026-09-07/2026-10-07"); Earth Search and CDSE answer 400, so every fallback
+  search found nothing, and its only payload test mocked `post` and asserted the bare range. Rule: a request to an external API has one test
+  against a server that answers like the real one (its validation, a recorded response). Gate: `test_stac_http_search.py`; review only elsewhere.
+- **2026-10-07** `asyncio.to_thread` did not keep the app answering during remote raster reads: rasterio 1.4.4 holds the GIL during part of a
+  read of a remote COG, so one WaPOR point read stalled the event loop ~2.5 s and a report's reads 10-24 s. Rule: reads of remote rasters go
+  through `src/services/raster_process.py` (worker processes), not a thread. Gate: `test_raster_process.py` (loop delay); review only for new readers.
+- **2026-10-07** `get_insurance_intelligence` took 384 s (104 s warm), so Sage's 120 s limit cut it: SAR-predicted NDVI waited for the other reads,
+  ~100 CHIRPS files were downloaded per report for one pixel each, and GDAL, pystac-client and planetary_computer had no network timeout. Rule: a tool's
+  remote reads run together under one deadline below the tool limit, name what missed it, keep what does not change, and each call has its own timeout
+  (a deadline abandons a thread, it does not stop it). Gate: `test_gdal_http.py` (silent server), engine deadline tests; review only elsewhere.
+- **2026-10-07** `_fetch_sar_backscatter` read up to 20 Sentinel-1 scenes per insurance report and returned None every time since #17: it looked for
+  a `statistics` key `get_backscatter` never returns, and its tests mocked that key. Promoted: "Mocks match the real thing" (How to work). Gate: review only.
+- **2026-10-07** Migration b8d4f0a2c6e1 said "updated_at is left alone", but copying a page's scope to its timeline entries fired a trigger that
+  stamped all 34 live pages with the same updated_at, and the packet's viewport query (ORDER BY updated_at) lost the user's orthophoto. Rule: a
+  migration's claim about side effects is tested on a copy, including triggers it sets off. Gate: `tests/brain/test_brain_timeline_trigger.py`.
+- **2026-10-07** A Brain page with no access_scope was public: RLS granted NULL ("legacy rows pre-backfill"; the backfill never came) and put_page wrote
+  NULL by default, so one user's 33 pages (orthophotos, an insurance report) were readable by every user and partner through search_brain. Rule: a missing
+  value never grants access; access columns are NOT NULL with a fail-closed default. Gate: NOT NULL + `test_no_policy_grants_a_page_by_its_missing_scope`.
+- **2026-10-07** Sage's memory packet padded an empty result with the 8 newest Brain pages RLS showed: 7 were other owners' test pages
+  ("Rwanda has two rainy seasons"), and the user's own orthophoto page had been dropped by a filter that parsed only `layer-` slugs. Rule: context
+  put into a turn matches the question or the viewport and is in the user's scope; never pad it. Gate: `test_brain_context_packet.py`, `test_brain_user_scope.py`.
+- **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
+  command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
+  can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
+- **2026-10-07** `get_cell_ndvi_stats` ran a blocking 40 s satellite read per sector inside `async def`: one Sage question froze
+  every request (one uvicorn worker) for ~10 min, and no `wait_for` limit could fire. Rule: blocking I/O in async code goes
+  through `asyncio.to_thread` with a cap and a deadline. Gate: review only (blocking calls hide behind library functions).
 - **2026-10-06** WorkOS signed users out 13 times in a day: zero JWT leeway against a clock 0.5-0.9 s off, and the SDK's refresh dropped new tokens
   after spending the old refresh token; the mocked tests replaced `session.refresh` and saw none of it. Rule: token checks allow clock leeway, and code that
   spends a single-use credential keeps what it got back before checking it. Gate: `test_workos_auth.py` / `test_workos_session.py` (real SDK, fake clock).
@@ -171,7 +221,7 @@ lines; promote a lesson that recurs into the sections above.
   or crypto path has one test that runs the real library on a realistic secret, and a failure page never auto-redirects. Gate: review only (test_workos_auth seals for real).
 - **2026-10-05** Local test runs used the live database (mundidb): 4,727 test projects and ~431,000 brain pages (Barcelona shops,
   US counties) piled up among real data and were nearly assigned to BK as its knowledge. Rule: tests never touch the live database; run
-  them on a copy. Gate: conftest `_refuse_the_live_database` (CI marks its fresh DB with MUNDI_TEST_DB_IS_DISPOSABLE=1).
+  them on a copy. Gate: conftest `_refuse_the_live_database` (no override; CI runs on its own database, mundidb_ci).
 - **2026-10-04** Migration b2c3d4e5f6a7 downloaded Rwanda boundaries from geoboundaries.org and raised on
   failure; the API timed out and CI failed on unchanged code. Rule: migrations read seed data from vendored
   files, never the network. Gate: `tests/test_rwanda_boundary_seed_offline.py` (network blocked).

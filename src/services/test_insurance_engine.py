@@ -2,7 +2,7 @@
 
 Part 1: Pure function tests (no DB/API required).
 Part 2: Mocked async tests for DB/API functions:
-  _load_triggers, _fetch_ndvi_anomaly, compute_insurance_intelligence,
+  _load_triggers, compute_insurance_intelligence,
   _resolve_location_name, compute_insurance_accuracy_safe
 """
 
@@ -28,8 +28,7 @@ from src.services.insurance_engine import (
     _climatology_rainfall,
     _default_triggers,
     _evaluate_triggers,
-    _fetch_ndvi_anomaly,
-    _fetch_sar_backscatter,
+    _season_ndvi_anomaly,
     _flatten_coords,
     _generate_recommendation,
     _load_triggers,
@@ -814,110 +813,23 @@ class TestResolveLocationName:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_ndvi_anomaly (mock conn)
+# _season_ndvi_anomaly
 # ---------------------------------------------------------------------------
 
-class TestFetchNdviAnomaly:
-    def test_with_district(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": -0.85}
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result == pytest.approx(-0.85)
-        conn.fetchrow.assert_called_once()
-        call_sql = conn.fetchrow.call_args[0][0]
-        assert "LOWER(district)" in call_sql
+class TestSeasonNdviAnomaly:
+    ANOMALY = {"month": "2026-09", "z": -0.76, "ndvi": 0.38, "clear_fraction": 0.99, "source": "DEA"}
 
-    def test_without_district(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": 0.3}
-        result = _run(_fetch_ndvi_anomaly(conn, district=None))
-        assert result == pytest.approx(0.3)
-        call_sql = conn.fetchrow.call_args[0][0]
-        assert "LOWER(district)" not in call_sql
+    def test_a_month_mostly_in_the_season_is_the_seasons_anomaly(self):
+        assert _season_ndvi_anomaly(self.ANOMALY, date(2026, 9, 15)) == (-0.76, "2026-09")  # 16 days
 
-    def test_no_data_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": None}
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result is None
+    def test_a_month_mostly_before_planting_says_nothing_about_the_crop(self):
+        assert _season_ndvi_anomaly(self.ANOMALY, date(2026, 9, 17)) == (None, None)  # 14 days
 
-    def test_no_rows_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.return_value = None
-        result = _run(_fetch_ndvi_anomaly(conn))
-        assert result is None
+    def test_a_month_too_cloudy_to_tell_is_missing_not_zero(self):
+        assert _season_ndvi_anomaly({**self.ANOMALY, "z": None}, date(2026, 9, 1)) == (None, None)
 
-    def test_exception_returns_none(self):
-        conn = AsyncMock()
-        conn.fetchrow.side_effect = Exception("connection lost")
-        result = _run(_fetch_ndvi_anomaly(conn, district="Musanze"))
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _fetch_sar_backscatter (mock sentinel1_service)
-# ---------------------------------------------------------------------------
-
-class TestFetchSarBackscatter:
-    def test_linear_power_values(self):
-        """VH=0.05, VV=0.3 in linear power → ratio 0.167"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result == pytest.approx(0.05 / 0.3, rel=1e-4)
-
-    def test_db_values_converted_to_linear_ratio(self):
-        """VH=-20dB, VV=-12dB → linear ratio = 10^((-20-(-12))/10) ≈ 0.158"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -20.0}, "vv": {"mean": -12.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-20.0 - (-12.0)) / 10)  # ≈ 0.158
-        assert result == pytest.approx(expected, rel=1e-4)
-        assert 0.1 < result < 0.3  # sanity: within expected VH/VV range
-
-    def test_db_values_typical_vegetation(self):
-        """VH=-15dB, VV=-8dB → healthy vegetation, ratio ≈ 0.2"""
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": -15.0}, "vv": {"mean": -8.0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        expected = 10 ** ((-15.0 - (-8.0)) / 10)  # ≈ 0.2
-        assert result == pytest.approx(expected, rel=1e-4)
-
-    def test_service_error_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.side_effect = Exception("service down")
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_missing_stats_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {}}
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
-
-    def test_vv_zero_returns_none(self):
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {
-            "status": "success",
-            "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0}},
-        }
-        with patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc):
-            result = _run(_fetch_sar_backscatter(1.5, 29.5, "2025-10-01", "2025-11-15"))
-        assert result is None
+    def test_no_published_month_is_missing(self):
+        assert _season_ndvi_anomaly(None, date(2026, 9, 1)) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -930,7 +842,6 @@ class TestValidAudiences:
 
     def test_invalid_audience_clamped_to_farmer(self):
         conn = AsyncMock()
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         conn.fetch.return_value = []
 
         from contextlib import ExitStack
@@ -942,12 +853,9 @@ class TestValidAudiences:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=({}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=None))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=None))
-        svc = MagicMock()
-        svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=svc))
-        pred = MagicMock()
-        pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
 
         with stack:
             result = _run(compute_insurance_intelligence(
@@ -1049,10 +957,9 @@ class TestComputeInsuranceIntelligence:
             {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
             {"signal": "spi", "direction": "below", "threshold": -1.0, "weight": 0.8, "description": "Drought"},
         ]
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
-    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None, sar=None):
+    def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
         """Return a contextlib.ExitStack context manager with all external deps patched."""
         from contextlib import ExitStack
         stack = ExitStack()
@@ -1063,13 +970,9 @@ class TestComputeInsuranceIntelligence:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        # SAR services — cloud-penetrating fallback
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = sar or {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
-        sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
         return stack
 
     def test_returns_ok_with_district(self):
@@ -1098,6 +1001,19 @@ class TestComputeInsuranceIntelligence:
             ))
         assert result["status"] == "ok"
         assert result["data"]["season"] == "B"
+
+    def test_a_report_reads_no_sentinel1_backscatter(self):
+        """The VH/VV read fetched up to 20 scenes and was always discarded (get_backscatter returns scenes,
+        never statistics): 34 s of a report for nothing. The SAR trigger stays out until there is a source."""
+        conn = self._mock_conn()
+        conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the SAR trigger
+        with self._patches(), patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        s1.assert_not_called()
+        assert "sar_backscatter" in {t["signal"] for t in _default_triggers("full_season")}
+        assert "sar_backscatter" not in {t["signal"] for t in result["data"]["triggers"]}
 
     def test_geometry_used_for_centroid(self):
         conn = self._mock_conn()
@@ -1152,6 +1068,158 @@ class TestComputeInsuranceIntelligence:
             assert "rainfall_cumulative" not in [t["signal"] for t in result["data"]["triggers"]]
             assert "do not cover the season yet" in result["report"]
 
+    @staticmethod
+    def _timed(coro):
+        """(result, seconds the coroutine took), timed inside the loop."""
+        import time as _time
+
+        async def timed():
+            started = _time.monotonic()
+            result = await coro
+            return result, _time.monotonic() - started
+        return _run(timed())
+
+    def test_a_read_that_misses_the_deadline_is_missing_and_named(self, monkeypatch):
+        """2026-10-07: slow sources held one report past Sage's 120 s tool limit, so Sage answered without
+        any of it. The report now goes out at the deadline with what arrived and names what it left out."""
+        import time as _time
+        import src.services.insurance_engine as engine
+
+        monkeypatch.setattr(engine, "_FETCH_DEADLINE_S", 0.6)
+        soil = {"status": "success", "time_series": [{"relative_soil_moisture_pct": 40.0}]}
+        conn = self._mock_conn()
+
+        def slow_soil(*args, **kwargs):
+            _time.sleep(2)
+            return soil
+
+        with self._patches(soil=soil), patch("src.services.wapor_service.query_soil_moisture", side_effect=slow_soil):
+            result, took = self._timed(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 1.5
+        assert result["status"] == "ok"
+        assert result["data"]["soil_moisture_pct"] is None
+        assert result["data"]["not_read_in_time"] == ["WaPOR soil moisture"]
+        assert "WaPOR soil moisture" in result["coverage"] and "not zero" in result["coverage"]
+        assert result["coverage"] in result["report"]
+
+    def test_a_slow_ndvi_anomaly_read_is_missing_and_named(self, monkeypatch):
+        import time as _time
+        import src.services.insurance_engine as engine
+
+        monkeypatch.setattr(engine, "_FETCH_DEADLINE_S", 0.6)
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+
+        def slow_anomaly(*args, **kwargs):
+            _time.sleep(2)
+            return {"month": "2025-10", "z": -2.0, "ndvi": 0.3, "clear_fraction": 0.9, "source": "DEA"}
+
+        with self._patches(geom=geom), patch("src.services.deafrica_stac.area_ndvi_anomaly", side_effect=slow_anomaly):
+            result, took = self._timed(compute_insurance_intelligence(
+                self._mock_conn(), crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 1.5
+        assert result["data"]["ndvi_z_score"] is None
+        assert result["data"]["not_read_in_time"] == ["Digital Earth Africa NDVI anomaly"]
+
+    def test_a_report_with_every_read_in_time_has_no_coverage_note(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert result["data"]["not_read_in_time"] == []
+        assert "coverage" not in result
+        assert "Left out of this report" not in result["report"]
+
+    def test_network_reads_run_together_and_alongside_the_database(self):
+        """They used to queue: each started only after the one before and the database reads."""
+        import time as _time
+
+        def slow(value):
+            def read(*args, **kwargs):
+                _time.sleep(0.4)
+                return value
+            return read
+
+        async def slow_db(*args, **kwargs):
+            await asyncio.sleep(0.4)
+            return None
+
+        conn = self._mock_conn()
+        with self._patches(), \
+                patch("src.services.forecast_fusion.fetch_chirps_daily", side_effect=slow(({}, set()))), \
+                patch("src.services.wapor_service.query_et", side_effect=slow(None)), \
+                patch("src.services.wapor_service.query_soil_moisture", side_effect=slow(None)), \
+                patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", side_effect=slow(None)), \
+                patch("src.services.weather_accuracy.detect_dry_spells", side_effect=slow_db):
+            result, took = self._timed(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert took < 0.75  # four 0.4 s reads and a 0.4 s query at once, not 2.0 s in a row
+        assert result["data"]["not_read_in_time"] == []
+
+    def test_a_report_stopped_early_leaves_no_read_waiting(self):
+        """Sage stops a tool at its time limit; the reads the report started must not be left pending."""
+        async def stuck_db(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        async def stop_early():
+            report = asyncio.ensure_future(compute_insurance_intelligence(
+                self._mock_conn(), crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+            await asyncio.sleep(0.2)
+            report.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await report
+            await asyncio.sleep(0)
+            return [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
+
+        def slow_et(*args, **kwargs):
+            import time as _time
+            _time.sleep(1)  # still running when the report is stopped
+
+        with self._patches(), patch("src.services.weather_accuracy.detect_dry_spells", side_effect=stuck_db), \
+                patch("src.services.wapor_service.query_et", side_effect=slow_et):
+            assert _run(stop_early()) == []
+
+    def test_the_ndvi_z_score_is_the_areas_monthly_anomaly(self):
+        conn = self._mock_conn()
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+        anomaly = {"month": "2025-10", "z": -0.5, "ndvi": 0.41, "clear_fraction": 0.9,
+                   "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"}
+        with self._patches(geom=geom), \
+                patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=anomaly) as read:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        assert read.call_args.args == (geom, date(2025, 11, 15))  # the area itself, months ended by the report date
+        assert result["data"]["ndvi_z_score"] == -0.5
+        assert result["data"]["ndvi_month"] == "2025-10"
+        assert "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2025-10" in result["data"]["sources"]
+        assert "NDVI z-score: -0.50 (2025-10, against 1984-2020)" in result["report"]
+
+    def test_without_an_optical_anomaly_the_ndvi_z_score_is_missing(self):
+        """2026-10-07: a missing NDVI anomaly used to be filled with a Sentinel-1 prediction scored against
+        invented constants (0.45 +/- 0.15), which did not follow optical NDVI (docs/SAR_NDVI_SKILL.md) and
+        could fire the NDVI trigger. Now the z-score is missing and its trigger is left out."""
+        conn = self._mock_conn()
+        conn.fetch.side_effect = Exception("no insurance_triggers table")  # the defaults include the NDVI trigger
+        geom = {"type": "Polygon", "coordinates": [[[29.5, -1.6], [29.7, -1.6], [29.7, -1.4], [29.5, -1.6]]]}
+        with self._patches(geom=geom), patch("src.services.sar_ndvi.get_sar_ndvi_predictor") as sar_ndvi, \
+                patch("src.services.sentinel1_service.get_sentinel1_service") as s1:
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+            ))
+        sar_ndvi.assert_not_called()
+        s1.assert_not_called()
+        assert result["data"]["ndvi_z_score"] is None
+        assert "ndvi_z_score" in {t["signal"] for t in _default_triggers("full_season")}
+        assert "ndvi_z_score" not in {t["signal"] for t in result["data"]["triggers"]}
+        assert not any("NDVI" in s for s in result["data"]["sources"])
+        assert "NDVI z-score" not in result["report"]  # the agronomist report's NDVI line
+
     def test_dry_spells_flow_through(self):
         conn = self._mock_conn()
         dry_result = {"status": "success", "longest_spell_days": 12, "dry_spells": [{"duration_days": 12, "ongoing": False}]}
@@ -1201,10 +1269,31 @@ class TestComputeInsuranceIntelligence:
             result = _run(compute_insurance_intelligence(
                 conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
             ))
-        # Slug format is now `insurance-{location}-{season}-{YYYYMMDD}`
-        # (insurance_engine.py:1826) — crop was removed because reports are
+        # Slug format is `insurance-{location}-{season}-{YYYYMMDD}[-{owner}]`
+        # (insurance_page_slug) — crop was removed because reports are
         # location-based, not crop-specific.
         assert result["slug"].startswith("insurance-musanze-")
+
+    def test_slug_names_the_owner_in_the_form_the_brain_stores(self):
+        conn = self._mock_conn()
+        with self._patches():
+            result = _run(compute_insurance_intelligence(
+                conn, crop="maize", district="Musanze", ref_date=date(2025, 11, 15),
+                season="A", owner_uuid="6D900EAE-ca15-55df-8b9c-eb547876165d",
+            ))
+        assert result["slug"] == "insurance-musanze-a-20251115-6d900eae"
+
+    def test_two_users_same_place_same_day_get_two_slugs(self):
+        from src.services.insurance_engine import insurance_page_slug
+        day = date(2026, 10, 6)
+        a = insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+        b = insurance_page_slug("Gatsibo", "A", day, "2dd65169-166c-4192-89d5-c7de02cc91a3")
+        assert a != b
+        assert a == insurance_page_slug("Gatsibo", "A", day, "6d900eae-ca15-55df-8b9c-eb547876165d")
+
+    def test_slug_without_an_owner_has_no_owner_part(self):
+        from src.services.insurance_engine import insurance_page_slug
+        assert insurance_page_slug("Kiyovu Cell", "B", date(2026, 3, 1)) == "insurance-kiyovu-cell-b-20260301"
 
     def test_accuracy_result_used_when_available(self):
         conn = self._mock_conn()
@@ -1425,7 +1514,6 @@ class TestOrchestratorEdgeCases:
         conn.fetch.return_value = [
             {"signal": "rainfall_cumulative", "direction": "below", "threshold": 100.0, "weight": 1.0, "description": "Low rain"},
         ]
-        conn.fetchrow.return_value = {"mean_z": -0.5}
         return conn
 
     def _patches(self, *, geom=None, season="A", acc=None, dry=None, conc=None, chirps=None, et=None, soil=None):
@@ -1438,12 +1526,9 @@ class TestOrchestratorEdgeCases:
         stack.enter_context(patch("src.services.forecast_fusion.fetch_chirps_daily", return_value=(chirps or {}, set())))
         stack.enter_context(patch("src.services.wapor_service.query_et", return_value=et))
         stack.enter_context(patch("src.services.wapor_service.query_soil_moisture", return_value=soil))
-        sar_svc = MagicMock()
-        sar_svc.get_backscatter.return_value = {"status": "success", "statistics": {"vh": {"mean": 0.05}, "vv": {"mean": 0.3}}}
-        stack.enter_context(patch("src.services.sentinel1_service.get_sentinel1_service", return_value=sar_svc))
-        sar_ndvi_pred = MagicMock()
-        sar_ndvi_pred.predict_ndvi.return_value = {"status": "success", "predicted_ndvi": 0.45}
-        stack.enter_context(patch("src.services.sar_ndvi.get_sar_ndvi_predictor", return_value=sar_ndvi_pred))
+        # No live forecast in unit tests (it called Open-Meteo, ~2.4 s a test)
+        stack.enter_context(patch("src.services.forecast_openmeteo.fetch_openmeteo_multimodel", return_value=None))
+        stack.enter_context(patch("src.services.deafrica_stac.area_ndvi_anomaly", return_value=None))
         return stack
 
     def test_dap_negative_correction(self):
@@ -1759,7 +1844,7 @@ class TestBrainServicePutPageParams:
         assert geom in positional
 
     def test_coalesce_on_conflict_preserves_existing_scope(self):
-        """ON CONFLICT UPDATE uses COALESCE so NULL excluded doesn't overwrite existing."""
+        """No scope given: a new page is private, an existing page keeps its scope."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()
@@ -1768,11 +1853,13 @@ class TestBrainServicePutPageParams:
         page = PageInput(type="t", title="t", compiled_truth="c")
         _run(brain.put_page(conn, "test-page", page, owner_uuid="o"))
         sql = conn.fetchrow.call_args[0][0]
-        assert "COALESCE(EXCLUDED.access_scope, brain_pages.access_scope)" in sql
+        assert "COALESCE($11::text, 'private')" in sql
+        assert "COALESCE($11::text, brain_pages.access_scope)" in sql
         assert "COALESCE(EXCLUDED.partner_id, brain_pages.partner_id)" in sql
 
     def test_default_scope_is_none(self):
-        """When access_scope/partner_id not provided, None should be passed."""
+        """When access_scope/partner_id not provided, None is passed (the SQL
+        makes a new page private and keeps an existing page's scope)."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
         conn = AsyncMock()
@@ -1785,18 +1872,18 @@ class TestBrainServicePutPageParams:
         assert positional[11] is None  # partner_id ($12)
 
     def test_partner_filter_constant_structure(self):
-        """_PARTNER_FILTER SQL constant must check access_scope and partner_id via GUC."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "access_scope" in _PARTNER_FILTER
-        assert "partner_id" in _PARTNER_FILTER
-        assert "current_setting('app.partner_id'" in _PARTNER_FILTER
-        assert "partner_internal" in _PARTNER_FILTER
+        """PAGE_SCOPE_FILTER SQL constant must check access_scope and partner_id via GUC."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "access_scope" in PAGE_SCOPE_FILTER
+        assert "partner_id" in PAGE_SCOPE_FILTER
+        assert "current_setting('app.partner_id'" in PAGE_SCOPE_FILTER
+        assert "partner_internal" in PAGE_SCOPE_FILTER
 
     def test_partner_filter_alias_placeholder(self):
-        """_PARTNER_FILTER should use {a} placeholder for table alias."""
-        from src.services.brain_service import _PARTNER_FILTER
-        assert "{a}" in _PARTNER_FILTER
-        formatted = _PARTNER_FILTER.format(a="p.")
+        """PAGE_SCOPE_FILTER should use {a} placeholder for table alias."""
+        from src.services.brain_service import PAGE_SCOPE_FILTER
+        assert "{a}" in PAGE_SCOPE_FILTER
+        formatted = PAGE_SCOPE_FILTER.format(a="p.")
         assert "p.access_scope" in formatted
         assert "p.partner_id" in formatted
 

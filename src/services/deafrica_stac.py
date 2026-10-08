@@ -34,15 +34,21 @@ Environment:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 import numpy as np
+
+from src.services import raster_process
+from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+from src.services.stac_service import SCL_UNUSABLE, stac_datetime_interval
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +68,6 @@ MAX_WINDOW_PIXELS = 4_000_000
 
 _STAC_ROOT = "https://explorer.digitalearth.africa/stac"
 _STAC_SEARCH = f"{_STAC_ROOT}/search"
-
-# SCL values that should be masked as invalid (matches EVALSCRIPT_AGRI_INDICES).
-# 0=nodata, 1=saturated, 3=cloudShadow, 8=cloudMed, 9=cloudHigh, 10=cirrus, 11=snow
-_SCL_INVALID = {0, 1, 3, 8, 9, 10, 11}
 
 # Index → required bands. B08 NIR, B04 Red, B03 Green, B02 Blue, B05 RedEdge, B11 SWIR1.
 _INDEX_BANDS: Dict[str, Tuple[str, ...]] = {
@@ -122,6 +124,10 @@ def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
     raise ValueError(f"Unsupported index '{index}' for DE Africa service")
 
 
+class DEAfricaSearchError(Exception):
+    """The DE Africa scene search failed, which is not the same as finding no scenes."""
+
+
 def _search_s2_items(
     bbox: Tuple[float, float, float, float],
     date_from: str,
@@ -134,14 +140,16 @@ def _search_s2_items(
     Uses GET against the collection /items endpoint — DE Africa's STAC
     server rejects POST /search with 403, but GET with query params works.
     Cloud-cover filter is applied client-side after the response lands.
+    Raises DEAfricaSearchError when the search fails (2026-10-07: it returned
+    [], which callers reported as "no scenes matched").
     """
     url = f"{_STAC_ROOT}/collections/s2_l2a/items"
-    params = {
-        "bbox": ",".join(str(x) for x in bbox),
-        "datetime": f"{date_from}T00:00:00Z/{date_to}T23:59:59Z",
-        "limit": str(limit),
-    }
     try:
+        params = {
+            "bbox": ",".join(str(x) for x in bbox),
+            "datetime": stac_datetime_interval(f"{date_from}/{date_to}"),
+            "limit": str(limit),
+        }
         r = httpx.get(
             url,
             params=params,
@@ -153,8 +161,7 @@ def _search_s2_items(
         r.raise_for_status()
         features = r.json().get("features", [])
     except Exception as e:
-        logger.warning("DE Africa STAC search failed: %s", e)
-        return []
+        raise DEAfricaSearchError(f"DE Africa scene search failed: {e}") from e
     # Client-side cloud filter (collection /items endpoint does not
     # support CQL query params reliably across STAC servers).
     features = [
@@ -237,13 +244,16 @@ def _search_collection_items(
     collection: str,
     bbox: Tuple[float, float, float, float],
     limit: int = 1,
+    datetime_range: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Search a DE Africa STAC collection for the most recent item covering bbox."""
+    """Search a DE Africa STAC collection for items covering bbox (within datetime_range when given)."""
     url = f"{_STAC_ROOT}/collections/{collection}/items"
     params = {
         "bbox": ",".join(str(x) for x in bbox),
         "limit": str(limit),
     }
+    if datetime_range:
+        params["datetime"] = datetime_range
     try:
         r = httpx.get(
             url,
@@ -322,6 +332,115 @@ def _cached_cropland(bbox: Tuple[float, float, float, float]) -> Optional[Tuple[
     except (ValueError, IndexError):
         data_year = datetime.utcnow().year
     return (fraction, data_year)
+
+
+# --- Monthly NDVI anomaly -------------------------------------------------------
+# Digital Earth Africa's `ndvi_anomaly`: per 30 m pixel and calendar month, the mean NDVI of the
+# month's clear Landsat 8/9 and Sentinel-2 views as a standardised anomaly against that month in the
+# 1984-2020 Landsat NDVI climatology (`ndvi_climatology_ls`). A month is published a few days after it
+# ends (September 2026 on 2026-10-05). Bands: ndvi_mean, ndvi_std_anomaly, clear_count.
+NDVI_ANOMALY_SOURCE = "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+# Below this share of an area's pixels with a clear view in the month, the area's anomaly is unknown:
+# the clear part need not look like the rest (missing is not zero).
+NDVI_ANOMALY_MIN_CLEAR = 0.3
+# How far back to look for the latest published month: two months and the publication delay.
+_NDVI_ANOMALY_LOOKBACK_DAYS = 70
+
+
+def area_ndvi_anomaly(geometry: Dict[str, Any], not_after: date) -> Optional[Dict[str, Any]]:
+    """NDVI anomaly of an area (GeoJSON, WGS84) for the latest published month ended by `not_after`.
+
+    Returns {"month": "YYYY-MM", "z": mean standardised anomaly of the area's clear pixels (None
+    below NDVI_ANOMALY_MIN_CLEAR), "ndvi": their mean NDVI (None likewise), "clear_fraction",
+    "source"}, or None when no month ended in the last ~two is published for the area.
+    """
+    start = not_after - timedelta(days=_NDVI_ANOMALY_LOOKBACK_DAYS)
+    items = _search_collection_items(
+        "ndvi_anomaly", _bbox_from_geojson(geometry), limit=50,
+        datetime_range=stac_datetime_interval(f"{start.isoformat()}/{not_after.isoformat()}"),
+    )
+    by_month: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        props = item.get("properties", {})
+        ended = (props.get("end_datetime") or "")[:10]
+        if ended and ended <= not_after.isoformat():
+            by_month.setdefault(props.get("datetime", "")[:7], []).append(item)
+    if not by_month:
+        return None
+    month = max(by_month)
+    hrefs = tuple(sorted(
+        tuple(item["assets"][band]["href"] for band in ("ndvi_std_anomaly", "ndvi_mean", "clear_count"))
+        for item in by_month[month]
+    ))
+    return {"month": month, **_area_month_anomaly(json.dumps(geometry, sort_keys=True), hrefs),
+            "source": NDVI_ANOMALY_SOURCE}
+
+
+@lru_cache(maxsize=256)  # a published month does not change; a failed read raises and is not kept
+def _area_month_anomaly(geometry_json: str, hrefs: Tuple[Tuple[str, str, str], ...]) -> Dict[str, Any]:
+    """z, ndvi and clear_fraction of one area over one month's tiles ((anomaly, ndvi, count) hrefs)."""
+    def read(tile: Tuple[str, str, str]) -> Tuple[str, Any]:
+        try:
+            return raster_process.run(_area_tile_raw, geometry_json, tile, GDAL_HTTP_TIMEOUTS)
+        except Exception as e:  # the worker died or never answered
+            return "error", f"raster worker: {e!r}"
+
+    z_sum = ndvi_sum = 0.0
+    clear_pixels, area_pixels = 0, None
+    with ThreadPoolExecutor(max_workers=raster_process.WORKERS) as pool:  # a large district spans several tiles
+        answers = list(pool.map(read, hrefs))
+    for tile, (kind, got) in zip(hrefs, answers):
+        if kind == "error":
+            logger.warning("DE Africa NDVI anomaly read failed for %s: %s", tile[0], got)
+            raise RuntimeError(f"NDVI anomaly tile not read: {got}")
+        if kind == "sums":
+            tile_z, tile_ndvi, tile_clear, area_pixels = got
+            z_sum, ndvi_sum, clear_pixels = z_sum + tile_z, ndvi_sum + tile_ndvi, clear_pixels + tile_clear
+    clear_fraction = min(1.0, clear_pixels / area_pixels) if area_pixels else 0.0
+    known = clear_fraction >= NDVI_ANOMALY_MIN_CLEAR and clear_pixels > 0
+    return {
+        "z": round(z_sum / clear_pixels, 2) if known else None,
+        "ndvi": round(ndvi_sum / clear_pixels, 3) if known else None,
+        "clear_fraction": round(clear_fraction, 2),
+    }
+
+
+def _area_tile_raw(geometry_json: str, tile: Tuple[str, str, str], env: Dict[str, str]) -> Tuple[str, Any]:
+    """In a raster worker (raster_process): the area's clear pixels in one tile, summed.
+
+    ("sums", (sum of anomaly, sum of NDVI, clear pixels, area in pixels)) over the area's pixels with
+    a clear view, ("outside", None) when the area misses the tile, or ("error", message). Sums, not
+    arrays: a district is ~2 million pixels a band, too much to send back between processes.
+    No logging here: the caller logs.
+    """
+    import rasterio  # lazy: rasterio/GDAL stack, loaded in the raster worker
+    from rasterio.errors import WindowError  # lazy: rasterio/GDAL stack
+    from rasterio.features import geometry_mask  # lazy: rasterio/GDAL stack
+    from rasterio.warp import transform_geom  # lazy: rasterio/GDAL stack
+    from rasterio.windows import Window, from_bounds  # lazy: rasterio/GDAL stack
+    from shapely.geometry import shape  # lazy: as _bbox_from_geojson
+
+    geometry = json.loads(geometry_json)
+    bands, area_pixels = [], 0.0
+    try:
+        with rasterio.Env(**env):
+            for href in tile:
+                with rasterio.open(href) as src:
+                    geom = transform_geom("EPSG:4326", src.crs, geometry)
+                    area_pixels = shape(geom).area / abs(src.res[0] * src.res[1])
+                    win = from_bounds(*shape(geom).bounds, transform=src.transform).round_offsets().round_lengths()
+                    try:
+                        win = win.intersection(Window(0, 0, src.width, src.height))
+                    except WindowError:
+                        return "outside", None
+                    arr = src.read(1, window=win).astype("float64")
+                    inside = geometry_mask([geom], out_shape=arr.shape, transform=src.window_transform(win), invert=True)
+                    bands.append(arr[inside])
+    except Exception as e:
+        return "error", str(e)
+    z, ndvi, clear = bands
+    ok = np.isfinite(z) & np.isfinite(ndvi) & (clear > 0)
+    return "sums", (float(z[ok].sum()), float(ndvi[ok].sum()), int(ok.sum()), area_pixels)
 
 
 def enrich_with_validation(
@@ -413,7 +532,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
@@ -462,7 +585,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays[next(iter(needed_bands))] > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays[next(iter(needed_bands))] > 0)
             idx_arr = _compute_index(band_arrays, index)
             stats = _stats_from_array(idx_arr, valid)
 
@@ -512,7 +635,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
@@ -576,7 +703,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(max_shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
 
             dt = item["properties"].get("datetime", "")
             parsed: Dict[str, Any] = {

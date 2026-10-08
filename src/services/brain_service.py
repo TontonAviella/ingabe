@@ -29,16 +29,40 @@ import asyncpg
 MAX_SEARCH_LIMIT = 100
 _DEFAULT_LIMIT = 20
 
-# Application-layer partner filter (defense-in-depth alongside RLS).
-# {a} is the table alias prefix, e.g. "p." or "" for unaliased brain_pages.
-_PARTNER_FILTER = """
-    AND (
-        {a}access_scope IS NULL
-        OR {a}access_scope = 'public'
-        OR ({a}access_scope = 'partner_internal'
-            AND {a}partner_id::text = coalesce(
-                current_setting('app.partner_id', true), ''))
-    )
+# The session's user owns the page or was shared on it. NULLIF: an empty
+# app.user_id (worker context) must never be cast to uuid
+# (feedback_rls_nullif_uuid_cast); NULL = ANY(...) is not a match.
+_SESSION_USER_IS_MEMBER = """(
+            {a}owner_uuid::text = current_setting('app.user_id', true)
+            OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY({a}viewer_uuids)
+            OR NULLIF(current_setting('app.user_id', true), '')::uuid = ANY({a}editor_uuids)
+        )"""
+
+# Application-layer scope filter (defense-in-depth alongside RLS): the one
+# definition of which Brain pages a session may read; other modules format it
+# instead of copying it. {a} is the brain_pages alias prefix, e.g. "p." or ""
+# for unaliased brain_pages.
+#
+# Scopes (migration b8d4f0a2c6e1): 'private' pages are read by their owner,
+# viewers and editors, and by workers (empty app.user_id: the hook processor
+# and the embeddings backfill must still reach them); 'public' by everyone;
+# 'partner_internal' by the session's partner; 'mundi_only' through admin
+# tools only. Until 2026-10-07 a page with no scope counted as public here
+# and in RLS, so every user's pages reached every other user.
+#
+# A CASE, like the partner_isolation policy: written as an OR of scope
+# equalities, the planner answered it with a BitmapOr over
+# idx_brain_pages_scope_partner covering ~98% of the table (search_keyword,
+# 100k pages, 2026-10-07).
+PAGE_SCOPE_FILTER = f"""
+    AND CASE {{a}}access_scope
+        WHEN 'public' THEN true
+        WHEN 'partner_internal' THEN {{a}}partner_id::text = coalesce(
+            current_setting('app.partner_id', true), '')
+        WHEN 'private' THEN coalesce(current_setting('app.user_id', true), '') = ''
+            OR {_SESSION_USER_IS_MEMBER}
+        ELSE false
+    END
 """
 
 # Agricultural page types for Rwanda insurance
@@ -186,6 +210,11 @@ def _validate_slug(slug: str) -> str:
     return slug
 
 
+def _like_escape(text: str) -> str:
+    """Escape LIKE wildcards: slugs may contain `_`."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+?)(?:\|[^\]]+?)?\]\]")
 _FRONTMATTER_REF_KEYS = {"related", "see_also", "links", "references", "parent", "children"}
 
@@ -298,7 +327,7 @@ class BrainService:
                    content_hash, owner_uuid, viewer_uuids, editor_uuids,
                    created_at, updated_at
             FROM brain_pages WHERE slug = $1
-            {_PARTNER_FILTER.format(a="")}
+            {PAGE_SCOPE_FILTER.format(a="")}
             """,
             slug,
         )
@@ -315,6 +344,13 @@ class BrainService:
         access_scope: Optional[str] = None,
         partner_id: Optional[str] = None,
     ) -> Page:
+        """Create or update a page.
+
+        access_scope: None makes a new page 'private' (its owner, viewers and
+        editors) and leaves an existing page's scope as it is. Pass 'public'
+        or 'partner_internal' (with partner_id) to share it. Until 2026-10-07
+        None meant NULL, which RLS read as public.
+        """
         slug = _validate_slug(slug)
         content_hash = page.content_hash or _content_hash(page)
         frontmatter = json.dumps(page.frontmatter or {})
@@ -330,7 +366,7 @@ class BrainService:
                      access_scope, partner_id,
                      geom, updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                        $11, $12::uuid,
+                        COALESCE($11::text, 'private'), $12::uuid,
                         ST_SetSRID(ST_GeomFromGeoJSON($13), 4326), now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
@@ -339,7 +375,7 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
-                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    access_scope = COALESCE($11::text, brain_pages.access_scope),
                     partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     geom = EXCLUDED.geom,
                     updated_at = now()
@@ -362,7 +398,7 @@ class BrainService:
                      access_scope, partner_id,
                      updated_at)
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                        $11, $12::uuid,
+                        COALESCE($11::text, 'private'), $12::uuid,
                         now())
                 ON CONFLICT (slug) DO UPDATE SET
                     type = EXCLUDED.type,
@@ -371,7 +407,7 @@ class BrainService:
                     timeline = EXCLUDED.timeline,
                     frontmatter = EXCLUDED.frontmatter,
                     content_hash = EXCLUDED.content_hash,
-                    access_scope = COALESCE(EXCLUDED.access_scope, brain_pages.access_scope),
+                    access_scope = COALESCE($11::text, brain_pages.access_scope),
                     partner_id = COALESCE(EXCLUDED.partner_id, brain_pages.partner_id),
                     updated_at = now()
                 RETURNING id, slug, type, title, compiled_truth, timeline, frontmatter,
@@ -517,7 +553,7 @@ class BrainService:
         """
         from src.services.brain_facts_fence import flag_regressions
 
-        pf = _PARTNER_FILTER.format(a="bp.")
+        pf = PAGE_SCOPE_FILTER.format(a="bp.")
         rows = await conn.fetch(
             f"""
             SELECT bf.valid_from, bf.value, bf.value_numeric, bf.unit,
@@ -556,8 +592,8 @@ class BrainService:
         limit: int = 100,
         offset: int = 0,
     ) -> list[Page]:
-        pf = _PARTNER_FILTER.format(a="p.")
-        pf_bare = _PARTNER_FILTER.format(a="")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
+        pf_bare = PAGE_SCOPE_FILTER.format(a="")
         if type and tag:
             rows = await conn.fetch(
                 f"""
@@ -600,25 +636,33 @@ class BrainService:
             )
         return [_row_to_page(r) for r in rows]
 
-    async def resolve_slugs(self, conn: asyncpg.Connection, partial: str) -> list[str]:
-        pf = _PARTNER_FILTER.format(a="")
-        exact = await conn.fetch(
-            f"SELECT slug FROM brain_pages WHERE slug = $1 {pf}", partial
-        )
-        if exact:
-            return [exact[0]["slug"]]
+    async def slugs_in_user_scope(
+        self, conn: asyncpg.Connection, slugs: list[str]
+    ) -> set[str]:
+        """The slugs among `slugs` that are in the session user's own scope.
 
-        fuzzy = await conn.fetch(
+        In scope: pages the user owns or was shared on, public pages, and their
+        partner's internal pages. In a user's session that is exactly
+        PAGE_SCOPE_FILTER; in a session with no user (worker context) the
+        filter shows every private page, and this leaves them out. Test pages
+        of random owners reached Sage's memory packet on 2026-10-07, when a
+        page with no scope still counted as public.
+        """
+        if not slugs:
+            return set()
+        rows = await conn.fetch(
             f"""
-            SELECT slug, similarity(title, $1) AS sim
-            FROM brain_pages
-            WHERE (title %% $1 OR slug ILIKE '%' || $1 || '%')
-            {pf}
-            ORDER BY sim DESC LIMIT 5
+            SELECT slug FROM brain_pages
+            WHERE slug = ANY($1::text[])
+            {PAGE_SCOPE_FILTER.format(a="")}
+            AND (
+                access_scope IN ('public', 'partner_internal')
+                OR {_SESSION_USER_IS_MEMBER.format(a="")}
+            )
             """,
-            partial,
+            slugs,
         )
-        return [r["slug"] for r in fuzzy]
+        return {r["slug"] for r in rows}
 
     # ── Search ──────────────────────────────────────────────────
 
@@ -643,7 +687,7 @@ class BrainService:
                 WHERE p.search_vector @@ websearch_to_tsquery('english', $1)
                     AND ($4::text IS NULL OR p.type = $4)
                     AND p.slug != ALL($5::text[])
-                    {_PARTNER_FILTER.format(a="p.")}
+                    {PAGE_SCOPE_FILTER.format(a="p.")}
                 ORDER BY score DESC
                 LIMIT $2 OFFSET $3
             ),
@@ -697,7 +741,7 @@ class BrainService:
             WHERE cc.embedding IS NOT NULL
                 AND ($4::text IS NULL OR p.type = $4)
                 AND p.slug != ALL($5::text[])
-                {_PARTNER_FILTER.format(a="p.")}
+                {PAGE_SCOPE_FILTER.format(a="p.")}
             ORDER BY cc.embedding <=> $1::vector
             LIMIT $2 OFFSET $3
             """,
@@ -790,7 +834,7 @@ class BrainService:
                 FROM brain_pages p
                 LEFT JOIN brain_links l ON l.to_page_id = p.id
                 WHERE p.slug = ANY($1::text[])
-                {_PARTNER_FILTER.format(a="p.")}
+                {PAGE_SCOPE_FILTER.format(a="p.")}
                 GROUP BY p.slug
                 """,
                 slugs_with_scores,
@@ -901,7 +945,7 @@ class BrainService:
             SELECT cc.* FROM brain_content_chunks cc
             JOIN brain_pages p ON p.id = cc.page_id
             WHERE p.slug = $1
-            {_PARTNER_FILTER.format(a="p.")}
+            {PAGE_SCOPE_FILTER.format(a="p.")}
             ORDER BY cc.chunk_index
             """,
             slug,
@@ -963,8 +1007,8 @@ class BrainService:
             JOIN brain_pages f ON f.id = l.from_page_id
             JOIN brain_pages t ON t.id = l.to_page_id
             WHERE f.slug = $1
-            {_PARTNER_FILTER.format(a="f.")}
-            {_PARTNER_FILTER.format(a="t.")}
+            {PAGE_SCOPE_FILTER.format(a="f.")}
+            {PAGE_SCOPE_FILTER.format(a="t.")}
             """,
             slug,
         )
@@ -978,8 +1022,8 @@ class BrainService:
             JOIN brain_pages f ON f.id = l.from_page_id
             JOIN brain_pages t ON t.id = l.to_page_id
             WHERE t.slug = $1
-            {_PARTNER_FILTER.format(a="f.")}
-            {_PARTNER_FILTER.format(a="t.")}
+            {PAGE_SCOPE_FILTER.format(a="f.")}
+            {PAGE_SCOPE_FILTER.format(a="t.")}
             """,
             slug,
         )
@@ -993,7 +1037,7 @@ class BrainService:
             WITH RECURSIVE graph AS (
                 SELECT p.id, p.slug, p.title, p.type, 0 as depth
                 FROM brain_pages p WHERE p.slug = $1
-                {_PARTNER_FILTER.format(a="p.")}
+                {PAGE_SCOPE_FILTER.format(a="p.")}
 
                 UNION
 
@@ -1002,7 +1046,7 @@ class BrainService:
                 JOIN brain_links l ON l.from_page_id = g.id
                 JOIN brain_pages p2 ON p2.id = l.to_page_id
                 WHERE g.depth < $2
-                {_PARTNER_FILTER.format(a="p2.")}
+                {PAGE_SCOPE_FILTER.format(a="p2.")}
             )
             SELECT DISTINCT g.slug, g.title, g.type, g.depth,
                 coalesce(
@@ -1056,7 +1100,7 @@ class BrainService:
             f"""
             SELECT tag FROM brain_tags
             WHERE page_id = (SELECT id FROM brain_pages
-                             WHERE slug = $1 {_PARTNER_FILTER.format(a="")})
+                             WHERE slug = $1 {PAGE_SCOPE_FILTER.format(a="")})
             ORDER BY tag
             """,
             slug,
@@ -1093,7 +1137,7 @@ class BrainService:
         after: Optional[date] = None,
         before: Optional[date] = None,
     ) -> list[dict]:
-        pf = _PARTNER_FILTER.format(a="p.")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
         if after and before:
             rows = await conn.fetch(
                 f"""
@@ -1151,7 +1195,7 @@ class BrainService:
     async def get_raw_data(
         self, conn: asyncpg.Connection, slug: str, source: Optional[str] = None
     ) -> list[dict]:
-        pf = _PARTNER_FILTER.format(a="p.")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
         if source:
             rows = await conn.fetch(
                 f"""
@@ -1196,7 +1240,7 @@ class BrainService:
             SELECT pv.* FROM brain_page_versions pv
             JOIN brain_pages p ON p.id = pv.page_id
             WHERE p.slug = $1
-            {_PARTNER_FILTER.format(a="p.")}
+            {PAGE_SCOPE_FILTER.format(a="p.")}
             ORDER BY pv.snapshot_at DESC
             """,
             slug,
@@ -1223,7 +1267,7 @@ class BrainService:
     # ── Stats + Health ──────────────────────────────────────────
 
     async def get_stats(self, conn: asyncpg.Connection) -> dict:
-        pf = _PARTNER_FILTER.format(a="p.")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
         row = await conn.fetchrow(
             f"""
             WITH visible_pages AS MATERIALIZED (
@@ -1298,7 +1342,7 @@ class BrainService:
         }
 
     async def get_health(self, conn: asyncpg.Connection) -> dict:
-        pf = _PARTNER_FILTER.format(a="p.")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
         row = await conn.fetchrow(
             f"""
             WITH visible_pages AS MATERIALIZED (
@@ -1387,37 +1431,52 @@ class BrainService:
         bbox: tuple[float, float, float, float],
         limit: int = 50,
         type: Optional[str] = None,
+        layer_ids: Optional[list[str]] = None,
     ) -> list[Page]:
         """Get brain pages whose geometry intersects a bounding box.
 
         Args:
             bbox: (lon_min, lat_min, lon_max, lat_max)
+            layer_ids: when given, pages about a layer (`raster-<id>`,
+                `layer-<id>`, `layer-<id>-fN`, as brain_hook_processor names
+                them) are returned only for these layers; other pages are
+                unaffected. The filter runs before the LIMIT, so pages of
+                layers elsewhere cannot crowd these out (on 2026-10-07 twenty
+                copies of one orthophoto on other maps hid the copy on the
+                user's map).
         """
         lon_min, lat_min, lon_max, lat_max = bbox
-        pf = _PARTNER_FILTER.format(a="")
+        args: list[Any] = [lon_min, lat_min, lon_max, lat_max]
+        type_filter = ""
         if type:
-            rows = await conn.fetch(
-                f"""
-                SELECT * FROM brain_pages
-                WHERE geom IS NOT NULL
-                  AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
-                  AND type = $5
-                {pf}
-                ORDER BY updated_at DESC LIMIT $6
-                """,
-                lon_min, lat_min, lon_max, lat_max, type, limit,
-            )
-        else:
-            rows = await conn.fetch(
-                f"""
-                SELECT * FROM brain_pages
-                WHERE geom IS NOT NULL
-                  AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
-                {pf}
-                ORDER BY updated_at DESC LIMIT $5
-                """,
-                lon_min, lat_min, lon_max, lat_max, limit,
-            )
+            args.append(type)
+            type_filter = f"AND type = ${len(args)}"
+        layer_filter = ""
+        if layer_ids is not None:
+            ids = [_validate_slug(i) for i in layer_ids if i and i.strip()]
+            args.append([f"{kind}-{i}" for i in ids for kind in ("raster", "layer")])
+            exact = len(args)
+            args.append([_like_escape(f"layer-{i}-f") + "%" for i in ids])
+            prefix = len(args)
+            layer_filter = f"""
+                  AND (
+                      NOT (slug LIKE 'layer-%' OR slug LIKE 'raster-%')
+                      OR slug = ANY(${exact}::text[])
+                      OR slug LIKE ANY(${prefix}::text[])
+                  )"""
+        args.append(limit)
+        rows = await conn.fetch(
+            f"""
+            SELECT * FROM brain_pages
+            WHERE geom IS NOT NULL
+              AND ST_Intersects(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
+              {type_filter}
+              {layer_filter}
+            {PAGE_SCOPE_FILTER.format(a="")}
+            ORDER BY updated_at DESC LIMIT ${len(args)}
+            """,
+            *args,
+        )
         return [_row_to_page(r) for r in rows]
 
     # ── Pending Hooks ───────────────────────────────────────────
@@ -1487,7 +1546,7 @@ class BrainService:
           - Orphan penalty (15 pts): deducted for pages with no inbound links
           - Dead link penalty (10 pts): deducted for links pointing to non-existent pages
         """
-        pf = _PARTNER_FILTER.format(a="p.")
+        pf = PAGE_SCOPE_FILTER.format(a="p.")
 
         stats = await conn.fetchrow(
             f"""

@@ -2,7 +2,7 @@
 
 Covers the helper plus the two write-path gate sites and the retrieval
 isolation layer. The flag gates the write path only; retrieval uses the
-app.partner_id GUC and _PARTNER_FILTER for defense-in-depth isolation.
+app.partner_id GUC and PAGE_SCOPE_FILTER for defense-in-depth isolation.
 
 Write-path gates (flag-controlled):
   1. scheduler._run_source_job — skips partner_internal sources when off
