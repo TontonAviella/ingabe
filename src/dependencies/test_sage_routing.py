@@ -125,6 +125,9 @@ def test_detect_small_talk_negative(msg: str) -> None:
         ("compute the spectral index for January 2025", {SATELLITE}),
         ("what is the soil moisture in Kigali", {AGRICULTURE}),
         ("dry spell in Nyagatare last month", {AGRICULTURE}),
+        # "rained" alone used to miss the weather tools: Sage then said rainfall was not available (2026-10-08).
+        ("has it rained enough here this season?", {AGRICULTURE}),
+        ("will it rain in Huye tomorrow", {AGRICULTURE}),
         ("analyze my drone ortho", {USER_RASTER}),
         ("what is happening in this drone image", {USER_RASTER, SPATIAL_INSIGHT}),
         (
@@ -161,6 +164,11 @@ def test_classify_intent_known_domains(msg: str, expected: set[str]) -> None:
 )
 def test_classify_intent_uncertain_returns_empty(msg: str) -> None:
     assert classify_intent(msg) == frozenset()
+
+
+@pytest.mark.parametrize("msg", ["show the terrain around Kigali", "the marsh drained after the dam"])
+def test_rain_words_do_not_match_inside_other_words(msg: str) -> None:
+    assert AGRICULTURE not in classify_intent(msg)
 
 
 # ---------------------------------------------------------------------------
