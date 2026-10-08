@@ -436,7 +436,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
     """Set Cache-Control headers for static assets, tiles, and API responses."""
 
     # Immutable hashed assets (Vite adds content hash to filenames)
-    _IMMUTABLE_PREFIXES = ("/assets/",)
+    _IMMUTABLE_PREFIXES = ("/assets/", "/api/basemaps/terrain/")  # elevation tiles never change
     # Tile responses — cache at CDN, short browser cache
     _TILE_SUFFIXES = (".mvt", ".pmtiles", ".pbf", ".png", ".webp")
     # Favicons / static images — moderate cache

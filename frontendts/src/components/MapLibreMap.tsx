@@ -142,6 +142,7 @@ import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
+import { TerrainOverlay } from '@/components/TerrainOverlay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -1710,6 +1711,7 @@ export default function MapLibreMap({
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
         <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
+        <TerrainOverlay key={`terrain-${mapInstanceId}`} map={mapRef.current} />
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (
