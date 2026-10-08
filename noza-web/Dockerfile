@@ -12,19 +12,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# NEXT_PUBLIC_* vars must exist at build time (inlined by webpack).
-# Write the local runtime URL into the production frontend build.
-# from ARGs with sensible defaults.
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2xvc2luZy1tb2NjYXNpbi0xMS5jbGVyay5hY2NvdW50cy5kZXYk
-ARG NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
-ARG NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
+# NEXT_PUBLIC_* vars are inlined at build time.
 ARG NEXT_PUBLIC_INGABE_URL=http://localhost:8000
-
-RUN printf "NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=%s\nNEXT_PUBLIC_CLERK_SIGN_IN_URL=%s\nNEXT_PUBLIC_CLERK_SIGN_UP_URL=%s\nNEXT_PUBLIC_INGABE_URL=%s\n" \
-    "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
-    "$NEXT_PUBLIC_CLERK_SIGN_IN_URL" \
-    "$NEXT_PUBLIC_CLERK_SIGN_UP_URL" \
-    "$NEXT_PUBLIC_INGABE_URL" > .env.production
+RUN printf "NEXT_PUBLIC_INGABE_URL=%s\n" "$NEXT_PUBLIC_INGABE_URL" > .env.production
 
 # Limit Node memory for Render starter build plan
 ENV NODE_OPTIONS="--max-old-space-size=512"
