@@ -156,3 +156,91 @@ async def test_social_preview_shows_the_drone_raster_centred(auth_client, tmp_pa
     assert preview.size == (1200, 630)
     centre = preview.getpixel((600, 315))
     assert all(abs(got - want) <= 12 for got, want in zip(centre, DRONE_RGB)), centre
+
+
+# A field boundary next to Cyampirita, filled with a teal the satellite basemap never shows.
+FIELD_RGB = (20, 230, 200)
+
+
+@pytest.mark.anyio
+@pytest.mark.timeout(150)
+async def test_social_preview_draws_a_postgis_layer_from_its_pmtiles(auth_client):
+    """PostGIS layers have only live /api/layer/<id>/{z}/{x}/{y}.mvt tiles, which the renderer
+    cannot fetch; the preview builds the layer's PMTiles from its query and draws those."""
+    import io
+    import json
+    import os
+    from urllib.parse import quote
+
+    from src.structures import get_async_db_connection
+    from src.utils import generate_id
+
+    run_tag = uuid.uuid4().hex[:8]
+    table = f"social_preview_fields_{run_tag}"
+    created = await auth_client.post("/api/maps/create", json={"title": "PostGIS preview"})
+    assert created.status_code == 200, created.text
+    project_id, map_id = created.json()["project_id"], created.json()["id"]
+    connection_id, layer_id, style_id = generate_id(prefix="C"), generate_id(prefix="L"), generate_id(prefix="S")
+    west, south, east, north = DRONE_BOUNDS
+    # The app's own database, as Sage's internal Rwanda connection reaches it.
+    uri = (
+        f"postgresql://{quote(os.environ.get('POSTGRES_USER', 'mundiuser'), safe='')}"
+        f":{quote(os.environ.get('POSTGRES_PASSWORD', 'changeme'), safe='')}"
+        f"@{os.environ.get('POSTGRES_HOST', 'postgresdb')}:{os.environ.get('POSTGRES_PORT', '5432')}"
+        f"/{quote(os.environ['POSTGRES_DB'], safe='')}?sslmode=disable"
+    )
+    style = [
+        {"id": f"{layer_id}-fill", "type": "fill", "source": layer_id, "source-layer": "reprojectedfgb",
+         "paint": {"fill-color": "#%02x%02x%02x" % FIELD_RGB, "fill-opacity": 1}},
+    ]
+
+    async with get_async_db_connection() as conn:
+        owner = str(await conn.fetchval("SELECT owner_uuid FROM user_mundiai_maps WHERE id = $1", map_id))
+        await conn.execute(f"CREATE TABLE {table} (id serial PRIMARY KEY, name text, geom geometry(MultiPolygon, 4326))")
+        try:
+            await conn.execute(
+                f"INSERT INTO {table} (name, geom) VALUES ('field', ST_Multi(ST_MakeEnvelope($1, $2, $3, $4, 4326)))",
+                west, south, east, north,
+            )
+            await conn.execute(
+                "INSERT INTO project_postgres_connections (id, project_id, user_id, connection_uri, connection_name)"
+                " VALUES ($1, $2, $3, $4, 'preview test')",
+                connection_id, project_id, owner, uri,
+            )
+            await conn.execute(
+                """
+                INSERT INTO map_layers
+                (layer_id, owner_uuid, name, type, postgis_connection_id, postgis_query, metadata,
+                 feature_count, bounds, geometry_type, source_map_id, created_on, last_edited,
+                 postgis_attribute_column_list)
+                VALUES ($1, $2, 'Field', 'postgis', $3, $4, '{}', 1, $5, 'multipolygon', $6,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ARRAY['name'])
+                """,
+                layer_id, owner, connection_id, f"SELECT id, name, geom FROM {table}",
+                [west, south, east, north], map_id,
+            )
+            await conn.execute(
+                "INSERT INTO layer_styles (style_id, layer_id, style_json, created_by) VALUES ($1, $2, $3, $4)",
+                style_id, layer_id, json.dumps(style), owner,
+            )
+            await conn.execute(
+                "INSERT INTO map_layer_styles (map_id, layer_id, style_id) VALUES ($1, $2, $3)",
+                map_id, layer_id, style_id,
+            )
+            await conn.execute(
+                "UPDATE user_mundiai_maps SET layers = array_append(COALESCE(layers, '{}'), $1) WHERE id = $2",
+                layer_id, map_id,
+            )
+
+            response = await auth_client.get(f"/api/projects/{project_id}/social.webp")
+            metadata = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+        finally:
+            await conn.execute(f"DROP TABLE {table}")
+
+    assert response.status_code == 200
+    preview = Image.open(io.BytesIO(response.content)).convert("RGB")
+    centre = preview.getpixel((600, 315))
+    assert all(abs(got - want) <= 12 for got, want in zip(centre, FIELD_RGB)), centre
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata.get("pmtiles_key"), "the PMTiles built for the preview are recorded for reuse"

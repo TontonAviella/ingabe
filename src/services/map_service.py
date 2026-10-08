@@ -35,6 +35,7 @@ from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE
 from src.services.raster_zoom import raster_source_minzoom
 from src.services import raster_display
 from src.services.remote_cog_layer import build_remote_cog_maplibre_layer
+from src.upload.pmtiles import postgis_layer_pmtiles_key
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -796,33 +797,6 @@ async def get_map_style_internal(
                 json.loads(layer["maplibre_layers"]),
             )
 
-    # Pre-generate presigned URLs for PostGIS layers with PMTiles (inline mode)
-    postgis_presigned: dict[str, str] = {}
-    if only_show_inline_sources:
-        presign_endpoint_url = inline_s3_endpoint_url or get_s3_public_endpoint_url()
-        postgis_needing_presigned: list[tuple[str, str]] = []
-        for layer in postgis_layers:
-            if layer["type"] == LAYER_TYPE_POSTGIS:
-                metadata = layer.get("metadata") or {}
-                if isinstance(metadata, str):
-                    metadata = json.loads(metadata)
-                pk = metadata.get("pmtiles_key")
-                if pk:
-                    postgis_needing_presigned.append((layer["layer_id"], pk))
-        if postgis_needing_presigned:
-            _bucket = get_bucket_name()
-            _s3 = await get_async_s3_client(endpoint_url=presign_endpoint_url)
-
-            async def _gen_postgis_url(key: str) -> str:
-                return await s3_op(
-                    _s3.generate_presigned_url("get_object", Params={"Bucket": _bucket, "Key": key}, ExpiresIn=28800),
-                    "presigned URL", f"PMTiles {key}",
-                )
-
-            _urls = await asyncio.gather(*[_gen_postgis_url(k) for _, k in postgis_needing_presigned])
-            for (lid, _), url in zip(postgis_needing_presigned, _urls):
-                postgis_presigned[lid] = url
-
     for layer in postgis_layers:
         if layer["type"] == LAYER_TYPE_POSTGIS:
             layer_id = layer["layer_id"]
@@ -1049,6 +1023,34 @@ async def _raster_image_source(layer: dict, workdir: str) -> Optional[dict]:
     }
 
 
+async def _presigned_pmtiles_source(layer_id: str, pmtiles_key: str, metadata: dict) -> dict:
+    s3 = await get_async_s3_client()
+    url = await s3_op(
+        s3.generate_presigned_url(
+            "get_object", Params={"Bucket": get_bucket_name(), "Key": pmtiles_key}, ExpiresIn=600
+        ),
+        "presigned URL", f"render PMTiles {layer_id}",
+    )
+    source: dict[str, object] = {"type": "vector", "url": f"pmtiles://{url}"}
+    maxzoom = vector_source_maxzoom(metadata)
+    if maxzoom is not None:
+        source["maxzoom"] = maxzoom
+    return source
+
+
+async def _postgis_pmtiles_source(layer: dict) -> Optional[dict]:
+    """A PMTiles source of a PostGIS layer (built from its query on first use), or None if it cannot be made."""
+    metadata = layer["metadata"] or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    try:
+        pmtiles_key = await postgis_layer_pmtiles_key(layer["layer_id"])
+    except Exception as e:
+        logger.warning("No PMTiles for PostGIS layer %s: %s", layer["layer_id"], e)
+        return None
+    return await _presigned_pmtiles_source(layer["layer_id"], pmtiles_key, metadata)
+
+
 async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list[str]]:
     """A copy of `style` that the native renderer (src/renderer/render.js) can draw, and the ids of
     the sources it left out.
@@ -1056,37 +1058,39 @@ async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list
     The renderer runs in the app with no page origin and no signed-in user, so it cannot fetch the
     app's own relative tile URLs (/api/layer/...): one such source fails the whole render with
     "URL using bad/illegal format or missing URL". Each stored raster layer becomes an image source,
-    the raster read from its COG and written into `workdir`; any other relative source (PostGIS
-    tiles, WorldCover) is left out with its layers, so the rest of the map still renders.
+    the raster read from its COG and written into `workdir`; each PostGIS layer reads its PMTiles
+    (the same query as its live tiles, same source-layer); any other relative source (WorldCover),
+    or one of these that cannot be made, is left out with its layers, so the rest of the map still
+    renders.
     """
     style = copy.deepcopy(style)
     unreachable = [sid for sid, src in style.get("sources", {}).items() if _has_relative_url(src)]
     if not unreachable:
         return style, []
 
-    raster_layer_ids = [
-        sid.removeprefix(INLINE_RASTER_SOURCE_PREFIX)
-        for sid in unreachable
-        if sid.startswith(INLINE_RASTER_SOURCE_PREFIX)
-    ]
-    raster_layers: dict[str, dict] = {}
-    if raster_layer_ids:
-        async with async_conn("style_for_native_render.raster_layers") as conn:
-            rows = await conn.fetch(
-                "SELECT layer_id, bounds, metadata FROM map_layers WHERE layer_id = ANY($1) AND type = $2",
-                raster_layer_ids,
-                LAYER_TYPE_RASTER,
-            )
-        raster_layers = {
-            inline_raster_source_id(row["layer_id"]): dict(row) for row in rows
-        }
+    # Stored rasters are sourced as raster-source-<layer id>, PostGIS layers by their layer id.
+    async with async_conn("style_for_native_render.layers") as conn:
+        rows = await conn.fetch(
+            "SELECT layer_id, type, bounds, metadata FROM map_layers WHERE layer_id = ANY($1)",
+            [sid.removeprefix(INLINE_RASTER_SOURCE_PREFIX) for sid in unreachable],
+        )
+    layers_by_source: dict[str, dict] = {}
+    for row in rows:
+        if row["type"] == LAYER_TYPE_RASTER:
+            layers_by_source[inline_raster_source_id(row["layer_id"])] = dict(row)
+        elif row["type"] == LAYER_TYPE_POSTGIS:
+            layers_by_source[row["layer_id"]] = dict(row)
 
     left_out = []
     for sid in unreachable:
-        layer = raster_layers.get(sid)
-        image_source = await _raster_image_source(layer, workdir) if layer else None
-        if image_source is not None:
-            style["sources"][sid] = image_source
+        layer = layers_by_source.get(sid)
+        replacement = None
+        if layer is not None and layer["type"] == LAYER_TYPE_RASTER:
+            replacement = await _raster_image_source(layer, workdir)
+        elif layer is not None and layer["type"] == LAYER_TYPE_POSTGIS:
+            replacement = await _postgis_pmtiles_source(layer)
+        if replacement is not None:
+            style["sources"][sid] = replacement
             continue
         del style["sources"][sid]
         style["layers"] = [ml for ml in style.get("layers", []) if ml.get("source") != sid]
