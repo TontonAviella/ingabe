@@ -174,6 +174,12 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-08** "Remera sector in Gasabo district" drew all four Remera sectors: the admin parser dropped the parents after the level
+  word, and a name shared by several units was drawn in full ("Matches"). Rule: a request for one thing delivers exactly one or nothing, and
+  then says where each candidate is. Gate: `src/services/test_admin_boundary_resolve.py`, `tests/test_admin_boundary_one_unit.py`.
+- **2026-10-08** Changing `render_map_internal` to take a style dict, the caller search covered two callers; `basemap_routes` still passed a
+  string, and CI caught it (its local test was hidden by a cached thumbnail). Rule: a contract change lists every caller from a plain grep,
+  not the code index (GitNexus showed none), and runs each caller's test with caches empty. Gate: review only; `src/test_basemap.py` in CI.
 - **2026-10-08** Every project card showed the default basemap: the static renderer (no page origin, no session) cannot fetch the app's relative
   `/api/layer/...` tile URLs, so any map with a drone raster or PostGIS layer failed with a RenderError, and the preview test mocked both the style
   and the renderer. "Mocks match the real thing" is review only, so it did not fire. Gate: `tests/test_project_social_preview.py` (real upload + render).

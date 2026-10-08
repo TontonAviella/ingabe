@@ -929,37 +929,43 @@ def _admin_boundary_style(layer_id: str) -> list[dict]:
     ]
 
 
+def _admin_place_text(place: dict[str, object]) -> str:
+    """"Ruganda cell, Gatare sector, Nyamagabe district" from a place's parent names."""
+    return ", ".join(
+        f"{place[level]} {level}" for level in ("cell", "sector", "district") if place.get(level)
+    )
+
+
 def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
     name = str(result.get("admin_name") or "that area")
     level = str(result.get("admin_level") or "admin")
-    if result.get("status") == "success":
+    status = result.get("status")
+    if status == "success":
+        within = result.get("within") if isinstance(result.get("within"), dict) else {}
+        where = _admin_place_text(within)
         count = result.get("feature_count")
         if isinstance(count, int) and count > 1:
-            return f"I added {count} {level} boundaries to the map."
-        return f"I added {name} {level} boundary to the map."
-    if result.get("status") == "ambiguous":
-        examples: list[str] = []
-        candidates = result.get("candidates")
-        if isinstance(candidates, list):
-            for candidate in candidates[:5]:
-                if not isinstance(candidate, dict):
-                    continue
-                parts = [
-                    str(candidate[key])
-                    for key in ("village_name", "cell_name", "sector_name", "district_name", "province")
-                    if candidate.get(key)
-                ]
-                if parts:
-                    examples.append(" / ".join(parts))
-        suffix = f" Examples: {'; '.join(examples)}." if examples else ""
-        count = result.get("match_count") or result.get("feature_count")
-        count_text = f" {count}" if isinstance(count, int) and count > 1 else ""
-        if result.get("layer_id"):
+            return f"I added the {count} {level} boundaries{f' in {where}' if where else ''} to the map."
+        unit = name if name.lower().endswith(level.lower()) else f"{name} {level}"
+        return f"I added {unit}{f' ({where})' if where else ''} to the map."
+    if status == "ambiguous":
+        candidates = [c for c in result.get("candidates") or [] if isinstance(c, dict)]
+        count = result.get("match_count") or len(candidates)
+        places = [_admin_place_text(c) or str(c.get("name")) for c in candidates]
+        shown = "; ".join(places[:5]) + (f"; and {count - 5} more" if isinstance(count, int) and count > 5 else "")
+        units_of = result.get("units_of")
+        given = result.get("given") if isinstance(result.get("given"), dict) else {}
+        given_text = f" in {_admin_place_text(given)}" if given else ""
+        example = f"{name} {level} in {places[0]}" if places and places[0] else f"{name} {level}"
+        if units_of:
             return (
-                f"I found{count_text} matches for {name} and added them to the map in red. "
-                f"Specify the parent district, sector, or cell if you want only one.{suffix}"
+                f"There are {count} {level}s called {name}: {shown}. I haven't added any {units_of}s to the map. "
+                f"Which {level} do you mean? For example: \"the {units_of}s of {example}\"."
             )
-        return f"I found{count_text} matches for {name}. Please specify the parent district, sector, or cell.{suffix}"
+        return (
+            f"There are {count} {level}s called {name}{given_text}: {shown}. I haven't added any to the map. "
+            f"Which one do you mean? For example: \"{example}\"."
+        )
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
@@ -1034,7 +1040,8 @@ async def _maybe_run_fast_admin_boundary_turn(
             return False
 
         result = await resolve_admin_boundary(conn, fast_call.arguments)
-        if result.get("status") in {"success", "ambiguous"} and result.get("query"):
+        # Only exactly what was asked is drawn; an ambiguous name draws nothing.
+        if result.get("status") == "success" and result.get("query"):
             layer_id = generate_id(prefix="L")
             style_id = generate_id(prefix="S")
             layer_name = str(result["layer_name"])
