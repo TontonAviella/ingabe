@@ -216,6 +216,9 @@ lines; promote a lesson that recurs into the sections above.
 - **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
   command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
   can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
+- **2026-10-07** The drone crop map shipped a vision model's labels unmeasured: on unmistakable plots it was wrong 4 times in 9
+  (maize read as cassava). Rule: a model's labels are measured against checked examples before they show, abstain ("not sure")
+  when two independent looks disagree, and say the measured rate. Gate: review only (needs labelled examples per domain).
 - **2026-10-07** `get_cell_ndvi_stats` ran a blocking 40 s satellite read per sector inside `async def`: one Sage question froze
   every request (one uvicorn worker) for ~10 min, and no `wait_for` limit could fire. Rule: blocking I/O in async code goes
   through `asyncio.to_thread` with a cap and a deadline. Gate: review only (blocking calls hide behind library functions).

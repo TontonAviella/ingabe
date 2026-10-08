@@ -129,7 +129,7 @@ export default function MapsList() {
                 <Button
                   onClick={handleCreateMap}
                   disabled={isLoading}
-                  className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+                  className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   {isLoading ? 'Creating...' : 'New Map'}
@@ -156,7 +156,7 @@ export default function MapsList() {
             onClick={() => {
               // Refetch projects handled by context
             }}
-            className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
           >
             Try Again
           </Button>
@@ -184,7 +184,7 @@ export default function MapsList() {
           <Button
             onClick={handleCreateMap}
             disabled={isLoading}
-            className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
           >
             {isLoading ? 'Creating...' : 'Create Your First Map'}
           </Button>
@@ -267,7 +267,7 @@ export default function MapsList() {
                           })()}
                         </div>
 
-                        <Button size="sm" asChild className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black">
+                        <Button size="sm" asChild className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B]">
                           Open
                         </Button>
                       </div>

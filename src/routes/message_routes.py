@@ -65,7 +65,7 @@ from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage
+from src.services import data_coverage, llm_cache
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -507,22 +507,30 @@ async def label_conversation_inline(conversation_id: int):
             request = Request({"type": "http", "method": "POST", "headers": []})
             openai_client, title_model = get_chat_client_for_model(request)
 
-            response = await openai_client.chat.completions.create(
-                model=title_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
-                    },
-                    {"role": "user", "content": f"Conversation:\n{content_summary}"},
-                ],
-                # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
-                # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
-                max_tokens=150,
-                temperature=0.3,
-            )
+            title_messages = [
+                {
+                    "role": "system",
+                    "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
+                },
+                {"role": "user", "content": f"Conversation:\n{content_summary}"},
+            ]
 
-            title = (response.choices[0].message.content or "").strip()
+            async def name_it() -> dict:
+                response = await openai_client.chat.completions.create(
+                    model=title_model,
+                    messages=title_messages,
+                    # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                    # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                    max_tokens=150,
+                    temperature=0.3,
+                    extra_body={"usage": {"include": True}},
+                )
+                llm_cache.record("chat_title", response.usage)
+                return {"title": response.choices[0].message.content or ""}
+
+            # Chats that start the same way (an Ask Sage question from a card) get their title for free.
+            named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
+            title = named["title"].strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
@@ -984,8 +992,10 @@ async def _run_abdication_guard(
             tool.get("function", {}).pop("strict", None)
     try:
         response = await client.chat.completions.create(
-            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
         )
+        llm_cache.record("sage_guard", getattr(response, "usage", None))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
@@ -1530,6 +1540,41 @@ def _tool_timeout_seconds() -> float:
         return max(15.0, float(raw))
     except (TypeError, ValueError):
         return 120.0
+
+
+# System blocks added on every turn (the map, the view, the selected feature, Brain memory). Each turn stores a
+# fresh copy; replaying the old ones re-sent ~2,700 stale tokens a turn (39k-token prompts after 4 turns).
+_PER_TURN_CONTEXT = ("<MapState>", "<CurrentAOI>", "<NoSelectedFeature", "<SelectedFeature", "<BrainContext")
+
+
+def _latest_context_only(messages: list[Any]) -> list[Any]:
+    """The replayed history with only the newest copy of each per-turn context block: older copies describe a
+    map that has changed since, cost tokens on every call, and can mislead the model."""
+    kinds = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "system" and isinstance(m.get("content"), str):
+            kind = next((k for k in _PER_TURN_CONTEXT if m["content"].lstrip().startswith(k)), None)
+            if kind:
+                kinds.setdefault(kind, []).append(i)
+    stale = {i for positions in kinds.values() for i in positions[:-1]}
+    return [m for i, m in enumerate(messages) if i not in stale]
+
+
+OLD_TOOL_RESULT_CHARS = 1_500  # a tool result from an earlier turn is replayed this long at most
+
+
+def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
+    """Tool results from earlier turns, cut to their first OLD_TOOL_RESULT_CHARS: their substance is already in
+    the answers given then, and a forecast alone was 20,000 characters replayed on every later call."""
+    last_user = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"), default=-1)
+    shortened = []
+    for i, m in enumerate(messages):
+        content = m.get("content") if isinstance(m, dict) else None
+        if i < last_user and m.get("role") == "tool" and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = {**m, "content": content[:OLD_TOOL_RESULT_CHARS] + " … [shortened: this result was used in an earlier "
+                                                                     "answer; call the tool again for all of it]"}
+        shortened.append(m)
+    return shortened
 
 
 def _pair_tool_results(messages: list[Any]) -> list[Any]:
@@ -2189,7 +2234,7 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
-            openai_messages = _pair_tool_results(openai_messages)
+            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(openai_messages)))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
@@ -2453,10 +2498,18 @@ async def process_chat_interaction_task(
                             # `<tool_call>...</tool_call>` text emissions don't
                             # leak into the user-visible chat. See class docstring.
                             _xml_scrub = _ToolCallTextScrubber()
+                            if not _model_name.startswith("ollama:"):
+                                # The last chunk carries the call's tokens and cost, and how much of the prompt
+                                # the provider served from its cache (llm_cache.record logs it).
+                                _attempt_kwargs["stream_options"] = {"include_usage": True}
+                                _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
+                                                                 "usage": {"include": True}}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
                             async for chunk in stream:
+                                if getattr(chunk, "usage", None):
+                                    llm_cache.record("sage", chunk.usage)
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()
