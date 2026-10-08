@@ -77,3 +77,55 @@ async def test_safe_chat_task_cancellation_clears_frontend_state(monkeypatch):
         "Sage stopped before finishing this request. Please try again.",
     ]
     assert deleted_keys == ["chat_lock:123"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_never_returns_is_stopped_and_the_model_told(monkeypatch):
+    monkeypatch.setattr(message_routes, "_tool_timeout_seconds", lambda: 0.05)
+
+    async def stalled() -> dict:
+        await asyncio.sleep(60)
+        return {"status": "success"}
+
+    result = await message_routes._within_tool_limit("get_insurance_intelligence", stalled())
+    assert result["status"] == "error"
+    assert "did not finish within 0 seconds" in result["error"] and "which part is missing" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_tool_within_the_limit_returns_its_own_result():
+    async def quick() -> dict:
+        return {"status": "success", "value": 1}
+
+    assert await message_routes._within_tool_limit("x", quick()) == {"status": "success", "value": 1}
+
+
+def _call(call_id: str) -> dict:
+    return {"id": call_id, "type": "function", "function": {"name": "get_ndvi_stats", "arguments": "{}"}}
+
+
+def test_a_turn_cut_off_mid_tool_does_not_break_the_conversation():
+    """A restart killed a turn after 2 of its 3 tool results: every later message got HTTP 400."""
+    history = [
+        {"role": "user", "content": "How is cassava doing?"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("a"), _call("b"), _call("c")]},
+        {"role": "tool", "tool_call_id": "a", "content": "{}"},
+        {"role": "tool", "tool_call_id": "b", "content": "{}"},
+        {"role": "system", "content": "<MapState />"},
+        {"role": "user", "content": "And now?"},
+    ]
+    paired = message_routes._pair_tool_results(history)
+    assert [m.get("tool_call_id") for m in paired[2:5]] == ["a", "b", "c"]
+    assert "did not finish" in paired[4]["content"]
+    assert paired[5]["role"] == "system" and paired[-1]["content"] == "And now?"
+
+
+def test_a_result_without_its_call_is_dropped_and_whole_turns_are_untouched():
+    history = [
+        {"role": "assistant", "content": "", "tool_calls": [_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": "{}"},
+        {"role": "tool", "tool_call_id": "gone", "content": "{}"},
+        {"role": "assistant", "content": "Cassava looks fine."},
+    ]
+    paired = message_routes._pair_tool_results(history)
+    assert paired == [history[0], history[1], history[3]]

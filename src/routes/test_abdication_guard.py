@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.dependencies.pydantic_tools import get_pydantic_tool_calls
-from src.dependencies.sage_turn_request import build_sage_tools_payload
+from src.dependencies.sage_turn_request import KEEP_ANSWER_TOOL, build_sage_tools_payload
 from src.routes import message_routes
 
 
@@ -45,7 +45,9 @@ async def test_guard_retry_forces_a_tool_over_the_short_list(monkeypatch) -> Non
                          "function": {"name": "get_forecast", "arguments": '{"district": "Musanze"}'}}}
     assert completions.kwargs["tool_choice"] == "required"
     assert completions.kwargs["stream"] is False
-    assert len(completions.kwargs["tools"]) == 5
+    # The short list, plus the one way out when no tool fits (so the guard cannot force a wrong tool).
+    names = [tool["function"]["name"] for tool in completions.kwargs["tools"]]
+    assert len(names) == 6 and names[-1] == KEEP_ANSWER_TOOL
 
 
 @pytest.mark.asyncio
