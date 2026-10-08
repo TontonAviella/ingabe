@@ -306,10 +306,26 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(
             r"\b(sentinel|sentinel-?2|landsat|tci|true\s*color|"
             r"satellite\s+(image|imagery|scene)|cog\s+tile|"
-            r"ndvi|ndwi|nbr|spectral\s+index|natural\s+color|s2)\b",
+            r"ndvi|ndwi|nbr|spectral\s+index|natural\s+color|s2|"
+            r"satellite|imagery|optical\s+(?:image|scene)s?)\b",
             re.IGNORECASE,
         ),
         frozenset({SATELLITE}),
+    ),
+    # Vegetation questions. The NDVI-by-place and anomaly tools are filed under
+    # agriculture, so "NDVI for Nyagatare" offered only the imagery tools and
+    # Sage could not answer it (2026-10-08 picker test: 27 of 216 right tools dropped).
+    (
+        re.compile(
+            r"\b(ndvi|ndwi|evi|savi|vegetation|indices|anomal(?:y|ies|ous))\b",
+            re.IGNORECASE,
+        ),
+        frozenset({SATELLITE, AGRICULTURE}),
+    ),
+    # Greenness indices made from red, green and blue only fit a drone photo.
+    (
+        re.compile(r"\b(greenness|grvi|vari|exg|rgb\s+ind(?:ex|ices))\b", re.IGNORECASE),
+        frozenset({USER_RASTER, SATELLITE}),
     ),
     # Agriculture / weather / insurance
     (
@@ -334,9 +350,16 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
             r"stress\s+zone|pixel|histogram|distribution|"
             r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
-            r"compare\s+(raster|image)|similar\s+tile|find\s+similar)\b",
+            r"compare\s+(raster|image)|similar\s+tile|find\s+similar|"
+            r"rasters?|flights?|plot\s*\d+)\b",
             re.IGNORECASE,
         ),
+        frozenset({USER_RASTER, SPATIAL_INSIGHT}),
+    ),
+    # A layer named like an upload ("Plot9_NDVI", "Farm_A_Orthophoto"): the
+    # underscore hides the word from the \b patterns above.
+    (
+        re.compile(r"[a-z0-9]_(?:ndvi|ortho\w*|rgb|dsm|dtm)\b", re.IGNORECASE),
         frozenset({USER_RASTER, SPATIAL_INSIGHT}),
     ),
     # H3-first spatial intelligence for housing, infrastructure, environment,
@@ -358,7 +381,8 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(
             r"\b(brain|entity|observation|knowledge|"
             r"who\s+is|what\s+is\s+the\s+(rab|minagri|bk|bnr|naeb)|"
-            r"institution|cooperative|government|ministry|partner)\b",
+            r"institution|cooperative|government|ministry|partner|"
+            r"notes?|remember|field\s+visit|log\s+(?:a|an|this|that)|what\s+do\s+we\s+know)\b",
             re.IGNORECASE,
         ),
         frozenset({BRAIN}),
