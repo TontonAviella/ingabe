@@ -10,7 +10,7 @@ import socket
 import shutil
 import logging
 from urllib.parse import urlparse
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from fastapi import HTTPException, status
 from fastapi.responses import Response
@@ -1051,9 +1051,18 @@ async def _postgis_pmtiles_source(layer: dict) -> Optional[dict]:
     return await _presigned_pmtiles_source(layer["layer_id"], pmtiles_key, metadata)
 
 
-async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list[str]]:
-    """A copy of `style` that the native renderer (src/renderer/render.js) can draw, and the ids of
-    the sources it left out.
+class NativeRenderStyle(NamedTuple):
+    style: dict
+    # Sources the renderer could not be given; their layers are not drawn.
+    left_out: list[str]
+    # Box around the stored rasters drawn from their own COG (drone images), if any:
+    # [west, south, east, north].
+    drone_bounds: Optional[tuple[float, float, float, float]]
+
+
+async def style_for_native_render(style: dict, workdir: str) -> NativeRenderStyle:
+    """A copy of `style` that the native renderer (src/renderer/render.js) can draw, the ids of the
+    sources it left out, and where its drone images are.
 
     The renderer runs in the app with no page origin and no signed-in user, so it cannot fetch the
     app's own relative tile URLs (/api/layer/...): one such source fails the whole render with
@@ -1066,7 +1075,7 @@ async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list
     style = copy.deepcopy(style)
     unreachable = [sid for sid, src in style.get("sources", {}).items() if _has_relative_url(src)]
     if not unreachable:
-        return style, []
+        return NativeRenderStyle(style, [], None)
 
     # Stored rasters are sourced as raster-source-<layer id>, PostGIS layers by their layer id.
     async with async_conn("style_for_native_render.layers") as conn:
@@ -1082,11 +1091,14 @@ async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list
             layers_by_source[row["layer_id"]] = dict(row)
 
     left_out = []
+    drone_boxes: list[list[float]] = []
     for sid in unreachable:
         layer = layers_by_source.get(sid)
         replacement = None
         if layer is not None and layer["type"] == LAYER_TYPE_RASTER:
             replacement = await _raster_image_source(layer, workdir)
+            if replacement is not None:
+                drone_boxes.append([float(v) for v in layer["bounds"]])
         elif layer is not None and layer["type"] == LAYER_TYPE_POSTGIS:
             replacement = await _postgis_pmtiles_source(layer)
         if replacement is not None:
@@ -1097,7 +1109,27 @@ async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list
         left_out.append(sid)
     if left_out:
         logger.warning("Static render leaves out sources it cannot fetch: %s", ", ".join(left_out))
-    return style, left_out
+    drone_bounds = (
+        (
+            min(b[0] for b in drone_boxes),
+            min(b[1] for b in drone_boxes),
+            max(b[2] for b in drone_boxes),
+            max(b[3] for b in drone_boxes),
+        )
+        if drone_boxes
+        else None
+    )
+    return NativeRenderStyle(style, left_out, drone_bounds)
+
+
+# Margin around the drone images when a picture is framed on them, as a share of their width/height.
+DRONE_FRAME_MARGIN = 0.1
+
+
+def _with_margin(bounds: tuple[float, float, float, float], margin: float) -> tuple[float, float, float, float]:
+    west, south, east, north = bounds
+    dx, dy = (east - west) * margin, (north - south) * margin
+    return (west - dx, south - dy, east + dx, north + dy)
 
 
 # requires style.json to be provided, so that we can do this without auth
@@ -1109,16 +1141,21 @@ async def render_map_internal(
     renderer: str,
     bgcolor: str,
     style_json: dict,
+    frame_on_drone: bool = False,
 ) -> tuple[Response, dict]:
+    """Render the map to a PNG. With no `bbox` the picture frames every drawn layer, or, with
+    `frame_on_drone`, the map's drone images when it has any (project cards)."""
     # The output PNG and the raster pictures the style points at live only for this render.
     with tempfile.TemporaryDirectory(prefix="render_") as workdir:
         output_path = os.path.join(workdir, "map.png")
-        style, left_out = await style_for_native_render(style_json, workdir)
+        style, left_out, drone_bounds = await style_for_native_render(style_json, workdir)
 
-        if bbox is None:
-            xmin, ymin, xmax, ymax = await pull_bounds_from_map(map_id, frozenset(left_out))
-        else:
+        if bbox is not None:
             xmin, ymin, xmax, ymax = map(float, bbox.split(","))
+        elif frame_on_drone and drone_bounds is not None:
+            xmin, ymin, xmax, ymax = _with_margin(drone_bounds, DRONE_FRAME_MARGIN)
+        else:
+            xmin, ymin, xmax, ymax = await pull_bounds_from_map(map_id, frozenset(left_out))
 
         # Format the style JSON with required parameters
         input_data = {

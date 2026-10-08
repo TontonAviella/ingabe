@@ -19,9 +19,10 @@ async def test_sources_the_renderer_cannot_fetch_are_left_out_with_their_layers(
         ],
     }
 
-    drawable, left_out = await style_for_native_render(style, str(tmp_path))
+    drawable, left_out, drone_bounds = await style_for_native_render(style, str(tmp_path))
 
     assert left_out == ["worldcover-source-Lwc1"]
+    assert drone_bounds is None
     assert set(drawable["sources"]) == {"basemap", "Lvector1", "pointer-positions"}
     assert [ml["id"] for ml in drawable["layers"]] == ["basemap", "Lvector1-fill"]
     assert "worldcover-source-Lwc1" in style["sources"], "the caller's style is not changed"
