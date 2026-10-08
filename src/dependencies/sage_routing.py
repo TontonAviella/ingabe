@@ -317,7 +317,7 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     (
         re.compile(
             r"\b(field|farm|crop|harvest|yield|drought|flood|water|"
-            r"rainfall|precip|weather|forecast|temperature|"
+            r"rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature|"
             r"soil|moisture|evapo|ndre|emission|"
             r"insurance|trigger|payout|"
             r"sar|alos|cygnss|wapor|chirps|food\s+security|fewsnet|"

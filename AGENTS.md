@@ -104,7 +104,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 
 ### Sage Tool Surface
 - **Phase 1 raster interpretation** (`src/tools/raster_interpret.py`): mechanical (`describe_user_raster`, `compute_zonal_stats`, `get_value_distribution`, `read_pixel_at`, `find_stress_zones`) + verdicts (`interpret_raster_health`, `compare_rasters`, `evaluate_insurance_trigger`)
-- **Insurance intelligence** (`src/services/insurance_engine.py`): location-based agricultural reports combining CHIRPS, NDVI, WaPOR, SAR, soil moisture across Rwanda's Season A/B/C calendar
+- **Insurance intelligence** (`src/services/insurance_engine.py`): location-based agricultural reports combining CHIRPS rainfall, the Digital Earth Africa monthly NDVI anomaly, WaPOR ET and soil moisture across Rwanda's Season A/B/C calendar
 
 ### Storage & Services
 - **PostgreSQL 15 + pgvector 0.8.2**: App metadata, PostGIS spatial data, brain page embeddings (768-dim from Ollama nomic-embed-text)

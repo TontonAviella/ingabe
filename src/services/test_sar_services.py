@@ -305,11 +305,11 @@ class TestConfidence:
 
     def test_confidence_capped(self):
         from src.services.sar_ndvi import SARNDVIPredictor
+        from src.services.sar_ndvi import _AreaModel
         pred = SARNDVIPredictor()
-        pred._model_rmse = 0.05
-        pred._n_training_samples = 50
+        area = _AreaModel(model=None, rmse=0.05, r2=0.9, n_samples=50, trained_at=0.0)
         ts = {"dates": list(range(10))}
-        confidence = pred._compute_confidence(ts)
+        confidence = pred._compute_confidence(ts, area)
         assert confidence <= 0.95
 
 
@@ -344,19 +344,18 @@ class TestSARNDVIPredictor:
         pred = sar_ndvi.SARNDVIPredictor()
         trainings = []
 
-        def train(bbox, days_back=180):
+        def generate(bbox, days_back=180):
             trainings.append(bbox)
             time.sleep(0.3)
-            return {"status": "error", "error": "Insufficient training data"}
+            raise sar_ndvi.TrainingDataUnavailable("3 Sentinel-2 NDVI observations in the last 180 days, need at least 5")
 
-        monkeypatch.setattr(pred, "train_model", train)
+        monkeypatch.setattr(sar_ndvi, "_generate_training_data", generate)
         threads = [threading.Thread(target=pred.predict_ndvi, args=((30.0, -2.0, 30.1, -1.9),)) for _ in range(2)]
         for t in threads:
             t.start()
-        time.sleep(0.05)
-        pred._model = object()  # the first training succeeded while the second caller waited
         for t in threads:
             t.join()
+        # The second caller waited for the first training and reused its outcome (here, its failure).
         assert len(trainings) == 1
 
 
