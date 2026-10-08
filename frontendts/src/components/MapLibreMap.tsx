@@ -141,6 +141,7 @@ import AttributeTable from '@/components/AttributeTable';
 import { DroneCards } from '@/components/DroneCards';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
+import { TerrainOverlay } from '@/components/TerrainOverlay';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -1703,6 +1704,7 @@ export default function MapLibreMap({
           historyOpen={mobileWorkspacePanel === 'history'}
           onAskSage={(prompt) => void sendMessage(prompt)}
         />
+        <TerrainOverlay key={`terrain-${mapInstanceId}`} map={mapRef.current} />
 
         {/* Render the attribute table if showAttributeTable is true */}
         {selectedLayer && (
