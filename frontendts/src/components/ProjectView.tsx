@@ -14,6 +14,7 @@ import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
 import { parseMapResponse } from '../lib/mapResponse';
 import { getProjectViewLoadState, shouldRetryProjectQuery } from '../lib/projectViewLoadState';
+import { addSageGeoJsonLayer } from '../lib/sageGeoJsonLayer';
 import type { Conversation, EphemeralAction, GeoJsonLayerUpdate, MapProject, MapTreeResponse, TileLayerUpdate } from '../lib/types';
 import { usePersistedState } from '../lib/usePersistedState';
 
@@ -190,40 +191,7 @@ export default function ProjectView() {
             });
             continue;
           }
-          map.addSource(gl.source_id, {
-            type: 'geojson',
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            data: geojsonData as any,
-          });
-          const style = gl.style || {};
-          const colorProperty: string | null = style.color_property ?? null;
-          const stops: Array<{ max: number; color: string }> = style.stops || [];
-          const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
-          const strokeColor = style.stroke_color || '#1a1a1a';
-          const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let fillColorExpr: any = stops[0]?.color || '#888';
-          if (colorProperty && stops.length > 0) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const expr: any[] = ['step', ['get', colorProperty], stops[0].color];
-            for (let i = 0; i < stops.length - 1; i++) {
-              expr.push(stops[i].max, stops[i + 1].color);
-            }
-            fillColorExpr = expr;
-          }
-          map.addLayer({
-            id: `${gl.source_id}-fill`,
-            type: 'fill',
-            source: gl.source_id,
-            metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
-            paint: { 'fill-color': fillColorExpr, 'fill-opacity': fillOpacity },
-          });
-          map.addLayer({
-            id: `${gl.source_id}-stroke`,
-            type: 'line',
-            source: gl.source_id,
-            paint: { 'line-color': strokeColor, 'line-width': strokeWidth },
-          });
+          addSageGeoJsonLayer(map, gl, geojsonData);
         }
       } catch (e) {
         console.error('Failed to replay ephemeral layer', layer.source_id, e);
@@ -586,68 +554,7 @@ export default function ProjectView() {
                 toast.error(`Could not render ${gl.name || 'map layer'}: ${message}`);
                 return;
               }
-              map.addSource(gl.source_id, {
-                type: 'geojson',
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                data: geojsonData as any,
-              });
-              const style = gl.style || {};
-              const colorProperty: string | null = style.color_property ?? null;
-              const stops: Array<{ max: number; color: string }> = style.stops || [];
-              const fillOpacity = typeof style.fill_opacity === 'number' ? style.fill_opacity : 0.55;
-              const strokeColor = style.stroke_color || '#1a1a1a';
-              const strokeWidth = typeof style.stroke_width === 'number' ? style.stroke_width : 2;
-              const extrude3d = style.extrude_3d === true;
-              const extrusionProperty = typeof style.extrusion_property === 'string' ? style.extrusion_property : colorProperty;
-              const extrusionScale = typeof style.extrusion_scale === 'number' ? style.extrusion_scale : 40;
-              // Build a MapLibre 'step' expression from the categorical stops so each
-              // feature gets the color matching its property bucket.
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              let fillColorExpr: any = stops[0]?.color || '#888';
-              if (colorProperty && stops.length > 0) {
-                // step format: ['step', input, base_output, stop1, output1, stop2, output2, ...]
-                // We treat each stop's max as the lower-edge boundary for the NEXT bucket.
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const expr: any[] = ['step', ['get', colorProperty], stops[0].color];
-                for (let i = 0; i < stops.length - 1; i++) {
-                  expr.push(stops[i].max, stops[i + 1].color);
-                }
-                fillColorExpr = expr;
-              }
-              if (extrude3d && extrusionProperty) {
-                map.addLayer({
-                  id: `${gl.source_id}-extrusion`,
-                  type: 'fill-extrusion',
-                  source: gl.source_id,
-                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
-                  paint: {
-                    'fill-extrusion-color': fillColorExpr,
-                    'fill-extrusion-opacity': Math.min(fillOpacity + 0.08, 0.9),
-                    'fill-extrusion-base': 0,
-                    'fill-extrusion-height': ['*', ['coalesce', ['to-number', ['get', extrusionProperty]], 0], extrusionScale],
-                  },
-                });
-              } else {
-                map.addLayer({
-                  id: `${gl.source_id}-fill`,
-                  type: 'fill',
-                  source: gl.source_id,
-                  metadata: style.legend ? { 'mundi:legend': style.legend } : undefined,
-                  paint: {
-                    'fill-color': fillColorExpr,
-                    'fill-opacity': fillOpacity,
-                  },
-                });
-              }
-              map.addLayer({
-                id: `${gl.source_id}-stroke`,
-                type: 'line',
-                source: gl.source_id,
-                paint: {
-                  'line-color': strokeColor,
-                  'line-width': strokeWidth,
-                },
-              });
+              addSageGeoJsonLayer(map, gl, geojsonData);
               if (!ephemeralLayersRef.current.some((l) => l.source_id === gl.source_id)) {
                 ephemeralLayersRef.current = [...ephemeralLayersRef.current, gl];
               }
