@@ -174,6 +174,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-08** Every project card showed the default basemap: the static renderer (no page origin, no session) cannot fetch the app's relative
+  `/api/layer/...` tile URLs, so any map with a drone raster or PostGIS layer failed with a RenderError, and the preview test mocked both the style
+  and the renderer. "Mocks match the real thing" is review only, so it did not fire. Gate: `tests/test_project_social_preview.py` (real upload + render).
 - **2026-10-07** drought_cache was empty: detect_drought returned numpy floats, psycopg2 wrote them as `np.float64(...)` and the weekly scan failed;
   fixed as-is it would have published "Bugesera severe drought" from 13 weeks, VCI over one year reading the dry season as drought. Rules: values
   leaving numpy for SQL or JSON are plain Python; an anomaly index compares the same season across years. Gate: `test_drought_seasonal_vci.py`.

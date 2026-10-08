@@ -33,6 +33,7 @@ from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
 from src.database.models import LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR, LAYER_TYPE_POINT_CLOUD, LAYER_TYPE_POSTGIS
 from src.services.raster_zoom import raster_source_minzoom
+from src.services import raster_display
 from src.services.remote_cog_layer import build_remote_cog_maplibre_layer
 
 logger = logging.getLogger(__name__)
@@ -433,6 +434,14 @@ async def internal_upload_layer(
         )
 
 
+INLINE_RASTER_SOURCE_PREFIX = "raster-source-"
+
+
+def inline_raster_source_id(layer_id: str) -> str:
+    """Style source id of a stored raster layer drawn from the app's own /api/layer tiles."""
+    return f"{INLINE_RASTER_SOURCE_PREFIX}{layer_id}"
+
+
 async def get_map_style_internal(
     map_id: str,
     base_map: BaseMapProvider,
@@ -602,7 +611,7 @@ async def get_map_style_internal(
                 style_json["layers"].append(map_layer)
                 continue
 
-            source_id = f"raster-source-{layer_id}"
+            source_id = inline_raster_source_id(layer_id)
             # Add cache-busting parameter using last_edited timestamp
             cache_param = f"v={int(layer['last_edited'].timestamp())}" if layer.get('last_edited') else ""
             tile_url = f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png"
@@ -958,16 +967,19 @@ async def get_map_style_internal(
     return style_json
 
 
-async def pull_bounds_from_map(map_id: str) -> tuple[float, float, float, float]:
-    """Pull the bounds from the map in the database by taking the min and max of all layer bounds."""
+async def pull_bounds_from_map(
+    map_id: str, left_out_sources: frozenset[str] = frozenset()
+) -> tuple[float, float, float, float]:
+    """The box around the map's layers: min and max of their bounds.
+
+    A layer whose style source was left out of a render (`left_out_sources`, see
+    style_for_native_render) does not set the frame, so the picture centres on what it shows;
+    unless no drawn layer has bounds, then every layer counts.
+    """
     async with get_async_db_connection() as conn:
-        result = await conn.fetchrow(
+        rows = await conn.fetch(
             """
-            SELECT
-                MIN(ml.bounds[1]) as xmin,
-                MIN(ml.bounds[2]) as ymin,
-                MAX(ml.bounds[3]) as xmax,
-                MAX(ml.bounds[4]) as ymax
+            SELECT ml.layer_id, ml.bounds
             FROM map_layers ml
             JOIN user_mundiai_maps m ON ml.layer_id = ANY(m.layers)
             WHERE m.id = $1 AND ml.bounds IS NOT NULL
@@ -975,16 +987,113 @@ async def pull_bounds_from_map(map_id: str) -> tuple[float, float, float, float]
             map_id,
         )
 
-        if not result or result["xmin"] is None:
-            # No layers with bounds found
-            return (-180, -90, 180, 90)
+    def left_out(layer_id: str) -> bool:
+        # A layer's style source is named by its id, or ends in "-<id>" (raster-source-<id>).
+        return any(sid == layer_id or sid.endswith(f"-{layer_id}") for sid in left_out_sources)
 
-        return (
-            result["xmin"],
-            result["ymin"],
-            result["xmax"],
-            result["ymax"],
-        )
+    bounds = [row["bounds"] for row in rows if not left_out(row["layer_id"])]
+    bounds = bounds or [row["bounds"] for row in rows]
+    if not bounds:
+        # No layers with bounds found
+        return (-180, -90, 180, 90)
+    return (
+        min(b[0] for b in bounds),
+        min(b[1] for b in bounds),
+        max(b[2] for b in bounds),
+        max(b[3] for b in bounds),
+    )
+
+
+# Longest side, in pixels, of the picture of a stored raster drawn into a static render.
+# Social previews are 1200x630, so this is about one source pixel per screen pixel.
+NATIVE_RENDER_RASTER_MAX_SIZE = 1200
+
+
+def _has_relative_url(source: dict) -> bool:
+    urls = list(source.get("tiles") or [])
+    if isinstance(source.get("url"), str):
+        urls.append(source["url"])
+    return any(url.startswith("/") for url in urls)
+
+
+async def _raster_image_source(layer: dict, workdir: str) -> Optional[dict]:
+    """An image source of a stored raster layer read from its COG, or None if it cannot be drawn."""
+    metadata = layer["metadata"] or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    cog_key = metadata.get("cog_key")
+    bounds = layer["bounds"]
+    if not cog_key or not bounds or len(bounds) != 4:
+        return None
+    west, south, east, north = (float(v) for v in bounds)
+
+    s3 = await get_async_s3_client()
+    cog_url = await s3_op(
+        s3.generate_presigned_url(
+            "get_object", Params={"Bucket": get_bucket_name(), "Key": cog_key}, ExpiresIn=600
+        ),
+        "presigned URL", f"render raster {layer['layer_id']}",
+    )
+    png = await raster_display.preview_png(
+        cog_url, metadata, (west, south, east, north), NATIVE_RENDER_RASTER_MAX_SIZE
+    )
+    if png is None:
+        return None
+    path = os.path.join(workdir, f"{layer['layer_id']}.png")
+    with open(path, "wb") as f:
+        f.write(png)
+    return {
+        "type": "image",
+        "url": f"file://{path}",
+        "coordinates": [[west, north], [east, north], [east, south], [west, south]],
+    }
+
+
+async def style_for_native_render(style: dict, workdir: str) -> tuple[dict, list[str]]:
+    """A copy of `style` that the native renderer (src/renderer/render.js) can draw, and the ids of
+    the sources it left out.
+
+    The renderer runs in the app with no page origin and no signed-in user, so it cannot fetch the
+    app's own relative tile URLs (/api/layer/...): one such source fails the whole render with
+    "URL using bad/illegal format or missing URL". Each stored raster layer becomes an image source,
+    the raster read from its COG and written into `workdir`; any other relative source (PostGIS
+    tiles, WorldCover) is left out with its layers, so the rest of the map still renders.
+    """
+    style = copy.deepcopy(style)
+    unreachable = [sid for sid, src in style.get("sources", {}).items() if _has_relative_url(src)]
+    if not unreachable:
+        return style, []
+
+    raster_layer_ids = [
+        sid.removeprefix(INLINE_RASTER_SOURCE_PREFIX)
+        for sid in unreachable
+        if sid.startswith(INLINE_RASTER_SOURCE_PREFIX)
+    ]
+    raster_layers: dict[str, dict] = {}
+    if raster_layer_ids:
+        async with async_conn("style_for_native_render.raster_layers") as conn:
+            rows = await conn.fetch(
+                "SELECT layer_id, bounds, metadata FROM map_layers WHERE layer_id = ANY($1) AND type = $2",
+                raster_layer_ids,
+                LAYER_TYPE_RASTER,
+            )
+        raster_layers = {
+            inline_raster_source_id(row["layer_id"]): dict(row) for row in rows
+        }
+
+    left_out = []
+    for sid in unreachable:
+        layer = raster_layers.get(sid)
+        image_source = await _raster_image_source(layer, workdir) if layer else None
+        if image_source is not None:
+            style["sources"][sid] = image_source
+            continue
+        del style["sources"][sid]
+        style["layers"] = [ml for ml in style.get("layers", []) if ml.get("source") != sid]
+        left_out.append(sid)
+    if left_out:
+        logger.warning("Static render leaves out sources it cannot fetch: %s", ", ".join(left_out))
+    return style, left_out
 
 
 # requires style.json to be provided, so that we can do this without auth
@@ -995,24 +1104,24 @@ async def render_map_internal(
     height: int,
     renderer: str,
     bgcolor: str,
-    style_json: str,
+    style_json: dict,
 ) -> tuple[Response, dict]:
-    if bbox is None:
-        xmin, ymin, xmax, ymax = await pull_bounds_from_map(map_id)
-    else:
-        xmin, ymin, xmax, ymax = map(float, bbox.split(","))
+    # The output PNG and the raster pictures the style points at live only for this render.
+    with tempfile.TemporaryDirectory(prefix="render_") as workdir:
+        output_path = os.path.join(workdir, "map.png")
+        style, left_out = await style_for_native_render(style_json, workdir)
 
-    assert style_json is not None
-    # Create a temporary file for the output PNG
-    with tempfile.NamedTemporaryFile(suffix=".png") as temp_output:
-        output_path = temp_output.name
+        if bbox is None:
+            xmin, ymin, xmax, ymax = await pull_bounds_from_map(map_id, frozenset(left_out))
+        else:
+            xmin, ymin, xmax, ymax = map(float, bbox.split(","))
 
         # Format the style JSON with required parameters
         input_data = {
             "width": width,
             "height": height,
             "bounds": f"{xmin},{ymin},{xmax},{ymax}",
-            "style": style_json,
+            "style": style,
             "ratio": 1,
         }
 
@@ -1102,8 +1211,10 @@ async def render_map_internal(
                         stderr=stderr,
                     )
 
-            temp_output.seek(0)
-            screenshot_data = temp_output.read()
+            screenshot_data = b""
+            if os.path.exists(output_path):
+                with open(output_path, "rb") as f:
+                    screenshot_data = f.read()
             if not screenshot_data:
                 renderer_stderr = stderr.decode(errors="replace").strip()
                 renderer_stdout = stdout.decode(errors="replace").strip()
