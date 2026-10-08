@@ -1,0 +1,652 @@
+{
+ "inputs": "scripts/insurance_report_dump.py deafrica (maize, Season A 2026 planted 2026-09-15, report 2026-10-07, 3 mm/day CHIRPS, real maize A triggers)",
+ "before_commit": "b4cba917 (NDVI z-score from anomaly_alerts_cache, no stand-in)",
+ "after": {
+  "Kayumba, Sep -1.16": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.16,
+     "ndvi": 0.326,
+     "clear_fraction": 1.0,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": -1.16,
+   "ndvi_month": "2026-09",
+   "sources": [
+    "CHIRPS v2.0",
+    "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "ndvi_z_score/full_season: -1.16 vs -1.5 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 11.9 pass",
+    "spi/full_season: 0.92 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 4,
+   "confidence_score": 66,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kayumba: SAFE.",
+    "Rain since planting: 66mm, about 25% more than usual for this time of year (usual by now: about 52mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "Vegetation: stressed",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kayumba — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/4 activated | Confidence: 66/100",
+    "Rain since planting: 66mm = 126% of normal for these dates (normal 52mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  ndvi_z_score                           -1.2  <-1.5      PASS       0.8",
+    "  rainfall_cumulative                    66.0  <11.9      PASS       1.0",
+    "  spi                                     0.9  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 12mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0, Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kanyangese, Sep -0.79": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -0.79,
+     "ndvi": 0.371,
+     "clear_fraction": 0.99,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": -0.79,
+   "ndvi_month": "2026-09",
+   "sources": [
+    "CHIRPS v2.0",
+    "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "ndvi_z_score/full_season: -0.79 vs -1.5 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 14.5 pass",
+    "spi/full_season: -0.09 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 4,
+   "confidence_score": 66,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kanyangese: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 67mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kanyangese. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "Vegetation: stressed",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kanyangese — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/4 activated | Confidence: 66/100",
+    "Rain since planting: 66mm = 99% of normal for these dates (normal 67mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  ndvi_z_score                           -0.8  <-1.5      PASS       0.8",
+    "  rainfall_cumulative                    66.0  <14.5      PASS       1.0",
+    "  spi                                    -0.1  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 14mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0, Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kanyangese. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, Sep -1.8 (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.8,
+     "ndvi": 0.25,
+     "clear_fraction": 0.95,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": -1.8,
+   "ndvi_month": "2026-09",
+   "sources": [
+    "CHIRPS v2.0",
+    "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "ndvi_z_score/full_season: -1.8 vs -1.5 TRIGGERED",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 1,
+   "triggers_total": 4,
+   "confidence_score": 50,
+   "overall_status": "WARNING",
+   "recommendation": "Warning: ndvi z score exceeded threshold. Recommend immediate field assessment and consider early payout preparation.",
+   "farmer_report": [
+    "⚠️ Kamate: AT RISK.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "Vegetation: very stressed",
+    "1 trigger(s) activated — contact your insurance agent.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: WARNING | Triggers: 1/4 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  ndvi_z_score                           -1.8  <-1.5      TRIGGERED  0.8",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0, Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, Sep too cloudy (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": null,
+     "ndvi": null,
+     "clear_fraction": 0.12,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kamate: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, latest month Aug: before planting (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-08",
+     "z": -1.8,
+     "ndvi": 0.25,
+     "clear_fraction": 0.95,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kamate: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kayumba, cache alert -2.4, Sep -1.16": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": -2.4,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.16,
+     "ndvi": 0.326,
+     "clear_fraction": 1.0,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": -1.16,
+   "ndvi_month": "2026-09",
+   "sources": [
+    "CHIRPS v2.0",
+    "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "ndvi_z_score/full_season: -1.16 vs -1.5 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 11.9 pass",
+    "spi/full_season: 0.92 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 4,
+   "confidence_score": 66,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kayumba: SAFE.",
+    "Rain since planting: 66mm, about 25% more than usual for this time of year (usual by now: about 52mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "Vegetation: stressed",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kayumba — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/4 activated | Confidence: 66/100",
+    "Rain since planting: 66mm = 126% of normal for these dates (normal 52mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  ndvi_z_score                           -1.2  <-1.5      PASS       0.8",
+    "  rainfall_cumulative                    66.0  <11.9      PASS       1.0",
+    "  spi                                     0.9  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 12mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0, Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020), 2026-09",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  }
+ },
+ "before": {
+  "Kayumba, Sep -1.16": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.16,
+     "ndvi": 0.326,
+     "clear_fraction": 1.0,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 11.9 pass",
+    "spi/full_season: 0.92 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kayumba: SAFE.",
+    "Rain since planting: 66mm, about 25% more than usual for this time of year (usual by now: about 52mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kayumba — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 126% of normal for these dates (normal 52mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <11.9      PASS       1.0",
+    "  spi                                     0.9  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 12mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kanyangese, Sep -0.79": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -0.79,
+     "ndvi": 0.371,
+     "clear_fraction": 0.99,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 14.5 pass",
+    "spi/full_season: -0.09 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kanyangese: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 67mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kanyangese. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kanyangese — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 99% of normal for these dates (normal 67mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <14.5      PASS       1.0",
+    "  spi                                    -0.1  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 14mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kanyangese. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, Sep -1.8 (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.8,
+     "ndvi": 0.25,
+     "clear_fraction": 0.95,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kamate: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, Sep too cloudy (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": null,
+     "ndvi": null,
+     "clear_fraction": 0.12,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kamate: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kamate, latest month Aug: before planting (set)": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": null,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-08",
+     "z": -1.8,
+     "ndvi": 0.25,
+     "clear_fraction": 0.95,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": null,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "rainfall_cumulative/full_season: 66.0 vs 15.9 pass",
+    "spi/full_season: -0.36 vs -1 pass"
+   ],
+   "triggers_activated": 0,
+   "triggers_total": 3,
+   "confidence_score": 50,
+   "overall_status": "SAFE",
+   "recommendation": "Conditions in early_season are progressing normally. No intervention needed.",
+   "farmer_report": [
+    "✅ Kamate: SAFE.",
+    "Rain since planting: 66mm, about the usual amount for this time of year (usual by now: about 71mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "No drought trigger activated.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kamate — Season A (2026-09-15 to 2026-10-07)",
+    "Status: SAFE | Triggers: 0/3 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 94% of normal for these dates (normal 71mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  rainfall_cumulative                    66.0  <15.9      PASS       1.0",
+    "  spi                                    -0.4  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 16mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kamate. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  },
+  "Kayumba, cache alert -2.4, Sep -1.16": {
+   "inputs": {
+    "anomaly_cache_ndvi_z": -2.4,
+    "sar_predicted_ndvi": null,
+    "deafrica_anomaly": {
+     "month": "2026-09",
+     "z": -1.16,
+     "ndvi": 0.326,
+     "clear_fraction": 1.0,
+     "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)"
+    }
+   },
+   "sar_predictor_called": false,
+   "ndvi_z_score": -2.4,
+   "ndvi_month": null,
+   "sources": [
+    "CHIRPS v2.0",
+    "Sentinel-2 NDVI anomaly (district)"
+   ],
+   "triggers": [
+    "dry_spell_days/full_season: 0.0 vs 15 pass",
+    "ndvi_z_score/full_season: -2.4 vs -1.5 TRIGGERED",
+    "rainfall_cumulative/full_season: 66.0 vs 11.9 pass",
+    "spi/full_season: 0.92 vs -1 pass"
+   ],
+   "triggers_activated": 1,
+   "triggers_total": 4,
+   "confidence_score": 50,
+   "overall_status": "WARNING",
+   "recommendation": "Warning: ndvi z score exceeded threshold. Recommend immediate field assessment and consider early payout preparation.",
+   "farmer_report": [
+    "⚠️ Kayumba: AT RISK.",
+    "Rain since planting: 66mm, about 25% more than usual for this time of year (usual by now: about 52mm).",
+    "(From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures.)",
+    "Vegetation: very stressed",
+    "1 trigger(s) activated — contact your insurance agent.",
+    "Season progress: early_season (day 22)"
+   ],
+   "insurer_report": [
+    "TRIGGER ASSESSMENT: Kayumba — Season A (2026-09-15 to 2026-10-07)",
+    "Status: WARNING | Triggers: 1/4 activated | Confidence: 50/100",
+    "Rain since planting: 66mm = 126% of normal for these dates (normal 52mm, CHIRPS 2000-2023)",
+    "",
+    "  Signal                              Current  Threshold  Status     Weight",
+    "  -----------------------------------------------------------------------------",
+    "  dry_spell_days                          0.0  >15.0      PASS       0.6",
+    "  ndvi_z_score                           -2.4  <-1.5      TRIGGERED  0.8",
+    "  rainfall_cumulative                    66.0  <11.9      PASS       1.0",
+    "  spi                                     0.9  <-1.0      PASS       0.8",
+    "  Note: rainfall_cumulative uses the 100mm season minimum prorated to 12mm, the share of normal rain due so far.",
+    "",
+    "Season progress: early_season (day 22 of 135)",
+    "Sources: CHIRPS v2.0, Sentinel-2 NDVI anomaly (district)",
+    "Rainfall coverage: From CHIRPS satellite rainfall estimates: the 5 km square at the centre of Kayumba. One square is larger than a cell, so about 3 neighbouring cells share these figures."
+   ]
+  }
+ }
+}

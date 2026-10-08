@@ -24,9 +24,9 @@ from typing import Any, Optional
 import asyncpg
 
 from src.services import crop_stages
+from src.services import deafrica_stac
 from src.services import et_normals
 from src.services import forecast_openmeteo
-from src.services import sar_ndvi
 from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
@@ -178,6 +178,7 @@ class InsuranceReport:
     drought_diagnostic_label: str = ""
 
     ndvi_z_score: Optional[float] = None
+    ndvi_month: Optional[str] = None  # "YYYY-MM": the month the NDVI z-score describes
     ndvi_concordance_score: Optional[float] = None
 
     et_anomaly_pct: Optional[float] = None
@@ -234,6 +235,7 @@ class InsuranceReport:
                 for p in self.phase_rainfall
             ],
             "ndvi_z_score": round(self.ndvi_z_score, 2) if self.ndvi_z_score is not None else None,
+            "ndvi_month": self.ndvi_month,
             "ndvi_concordance_score": round(self.ndvi_concordance_score, 2) if self.ndvi_concordance_score is not None else None,
             "et_anomaly_pct": round(self.et_anomaly_pct, 1) if self.et_anomaly_pct is not None else None,
             "soil_moisture_pct": round(self.soil_moisture_pct, 1) if self.soil_moisture_pct is not None else None,
@@ -624,47 +626,27 @@ def rainfall_vs_usual(pct_of_normal: Optional[float]) -> Optional[str]:
     return f"about {diff}% more than usual for this time of year"
 
 # ---------------------------------------------------------------------------
-# 3. NDVI anomaly from database cache
+# 3. NDVI anomaly (Digital Earth Africa, monthly)
 # ---------------------------------------------------------------------------
 
-async def _fetch_ndvi_anomaly(
-    conn: asyncpg.Connection,
-    district: Optional[str] = None,
-) -> Optional[float]:
-    """Get latest mean NDVI z-score from anomaly_alerts_cache."""
-    try:
-        if district:
-            row = await conn.fetchrow(
-                "SELECT AVG(z_score) as mean_z FROM anomaly_alerts_cache "
-                "WHERE LOWER(district) = LOWER($1) "
-                "AND computed_at > NOW() - INTERVAL '30 days'",
-                district,
-            )
-        else:
-            row = await conn.fetchrow(
-                "SELECT AVG(z_score) as mean_z FROM anomaly_alerts_cache "
-                "WHERE computed_at > NOW() - INTERVAL '30 days'",
-            )
-        if row and row["mean_z"] is not None:
-            return float(row["mean_z"])
-    except Exception:
-        logger.debug("anomaly_alerts_cache query failed", exc_info=True)
-    return None
+# A month's NDVI anomaly speaks for the season only when this many of its days fell after planting;
+# an earlier month describes the vegetation before the crop.
+_NDVI_MIN_SEASON_DAYS = 15
 
-async def _sar_predicted_ndvi_z(lat: float, lon: float) -> Optional[float]:
-    """NDVI z-score from SAR-predicted NDVI around (lat, lon): the fallback when the optical
-    anomaly cache has nothing for the district."""
-    pred = sar_ndvi.get_sar_ndvi_predictor()
-    buf = 0.05
-    bbox = (lon - buf, lat - buf, lon + buf, lat + buf)
-    result = await asyncio.to_thread(pred.predict_ndvi, bbox=bbox)
-    if result and result.get("status") == "success":
-        predicted = result.get("predicted_ndvi")
-        if predicted is not None:
-            mean_ndvi = 0.45
-            std_ndvi = 0.15
-            return (predicted - mean_ndvi) / std_ndvi if std_ndvi > 0 else 0.0
-    return None
+
+def _season_ndvi_anomaly(anomaly: Optional[dict], planting_date: date) -> tuple[Optional[float], Optional[str]]:
+    """(z-score, "YYYY-MM") of the season's latest published NDVI anomaly month, or (None, None).
+
+    ``anomaly`` is deafrica_stac.area_ndvi_anomaly's answer for the area; its z is None when too
+    little of the area had a clear view that month (unknown, never 0).
+    """
+    if not anomaly or anomaly.get("z") is None:
+        return None, None
+    year, month = (int(v) for v in anomaly["month"].split("-"))
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    if (month_end - planting_date).days + 1 < _NDVI_MIN_SEASON_DAYS:
+        return None, None
+    return anomaly["z"], anomaly["month"]
 
 # ---------------------------------------------------------------------------
 # 4. Centroid from GeoJSON geometry
@@ -1360,7 +1342,7 @@ def _format_agronomist(r: InsuranceReport) -> str:
     lines.append("")
     lines.append("VEGETATION:")
     if r.ndvi_z_score is not None:
-        lines.append(f"  NDVI z-score: {r.ndvi_z_score:.2f}")
+        lines.append(f"  NDVI z-score: {r.ndvi_z_score:.2f} ({r.ndvi_month}, against 1984-2020)")
     if r.ndvi_concordance_score is not None:
         lines.append(f"  Rainfall-NDVI concordance: {r.ndvi_concordance_score:.2f}")
 
@@ -1399,7 +1381,7 @@ def _format_scientist(r: InsuranceReport) -> str:
         "season_vs_normal": "Observed CHIRPS rainfall since planting (scaled up for missing days, as for the season SPI) over the sum of per-district monthly CHIRPS normals (2000-2023) prorated to the same calendar dates.",
         "spi": "SPI-1 (30-day) and SPI-3 (90-day) from daily CHIRPS against per-district monthly normals (CHIRPS 2000-2023). Z-score approximation; gamma fit deferred.",
         "drought_diagnostic": "SPI-SM divergence classification: consistent_drought (SPI<-1, SM<35%), flash_drought (SPI normal, SM<35%), carryover_storage (SPI<-1, SM>=35%), runoff_dominated (SPI>1, SM<35%)",
-        "ndvi": "Sentinel-2 NDVI with SAR fallback (cloud-penetrating) anomaly z-scores",
+        "ndvi": "Digital Earth Africa ndvi_anomaly: the month's NDVI standardised against the 1984-2020 Landsat climatology for that month, averaged over the area's clear 30 m pixels; the latest published month with at least 15 days in the season; missing when under 30% of the area was clear",
         "sar_backscatter": "Sentinel-1 C-band SAR VH/VV ratio, cloud-penetrating vegetation density",
         "ndvi_concordance": "Rainfall deficit vs NDVI response lag analysis",
         "et": "WaPOR v3 AETI dekadal, 100m resolution",
@@ -1774,7 +1756,7 @@ def _rank_by_rainfall(areas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # 8b. Composite orchestrator — THE MAIN ENTRY POINT
 # ---------------------------------------------------------------------------
 
-# A report's network reads (CHIRPS, WaPOR, the forecast, SAR-predicted NDVI) get
+# A report's network reads (CHIRPS, WaPOR, the forecast) get
 # this long, all together. What has not arrived by then is missing, never zero,
 # and the report names it; reads still running finish in their threads and fill
 # the caches for the next report. Sage stops a tool after SAGE_TOOL_TIMEOUT_SECONDS
@@ -1787,7 +1769,7 @@ _CHIRPS_READ = "CHIRPS rainfall"
 _ET_READ = "WaPOR evapotranspiration"
 _SOIL_READ = "WaPOR soil moisture"
 _FORECAST_READ = "multi-model weather forecast"
-_SAR_NDVI_READ = "SAR-predicted NDVI"
+_NDVI_READ = "Digital Earth Africa NDVI anomaly"
 
 
 async def _collect_reads(
@@ -1911,7 +1893,6 @@ async def compute_insurance_intelligence(
     # use). The network reads get _FETCH_DEADLINE_S in all; what has not arrived
     # by then is missing, and the report names it.
     started = time.monotonic()
-    ndvi_z = await _fetch_ndvi_anomaly(conn, district)
     forecast_days = min(max(0, harvest_dap - dap), 16)
     network: dict[str, Awaitable[Any]] = {
         _CHIRPS_READ: _fetch_season_chirps(
@@ -1924,8 +1905,10 @@ async def compute_insurance_intelligence(
         network[_FORECAST_READ] = asyncio.to_thread(
             forecast_openmeteo.fetch_openmeteo_multimodel, lat, lon, forecast_days,
         )
-    if ndvi_z is None:
-        network[_SAR_NDVI_READ] = _sar_predicted_ndvi_z(lat, lon)
+    if geometry:
+        # The area's own monthly NDVI anomaly; no stand-in when there is none (the Sentinel-1
+        # prediction that stood in did not follow NDVI, docs/SAR_NDVI_SKILL.md).
+        network[_NDVI_READ] = asyncio.to_thread(deafrica_stac.area_ndvi_anomaly, geometry, today)
     reads = {name: asyncio.ensure_future(read) for name, read in network.items()}
     try:
         try:
@@ -1973,8 +1956,6 @@ async def compute_insurance_intelligence(
     et_result = arrived.get(_ET_READ)
     soil_result = arrived.get(_SOIL_READ)
     forecast_result = arrived.get(_FORECAST_READ)
-    if _SAR_NDVI_READ in arrived:
-        ndvi_z = arrived[_SAR_NDVI_READ]
     if forecast_result is None:
         logger.info("forecast fetch returned None")
     else:
@@ -2023,8 +2004,9 @@ async def compute_insurance_intelligence(
     ndvi_concordance_score = None
     if ndvi_conc_result and ndvi_conc_result.get("status") == "success":
         ndvi_concordance_score = ndvi_conc_result.get("concordance_score")
+    ndvi_z, ndvi_month = _season_ndvi_anomaly(arrived.get(_NDVI_READ), planting_date)
     if ndvi_z is not None:
-        sources.append("Sentinel-2/SAR NDVI")
+        sources.append(f"{deafrica_stac.NDVI_ANOMALY_SOURCE}, {ndvi_month}")
 
     # ET and soil moisture
     et_anomaly = _et_anomaly_pct(et_result)
@@ -2127,6 +2109,7 @@ async def compute_insurance_intelligence(
         drought_diagnostic=drought_diagnostic,
         drought_diagnostic_label=drought_diagnostic_label,
         ndvi_z_score=ndvi_z,
+        ndvi_month=ndvi_month,
         ndvi_concordance_score=ndvi_concordance_score,
         et_anomaly_pct=et_anomaly,
         soil_moisture_pct=soil_moisture,
