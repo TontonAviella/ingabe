@@ -23,6 +23,7 @@ import {
   type DroneCardAnswer,
   type DroneDeck,
   useAddFarmRecord,
+  useCheckPlot,
   useChoosePlotSource,
   useDroneCardAnswer,
   useDroneDeck,
@@ -298,6 +299,78 @@ function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable
   );
 }
 
+// The crops offered first when checking a plot; the rest open behind "Other crops".
+const COMMON_CHECK_CROPS = ['maize', 'cassava', 'beans', 'banana', 'irish_potato', 'sweet_potato', 'fallow_or_bare'];
+
+function FieldCheck({
+  layerId,
+  check,
+  onGoTo,
+}: {
+  layerId: string;
+  check: NonNullable<DroneCardAnswer['field_check']>;
+  onGoTo: (lon: number, lat: number) => void;
+}) {
+  const save = useCheckPlot(layerId);
+  const [more, setMore] = useState<number | null>(null);
+  const common = check.options.filter((o) => COMMON_CHECK_CROPS.includes(o.id));
+  const rest = check.options.filter((o) => !COMMON_CHECK_CROPS.includes(o.id));
+  return (
+    <div className="flex flex-col gap-2 rounded-[18px] bg-[#1E1612] border border-[#D9A066]/30 p-4">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[15px] font-bold text-[#F3EDE6]">{check.title}</span>
+        {check.checked > 0 && <span className="text-[12px] text-[#B8A99B] tabular-nums">{check.checked} checked</span>}
+      </div>
+      <p className="m-0 text-[13px] leading-snug text-[#B8A99B]">{check.detail}</p>
+      {check.plots.map((plot) => {
+        const busy = save.isPending && save.variables?.number === plot.number;
+        return (
+          <div key={plot.id} className="flex flex-col gap-2 pt-3 border-t border-white/[0.07] first-of-type:border-t-0">
+            <button type="button" onClick={() => onGoTo(plot.lon, plot.lat)} className="flex items-center gap-3 text-left cursor-pointer">
+              {plot.picture && (
+                <img
+                  src={plot.picture}
+                  alt={`${plot.title} on the photo`}
+                  loading="lazy"
+                  className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
+                />
+              )}
+              <span className="flex flex-col min-w-0">
+                <span className="text-[15px] font-semibold text-[#F3EDE6]">{plot.title}</span>
+                <span className="text-[13px] leading-snug text-[#B8A99B]">{plot.detail}</span>
+              </span>
+            </button>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label={`What grows in ${plot.title}`}>
+              {(more === plot.number ? [...common, ...rest] : common).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={save.isPending}
+                  onClick={() => save.mutate({ href: check.href, number: plot.number, crop: option.id })}
+                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold bg-white/[0.06] text-[#F3EDE6] border border-white/10 hover:bg-[#D9A066] hover:text-[#140E0B] disabled:opacity-60 cursor-pointer"
+                >
+                  {option.label}
+                </button>
+              ))}
+              {more !== plot.number && rest.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setMore(plot.number)}
+                  className="min-h-9 px-3 rounded-full text-[13px] font-semibold text-[#D9A066] hover:bg-white/5 cursor-pointer"
+                >
+                  Other crops
+                </button>
+              )}
+              {busy && <LoaderCircle className="size-4 self-center text-[#D9A066] animate-spin" />}
+            </div>
+          </div>
+        );
+      })}
+      {save.error && <p className="m-0 text-[13px] text-[#E9B987]">{save.error.message}</p>}
+    </div>
+  );
+}
+
 function Progress({ progress }: { progress: NonNullable<DroneCardAnswer['progress']> }) {
   const share = progress.parts ? progress.done / progress.parts : 0;
   return (
@@ -495,6 +568,8 @@ function AnswerView({
           )}
         </Section>
       </div>
+
+      {answer.field_check && <FieldCheck layerId={layerId} check={answer.field_check} onGoTo={onGoTo} />}
 
       {answer.upload && <AddDocument layerId={layerId} upload={answer.upload} />}
 

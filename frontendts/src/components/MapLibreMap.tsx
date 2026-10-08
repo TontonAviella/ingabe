@@ -120,7 +120,7 @@ async function createAgriIndicesLayer(layerId: string, geojsonUrl: string) {
 }
 
 import { bbox } from '@turf/turf';
-import { Activity, Brain, Database, History, Layers3, Maximize2, Minimize2, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
+import { Activity, Brain, Database, History, Layers3, MousePointerClick, Send, X, ZoomIn } from 'lucide-react';
 import {
   AJAXError,
   type LayerSpecification,
@@ -134,9 +134,7 @@ import {
 import type { ChatCompletionUserMessageParam } from 'openai/resources/chat/completions';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Download } from 'react-bootstrap-icons';
-import ReactMarkdown from 'react-markdown';
 import { ReadyState } from 'react-use-websocket';
-import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
@@ -162,22 +160,9 @@ import type {
 } from '../lib/types';
 import type { MobileWorkspacePanel } from '../lib/workspacePanels';
 import { toggleMobileWorkspacePanel } from '../lib/workspacePanels';
+import { SageReply } from './SageReply';
 
 const EMPTY_POINT_CLOUD_LAYERS: MapLayer[] = [];
-
-// Import styles in the parent component
-const KUE_MESSAGE_STYLE = `
-  text-sm
-  [&_table]:w-full [&_table]:border-collapse [&_table]:text-left
-  [&_thead]:border-b-1 [&_thead]:border-gray-600
-  [&_thead_th]:font-semibold
-  [&_tbody_tr]:border-b [&_tbody_tr]:border-gray-200 last:[&_tbody_tr]:border-b-0
-  [&_td]:align-top
-  [&_a]:text-blue-200 [&_a]:underline
-  [&_img]:h-auto [&_img]:block [&_img]:mx-auto
-  [&_img]:my-2 [&_img]:w-[320px] [&_img]:border
-  [&_img]:border-[#aaa] [&_img]:rounded-md
-`;
 
 // SWAP_XY is created lazily via getDeckModules() since Matrix4 is dynamically imported.
 
@@ -313,7 +298,6 @@ export default function MapLibreMap({
     [layerId: string]: JSX.Element;
   }>({});
   const [loadingSourceIds, setLoadingSourceIds] = useState<Set<string>>(new Set());
-  const [assistantExpanded, setAssistantExpanded] = useState(false);
   const [mobileWorkspacePanel, setMobileWorkspacePanel] = useState<MobileWorkspacePanel>(null);
   const [isMapReady, setIsMapReady] = useState(false);
 
@@ -1847,85 +1831,21 @@ export default function MapLibreMap({
             </CardContent>
           </Card>
         )}
-        {/* Message display component - always show parent div, animate height */}
-        {(criticalErrors.length > 0 || !!streamingText || activeActions.length > 0 || lastAssistantMsg) && (
-          <div
-            className={`z-30 absolute bottom-12 mb-[34px] left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-lg ${assistantExpanded ? 'max-h-[80vh]' : 'max-h-40'} overflow-auto rounded-t-md shadow-md p-2 text-sm transition-all duration-300 h-auto ${errors.length > 0 ? 'border-red-800' : ''}`}
-            style={{ backgroundColor: 'rgba(30, 41, 57, 0.9)' }}
-          >
-            {/* Expand/contract toggle */}
-            {(lastAssistantMsg || !!streamingText) && (
-              <button
-                onClick={() => setAssistantExpanded((v) => !v)}
-                className="absolute right-2 top-2 text-gray-400 hover:text-gray-200 cursor-pointer"
-                title={assistantExpanded ? 'Contract' : 'Expand'}
-              >
-                {assistantExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              </button>
-            )}
-            {criticalErrors.length > 0 ? (
-              <div className="space-y-1 max-h-20">
-                {criticalErrors.map((error) => (
-                  <div key={error.id} className="flex items-center justify-between">
-                    <div className="flex flex-col flex-1 mr-2">
-                      <span className="text-red-400">{error.message}</span>
-                      <span className="text-xs text-slate-500 dark:text-gray-400">{error.timestamp.toLocaleTimeString()}</span>
-                    </div>
-                    <button
-                      onClick={() => dismissError(error.id)}
-                      className="text-white cursor-pointer hover:underline shrink-0"
-                      title="Dismiss error"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ) : streamingText ? (
-              <div className="flex items-start justify-between">
-                <div className={KUE_MESSAGE_STYLE}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingText}</ReactMarkdown>
-                  <span className="inline-block w-1.5 h-4 ml-0.5 bg-gray-400 animate-pulse align-text-bottom" />
-                </div>
-                {isCancelling ? (
-                  <span className="text-white ml-2 shrink-0">Cancelling...</span>
-                ) : (
-                  <button className="text-white cursor-pointer ml-2 shrink-0 hover:underline" onClick={() => setIsCancelling(true)}>
-                    Cancel
-                  </button>
-                )}
-              </div>
-            ) : activeActions.length > 0 ? (
-              <div className="flex items-center justify-between">
-                <ol className="space-y-1">
-                  {activeActions.map((action, actionIndex) => (
-                    <li key={`${action.action_id}-${actionIndex}`} className="flex items-center">
-                      {getActionIcon(action.action)}
-                      <span>{action.action}</span>
-                    </li>
-                  ))}
-                </ol>
-                {isCancelling ? (
-                  <span className="text-white ml-2 shrink-0">Cancelling...</span>
-                ) : (
-                  <button className="text-white cursor-pointer ml-2 shrink-0 hover:underline" onClick={() => setIsCancelling(true)}>
-                    Cancel
-                  </button>
-                )}
-              </div>
-            ) : lastAssistantMsg ? (
-              <div className={KUE_MESSAGE_STYLE}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{lastAssistantMsg}</ReactMarkdown>
-              </div>
-            ) : null}
-          </div>
-        )}
-        <div
-          className={`z-30 absolute bottom-12 left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-xl bg-white dark:bg-gray-800 shadow-md focus-within:ring-2 focus-within:ring-white/30 flex items-center border border-input bg-input rounded-md`}
-        >
+        <SageReply
+          reply={lastAssistantMsg}
+          waiting={!!lastMsg && (lastMsg.role === 'user' || lastMsg.role === 'tool' || (lastMsg.role === 'assistant' && !lastMsg.content))}
+          streamingText={streamingText}
+          actions={activeActions}
+          errors={criticalErrors}
+          cancelling={isCancelling}
+          onCancel={() => setIsCancelling(true)}
+          onDismissError={dismissError}
+          actionIcon={getActionIcon}
+        />
+        <div className="z-30 absolute bottom-12 left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-[#17110E]/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-[#D9A066]/60">
           <Input
-            className={`flex-1 border-none shadow-none !bg-transparent focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-            placeholder={lastUserMsg || 'Type in for Sage to do something...'}
+            className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
+            placeholder={lastUserMsg || 'Ask Sage about this photo, a plot or a place…'}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}

@@ -426,7 +426,8 @@ def _name_column(columns: list[str]) -> Optional[str]:
     return next((by_lower[name] for name in PLOT_NAME_COLUMNS if name in by_lower), None)
 
 
-def bare_spots(cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
+def bare_spots(cog_url: str, plots: list[dict[str, Any]],
+               progress: Optional[background_jobs.Progress] = None) -> dict[str, Any]:
     """Patches of bare soil (GRVI below BARE_PIXEL over about half a metre) of 1 m² or more inside the given
     plot features (WGS84), as WGS84 polygons; each spot keeps its plot's number."""
     import cv2
@@ -436,7 +437,9 @@ def bare_spots(cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
         to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
         to_wgs84 = Transformer.from_crs(ds.crs, "EPSG:4326", always_xy=True).transform
         factor = max(1.0, SPOTS_M_PER_PX / _photo_m_per_px(ds))
-        for plot in plots:
+        for done, plot in enumerate(plots):
+            if progress:
+                progress(done, len(plots))
             outline = reproject(to_photo, shape(plot["geometry"]))
             w = from_bounds(*outline.bounds, transform=ds.transform)
             col0, row0 = max(0, int(np.floor(w.col_off))), max(0, int(np.floor(w.row_off)))
@@ -460,7 +463,9 @@ def bare_spots(cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
                     features.append({"type": "Feature", "geometry": mapping(spot),
                                      "properties": {"number": plot["properties"]["number"], "area_m2": round(area, 1),
                                                     "label": f"Bare soil · {area:.0f} m²"}})
-    return {"type": "FeatureCollection", "features": features}
+    # Plots measured with no spot at all are as much a finding as plots with spots.
+    return {"type": "FeatureCollection", "features": features,
+            "measured_plots": [plot["properties"]["number"] for plot in plots]}
 
 
 def read_plot_map(path: str) -> list[MapPlot]:
@@ -536,20 +541,33 @@ async def load_plots(s3: Any, bucket: str, photo_key: str) -> Optional[PlotSet]:
 _spots: dict[str, dict[str, Any]] = {}
 
 
-async def load_spots(s3: Any, bucket: str, key: str, cog_url: str, plots: list[dict[str, Any]]) -> dict[str, Any]:
-    """Bare spots inside these plots, measured once per key (photo, plot set and plot numbers) and kept."""
+async def kept_spots(s3: Any, bucket: str, key: str) -> Optional[dict[str, Any]]:
+    """Bare spots measured before for this key (photo, plot set and plot numbers), or None."""
     if key in _spots:
         return _spots[key]
-    store = _store_key(f"spots|{key}")
     try:
-        response = await s3.get_object(Bucket=bucket, Key=store)
-        async with response["Body"] as body:
-            spots = json.loads(await body.read())
+        response = await s3.get_object(Bucket=bucket, Key=_store_key(f"spots|{key}"))
     except s3.exceptions.NoSuchKey:
-        spots = await asyncio.to_thread(bare_spots, cog_url, plots)
-        await s3.put_object(Bucket=bucket, Key=store, Body=json.dumps(spots).encode(), ContentType="application/json")
-    _spots[key] = spots
-    return spots
+        return None
+    async with response["Body"] as body:
+        _spots[key] = json.loads(await body.read())
+    return _spots[key]
+
+
+def spots_job(key: str) -> Optional[background_jobs.Job]:
+    return background_jobs.status(f"spots:{key}")
+
+
+def start_spots(s3: Any, bucket: str, key: str, cog_url: str, plots: list[dict[str, Any]]) -> background_jobs.Job:
+    """Measure the bare spots in the background (a minute or more for a few hundred plots), once, and keep them."""
+
+    async def work(progress: background_jobs.Progress) -> None:
+        spots = await asyncio.to_thread(bare_spots, cog_url, plots, progress)
+        await s3.put_object(Bucket=bucket, Key=_store_key(f"spots|{key}"), Body=json.dumps(spots).encode(),
+                            ContentType="application/json")
+        _spots[key] = spots
+
+    return background_jobs.start(f"spots:{key}", work)
 
 
 _map_locks: dict[str, asyncio.Lock] = {}

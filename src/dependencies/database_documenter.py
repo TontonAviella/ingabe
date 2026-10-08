@@ -4,14 +4,31 @@ from functools import lru_cache
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
 from src.structures import get_async_db_connection
 from src.dependencies.postgres_connection import PostgresConnectionManager
 from src.dependencies.chat_completions import ChatArgsProvider
 from src.dependencies.redis_client import get_redis_client
+from src.services import llm_cache
 from src.utils import generate_id
 from openai import AsyncOpenAI
 
 redis = get_redis_client()
+
+
+async def _kept_answer(client: AsyncOpenAI, chat_args: dict, messages: list[dict]) -> str:
+    """The model's text for these messages; the same database schema (every project gets the Rwanda
+    connection) is documented once and then read back for free."""
+
+    async def ask() -> dict:
+        response = await client.chat.completions.create(
+            **chat_args, messages=messages,
+            extra_body={**(chat_args.get("extra_body") or {}), "usage": {"include": True}})
+        llm_cache.record("database_docs", response.usage)
+        return {"text": response.choices[0].message.content or ""}
+
+    kept, _ = await llm_cache.answer("database_docs", llm_cache.key_of(str(chat_args.get("model")), messages), ask)
+    return kept["text"]
 
 
 class DatabaseDocumenter(ABC):
@@ -126,14 +143,8 @@ Respond with ONLY the friendly name, no additional text."""
             name_chat_args = await chat_args_provider.get_args(
                 user_id, "generate_database_docs"
             )
-            name_response = await openai_client.chat.completions.create(
-                **name_chat_args,
-                messages=[
-                    {"role": "user", "content": name_prompt},
-                ],
-            )
-
-            friendly_name = name_response.choices[0].message.content.strip()
+            friendly_name = (await _kept_answer(openai_client, name_chat_args,
+                                                [{"role": "user", "content": name_prompt}])).strip()
 
             # Generate documentation
             system_prompt = """You are a database documentation expert. Create a brief overview of a PostgreSQL database.
@@ -157,15 +168,10 @@ Schema:
             doc_chat_args = await chat_args_provider.get_args(
                 user_id, "generate_database_docs"
             )
-            response = await openai_client.chat.completions.create(
-                **doc_chat_args,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-
-            documentation = response.choices[0].message.content
+            documentation = await _kept_answer(openai_client, doc_chat_args, [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
 
             # Save the generated summary to the new table
             summary_id = generate_id(prefix="S")
