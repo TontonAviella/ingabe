@@ -63,6 +63,7 @@ from src.services.life_harness import (
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
+from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage
 from src.services.sage_result_checks import apply_result_checks
@@ -902,10 +903,6 @@ async def _generate_postgis_pmtiles_background(
         )
 
 
-def _admin_sql_literal(value: object) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 def _admin_boundary_style(layer_id: str) -> list[dict]:
     source_layer = "reprojectedfgb"
     return [
@@ -930,186 +927,6 @@ def _admin_boundary_style(layer_id: str) -> list[dict]:
             },
         },
     ]
-
-
-async def _resolve_admin_boundary_query(
-    conn,
-    args: dict[str, object],
-) -> dict[str, object]:
-    requested_level = str(args.get("admin_level") or "auto").strip().lower()
-    name = str(args.get("name") or "").strip()
-    if not name:
-        return {"status": "error", "error": "Missing boundary name."}
-
-    levels = {
-        "province": {
-            "table": "rwanda_province_boundaries",
-            "name_col": "province",
-            "attrs": ["province"],
-            "label": "province",
-        },
-        "district": {
-            "table": "rwanda_district_boundaries",
-            "name_col": "district",
-            "attrs": ["district"],
-            "label": "district",
-        },
-        "sector": {
-            "table": "rwanda_sector_boundaries",
-            "name_col": "sector_name",
-            "attrs": ["sector_name", "district_name"],
-            "label": "sector",
-        },
-        "cell": {
-            "table": "rwanda_cell_boundaries",
-            "name_col": "cell_name",
-            "attrs": ["cell_name", "sector_name", "district_name"],
-            "label": "cell",
-        },
-        "village": {
-            "table": "rwanda_village_boundaries",
-            "name_col": "village_name",
-            "attrs": ["village_name", "cell_name", "sector_name", "district_name"],
-            "label": "village",
-        },
-    }
-
-    def _filters_for(level: str, *, sql: bool) -> tuple[list[str], list[object]]:
-        spec = levels[level]
-        filters: list[str] = []
-        params: list[object] = []
-        if name not in {"*", "all"}:
-            if sql:
-                filters.append(f"LOWER({spec['name_col']}) = LOWER({_admin_sql_literal(name)})")
-            else:
-                params.append(name)
-                filters.append(f"LOWER({spec['name_col']}) = LOWER(${len(params)})")
-        for arg_key, col in (
-            ("district", "district_name"),
-            ("sector", "sector_name"),
-            ("cell", "cell_name"),
-        ):
-            value = args.get(arg_key)
-            if not value:
-                continue
-            available_cols = set(spec["attrs"]) | {spec["name_col"]}
-            if col not in available_cols:
-                continue
-            if sql:
-                filters.append(f"LOWER({col}) = LOWER({_admin_sql_literal(value)})")
-            else:
-                params.append(value)
-                filters.append(f"LOWER({col}) = LOWER(${len(params)})")
-        return filters, params
-
-    async def _match(level: str) -> dict[str, object]:
-        spec = levels[level]
-        filters, params = _filters_for(level, sql=False)
-        where = " AND ".join(filters) if filters else "TRUE"
-        try:
-            rows = await conn.fetch(
-                f"""
-                SELECT {', '.join(spec['attrs'])},
-                       ST_XMin(ST_Extent(geom)) AS xmin,
-                       ST_YMin(ST_Extent(geom)) AS ymin,
-                       ST_XMax(ST_Extent(geom)) AS xmax,
-                       ST_YMax(ST_Extent(geom)) AS ymax,
-                       COUNT(*) OVER() AS match_count
-                FROM {spec['table']}
-                WHERE {where}
-                GROUP BY {', '.join(spec['attrs'])}
-                ORDER BY {', '.join(spec['attrs'])}
-                LIMIT 12
-                """,
-                *params,
-            )
-        except asyncpg.exceptions.UndefinedTableError:
-            logger.warning("Admin boundary table missing: %s", spec["table"])
-            return {"status": "not_found", "admin_level": level}
-        if not rows:
-            return {"status": "not_found", "admin_level": level}
-        total = int(rows[0]["match_count"])
-        candidates = [dict(row) for row in rows]
-
-        sql_filters, _ = _filters_for(level, sql=True)
-        sql_where = " AND ".join(sql_filters) if sql_filters else "TRUE"
-        attr_select = ", ".join(spec["attrs"])
-        query = (
-            f"SELECT ROW_NUMBER() OVER()::bigint AS id, {attr_select}, geom "
-            f"FROM {spec['table']} WHERE {sql_where}"
-        )
-        if name in {"*", "all"} or total > 1:
-            extent_row = await conn.fetchrow(
-                f"""
-                SELECT ST_XMin(ST_Extent(geom)) AS xmin,
-                       ST_YMin(ST_Extent(geom)) AS ymin,
-                       ST_XMax(ST_Extent(geom)) AS xmax,
-                       ST_YMax(ST_Extent(geom)) AS ymax
-                FROM {spec['table']}
-                WHERE {where}
-                """,
-                *params,
-            )
-            bounds_source = extent_row or rows[0]
-        else:
-            bounds_source = rows[0]
-        bounds = [
-            float(bounds_source["xmin"]),
-            float(bounds_source["ymin"]),
-            float(bounds_source["xmax"]),
-            float(bounds_source["ymax"]),
-        ]
-        first = dict(rows[0])
-        display_name = (
-            str(first.get(spec["name_col"]) or name)
-            if name not in {"*", "all"}
-            else f"{level.title()} Boundaries"
-        )
-        if total > 1 and name not in {"*", "all"}:
-            return {
-                "status": "ambiguous",
-                "admin_level": level,
-                "admin_name": display_name,
-                "query": query,
-                "bounds": bounds,
-                "feature_count": total,
-                "attribute_columns": spec["attrs"],
-                "layer_name": f"{display_name} {level.title()} Matches",
-                "candidates": candidates,
-                "match_count": total,
-            }
-        return {
-            "status": "success",
-            "admin_level": level,
-            "admin_name": display_name,
-            "query": query,
-            "bounds": bounds,
-            "feature_count": total if name in {"*", "all"} else 1,
-            "attribute_columns": spec["attrs"],
-            "layer_name": (
-                f"{display_name} {level.title()} Boundary"
-                if name not in {"*", "all"}
-                else f"{display_name}"
-            ),
-        }
-
-    search_levels = (
-        list(levels)
-        if requested_level == "auto"
-        else [requested_level]
-    )
-    for level in search_levels:
-        if level not in levels:
-            continue
-        result = await _match(level)
-        if result["status"] != "not_found":
-            return result
-    return {
-        "status": "not_found",
-        "admin_level": requested_level,
-        "admin_name": name,
-        "error": f"No Rwanda administrative boundary found for {name!r}.",
-    }
 
 
 def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
@@ -1216,7 +1033,7 @@ async def _maybe_run_fast_admin_boundary_turn(
         if not pgc_id:
             return False
 
-        result = await _resolve_admin_boundary_query(conn, fast_call.arguments)
+        result = await resolve_admin_boundary(conn, fast_call.arguments)
         if result.get("status") in {"success", "ambiguous"} and result.get("query"):
             layer_id = generate_id(prefix="L")
             style_id = generate_id(prefix="S")
