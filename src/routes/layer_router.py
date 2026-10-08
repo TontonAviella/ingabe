@@ -763,27 +763,9 @@ async def get_layer_pmtiles(
 
                 if layer.type == LAYER_TYPE_POSTGIS:
                     # PostGIS layer: generate PMTiles from the query
-                    from src.upload.pmtiles import generate_pmtiles_for_postgis_layer
+                    from src.upload.pmtiles import postgis_layer_pmtiles_key
 
-                    # Look up project_id via source_map_id
-                    _project_id = "unknown"
-                    if layer.source_map_id:
-                        async with get_async_db_connection() as _conn:
-                            project_row = await _conn.fetchrow(
-                                "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
-                                layer.source_map_id,
-                            )
-                            if project_row:
-                                _project_id = project_row["project_id"]
-
-                    pmtiles_key = await generate_pmtiles_for_postgis_layer(
-                        layer.layer_id,
-                        layer.postgis_connection_id,
-                        layer.postgis_query,
-                        feature_count,
-                        str(layer.owner_uuid),
-                        _project_id,
-                    )
+                    pmtiles_key = await postgis_layer_pmtiles_key(layer.layer_id)
                 else:
                     # Vector layer: download S3 source file and generate
                     from src.upload.pmtiles import generate_pmtiles_from_ogr_source
