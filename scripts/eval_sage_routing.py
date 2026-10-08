@@ -437,8 +437,8 @@ async def run(args: argparse.Namespace) -> Path:
                              categories=list(plan.routing.selected_categories),
                              small_talk=plan.routing.is_small_talk, tools=plan.tools,
                              shortlist=shortlist_method, model=model)
-                map_msgs = await map_provider.get_system_messages(
-                    history + [user_msg], map_description(case), None, None)
+                map_msgs = await map_provider.get_system_messages(  # a case may give the map's view (w, s, e, n)
+                    history + [user_msg], map_description(case), None, (case.get("map_state") or {}).get("viewport"))
                 messages = [{"role": "system", "content": plan.system_prompt}, *history,
                             *map_msgs, user_msg]
                 source, tools_sent, attempts = "model", len(plan.tools), []
