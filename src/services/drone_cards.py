@@ -18,6 +18,7 @@ this domain (brief agreed with Roger, 2026-10-06):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import random
 import zlib
@@ -43,6 +44,7 @@ from src.services import (
     drone_plots,
     drone_vision,
     farm_records,
+    field_checks,
     isdasoil_service,
     wapor_service,
 )
@@ -152,7 +154,10 @@ class Here:
     survey: Optional[drone_vision.Survey] = None  # the vision model's look at each plot
     survey_job: Optional[background_jobs.Job] = None
     spots: Optional[dict[str, Any]] = None  # bare soil inside plots seen with gaps (GeoJSON), when measured
+    spots_job: Optional[background_jobs.Job] = None  # measuring those spots, while it runs
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
+    checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground (already in `survey`)
+    record: Optional[field_checks.Record] = None  # how the model did on those plots
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
 
 
@@ -647,14 +652,15 @@ def _answer(card_id: str, analysis: PhotoAnalysis, here: Here, *, what: str, why
             overlay: Optional[dict[str, Any]] = None, facts: Optional[list[dict[str, str]]] = None,
             items: Optional[list[dict[str, Any]]] = None, downloads: Optional[list[dict[str, str]]] = None,
             progress: Optional[dict[str, Any]] = None, choices: Optional[dict[str, Any]] = None,
-            upload: Optional[dict[str, str]] = None) -> dict[str, Any]:
+            upload: Optional[dict[str, str]] = None, field_check: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """One answer. items: places to go, each with a point; progress: set while the answer is still being worked
-    out; choices: options the reader can pick that change the answer (where the plots come from)."""
+    out; choices: options the reader can pick that change the answer (where the plots come from); field_check:
+    plots the reader can say the real crop of."""
     card = _card(card_id, analysis, here)
     return {**card, "what": what, "why": why, "todo": todo, "how_sure": how_sure,
             "overlay": overlay, "facts": facts or [], "terms": _terms(terms, audience),
             "items": items or [], "downloads": downloads or [], "progress": progress, "choices": choices,
-            "upload": upload}
+            "upload": upload, "field_check": field_check}
 
 
 def _weak_spots(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -1032,13 +1038,73 @@ def _survey_pending(card_id: str, analysis: PhotoAnalysis, audience: str, here: 
         choices=_plot_choices(analysis, here))
 
 
-def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str]) -> dict[str, Any]:
-    because = [f"Seen by an AI vision model ({survey.model.split('/')[-1]}) in the photo only",
-               "Not checked against what is really in the plots"]
-    if unsure:
-        because.append(f"It said 'not sure' for {unsure} plots instead of guessing")
-    return _how_sure("low", because + extra,
-                     "Tell Ingabe what is really in 10 plots; it will then say how often the model is right.")
+FIELD_CHECKS_FOR_MEDIUM = 10  # checked plots (with ≥ 90% right) before a crop answer can say "medium"
+FIELD_CHECKS_FOR_HIGH = 30  # and ≥ 95% right for "high"
+
+
+def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str], here: Here,
+                     crops: bool = False) -> dict[str, Any]:
+    model = survey.model.split('/')[-1]
+    record = here.record
+    if crops:
+        because = [f"Two separate looks by an AI vision model ({model}) at each plot; a crop is named only where "
+                   "both looks name the same one"]
+        if unsure:
+            because.append(f"{unsure} plots stay 'not sure': the looks disagreed or could not tell")
+    else:
+        because = [f"Seen by an AI vision model ({model}) in the photo only"]
+    level = "low"
+    if not crops:  # field checks say what the crop is, not whether a problem or a stage was seen right
+        because.append("Not checked against what is really in the plots")
+        return _how_sure(level, because + extra, "Walk to the plots listed and look: a close-up phone photo helps.")
+    if record is not None and record.named:
+        because.append(f"Checked on the ground: the model was right in {record.right} of {record.named} plots")
+        share = record.share or 0
+        if record.named >= FIELD_CHECKS_FOR_HIGH and share >= 0.95:
+            level = "high"
+        elif record.named >= FIELD_CHECKS_FOR_MEDIUM and share >= 0.9:
+            level = "medium"
+    else:
+        because.append("Not yet checked against what is really in the plots")
+    surer = None if level == "high" else (
+        "Say what really grows in the plots listed below; Ingabe then says how often the model is right.")
+    return _how_sure(level, because + extra, surer)
+
+
+FIELD_CHECK_PLOTS = 8  # plots offered for a field check at a time
+
+
+def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: drone_vision.Survey,
+                 here: Here) -> Optional[dict[str, Any]]:
+    """Plots to say the real crop of: those the looks disagreed on first, then the largest plot of each named
+    crop (so every crop the model names gets checked), skipping plots already checked."""
+    pairs = [(p, look) for p, look in _looked(plots, survey) if p["number"] not in here.checked]
+    disputed = sorted([(p, look) for p, look in pairs if look.candidates], key=lambda t: -t[0]["area_ha"])
+    by_crop: dict[str, tuple[dict[str, Any], drone_vision.PlotLook]] = {}
+    for p, look in sorted(pairs, key=lambda t: -t[0]["area_ha"]):
+        if look.main_crop not in ("unsure",) and look.main_crop not in by_crop:
+            by_crop[look.main_crop] = (p, look)
+    chosen = (disputed[: FIELD_CHECK_PLOTS // 2] + list(by_crop.values()))[:FIELD_CHECK_PLOTS]
+    if not chosen:
+        return None
+
+    def guess(look: drone_vision.PlotLook) -> str:
+        if len(look.candidates) > 1:
+            return " or ".join(_crop_words(c) for c in look.candidates).capitalize() + "? The two looks disagreed."
+        if look.candidates:
+            return f"{_crop_words(look.candidates[0]).capitalize()}? Only one of the two looks could name it."
+        if look.main_crop == "unsure":
+            return "The model could not tell."
+        return f"The model says {_crop_words(look.main_crop)}."
+
+    return {
+        "title": "What really grows here?",
+        "detail": "Tap the crop you find in each plot. Your answer replaces the model's, and shows how often it is right.",
+        "plots": [{**_plot_item(analysis, p, guess(look)), "number": p["number"]} for p, look in chosen],
+        "options": [{"id": c, "label": drone_vision.CROP_LABELS[c]} for c in field_checks.CHECK_CROPS],
+        "href": f"/api/layer/{analysis.layer_id}/plots/{{number}}/check",
+        "checked": len(here.checked),
+    }
 
 
 def _spotlight(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, numbers: set[int]) -> Optional[dict[str, Any]]:
@@ -1074,13 +1140,35 @@ def _plot_item(analysis: PhotoAnalysis, plot: dict[str, Any], detail: str) -> di
             "lon": plot["lon"], "lat": plot["lat"]}
 
 
-MAX_SPOT_PLOTS = 60  # plots whose bare spots are measured for the problems answer, most problems first
+MAX_SPOT_PLOTS = 300  # plots whose bare spots are measured for the problems answer, most problems first
+# A plot the model flagged for gaps counts as gappy only where open soil (patches of 1 m² or more, measured)
+# covers this share of it, and at least GAP_MIN_M2. Seeing the photo at full detail, the model also called the
+# soil between young plants "gaps": 222 of 445 Cyampirita plots, half of them under 5% open soil; 89 at 10%+.
+GAP_CONFIRM_SHARE = 0.10
+GAP_MIN_M2 = 2.0
 
 
 def _problem_plots(plots: drone_plots.PlotSet, survey: drone_vision.Survey) -> list[tuple[dict[str, Any], drone_vision.PlotLook]]:
     """Plots where the model saw a problem, most problems first."""
     return sorted([(p, look) for p, look in _looked(plots, survey) if look.problems],
                   key=lambda t: (len(t[1].problems), t[1].confidence != "low"), reverse=True)
+
+
+@dataclass(frozen=True)
+class _Bare:
+    measured: frozenset[int]  # plots whose bare soil was measured
+    m2: dict[int, float]  # measured bare soil per plot, m²
+
+
+def _bare_by_plot(spots: Optional[dict[str, Any]]) -> Optional[_Bare]:
+    """Measured bare soil per plot from the spots GeoJSON (each spot keeps its plot's number); None if not measured."""
+    if spots is None:
+        return None
+    m2: dict[int, float] = {}
+    for feature in spots.get("features", []):
+        number = feature["properties"]["number"]
+        m2[number] = m2.get(number, 0.0) + feature["properties"]["area_m2"]
+    return _Bare(measured=frozenset(spots.get("measured_plots") or m2), m2=m2)
 
 
 def plots_to_measure_spots(card_id: str, here: Here) -> list[dict[str, Any]]:
@@ -1102,12 +1190,14 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     crops = [(c, n, ha) for c, n, ha in totals if c not in _NOT_A_CROP]
     no_crop = sum(n for c, n, _ in totals if c in _NOT_A_CROP and c != "unsure")
     if crops:
-        what = (f"The AI vision model named the crop in {sum(n for _, n, _ in crops)} of {len(pairs)} plots: "
+        what = (f"The crop is named in {sum(n for _, n, _ in crops)} of {len(pairs)} plots: "
                 + ", ".join(f"{_crop_words(c)} in {n} plot{'s' if n != 1 else ''} ({_ha(ha)})" for c, n, ha in crops[:4])
                 + "." + (f" {no_crop} more look fallow, bare, grass or woodland." if no_crop else "")
-                + (f" It was not sure about {unsure} plots." if unsure else ""))
+                + (f" {unsure} plots are 'not sure' rather than a guess." if unsure else ""))
     else:
-        what = f"The AI vision model could not tell what grows in the {len(pairs)} plots it looked at."
+        what = f"No crop could be named with certainty in the {len(pairs)} plots looked at."
+    if here.checked:
+        what += f" {len(here.checked)} plot{'s' if len(here.checked) != 1 else ''} checked on the ground."
     mixed = sum(1 for _, look in pairs if look.other_crops)
     if mixed:
         what += f" {mixed} plot{'s' if mixed != 1 else ''} look{'s' if mixed == 1 else ''} intercropped."
@@ -1117,12 +1207,16 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         p = f["properties"]
         look = looks.get(p["number"])
         crop = look.main_crop if look else "unsure"
+        checked = p["number"] in here.checked
         extra = f" + {', '.join(_crop_words(c) for c in look.other_crops)}" if look and look.other_crops else ""
         stage = f" · {look.stage.replace('_', ' ')}" if look and look.stage != "unsure" else ""
-        label = f"{_plot_label(p)} · {drone_vision.CROP_LABELS[crop]}{extra}{stage} · {_ha(p['area_ha'])}"
-        props = {**p, "crop": crop, "label": label}
+        named = (" or ".join(drone_vision.CROP_LABELS[c] for c in look.candidates) + "?" if look and look.candidates
+                 else drone_vision.CROP_LABELS[crop])
+        label = (f"{_plot_label(p)} · {named}{extra}{stage} · {_ha(p['area_ha'])}"
+                 + (" · checked on the ground" if checked else ""))
+        props = {**p, "crop": crop, "label": label, "checked": checked}
         if crop not in _NOT_A_CROP:
-            props["badge"] = drone_vision.CROP_LABELS[crop]
+            props["badge"] = ("✓ " if checked else "") + drone_vision.CROP_LABELS[crop]
         features.append({**f, "properties": props})
     overlay = {"kind": "crop_map", "legend": "Crop seen in each plot",
                "legend_items": [{"key": c, "label": drone_vision.CROP_LABELS[c], "count": n} for c, n, _ in totals],
@@ -1137,10 +1231,12 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         why = "Knowing what grows where lets every answer talk about your crop: its stage, its needs, its harvest."
     return _answer(
         "crop_types", analysis, here, what=what, why=why,
-        todo="Tap a plot to see what the model saw. Check a few plots you know, starting with those marked not sure.",
-        how_sure=_vision_how_sure(survey, unsure, []),
+        todo=("Walk to the plots listed below and tap what you find: the 'not sure' plots first. Each answer "
+              "replaces the model's guess and shows how often it is right."),
+        how_sure=_vision_how_sure(survey, unsure, [], here, crops=True),
         terms=["vision_model"], audience=audience, overlay=overlay, facts=facts,
-        downloads=_plot_downloads(analysis), choices=_plot_choices(analysis, here))
+        downloads=_plot_downloads(analysis), choices=_plot_choices(analysis, here),
+        field_check=_field_check(analysis, plots, survey, here))
 
 
 def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
@@ -1148,7 +1244,16 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     if plots is None or survey is None:
         return _survey_pending("plot_problems", analysis, audience, here)
     pairs = _looked(plots, survey)
-    seen = _problem_plots(plots, survey)
+    bare = _bare_by_plot(here.spots)
+    flagged_gaps = [p["number"] for p, look in pairs if "gaps" in look.problems]
+    area_m2 = {p["number"]: p["area_ha"] * 10_000 for p, _ in pairs}
+    unconfirmed = {n for n in flagged_gaps if bare is not None and n in bare.measured
+                   and (bare.m2.get(n, 0) < GAP_MIN_M2 or bare.m2.get(n, 0) < GAP_CONFIRM_SHARE * area_m2[n])}
+    seen = [(p, dataclasses.replace(look, problems=[x for x in look.problems
+                                                   if not (x == "gaps" and p["number"] in unconfirmed)]))
+            for p, look in _problem_plots(plots, survey)]
+    seen = sorted([(p, look) for p, look in seen if look.problems],
+                  key=lambda t: (len(t[1].problems), bare.m2.get(t[0]["number"], 0) if bare else 0), reverse=True)
     counts: dict[str, int] = {}
     for _, look in seen:
         for problem in look.problems:
@@ -1166,17 +1271,29 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
     items = [_plot_item(analysis, p, flagged[p["number"]] + (f" · {look.note}" if look.note else "")) for p, look in seen[:5]]
     overlay = _flag_overlay(analysis, plots, flagged, "Possible problems seen from the air",
                             {p["number"]: PROBLEM_BADGES[look.problems[0]] for p, look in seen})
-    if here.spots and here.spots.get("features"):
-        overlay["spots"] = here.spots
+    progress = None
+    if bare is None and flagged_gaps and here.spots_job is not None and here.spots_job.state != "failed":
+        job = here.spots_job
+        progress = {"done": job.parts_done, "parts": job.parts, "minutes_left": job.minutes_left}
+        what += (f" The open soil in the {len(flagged_gaps)} plots flagged for gaps is being measured to confirm them; "
+                 "this answer updates by itself.")
+    if bare is not None and flagged_gaps:
+        confirmed = len(flagged_gaps) - len(unconfirmed)
+        what += (f" The model flagged gaps in {len(flagged_gaps)} plots; measured open soil covers "
+                 f"{GAP_CONFIRM_SHARE:.0%} or more of {confirmed} of them, so only those count as gaps (in the rest it "
+                 "is likely the normal soil between young plants).")
+    shown = {p["number"] for p, _ in seen}
+    spots = [f for f in (here.spots or {}).get("features", []) if f["properties"]["number"] in shown]
+    if spots:
+        overlay["spots"] = {"type": "FeatureCollection", "features": spots}
         overlay["spots_legend"] = "Bare soil inside those plots, measured from the photo"
-        what += (f" The bare soil inside them is filled in bright on the photo "
-                 f"({len(here.spots['features'])} spots of 1 m² or more).")
+        what += f" The bare soil inside them is filled in bright on the photo ({len(spots)} spots of 1 m² or more)."
     return _answer(
         "plot_problems", analysis, here, what=what,
         why="Gaps, yellowing or standing water found early can still be fixed this season.",
-        todo=todo, how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"]),
+        todo=todo, how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"], here),
         terms=["vision_model", "colour_camera"], audience=audience,
-        overlay=overlay, items=items,
+        overlay=overlay, items=items, progress=progress,
         facts=[{"label": drone_vision.PROBLEM_LABELS[k].capitalize(), "value": f"{n} plots"} for k, n in counts.items()],
         choices=_plot_choices(analysis, here))
 
@@ -1204,7 +1321,7 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
     return _answer(
         "weeds", analysis, here, what=what,
         why="Weeds take the water and food meant for the crop, most of all while the crop is young.",
-        todo=todo, how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"]),
+        todo=todo, how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"], here),
         terms=["vision_model"], audience=audience, overlay=_flag_overlay(analysis, plots, flagged, "Plots that look weedy", {n: "Weeds" for n in flagged}),
         items=items, facts=[{"label": "Look weedy", "value": f"{len(weedy)} plots, {_ha(weedy_ha)}"},
                             {"label": "A few weeds", "value": f"{some} plots"}],
@@ -1237,7 +1354,7 @@ def _plot_stage(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
            "Plots planted late carry a different risk; a plot held back may be an early sign of loss.")
     return _answer(
         "plot_stage", analysis, here, what=what, why=why, todo=todo,
-        how_sure=_vision_how_sure(survey, 0, ["Stage judged from one photo, without planting dates"]),
+        how_sure=_vision_how_sure(survey, 0, ["Stage judged from one photo, without planting dates"], here),
         terms=["vision_model"], audience=audience, overlay=_flag_overlay(analysis, plots, flagged, "Younger than most of their crop", {n: "Behind" for n in flagged}),
         items=items, choices=_plot_choices(analysis, here))
 

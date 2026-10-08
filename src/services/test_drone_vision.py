@@ -55,25 +55,42 @@ def test_answers_outside_the_lists_are_dropped():
 
 
 def _answer(crop):
-    return {"main_crop": crop, "other_crops": [], "stage": "young", "crop_cover_percent": 40, "weeds": "few",
-            "problems": [], "note": "Young plants in rows.", "confidence": "medium"}
+    return {"evidence": "Stars of long blades in rows.", "main_crop": crop, "other_crops": [], "stage": "young",
+            "crop_cover_percent": 40, "weeds": "few", "problems": [], "note": "Young plants in rows.",
+            "confidence": "medium"}
 
 
-def test_survey_looks_at_every_measured_plot(photo, plots, monkeypatch):
+def _fake_asks(monkeypatch, first, second):
+    """The two looks answer `first` and `second` (crop names) for every plot; the calls are recorded."""
     calls = []
 
-    async def fake_ask(client, model, picture, width_m, cm, place):
-        calls.append(place)
-        return _answer("maize"), 0.0002
+    async def fake_ask(client, model, system, content, schema, name):
+        calls.append((name, sum(1 for part in content if part["type"] == "image_url")))
+        return _answer(first if name == "plot_look" else second), 0.0002
 
     monkeypatch.setattr(drone_vision, "_ask", fake_ask)
     monkeypatch.setattr(drone_vision, "_client", lambda: (None, "openai/gpt-6-luna"))
+    return calls
+
+
+def test_the_crop_is_named_when_both_looks_agree(photo, plots, monkeypatch):
+    calls = _fake_asks(monkeypatch, "maize", "maize")
     seen = []
-    result = asyncio.run(drone_vision.survey(str(photo), plots, "Test cell", lambda d, n: seen.append((d, n))))
+    refs = [drone_vision.Reference("maize", b"jpeg", "checked by eye"), drone_vision.Reference("cassava", b"jpeg", "x")]
+    result = asyncio.run(drone_vision.survey(str(photo), plots, "Test cell", lambda d, n: seen.append((d, n)), refs))
     assert sorted(result.looks) == [1, 2, 3] and result.plots == 3
     assert {look.main_crop for look in result.looks.values()} == {"maize"}
-    assert result.cost_usd == pytest.approx(0.0006)
-    assert calls == ["Test cell"] * 3 and seen[-1] == (3, 3)
+    assert result.cost_usd == pytest.approx(0.0012)  # two looks a plot
+    # the first look sees the plot and 2 squares; the second also sees the 2 reference squares
+    assert sorted(set(calls)) == [("plot_check", 5), ("plot_look", 3)] and seen[-1] == (3, 3)
+
+
+def test_when_the_looks_disagree_the_plot_is_not_sure_with_both_crops_kept(photo, plots, monkeypatch):
+    _fake_asks(monkeypatch, "cassava", "maize")
+    result = asyncio.run(drone_vision.survey(str(photo), plots, None, lambda d, n: None))
+    look = result.looks[1]
+    assert (look.main_crop, look.candidates, look.confidence) == ("unsure", ("cassava", "maize"), "low")
+    assert look.stage == "young" and look.evidence  # the rest of the first look is kept
 
 
 def test_a_survey_with_too_many_failed_looks_fails(photo, plots, monkeypatch):
@@ -86,7 +103,20 @@ def test_a_survey_with_too_many_failed_looks_fails(photo, plots, monkeypatch):
         asyncio.run(drone_vision.survey(str(photo), plots, None, lambda d, n: None))
 
 
+def test_closeups_are_squares_at_full_detail_with_a_metre_bar(photo):
+    with rasterio.open(photo) as ds:
+        big = drone_vision.closeups(ds, box(X0 + 5, Y0 - 195, X0 + 195, Y0 - 5), 1, 2)
+        small = drone_vision.closeups(ds, box(X0 + 10, Y0 - 20, X0 + 20, Y0 - 10), 2, 2)
+        again = drone_vision.closeups(ds, box(X0 + 5, Y0 - 195, X0 + 195, Y0 - 5), 1, 2)
+    assert len(big) == 2 and big == again  # the same plot always gets the same squares
+    assert len(small) == 1  # too small for two squares: shown once
+    image = Image.open(io.BytesIO(big[0]))
+    assert image.size == (drone_vision.CLOSE_PX, drone_vision.CLOSE_PX)
+    assert image.getpixel((14, drone_vision.CLOSE_PX - 18))[0] > 240  # the white metre bar
+
+
 def test_a_kept_survey_round_trips():
-    survey = drone_vision.Survey(looks={1: drone_vision._look(1, _answer("beans"))}, plots=1,
-                                 model="openai/gpt-6-luna", done_at="2026-10-06T17:00:00+00:00", cost_usd=0.0002)
+    look = drone_vision._look(1, _answer("beans"), _answer("maize"))
+    survey = drone_vision.Survey(looks={1: look}, plots=1, model="openai/gpt-6-luna",
+                                 done_at="2026-10-06T17:00:00+00:00", cost_usd=0.0002)
     assert drone_vision._from_json(drone_vision._to_json(survey)) == survey

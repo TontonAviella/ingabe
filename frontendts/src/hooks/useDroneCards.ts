@@ -76,6 +76,15 @@ export interface DroneCardAnswer extends DroneCard {
   ask_sage: AskSage[];
   /** A document the reader can add (soil lab report, harvest records) to answer with their own numbers. */
   upload: { label: string; href: string; accept: string } | null;
+  /** Plots the reader can say the real crop of; href has a {number} slot. */
+  field_check: {
+    title: string;
+    detail: string;
+    plots: { id: string; number: number; title: string; detail: string; lon: number; lat: number; picture?: string }[];
+    options: { id: string; label: string }[];
+    href: string;
+    checked: number;
+  } | null;
 }
 
 /** What the server read in an added document. */
@@ -180,6 +189,25 @@ export function useAddFarmRecord(layerId: string | null) {
       const res = await apiFetch(href, { method: 'POST', body, signal: AbortSignal.timeout(120_000) });
       if (!res.ok) throw await failure(res);
       return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
+      queryClient.invalidateQueries({ queryKey: ['drone-card-answer', layerId] });
+    },
+  });
+}
+
+/** Say what really grows in a plot; every card of the photo is asked again. */
+export function useCheckPlot(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<void, DroneCardsError, { href: string; number: number; crop: string }>({
+    mutationFn: async ({ href, number, crop }) => {
+      const res = await apiFetch(href.replace('{number}', String(number)), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crop }),
+      });
+      if (!res.ok) throw await failure(res);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
