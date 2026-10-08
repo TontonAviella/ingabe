@@ -1,5 +1,7 @@
-import pytest
+import json
 from pathlib import Path
+
+import pytest
 
 
 @pytest.fixture
@@ -72,6 +74,16 @@ async def test_remove_layer_from_map(test_setup, auth_client):
     parent_layers_data = parent_layers_response.json()
     assert len(parent_layers_data["layers"]) == 1
     assert parent_layers_data["layers"][0]["id"] == layer_id
+
+    # The earlier version still shows the layer, so its stored file must still be there (it used to be deleted).
+    from src.structures import get_async_db_connection
+    from src.utils import get_async_s3_client, get_bucket_name
+
+    async with get_async_db_connection() as conn:
+        metadata = await conn.fetchval("SELECT metadata FROM map_layers WHERE layer_id = $1", layer_id)
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    s3 = await get_async_s3_client()
+    await s3.head_object(Bucket=get_bucket_name(), Key=metadata["pmtiles_key"])  # raises if deleted
 
 
 @pytest.mark.anyio
