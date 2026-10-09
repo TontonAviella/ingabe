@@ -961,6 +961,46 @@ def test_admin_fast_path_still_ignores_non_displays(msg: str) -> None:
     assert fast is None or fast.tool_name != "show_admin_boundary"
 
 
+# Asked for one unit "in" its parents: the parents travel with the request, so one unit is found,
+# not every unit of that name (2026-10-08: "Remera sector in Gasabo district" drew all 4 Remeras).
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ("show Remera sector in Gasabo district", {"admin_level": "sector", "name": "Remera", "district": "Gasabo"}),
+        ("show Remera sector of Gasabo", {"admin_level": "sector", "name": "Remera", "district": "Gasabo"}),
+        ("show Murambi cell in Rangiro sector", {"admin_level": "cell", "name": "Murambi", "sector": "Rangiro"}),
+        ("show Murambi cell in Gatsibo district", {"admin_level": "cell", "name": "Murambi", "district": "Gatsibo"}),
+        ("show Gasharu village in Ruganda cell", {"admin_level": "village", "name": "Gasharu", "cell": "Ruganda"}),
+        (
+            "show Gasharu village, Ruganda cell, Gatare sector, Nyamagabe district",
+            {"admin_level": "village", "name": "Gasharu", "cell": "Ruganda", "sector": "Gatare", "district": "Nyamagabe"},
+        ),
+        ("show Murambi in Rangiro sector", {"admin_level": "auto", "name": "Murambi", "sector": "Rangiro"}),
+        ("show Remera in Gasabo district", {"admin_level": "auto", "name": "Remera", "district": "Gasabo"}),
+        (
+            "show the cells of Busasamana sector in Nyanza district",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana", "district": "Nyanza"},
+        ),
+        (
+            "show the cells of Busasamana in Nyanza",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana", "district": "Nyanza"},
+        ),
+        # A parent no larger than the unit is not a parent.
+        ("show Remera sector in Kimironko cell", {"admin_level": "sector", "name": "Remera"}),
+        ("Nyereka umudugudu wa Gasharu", {"admin_level": "village", "name": "Gasharu"}),
+        # Some village names carry numbers.
+        (
+            "show Karambo Ya 1 village in Rusizi district",
+            {"admin_level": "village", "name": "Karambo Ya 1", "district": "Rusizi"},
+        ),
+    ],
+)
+def test_admin_fast_path_keeps_the_parents_of_one_unit(msg: str, expected: dict) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == "show_admin_boundary"
+    assert fast.arguments == expected
+
+
 @pytest.mark.parametrize("text", [
     "count the plants in plot 42 of my drone photo",
     "How many maize plants are in plot 175 on Farm_Orthophoto?",

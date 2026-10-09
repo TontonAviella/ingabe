@@ -531,6 +531,31 @@ def _is_admin_boundary_placeholder_name(value: str) -> bool:
     return not words or all(word in _ADMIN_PLACEHOLDER_NAMES for word in words)
 
 
+# Units a smaller unit can be asked "in", smallest first.
+_ADMIN_PARENT_LEVELS = ("cell", "sector", "district")
+_ADMIN_SIZE_ORDER = ("village", *_ADMIN_PARENT_LEVELS, "province")
+
+
+def _admin_parents(rest: str, level: str) -> dict[str, str]:
+    """Parents named after the requested unit, so one unit is asked for, not every unit of that name:
+    "in Gasabo district", ", Ruganda cell, Gatare sector", "of Gasabo" (a known district)."""
+    larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(level) + 1:]
+    parents: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?i)(?:\b(?:in|of|within|inside|under)\b|,)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9' -]*?)\s+(cell|sector|district)\b",
+        rest,
+    ):
+        parent_level = match.group(2).lower()
+        if parent_level in larger and parent_level not in parents:
+            parents[parent_level] = match.group(1).strip()
+    if "district" in larger and "district" not in parents:
+        for match in re.finditer(r"(?i)(?:\b(?:in|of)\b|,)\s+([A-Za-z'-]+)\b", rest):
+            if match.group(1).lower() in _DISTRICTS_LOWER:
+                parents["district"] = match.group(1)
+                break
+    return parents
+
+
 def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
@@ -552,7 +577,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         if parent_name:
             args: dict[str, object] = {"admin_level": child_level, "name": "*"}
             args[parent_level] = parent_name
-            return args
+            return {**args, **_admin_parents(prompt[child_match.end():], parent_level)}
 
     implicit_child_match = re.search(
         rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
@@ -565,6 +590,15 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     if implicit_child_match:
         child_level = implicit_child_match.group(1).lower().rstrip("s")
         parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
+        # "the cells of Busasamana in Nyanza": the district says which Busasamana.
+        in_district = re.match(r"(?i)^(.+?)\s+(?:in|,)\s+([A-Za-z'-]+)$", parent_name)
+        if in_district and in_district.group(2).lower() in _DISTRICTS_LOWER and child_level != "sector":
+            return {
+                "admin_level": child_level,
+                "name": "*",
+                {"cell": "sector", "village": "cell"}[child_level]: in_district.group(1).strip(),
+                "district": in_district.group(2),
+            }
         parent_level = (
             "district" if parent_name.lower() in _DISTRICTS_LOWER
             else {"sector": "district", "cell": "sector", "village": "cell"}.get(child_level)
@@ -578,6 +612,22 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
         if explicit:
             name = _clean_admin_boundary_candidate(explicit.group(1))
+            # "Murambi in Rangiro sector": the level word names the parent, not the unit.
+            inside = re.match(r"(?i)^(.+?)\s+(?:in|of|within|inside|under)\s+(.+)$", name)
+            if inside and level in _ADMIN_PARENT_LEVELS and not _is_admin_boundary_placeholder_name(inside.group(1)):
+                unit, unit_level = inside.group(1).strip(), "auto"
+                # "Remera sector in Kimironko cell": the unit says its own level.
+                own_level = re.match(r"(?i)^(.+?)\s+(village|cell|sector|district)$", unit)
+                if own_level:
+                    unit, unit_level = own_level.group(1).strip(), own_level.group(2).lower()
+                size = "village" if unit_level == "auto" else unit_level
+                larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(size) + 1:]
+                return {
+                    "admin_level": unit_level,
+                    "name": unit,
+                    **({level: inside.group(2).strip()} if level in larger else {}),
+                    **_admin_parents(prompt[explicit.end():], size),
+                }
             if name and not _is_admin_boundary_placeholder_name(name):
                 if level == "province" and name.lower() not in {
                     "kigali",
@@ -585,7 +635,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
                 }:
                     if not name.lower().endswith("province"):
                         name = f"{name} Province"
-                return {"admin_level": level, "name": name}
+                return {"admin_level": level, "name": name, **_admin_parents(prompt[explicit.end():], level)}
 
     simple = re.match(
         r"(?i)^(?:please\s+)?(?:again\s+)?"
