@@ -420,3 +420,40 @@ def test_a_session_acting_for_a_partner_keeps_its_class():
     assert isinstance(workos, WorkOSUserContext) and workos.get_org_id() == "alpha" and workos.get_user_id() == "u"
     legacy = LegacyUserContext().for_partner(None)
     assert isinstance(legacy, LegacyUserContext) and legacy.get_org_id() is None
+
+
+@pytest.mark.anyio
+async def test_semantic_search_finds_a_small_industrys_notes_among_many_others():
+    """The vector index returns only its 40 nearest chunks before row security drops other industries' ones; the
+    search must keep reading until it finds the session's own (audit R2-5)."""
+    from src.services.brain_service import BrainService
+
+    import random
+
+    rng = random.Random(42)  # realistic, distinct embeddings: identical ones make a degenerate index graph
+
+    def vec(lead: float) -> str:  # lead: how close to the query (along the first axis)
+        return "[" + ",".join([str(lead)] + [str((rng.random() - 0.5) * 0.4) for _ in range(767)]) + "]"
+
+    farm = [f"farm-{RUN_TAG}-{i}" for i in range(300)]  # close to the query
+    masts = [f"mast-{RUN_TAG}-{i}" for i in range(5)]  # further away
+    async with get_async_db_connection() as conn:  # worker: seeds every industry
+        for slugs, ind, lead in ((farm, "agriculture", 3.0), (masts, "telecom", 0.5)):
+            ids = await conn.fetch(
+                "INSERT INTO brain_pages (slug, type, title, compiled_truth, owner_uuid, access_scope, industry) "
+                "SELECT s, 'concept', s, s, gen_random_uuid(), 'public', $2 FROM unnest($1::text[]) s RETURNING id",
+                slugs, ind)
+            await conn.executemany(
+                "INSERT INTO brain_content_chunks (page_id, chunk_index, chunk_text, embedding) VALUES ($1, 0, 'x', $2::vector)",
+                [(r["id"], vec(lead)) for r in ids])
+    try:
+        set_request_industry("telecom")
+        async with get_async_db_connection(user_id=str(uuid.uuid4())) as conn:
+            await conn.execute("SET enable_seqscan = off")  # the index plan, as on a large Brain
+            found = await BrainService().search_vector(conn, [1.0] + [0.0] * 767, limit=5)
+            await conn.execute("RESET enable_seqscan")
+        assert {r.slug for r in found} == set(masts)
+    finally:
+        set_request_industry(None)
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM brain_pages WHERE slug = ANY($1)", farm + masts)

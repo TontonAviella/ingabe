@@ -83,9 +83,13 @@ def upgrade() -> None:
     )
     for table, (column, note_column) in _PAGE_CHILDREN.items():
         # Readable when the note is; writable only on a note of exactly the writer's scope.
-        child_read = f"{_WORKER} OR {column} IS NULL OR {column} IN (SELECT {note_column} FROM brain_pages)"
-        child_write = (f"{_WORKER} OR {column} IN "
-                       f"(SELECT {note_column} FROM brain_pages WHERE industry IS NOT DISTINCT FROM {_SCOPE})")
+        # A correlated key lookup, not "IN (SELECT ... FROM brain_pages)": that built a scan of every note into each
+        # statement's plan, even with app.industry unset, and stopped being hashed past ~670k notes (audit R2-8).
+        # brain_pages' own row security still applies inside the EXISTS, so isolation is the same.
+        note = f"brain_pages bp WHERE bp.{note_column} = {table}.{column}"
+        child_read = f"{_WORKER} OR {table}.{column} IS NULL OR EXISTS (SELECT 1 FROM {note})"
+        child_write = (f"{_WORKER} OR EXISTS (SELECT 1 FROM {note} "
+                       f"AND bp.industry IS NOT DISTINCT FROM {_SCOPE})")
         op.execute(
             f"CREATE POLICY industry_isolation_{table} ON {table} AS RESTRICTIVE FOR ALL "
             f"USING ({child_read}) WITH CHECK ({child_write})"

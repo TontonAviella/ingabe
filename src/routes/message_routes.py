@@ -2173,6 +2173,10 @@ async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
     return project_industry
 
 
+# Longest the Brain memory for one turn may take before Sage answers without it.
+BRAIN_PACKET_TIMEOUT_SECONDS = float(os.environ.get("SAGE_BRAIN_PACKET_TIMEOUT_SECONDS", "5"))
+
+
 def chat_lock_key(conversation_id: int) -> str:
     """Redis lock for one conversation's turn, per database (conversation ids repeat across databases)."""
     return f"chat_lock:{os.environ.get('POSTGRES_DB', 'mundidb')}:{conversation_id}"
@@ -3392,17 +3396,23 @@ async def send_map_message(
                 if map_layer_ids_row
                 else []
             )
-            brain_text = await build_brain_context_packet(
-                brain_conn,
-                brain_svc,
-                query_text=extract_user_message_text(body.message),
-                viewport_bounds=body.viewport_bounds,
-                visible_layer_ids=visible_layer_ids,
+            # Awaited before the model is called, so a slow Brain would delay every reply: bounded (audit R2-12).
+            brain_text = await asyncio.wait_for(
+                build_brain_context_packet(
+                    brain_conn,
+                    brain_svc,
+                    query_text=extract_user_message_text(body.message),
+                    viewport_bounds=body.viewport_bounds,
+                    visible_layer_ids=visible_layer_ids,
+                ),
+                timeout=BRAIN_PACKET_TIMEOUT_SECONDS,
             )
             if brain_text:
                 system_messages.append({"role": "system", "content": brain_text})
+    except asyncio.TimeoutError:
+        logger.warning("Brain memory skipped for map %s: took longer than %.0f s", map_id, BRAIN_PACKET_TIMEOUT_SECONDS)
     except Exception:
-        logger.debug("Brain context injection skipped (tables may not exist yet)")
+        logger.warning("Brain memory skipped for map %s", map_id, exc_info=True)
 
     async with async_conn("send_map_message.update_messages", user_id=user_id) as conn:
         # Add any generated system messages to the database

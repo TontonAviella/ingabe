@@ -745,23 +745,32 @@ class BrainService:
         exclude = exclude_slugs or []
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
-        rows = await conn.fetch(
-            f"""
-            SELECT
-                p.slug, p.id as page_id, p.title, p.type,
-                cc.chunk_text, cc.chunk_source,
-                1 - (cc.embedding <=> $1::vector) AS score
-            FROM brain_content_chunks cc
-            JOIN brain_pages p ON p.id = cc.page_id
-            WHERE cc.embedding IS NOT NULL
-                AND ($4::text IS NULL OR p.type = $4)
-                AND p.slug != ALL($5::text[])
-                {PAGE_SCOPE_FILTER.format(a="p.")}
-            ORDER BY cc.embedding <=> $1::vector
-            LIMIT $2 OFFSET $3
-            """,
-            vec_str, limit, offset, type, exclude,
-        )
+        # The HNSW index hands back only ef_search (40) nearest chunks, and the partner, owner and industry rules then
+        # drop the ones this session cannot see: a small industry's or partner's notes, outnumbered by the rest,
+        # came back empty. An iterative scan keeps reading the index until enough visible chunks are found (audit
+        # R2-5; pgvector >= 0.8). relaxed_order may return them slightly out of order, so they are sorted again.
+        async with conn.transaction():
+            await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+            await conn.execute("SET LOCAL hnsw.max_scan_tuples = 20000")
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM (
+                    SELECT
+                        p.slug, p.id as page_id, p.title, p.type,
+                        cc.chunk_text, cc.chunk_source,
+                        1 - (cc.embedding <=> $1::vector) AS score
+                    FROM brain_content_chunks cc
+                    JOIN brain_pages p ON p.id = cc.page_id
+                    WHERE cc.embedding IS NOT NULL
+                        AND ($4::text IS NULL OR p.type = $4)
+                        AND p.slug != ALL($5::text[])
+                        {PAGE_SCOPE_FILTER.format(a="p.")}
+                    ORDER BY cc.embedding <=> $1::vector
+                    LIMIT $2 OFFSET $3
+                ) nearest ORDER BY score DESC
+                """,
+                vec_str, limit, offset, type, exclude,
+            )
         return [
             SearchResult(
                 slug=r["slug"], page_id=r["page_id"], title=r["title"],
