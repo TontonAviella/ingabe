@@ -809,6 +809,7 @@ async def get_project_social_preview(
                     renderer="mbgl",
                     bgcolor="#ffffff",
                     style_json=style_json,
+                    frame_on_drone=True,
                 )
 
                 from PIL import Image, UnidentifiedImageError
