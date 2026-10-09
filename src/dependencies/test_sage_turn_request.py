@@ -41,6 +41,16 @@ def test_tool_catalog_matches_eval_snapshot() -> None:
     assert sorted(FAST_PATH_TOOLS) == snapshot["fast_path_tools"]
 
 
+def test_eval_map_context_lists_the_internal_rwanda_tables() -> None:
+    """The eval builds every model case's <MapState> with this; a stale import made it crash at the
+    first model case (2026-10-09), so no routing eval could run."""
+    from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES
+
+    text = _eval_runner().map_description({"id": "x", "map_state": {"layers": [{"name": "Field", "type": "raster"}]}})
+    assert ", ".join(sorted(INTERNAL_RWANDA_ALLOWED_TABLES)) in text
+    assert "# Layer: Field" in text
+
+
 def test_layer_enum_is_kept_only_when_layers_exist() -> None:
     def layer_param(tools: list[dict]) -> dict:
         tool = next(t for t in tools if t["function"]["name"] == "add_layer_to_map")

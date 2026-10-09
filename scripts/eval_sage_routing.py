@@ -177,10 +177,8 @@ def map_layers(case: dict[str, Any]) -> list[dict[str, str]]:
 def map_description(case: dict[str, Any]) -> str:
     """Same structure as postgres_routes.get_map_description, with the
     project's internal Rwanda PostGIS connection every map gets."""
-    from src.routes.message_routes import (
-        INTERNAL_RWANDA_ALLOWED_TABLES,
-        RWANDA_INTERNAL_CONNECTION_NAME,
-    )
+    from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES
+    from src.routes.message_routes import RWANDA_INTERNAL_CONNECTION_NAME
 
     content = [
         f"<PostGISConnection id={EVAL_POSTGIS_ID}>",
