@@ -65,7 +65,7 @@ from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache
 from src.database.pool import set_request_industry
-from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES, READER_ROLE, reader_uri
+from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -131,7 +131,8 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
+# Neutral name: every industry has one (each logs in as its industry's reader role).
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda data (internal)"
 # The approved tables and the read-only login that enforces them: src/database/rwanda_reader.py.
 _SQL_TABLE_REF_RE = re.compile(
     r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
@@ -161,14 +162,15 @@ def _referenced_sql_tables(query: str) -> set[str]:
     return tables
 
 
-def validate_internal_rwanda_query(query: str) -> None:
+def validate_internal_rwanda_query(query: str, industry: str = "agriculture") -> None:
+    """A friendly early error for tables this project's industry may not read (the reader roles enforce it)."""
     referenced = _referenced_sql_tables(query)
     if not referenced:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Internal Rwanda queries must reference an allowed Rwanda table",
         )
-    disallowed = sorted(referenced - INTERNAL_RWANDA_ALLOWED_TABLES)
+    disallowed = sorted(referenced - tables_for(industry))
     if disallowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -212,8 +214,8 @@ async def _ensure_rwanda_postgis_connection(
             """,
             connection_id,
         )
-        # Logs in as the read-only reader role, which can SELECT only the approved Rwanda tables.
-        uri = reader_uri()
+        # Logs in as the project's industry's read-only reader role (it can SELECT only the approved tables).
+        uri = reader_uri(await industry.industry_of_project(conn, project_id))
 
         if existing:
             if existing["project_id"] != project_id:
@@ -237,10 +239,11 @@ async def _ensure_rwanda_postgis_connection(
                     SET project_id = $1,
                         user_id = $2,
                         connection_uri = $3,
+                        connection_name = $5,
                         soft_deleted_at = NULL
                     WHERE id = $4
                     """,
-                    project_id, user_id, uri, connection_id,
+                    project_id, user_id, uri, connection_id, RWANDA_INTERNAL_CONNECTION_NAME,
                 )
                 logger.info(
                     "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s uri_changed=%s",
@@ -323,7 +326,8 @@ async def _ensure_rwanda_postgis_connection(
                 """
             )
             # Grants survive CREATE OR REPLACE; this covers a view first created after the reader-role migration.
-            await conn.execute(f"GRANT SELECT ON rwanda_province_boundaries TO {READER_ROLE}")
+            for role in READER_ROLES:
+                await conn.execute(f"GRANT SELECT ON rwanda_province_boundaries TO {role}")
 
         # Dynamically count which Rwanda admin tables actually exist
         _RWANDA_TABLES = [

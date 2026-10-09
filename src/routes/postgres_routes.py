@@ -15,7 +15,7 @@ from fastapi import (
 )
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map
+from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map, edit_layer
 from src.dependencies.rate_limiter import heavy_limit
 from src.database.models import MundiMap, MapLayer, LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 from src.dependencies.session import (
@@ -1608,18 +1608,22 @@ async def generate_cog_for_layer(
     background_tasks: BackgroundTasks,
     force: bool = False,
     mundi_map: MundiMap = Depends(edit_map),
+    layer: MapLayer = Depends(edit_layer),
     session: UserContext = Depends(verify_session_required),
 ):
     """Trigger COG generation for an existing raster layer.
 
-    Use force=true to rebuild older COGs into the current target projection.
+    Use force=true to rebuild older COGs into the current target projection. The caller must be able to edit the
+    layer itself, and the layer must be on this map (editing a map is not permission over other people's layers).
     """
     from src.structures import async_read_conn
 
-    async with async_read_conn("generate_cog") as conn:
+    if layer_id not in (mundi_map.layers or []):
+        raise HTTPException(404, f"Layer {layer_id} not found")
+    async with async_read_conn("generate_cog", user_id=session.get_user_id()) as conn:
         row = await conn.fetchrow(
             "SELECT layer_id, type, s3_key, metadata FROM map_layers WHERE layer_id = $1",
-            layer_id,
+            layer.layer_id,
         )
     if not row:
         raise HTTPException(404, f"Layer {layer_id} not found")

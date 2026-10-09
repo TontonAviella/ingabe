@@ -153,7 +153,9 @@ async def _handle_new_layer_from_postgis(
         str(postgis_connection_id), ctx.project_id, connection_result["connection_name"]
     ):
         try:
-            validate_internal_rwanda_query(query)
+            from src.services import industry as _industry
+
+            validate_internal_rwanda_query(query, await _industry.industry_of_project(ctx.conn, ctx.project_id))
         except HTTPException as e:
             return {"status": "error", "error": f"Query validation failed: {e.detail}"}
 
@@ -829,6 +831,11 @@ async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
             None,
             lambda: get_farm_forecast(lat, lon, forecast_days=days),
         )
+        from src.services import industry
+        from src.services.forecast_openmeteo import without_farm_advice
+
+        if not industry.request_is_agriculture():  # power lines and masts get weather, not crop advice
+            result = without_farm_advice(result)
         return {"status": "success", **result}
     except Exception as e:
         logger.exception("get_forecast tool failed")

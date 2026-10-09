@@ -31,6 +31,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 _INDUSTRIES = "('agriculture', 'power_grid', 'telecom')"
+_INDUSTRY_CHOICE_LIVE = "2026-10-09 01:08:46+00"  # PR #166 merged: users.industry exists from here on
 _SCOPE = "NULLIF(current_setting('app.industry', true), '')"
 # Unrestricted only for background workers: no user and no industry on the connection.
 _WORKER = f"({_SCOPE} IS NULL AND COALESCE(current_setting('app.user_id', true), '') = '')"
@@ -50,9 +51,22 @@ def upgrade() -> None:
         "ALTER TABLE user_mundiai_projects ADD COLUMN IF NOT EXISTS industry text NOT NULL DEFAULT 'agriculture' "
         f"CHECK (industry IN {_INDUSTRIES})"
     )
+    # Since #166 went live (merged 2026-10-09 01:08:46 UTC) people choose an industry at sign-in; a project or note
+    # they made after that belongs to their chosen industry, not to agriculture (audit R1-14). Order matters: the
+    # agriculture backfill below only fills what is still NULL.
+    op.execute(
+        "UPDATE user_mundiai_projects p SET industry = u.industry FROM users u "
+        "WHERE u.internal_uuid = p.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
+        f"AND p.created_on >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
+    )
     op.execute(
         "ALTER TABLE brain_pages ADD COLUMN IF NOT EXISTS industry text "
         f"CHECK (industry IN {_INDUSTRIES})"
+    )
+    op.execute(
+        "UPDATE brain_pages b SET industry = u.industry FROM users u "
+        "WHERE u.internal_uuid = b.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
+        f"AND b.created_at >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
     )
     op.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE industry IS NULL")
     op.execute("ALTER TABLE brain_pages ALTER COLUMN industry SET DEFAULT NULLIF(current_setting('app.industry', true), '')")

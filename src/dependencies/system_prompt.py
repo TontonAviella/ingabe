@@ -206,7 +206,7 @@ You can see the user's PostGIS database(s) inside <PostGISConnection id=...> tag
 </PostGISConnections>
 
 <RwandaAdminBoundaries>
-Every project has access to Rwanda administrative boundary tables through the "Rwanda Agriculture (internal)"
+Every project has access to Rwanda administrative boundary tables through the "Rwanda data (internal)"
 PostGIS connection. When the user asks to show districts, sectors, cells, villages, or PROVINCES on the map,
 use `new_layer_from_postgis` with this connection to create polygon layers.
 

@@ -236,3 +236,33 @@ async def test_a_message_request_is_scoped_before_the_brain_packet_is_built():
         assert get_request_industry() == "power_grid"
     finally:
         set_request_industry(None)
+
+
+# --- Shared tools never run farm modes or give farm advice outside agriculture (audit R1-10..R1-12) ---------------
+
+def test_shared_raster_tools_drop_farm_modes_outside_agriculture():
+    from src.tools.raster_h3_context import CreateRasterH3ContextLayerArgs
+    from src.tools.raster_h3_context import args_for_industry as h3_args
+    from src.tools.raster_object_candidates import AnalyzeRasterObjectCandidatesArgs
+    from src.tools.raster_object_candidates import args_for_industry as object_args
+
+    h3 = CreateRasterH3ContextLayerArgs.model_construct(layer_id="Labc", domain="farm", analysis_goal="screen vegetation stress")
+    assert h3_args(h3, agriculture=False).domain == "environment"
+    assert h3_args(h3, agriculture=True).domain == "farm"
+    objects = AnalyzeRasterObjectCandidatesArgs.model_construct(layer_id="Labc", target_classes=["crops", "trees"])
+    grid = object_args(objects, agriculture=False).target_classes
+    assert "crop_patch" not in grid and "vegetation_patch" in grid and "tree_canopy" in grid
+    assert object_args(objects, agriculture=True).target_classes == ["crops", "trees"]
+
+
+def test_forecasts_lose_crop_advice_outside_agriculture():
+    from src.services.forecast_openmeteo import without_farm_advice
+
+    farm = {"briefing": {"headline": "Dry spell ahead — 6 consecutive days with little to no rain. Crops without "
+                                     "irrigation could face water stress. Also, 2 day(s) with temperatures high enough to stress crops.",
+                         "risks": [{"heat_stress_detail": "Max temperature 33°C — crop heat stress likely."}]}}
+    neutral = without_farm_advice(farm)
+    text = json.dumps(neutral)
+    assert "crop" not in text.lower() and "irrigation" not in text.lower()
+    assert "Dry spell ahead" in text and "high temperatures" in text and "very hot" in text
+    assert "Crops without irrigation" in farm["briefing"]["headline"]  # the cached original is untouched

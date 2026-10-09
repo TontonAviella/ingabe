@@ -83,6 +83,16 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
     )
 
 
+def args_for_industry(args: AnalyzeRasterObjectCandidatesArgs, agriculture: bool) -> AnalyzeRasterObjectCandidatesArgs:
+    """Outside agriculture there are no crop patches: vegetation is found as vegetation."""
+    from src.services.raster_object_candidates import _normalize_targets
+
+    if agriculture or not args.target_classes:
+        return args
+    targets = ["vegetation_patch" if t == "crop_patch" else t for t in _normalize_targets(list(args.target_classes))]
+    return args.model_copy(update={"target_classes": list(dict.fromkeys(targets))})
+
+
 async def analyze_raster_object_candidates(
     args: AnalyzeRasterObjectCandidatesArgs,
     meta: IngabeToolCallMetaArgs,
@@ -101,8 +111,11 @@ async def analyze_raster_object_candidates(
 
     workflow = raster_object_workflow(args.layer_id)
 
+    from src.services import industry
     from src.structures import get_async_read_connection
     from src.utils import get_async_s3_client, get_bucket_name
+
+    args = args_for_industry(args, industry.request_is_agriculture())  # audit R1-10/R1-11
 
     async with get_async_read_connection() as conn:
         row = await conn.fetchrow(

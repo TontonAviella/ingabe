@@ -106,6 +106,13 @@ def serves(capability: str, industry: Optional[str]) -> bool:
     return (industry or DEFAULT_INDUSTRY) in CAPABILITIES.get(capability, AGRICULTURE)
 
 
+def request_is_agriculture() -> bool:
+    """Whether the current request works for an agriculture project (also outside a request: the default)."""
+    from src.database.pool import get_request_industry
+
+    return (get_request_industry() or DEFAULT_INDUSTRY) == "agriculture"
+
+
 def tools_for(tools: list[dict], industry: Optional[str]) -> list[dict]:
     """The tool schemas a project of this industry may be offered."""
     return [t for t in tools if serves(t.get("function", {}).get("name", ""), industry)]
