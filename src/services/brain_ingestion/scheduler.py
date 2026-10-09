@@ -245,66 +245,11 @@ async def _run_maintenance_cycle() -> None:
         if embed_result.get("embedded", 0) > 0:
             log.info("maintenance_embedded", extra=embed_result)
 
-        # Phase 2: Rebuild missing auto-links for pages that have compiled_truth
-        rebuilt = 0
-        rows = await conn.fetch(
-            """
-            SELECT p.id, p.slug, p.compiled_truth, p.frontmatter
-            FROM brain_pages p
-            WHERE p.compiled_truth IS NOT NULL AND p.compiled_truth != ''
-              AND NOT EXISTS (
-                  SELECT 1 FROM brain_links bl WHERE bl.from_page_id = p.id AND bl.link_type = 'auto'
-              )
-            LIMIT 50
-            """
-        )
-        for row in rows:
-            import json as _json
-            from src.services.brain_service import PageInput, _extract_link_targets
-            # PageInput requires type + title; _extract_link_targets only reads
-            # compiled_truth + frontmatter, so empty placeholders are safe.
-            # frontmatter comes back from postgres as a JSON string (column is
-            # JSONB but psql/asyncpg may serialize on the way out depending on
-            # codec config). PageInput.frontmatter is typed Optional[dict], and
-            # _extract_link_targets calls .get() on it, so we must parse it
-            # here. Previous bug: passed the raw string and crashed at
-            # brain_service.py:202 with "'str' object has no attribute 'get'".
-            raw_fm = row["frontmatter"]
-            if isinstance(raw_fm, str):
-                try:
-                    fm_dict = _json.loads(raw_fm) if raw_fm.strip() else None
-                except _json.JSONDecodeError:
-                    fm_dict = None
-            else:
-                fm_dict = raw_fm or None
-            page_input = PageInput(
-                type="",
-                title="",
-                compiled_truth=row["compiled_truth"],
-                frontmatter=fm_dict,
-            )
-            targets = _extract_link_targets(page_input)
-            if targets:
-                for target_slug in targets:
-                    try:
-                        await conn.execute(
-                            """
-                            INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
-                            SELECT $1, p.id, 'auto', ''
-                            FROM brain_pages p WHERE p.slug = $2
-                            ON CONFLICT (from_page_id, to_page_id) DO NOTHING
-                            """,
-                            row["id"], target_slug,
-                        )
-                        rebuilt += 1
-                    except Exception:
-                        log.debug("auto_link_insert_failed", extra={
-                            "from_page_id": row["id"], "target_slug": target_slug,
-                        }, exc_info=True)
-        if rebuilt > 0:
-            log.info("maintenance_links_rebuilt", extra={"links": rebuilt})
+        # Links are made by put_page on every write, scoped to what the note's author may read. The old "rebuild
+        # auto-links" phase never inserted anything (it passed (slug, context) tuples as the slug) and, fixed as
+        # written, would have linked notes across partners and industries (audit 2026-10-09, round 2).
 
-        # Phase 3: Log health score
+        # Phase 2: Log health score
         health = await brain.health_score(conn)
         log.info(
             "maintenance_health",

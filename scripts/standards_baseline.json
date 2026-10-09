@@ -1,16 +1,14 @@
 {
   "_comment": "Debt that existed when CODING_STANDARDS.md was adopted. A ratchet: delete entries as you fix them; never add new ones. Regenerating this file to admit new debt is a standards violation.",
   "totals": {
-    "dup-body": 8,
+    "dup-body": 6,
     "lazy-import": 106,
     "private-import": 42,
     "render-threshold": 10,
     "web-import": 35
   },
   "violations": {
-    "dup-body|src/routes/cog_tile_router.py|_ensure_rio_tiler": 1,
     "dup-body|src/routes/cog_tile_router.py|_transparent_tile": 1,
-    "dup-body|src/routes/layer_router.py|_ensure_rio_tiler": 1,
     "dup-body|src/routes/partner_routes.py|_extract_text_plain": 1,
     "dup-body|src/routes/project_routes.py|_extract_text_plain": 1,
     "dup-body|src/routes/worldcover_router.py|_transparent_tile": 1,
@@ -24,7 +22,6 @@
     "lazy-import|src/services/brain_hook_processor.py|run_hook_processor_once->src.database.pool": 1,
     "lazy-import|src/services/brain_ingestion/scheduler.py|_open_admin_conn->src.database.pool": 1,
     "lazy-import|src/services/brain_ingestion/scheduler.py|_run_maintenance_cycle->src.services.brain_embeddings": 1,
-    "lazy-import|src/services/brain_ingestion/scheduler.py|_run_maintenance_cycle->src.services.brain_service": 1,
     "lazy-import|src/services/brain_service.py|BrainService._upsert_facts_from_page->src.services.brain_facts_fence": 1,
     "lazy-import|src/services/brain_service.py|BrainService.get_facts_trajectory->src.services.brain_facts_fence": 1,
     "lazy-import|src/services/brain_service.py|BrainService.put_page->src.services.brain_edge_inference": 1,
@@ -119,7 +116,6 @@
     "private-import|src/services/brain_hook_processor.py|src.routes.partner_routes._validate_url_safety": 1,
     "private-import|src/services/brain_hook_processor.py|src.services.brain_service._validate_slug": 2,
     "private-import|src/services/brain_ingestion/scheduler.py|src.database.pool._build_postgres_url": 1,
-    "private-import|src/services/brain_ingestion/scheduler.py|src.services.brain_service._extract_link_targets": 1,
     "private-import|src/services/forecast_service.py|src.services.forecast_noaa_fallback._fetch_single_model_cached": 1,
     "private-import|src/services/forecast_service.py|src.services.forecast_openmeteo._has_data": 1,
     "private-import|src/services/insurance_engine.py|src.services.forecast_fusion._fetch_observed": 1,

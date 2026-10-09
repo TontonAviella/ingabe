@@ -1,8 +1,9 @@
 import { AccountMenu, OrgSwitcher } from '@mundi/ee';
-import { House, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { House, Mountain, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import { IngabeIcon, IngabeWordmark } from '@/components/Brand';
+import { OPEN_INDUSTRY_PICKER } from '@/components/IndustryGate';
 import { Button } from '@/components/ui/button';
 import {
   Sidebar,
@@ -99,6 +100,19 @@ export function AppSidebar() {
                   ))}
                 </>
               )}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton tooltip="Your industry" onClick={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))}>
+                  <Mountain className="w-4 h-4 mr-2" />
+                  <span className="text-sm">Your industry</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

@@ -52,6 +52,19 @@ def test_cases_cover_every_kind_stratum_and_text_answers() -> None:
     assert len({c["intent"] for c in cases}) >= 150
 
 
+def test_non_agriculture_cases_exist_and_farm_wording_is_scored_wrong() -> None:
+    """Power Grid and Telecom cases exist, and a farm-talking reply outside agriculture scores as wrong (audit R1-33).
+    Their tools are checked against the real capabilities in src/services/test_industry.py, which has the app."""
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", ROOT / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness  # dataclasses look their module up while the file loads
+    spec.loader.exec_module(harness)
+    assert {c.get("industry") for c in _cases()} >= {"power_grid", "telecom"}
+    assert harness.FARM_WORDS.search("The maize fields look stressed") and not harness.FARM_WORDS.search(
+        "The mast is 40 m tall and the access road floods after heavy rain.")
+    assert scoring.classify_attempt({"no_tool": True}, scoring.FARM_WORDING) == scoring.FALSE_TOOL
+
+
 @pytest.mark.parametrize(("builder", "files"), [
     ("build_paraphrases", ["paraphrases.jsonl"]),
     ("build_conversations", ["multi_turn.jsonl", "chains.jsonl"]),

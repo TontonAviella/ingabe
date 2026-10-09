@@ -163,7 +163,15 @@ async def auth_switch_organization(body: OrganizationSwitch, request: Request,
     cookie = request.cookies.get(workos_auth.COOKIE_NAME)
     if not cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required")
-    switched = await asyncio.to_thread(workos_auth.switch_organization, cookie, body.organization_id)
+    try:
+        switched = await asyncio.to_thread(workos_auth.switch_organization, cookie, body.organization_id)
+    except workos_auth.SessionCheckUnavailable as e:
+        logger.warning("Organization switch could not finish: %s", e)
+        response = JSONResponse({"detail": "Could not switch organization just now; try again"},
+                                status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+        if e.refreshed_cookie:  # the old cookie's refresh token is spent
+            set_session_cookie(response, e.refreshed_cookie, is_secure(request))
+        return response
     if switched is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of that organization")
     request.state.workos_session = switched

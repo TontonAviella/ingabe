@@ -15,15 +15,16 @@ from fastapi import (
 )
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map
+from src.dependencies.dag import forked_map_by_user, get_map, get_layer, edit_map, edit_layer
 from src.dependencies.rate_limiter import heavy_limit
 from src.database.models import MundiMap, MapLayer, LAYER_TYPE_RASTER, LAYER_TYPE_VECTOR
 from src.dependencies.session import (
     verify_session_required,
     verify_session_optional,
     UserContext,
+    external_auth_enabled,
 )
-from typing import List, Optional
+from typing import Any, List, Optional
 import logging
 from fastapi import File, UploadFile, Form
 from src.dependencies.redis_client import get_redis_client
@@ -68,7 +69,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look
+from src.services import drone_first_look, industry, photo_content, project_partner
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -257,18 +258,27 @@ async def create_map(
 
     # Connect to database
     async with get_async_db_connection() as conn:
+        # With sign-in on, a project waits for an industry (the person's or their company's) instead of silently
+        # becoming agriculture; the legacy single-user mode keeps the agriculture default (audit R1-31).
+        if external_auth_enabled() and not (await industry.company_industry(conn, session.get_org_id())
+                                            or await industry.industry_of(conn, owner_id)):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Choose your industry before creating a project.")
         async with conn.transaction():
             # First create a project
+            # A project belongs to one industry: its company's, else its creator's (agriculture until chosen).
             await conn.execute(
                 """
                 INSERT INTO user_mundiai_projects
-                (id, owner_uuid, maps, title)
-                VALUES ($1, $2, ARRAY[$3], $4)
+                (id, owner_uuid, maps, title, industry, partner_id)
+                VALUES ($1, $2, ARRAY[$3], $4, $5, $6::uuid)
                 """,
                 project_id,
                 owner_id,
                 map_id,
                 map_request.title,
+                await industry.industry_for_new_project(conn, owner_id, session.get_org_id()),
+                session.get_org_id(),  # the organization it acts for (src.services.project_partner)
             )
 
             # Then insert map with data including project_id and layer_ids
@@ -1348,95 +1358,29 @@ async def _prewarm_raster_tiles_after_cog(
         logger.warning("Raster tile prewarm failed for %s (non-fatal)", layer_id, exc_info=True)
 
 
-async def _try_reuse_existing_cog(layer_id: str) -> bool:
-    """Link duplicate raster uploads to an existing optimized COG when possible."""
-    from src.structures import get_async_db_connection
-    from src.utils import s3_op
-
-    bucket_name = get_bucket_name()
-    s3 = await get_async_s3_client(signature_version="s3v4")
-
-    async with get_async_db_connection() as conn:
-        current = await conn.fetchrow(
-            """
-            SELECT layer_id, name, size_bytes, metadata, bounds
-            FROM map_layers
-            WHERE layer_id = $1 AND type = $2
-            """,
-            layer_id,
-            LAYER_TYPE_RASTER,
-        )
-        if not current:
-            return False
-
-        current_meta = current["metadata"] or {}
-        if isinstance(current_meta, str):
-            current_meta = json.loads(current_meta)
-        current_etag = current_meta.get("upload_etag")
-
-        candidates = await conn.fetch(
-            """
-            SELECT layer_id, metadata, bounds
-            FROM map_layers
-            WHERE layer_id <> $1
-              AND type = $2
-              AND name = $3
-              AND size_bytes = $4
-              AND metadata ? 'cog_key'
-            ORDER BY last_edited DESC
-            LIMIT 10
-            """,
-            layer_id,
-            LAYER_TYPE_RASTER,
-            current["name"],
-            current["size_bytes"],
-        )
-
-        for candidate in candidates:
-            metadata = candidate["metadata"] or {}
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            candidate_etag = metadata.get("upload_etag")
-            if current_etag and candidate_etag and current_etag != candidate_etag:
-                continue
-
-            cog_key = metadata.get("cog_key")
-            if not cog_key:
-                continue
-
-            try:
-                await s3_op(
-                    s3.head_object(Bucket=bucket_name, Key=cog_key),
-                    "head_object",
-                    f"reusable COG {cog_key}",
-                )
-            except Exception:
-                continue
-
-            current_meta["cog_key"] = cog_key
-            current_meta["cog_srs"] = metadata.get("cog_srs") or "EPSG:3857"
-            current_meta["cog_source"] = "reused_existing"
-            current_meta["reused_cog_from_layer_id"] = candidate["layer_id"]
-            current_meta["cog_status"] = "ready"
-            current_meta["cog_status_detail"] = "Reused existing optimized raster tiles"
-            current_meta["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
-            current_meta.pop("cog_error", None)
-            await conn.execute(
-                "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
-                json.dumps(current_meta),
-                layer_id,
-            )
-            await tile_cache.invalidate_layer(layer_id)
-            logger.info(
-                "Background COG: reused existing COG %s for %s from %s",
-                cog_key,
-                layer_id,
-                candidate["layer_id"],
-            )
-            await _prewarm_raster_tiles_after_cog(layer_id, cog_key, current_meta, current["bounds"])
-            return True
-
-    return False
+async def _point_layer_at_cog(conn, layer_id: str, cog_key: str, cog_srs: str | None, source: str,
+                              extra: dict[str, Any]) -> None:
+    """Make a layer use an optimised photo that already exists. Plots, surveys and spots are kept per optimised
+    photo (photo_plots.photo_key), so the layer gets every analysis already made for it at no cost."""
+    row = await conn.fetchrow("SELECT metadata, bounds FROM map_layers WHERE layer_id = $1", layer_id)
+    metadata = (row["metadata"] if row else None) or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    metadata.update(extra)
+    metadata["cog_key"] = cog_key
+    metadata["cog_srs"] = cog_srs or "EPSG:3857"
+    metadata["cog_source"] = source
+    metadata["cog_status"] = "ready"
+    metadata["cog_status_detail"] = "Reused existing optimized raster tiles"
+    metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+    metadata.pop("cog_error", None)
+    await conn.execute(
+        "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
+        json.dumps(metadata),
+        layer_id,
+    )
+    await tile_cache.invalidate_layer(layer_id)
+    await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
 
 
 async def _background_generate_cog(
@@ -1461,16 +1405,8 @@ async def _background_generate_cog(
 
     started_at = time.monotonic()
     bucket_name = get_bucket_name()
-    if await _try_reuse_existing_cog(layer_id):
-        capture_backend_event(
-            "backend_cog_generation_completed",
-            properties={
-                "layer_id": layer_id,
-                "duration_ms": elapsed_ms(started_at),
-                "cog_source": "reused_existing",
-            },
-        )
-        return
+    # Reuse happens only for byte-identical uploads (photo_content, below). A name-and-size guess used to run
+    # here; it could attach another partner's different photo (audit 2026-10-09, R1-6).
 
     tmp_dir = cleanup_dir or tempfile.mkdtemp()
     try:
@@ -1497,6 +1433,20 @@ async def _background_generate_cog(
             )
             await s3.download_file(bucket_name, s3_key, local_input)
             logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
+
+        # Same bytes uploaded before (any name, any partner): share that optimised photo and all its analyses.
+        content_sha = await asyncio.to_thread(photo_content.file_sha256, local_input)
+        same = await photo_content.find(s3, bucket_name, content_sha, target_srs)
+        if same:
+            async with get_async_db_connection() as conn:
+                await _point_layer_at_cog(conn, layer_id, same["cog_key"], same.get("cog_srs"), "same_content",
+                                          {"content_sha256": content_sha})
+            logger.info("Background COG: %s has the same content as %s; reusing it", layer_id, same["cog_key"])
+            capture_backend_event(
+                "backend_cog_generation_completed",
+                properties={"layer_id": layer_id, "duration_ms": elapsed_ms(started_at), "cog_source": "same_content"},
+            )
+            return
         source_epsg = _raster_epsg(local_input)
 
         # Fast path: already a COG. Server-side copy to canonical key, skip gdalwarp.
@@ -1515,6 +1465,7 @@ async def _background_generate_cog(
                     import json as _json
                     metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
                 metadata["cog_key"] = cog_key
+                metadata["content_sha256"] = content_sha
                 metadata["cog_source"] = "client_provided"
                 metadata["cog_status"] = "ready"
                 metadata["cog_status_detail"] = "Optimized raster tiles ready"
@@ -1527,6 +1478,7 @@ async def _background_generate_cog(
                     json.dumps(metadata), layer_id,
                 )
             await tile_cache.invalidate_layer(layer_id)
+            await photo_content.remember(s3, bucket_name, content_sha, target_srs, cog_key, metadata.get("cog_srs"))
             logger.info("Background COG fast-path complete for %s", layer_id)
             await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
             capture_backend_event(
@@ -1606,6 +1558,7 @@ async def _background_generate_cog(
                 import json as _json
                 metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
             metadata["cog_key"] = cog_key
+            metadata["content_sha256"] = content_sha
             metadata["cog_status"] = "ready"
             metadata["cog_status_detail"] = "Optimized raster tiles ready"
             metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1617,6 +1570,7 @@ async def _background_generate_cog(
                 json.dumps(metadata), layer_id,
             )
         await tile_cache.invalidate_layer(layer_id)
+        await photo_content.remember(s3, bucket_name, content_sha, target_srs, cog_key, metadata.get("cog_srs"))
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
         await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
         capture_backend_event(
@@ -1662,18 +1616,22 @@ async def generate_cog_for_layer(
     background_tasks: BackgroundTasks,
     force: bool = False,
     mundi_map: MundiMap = Depends(edit_map),
+    layer: MapLayer = Depends(edit_layer),
     session: UserContext = Depends(verify_session_required),
 ):
     """Trigger COG generation for an existing raster layer.
 
-    Use force=true to rebuild older COGs into the current target projection.
+    Use force=true to rebuild older COGs into the current target projection. The caller must be able to edit the
+    layer itself, and the layer must be on this map (editing a map is not permission over other people's layers).
     """
     from src.structures import async_read_conn
 
-    async with async_read_conn("generate_cog") as conn:
+    if layer_id not in (mundi_map.layers or []):
+        raise HTTPException(404, f"Layer {layer_id} not found")
+    async with async_read_conn("generate_cog", user_id=session.get_user_id()) as conn:
         row = await conn.fetchrow(
             "SELECT layer_id, type, s3_key, metadata FROM map_layers WHERE layer_id = $1",
-            layer_id,
+            layer.layer_id,
         )
     if not row:
         raise HTTPException(404, f"Layer {layer_id} not found")
@@ -1929,14 +1887,19 @@ async def complete_layer_upload(
             )
             try:
                 async with get_async_db_connection() as conn:
-                    first_look_conversation = await drone_first_look.conversation_for_upload(
-                        conn, mundi_map.project_id, user_id, body.conversation_id,
-                        f"Drone image: {result.first_layer_name or layer_name}",
+                    # The first look is a farm capability: other industries get no empty "Drone image" chat (R1-29).
+                    if industry.serves("drone_first_look", await industry.industry_of_project(conn, mundi_map.project_id)):
+                        first_look_conversation = await drone_first_look.conversation_for_upload(
+                            conn, mundi_map.project_id, user_id, body.conversation_id,
+                            f"Drone image: {result.first_layer_name or layer_name}",
+                        )
+                        first_look_partner = await project_partner.partner_for_project(
+                            conn, mundi_map.project_id, user_id, session.get_org_id())
+                if first_look_conversation is not None:
+                    background_tasks.add_task(
+                        drone_first_look.post_first_look,
+                        primary_id, map_id, user_id, first_look_partner, first_look_conversation,
                     )
-                background_tasks.add_task(
-                    drone_first_look.post_first_look,
-                    primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
-                )
             except Exception:  # noqa: BLE001 - the upload succeeded; only the automatic summary is skipped
                 logger.exception("first look not scheduled for %s", primary_id)
 
@@ -2311,23 +2274,30 @@ async def add_layer_to_map(
     map: MundiMap = Depends(edit_map),
     layer: MapLayer = Depends(get_layer),
 ):
-    if map.layers is not None and layer.id in map.layers:
+    # MapLayer.id is an unused integer column; the key is layer_id. Using id appended NULL to the map (audit R1-34).
+    if map.layers is not None and layer.layer_id in map.layers:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is already associated with this map",
         )
 
     async with get_async_db_connection() as conn:
-        # Update the map to include the layer_id in its layers array
+        # A layer never joins another industry's map, and a layer of unknown origin joins none (as in the
+        # add_layer_to_map tool, audit R1-16).
+        layer_industry = await industry.industry_of_layer(conn, layer.layer_id)
+        if layer_industry is None or layer_industry != await industry.industry_of_map(conn, map.id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Layer not found")
+
+        # Update the map to include the layer_id in its layers array (and drop NULLs earlier calls left behind)
         updated_map = await conn.fetchrow(
             """
             UPDATE user_mundiai_maps
-            SET layers = array_append(layers, $1),
+            SET layers = array_append(array_remove(COALESCE(layers, '{}'), NULL), $1),
                 last_edited = CURRENT_TIMESTAMP
             WHERE id = $2
             RETURNING id
             """,
-            layer.id,
+            layer.layer_id,
             map.id,
         )
 
@@ -2339,7 +2309,7 @@ async def add_layer_to_map(
 
         return {
             "message": "Layer successfully associated with map",
-            "layer_id": layer.id,
+            "layer_id": layer.layer_id,
             "layer_name": layer.name,
             "map_id": map.id,
         }
@@ -2398,6 +2368,7 @@ async def remove_layer_from_map(
             detail="Layer not found or not associated with this map",
         )
 
+    photo_to_check = None
     async with get_async_db_connection() as conn:
         async with conn.transaction():
             # Get layer name and metadata for response and S3 cleanup
@@ -2416,24 +2387,6 @@ async def remove_layer_from_map(
                     layer_metadata = json.loads(layer_metadata)
                 except Exception:
                     layer_metadata = None
-
-            # Clean up all S3 objects associated with this layer
-            s3_keys_to_delete = []
-            if layer_metadata and isinstance(layer_metadata, dict):
-                for key_name in ("pmtiles_key", "s3_key", "cog_key"):
-                    key_val = layer_metadata.get(key_name)
-                    if key_val:
-                        s3_keys_to_delete.append(key_val)
-
-            if s3_keys_to_delete:
-                try:
-                    s3 = await get_async_s3_client()
-                    bucket = get_bucket_name()
-                    for s3_key in s3_keys_to_delete:
-                        await s3.delete_object(Bucket=bucket, Key=s3_key)
-                        logger.info("Cleaned up S3 object: %s", s3_key)
-                except Exception as e:
-                    logger.warning("Failed to clean up S3 objects for layer %s: %s", layer_id, e)
 
             # Invalidate Redis tile cache (raster + MVT)
             try:
@@ -2466,6 +2419,23 @@ async def remove_layer_from_map(
                     layer_id,
                 )
                 logger.info("Deleted orphaned map_layers row for layer %s", layer_id)
+                # Files go with the row: earlier versions of this map still show the layer while the row exists.
+                # The optimised photo (cog_key) is shared by copies and identical uploads: it goes only once no
+                # layer uses it, checked after this transaction commits (photo_content.forget_if_unused).
+                photo_to_check = layer_metadata if isinstance(layer_metadata, dict) else None
+                s3_keys_to_delete = [
+                    layer_metadata[key_name]
+                    for key_name in ("pmtiles_key", "s3_key")
+                    if isinstance(layer_metadata, dict) and layer_metadata.get(key_name)
+                ]
+                try:
+                    s3 = await get_async_s3_client()
+                    bucket = get_bucket_name()
+                    for s3_key in s3_keys_to_delete:
+                        await s3.delete_object(Bucket=bucket, Key=s3_key)
+                        logger.info("Cleaned up S3 object: %s", s3_key)
+                except Exception as e:
+                    logger.warning("Failed to clean up S3 objects for layer %s: %s", layer_id, e)
 
             # Remove the layer from the child map's layers array
             updated_layers = [lid for lid in forked_map.layers if lid != layer_id]
@@ -2479,6 +2449,12 @@ async def remove_layer_from_map(
                 updated_layers,
                 forked_map.id,
             )
+        if photo_to_check:
+            try:
+                await photo_content.forget_if_unused(conn, await get_async_s3_client(), get_bucket_name(),
+                                                     photo_to_check)
+            except Exception:  # noqa: BLE001 - the layer is removed; a leftover photo is only storage
+                logger.warning("Unused optimised photo cleanup failed for layer %s", layer_id, exc_info=True)
 
     return LayerRemovalResponse(
         dag_child_map_id=forked_map.id,

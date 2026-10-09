@@ -1,5 +1,6 @@
 import { Clock, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useIndustryKnown } from '@/components/IndustryGate';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useProjects } from '../contexts/ProjectsContext';
 import { Button } from './ui/button';
@@ -8,6 +9,8 @@ import { Pagination, PaginationContent, PaginationItem, PaginationLink, Paginati
 import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
 export default function MapsList() {
+  // A new project takes its industry at creation: wait until it is known (audit R1-31).
+  const industryKnown = useIndustryKnown();
   const {
     projects,
     totalPages,
@@ -102,8 +105,8 @@ export default function MapsList() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-6 p-6 min-w-xl">
-      <div className="flex items-center justify-between relative">
+    <div className="w-full min-w-0 flex flex-col gap-6 p-4 sm:p-6 sm:min-w-xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 sm:flex-nowrap sm:relative">
         <div className="flex items-center gap-3">
           <div className="flex flex-row items-center gap-2">
             <Checkbox
@@ -116,8 +119,9 @@ export default function MapsList() {
           </div>
         </div>
 
-        <div className="absolute left-1/2 transform -translate-x-1/2">
-          <h1 className="text-2xl font-bold">
+        {/* Phones: the title takes its own line above the controls; wider screens: centred between them. */}
+        <div className="order-first w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2">
+          <h1 className="text-xl sm:text-2xl font-bold">
             {showDeleted ? 'Recently Deleted Maps' : 'Your Maps'} <span className="text-gray-400">({totalItems} projects)</span>
           </h1>
         </div>
@@ -128,8 +132,8 @@ export default function MapsList() {
               <div>
                 <Button
                   onClick={handleCreateMap}
-                  disabled={isLoading}
-                  className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+                  disabled={isLoading || !industryKnown}
+                  className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
                 >
                   <Plus className="mr-2 h-4 w-4" />
                   {isLoading ? 'Creating...' : 'New Map'}
@@ -156,7 +160,7 @@ export default function MapsList() {
             onClick={() => {
               // Refetch projects handled by context
             }}
-            className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
           >
             Try Again
           </Button>
@@ -183,8 +187,8 @@ export default function MapsList() {
           <p className="text-sm text-gray-400 text-center mt-1">Create your first map to get started</p>
           <Button
             onClick={handleCreateMap}
-            disabled={isLoading}
-            className="mt-4 bg-[#C1FA3D] hover:bg-[#B8E92B] text-black hover:cursor-pointer"
+            disabled={isLoading || !industryKnown}
+            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
           >
             {isLoading ? 'Creating...' : 'Create Your First Map'}
           </Button>
@@ -267,7 +271,7 @@ export default function MapsList() {
                           })()}
                         </div>
 
-                        <Button size="sm" asChild className="bg-[#C1FA3D] hover:bg-[#B8E92B] text-black">
+                        <Button size="sm" asChild className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B]">
                           Open
                         </Button>
                       </div>

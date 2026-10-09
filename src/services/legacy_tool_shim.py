@@ -21,7 +21,8 @@ import asyncpg
 
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
-from src.services import ndvi_classes
+from src.services import industry, ndvi_classes
+from src.services.forecast_openmeteo import without_farm_advice
 from src.services import satellite_analytics
 
 
@@ -153,7 +154,7 @@ async def _handle_new_layer_from_postgis(
         str(postgis_connection_id), ctx.project_id, connection_result["connection_name"]
     ):
         try:
-            validate_internal_rwanda_query(query)
+            validate_internal_rwanda_query(query, await industry.industry_of_project(ctx.conn, ctx.project_id))
         except HTTPException as e:
             return {"status": "error", "error": f"Query validation failed: {e.detail}"}
 
@@ -488,6 +489,16 @@ async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {
             "status": "error",
             "error": "Missing required parameters (layer_id or new_name).",
+        }
+    # A layer belongs to the industry of the project it was made in; it never joins another industry's map
+    # (audit R1-16). An unknown origin is refused too.
+    _layer_industry = await industry.industry_of_layer(ctx.conn, layer_id_to_add)
+    _project_industry = await industry.industry_of_project(ctx.conn, ctx.project_id)
+    if _layer_industry is None or _layer_industry != _project_industry:
+        return {
+            "status": "error",
+            "error_kind": "wrong_industry",
+            "error": "That layer belongs to a project of another industry, so it cannot be added to this map.",
         }
 
     _layer_bounds = None
@@ -829,6 +840,8 @@ async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
             None,
             lambda: get_farm_forecast(lat, lon, forecast_days=days),
         )
+        if not industry.request_is_agriculture():  # power lines and masts get weather, not crop advice
+            result = without_farm_advice(result)
         return {"status": "success", **result}
     except Exception as e:
         logger.exception("get_forecast tool failed")
@@ -1066,13 +1079,10 @@ async def _handle_get_insurance_intelligence(ctx: LegacyToolContext) -> Dict[str
 
             del result["data"]
             result["instruction"] = (
-                "You are briefing someone who cares about this area. "
-                "Speak naturally — like a knowledgeable colleague explaining the situation over coffee, not reading a report. "
-                "Use the technical terms (SPI, NDVI, ET) but always pair them with what they mean in plain language — the 'situation' field already does this for you. "
-                "Tell a coherent story: what's the headline, what's surprising or interesting, what should they watch. "
-                "If the forecast is present, weave it in — don't list it separately. "
-                "3-5 sentences. No bullet points, no tables, no metric dumps. "
-                "End with sources in parentheses."
+                "Brief someone who cares about this area, in the answer shape of the system prompt: a bold first line "
+                "with the headline (what matters most, or 'nothing unusual'), then 2-4 short points, one signal each "
+                "with its number and what area it covers (the 'situation' field pairs SPI, NDVI and ET with plain "
+                "words), the forecast as one of the points if present, and a last 'Sources:' line."
             )
             if result.get("coverage"):
                 # Tried in Sage on 2026-10-07: with only the note in the result, the answer never said NDVI was missing.
@@ -1229,7 +1239,13 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
             where.append(f"layer_id = ${idx}")
             params.append(layer)
             idx += 1
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        # The cache holds every user's parcels and has no owner column: read only parcels from layers on this
+        # project's maps (audit 2026-10-09, round 2). No project, no parcels.
+        where.append(f"layer_id IN (SELECT unnest(layers) FROM user_mundiai_maps WHERE project_id = ${idx} "
+                     "AND soft_deleted_at IS NULL)")
+        params.append(ctx.project_id or "")
+        idx += 1
+        where_sql = f"WHERE {' AND '.join(where)}"
 
         rows = await ctx.conn.fetch(
             f"SELECT parcel_id, parcel_name, layer_id, week_start, "
@@ -3140,9 +3156,13 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
             "slug": _slug,
             "summary": _summary,
         }
-    except Exception as e:
+    except Exception:
+        # One fixed message: the raw database error named the row-security policy and told a note of another
+        # partner or industry apart from a missing one (audit R1-26).
         logger.exception("add_observation tool failed")
-        return {"status": "error", "error": str(e)}
+        return {"status": "error",
+                "error": "Could not add the observation: no note with that slug is available here, or the date is "
+                         "not YYYY-MM-DD."}
 
 
 async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:

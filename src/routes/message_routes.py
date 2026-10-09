@@ -12,7 +12,6 @@ import os
 import json
 import re
 import time
-from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
 import asyncio
@@ -63,8 +62,11 @@ from src.services.life_harness import (
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
+from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage
+from src.services import data_coverage, industry, llm_cache, project_partner
+from src.database.pool import set_request_industry
+from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -130,27 +132,9 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
-INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
-    {
-        "rwanda_province_boundaries",
-        "rwanda_district_boundaries",
-        "rwanda_sector_boundaries",
-        "rwanda_cell_boundaries",
-        "rwanda_village_boundaries",
-        "ndvi_cell_cache",
-        "ndvi_field_cache",
-        "ndvi_parcel_cache",
-        "agri_indices_cache",
-        "anomaly_alerts_cache",
-        "crop_classification_cache",
-        "drought_cache",
-        "emissions_annual_cache",
-        "phenology_cache",
-        "weather_daily_cache",
-        "yield_risk_cache",
-    }
-)
+# Neutral name: every industry has one (each logs in as its industry's reader role).
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda data (internal)"
+# The approved tables and the read-only login that enforces them: src/database/rwanda_reader.py.
 _SQL_TABLE_REF_RE = re.compile(
     r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
     re.IGNORECASE,
@@ -179,14 +163,15 @@ def _referenced_sql_tables(query: str) -> set[str]:
     return tables
 
 
-def validate_internal_rwanda_query(query: str) -> None:
+def validate_internal_rwanda_query(query: str, industry: Optional[str] = "agriculture") -> None:
+    """A friendly early error for tables this project's industry may not read (the reader roles enforce it)."""
     referenced = _referenced_sql_tables(query)
     if not referenced:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Internal Rwanda queries must reference an allowed Rwanda table",
         )
-    disallowed = sorted(referenced - INTERNAL_RWANDA_ALLOWED_TABLES)
+    disallowed = sorted(referenced - tables_for(industry))
     if disallowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -230,15 +215,8 @@ async def _ensure_rwanda_postgis_connection(
             """,
             connection_id,
         )
-        pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
-        pg_port = os.environ.get("POSTGRES_PORT", "5432")
-        pg_db = os.environ.get("POSTGRES_DB", "mundidb")
-        pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
-        pg_pass = os.environ.get("POSTGRES_PASSWORD", "changeme")
-        uri = (
-            f"postgresql://{quote(pg_user, safe='')}:{quote(pg_pass, safe='')}"
-            f"@{pg_host}:{pg_port}/{quote(pg_db, safe='')}?sslmode=disable"
-        )
+        # Logs in as the project's industry's read-only reader role (it can SELECT only the approved tables).
+        uri = reader_uri(await industry.industry_of_project(conn, project_id))
 
         if existing:
             if existing["project_id"] != project_id:
@@ -262,10 +240,11 @@ async def _ensure_rwanda_postgis_connection(
                     SET project_id = $1,
                         user_id = $2,
                         connection_uri = $3,
+                        connection_name = $5,
                         soft_deleted_at = NULL
                     WHERE id = $4
                     """,
-                    project_id, user_id, uri, connection_id,
+                    project_id, user_id, uri, connection_id, RWANDA_INTERNAL_CONNECTION_NAME,
                 )
                 logger.info(
                     "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s uri_changed=%s",
@@ -347,6 +326,9 @@ async def _ensure_rwanda_postgis_connection(
                 GROUP BY province
                 """
             )
+            # Grants survive CREATE OR REPLACE; this covers a view first created after the reader-role migration.
+            for role in READER_ROLES:
+                await conn.execute(f"GRANT SELECT ON rwanda_province_boundaries TO {role}")
 
         # Dynamically count which Rwanda admin tables actually exist
         _RWANDA_TABLES = [
@@ -506,22 +488,30 @@ async def label_conversation_inline(conversation_id: int):
             request = Request({"type": "http", "method": "POST", "headers": []})
             openai_client, title_model = get_chat_client_for_model(request)
 
-            response = await openai_client.chat.completions.create(
-                model=title_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
-                    },
-                    {"role": "user", "content": f"Conversation:\n{content_summary}"},
-                ],
-                # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
-                # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
-                max_tokens=150,
-                temperature=0.3,
-            )
+            title_messages = [
+                {
+                    "role": "system",
+                    "content": "Generate a short, descriptive title (3-6 words) for this conversation. The title should capture the main topic or request. Only return the title, nothing else.",
+                },
+                {"role": "user", "content": f"Conversation:\n{content_summary}"},
+            ]
 
-            title = (response.choices[0].message.content or "").strip()
+            async def name_it() -> dict:
+                response = await openai_client.chat.completions.create(
+                    model=title_model,
+                    messages=title_messages,
+                    # Thinking models (Nemotron, GPT-6 Luna) spend tokens on reasoning before the title:
+                    # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
+                    max_tokens=150,
+                    temperature=0.3,
+                    extra_body={"usage": {"include": True}},
+                )
+                llm_cache.record("chat_title", response.usage)
+                return {"title": response.choices[0].message.content or ""}
+
+            # Chats that start the same way (an Ask Sage question from a card) get their title for free.
+            named, _ = await llm_cache.answer("chat_title", llm_cache.key_of(title_model, title_messages), name_it)
+            title = named["title"].strip()
             if title and len(title) > 0:
                 await conn.execute(
                     """
@@ -902,10 +892,6 @@ async def _generate_postgis_pmtiles_background(
         )
 
 
-def _admin_sql_literal(value: object) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 def _admin_boundary_style(layer_id: str) -> list[dict]:
     source_layer = "reprojectedfgb"
     return [
@@ -932,217 +918,43 @@ def _admin_boundary_style(layer_id: str) -> list[dict]:
     ]
 
 
-async def _resolve_admin_boundary_query(
-    conn,
-    args: dict[str, object],
-) -> dict[str, object]:
-    requested_level = str(args.get("admin_level") or "auto").strip().lower()
-    name = str(args.get("name") or "").strip()
-    if not name:
-        return {"status": "error", "error": "Missing boundary name."}
-
-    levels = {
-        "province": {
-            "table": "rwanda_province_boundaries",
-            "name_col": "province",
-            "attrs": ["province"],
-            "label": "province",
-        },
-        "district": {
-            "table": "rwanda_district_boundaries",
-            "name_col": "district",
-            "attrs": ["district"],
-            "label": "district",
-        },
-        "sector": {
-            "table": "rwanda_sector_boundaries",
-            "name_col": "sector_name",
-            "attrs": ["sector_name", "district_name"],
-            "label": "sector",
-        },
-        "cell": {
-            "table": "rwanda_cell_boundaries",
-            "name_col": "cell_name",
-            "attrs": ["cell_name", "sector_name", "district_name"],
-            "label": "cell",
-        },
-        "village": {
-            "table": "rwanda_village_boundaries",
-            "name_col": "village_name",
-            "attrs": ["village_name", "cell_name", "sector_name", "district_name"],
-            "label": "village",
-        },
-    }
-
-    def _filters_for(level: str, *, sql: bool) -> tuple[list[str], list[object]]:
-        spec = levels[level]
-        filters: list[str] = []
-        params: list[object] = []
-        if name not in {"*", "all"}:
-            if sql:
-                filters.append(f"LOWER({spec['name_col']}) = LOWER({_admin_sql_literal(name)})")
-            else:
-                params.append(name)
-                filters.append(f"LOWER({spec['name_col']}) = LOWER(${len(params)})")
-        for arg_key, col in (
-            ("district", "district_name"),
-            ("sector", "sector_name"),
-            ("cell", "cell_name"),
-        ):
-            value = args.get(arg_key)
-            if not value:
-                continue
-            available_cols = set(spec["attrs"]) | {spec["name_col"]}
-            if col not in available_cols:
-                continue
-            if sql:
-                filters.append(f"LOWER({col}) = LOWER({_admin_sql_literal(value)})")
-            else:
-                params.append(value)
-                filters.append(f"LOWER({col}) = LOWER(${len(params)})")
-        return filters, params
-
-    async def _match(level: str) -> dict[str, object]:
-        spec = levels[level]
-        filters, params = _filters_for(level, sql=False)
-        where = " AND ".join(filters) if filters else "TRUE"
-        try:
-            rows = await conn.fetch(
-                f"""
-                SELECT {', '.join(spec['attrs'])},
-                       ST_XMin(ST_Extent(geom)) AS xmin,
-                       ST_YMin(ST_Extent(geom)) AS ymin,
-                       ST_XMax(ST_Extent(geom)) AS xmax,
-                       ST_YMax(ST_Extent(geom)) AS ymax,
-                       COUNT(*) OVER() AS match_count
-                FROM {spec['table']}
-                WHERE {where}
-                GROUP BY {', '.join(spec['attrs'])}
-                ORDER BY {', '.join(spec['attrs'])}
-                LIMIT 12
-                """,
-                *params,
-            )
-        except asyncpg.exceptions.UndefinedTableError:
-            logger.warning("Admin boundary table missing: %s", spec["table"])
-            return {"status": "not_found", "admin_level": level}
-        if not rows:
-            return {"status": "not_found", "admin_level": level}
-        total = int(rows[0]["match_count"])
-        candidates = [dict(row) for row in rows]
-
-        sql_filters, _ = _filters_for(level, sql=True)
-        sql_where = " AND ".join(sql_filters) if sql_filters else "TRUE"
-        attr_select = ", ".join(spec["attrs"])
-        query = (
-            f"SELECT ROW_NUMBER() OVER()::bigint AS id, {attr_select}, geom "
-            f"FROM {spec['table']} WHERE {sql_where}"
-        )
-        if name in {"*", "all"} or total > 1:
-            extent_row = await conn.fetchrow(
-                f"""
-                SELECT ST_XMin(ST_Extent(geom)) AS xmin,
-                       ST_YMin(ST_Extent(geom)) AS ymin,
-                       ST_XMax(ST_Extent(geom)) AS xmax,
-                       ST_YMax(ST_Extent(geom)) AS ymax
-                FROM {spec['table']}
-                WHERE {where}
-                """,
-                *params,
-            )
-            bounds_source = extent_row or rows[0]
-        else:
-            bounds_source = rows[0]
-        bounds = [
-            float(bounds_source["xmin"]),
-            float(bounds_source["ymin"]),
-            float(bounds_source["xmax"]),
-            float(bounds_source["ymax"]),
-        ]
-        first = dict(rows[0])
-        display_name = (
-            str(first.get(spec["name_col"]) or name)
-            if name not in {"*", "all"}
-            else f"{level.title()} Boundaries"
-        )
-        if total > 1 and name not in {"*", "all"}:
-            return {
-                "status": "ambiguous",
-                "admin_level": level,
-                "admin_name": display_name,
-                "query": query,
-                "bounds": bounds,
-                "feature_count": total,
-                "attribute_columns": spec["attrs"],
-                "layer_name": f"{display_name} {level.title()} Matches",
-                "candidates": candidates,
-                "match_count": total,
-            }
-        return {
-            "status": "success",
-            "admin_level": level,
-            "admin_name": display_name,
-            "query": query,
-            "bounds": bounds,
-            "feature_count": total if name in {"*", "all"} else 1,
-            "attribute_columns": spec["attrs"],
-            "layer_name": (
-                f"{display_name} {level.title()} Boundary"
-                if name not in {"*", "all"}
-                else f"{display_name}"
-            ),
-        }
-
-    search_levels = (
-        list(levels)
-        if requested_level == "auto"
-        else [requested_level]
+def _admin_place_text(place: dict[str, object]) -> str:
+    """"Ruganda cell, Gatare sector, Nyamagabe district" from a place's parent names."""
+    return ", ".join(
+        f"{place[level]} {level}" for level in ("cell", "sector", "district") if place.get(level)
     )
-    for level in search_levels:
-        if level not in levels:
-            continue
-        result = await _match(level)
-        if result["status"] != "not_found":
-            return result
-    return {
-        "status": "not_found",
-        "admin_level": requested_level,
-        "admin_name": name,
-        "error": f"No Rwanda administrative boundary found for {name!r}.",
-    }
 
 
 def _admin_boundary_fast_reply(result: dict[str, object]) -> str:
     name = str(result.get("admin_name") or "that area")
     level = str(result.get("admin_level") or "admin")
-    if result.get("status") == "success":
+    status = result.get("status")
+    if status == "success":
+        within = result.get("within") if isinstance(result.get("within"), dict) else {}
+        where = _admin_place_text(within)
         count = result.get("feature_count")
         if isinstance(count, int) and count > 1:
-            return f"I added {count} {level} boundaries to the map."
-        return f"I added {name} {level} boundary to the map."
-    if result.get("status") == "ambiguous":
-        examples: list[str] = []
-        candidates = result.get("candidates")
-        if isinstance(candidates, list):
-            for candidate in candidates[:5]:
-                if not isinstance(candidate, dict):
-                    continue
-                parts = [
-                    str(candidate[key])
-                    for key in ("village_name", "cell_name", "sector_name", "district_name", "province")
-                    if candidate.get(key)
-                ]
-                if parts:
-                    examples.append(" / ".join(parts))
-        suffix = f" Examples: {'; '.join(examples)}." if examples else ""
-        count = result.get("match_count") or result.get("feature_count")
-        count_text = f" {count}" if isinstance(count, int) and count > 1 else ""
-        if result.get("layer_id"):
+            return f"I added the {count} {level} boundaries{f' in {where}' if where else ''} to the map."
+        unit = name if name.lower().endswith(level.lower()) else f"{name} {level}"
+        return f"I added {unit}{f' ({where})' if where else ''} to the map."
+    if status == "ambiguous":
+        candidates = [c for c in result.get("candidates") or [] if isinstance(c, dict)]
+        count = result.get("match_count") or len(candidates)
+        places = [_admin_place_text(c) or str(c.get("name")) for c in candidates]
+        shown = "; ".join(places[:5]) + (f"; and {count - 5} more" if isinstance(count, int) and count > 5 else "")
+        units_of = result.get("units_of")
+        given = result.get("given") if isinstance(result.get("given"), dict) else {}
+        given_text = f" in {_admin_place_text(given)}" if given else ""
+        example = f"{name} {level} in {places[0]}" if places and places[0] else f"{name} {level}"
+        if units_of:
             return (
-                f"I found{count_text} matches for {name} and added them to the map in red. "
-                f"Specify the parent district, sector, or cell if you want only one.{suffix}"
+                f"There are {count} {level}s called {name}: {shown}. I haven't added any {units_of}s to the map. "
+                f"Which {level} do you mean? For example: \"the {units_of}s of {example}\"."
             )
-        return f"I found{count_text} matches for {name}. Please specify the parent district, sector, or cell.{suffix}"
+        return (
+            f"There are {count} {level}s called {name}{given_text}: {shown}. I haven't added any to the map. "
+            f"Which one do you mean? For example: \"{example}\"."
+        )
     return str(result.get("error") or f"I couldn't find {name}.")
 
 
@@ -1161,8 +973,10 @@ async def _run_abdication_guard(
             tool.get("function", {}).pop("strict", None)
     try:
         response = await client.chat.completions.create(
-            **{**attempt_kwargs, "tools": tools, "tool_choice": "required"}, stream=False,
+            **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
         )
+        llm_cache.record("sage_guard", getattr(response, "usage", None))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
@@ -1216,8 +1030,9 @@ async def _maybe_run_fast_admin_boundary_turn(
         if not pgc_id:
             return False
 
-        result = await _resolve_admin_boundary_query(conn, fast_call.arguments)
-        if result.get("status") in {"success", "ambiguous"} and result.get("query"):
+        result = await resolve_admin_boundary(conn, fast_call.arguments)
+        # Only exactly what was asked is drawn; an ambiguous name draws nothing.
+        if result.get("status") == "success" and result.get("query"):
             layer_id = generate_id(prefix="L")
             style_id = generate_id(prefix="S")
             layer_name = str(result["layer_name"])
@@ -1708,6 +1523,66 @@ def _tool_timeout_seconds() -> float:
         return 120.0
 
 
+# System blocks added on every turn (the map, the view, the selected feature, Brain memory). Each turn stores a
+# fresh copy; replaying the old ones re-sent ~2,700 stale tokens a turn (39k-token prompts after 4 turns).
+_PER_TURN_CONTEXT = ("<MapState>", "<CurrentAOI>", "<NoSelectedFeature", "<SelectedFeature", "<BrainContext")
+
+
+def _latest_context_only(messages: list[Any]) -> list[Any]:
+    """The replayed history with only the newest copy of each per-turn context block: older copies describe a
+    map that has changed since, cost tokens on every call, and can mislead the model."""
+    kinds = {}
+    for i, m in enumerate(messages):
+        if isinstance(m, dict) and m.get("role") == "system" and isinstance(m.get("content"), str):
+            kind = next((k for k in _PER_TURN_CONTEXT if m["content"].lstrip().startswith(k)), None)
+            if kind:
+                kinds.setdefault(kind, []).append(i)
+    stale = {i for positions in kinds.values() for i in positions[:-1]}
+    return [m for i, m in enumerate(messages) if i not in stale]
+
+
+OLD_TOOL_RESULT_CHARS = 1_500  # a tool result from an earlier turn is replayed this long at most
+
+
+def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
+    """Tool results from earlier turns, cut to their first OLD_TOOL_RESULT_CHARS: their substance is already in
+    the answers given then, and a forecast alone was 20,000 characters replayed on every later call."""
+    last_user = max((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"), default=-1)
+    shortened = []
+    for i, m in enumerate(messages):
+        content = m.get("content") if isinstance(m, dict) else None
+        if i < last_user and m.get("role") == "tool" and isinstance(content, str) and len(content) > OLD_TOOL_RESULT_CHARS:
+            m = {**m, "content": content[:OLD_TOOL_RESULT_CHARS] + " … [shortened: this result was used in an earlier "
+                                                                     "answer; call the tool again for all of it]"}
+        shortened.append(m)
+    return shortened
+
+
+def _without_other_industries_calls(messages: list[Any], project_industry: Optional[str]) -> list[Any]:
+    """The replayed history without tool calls this project's industry may not make, nor their results. One farm
+    result stored in a Power Grid or Telecom conversation would otherwise ride along on every later turn (audit
+    R2-14). Results are matched to calls by id, so a dropped call takes its result with it."""
+    dropped: set[str] = set()
+    out: list[Any] = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id") in dropped:
+            continue
+        calls = m.get("tool_calls") if isinstance(m, dict) else None
+        if calls:
+            kept = []
+            for call in calls:
+                name = (call.get("function") or {}).get("name", "") if isinstance(call, dict) else ""
+                if name and not industry.serves(name, project_industry):
+                    logger.warning("Dropping wrong-industry tool_call %r from history replay", name)
+                    dropped.add(call.get("id"))
+                else:
+                    kept.append(call)
+            if len(kept) != len(calls):
+                m = {**m, "tool_calls": kept} if kept else {k: v for k, v in m.items() if k != "tool_calls"}
+        out.append(m)
+    return out
+
+
 def _pair_tool_results(messages: list[Any]) -> list[Any]:
     """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
     conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
@@ -2137,6 +2012,34 @@ async def _maybe_run_deterministic_turn_before_hermes(
     ) is not None
 
 
+async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
+    """Look up the industry of the map's project and scope every connection this request opens from now on to it
+    (app.industry, which Brain's row-level security reads). Returns the industry; None if the map's project cannot
+    be found, in which case everything fails closed (shared tools only, general Brain notes only)."""
+    async with async_conn("request.project_industry") as conn:
+        project_industry = await industry.industry_of_map(conn, map_id)
+    set_request_industry(project_industry)
+    return project_industry
+
+
+# Longest the Brain memory for one turn may take before Sage answers without it.
+BRAIN_PACKET_TIMEOUT_SECONDS = float(os.environ.get("SAGE_BRAIN_PACKET_TIMEOUT_SECONDS", "5"))
+
+
+def chat_lock_key(conversation_id: int) -> str:
+    """Redis lock for one conversation's turn, per database (conversation ids repeat across databases)."""
+    return f"chat_lock:{os.environ.get('POSTGRES_DB', 'mundidb')}:{conversation_id}"
+
+
+async def _act_for_project(map_id: str, session: UserContext) -> UserContext:
+    """The session acting for the map's project's organization (see src.services.project_partner)."""
+    async with async_conn("request.project_partner") as conn:
+        project_id = await conn.fetchval("SELECT project_id FROM user_mundiai_maps WHERE id = $1", map_id)
+        partner = await project_partner.partner_for_project(conn, project_id, session.get_user_id(),
+                                                            session.get_org_id())
+    return session.for_partner(partner)
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -2151,6 +2054,11 @@ async def process_chat_interaction_task(
     client_turn_id: str | None = None,
     user_message_id: str | None = None,
 ):
+    # Everything this turn does follows the project's industry: the tools Sage is
+    # offered and may run, and (through app.industry on every connection) which
+    # Brain notes it can read or write. See src/services/industry.py.
+    project_industry = await _scope_request_to_map_industry(map_id)
+
     # Hermes handles complex requests only after deterministic fast paths have
     # had the first chance to answer. This keeps admin lookups and raster/FastSAM
     # work fast, bounded, and independent of agent planning quality.
@@ -2184,7 +2092,7 @@ async def process_chat_interaction_task(
     await asyncio.sleep(0.1)
     partner_id = session.get_org_id()
 
-    _lock_key = f"chat_lock:{conversation.id}"
+    _lock_key = chat_lock_key(conversation.id)
     # tool_call_id -> (tool name, arguments), for result checks.
     _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
@@ -2365,7 +2273,8 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
-            openai_messages = _pair_tool_results(openai_messages)
+            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(
+                _without_other_industries_calls(openai_messages, project_industry))))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,
@@ -2380,11 +2289,15 @@ async def process_chat_interaction_task(
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
+                    # Only layers made in a project of this industry (audit R1-16).
                     unattached_layers = await ul_conn.fetch(
                         """
                         SELECT ml.layer_id, ml.created_on, ml.last_edited, ml.type, ml.name
                         FROM map_layers ml
+                        JOIN user_mundiai_maps sm ON sm.id = ml.source_map_id
+                        JOIN user_mundiai_projects sp ON sp.id = sm.project_id
                         WHERE ml.owner_uuid = $1
+                        AND sp.industry = $3
                         AND NOT EXISTS (
                             SELECT 1 FROM user_mundiai_maps m
                             WHERE ml.layer_id = ANY(m.layers) AND m.owner_uuid = $2
@@ -2394,6 +2307,7 @@ async def process_chat_interaction_task(
                         """,
                         user_id,
                         user_id,
+                        project_industry,
                     )
 
             layer_enum = {}
@@ -2407,7 +2321,8 @@ async def process_chat_interaction_task(
 
             client = get_openai_client(request)
 
-            tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
+            tools_payload = industry.tools_for(build_sage_tools_payload(pydantic_tool_calls, layer_enum),
+                                               project_industry)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -2629,10 +2544,18 @@ async def process_chat_interaction_task(
                             # `<tool_call>...</tool_call>` text emissions don't
                             # leak into the user-visible chat. See class docstring.
                             _xml_scrub = _ToolCallTextScrubber()
+                            if not _model_name.startswith("ollama:"):
+                                # The last chunk carries the call's tokens and cost, and how much of the prompt
+                                # the provider served from its cache (llm_cache.record logs it).
+                                _attempt_kwargs["stream_options"] = {"include_usage": True}
+                                _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
+                                                                 "usage": {"include": True}}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
                             async for chunk in stream:
+                                if getattr(chunk, "usage", None):
+                                    llm_cache.record("sage", chunk.usage)
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()
@@ -2920,7 +2843,9 @@ async def process_chat_interaction_task(
 
             # Process each tool call returned by the assistant
             # Wrap tool processing in its own connection scope
-            async with async_conn("tool_execution") as conn:
+            # Tools run as the signed-in user and partner: with no user on the connection, row-level security treats
+            # it as a background worker and every user's rows are visible (audit 2026-10-09, round 2).
+            async with async_conn("tool_execution", user_id=user_id, partner_id=partner_id) as conn:
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
@@ -2932,7 +2857,9 @@ async def process_chat_interaction_task(
                     _recent_tool_signatures.append(
                         life_harness_tool_signature(function_name, tool_args)
                     )
-                    tool_result = repeated_life_harness_tool_error(
+                    tool_result = industry.tool_refusal(
+                        function_name, project_industry
+                    ) or repeated_life_harness_tool_error(
                         _recent_tool_signatures
                     ) or validate_life_harness_tool_args(
                         function_name,
@@ -3091,7 +3018,7 @@ async def process_chat_interaction_task_safely(
     user_message_id: str | None = None,
 ):
     started_at = time.monotonic()
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
 
     async def clear_streaming_state() -> None:
         try:
@@ -3256,7 +3183,7 @@ async def send_map_message(
     )
 
     # Check if map is already being processed
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
     try:
         if redis.get(lock_key):
             raise HTTPException(
@@ -3269,6 +3196,13 @@ async def send_map_message(
         raise  # Re-raise the 409 conflict
     except Exception:
         logger.warning("Redis unavailable for chat lock, proceeding without lock")
+
+    # Before any database work (the Brain memory packet below included): this request reads and writes only
+    # the project's industry. The background turn runs in this request's context and keeps the same scope.
+    await _scope_request_to_map_industry(map_id)
+    # And to the project's organization, whichever one the user has active (Brain's partner-only notes).
+    session = await _act_for_project(map_id, session)
+    partner_id = session.get_org_id()
 
     # Use map state provider to generate system messages
     messages_response = await get_all_conversation_messages(conversation.id, session)
@@ -3312,17 +3246,23 @@ async def send_map_message(
                 if map_layer_ids_row
                 else []
             )
-            brain_text = await build_brain_context_packet(
-                brain_conn,
-                brain_svc,
-                query_text=extract_user_message_text(body.message),
-                viewport_bounds=body.viewport_bounds,
-                visible_layer_ids=visible_layer_ids,
+            # Awaited before the model is called, so a slow Brain would delay every reply: bounded (audit R2-12).
+            brain_text = await asyncio.wait_for(
+                build_brain_context_packet(
+                    brain_conn,
+                    brain_svc,
+                    query_text=extract_user_message_text(body.message),
+                    viewport_bounds=body.viewport_bounds,
+                    visible_layer_ids=visible_layer_ids,
+                ),
+                timeout=BRAIN_PACKET_TIMEOUT_SECONDS,
             )
             if brain_text:
                 system_messages.append({"role": "system", "content": brain_text})
+    except asyncio.TimeoutError:
+        logger.warning("Brain memory skipped for map %s: took longer than %.0f s", map_id, BRAIN_PACKET_TIMEOUT_SECONDS)
     except Exception:
-        logger.debug("Brain context injection skipped (tables may not exist yet)")
+        logger.warning("Brain memory skipped for map %s", map_id, exc_info=True)
 
     async with async_conn("send_map_message.update_messages", user_id=user_id) as conn:
         # Add any generated system messages to the database

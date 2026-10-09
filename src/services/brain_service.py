@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -64,6 +67,41 @@ PAGE_SCOPE_FILTER = f"""
         ELSE false
     END
 """
+
+# Which notes a just-written note (s) may link to (t): only notes its own author could read, of its own industry
+# or general. Hooks and ingestion write with no user or industry set, so without this a feature attribute or a
+# [[slug]] in fetched partner text linked to other partners' private notes and other industries' notes (audit
+# 2026-10-09, round 2). A general note links to general notes only: links are readable wherever the source is.
+_LINKABLE_FROM_SOURCE = """
+    AND (t.industry IS NULL OR t.industry IS NOT DISTINCT FROM s.industry)
+    AND CASE t.access_scope
+        WHEN 'public' THEN true
+        WHEN 'partner_internal' THEN t.partner_id IS NOT NULL AND t.partner_id IS NOT DISTINCT FROM s.partner_id
+        WHEN 'private' THEN t.owner_uuid IS NOT DISTINCT FROM s.owner_uuid
+        ELSE false
+    END
+"""
+
+class NoteNotWritable(PermissionError):
+    """A note this session may not write: the slug belongs to a note it cannot see (another owner, partner or
+    industry). One message for every such case, so a failed write does not name a policy or tell which rule hid
+    the note (audit R1-26)."""
+
+    def __init__(self, slug: str):
+        super().__init__(f"The note '{slug}' cannot be written from here.")
+        self.slug = slug
+
+
+async def _upsert_page(conn: asyncpg.Connection, sql: str, *args: Any) -> asyncpg.Record:
+    """Run a brain_pages upsert in a savepoint; an ON CONFLICT onto a note row security hides becomes
+    NoteNotWritable instead of an InsufficientPrivilegeError that aborts the caller's transaction."""
+    try:
+        async with conn.transaction():
+            return await conn.fetchrow(sql, *args)
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        logger.info("Brain write refused for slug %s (a note this session cannot see)", args[0])
+        raise NoteNotWritable(str(args[0])) from None
+
 
 # Agricultural page types for Rwanda insurance
 PAGE_TYPES = {
@@ -358,7 +396,8 @@ class BrainService:
         e_uuids = editor_uuids or []
 
         if page.geom_geojson:
-            row = await conn.fetchrow(
+            row = await _upsert_page(
+                conn,
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,
@@ -390,7 +429,8 @@ class BrainService:
                 page.geom_geojson,
             )
         else:
-            row = await conn.fetchrow(
+            row = await _upsert_page(
+                conn,
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,
@@ -445,8 +485,9 @@ class BrainService:
             # Bulk-resolve target types in one round-trip rather than per-edge.
             target_slugs = [slug for slug, _ in link_targets]
             target_rows = await conn.fetch(
-                "SELECT slug, type FROM brain_pages WHERE slug = ANY($1::text[])",
-                target_slugs,
+                f"SELECT t.slug, t.type FROM brain_pages t, brain_pages s "
+                f"WHERE s.id = $2 AND t.slug = ANY($1::text[]) {_LINKABLE_FROM_SOURCE}",
+                target_slugs, result_page.id,
             )
             slug_to_type: dict[str, str] = {
                 r["slug"]: r["type"] for r in target_rows
@@ -460,10 +501,10 @@ class BrainService:
                     page_content=page.compiled_truth or "",
                 )
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
-                    SELECT $1, p.id, $3, $4
-                    FROM brain_pages p WHERE p.slug = $2
+                    SELECT $1, t.id, $3, $4
+                    FROM brain_pages t, brain_pages s WHERE s.id = $1 AND t.slug = $2 {_LINKABLE_FROM_SOURCE}
                     ON CONFLICT (from_page_id, to_page_id) DO UPDATE SET
                         link_type = EXCLUDED.link_type,
                         context = EXCLUDED.context
@@ -730,23 +771,32 @@ class BrainService:
         exclude = exclude_slugs or []
         vec_str = "[" + ",".join(str(v) for v in embedding) + "]"
 
-        rows = await conn.fetch(
-            f"""
-            SELECT
-                p.slug, p.id as page_id, p.title, p.type,
-                cc.chunk_text, cc.chunk_source,
-                1 - (cc.embedding <=> $1::vector) AS score
-            FROM brain_content_chunks cc
-            JOIN brain_pages p ON p.id = cc.page_id
-            WHERE cc.embedding IS NOT NULL
-                AND ($4::text IS NULL OR p.type = $4)
-                AND p.slug != ALL($5::text[])
-                {PAGE_SCOPE_FILTER.format(a="p.")}
-            ORDER BY cc.embedding <=> $1::vector
-            LIMIT $2 OFFSET $3
-            """,
-            vec_str, limit, offset, type, exclude,
-        )
+        # The HNSW index hands back only ef_search (40) nearest chunks, and the partner, owner and industry rules then
+        # drop the ones this session cannot see: a small industry's or partner's notes, outnumbered by the rest,
+        # came back empty. An iterative scan keeps reading the index until enough visible chunks are found (audit
+        # R2-5; pgvector >= 0.8). relaxed_order may return them slightly out of order, so they are sorted again.
+        async with conn.transaction():
+            await conn.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+            await conn.execute("SET LOCAL hnsw.max_scan_tuples = 20000")
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM (
+                    SELECT
+                        p.slug, p.id as page_id, p.title, p.type,
+                        cc.chunk_text, cc.chunk_source,
+                        1 - (cc.embedding <=> $1::vector) AS score
+                    FROM brain_content_chunks cc
+                    JOIN brain_pages p ON p.id = cc.page_id
+                    WHERE cc.embedding IS NOT NULL
+                        AND ($4::text IS NULL OR p.type = $4)
+                        AND p.slug != ALL($5::text[])
+                        {PAGE_SCOPE_FILTER.format(a="p.")}
+                    ORDER BY cc.embedding <=> $1::vector
+                    LIMIT $2 OFFSET $3
+                ) nearest ORDER BY score DESC
+                """,
+                vec_str, limit, offset, type, exclude,
+            )
         return [
             SearchResult(
                 slug=r["slug"], page_id=r["page_id"], title=r["title"],

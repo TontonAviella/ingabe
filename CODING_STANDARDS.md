@@ -174,6 +174,15 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-08** "Remera sector in Gasabo district" drew all four Remera sectors: the admin parser dropped the parents after the level
+  word, and a name shared by several units was drawn in full ("Matches"). Rule: a request for one thing delivers exactly one or nothing, and
+  then says where each candidate is. Gate: `src/services/test_admin_boundary_resolve.py`, `tests/test_admin_boundary_one_unit.py`.
+- **2026-10-08** Changing `render_map_internal` to take a style dict, the caller search covered two callers; `basemap_routes` still passed a
+  string, and CI caught it (its local test was hidden by a cached thumbnail). Rule: a contract change lists every caller from a plain grep,
+  not the code index (GitNexus showed none), and runs each caller's test with caches empty. Gate: review only; `src/test_basemap.py` in CI.
+- **2026-10-08** Every project card showed the default basemap: the static renderer (no page origin, no session) cannot fetch the app's relative
+  `/api/layer/...` tile URLs, so any map with a drone raster or PostGIS layer failed with a RenderError, and the preview test mocked both the style
+  and the renderer. "Mocks match the real thing" is review only, so it did not fire. Gate: `tests/test_project_social_preview.py` (real upload + render).
 - **2026-10-07** drought_cache was empty: detect_drought returned numpy floats, psycopg2 wrote them as `np.float64(...)` and the weekly scan failed;
   fixed as-is it would have published "Bugesera severe drought" from 13 weeks, VCI over one year reading the dry season as drought. Rules: values
   leaving numpy for SQL or JSON are plain Python; an anomaly index compares the same season across years. Gate: `test_drought_seasonal_vci.py`.
@@ -207,9 +216,15 @@ lines; promote a lesson that recurs into the sections above.
 - **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
   command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
   can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
+- **2026-10-07** The drone crop map shipped a vision model's labels unmeasured: on unmistakable plots it was wrong 4 times in 9
+  (maize read as cassava). Rule: a model's labels are measured against checked examples before they show, abstain ("not sure")
+  when two independent looks disagree, and say the measured rate. Gate: review only (needs labelled examples per domain).
 - **2026-10-07** `get_cell_ndvi_stats` ran a blocking 40 s satellite read per sector inside `async def`: one Sage question froze
   every request (one uvicorn worker) for ~10 min, and no `wait_for` limit could fire. Rule: blocking I/O in async code goes
   through `asyncio.to_thread` with a cap and a deadline. Gate: review only (blocking calls hide behind library functions).
+- **2026-10-06** WorkOS signed users out 13 times in a day: zero JWT leeway against a clock 0.5-0.9 s off, and the SDK's refresh dropped new tokens
+  after spending the old refresh token; the mocked tests replaced `session.refresh` and saw none of it. Rule: token checks allow clock leeway, and code that
+  spends a single-use credential keeps what it got back before checking it. Gate: `test_workos_auth.py` / `test_workos_session.py` (real SDK, fake clock).
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.

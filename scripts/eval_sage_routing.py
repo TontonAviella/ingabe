@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ RUNS_DIR = EVAL_DIR / "runs"
 # Same output budget the live loop asks for (message_routes
 # _DESIRED_OUTPUT_TOKENS). Reasoning models spend part of it thinking.
 MAX_TOKENS = 4096
+
+# Farm talk in a Power Grid or Telecom reply (scored as scoring.FARM_WORDING).
+FARM_WORDS = re.compile(r"\b(crops?|farm(s|ers?|ing|land)?|harvest|maize|beans|cassava|yield|NDVI|vegetation health|"
+                        r"irrigation|livestock|insurance payout)\b", re.IGNORECASE)
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 # Stop (and allow --resume) after this many consecutive fully-errored cases:
 # usually the provider's daily request cap.
@@ -292,6 +297,10 @@ async def run_attempt(
         if not calls:
             if step == 0:
                 first_tool = scoring.TEXT_ONLY
+                # Outside agriculture a reply about crops or farming is wrong even when no tool was expected.
+                if (case.get("industry") or "agriculture") != "agriculture" and \
+                        FARM_WORDS.search(getattr(message, "content", None) or ""):
+                    first_tool = scoring.FARM_WORDING
             break
         call = calls[0]
         called.append(call.function.name)
@@ -342,12 +351,25 @@ def fast_path_applies(fast: Any, text: str, case: dict[str, Any]) -> bool:
     return select_fast_raster_layer(text, rasters) is not None
 
 
+def check_industry_cases(cases: list[dict[str, Any]]) -> None:
+    """A non-agriculture case may expect only tools its industry is offered (a farm tool could never be right)."""
+    from src.services import industry
+
+    for case in cases:
+        ind = case.get("industry")
+        refused = [t for t in case["expect"].get("any_of") or [] if ind and not industry.serves(t, ind)]
+        if refused:
+            raise scoring.CorpusError(f"{case['id']}: {ind} is never offered {refused}")
+
+
 async def run(args: argparse.Namespace) -> Path:
     from src.dependencies.map_state import DefaultMapStateProvider
     from src.dependencies.pydantic_tools import get_pydantic_tool_calls
     from src.dependencies.sage_routing import build_fast_tool_call
     from src.dependencies.sage_turn_request import build_sage_tools_payload, plan_sage_turn
+    from src.database.pool import set_request_industry
     from src.dependencies.system_prompt import get_system_prompt_provider
+    from src.services import industry
     from src.services.sage_flight_recorder import flush, sage_turn_trace
     from src.utils import get_chat_client_for_model
 
@@ -356,6 +378,7 @@ async def run(args: argparse.Namespace) -> Path:
         raise SystemExit("tool catalog drifted from tool_catalog.json; run `catalog` for details")
     raw = load_cases()
     scoring.validate_corpus(raw, known_tools(catalog))
+    check_industry_cases(raw)
     cases = [scoring.effective_case(c, catalog) for c in raw]
     if args.case:
         cases = [c for c in cases if c["id"] in set(args.case)]
@@ -366,7 +389,7 @@ async def run(args: argparse.Namespace) -> Path:
 
     meta = {
         "variant": args.variant, "repeats": args.repeats, "model_only": args.model_only,
-        "concurrency": args.concurrency,
+        "concurrency": args.concurrency, "industry": args.industry,
         "model": os.environ.get("OPENAI_MODEL", ""), "corpus_sha": corpus_sha(),
         "git_sha": _git_sha(), "started_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -419,7 +442,16 @@ async def run(args: argparse.Namespace) -> Path:
         history = case.get("history") or []
         user_msg = {"role": "user", "content": text}
         turn.set_input(text)
+        # The case's industry, as the live turn sets it: the prompt, the tools offered, the fast paths and the
+        # abdication guard all follow it (audit R1-33). Each case runs in its own task, so the scope is per case.
+        case_industry = case.get("industry") or args.industry
+        if case_industry:
+            case = {**case, "industry": case_industry}
+        set_request_industry(case_industry)
+        case_tools = industry.tools_for(tools_payload, case_industry) if case_industry else tools_payload
         fast = None if args.model_only else build_fast_tool_call(text)
+        if fast is not None and case_industry and industry.tool_refusal(fast.tool_name, case_industry):
+            fast = None  # the live turn refuses another industry's fast path
         async with slots:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
                 return  # stopping; leave the case for --resume
@@ -428,24 +460,24 @@ async def run(args: argparse.Namespace) -> Path:
                 attempts = [fast_path_attempt(case, fast)] * args.repeats
                 turn.fast_path(fast.tool_name)
             else:
-                plan = plan_sage_turn(text, history + [user_msg], tools_payload,
+                plan = plan_sage_turn(text, history + [user_msg], case_tools,
                                       prompt_provider.get_system_prompt)
-                plan = await variant.prepare(plan, text, history, tools_payload)
+                plan = await variant.prepare(plan, text, history, case_tools)
                 shortlist_method = plan.shortlist
                 client, model = get_chat_client_for_model(None, plan.model_override or default_model)
                 turn.routing(user_text=text, reason=plan.routing.reason,
                              categories=list(plan.routing.selected_categories),
                              small_talk=plan.routing.is_small_talk, tools=plan.tools,
                              shortlist=shortlist_method, model=model)
-                map_msgs = await map_provider.get_system_messages(
-                    history + [user_msg], map_description(case), None, None)
+                map_msgs = await map_provider.get_system_messages(  # a case may give the map's view (w, s, e, n)
+                    history + [user_msg], map_description(case), None, (case.get("map_state") or {}).get("viewport"))
                 messages = [{"role": "system", "content": plan.system_prompt}, *history,
                             *map_msgs, user_msg]
                 source, tools_sent, attempts = "model", len(plan.tools), []
                 for attempt in range(args.repeats):
                     attempts.append(await run_attempt(
                         case, plan, messages, client, model, variant.tool_choice(plan), args.retries,
-                        guard={"text": text, "history": history, "full_tools": tools_payload}
+                        guard={"text": text, "history": history, "full_tools": case_tools}
                         if variant.guard else None, turn=turn, attempt=attempt))
                     if args.pace:
                         await asyncio.sleep(args.pace)
@@ -584,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--concurrency", type=int, default=4,
                        help="cases run in parallel (keep under the provider's rate limit)")
     p_run.add_argument("--retries", type=int, default=6)
+    p_run.add_argument("--industry", choices=scoring.INDUSTRIES, default=None,
+                       help="run cases without their own industry as this one (default: agriculture)")
     p_run.add_argument("--model-only", action="store_true",
                        help="skip deterministic fast paths; measure the model on every case")
     p_run.add_argument("--case", action="append", help="run only this case id (repeatable)")

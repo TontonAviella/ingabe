@@ -135,6 +135,11 @@ def stub_registry(monkeypatch: pytest.MonkeyPatch) -> dict:
         "get_pydantic_tool_calls",
         lambda: registry,
     )
+    # The fake project is not in the database (unknown industry), so only shared tools may run there.
+    from src.services import industry
+
+    for name in registry:
+        monkeypatch.setitem(industry.CAPABILITIES, name, industry.SHARED)
     return registry
 
 

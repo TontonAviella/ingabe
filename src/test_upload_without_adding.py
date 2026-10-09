@@ -116,3 +116,29 @@ async def test_upload_with_adding_to_map(test_map_id, auth_client):
     )
     parent_layers = parent_response.json()["layers"]
     assert len(parent_layers) == 0, "Parent map should not contain the uploaded layer"
+
+
+@pytest.mark.anyio
+async def test_an_uploaded_layer_can_be_added_to_its_map_later(test_map_id, auth_client):
+    """PUT /maps/{map}/layer/{layer} adds the layer's id, not NULL, and refuses a second add (audit R1-34)."""
+    with open("test_fixtures/airports.fgb", "rb") as f:
+        response = await auth_client.post(
+            f"/api/maps/{test_map_id}/layers",
+            files={"file": ("airports.fgb", f)},
+            data={"layer_name": "Airports later", "add_layer_to_map": "false"},
+        )
+    assert response.status_code == 200, response.text
+    layer_id = response.json()["id"]
+
+    added = await auth_client.put(f"/api/maps/{test_map_id}/layer/{layer_id}")
+    assert added.status_code == 200, added.text
+    assert added.json()["layer_id"] == layer_id
+
+    from src.database.pool import get_async_db_connection
+
+    async with get_async_db_connection() as conn:
+        layers = await conn.fetchval("SELECT layers FROM user_mundiai_maps WHERE id = $1", test_map_id)
+    assert layer_id in layers and None not in layers
+
+    again = await auth_client.put(f"/api/maps/{test_map_id}/layer/{layer_id}")
+    assert again.status_code == 400

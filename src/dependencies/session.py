@@ -10,6 +10,7 @@ and test environments.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import uuid
@@ -19,6 +20,7 @@ from typing import Optional
 from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.exceptions import WebSocketException
 
+from src.dependencies.workos_session import load_session
 from src.services import workos_auth
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,13 @@ class UserContext(ABC):
     def get_org_role(self) -> str | None:
         """Return the user's role within the active org (owner/admin/member)."""
         return None
+
+    def for_partner(self, partner_id: str | None) -> "UserContext":
+        """This user acting for one organization (a project's, see src.services.project_partner): a copy of the same
+        class whose get_org_id() answers partner_id, so every reader downstream gets the project's partner."""
+        bound = copy.copy(self)
+        bound.get_org_id = lambda: partner_id  # type: ignore[method-assign]
+        return bound
 
 
 class WorkOSUserContext(UserContext):
@@ -218,6 +227,11 @@ def verify_session(session_required: bool = True):
             if ws_session is not None:
                 return await workos_context(ws_session)
             if session_required:
+                if request is not None and getattr(request.state, "workos_session_unavailable", False):
+                    # Not a sign-out: a 401 would send the page to the sign-in screen; the
+                    # cookie is kept and the next request checks it again.
+                    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                        detail="Could not check your sign-in just now; try again")
                 raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sign in required")
             return None
 
@@ -259,10 +273,17 @@ async def session_user_id(request: Request = None) -> str:
 # WebSocket authentication
 # ---------------------------------------------------------------------------
 
+WS_SESSION_REFRESH_NEEDED = 4401  # the same number is in frontendts/src/components/ProjectView.tsx
+
+
 async def verify_websocket(websocket: WebSocket) -> UserContext:
     """Authenticate WebSocket connections.
 
-    WorkOS mode: the sealed session cookie comes with the handshake.
+    WorkOS mode: the sealed session cookie comes with the handshake. The handshake
+    never refreshes an expired session: it cannot send the new cookie back, and the
+    refresh token is single-use, so the browser's next request carried a spent token
+    and was signed out. It closes with WS_SESSION_REFRESH_NEEDED instead; the page then
+    makes a normal request (which refreshes and sets the cookie) and reconnects.
     Legacy mode: allows all in edit mode, denies in view_only.
     """
     if workos_auth.selected():
@@ -270,8 +291,17 @@ async def verify_websocket(websocket: WebSocket) -> UserContext:
         if not workos_auth.enabled():
             logger.error("AUTH_PROVIDER=workos but WorkOS keys are missing; refusing WebSocket")
             raise WebSocketException(code=status.WS_1011_INTERNAL_ERROR)
+        cookie = websocket.cookies.get(workos_auth.COOKIE_NAME)
+        if not cookie:
+            logger.info("WS handshake without a WorkOS session cookie")
+            raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
         try:
-            ws_session = await asyncio.to_thread(workos_auth.load, websocket.cookies.get(workos_auth.COOKIE_NAME))
+            ws_session = await load_session(cookie, refresh=False)
+        except workos_auth.RefreshNeeded:
+            # A close code only reaches the page once the handshake is accepted
+            # (a refused handshake is an HTTP 403, seen there as 1006).
+            await websocket.accept()
+            raise WebSocketException(code=WS_SESSION_REFRESH_NEEDED, reason="session refresh needed")
         except Exception as e:  # noqa: BLE001 - WorkOS unreachable: retry later, not "unauthorised"
             logger.warning("WS WorkOS session check failed: %s", e)
             raise WebSocketException(code=1013)

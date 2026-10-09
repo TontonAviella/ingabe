@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextvars import ContextVar
 from typing import Optional
 
 import asyncpg
@@ -147,6 +148,11 @@ class AsyncDatabaseConnection:
             await self.conn.execute(
                 "SELECT set_config('app.role', $1, false)", self.role
             )
+        industry = _request_industry.get()
+        if industry:
+            await self.conn.execute(
+                "SELECT set_config('app.industry', $1, false)", industry
+            )
 
         return self.conn
 
@@ -161,7 +167,7 @@ class AsyncDatabaseConnection:
                 reset_ok = True
                 try:
                     await self.conn.execute(
-                        "RESET app.user_id; RESET app.partner_id; RESET app.role"
+                        "RESET app.user_id; RESET app.partner_id; RESET app.role; RESET app.industry"
                     )
                 except Exception:
                     reset_ok = False
@@ -181,6 +187,22 @@ class AsyncDatabaseConnection:
 # ---------------------------------------------------------------------------
 # Public convenience helpers
 # ---------------------------------------------------------------------------
+
+# The industry of the project the current request works for (set once per Sage turn or tool call). Every
+# connection opened while it is set carries it as app.industry, which Brain's row-level security reads, so no
+# individual query can forget it. Each asyncio task has its own copy, so turns never see each other's.
+_request_industry: ContextVar[Optional[str]] = ContextVar("request_industry", default=None)
+
+
+def set_request_industry(industry: Optional[str]) -> None:
+    """Scope every connection opened from now on in this task (and tasks it starts) to one industry."""
+    _request_industry.set(industry)
+
+
+def get_request_industry() -> Optional[str]:
+    """The industry set for the current request, or None outside a Sage turn or tool call."""
+    return _request_industry.get()
+
 
 def get_async_db_connection(
     user_id: Optional[str] = None,
@@ -258,6 +280,8 @@ def get_sync_db_connection(
                 cur.execute("SELECT set_config('app.partner_id', %s, false)", (partner_id,))
             if role:
                 cur.execute("SELECT set_config('app.role', %s, false)", (role,))
+            if _request_industry.get():
+                cur.execute("SELECT set_config('app.industry', %s, false)", (_request_industry.get(),))
             conn.commit()
         yield conn
     finally:

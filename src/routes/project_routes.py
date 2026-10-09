@@ -98,6 +98,8 @@ class ProjectResponse(BaseModel):
     created_on: str
     most_recent_version: Optional[MostRecentVersion] = None
     soft_deleted_at: Optional[datetime] = None
+    # The one industry the project belongs to: the app hides farm-only controls elsewhere (audit R1-28).
+    industry: str = "agriculture"
 
 
 class UserProjectsResponse(BaseModel):
@@ -148,7 +150,7 @@ async def list_user_projects(
 
         projects_data = await conn.fetch(
             """
-            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at
+            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at, p.industry
             FROM user_mundiai_projects p
             WHERE (
                 p.owner_uuid = $1 OR
@@ -216,6 +218,7 @@ async def list_user_projects(
                     created_on=created_on_str,
                     most_recent_version=most_recent_map_details,
                     soft_deleted_at=project_data["soft_deleted_at"],
+                    industry=project_data["industry"],
                 )
             )
 
@@ -357,6 +360,7 @@ async def get_project_route(
             maps=project.maps,
             created_on=created_on_str,
             most_recent_version=most_recent_map_details,
+            industry=project.industry,
         )
 
 
@@ -809,6 +813,7 @@ async def get_project_social_preview(
                     renderer="mbgl",
                     bgcolor="#ffffff",
                     style_json=style_json,
+                    frame_on_drone=True,
                 )
 
                 from PIL import Image, UnidentifiedImageError
@@ -1297,6 +1302,11 @@ async def upload_document_to_brain(
         s3_key = ""
 
     brain = get_brain_service()
+    # The document belongs to this project's industry (MundiProject.industry): Brain's row-level security
+    # labels it from app.industry and only shows it to that industry.
+    from src.database.pool import set_request_industry
+
+    set_request_industry(project.industry)
     async with get_async_db_connection(user_id=user_id) as conn:
         async with conn.transaction():
             await brain.put_page(

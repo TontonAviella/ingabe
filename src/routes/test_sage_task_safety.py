@@ -76,7 +76,7 @@ async def test_safe_chat_task_cancellation_clears_frontend_state(monkeypatch):
     assert error_messages == [
         "Sage stopped before finishing this request. Please try again.",
     ]
-    assert deleted_keys == ["chat_lock:123"]
+    assert deleted_keys == [message_routes.chat_lock_key(123)]
 
 
 @pytest.mark.asyncio
@@ -129,3 +129,36 @@ def test_a_result_without_its_call_is_dropped_and_whole_turns_are_untouched():
     ]
     paired = message_routes._pair_tool_results(history)
     assert paired == [history[0], history[1], history[3]]
+
+
+def test_only_the_newest_map_state_is_replayed():
+    history = [
+        {"role": "system", "content": "<MapState>old map</MapState>"},
+        {"role": "system", "content": "<CurrentAOI>old view</CurrentAOI>"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "system", "content": "<MapState>new map</MapState>"},
+        {"role": "system", "content": "<CurrentAOI>new view</CurrentAOI>"},
+        {"role": "system", "content": "<BrainContext>memory</BrainContext>"},
+        {"role": "user", "content": "second question"},
+    ]
+    kept = message_routes._latest_context_only(history)
+    assert [m["content"] for m in kept] == [
+        "first question", "first answer", "<MapState>new map</MapState>", "<CurrentAOI>new view</CurrentAOI>",
+        "<BrainContext>memory</BrainContext>", "second question"]
+
+
+def test_old_tool_results_are_shortened_and_this_turns_are_kept_whole():
+    big = "x" * 20_000
+    history = [
+        {"role": "user", "content": "rain?"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": big},
+        {"role": "assistant", "content": "58 mm."},
+        {"role": "user", "content": "and the forecast?"},
+        {"role": "assistant", "content": "", "tool_calls": [_call("b")]},
+        {"role": "tool", "tool_call_id": "b", "content": big},
+    ]
+    replayed = message_routes._shorten_old_tool_results(history)
+    assert len(replayed[2]["content"]) < 1_700 and "shortened" in replayed[2]["content"]
+    assert replayed[6]["content"] == big

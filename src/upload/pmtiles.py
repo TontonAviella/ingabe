@@ -221,6 +221,44 @@ async def generate_pmtiles_from_ogr_source(
         return pmtiles_key
 
 
+async def postgis_layer_pmtiles_key(layer_id: str) -> str:
+    """The S3 key of a PostGIS layer's PMTiles, generating and recording the file first if it has none."""
+    async with get_async_db_connection() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT metadata, postgis_connection_id, postgis_query, feature_count, owner_uuid, source_map_id
+            FROM map_layers
+            WHERE layer_id = $1
+            """,
+            layer_id,
+        )
+        if not row:
+            raise ValueError(f"Layer {layer_id} not found")
+        metadata = row["metadata"] or {}
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+        if metadata.get("pmtiles_key"):
+            return metadata["pmtiles_key"]
+
+        project_id = "unknown"
+        if row["source_map_id"]:
+            project_row = await conn.fetchrow(
+                "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
+                row["source_map_id"],
+            )
+            if project_row:
+                project_id = project_row["project_id"]
+
+    return await generate_pmtiles_for_postgis_layer(
+        layer_id,
+        row["postgis_connection_id"],
+        row["postgis_query"],
+        row["feature_count"] or 1,
+        str(row["owner_uuid"]),
+        project_id,
+    )
+
+
 async def generate_pmtiles_for_postgis_layer(
     layer_id: str,
     postgis_connection_id: str,

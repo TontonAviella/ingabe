@@ -18,6 +18,7 @@ import pytest
 
 from src.dependencies.sage_routing import (
     AGRICULTURE,
+    RASTER_OBJECT_CANDIDATES_TOOL,
     BRAIN,
     MAP_EDIT,
     SATELLITE,
@@ -1012,3 +1013,72 @@ def test_raster_fast_path_new_phrasings(msg: str, tool: str) -> None:
 def test_admin_fast_path_still_ignores_non_displays(msg: str) -> None:
     fast = build_fast_tool_call(msg)
     assert fast is None or fast.tool_name != "show_admin_boundary"
+
+
+# Asked for one unit "in" its parents: the parents travel with the request, so one unit is found,
+# not every unit of that name (2026-10-08: "Remera sector in Gasabo district" drew all 4 Remeras).
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ("show Remera sector in Gasabo district", {"admin_level": "sector", "name": "Remera", "district": "Gasabo"}),
+        ("show Remera sector of Gasabo", {"admin_level": "sector", "name": "Remera", "district": "Gasabo"}),
+        ("show Murambi cell in Rangiro sector", {"admin_level": "cell", "name": "Murambi", "sector": "Rangiro"}),
+        ("show Murambi cell in Gatsibo district", {"admin_level": "cell", "name": "Murambi", "district": "Gatsibo"}),
+        ("show Gasharu village in Ruganda cell", {"admin_level": "village", "name": "Gasharu", "cell": "Ruganda"}),
+        (
+            "show Gasharu village, Ruganda cell, Gatare sector, Nyamagabe district",
+            {"admin_level": "village", "name": "Gasharu", "cell": "Ruganda", "sector": "Gatare", "district": "Nyamagabe"},
+        ),
+        ("show Murambi in Rangiro sector", {"admin_level": "auto", "name": "Murambi", "sector": "Rangiro"}),
+        ("show Remera in Gasabo district", {"admin_level": "auto", "name": "Remera", "district": "Gasabo"}),
+        (
+            "show the cells of Busasamana sector in Nyanza district",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana", "district": "Nyanza"},
+        ),
+        (
+            "show the cells of Busasamana in Nyanza",
+            {"admin_level": "cell", "name": "*", "sector": "Busasamana", "district": "Nyanza"},
+        ),
+        # A parent no larger than the unit is not a parent.
+        ("show Remera sector in Kimironko cell", {"admin_level": "sector", "name": "Remera"}),
+        ("Nyereka umudugudu wa Gasharu", {"admin_level": "village", "name": "Gasharu"}),
+        # Some village names carry numbers.
+        (
+            "show Karambo Ya 1 village in Rusizi district",
+            {"admin_level": "village", "name": "Karambo Ya 1", "district": "Rusizi"},
+        ),
+    ],
+)
+def test_admin_fast_path_keeps_the_parents_of_one_unit(msg: str, expected: dict) -> None:
+    fast = build_fast_tool_call(msg)
+    assert fast is not None and fast.tool_name == "show_admin_boundary"
+    assert fast.arguments == expected
+
+
+@pytest.mark.parametrize("text", [
+    "count the plants in plot 42 of my drone photo",
+    "How many maize plants are in plot 175 on Farm_Orthophoto?",
+    "How many plots are on this photo and how big are they?",
+    "How is my crop doing on Farm_Orthophoto?",
+    "Which plots should I weed first?",
+])
+def test_plot_and_plant_questions_skip_the_fast_paths(text):
+    """They need the drone tools; the fast paths drew house masks or screening cells for them."""
+    assert build_fast_tool_call(text) is None
+
+
+def test_house_counts_on_a_drone_photo_still_take_the_fast_path():
+    call = build_fast_tool_call("count the houses in Farm_A_Orthophoto")
+    assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+@pytest.mark.parametrize("text", [
+    "How is the maize doing on Cyampirita_Orthophoto?",
+    "Count the plants in plot 175",
+    "Which plots should I weed first?",
+    "what's on this photo",
+])
+def test_drone_photo_questions_keep_the_drone_tools(text):
+    """Layer names join words with '_': 'Cyampirita_Orthophoto' did not match the drone keywords, so the drone
+    tools were filtered out and Sage answered a question about the photo from satellites only."""
+    assert USER_RASTER in classify_intent(text)

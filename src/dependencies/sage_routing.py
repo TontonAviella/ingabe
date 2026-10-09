@@ -158,6 +158,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_stress_zones": USER_RASTER,
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
+    "get_drone_photo_findings": USER_RASTER,
+    "count_plants_in_plot": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_raster_object_candidates": SPATIAL_INSIGHT,
@@ -341,12 +343,15 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({AGRICULTURE}),
     ),
-    # User-uploaded raster (drone ortho, custom COG)
+    # User-uploaded raster (drone ortho, custom COG). Layer names join words with "_" ("Cyampirita_Orthophoto"),
+    # so "ortho" and "drone" match inside a name; plots, plants and weeds are only seen on drone photos.
     (
         re.compile(
+            r"(?<![A-Za-z0-9])(?:ortho(?:photo|mosaic)?|drone)|"
             r"\b(my\s+(field|raster|cog|drone|ortho|image)|"
-            r"this\s+(raster|drone|ortho|image|cog)|"
-            r"uploaded|drone|ortho(photo|mosaic)?|tiff|geotiff|"
+            r"this\s+(raster|drone|ortho|image|cog|photo)|"
+            r"uploaded|tiff|geotiff|plots?|umurima|imirima|plants?|weed(?:s|ing|y)?|stand\s+count|"
+            r"what\s+is\s+growing|"
             r"stress\s+zone|pixel|histogram|distribution|"
             r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
@@ -550,6 +555,31 @@ def _is_admin_boundary_placeholder_name(value: str) -> bool:
     return not words or all(word in _ADMIN_PLACEHOLDER_NAMES for word in words)
 
 
+# Units a smaller unit can be asked "in", smallest first.
+_ADMIN_PARENT_LEVELS = ("cell", "sector", "district")
+_ADMIN_SIZE_ORDER = ("village", *_ADMIN_PARENT_LEVELS, "province")
+
+
+def _admin_parents(rest: str, level: str) -> dict[str, str]:
+    """Parents named after the requested unit, so one unit is asked for, not every unit of that name:
+    "in Gasabo district", ", Ruganda cell, Gatare sector", "of Gasabo" (a known district)."""
+    larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(level) + 1:]
+    parents: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?i)(?:\b(?:in|of|within|inside|under)\b|,)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9' -]*?)\s+(cell|sector|district)\b",
+        rest,
+    ):
+        parent_level = match.group(2).lower()
+        if parent_level in larger and parent_level not in parents:
+            parents[parent_level] = match.group(1).strip()
+    if "district" in larger and "district" not in parents:
+        for match in re.finditer(r"(?i)(?:\b(?:in|of)\b|,)\s+([A-Za-z'-]+)\b", rest):
+            if match.group(1).lower() in _DISTRICTS_LOWER:
+                parents["district"] = match.group(1)
+                break
+    return parents
+
+
 def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
@@ -571,7 +601,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         if parent_name:
             args: dict[str, object] = {"admin_level": child_level, "name": "*"}
             args[parent_level] = parent_name
-            return args
+            return {**args, **_admin_parents(prompt[child_match.end():], parent_level)}
 
     implicit_child_match = re.search(
         rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
@@ -584,6 +614,15 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     if implicit_child_match:
         child_level = implicit_child_match.group(1).lower().rstrip("s")
         parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
+        # "the cells of Busasamana in Nyanza": the district says which Busasamana.
+        in_district = re.match(r"(?i)^(.+?)\s+(?:in|,)\s+([A-Za-z'-]+)$", parent_name)
+        if in_district and in_district.group(2).lower() in _DISTRICTS_LOWER and child_level != "sector":
+            return {
+                "admin_level": child_level,
+                "name": "*",
+                {"cell": "sector", "village": "cell"}[child_level]: in_district.group(1).strip(),
+                "district": in_district.group(2),
+            }
         parent_level = (
             "district" if parent_name.lower() in _DISTRICTS_LOWER
             else {"sector": "district", "cell": "sector", "village": "cell"}.get(child_level)
@@ -597,6 +636,22 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
         if explicit:
             name = _clean_admin_boundary_candidate(explicit.group(1))
+            # "Murambi in Rangiro sector": the level word names the parent, not the unit.
+            inside = re.match(r"(?i)^(.+?)\s+(?:in|of|within|inside|under)\s+(.+)$", name)
+            if inside and level in _ADMIN_PARENT_LEVELS and not _is_admin_boundary_placeholder_name(inside.group(1)):
+                unit, unit_level = inside.group(1).strip(), "auto"
+                # "Remera sector in Kimironko cell": the unit says its own level.
+                own_level = re.match(r"(?i)^(.+?)\s+(village|cell|sector|district)$", unit)
+                if own_level:
+                    unit, unit_level = own_level.group(1).strip(), own_level.group(2).lower()
+                size = "village" if unit_level == "auto" else unit_level
+                larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(size) + 1:]
+                return {
+                    "admin_level": unit_level,
+                    "name": unit,
+                    **({level: inside.group(2).strip()} if level in larger else {}),
+                    **_admin_parents(prompt[explicit.end():], size),
+                }
             if name and not _is_admin_boundary_placeholder_name(name):
                 if level == "province" and name.lower() not in {
                     "kigali",
@@ -604,7 +659,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
                 }:
                     if not name.lower().endswith("province"):
                         name = f"{name} Province"
-                return {"admin_level": level, "name": name}
+                return {"admin_level": level, "name": name, **_admin_parents(prompt[explicit.end():], level)}
 
     simple = re.match(
         r"(?i)^(?:please\s+)?(?:again\s+)?"
@@ -1222,12 +1277,30 @@ def select_fast_raster_layer(question: str, rows: list) -> dict | None:
         return dict(rows[0])
     return None
 
+# Questions about the plots, plants and crops on a drone photo go to the model, which reads what the
+# question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
+# masks and cells cannot answer them: "count the plants in plot 42" used to draw house masks.
+_DRONE_PLOT_QUESTION = re.compile(
+    r"\b(plots?|umurima|imirima|stand\s+count|weed(?:s|ing|y)?|gaps?|per\s+hectare|"
+    r"(?:how\s+many|count(?:\s+the)?)\s+(?:\w+\s+)?plants|plants?\s+(?:per|in|on)\b|"
+    r"what\s+(?:is|'s)\s+growing|which\s+crops?|"
+    r"how\s+(?:is|are)\s+(?:my|the)\s+(?:crops?|maize|cassava|beans|bananas?|farm|field))\b",
+    re.IGNORECASE,
+)
+
+
+def is_drone_plot_question(text: str) -> bool:
+    return bool(_DRONE_PLOT_QUESTION.search(str(text or "")))
+
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     decision = choose_geospatial_evidence_path(text)
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
+    if is_drone_plot_question(text):
+        return None
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
     if (
