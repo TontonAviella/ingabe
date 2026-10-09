@@ -450,9 +450,10 @@ async def test_semantic_search_finds_a_small_industrys_notes_among_many_others()
         set_request_industry("telecom")
         async with get_async_db_connection(user_id=str(uuid.uuid4())) as conn:
             await conn.execute("SET enable_seqscan = off")  # the index plan, as on a large Brain
-            found = await BrainService().search_vector(conn, [1.0] + [0.0] * 767, limit=5)
+            found = await BrainService().search_vector(conn, [1.0] + [0.0] * 767, limit=50)
             await conn.execute("RESET enable_seqscan")
-        assert {r.slug for r in found} == set(masts)
+        # All of this run's masts (another run's leftovers may come back too; the old search found none of them)
+        assert set(masts) <= {r.slug for r in found}
     finally:
         set_request_industry(None)
         async with get_async_db_connection() as conn:
