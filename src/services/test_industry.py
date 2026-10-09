@@ -304,3 +304,27 @@ def test_other_industries_get_no_farm_instructions_and_no_forced_tool_after_an_h
     finally:
         set_request_industry(None)
     assert "<AgricultureCapabilities>" in farm_prompt  # agriculture unchanged
+
+
+@pytest.mark.anyio
+async def test_parcel_ndvi_reads_only_this_projects_parcels():
+    """ndvi_parcel_cache has every user's parcels and no owner column (audit round 2, critical)."""
+    from src.services.legacy_tool_shim import LegacyToolContext, execute_legacy_tool
+
+    owner = str(uuid.uuid4())
+    mine, theirs = f"L{RUN_TAG}pm"[:12], f"L{RUN_TAG}pt"[:12]
+    async with get_async_db_connection() as conn:
+        my_map = await _project(conn, owner, "agriculture", mine)
+        await _project(conn, str(uuid.uuid4()), "agriculture", theirs)
+        project_id = await conn.fetchval("SELECT project_id FROM user_mundiai_maps WHERE id = $1", my_map)
+        for layer, name in ((mine, f"my-field-{RUN_TAG}"), (theirs, f"their-field-{RUN_TAG}")):
+            await conn.execute("INSERT INTO ndvi_parcel_cache (parcel_id, parcel_name, layer_id, week_start, mean_ndvi, "
+                               "computed_at) VALUES ($1, $2, $3, CURRENT_DATE, 0.5, now())", f"{layer}-1", name, layer)
+        try:
+            result = await execute_legacy_tool("get_parcel_ndvi_stats", LegacyToolContext(
+                user_id=owner, partner_id="", conversation_id=0, map_id=my_map, project_id=project_id, conn=conn,
+                arguments={"parcel_name": f"field-{RUN_TAG}"}))
+            text = json.dumps(result, default=str)
+            assert f"my-field-{RUN_TAG}" in text and f"their-field-{RUN_TAG}" not in text
+        finally:
+            await conn.execute("DELETE FROM ndvi_parcel_cache WHERE layer_id = ANY($1::text[])", [mine, theirs])

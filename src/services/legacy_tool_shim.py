@@ -1239,7 +1239,13 @@ async def _handle_get_parcel_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any
             where.append(f"layer_id = ${idx}")
             params.append(layer)
             idx += 1
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        # The cache holds every user's parcels and has no owner column: read only parcels from layers on this
+        # project's maps (audit 2026-10-09, round 2). No project, no parcels.
+        where.append(f"layer_id IN (SELECT unnest(layers) FROM user_mundiai_maps WHERE project_id = ${idx} "
+                     "AND soft_deleted_at IS NULL)")
+        params.append(ctx.project_id or "")
+        idx += 1
+        where_sql = f"WHERE {' AND '.join(where)}"
 
         rows = await ctx.conn.fetch(
             f"SELECT parcel_id, parcel_name, layer_id, week_start, "
