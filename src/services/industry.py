@@ -215,6 +215,30 @@ async def save_industry(conn: Any, user_id: str, industry: str) -> bool:
     return status.endswith(" 1")
 
 
+COMPANY_ADMIN_ROLES = frozenset({"owner", "admin"})
+
+
+async def company_industry(conn: Any, org_id: Optional[str]) -> Optional[str]:
+    """The industry a company works in; None when there is no company or it has not chosen yet."""
+    if not org_id:
+        return None
+    value = await conn.fetchval("SELECT industry FROM organizations WHERE id::text = $1", org_id)
+    return value if value in INDUSTRIES else None
+
+
+async def save_company_industry(conn: Any, org_id: str, industry: str) -> bool:
+    """Set the company's industry (its owners and admins decide). ValueError for an unknown one."""
+    check_industry(industry)
+    status = await conn.execute("UPDATE organizations SET industry = $2 WHERE id::text = $1", org_id, industry)
+    return status.endswith(" 1")
+
+
+async def industry_for_new_project(conn: Any, user_id: Optional[str], org_id: Optional[str]) -> str:
+    """A new project's industry: its company's; the creator's own choice when the company has none yet (or there is
+    no company); agriculture until anyone chooses."""
+    return (await company_industry(conn, org_id) or await industry_of(conn, user_id) or DEFAULT_INDUSTRY)
+
+
 async def industry_of_project(conn: Any, project_id: Optional[str]) -> Optional[str]:
     """The project's industry; None when the project cannot be found (callers fail closed)."""
     if not project_id:

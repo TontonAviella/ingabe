@@ -259,19 +259,18 @@ async def create_map(
     async with get_async_db_connection() as conn:
         async with conn.transaction():
             # First create a project
-            # A project belongs to one industry: its creator's (agriculture until they choose).
+            # A project belongs to one industry: its company's, else its creator's (agriculture until chosen).
             await conn.execute(
                 """
                 INSERT INTO user_mundiai_projects
                 (id, owner_uuid, maps, title, industry, partner_id)
-                VALUES ($1, $2, ARRAY[$3], $4,
-                        COALESCE((SELECT industry FROM users WHERE internal_uuid = ($2::uuid)::text), 'agriculture'),
-                        $5::uuid)
+                VALUES ($1, $2, ARRAY[$3], $4, $5, $6::uuid)
                 """,
                 project_id,
                 owner_id,
                 map_id,
                 map_request.title,
+                await industry.industry_for_new_project(conn, owner_id, session.get_org_id()),
                 session.get_org_id(),  # the organization it acts for (src.services.project_partner)
             )
 
