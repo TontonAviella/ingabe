@@ -64,7 +64,8 @@ from src.services.life_harness import (
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage, llm_cache
+from src.services import data_coverage, industry, llm_cache
+from src.database.pool import set_request_industry
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -2196,6 +2197,13 @@ async def process_chat_interaction_task(
     client_turn_id: str | None = None,
     user_message_id: str | None = None,
 ):
+    # Everything this turn does follows the project's industry: the tools Sage is
+    # offered and may run, and (through app.industry on every connection) which
+    # Brain notes it can read or write. See src/services/industry.py.
+    async with async_conn("turn.project_industry") as _ind_conn:
+        project_industry = await industry.industry_of_map(_ind_conn, map_id)
+    set_request_industry(project_industry)
+
     # Hermes handles complex requests only after deterministic fast paths have
     # had the first chance to answer. This keeps admin lookups and raster/FastSAM
     # work fast, bounded, and independent of agent planning quality.
@@ -2452,7 +2460,8 @@ async def process_chat_interaction_task(
 
             client = get_openai_client(request)
 
-            tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
+            tools_payload = industry.tools_for(build_sage_tools_payload(pydantic_tool_calls, layer_enum),
+                                               project_industry)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -2512,6 +2521,9 @@ async def process_chat_interaction_task(
                     len(_last_user_text),
                 )
 
+            _industry_note = industry.prompt_note(project_industry)
+            if _industry_note and not _routing.is_small_talk:
+                _system_prompt_content = f"{_system_prompt_content}\n\n{_industry_note}"
             _llm_messages = [
                 {
                     "role": "system",
@@ -2985,7 +2997,9 @@ async def process_chat_interaction_task(
                     _recent_tool_signatures.append(
                         life_harness_tool_signature(function_name, tool_args)
                     )
-                    tool_result = repeated_life_harness_tool_error(
+                    tool_result = industry.tool_refusal(
+                        function_name, project_industry
+                    ) or repeated_life_harness_tool_error(
                         _recent_tool_signatures
                     ) or validate_life_harness_tool_args(
                         function_name,

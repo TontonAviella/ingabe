@@ -28,6 +28,7 @@ import rasterio
 from rasterio.enums import Resampling
 
 from src.services.grvi import LOW_GREEN, grvi, grvi_verdict
+from src.services import industry
 from src.services.h3_admin_index import admin_units_for_hexagon
 from src.services.insurance_engine import resolve_audience
 from src.structures import get_async_db_connection
@@ -308,9 +309,15 @@ async def post_first_look(layer_id: str, map_id: str, user_id: str, partner_id: 
                           conversation_id: int, wait_s: int = 600) -> Optional[str]:
     """Background task after the COG step: post the first look into the chat. Returns the text, or None.
 
-    Never raises: a failed first look must not disturb the upload.
+    Never raises: a failed first look must not disturb the upload. Only agriculture projects get it (it talks
+    about green cover and plots); other industries get their own when it is built.
     """
     try:
+        async with get_async_db_connection() as conn:
+            project_industry = await industry.industry_of_map(conn, map_id)
+        if not industry.serves("drone_first_look", project_industry):
+            logger.info("first look skipped for %s: %s project", layer_id, project_industry)
+            return None
         layer = None
         for _ in range(max(1, wait_s // 15)):
             async with get_async_db_connection() as conn:

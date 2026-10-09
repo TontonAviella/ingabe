@@ -22,6 +22,7 @@ from src.services import (
     drone_vision,
     farm_records,
     field_checks,
+    industry,
     photo_context,
     photo_plots,
 )
@@ -31,7 +32,19 @@ from src.utils import get_async_s3_client, get_bucket_name
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+
+
+async def _agriculture_project(layer_id: str) -> None:
+    """The cards (plots, crops, bare ground, the crop survey) are an agriculture capability: a photo in a Power Grid
+    or Telecom project gets a 404 (the panel shows nothing; 409 already means "still processing, ask again")."""
+    async with async_read_conn("drone_cards.industry") as conn:
+        project_industry = await industry.industry_of_layer(conn, layer_id)
+    if not industry.serves("drone_cards", project_industry):
+        label = industry.INDUSTRIES[project_industry]["label"]
+        raise HTTPException(404, f"No question cards here: they are for farm photos, and this project is {label}.")
+
+
+router = APIRouter(dependencies=[Depends(_agriculture_project)])
 
 
 

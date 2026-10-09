@@ -245,6 +245,18 @@ async def tool_call(
         conversation_id_int, user_id=payload.user_id,
     )
 
+    # The project's industry decides which tools may run and which Brain notes
+    # the call can see (app.industry on every connection it opens).
+    from src.database.pool import async_conn, set_request_industry
+    from src.services import industry
+
+    async with async_conn("tool_call.project_industry") as ind_conn:
+        project_industry = await industry.industry_of_project(ind_conn, project_id)
+    set_request_industry(project_industry)
+    refusal = industry.tool_refusal(payload.tool_name, project_industry)
+    if refusal:
+        return {"result": refusal}
+
     # Parse tool-specific arguments (modern path only). Validation failure is
     # a CALLER error (200 with status=error in the result body), not a 4xx —
     # Hermes still wants to feed an error string back to the LLM so it can

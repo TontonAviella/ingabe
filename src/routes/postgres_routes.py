@@ -259,11 +259,13 @@ async def create_map(
     async with get_async_db_connection() as conn:
         async with conn.transaction():
             # First create a project
+            # A project belongs to one industry: its creator's (agriculture until they choose).
             await conn.execute(
                 """
                 INSERT INTO user_mundiai_projects
-                (id, owner_uuid, maps, title)
-                VALUES ($1, $2, ARRAY[$3], $4)
+                (id, owner_uuid, maps, title, industry)
+                VALUES ($1, $2, ARRAY[$3], $4,
+                        COALESCE((SELECT industry FROM users WHERE internal_uuid = ($2::uuid)::text), 'agriculture'))
                 """,
                 project_id,
                 owner_id,
