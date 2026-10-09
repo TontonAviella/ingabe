@@ -10,6 +10,7 @@ export type IndustryKey = 'agriculture' | 'power_grid' | 'telecom';
 
 export interface IndustryState {
   industry: IndustryKey | null;
+  can_choose: boolean; // false without an account row (legacy single-user mode): nothing to ask
   options: { key: IndustryKey; label: string; note: string }[];
 }
 
@@ -44,7 +45,7 @@ export function IndustryGate() {
     return () => window.removeEventListener(OPEN_INDUSTRY_PICKER, open);
   }, []);
 
-  if (!data || (data.industry !== null && !reopened)) return null;
+  if (!data || !data.can_choose || (data.industry !== null && !reopened)) return null;
   return (
     <Suspense fallback={<div className="fixed inset-0 z-[10000] bg-[#0B0908]" />}>
       <IndustryPicker data={data} onClose={() => setReopened(false)} />

@@ -68,7 +68,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look, photo_content
+from src.services import drone_first_look, industry, photo_content
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -1879,14 +1879,17 @@ async def complete_layer_upload(
             )
             try:
                 async with get_async_db_connection() as conn:
-                    first_look_conversation = await drone_first_look.conversation_for_upload(
-                        conn, mundi_map.project_id, user_id, body.conversation_id,
-                        f"Drone image: {result.first_layer_name or layer_name}",
+                    # The first look is a farm capability: other industries get no empty "Drone image" chat (R1-29).
+                    if industry.serves("drone_first_look", await industry.industry_of_project(conn, mundi_map.project_id)):
+                        first_look_conversation = await drone_first_look.conversation_for_upload(
+                            conn, mundi_map.project_id, user_id, body.conversation_id,
+                            f"Drone image: {result.first_layer_name or layer_name}",
+                        )
+                if first_look_conversation is not None:
+                    background_tasks.add_task(
+                        drone_first_look.post_first_look,
+                        primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
                     )
-                background_tasks.add_task(
-                    drone_first_look.post_first_look,
-                    primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
-                )
             except Exception:  # noqa: BLE001 - the upload succeeded; only the automatic summary is skipped
                 logger.exception("first look not scheduled for %s", primary_id)
 

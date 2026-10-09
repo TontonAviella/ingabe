@@ -30,6 +30,7 @@ async def test_get_industry_lists_the_three_industries(auth_client):
     assert body["industry"] in {None, "agriculture", "power_grid", "telecom"}
     assert [o["key"] for o in body["options"]] == ["agriculture", "power_grid", "telecom"]
     assert all(o["label"] and o["note"] for o in body["options"])
+    assert isinstance(body["can_choose"], bool)  # false without an account row: the app does not ask (R1-30)
 
 
 @pytest.mark.anyio

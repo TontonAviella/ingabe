@@ -66,8 +66,11 @@ class IndustryUpdate(BaseModel):
 
 
 async def _industry_payload(conn, session: UserContext) -> dict:
+    user_id = session.get_user_id()
     return {
-        "industry": await industry.industry_of(conn, session.get_user_id()),
+        "industry": await industry.industry_of(conn, user_id),
+        # Only an account row can keep a choice (the legacy single-user mode has none): the app asks only then.
+        "can_choose": bool(user_id) and await conn.fetchval("SELECT 1 FROM users WHERE internal_uuid = $1", user_id) is not None,
         "options": [{"key": k, **v} for k, v in industry.INDUSTRIES.items()],
     }
 
