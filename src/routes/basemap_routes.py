@@ -1,5 +1,8 @@
 import datetime
 import logging
+import math
+
+import aiohttp
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, status, Depends, Query
@@ -122,3 +125,70 @@ async def render_basemap(
         logger.warning("Unexpected error caching basemap thumbnail: %s", e)
 
     return response
+
+
+# --- 3D terrain -----------------------------------------------------------------------
+# Elevation tiles for MapLibre's 3D terrain (terrarium encoding: height = R*256 + G + B/256 - 32768 m).
+# Source: AWS Open Data "Terrain Tiles" (Mapzen; SRTM, GMTED, ETOPO...), free, no key. Each tile is fetched
+# once and kept in object storage, so everyone after the first viewer gets it from us. Tiles over Rwanda and its
+# neighbours are kept; tiles elsewhere are passed through without keeping, so the store cannot grow worldwide.
+
+TERRAIN_SOURCE = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+TERRAIN_MAX_ZOOM = 15
+_TERRAIN_PREFIX = "terrain/terrarium/v1"
+_KEEP_REGION = (28.0, -4.0, 32.0, 0.0)  # west, south, east, north: Rwanda with a margin
+_TERRAIN_HEADERS = {"Cache-Control": "public, max-age=31536000, immutable"}  # wsgi CacheControl sets the same
+
+
+def _tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
+    n = 2**z
+
+    def lat(row: int) -> float:
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / n))))
+
+    return x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)
+
+
+def keeps_terrain_tile(z: int, x: int, y: int) -> bool:
+    west, south, east, north = _tile_bounds(z, x, y)
+    kw, ks, ke, kn = _KEEP_REGION
+    return west < ke and east > kw and south < kn and north > ks
+
+
+async def fetch_terrain_tile(z: int, x: int, y: int) -> bytes:
+    """The tile from the source; 502 when the source fails."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            async with session.get(TERRAIN_SOURCE.format(z=z, x=x, y=y)) as upstream:
+                if upstream.status == 200:
+                    return await upstream.read()
+                logger.warning("terrain source answered %s for %s/%s/%s", upstream.status, z, x, y)
+    except aiohttp.ClientError as e:
+        logger.warning("terrain tile fetch failed for %s/%s/%s: %s", z, x, y, e)
+    raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Terrain source unavailable")
+
+
+@basemap_router.get("/terrain/{z}/{x}/{y}.png", operation_id="get_terrain_tile")
+async def get_terrain_tile(z: int, x: int, y: int):
+    """One elevation tile for 3D terrain, from our store or fetched once from AWS Open Data."""
+    if not (0 <= z <= TERRAIN_MAX_ZOOM and 0 <= x < 2**z and 0 <= y < 2**z):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No terrain tile there")
+    key = f"{_TERRAIN_PREFIX}/{z}/{x}/{y}.png"
+    keep = keeps_terrain_tile(z, x, y)
+    s3 = await get_async_s3_client()
+    bucket = get_bucket_name()
+    if keep:
+        try:
+            kept = await s3.get_object(Bucket=bucket, Key=key)
+            async with kept["Body"] as body:
+                return Response(content=await body.read(), media_type="image/png", headers=_TERRAIN_HEADERS)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code", "") not in ("404", "NoSuchKey"):
+                logger.warning("terrain tile read failed for %s: %s", key, e)
+    tile = await fetch_terrain_tile(z, x, y)
+    if keep:
+        try:
+            await s3.put_object(Bucket=bucket, Key=key, Body=tile, ContentType="image/png")
+        except Exception as e:  # noqa: BLE001 - keeping is a saving, never a reason to fail the tile
+            logger.warning("terrain tile write failed for %s: %s", key, e)
+    return Response(content=tile, media_type="image/png", headers=_TERRAIN_HEADERS)

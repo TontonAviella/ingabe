@@ -23,7 +23,7 @@ from src.dependencies.session import (
     verify_session_optional,
     UserContext,
 )
-from typing import List, Optional
+from typing import Any, List, Optional
 import logging
 from fastapi import File, UploadFile, Form
 from src.dependencies.redis_client import get_redis_client
@@ -68,7 +68,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look
+from src.services import drone_first_look, photo_content
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -1413,30 +1413,45 @@ async def _try_reuse_existing_cog(layer_id: str) -> bool:
             except Exception:
                 continue
 
-            current_meta["cog_key"] = cog_key
-            current_meta["cog_srs"] = metadata.get("cog_srs") or "EPSG:3857"
-            current_meta["cog_source"] = "reused_existing"
-            current_meta["reused_cog_from_layer_id"] = candidate["layer_id"]
-            current_meta["cog_status"] = "ready"
-            current_meta["cog_status_detail"] = "Reused existing optimized raster tiles"
-            current_meta["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
-            current_meta.pop("cog_error", None)
-            await conn.execute(
-                "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
-                json.dumps(current_meta),
-                layer_id,
-            )
-            await tile_cache.invalidate_layer(layer_id)
+            extra = {"reused_cog_from_layer_id": candidate["layer_id"]}
+            if metadata.get("content_sha256"):
+                extra["content_sha256"] = metadata["content_sha256"]
+            await _point_layer_at_cog(conn, layer_id, cog_key, metadata.get("cog_srs") or "EPSG:3857",
+                                      "reused_existing", extra)
             logger.info(
                 "Background COG: reused existing COG %s for %s from %s",
                 cog_key,
                 layer_id,
                 candidate["layer_id"],
             )
-            await _prewarm_raster_tiles_after_cog(layer_id, cog_key, current_meta, current["bounds"])
             return True
 
     return False
+
+
+async def _point_layer_at_cog(conn, layer_id: str, cog_key: str, cog_srs: str | None, source: str,
+                              extra: dict[str, Any]) -> None:
+    """Make a layer use an optimised photo that already exists. Plots, surveys and spots are kept per optimised
+    photo (photo_plots.photo_key), so the layer gets every analysis already made for it at no cost."""
+    row = await conn.fetchrow("SELECT metadata, bounds FROM map_layers WHERE layer_id = $1", layer_id)
+    metadata = (row["metadata"] if row else None) or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    metadata.update(extra)
+    metadata["cog_key"] = cog_key
+    metadata["cog_srs"] = cog_srs or "EPSG:3857"
+    metadata["cog_source"] = source
+    metadata["cog_status"] = "ready"
+    metadata["cog_status_detail"] = "Reused existing optimized raster tiles"
+    metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
+    metadata.pop("cog_error", None)
+    await conn.execute(
+        "UPDATE map_layers SET metadata = $1, last_edited = CURRENT_TIMESTAMP WHERE layer_id = $2",
+        json.dumps(metadata),
+        layer_id,
+    )
+    await tile_cache.invalidate_layer(layer_id)
+    await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
 
 
 async def _background_generate_cog(
@@ -1497,6 +1512,20 @@ async def _background_generate_cog(
             )
             await s3.download_file(bucket_name, s3_key, local_input)
             logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
+
+        # Same bytes uploaded before (any name, any partner): share that optimised photo and all its analyses.
+        content_sha = await asyncio.to_thread(photo_content.file_sha256, local_input)
+        same = await photo_content.find(s3, bucket_name, content_sha, target_srs)
+        if same:
+            async with get_async_db_connection() as conn:
+                await _point_layer_at_cog(conn, layer_id, same["cog_key"], same.get("cog_srs"), "same_content",
+                                          {"content_sha256": content_sha})
+            logger.info("Background COG: %s has the same content as %s; reusing it", layer_id, same["cog_key"])
+            capture_backend_event(
+                "backend_cog_generation_completed",
+                properties={"layer_id": layer_id, "duration_ms": elapsed_ms(started_at), "cog_source": "same_content"},
+            )
+            return
         source_epsg = _raster_epsg(local_input)
 
         # Fast path: already a COG. Server-side copy to canonical key, skip gdalwarp.
@@ -1515,6 +1544,7 @@ async def _background_generate_cog(
                     import json as _json
                     metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
                 metadata["cog_key"] = cog_key
+                metadata["content_sha256"] = content_sha
                 metadata["cog_source"] = "client_provided"
                 metadata["cog_status"] = "ready"
                 metadata["cog_status_detail"] = "Optimized raster tiles ready"
@@ -1527,6 +1557,7 @@ async def _background_generate_cog(
                     json.dumps(metadata), layer_id,
                 )
             await tile_cache.invalidate_layer(layer_id)
+            await photo_content.remember(s3, bucket_name, content_sha, target_srs, cog_key, metadata.get("cog_srs"))
             logger.info("Background COG fast-path complete for %s", layer_id)
             await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
             capture_backend_event(
@@ -1606,6 +1637,7 @@ async def _background_generate_cog(
                 import json as _json
                 metadata = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"])
             metadata["cog_key"] = cog_key
+            metadata["content_sha256"] = content_sha
             metadata["cog_status"] = "ready"
             metadata["cog_status_detail"] = "Optimized raster tiles ready"
             metadata["cog_status_updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1617,6 +1649,7 @@ async def _background_generate_cog(
                 json.dumps(metadata), layer_id,
             )
         await tile_cache.invalidate_layer(layer_id)
+        await photo_content.remember(s3, bucket_name, content_sha, target_srs, cog_key, metadata.get("cog_srs"))
         logger.info("Background COG uploaded for %s -> %s", layer_id, cog_key)
         await _prewarm_raster_tiles_after_cog(layer_id, cog_key, metadata, row["bounds"] if row else None)
         capture_backend_event(
@@ -2417,24 +2450,6 @@ async def remove_layer_from_map(
                 except Exception:
                     layer_metadata = None
 
-            # Clean up all S3 objects associated with this layer
-            s3_keys_to_delete = []
-            if layer_metadata and isinstance(layer_metadata, dict):
-                for key_name in ("pmtiles_key", "s3_key", "cog_key"):
-                    key_val = layer_metadata.get(key_name)
-                    if key_val:
-                        s3_keys_to_delete.append(key_val)
-
-            if s3_keys_to_delete:
-                try:
-                    s3 = await get_async_s3_client()
-                    bucket = get_bucket_name()
-                    for s3_key in s3_keys_to_delete:
-                        await s3.delete_object(Bucket=bucket, Key=s3_key)
-                        logger.info("Cleaned up S3 object: %s", s3_key)
-                except Exception as e:
-                    logger.warning("Failed to clean up S3 objects for layer %s: %s", layer_id, e)
-
             # Invalidate Redis tile cache (raster + MVT)
             try:
                 deleted_tiles = await tile_cache.invalidate_layer(layer_id)
@@ -2466,6 +2481,21 @@ async def remove_layer_from_map(
                     layer_id,
                 )
                 logger.info("Deleted orphaned map_layers row for layer %s", layer_id)
+                # Files go with the row: earlier versions of this map still show the layer while the row exists.
+                # The optimised photo (cog_key) is never deleted here: copies and identical uploads share it.
+                s3_keys_to_delete = [
+                    layer_metadata[key_name]
+                    for key_name in ("pmtiles_key", "s3_key")
+                    if isinstance(layer_metadata, dict) and layer_metadata.get(key_name)
+                ]
+                try:
+                    s3 = await get_async_s3_client()
+                    bucket = get_bucket_name()
+                    for s3_key in s3_keys_to_delete:
+                        await s3.delete_object(Bucket=bucket, Key=s3_key)
+                        logger.info("Cleaned up S3 object: %s", s3_key)
+                except Exception as e:
+                    logger.warning("Failed to clean up S3 objects for layer %s: %s", layer_id, e)
 
             # Remove the layer from the child map's layers array
             updated_layers = [lid for lid in forked_map.layers if lid != layer_id]

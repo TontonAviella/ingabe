@@ -102,8 +102,8 @@ export default function MapsList() {
   };
 
   return (
-    <div className="w-full flex flex-col gap-6 p-6 min-w-xl">
-      <div className="flex items-center justify-between relative">
+    <div className="w-full min-w-0 flex flex-col gap-6 p-4 sm:p-6 sm:min-w-xl">
+      <div className="flex flex-wrap items-center justify-between gap-3 sm:flex-nowrap sm:relative">
         <div className="flex items-center gap-3">
           <div className="flex flex-row items-center gap-2">
             <Checkbox
@@ -116,8 +116,9 @@ export default function MapsList() {
           </div>
         </div>
 
-        <div className="absolute left-1/2 transform -translate-x-1/2">
-          <h1 className="text-2xl font-bold">
+        {/* Phones: the title takes its own line above the controls; wider screens: centred between them. */}
+        <div className="order-first w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2">
+          <h1 className="text-xl sm:text-2xl font-bold">
             {showDeleted ? 'Recently Deleted Maps' : 'Your Maps'} <span className="text-gray-400">({totalItems} projects)</span>
           </h1>
         </div>
