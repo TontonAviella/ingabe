@@ -10,6 +10,7 @@ and test environments.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 import uuid
@@ -47,6 +48,13 @@ class UserContext(ABC):
     def get_org_role(self) -> str | None:
         """Return the user's role within the active org (owner/admin/member)."""
         return None
+
+    def for_partner(self, partner_id: str | None) -> "UserContext":
+        """This user acting for one organization (a project's, see src.services.project_partner): a copy of the same
+        class whose get_org_id() answers partner_id, so every reader downstream gets the project's partner."""
+        bound = copy.copy(self)
+        bound.get_org_id = lambda: partner_id  # type: ignore[method-assign]
+        return bound
 
 
 class WorkOSUserContext(UserContext):

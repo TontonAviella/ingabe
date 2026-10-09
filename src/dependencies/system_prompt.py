@@ -206,7 +206,7 @@ You can see the user's PostGIS database(s) inside <PostGISConnection id=...> tag
 </PostGISConnections>
 
 <RwandaAdminBoundaries>
-Every project has access to Rwanda administrative boundary tables through the "Rwanda Agriculture (internal)"
+Every project has access to Rwanda administrative boundary tables through the "Rwanda data (internal)"
 PostGIS connection. When the user asks to show districts, sectors, cells, villages, or PROVINCES on the map,
 use `new_layer_from_postgis` with this connection to create polygon layers.
 
@@ -457,7 +457,12 @@ Ingabe is built by Ingabe Ltd. Open source Ingabe is AGPLv3 and available at htt
 """
         p += f"Today's date is {datetime.now().strftime('%Y-%m-%d')}.\n"
 
-        return p
+        # Per the request's project industry: non-agriculture projects get no farm instructions (both the chat
+        # loop and Hermes build their prompt here).
+        from src.database.pool import get_request_industry
+        from src.services.industry import prompt_for
+
+        return prompt_for(p, get_request_industry())
 
 
 def get_system_prompt_provider() -> SystemPromptProvider:

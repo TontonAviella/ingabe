@@ -383,12 +383,13 @@ async def get_layer_render_status(
             "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
         }
 
+    # No cog_key here: this route is public (shared project links poll it), and since identical uploads share an
+    # optimised photo the key would name another uploader's object (audit R1-22).
     return {
         "ready": True,
         "status": "ready",
         "type": layer_type,
         "optimized_ready": True,
-        "cog_key": cog_key,
         "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
         "minzoom": raster_source_minzoom(metadata, row["bounds"]),
     }

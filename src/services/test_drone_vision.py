@@ -120,3 +120,22 @@ def test_a_kept_survey_round_trips():
     survey = drone_vision.Survey(looks={1: look}, plots=1, model="openai/gpt-6-luna",
                                  done_at="2026-10-06T17:00:00+00:00", cost_usd=0.0002)
     assert drone_vision._from_json(drone_vision._to_json(survey)) == survey
+
+
+def test_references_and_surveys_never_cross_partners():
+    """A partner's checked squares steer only that partner's surveys (audit R1-8)."""
+    import asyncio
+
+    from src.services.test_farm_records import _FakeS3
+
+    s3 = _FakeS3()
+    a, b = drone_vision.reference_scope("org-a-id", "u1"), drone_vision.reference_scope("org-b-id", "u2")
+    assert a != b and drone_vision.reference_scope(None, "u3") == "user-u3"
+    asyncio.run(drone_vision.add_reference(s3, "bkt", a, "maize", b"\xff\xd8 a's square", "checked in the field"))
+    assert [r.crop for r in asyncio.run(drone_vision.load_references(s3, "bkt", a))] == ["maize"]
+    assert asyncio.run(drone_vision.load_references(s3, "bkt", b)) == []
+
+    class Plots:
+        source, found_at = "found", "t"
+
+    assert drone_vision.survey_key("cog/x.tif", Plots(), a) != drone_vision.survey_key("cog/x.tif", Plots(), b)

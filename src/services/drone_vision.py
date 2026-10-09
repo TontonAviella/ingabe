@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import re
 import io
 import json
 import logging
@@ -56,7 +57,7 @@ EFFORT = "high"  # reasoning effort; "low" named the crop right half as often on
 CONCURRENT_LOOKS = 8
 MAX_FAILED_SHARE = 0.3  # more failed looks than this and the survey counts as failed
 _STORE_PREFIX = "drone_vision/v2"
-REFS_PREFIX = "drone_vision/refs/v1"  # reference squares of checked crops, shared by every photo
+REFS_PREFIX = "drone_vision/refs/v2"  # reference squares of checked crops, one set per partner (or user)
 MAX_REFS_PER_CROP = 1
 
 CROPS = ["maize", "beans", "cassava", "banana", "sorghum", "rice", "irish_potato", "sweet_potato", "soybean",
@@ -383,10 +384,17 @@ async def survey(cog_url: str, plots: drone_plots.PlotSet, place: Optional[str],
 
 # --- Reference squares of checked crops ------------------------------------------------------
 
-async def load_references(s3: Any, bucket: str) -> list[Reference]:
-    """The reference squares kept for the second look (at most MAX_REFS_PER_CROP a crop), newest first."""
+def reference_scope(org_id: Optional[str], user_id: Optional[str]) -> str:
+    """Whose reference squares a survey uses: the partner's, else the user's own. References are pieces of a
+    partner's photos and steer the second look, so they never cross partners (audit 2026-10-09, R1-8)."""
+    raw = f"org-{org_id}" if org_id else f"user-{user_id or 'anonymous'}"
+    return re.sub(r"[^A-Za-z0-9_-]", "-", raw)
+
+
+async def load_references(s3: Any, bucket: str, scope: str) -> list[Reference]:
+    """This scope's reference squares for the second look (at most MAX_REFS_PER_CROP a crop), newest first."""
     try:
-        response = await s3.get_object(Bucket=bucket, Key=f"{REFS_PREFIX}/index.json")
+        response = await s3.get_object(Bucket=bucket, Key=f"{REFS_PREFIX}/{scope}/index.json")
     except s3.exceptions.NoSuchKey:
         return []
     async with response["Body"] as body:
@@ -401,21 +409,21 @@ async def load_references(s3: Any, bucket: str) -> list[Reference]:
     return refs
 
 
-async def add_reference(s3: Any, bucket: str, crop: str, picture: bytes, source: str) -> None:
-    """Keep a checked square as a reference (newest first); older ones of the same crop stay in the index."""
+async def add_reference(s3: Any, bucket: str, scope: str, crop: str, picture: bytes, source: str) -> None:
+    """Keep a checked square as one of this scope's references (newest first); older ones stay in the index."""
     if crop not in CROPS or crop in ("unsure", "other"):
         return
-    key = f"{REFS_PREFIX}/{crop}-{hashlib.sha256(picture).hexdigest()[:16]}.jpg"
+    key = f"{REFS_PREFIX}/{scope}/{crop}-{hashlib.sha256(picture).hexdigest()[:16]}.jpg"
     await s3.put_object(Bucket=bucket, Key=key, Body=picture, ContentType="image/jpeg")
     try:
-        response = await s3.get_object(Bucket=bucket, Key=f"{REFS_PREFIX}/index.json")
+        response = await s3.get_object(Bucket=bucket, Key=f"{REFS_PREFIX}/{scope}/index.json")
         async with response["Body"] as body:
             index = json.loads(await body.read())
     except s3.exceptions.NoSuchKey:
         index = []
     index = [{"crop": crop, "key": key, "source": source,
               "added_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}] + [e for e in index if e["key"] != key]
-    await s3.put_object(Bucket=bucket, Key=f"{REFS_PREFIX}/index.json", Body=json.dumps(index).encode(),
+    await s3.put_object(Bucket=bucket, Key=f"{REFS_PREFIX}/{scope}/index.json", Body=json.dumps(index).encode(),
                         ContentType="application/json")
 
 
@@ -424,9 +432,10 @@ async def add_reference(s3: Any, bucket: str, crop: str, picture: bytes, source:
 _surveys: dict[str, Survey] = {}
 
 
-def survey_key(photo_key: str, plots: drone_plots.PlotSet) -> str:
-    """One survey per photo, plot set, model and way of looking (the store prefix's version)."""
-    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}"
+def survey_key(photo_key: str, plots: drone_plots.PlotSet, scope: str) -> str:
+    """One survey per photo, plot set, model, way of looking (the store prefix's version) and reference scope:
+    the second look is judged against the scope's references, so partners never share a survey run on another's."""
+    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}|{scope}"
 
 
 def _store_key(key: str) -> str:
@@ -463,11 +472,11 @@ def job(key: str) -> Optional[background_jobs.Job]:
 
 
 def start_survey(s3: Any, bucket: str, key: str, cog_url: str, plots: drone_plots.PlotSet,
-                 place: Optional[str]) -> background_jobs.Job:
+                 place: Optional[str], scope: str) -> background_jobs.Job:
     """Look at every plot in the background, once; the running or failed job is returned."""
 
     async def work(progress: background_jobs.Progress) -> None:
-        result = await survey(cog_url, plots, place, progress, await load_references(s3, bucket))
+        result = await survey(cog_url, plots, place, progress, await load_references(s3, bucket, scope))
         await s3.put_object(Bucket=bucket, Key=_store_key(key), Body=_to_json(result), ContentType="application/json")
         _surveys[key] = result
         logger.info("vision survey of %d plots for %s: %d looks, $%.4f", result.plots, key, len(result.looks),

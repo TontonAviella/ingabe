@@ -360,6 +360,11 @@ def _normalized_rgb_uint8(r: Any, g: Any, b: Any) -> Any:
     )
 
 
+def normalize_targets(target_classes: list[str]) -> list[str]:
+    """The canonical object classes for a request's target words (public: tools use it to rewrite targets)."""
+    return _normalize_targets(target_classes)
+
+
 def _normalize_targets(target_classes: list[str]) -> list[str]:
     aliases = {
         "houses": "building",

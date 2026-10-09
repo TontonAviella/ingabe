@@ -31,6 +31,13 @@ from src.tools.pyd import tool_from as tool_from_pyd
 logger = logging.getLogger(__name__)
 
 
+def _small_talk_prompt() -> str:
+    from src.database.pool import get_request_industry
+    from src.services.industry import small_talk_prompt
+
+    return small_talk_prompt(get_request_industry()) or SMALL_TALK_SYSTEM_PROMPT
+
+
 def build_sage_tools_payload(
     pydantic_tool_calls: Mapping[str, Any],
     layer_enum: Mapping[str, str],
@@ -206,7 +213,7 @@ def plan_sage_turn(
     if routing.is_small_talk:
         return SageTurnPlan(
             routing=routing,
-            system_prompt=SMALL_TALK_SYSTEM_PROMPT,
+            system_prompt=_small_talk_prompt(),
             tools=[],
             model_override=routing.primary_model_override or None,
         )
@@ -419,6 +426,12 @@ def abdication_guard_enabled() -> bool:
 def is_abdication(plan: SageTurnPlan, last_user_text: str, content: str | None, has_tool_calls: bool) -> bool:
     """True when a first-step answer is prose although the turn needs a tool."""
     if has_tool_calls or not plan.tools or plan.routing.is_small_talk:
+        return False
+    # A farm question on a non-agriculture project: its farm tools were withheld and the prompt tells Sage to say
+    # plainly what Ingabe cannot do yet. That prose is the right answer, not abdication (audit R1-20).
+    from src.database.pool import get_request_industry
+
+    if (get_request_industry() or "agriculture") != "agriculture" and "agriculture" in plan.routing.selected_categories:
         return False
     if _EXPLAIN_REQUEST_RE.search(last_user_text or "") or _ACKNOWLEDGEMENT_RE.search(last_user_text or ""):
         return False

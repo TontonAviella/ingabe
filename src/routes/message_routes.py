@@ -12,7 +12,6 @@ import os
 import json
 import re
 import time
-from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
 import asyncio
@@ -65,7 +64,9 @@ from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage, llm_cache
+from src.services import data_coverage, industry, llm_cache, project_partner
+from src.database.pool import set_request_industry
+from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -131,27 +132,9 @@ tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
-RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
-INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
-    {
-        "rwanda_province_boundaries",
-        "rwanda_district_boundaries",
-        "rwanda_sector_boundaries",
-        "rwanda_cell_boundaries",
-        "rwanda_village_boundaries",
-        "ndvi_cell_cache",
-        "ndvi_field_cache",
-        "ndvi_parcel_cache",
-        "agri_indices_cache",
-        "anomaly_alerts_cache",
-        "crop_classification_cache",
-        "drought_cache",
-        "emissions_annual_cache",
-        "phenology_cache",
-        "weather_daily_cache",
-        "yield_risk_cache",
-    }
-)
+# Neutral name: every industry has one (each logs in as its industry's reader role).
+RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda data (internal)"
+# The approved tables and the read-only login that enforces them: src/database/rwanda_reader.py.
 _SQL_TABLE_REF_RE = re.compile(
     r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
     re.IGNORECASE,
@@ -180,14 +163,15 @@ def _referenced_sql_tables(query: str) -> set[str]:
     return tables
 
 
-def validate_internal_rwanda_query(query: str) -> None:
+def validate_internal_rwanda_query(query: str, industry: Optional[str] = "agriculture") -> None:
+    """A friendly early error for tables this project's industry may not read (the reader roles enforce it)."""
     referenced = _referenced_sql_tables(query)
     if not referenced:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Internal Rwanda queries must reference an allowed Rwanda table",
         )
-    disallowed = sorted(referenced - INTERNAL_RWANDA_ALLOWED_TABLES)
+    disallowed = sorted(referenced - tables_for(industry))
     if disallowed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -231,15 +215,8 @@ async def _ensure_rwanda_postgis_connection(
             """,
             connection_id,
         )
-        pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
-        pg_port = os.environ.get("POSTGRES_PORT", "5432")
-        pg_db = os.environ.get("POSTGRES_DB", "mundidb")
-        pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
-        pg_pass = os.environ.get("POSTGRES_PASSWORD", "changeme")
-        uri = (
-            f"postgresql://{quote(pg_user, safe='')}:{quote(pg_pass, safe='')}"
-            f"@{pg_host}:{pg_port}/{quote(pg_db, safe='')}?sslmode=disable"
-        )
+        # Logs in as the project's industry's read-only reader role (it can SELECT only the approved tables).
+        uri = reader_uri(await industry.industry_of_project(conn, project_id))
 
         if existing:
             if existing["project_id"] != project_id:
@@ -263,10 +240,11 @@ async def _ensure_rwanda_postgis_connection(
                     SET project_id = $1,
                         user_id = $2,
                         connection_uri = $3,
+                        connection_name = $5,
                         soft_deleted_at = NULL
                     WHERE id = $4
                     """,
-                    project_id, user_id, uri, connection_id,
+                    project_id, user_id, uri, connection_id, RWANDA_INTERNAL_CONNECTION_NAME,
                 )
                 logger.info(
                     "Updated Rwanda PostGIS connection: project=%s soft_deleted=%s uri_changed=%s",
@@ -348,6 +326,9 @@ async def _ensure_rwanda_postgis_connection(
                 GROUP BY province
                 """
             )
+            # Grants survive CREATE OR REPLACE; this covers a view first created after the reader-role migration.
+            for role in READER_ROLES:
+                await conn.execute(f"GRANT SELECT ON rwanda_province_boundaries TO {role}")
 
         # Dynamically count which Rwanda admin tables actually exist
         _RWANDA_TABLES = [
@@ -2006,6 +1987,34 @@ async def _maybe_run_deterministic_turn_before_hermes(
     ) is not None
 
 
+async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
+    """Look up the industry of the map's project and scope every connection this request opens from now on to it
+    (app.industry, which Brain's row-level security reads). Returns the industry; None if the map's project cannot
+    be found, in which case everything fails closed (shared tools only, general Brain notes only)."""
+    async with async_conn("request.project_industry") as conn:
+        project_industry = await industry.industry_of_map(conn, map_id)
+    set_request_industry(project_industry)
+    return project_industry
+
+
+# Longest the Brain memory for one turn may take before Sage answers without it.
+BRAIN_PACKET_TIMEOUT_SECONDS = float(os.environ.get("SAGE_BRAIN_PACKET_TIMEOUT_SECONDS", "5"))
+
+
+def chat_lock_key(conversation_id: int) -> str:
+    """Redis lock for one conversation's turn, per database (conversation ids repeat across databases)."""
+    return f"chat_lock:{os.environ.get('POSTGRES_DB', 'mundidb')}:{conversation_id}"
+
+
+async def _act_for_project(map_id: str, session: UserContext) -> UserContext:
+    """The session acting for the map's project's organization (see src.services.project_partner)."""
+    async with async_conn("request.project_partner") as conn:
+        project_id = await conn.fetchval("SELECT project_id FROM user_mundiai_maps WHERE id = $1", map_id)
+        partner = await project_partner.partner_for_project(conn, project_id, session.get_user_id(),
+                                                            session.get_org_id())
+    return session.for_partner(partner)
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -2020,6 +2029,11 @@ async def process_chat_interaction_task(
     client_turn_id: str | None = None,
     user_message_id: str | None = None,
 ):
+    # Everything this turn does follows the project's industry: the tools Sage is
+    # offered and may run, and (through app.industry on every connection) which
+    # Brain notes it can read or write. See src/services/industry.py.
+    project_industry = await _scope_request_to_map_industry(map_id)
+
     # Hermes handles complex requests only after deterministic fast paths have
     # had the first chance to answer. This keeps admin lookups and raster/FastSAM
     # work fast, bounded, and independent of agent planning quality.
@@ -2053,7 +2067,7 @@ async def process_chat_interaction_task(
     await asyncio.sleep(0.1)
     partner_id = session.get_org_id()
 
-    _lock_key = f"chat_lock:{conversation.id}"
+    _lock_key = chat_lock_key(conversation.id)
     # tool_call_id -> (tool name, arguments), for result checks.
     _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
@@ -2249,11 +2263,15 @@ async def process_chat_interaction_task(
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
+                    # Only layers made in a project of this industry (audit R1-16).
                     unattached_layers = await ul_conn.fetch(
                         """
                         SELECT ml.layer_id, ml.created_on, ml.last_edited, ml.type, ml.name
                         FROM map_layers ml
+                        JOIN user_mundiai_maps sm ON sm.id = ml.source_map_id
+                        JOIN user_mundiai_projects sp ON sp.id = sm.project_id
                         WHERE ml.owner_uuid = $1
+                        AND sp.industry = $3
                         AND NOT EXISTS (
                             SELECT 1 FROM user_mundiai_maps m
                             WHERE ml.layer_id = ANY(m.layers) AND m.owner_uuid = $2
@@ -2263,6 +2281,7 @@ async def process_chat_interaction_task(
                         """,
                         user_id,
                         user_id,
+                        project_industry,
                     )
 
             layer_enum = {}
@@ -2276,7 +2295,8 @@ async def process_chat_interaction_task(
 
             client = get_openai_client(request)
 
-            tools_payload = build_sage_tools_payload(pydantic_tool_calls, layer_enum)
+            tools_payload = industry.tools_for(build_sage_tools_payload(pydantic_tool_calls, layer_enum),
+                                               project_industry)
 
             chat_completions_args = await chat_args.get_args(
                 user_id, "send_map_message_async"
@@ -2797,7 +2817,9 @@ async def process_chat_interaction_task(
 
             # Process each tool call returned by the assistant
             # Wrap tool processing in its own connection scope
-            async with async_conn("tool_execution") as conn:
+            # Tools run as the signed-in user and partner: with no user on the connection, row-level security treats
+            # it as a background worker and every user's rows are visible (audit 2026-10-09, round 2).
+            async with async_conn("tool_execution", user_id=user_id, partner_id=partner_id) as conn:
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
@@ -2809,7 +2831,9 @@ async def process_chat_interaction_task(
                     _recent_tool_signatures.append(
                         life_harness_tool_signature(function_name, tool_args)
                     )
-                    tool_result = repeated_life_harness_tool_error(
+                    tool_result = industry.tool_refusal(
+                        function_name, project_industry
+                    ) or repeated_life_harness_tool_error(
                         _recent_tool_signatures
                     ) or validate_life_harness_tool_args(
                         function_name,
@@ -2968,7 +2992,7 @@ async def process_chat_interaction_task_safely(
     user_message_id: str | None = None,
 ):
     started_at = time.monotonic()
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
 
     async def clear_streaming_state() -> None:
         try:
@@ -3133,7 +3157,7 @@ async def send_map_message(
     )
 
     # Check if map is already being processed
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
     try:
         if redis.get(lock_key):
             raise HTTPException(
@@ -3146,6 +3170,13 @@ async def send_map_message(
         raise  # Re-raise the 409 conflict
     except Exception:
         logger.warning("Redis unavailable for chat lock, proceeding without lock")
+
+    # Before any database work (the Brain memory packet below included): this request reads and writes only
+    # the project's industry. The background turn runs in this request's context and keeps the same scope.
+    await _scope_request_to_map_industry(map_id)
+    # And to the project's organization, whichever one the user has active (Brain's partner-only notes).
+    session = await _act_for_project(map_id, session)
+    partner_id = session.get_org_id()
 
     # Use map state provider to generate system messages
     messages_response = await get_all_conversation_messages(conversation.id, session)
@@ -3189,17 +3220,23 @@ async def send_map_message(
                 if map_layer_ids_row
                 else []
             )
-            brain_text = await build_brain_context_packet(
-                brain_conn,
-                brain_svc,
-                query_text=extract_user_message_text(body.message),
-                viewport_bounds=body.viewport_bounds,
-                visible_layer_ids=visible_layer_ids,
+            # Awaited before the model is called, so a slow Brain would delay every reply: bounded (audit R2-12).
+            brain_text = await asyncio.wait_for(
+                build_brain_context_packet(
+                    brain_conn,
+                    brain_svc,
+                    query_text=extract_user_message_text(body.message),
+                    viewport_bounds=body.viewport_bounds,
+                    visible_layer_ids=visible_layer_ids,
+                ),
+                timeout=BRAIN_PACKET_TIMEOUT_SECONDS,
             )
             if brain_text:
                 system_messages.append({"role": "system", "content": brain_text})
+    except asyncio.TimeoutError:
+        logger.warning("Brain memory skipped for map %s: took longer than %.0f s", map_id, BRAIN_PACKET_TIMEOUT_SECONDS)
     except Exception:
-        logger.debug("Brain context injection skipped (tables may not exist yet)")
+        logger.warning("Brain memory skipped for map %s", map_id, exc_info=True)
 
     async with async_conn("send_map_message.update_messages", user_id=user_id) as conn:
         # Add any generated system messages to the database

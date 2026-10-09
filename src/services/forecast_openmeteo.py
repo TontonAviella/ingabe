@@ -613,3 +613,26 @@ def _has_data(result: Dict[str, Any]) -> bool:
         if m_data.get("daily"):
             return True
     return False
+
+
+# The farm advice above, and the neutral wording other industries get instead (power lines and masts care about
+# heat and dry spells, not crops). Applied per request to a copy; the cached forecast keeps the farm wording.
+_FARM_TO_NEUTRAL = (
+    (" — crop heat stress likely.", " — very hot."),
+    (" Crop water stress likely without irrigation.", ""),
+    (" Crops without irrigation could face water stress.", ""),
+    ("with temperatures high enough to stress crops", "with high temperatures"),
+)
+
+
+def without_farm_advice(value: Any) -> Any:
+    """A deep copy of a forecast with every crop sentence replaced by neutral weather wording."""
+    if isinstance(value, str):
+        for farm, neutral in _FARM_TO_NEUTRAL:
+            value = value.replace(farm, neutral)
+        return value
+    if isinstance(value, dict):
+        return {k: without_farm_advice(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [without_farm_advice(v) for v in value]
+    return value
