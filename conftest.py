@@ -16,7 +16,15 @@ os.environ["OPENAI_MODEL"] = "test-chat-model"
 os.environ["SAGE_SMALL_TALK_MODEL"] = "test-chat-model"
 os.environ["OPENROUTER_FALLBACK_MODEL"] = ""
 os.environ["OPENROUTER_FALLBACK_MODELS"] = ""
-if not os.environ.get("OPENAI_API_KEY"):
+# Tests never spend money: the local .env holds the real OpenRouter key, and with it any test that reaches a
+# model (Brain query expansion, drone vision, a live-key test) was billed on every local run, while CI has no
+# key at all (2026-10-09: five local suite runs drained the credits). A fake key gets a free 401 instead. Live
+# model tests opt in with MUNDI_RUN_LIVE_LLM_TESTS=1, which keeps the real key and models.
+if os.environ.get("MUNDI_RUN_LIVE_LLM_TESTS") != "1":
+    os.environ["OPENAI_API_KEY"] = "test-api-key"
+    os.environ["DRONE_VISION_MODEL"] = "test-vision-model"
+    os.environ["BRAIN_QUERY_EXPANSION_MODEL"] = "test-expansion-model"
+elif not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = "test-api-key"
 # The test key above would switch MUNDI_USE_HERMES=auto on and route every chat
 # test through Hermes before the legacy loop those tests patch. Hermes tests
