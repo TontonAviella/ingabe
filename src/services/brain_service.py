@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -78,6 +81,27 @@ _LINKABLE_FROM_SOURCE = """
         ELSE false
     END
 """
+
+class NoteNotWritable(PermissionError):
+    """A note this session may not write: the slug belongs to a note it cannot see (another owner, partner or
+    industry). One message for every such case, so a failed write does not name a policy or tell which rule hid
+    the note (audit R1-26)."""
+
+    def __init__(self, slug: str):
+        super().__init__(f"The note '{slug}' cannot be written from here.")
+        self.slug = slug
+
+
+async def _upsert_page(conn: asyncpg.Connection, sql: str, *args: Any) -> asyncpg.Record:
+    """Run a brain_pages upsert in a savepoint; an ON CONFLICT onto a note row security hides becomes
+    NoteNotWritable instead of an InsufficientPrivilegeError that aborts the caller's transaction."""
+    try:
+        async with conn.transaction():
+            return await conn.fetchrow(sql, *args)
+    except asyncpg.exceptions.InsufficientPrivilegeError:
+        logger.info("Brain write refused for slug %s (a note this session cannot see)", args[0])
+        raise NoteNotWritable(str(args[0])) from None
+
 
 # Agricultural page types for Rwanda insurance
 PAGE_TYPES = {
@@ -372,7 +396,8 @@ class BrainService:
         e_uuids = editor_uuids or []
 
         if page.geom_geojson:
-            row = await conn.fetchrow(
+            row = await _upsert_page(
+                conn,
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,
@@ -404,7 +429,8 @@ class BrainService:
                 page.geom_geojson,
             )
         else:
-            row = await conn.fetchrow(
+            row = await _upsert_page(
+                conn,
                 """
                 INSERT INTO brain_pages
                     (slug, type, title, compiled_truth, timeline, frontmatter,

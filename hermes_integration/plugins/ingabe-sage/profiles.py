@@ -99,6 +99,8 @@ _EXTRA_SELECTION_WORDS = {
         "crop", "field", "farm", "soil", "ndvi", "vegetation", "satellite",
         "sentinel", "landsat", "agriculture", "parcel", "management", "zone",
         "stress", "worldcover", "imagery", "agri", "index", "indices",
+        # the drone-photo tools that live here: count_plants_in_plot, get_drone_photo_findings
+        "plot", "plant", "finding",
     },
     AGRI_WEATHER_TOOLSET: {"rain", "rainfall", "temperature", "dry", "spell"},
     AGRI_RISK_TOOLSET: {"yield", "stress", "trigger", "exposure", "payout"},

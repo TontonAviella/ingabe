@@ -4,8 +4,21 @@ import { formatWeek } from '@/lib/adminLevels';
 type Props = Record<string, unknown> | null | undefined;
 
 /** Hover card for an admin unit: its name and parents, and its district's NDVI,
- * saying when the value is shared by every unit of a finer level. */
-export function AdminUnitTooltip({ district, unit, x, y }: { district: Props; unit?: Props; x: number; y: number }) {
+ * saying when the value is shared by every unit of a finer level. Projects of industries without vegetation
+ * analysis (Power Grid, Telecom) get the names only. */
+export function AdminUnitTooltip({
+  district,
+  unit,
+  x,
+  y,
+  vegetation = true,
+}: {
+  district: Props;
+  unit?: Props;
+  x: number;
+  y: number;
+  vegetation?: boolean;
+}) {
   if (!district) return null;
   const ndvi = district.mean_ndvi;
   const unitLevel = unit?.level as AdminLevel | undefined;
@@ -30,7 +43,7 @@ export function AdminUnitTooltip({ district, unit, x, y }: { district: Props; un
       ) : (
         <div className="font-semibold mb-1">{String(district.district)} district</div>
       )}
-      {typeof ndvi === 'number' ? (
+      {!vegetation ? null : typeof ndvi === 'number' ? (
         <>
           <div>
             Vegetation index (NDVI): <span className="font-semibold">{ndvi.toFixed(2)}</span> — {String(district.ndvi_label)}

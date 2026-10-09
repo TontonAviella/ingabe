@@ -22,6 +22,7 @@ from src.dependencies.session import (
     verify_session_required,
     verify_session_optional,
     UserContext,
+    external_auth_enabled,
 )
 from typing import Any, List, Optional
 import logging
@@ -257,6 +258,12 @@ async def create_map(
 
     # Connect to database
     async with get_async_db_connection() as conn:
+        # With sign-in on, a project waits for an industry (the person's or their company's) instead of silently
+        # becoming agriculture; the legacy single-user mode keeps the agriculture default (audit R1-31).
+        if external_auth_enabled() and not (await industry.company_industry(conn, session.get_org_id())
+                                            or await industry.industry_of(conn, owner_id)):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="Choose your industry before creating a project.")
         async with conn.transaction():
             # First create a project
             # A project belongs to one industry: its company's, else its creator's (agriculture until chosen).
@@ -2267,23 +2274,30 @@ async def add_layer_to_map(
     map: MundiMap = Depends(edit_map),
     layer: MapLayer = Depends(get_layer),
 ):
-    if map.layers is not None and layer.id in map.layers:
+    # MapLayer.id is an unused integer column; the key is layer_id. Using id appended NULL to the map (audit R1-34).
+    if map.layers is not None and layer.layer_id in map.layers:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Layer is already associated with this map",
         )
 
     async with get_async_db_connection() as conn:
-        # Update the map to include the layer_id in its layers array
+        # A layer never joins another industry's map, and a layer of unknown origin joins none (as in the
+        # add_layer_to_map tool, audit R1-16).
+        layer_industry = await industry.industry_of_layer(conn, layer.layer_id)
+        if layer_industry is None or layer_industry != await industry.industry_of_map(conn, map.id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Layer not found")
+
+        # Update the map to include the layer_id in its layers array (and drop NULLs earlier calls left behind)
         updated_map = await conn.fetchrow(
             """
             UPDATE user_mundiai_maps
-            SET layers = array_append(layers, $1),
+            SET layers = array_append(array_remove(COALESCE(layers, '{}'), NULL), $1),
                 last_edited = CURRENT_TIMESTAMP
             WHERE id = $2
             RETURNING id
             """,
-            layer.id,
+            layer.layer_id,
             map.id,
         )
 
@@ -2295,7 +2309,7 @@ async def add_layer_to_map(
 
         return {
             "message": "Layer successfully associated with map",
-            "layer_id": layer.id,
+            "layer_id": layer.layer_id,
             "layer_name": layer.name,
             "map_id": map.id,
         }
@@ -2354,6 +2368,7 @@ async def remove_layer_from_map(
             detail="Layer not found or not associated with this map",
         )
 
+    photo_to_check = None
     async with get_async_db_connection() as conn:
         async with conn.transaction():
             # Get layer name and metadata for response and S3 cleanup
@@ -2405,7 +2420,9 @@ async def remove_layer_from_map(
                 )
                 logger.info("Deleted orphaned map_layers row for layer %s", layer_id)
                 # Files go with the row: earlier versions of this map still show the layer while the row exists.
-                # The optimised photo (cog_key) is never deleted here: copies and identical uploads share it.
+                # The optimised photo (cog_key) is shared by copies and identical uploads: it goes only once no
+                # layer uses it, checked after this transaction commits (photo_content.forget_if_unused).
+                photo_to_check = layer_metadata if isinstance(layer_metadata, dict) else None
                 s3_keys_to_delete = [
                     layer_metadata[key_name]
                     for key_name in ("pmtiles_key", "s3_key")
@@ -2432,6 +2449,12 @@ async def remove_layer_from_map(
                 updated_layers,
                 forked_map.id,
             )
+        if photo_to_check:
+            try:
+                await photo_content.forget_if_unused(conn, await get_async_s3_client(), get_bucket_name(),
+                                                     photo_to_check)
+            except Exception:  # noqa: BLE001 - the layer is removed; a leftover photo is only storage
+                logger.warning("Unused optimised photo cleanup failed for layer %s", layer_id, exc_info=True)
 
     return LayerRemovalResponse(
         dag_child_map_id=forked_map.id,

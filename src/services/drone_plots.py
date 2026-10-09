@@ -513,6 +513,11 @@ def _store_key(photo_key: str) -> str:
     return f"{_STORE_PREFIX}/{hashlib.sha256(photo_key.encode()).hexdigest()[:32]}.json"
 
 
+def stored_plots_key(photo_key: str) -> str:
+    """Where a photo's found plots are kept (deleted with the photo's last layer)."""
+    return _store_key(photo_key)
+
+
 def _to_json(plots: PlotSet) -> bytes:
     return json.dumps({"geojson": plots.geojson, "found_at": plots.found_at, "seconds": plots.seconds,
                        "source": plots.source, "read_m_per_px": plots.read_m_per_px}).encode()

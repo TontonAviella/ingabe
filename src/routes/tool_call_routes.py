@@ -74,7 +74,7 @@ class ToolCallPayload(BaseModel):
     Locked-in shape so the gateway side has a stable contract. New
     optional fields are fine; never break existing field semantics.
     """
-    partner_id: str        # internal organizations.id — sets app.partner_id GUC
+    partner_id: str = ""   # internal organizations.id — sets app.partner_id GUC; "" in a personal workspace
     user_id: str           # internal users.internal_uuid — sets app.user_id GUC
     conversation_id: str   # links back to chat_completion_messages
     tool_name: str         # e.g. "compute_zonal_stats", maps to pydantic_tools dispatch
@@ -256,7 +256,7 @@ async def tool_call(
         project_industry = await industry.industry_of_project(ind_conn, project_id)
         # The call acts for the project's organization, not for whichever one the payload names.
         acting_partner = await project_partner.partner_for_project(
-            ind_conn, project_id, payload.user_id, payload.partner_id)
+            ind_conn, project_id, payload.user_id, payload.partner_id or None)
     set_request_industry(project_industry)
     refusal = industry.tool_refusal(payload.tool_name, project_industry)
     if refusal:

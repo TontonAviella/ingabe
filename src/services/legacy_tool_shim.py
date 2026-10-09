@@ -3156,9 +3156,13 @@ async def _handle_add_observation(ctx: LegacyToolContext) -> Dict[str, Any]:
             "slug": _slug,
             "summary": _summary,
         }
-    except Exception as e:
+    except Exception:
+        # One fixed message: the raw database error named the row-security policy and told a note of another
+        # partner or industry apart from a missing one (audit R1-26).
         logger.exception("add_observation tool failed")
-        return {"status": "error", "error": str(e)}
+        return {"status": "error",
+                "error": "Could not add the observation: no note with that slug is available here, or the date is "
+                         "not YYYY-MM-DD."}
 
 
 async def _handle_search_satellite_imagery(ctx: LegacyToolContext) -> Dict[str, Any]:

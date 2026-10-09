@@ -29,9 +29,11 @@ export interface DistrictNdviMap {
       shared_note_village?: string;
     };
   }>;
-  legend: { title: string; items: Array<{ key: string; label: string; range: string; color: string }> };
+  // null, and no NDVI on the districts, in projects of industries without vegetation analysis (Power Grid, Telecom)
+  legend: { title: string; items: Array<{ key: string; label: string; range: string; color: string }> } | null;
   levels: MapLevel[];
-  data_coverage: DataCoverage;
+  data_coverage: DataCoverage | null;
+  vegetation: boolean;
 }
 
 export type AdminLevel = 'district' | 'sector' | 'cell' | 'village';
@@ -69,11 +71,13 @@ export function useAdminOutlines(level: AdminLevel, bbox: string | null) {
   });
 }
 
-export function useDistrictNdviMap() {
+/** District outlines, with NDVI when the project's industry has vegetation analysis (the server decides). */
+export function useDistrictNdviMap(projectId?: string) {
   return useQuery<DistrictNdviMap>({
-    queryKey: ['rwanda', 'ndvi', 'districts'],
+    queryKey: ['rwanda', 'ndvi', 'districts', projectId ?? null],
     queryFn: async () => {
-      const res = await apiFetch(`${API_BASE}/ndvi/districts`);
+      const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+      const res = await apiFetch(`${API_BASE}/ndvi/districts${query}`);
       if (!res.ok) throw new Error('Failed to fetch district NDVI');
       return res.json();
     },

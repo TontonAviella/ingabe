@@ -23,6 +23,7 @@ Create Date: 2026-10-09
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a4c9e2f7b1d3"
@@ -50,7 +51,17 @@ _PAGE_CHILDREN = {
 }
 
 
+def _has_industry_column(table: str) -> bool:
+    return op.get_bind().execute(sa.text(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = :t AND column_name = 'industry'"), {"t": table}
+    ).scalar() is not None
+
+
 def upgrade() -> None:
+    # Labels survive a downgrade (it keeps the columns), so a later upgrade backfills only columns it creates now;
+    # otherwise every Power Grid and Telecom project and note would come back as agriculture (audit R1-32).
+    new_projects = not _has_industry_column("user_mundiai_projects")
+    new_pages = not _has_industry_column("brain_pages")
     op.execute(
         "ALTER TABLE user_mundiai_projects ADD COLUMN IF NOT EXISTS industry text NOT NULL DEFAULT 'agriculture' "
         f"CHECK (industry IN {_INDUSTRIES})"
@@ -58,25 +69,28 @@ def upgrade() -> None:
     # Since #166 went live (merged 2026-10-09 01:08:46 UTC) people choose an industry at sign-in; a project or note
     # they made after that belongs to their chosen industry, not to agriculture (audit R1-14). Order matters: the
     # agriculture backfill below only fills what is still NULL.
-    op.execute(
-        "UPDATE user_mundiai_projects p SET industry = u.industry FROM users u "
-        "WHERE u.internal_uuid = p.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
-        f"AND p.created_on >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
-    )
+    if new_projects:
+        op.execute(
+            "UPDATE user_mundiai_projects p SET industry = u.industry FROM users u "
+            "WHERE u.internal_uuid = p.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
+            f"AND p.created_on >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
+        )
     op.execute(
         "ALTER TABLE brain_pages ADD COLUMN IF NOT EXISTS industry text "
         f"CHECK (industry IN {_INDUSTRIES})"
     )
-    op.execute(
-        "UPDATE brain_pages b SET industry = u.industry FROM users u "
-        "WHERE u.internal_uuid = b.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
-        f"AND b.created_at >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
-    )
-    op.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE industry IS NULL")
+    if new_pages:
+        op.execute(
+            "UPDATE brain_pages b SET industry = u.industry FROM users u "
+            "WHERE u.internal_uuid = b.owner_uuid::text AND u.industry IN ('power_grid', 'telecom') "
+            f"AND b.created_at >= TIMESTAMPTZ '{_INDUSTRY_CHOICE_LIVE}'"
+        )
+        op.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE industry IS NULL")
     op.execute("ALTER TABLE brain_pages ALTER COLUMN industry SET DEFAULT NULLIF(current_setting('app.industry', true), '')")
     op.execute("CREATE INDEX IF NOT EXISTS brain_pages_industry_idx ON brain_pages (industry)")
     page_read = f"{_WORKER} OR industry IS NULL OR industry = {_SCOPE}"
     page_write = f"{_WORKER} OR industry IS NOT DISTINCT FROM {_SCOPE}"
+    op.execute("DROP POLICY IF EXISTS industry_isolation_brain_pages ON brain_pages")
     op.execute(
         "CREATE POLICY industry_isolation_brain_pages ON brain_pages AS RESTRICTIVE FOR ALL "
         f"USING ({page_read}) WITH CHECK ({page_write})"
@@ -90,6 +104,7 @@ def upgrade() -> None:
         child_read = f"{_WORKER} OR {table}.{column} IS NULL OR EXISTS (SELECT 1 FROM {note})"
         child_write = (f"{_WORKER} OR EXISTS (SELECT 1 FROM {note} "
                        f"AND bp.industry IS NOT DISTINCT FROM {_SCOPE})")
+        op.execute(f"DROP POLICY IF EXISTS industry_isolation_{table} ON {table}")
         op.execute(
             f"CREATE POLICY industry_isolation_{table} ON {table} AS RESTRICTIVE FOR ALL "
             f"USING ({child_read}) WITH CHECK ({child_write})"
@@ -97,9 +112,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Only the policies go. The industry columns (and their index) stay on purpose, so the labels survive a rollback
+    # and a later upgrade does not relabel everything as agriculture (audit R1-32); older code ignores them.
     for table in _PAGE_CHILDREN:
         op.execute(f"DROP POLICY IF EXISTS industry_isolation_{table} ON {table}")
     op.execute("DROP POLICY IF EXISTS industry_isolation_brain_pages ON brain_pages")
-    op.execute("DROP INDEX IF EXISTS brain_pages_industry_idx")
-    op.execute("ALTER TABLE brain_pages DROP COLUMN IF EXISTS industry")
-    op.execute("ALTER TABLE user_mundiai_projects DROP COLUMN IF EXISTS industry")

@@ -38,9 +38,16 @@ export function useIndustry() {
   });
 }
 
+/** True once new projects' industry is settled: known, or nothing to ask (signed out, legacy single-user mode). */
+export function useIndustryKnown(): boolean {
+  const { data, isLoading, isError } = useIndustry();
+  if (isLoading || isError) return false;
+  return !data || !data.can_choose || data.industry !== null;
+}
+
 /** Asks a signed-in user which industry they work in, once, before anything else; also reopened from the sidebar. */
 export function IndustryGate() {
-  const { data } = useIndustry();
+  const { data, isError, refetch, isFetching } = useIndustry();
   const [reopened, setReopened] = useState(false);
 
   useEffect(() => {
@@ -49,6 +56,25 @@ export function IndustryGate() {
     return () => window.removeEventListener(OPEN_INDUSTRY_PICKER, open);
   }, []);
 
+  // Fail closed: if the industry cannot be loaded, say so instead of letting the app run as agriculture (R1-31).
+  if (isError) {
+    return (
+      <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-[#0B0908] px-6 text-center text-[#F6F1EB]">
+        <div className="max-w-sm">
+          <p className="text-[15px]">Ingabe could not load your industry.</p>
+          <p className="mt-2 text-[13px] text-[#B8A99B]">Check your connection, then try again.</p>
+          <button
+            type="button"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="mt-5 rounded-full bg-[#D9A066] px-5 py-2 text-[14px] font-medium text-[#0B0908] disabled:opacity-60"
+          >
+            {isFetching ? 'Trying…' : 'Try again'}
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (!data || !data.can_choose || (data.industry !== null && !reopened)) return null;
   return (
     <Suspense fallback={<div className="fixed inset-0 z-[10000] bg-[#0B0908]" />}>

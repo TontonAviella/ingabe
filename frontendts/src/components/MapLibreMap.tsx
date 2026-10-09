@@ -286,6 +286,8 @@ export default function MapLibreMap({
   invalidateProjectData,
   invalidateMapData,
 }: MapLibreMapProps) {
+  // Projects default to agriculture; farm-only wording and controls show only there (audit R1-28).
+  const farmProject = (project.industry ?? 'agriculture') === 'agriculture';
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const localMapRef = useRef<MLMap | null>(null);
   const basemapControlRef = useRef<BasemapControl | null>(null);
@@ -1695,7 +1697,7 @@ export default function MapLibreMap({
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
         <div ref={mapContainerRef} style={{ width: '100%', height: '100%', minHeight: '100vh' }} className="bg-slate-950" />
         <MapLegends key={mapInstanceId} map={mapRef.current} />
-        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} />
+        <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} />
         <DroneCards
           key={`cards-${mapInstanceId}`}
           map={mapRef.current}
@@ -1847,7 +1849,10 @@ export default function MapLibreMap({
         <div className="z-30 absolute bottom-12 left-1/2 xl:left-3/5 transform -translate-x-1/2 w-[calc(100%-1rem)] sm:w-4/5 max-w-[34rem] flex items-center min-h-12 rounded-[18px] border border-white/10 bg-[#17110E]/95 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-xl focus-within:border-[#D9A066]/60">
           <Input
             className={`flex-1 h-12 border-none shadow-none !bg-transparent px-4 text-[15px] text-[#F3EDE6] placeholder:text-[#8E7F73] focus:!ring-0 focus:!ring-offset-0 focus-visible:!ring-0 focus-visible:!ring-offset-0 focus-visible:!outline-none`}
-            placeholder={lastUserMsg || 'Ask Sage about this photo, a plot or a place…'}
+            placeholder={
+              lastUserMsg ||
+              (farmProject ? 'Ask Sage about this photo, a plot or a place…' : 'Ask Sage about this photo, the map or a place…')
+            }
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -1887,6 +1892,7 @@ export default function MapLibreMap({
           conversationsEnabled={conversationsEnabled}
           setConversationId={setConversationId}
           activeActions={activeActions}
+          farmControls={farmProject}
         />
       </div>
     </>

@@ -120,11 +120,11 @@ class AdminOutlinesControl implements IControl {
   }
 }
 
-export function AdminLevelsOverlay({ map }: { map: MLMap | null }) {
+export function AdminLevelsOverlay({ map, projectId }: { map: MLMap | null; projectId?: string }) {
   const [enabled, setEnabled] = useState(readEnabled);
   const [view, setView] = useState<{ level: AdminLevel; bbox: string | null }>({ level: 'district', bbox: null });
   const [hover, setHover] = useState<{ district: MapGeoJSONFeature; unit?: MapGeoJSONFeature; x: number; y: number } | null>(null);
-  const { data: districts } = useDistrictNdviMap();
+  const { data: districts } = useDistrictNdviMap(projectId);
   const outlines = useAdminOutlines(view.level, enabled ? view.bbox : null);
   const units = enabled && view.level !== 'district' && outlines.data?.level === view.level ? outlines.data : null;
 
@@ -231,7 +231,15 @@ export function AdminLevelsOverlay({ map }: { map: MLMap | null }) {
           </div>
         )}
       </div>
-      {hover && <AdminUnitTooltip district={hover.district.properties} unit={hover.unit?.properties} x={hover.x} y={hover.y} />}
+      {hover && (
+        <AdminUnitTooltip
+          district={hover.district.properties}
+          unit={hover.unit?.properties}
+          x={hover.x}
+          y={hover.y}
+          vegetation={districts?.vegetation !== false}
+        />
+      )}
     </>
   );
 }

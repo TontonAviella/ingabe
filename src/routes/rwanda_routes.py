@@ -29,7 +29,7 @@ from typing import Any, Optional
 import h3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.services import admin_boundaries, data_coverage, h3_admin_index, ndvi_classes
+from src.services import admin_boundaries, data_coverage, h3_admin_index, industry, ndvi_classes
 from src.dependencies.session import UserContext, verify_session_required
 
 logger = logging.getLogger(__name__)
@@ -166,17 +166,22 @@ async def get_admin_unit_hexagons(
 
 @rwanda_router.get("/rwanda/ndvi/districts")
 async def get_district_ndvi_map(
+    project_id: Optional[str] = Query(None, description="the project being viewed: its industry decides"),
     session: UserContext = Depends(verify_session_required),
 ):
     """District outlines with each district's latest NDVI, for the dashboard map.
 
     NDVI is computed per district (Sentinel-2 10 m pixels averaged over the
     district), so the map colours whole districts rather than hexagons that
-    would all repeat their district's value.
+    would all repeat their district's value. Vegetation is a farm capability:
+    other industries' projects get the outlines only (audit R2-13).
     """
     from src.structures import get_async_db_connection
 
     async with get_async_db_connection() as pg_conn:
+        viewer_industry = (await industry.industry_of_project(pg_conn, project_id) if project_id else
+                           await industry.industry_for_new_project(pg_conn, session.get_user_id(), session.get_org_id()))
+        vegetation = industry.serves("district_ndvi_map", viewer_industry)
         rows = await pg_conn.fetch(
             """
             SELECT b.district,
@@ -199,11 +204,12 @@ async def get_district_ndvi_map(
             "type": "Feature",
             "geometry": json.loads(r["geometry"]),
             "properties": {
-                **_district_ndvi_properties(r),
+                **(_district_ndvi_properties(r) if vegetation else {"district": r["district"]}),
                 **{
                     f"shared_note_{level}": data_coverage.shared_value_note(
                         "district", r["district"], level, n)
                     for level, n in counts.get(r["district"].lower(), {}).items()
+                    if vegetation  # the note explains a shared NDVI value; no value, no note
                 },
             },
         }
@@ -212,9 +218,10 @@ async def get_district_ndvi_map(
     return {
         "type": "FeatureCollection",
         "features": features,
-        "legend": ndvi_classes.legend(),
+        "legend": ndvi_classes.legend() if vegetation else None,
         "levels": data_coverage.map_levels(("district",)),
-        "data_coverage": data_coverage.describe("sentinel2", "district"),
+        "data_coverage": data_coverage.describe("sentinel2", "district") if vegetation else None,
+        "vegetation": vegetation,
     }
 
 
