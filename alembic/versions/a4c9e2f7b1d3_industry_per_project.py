@@ -10,10 +10,15 @@ Create Date: 2026-10-09
   The 37 notes on the server (field notes and insurance reports, 2026-10-09) are all agriculture, so existing
   notes become agriculture. New notes take the app.industry setting of the connection that writes them (set
   for every Sage turn from the project), else NULL.
-- Restrictive row-level security: with app.industry set, a connection sees and writes only notes of that
-  industry or general ones, and only the chunks, facts, timeline entries, tags, references, versions and links
-  of notes it can see. With app.industry unset (maintenance, background jobs) nothing changes. Restrictive
-  policies are ANDed with the existing partner and tenant policies, so they can only narrow access.
+- Restrictive row-level security, failing closed (audit 2026-10-09):
+  - Only a background worker (no app.user_id AND no app.industry) is unrestricted.
+  - Any other connection is scoped to app.industry (NULL when unset): it READS its industry's notes plus
+    general ones, and WRITES only notes of exactly its scope (a Power Grid turn writes power_grid notes; a
+    user request with no industry writes general notes). So no route that forgets to set the industry can
+    read another industry, and nobody can slip industry content into a general note or another industry's.
+  - Rows hanging off a note (chunks, facts, timeline entries, tags, references, versions, links) are
+    readable when their note is, and writable only on a note of exactly the writer's scope.
+  Restrictive policies are ANDed with the existing partner and tenant policies, so they can only narrow access.
 """
 
 from typing import Sequence, Union
@@ -26,7 +31,9 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 _INDUSTRIES = "('agriculture', 'power_grid', 'telecom')"
-_UNSET = "NULLIF(current_setting('app.industry', true), '') IS NULL"
+_SCOPE = "NULLIF(current_setting('app.industry', true), '')"
+# Unrestricted only for background workers: no user and no industry on the connection.
+_WORKER = f"({_SCOPE} IS NULL AND COALESCE(current_setting('app.user_id', true), '') = '')"
 _PAGE_CHILDREN = {
     "brain_content_chunks": "page_id",
     "brain_facts": "page_id",
@@ -50,17 +57,20 @@ def upgrade() -> None:
     op.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE industry IS NULL")
     op.execute("ALTER TABLE brain_pages ALTER COLUMN industry SET DEFAULT NULLIF(current_setting('app.industry', true), '')")
     op.execute("CREATE INDEX IF NOT EXISTS brain_pages_industry_idx ON brain_pages (industry)")
-    page_rule = f"{_UNSET} OR industry IS NULL OR industry = current_setting('app.industry', true)"
+    page_read = f"{_WORKER} OR industry IS NULL OR industry = {_SCOPE}"
+    page_write = f"{_WORKER} OR industry IS NOT DISTINCT FROM {_SCOPE}"
     op.execute(
         "CREATE POLICY industry_isolation_brain_pages ON brain_pages AS RESTRICTIVE FOR ALL "
-        f"USING ({page_rule}) WITH CHECK ({page_rule})"
+        f"USING ({page_read}) WITH CHECK ({page_write})"
     )
     for table, column in _PAGE_CHILDREN.items():
-        # A row with no note (a free-standing fact) is general knowledge, like a note with no industry.
-        rule = f"{_UNSET} OR {column} IS NULL OR {column} IN (SELECT id FROM brain_pages)"
+        # Readable when the note is; writable only on a note of exactly the writer's scope.
+        child_read = f"{_WORKER} OR {column} IS NULL OR {column} IN (SELECT id FROM brain_pages)"
+        child_write = (f"{_WORKER} OR {column} IN "
+                       f"(SELECT id FROM brain_pages WHERE industry IS NOT DISTINCT FROM {_SCOPE})")
         op.execute(
             f"CREATE POLICY industry_isolation_{table} ON {table} AS RESTRICTIVE FOR ALL "
-            f"USING ({rule}) WITH CHECK ({rule})"
+            f"USING ({child_read}) WITH CHECK ({child_write})"
         )
 
 

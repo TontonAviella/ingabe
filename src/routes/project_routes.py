@@ -1297,6 +1297,11 @@ async def upload_document_to_brain(
         s3_key = ""
 
     brain = get_brain_service()
+    # The document belongs to this project's industry (MundiProject.industry): Brain's row-level security
+    # labels it from app.industry and only shows it to that industry.
+    from src.database.pool import set_request_industry
+
+    set_request_industry(project.industry)
     async with get_async_db_connection(user_id=user_id) as conn:
         async with conn.transaction():
             await brain.put_page(

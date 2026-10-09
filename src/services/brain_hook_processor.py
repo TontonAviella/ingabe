@@ -46,6 +46,9 @@ async def process_pending_hooks(
         payload = hook["payload"] if isinstance(hook["payload"], dict) else json.loads(hook["payload"])
 
         try:
+            # Notes made from a project's upload belong to that project's industry; partner URLs stay general.
+            hook_industry = await _hook_industry(conn, hook_type, payload)
+            await conn.execute("SELECT set_config('app.industry', $1, false)", hook_industry or "")
             if hook_type == "vector_upload":
                 n = await _process_vector_hook(conn, brain, payload)
             elif hook_type == "raster_upload":
@@ -64,10 +67,30 @@ async def process_pending_hooks(
 
         except Exception as e:
             logger.exception("Hook %d (%s) failed", hook_id, hook_type)
+            await conn.execute("RESET app.industry")  # the hook row itself is worker bookkeeping
             await brain.fail_hook(conn, hook_id, str(e)[:500])
             failed += 1
+        finally:
+            await conn.execute("RESET app.industry")
 
     return {"processed": processed, "failed": failed, "skipped": skipped}
+
+
+async def _hook_industry(conn: asyncpg.Connection, hook_type: str, payload: dict) -> Optional[str]:
+    """The industry of the project an upload hook came from; None (general) for partner-wide hooks."""
+    from src.services import industry
+
+    if hook_type == "raster_upload" and payload.get("layer_id"):
+        return await industry.industry_of_layer(conn, payload["layer_id"])
+    if hook_type == "vector_upload":
+        if payload.get("connection_type") == "postgis" and payload.get("layer_id"):
+            project_id = await conn.fetchval(
+                "SELECT project_id FROM project_postgres_connections WHERE id = $1", payload["layer_id"])
+            return await industry.industry_of_project(conn, project_id)
+        layer_ids = payload.get("layer_ids") or []
+        if layer_ids:
+            return await industry.industry_of_layer(conn, layer_ids[0])
+    return None
 
 
 async def _process_vector_hook(

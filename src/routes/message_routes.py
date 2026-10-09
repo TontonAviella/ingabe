@@ -2183,6 +2183,15 @@ async def _maybe_run_deterministic_turn_before_hermes(
     ) is not None
 
 
+async def _scope_request_to_map_industry(map_id: str) -> str:
+    """Look up the industry of the map's project and scope every connection this request opens from now on to it
+    (app.industry, which Brain's row-level security reads). Returns the industry."""
+    async with async_conn("request.project_industry") as conn:
+        project_industry = await industry.industry_of_map(conn, map_id)
+    set_request_industry(project_industry)
+    return project_industry
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -2200,9 +2209,7 @@ async def process_chat_interaction_task(
     # Everything this turn does follows the project's industry: the tools Sage is
     # offered and may run, and (through app.industry on every connection) which
     # Brain notes it can read or write. See src/services/industry.py.
-    async with async_conn("turn.project_industry") as _ind_conn:
-        project_industry = await industry.industry_of_map(_ind_conn, map_id)
-    set_request_industry(project_industry)
+    project_industry = await _scope_request_to_map_industry(map_id)
 
     # Hermes handles complex requests only after deterministic fast paths have
     # had the first chance to answer. This keeps admin lookups and raster/FastSAM
@@ -3336,6 +3343,10 @@ async def send_map_message(
         raise  # Re-raise the 409 conflict
     except Exception:
         logger.warning("Redis unavailable for chat lock, proceeding without lock")
+
+    # Before any database work (the Brain memory packet below included): this request reads and writes only
+    # the project's industry. The background turn runs in this request's context and keeps the same scope.
+    await _scope_request_to_map_industry(map_id)
 
     # Use map state provider to generate system messages
     messages_response = await get_all_conversation_messages(conversation.id, session)

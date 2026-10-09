@@ -73,7 +73,8 @@ def test_farm_procedures_stay_out_of_other_industries_prompts(monkeypatch):
 # --- Projects, cards, first look -----------------------------------------------------------------------------------
 
 async def _project(conn, owner: str, project_industry: str, layer_id: str) -> str:
-    project_id, map_id = f"P{RUN_TAG}{project_industry[:3]}"[:12], f"M{RUN_TAG}{project_industry[:3]}"[:12]
+    unique = uuid.uuid4().hex[:11]
+    project_id, map_id = f"P{unique}", f"M{unique}"
     await conn.execute("INSERT INTO user_mundiai_projects (id, owner_uuid, maps, industry) VALUES ($1, $2, ARRAY[$3], $4)",
                        project_id, owner, map_id, project_industry)
     await conn.execute("INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) VALUES ($1, $2, $3, 't', ARRAY[$4])",
@@ -155,3 +156,83 @@ async def test_brain_notes_of_one_industry_are_invisible_from_another():
         async with get_async_db_connection() as conn:  # no industry set: maintenance sees everything
             await conn.execute("DELETE FROM brain_timeline_entries WHERE page_id = $1", farm_id)
             await conn.execute("DELETE FROM brain_pages WHERE slug = ANY($1::text[])", [farm_slug, general_slug, grid_slug])
+
+
+@pytest.mark.anyio
+async def test_brain_fails_closed_for_a_user_request_without_an_industry():
+    """A signed-in request that never set an industry sees and writes only general notes (audit R1-4)."""
+    owner = str(uuid.uuid4())
+    farm, general = f"farm2-{RUN_TAG}", f"general2-{RUN_TAG}"
+    async with get_async_db_connection() as conn:  # worker: unrestricted
+        await conn.execute("INSERT INTO brain_pages (slug, type, title, compiled_truth, industry, owner_uuid, access_scope) VALUES "
+                           "($1, 'note', 'farm', 'x', 'agriculture', $3, 'public'), ($2, 'note', 'general', 'y', NULL, $3, 'public')",
+                           farm, general, owner)
+    try:
+        async with get_async_db_connection(user_id=owner) as conn:  # signed in, no industry set
+            seen = {r["slug"] for r in await conn.fetch("SELECT slug FROM brain_pages WHERE slug = ANY($1::text[])", [farm, general])}
+            assert seen == {general}
+            with pytest.raises(Exception):  # and it cannot write an industry's note
+                await conn.execute("INSERT INTO brain_pages (slug, type, title, compiled_truth, industry, owner_uuid) "
+                                   "VALUES ($1, 'note', 'x', 'y', 'agriculture', $2)", f"sneak2-{RUN_TAG}", owner)
+    finally:
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM brain_pages WHERE slug = ANY($1::text[])", [farm, general])
+
+
+@pytest.mark.anyio
+async def test_an_industry_cannot_write_into_a_general_note():
+    """Observations from a Power Grid turn cannot land on a general note that every industry reads (audit R1-3)."""
+    owner = str(uuid.uuid4())
+    general = f"general3-{RUN_TAG}"
+    async with get_async_db_connection() as conn:
+        await conn.execute("INSERT INTO brain_pages (slug, type, title, compiled_truth, owner_uuid) VALUES ($1, 'note', 'g', 'z', $2)",
+                           general, owner)
+        page_id = await conn.fetchval("SELECT id FROM brain_pages WHERE slug = $1", general)
+    try:
+        set_request_industry("power_grid")
+        async with get_async_db_connection() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM brain_pages WHERE id = $1", page_id) == 1  # readable
+            with pytest.raises(Exception):
+                await conn.execute("INSERT INTO brain_timeline_entries (page_id, date, summary) VALUES ($1, CURRENT_DATE, 'span 12 sag')",
+                                   page_id)
+            with pytest.raises(Exception):
+                await conn.execute("UPDATE brain_pages SET compiled_truth = 'grid text' WHERE id = $1", page_id)
+    finally:
+        set_request_industry(None)
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM brain_pages WHERE id = $1", page_id)
+
+
+@pytest.mark.anyio
+async def test_notes_made_by_the_upload_hook_take_the_projects_industry():
+    """The background hook that turns an upload into a note labels it with the upload's project (audit R1-2)."""
+    from src.services.brain_hook_processor import process_pending_hooks
+    from src.services.brain_service import BrainService
+
+    owner = str(uuid.uuid4())
+    layer_id = f"L{RUN_TAG}hk"[:12]
+    async with get_async_db_connection() as conn:
+        await _project(conn, owner, "telecom", layer_id)
+        brain = BrainService()
+        await brain.enqueue_hook(conn, "raster_upload", {"layer_id": layer_id, "layer_name": "Mast site", "user_id": owner,
+                                                         "bounds": [30.0, -2.0, 30.01, -1.99]})
+        await process_pending_hooks(conn, brain, limit=50)
+        assert await conn.fetchval("SELECT industry FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower()) == "telecom"
+        assert await conn.fetchval("SELECT current_setting('app.industry', true)") in (None, "")  # reset after the hook
+        await conn.execute("DELETE FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower())
+
+
+@pytest.mark.anyio
+async def test_a_message_request_is_scoped_before_the_brain_packet_is_built():
+    """send_map_message scopes the request to the map's industry before reading Brain (audit R1-1)."""
+    from src.database.pool import get_request_industry
+    from src.routes.message_routes import _scope_request_to_map_industry
+
+    owner = str(uuid.uuid4())
+    async with get_async_db_connection() as conn:
+        grid_map = await _project(conn, owner, "power_grid", f"L{RUN_TAG}sm"[:12])
+    try:
+        assert await _scope_request_to_map_industry(grid_map) == "power_grid"
+        assert get_request_industry() == "power_grid"
+    finally:
+        set_request_industry(None)
