@@ -506,3 +506,22 @@ async def test_writing_another_industrys_slug_fails_with_one_plain_error():
         set_request_industry(None)
         async with get_async_db_connection() as conn:
             await conn.execute("DELETE FROM brain_pages WHERE slug = $1", slug)
+
+
+def test_routing_eval_cases_expect_only_tools_their_industry_is_offered():
+    """A Power Grid or Telecom eval case expecting a farm tool could never pass (audit R1-33)."""
+    import importlib.util
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", root / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness
+    spec.loader.exec_module(harness)
+    cases = [json.loads(line) for path in sorted((root / "evals" / "sage_routing" / "cases").glob("*.jsonl"))
+             for line in path.read_text().splitlines() if line.strip()]
+    harness.check_industry_cases(cases)
+    from evals.sage_routing import scoring
+
+    with pytest.raises(scoring.CorpusError):
+        harness.check_industry_cases([{"id": "x", "industry": "telecom", "expect": {"any_of": ["get_drought_status"]}}])
