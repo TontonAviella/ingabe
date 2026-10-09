@@ -98,6 +98,8 @@ class ProjectResponse(BaseModel):
     created_on: str
     most_recent_version: Optional[MostRecentVersion] = None
     soft_deleted_at: Optional[datetime] = None
+    # The one industry the project belongs to: the app hides farm-only controls elsewhere (audit R1-28).
+    industry: str = "agriculture"
 
 
 class UserProjectsResponse(BaseModel):
@@ -148,7 +150,7 @@ async def list_user_projects(
 
         projects_data = await conn.fetch(
             """
-            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at
+            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at, p.industry
             FROM user_mundiai_projects p
             WHERE (
                 p.owner_uuid = $1 OR
@@ -216,6 +218,7 @@ async def list_user_projects(
                     created_on=created_on_str,
                     most_recent_version=most_recent_map_details,
                     soft_deleted_at=project_data["soft_deleted_at"],
+                    industry=project_data["industry"],
                 )
             )
 
@@ -357,6 +360,7 @@ async def get_project_route(
             maps=project.maps,
             created_on=created_on_str,
             most_recent_version=most_recent_map_details,
+            industry=project.industry,
         )
 
 

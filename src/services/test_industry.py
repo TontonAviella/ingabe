@@ -457,3 +457,52 @@ async def test_semantic_search_finds_a_small_industrys_notes_among_many_others()
         set_request_industry(None)
         async with get_async_db_connection() as conn:
             await conn.execute("DELETE FROM brain_pages WHERE slug = ANY($1)", farm + masts)
+
+
+# --- Low-priority follow-ups (audit 2026-10-09) ---------------------------------------------------------------------
+
+def test_history_replay_drops_another_industrys_tool_calls_and_their_results():
+    """A farm tool call stored in a Telecom conversation is not replayed, nor its result (audit R2-14)."""
+    from src.routes.message_routes import _without_other_industries_calls
+
+    farm = sorted(AGRI_ONLY)[0]
+    history = [
+        {"role": "user", "content": "how are the fields?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": farm, "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "search_location", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "maize stress in plot 4"},
+        {"role": "tool", "tool_call_id": "c2", "content": "Kigali"},
+    ]
+    telecom = _without_other_industries_calls(history, "telecom")
+    assert [c["id"] for c in telecom[1]["tool_calls"]] == ["c2"]
+    assert all(m.get("tool_call_id") != "c1" for m in telecom)
+    assert "maize" not in json.dumps(telecom)
+    assert _without_other_industries_calls(history, "agriculture") == history
+
+
+@pytest.mark.anyio
+async def test_writing_another_industrys_slug_fails_with_one_plain_error():
+    """A slug held by a note this session cannot see: a plain NoteNotWritable, no policy name, and the caller's
+    transaction keeps working (audit R1-26)."""
+    from src.services.brain_service import BrainService, NoteNotWritable, PageInput
+
+    slug = f"shared-name-{RUN_TAG}"
+    brain = BrainService()
+    async with get_async_db_connection() as conn:  # worker: an agriculture note holds the slug
+        await brain.put_page(conn, slug, PageInput(type="concept", title="farm", compiled_truth="farm"),
+                             owner_uuid=str(uuid.uuid4()), access_scope="public")
+        await conn.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE slug = $1", slug)
+    try:
+        set_request_industry("telecom")
+        async with get_async_db_connection(user_id=str(uuid.uuid4())) as conn:
+            async with conn.transaction():
+                with pytest.raises(NoteNotWritable) as refused:
+                    await brain.put_page(conn, slug, PageInput(type="asset", title="mast", compiled_truth="mast"),
+                                         owner_uuid=str(uuid.uuid4()))
+                assert "policy" not in str(refused.value) and "industry" not in str(refused.value)
+                assert await conn.fetchval("SELECT 1") == 1  # the transaction is still usable
+    finally:
+        set_request_industry(None)
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM brain_pages WHERE slug = $1", slug)

@@ -284,7 +284,7 @@ def test_proxy_short_circuits_with_config_error_when_secret_missing(
     # Should never have constructed an httpx client — no last_post to inspect
 
 
-def test_proxy_short_circuits_with_context_missing_when_no_partner(
+def test_proxy_short_circuits_with_context_missing_when_no_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proxy = _load_proxy_module()
@@ -298,6 +298,23 @@ def test_proxy_short_circuits_with_context_missing_when_no_partner(
 
     parsed = json.loads(proxy.proxy_tool_call("any_tool", {}, task_id="t"))
     assert parsed["status"] == "context_missing"
+
+
+def test_proxy_dispatches_for_a_personal_workspace_with_no_partner(
+    fully_configured: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user acting for no organization still gets tools; the call carries an empty partner and mundi-app
+    scopes it by user only, as the in-process loop does (audit R2-10)."""
+    proxy = fully_configured
+    monkeypatch.delenv("INGABE_PARTNER_ID", raising=False)
+    fake = _FakeHttpxClient(response=_FakeResponse(200, json.dumps({"result": {"ok": True}})))
+    monkeypatch.setattr(proxy.httpx, "Client", lambda **kw: fake)
+
+    parsed = json.loads(proxy.proxy_tool_call("search_location", {"q": "Kigali"}, task_id="t"))
+    assert parsed.get("status") != "context_missing"
+    body = json.loads(fake.last_post["content"])
+    assert body["partner_id"] == "" and body["user_id"] == "user-aaaa"
 
 
 # ---------------------------------------------------------------------------

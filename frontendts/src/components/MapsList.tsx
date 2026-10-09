@@ -1,5 +1,6 @@
 import { Clock, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useIndustryKnown } from '@/components/IndustryGate';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useProjects } from '../contexts/ProjectsContext';
 import { Button } from './ui/button';
@@ -8,6 +9,8 @@ import { Pagination, PaginationContent, PaginationItem, PaginationLink, Paginati
 import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
 export default function MapsList() {
+  // A new project takes its industry at creation: wait until it is known (audit R1-31).
+  const industryKnown = useIndustryKnown();
   const {
     projects,
     totalPages,
@@ -129,7 +132,7 @@ export default function MapsList() {
               <div>
                 <Button
                   onClick={handleCreateMap}
-                  disabled={isLoading}
+                  disabled={isLoading || !industryKnown}
                   className="bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
                 >
                   <Plus className="mr-2 h-4 w-4" />
@@ -184,7 +187,7 @@ export default function MapsList() {
           <p className="text-sm text-gray-400 text-center mt-1">Create your first map to get started</p>
           <Button
             onClick={handleCreateMap}
-            disabled={isLoading}
+            disabled={isLoading || !industryKnown}
             className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
           >
             {isLoading ? 'Creating...' : 'Create Your First Map'}

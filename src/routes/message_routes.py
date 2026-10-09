@@ -1558,6 +1558,31 @@ def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
     return shortened
 
 
+def _without_other_industries_calls(messages: list[Any], project_industry: Optional[str]) -> list[Any]:
+    """The replayed history without tool calls this project's industry may not make, nor their results. One farm
+    result stored in a Power Grid or Telecom conversation would otherwise ride along on every later turn (audit
+    R2-14). Results are matched to calls by id, so a dropped call takes its result with it."""
+    dropped: set[str] = set()
+    out: list[Any] = []
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id") in dropped:
+            continue
+        calls = m.get("tool_calls") if isinstance(m, dict) else None
+        if calls:
+            kept = []
+            for call in calls:
+                name = (call.get("function") or {}).get("name", "") if isinstance(call, dict) else ""
+                if name and not industry.serves(name, project_industry):
+                    logger.warning("Dropping wrong-industry tool_call %r from history replay", name)
+                    dropped.add(call.get("id"))
+                else:
+                    kept.append(call)
+            if len(kept) != len(calls):
+                m = {**m, "tool_calls": kept} if kept else {k: v for k, v in m.items() if k != "tool_calls"}
+        out.append(m)
+    return out
+
+
 def _pair_tool_results(messages: list[Any]) -> list[Any]:
     """Every tool call in the replayed history gets exactly one result, or the provider rejects the whole
     conversation (HTTP 400) on every later message. A turn cut off mid-tool (a restart, a crash) left calls
@@ -2248,7 +2273,8 @@ async def process_chat_interaction_task(
                     if "content" in m and m["content"] is None:
                         m["content"] = ""
                 openai_messages.append(m)
-            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(openai_messages)))
+            openai_messages = _shorten_old_tool_results(_latest_context_only(_pair_tool_results(
+                _without_other_industries_calls(openai_messages, project_industry))))
 
             _fast_path = await _run_first_fast_path(
                 map_id=map_id,

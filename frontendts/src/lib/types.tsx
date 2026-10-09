@@ -11,6 +11,8 @@ export interface MapProject {
     last_edited?: string;
   };
   soft_deleted_at?: string;
+  // The one industry the project belongs to; farm-only controls show only in agriculture projects.
+  industry?: 'agriculture' | 'power_grid' | 'telecom';
 }
 
 export type ProjectState = { type: 'not_logged_in' } | { type: 'loading' } | { type: 'loaded'; projects: MapProject[] };

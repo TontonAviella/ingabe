@@ -93,6 +93,7 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     # --- Automatic jobs on a drone photo ---
     "drone_first_look": AGRICULTURE,  # Sage's first message about green cover and plots
     "drone_cards": AGRICULTURE,  # the question cards: plots, crops, bare ground, the crop survey
+    "district_ndvi_map": AGRICULTURE,  # district vegetation colours and NDVI in the admin outlines tooltip
     # (Power Grid and Telecom capabilities are added here as they are built.)
 }
 

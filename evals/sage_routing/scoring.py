@@ -33,6 +33,8 @@ ERROR = "error"
 
 STRATA = ("observed", "coverage")
 LANGS = ("en", "rw", "fr")
+INDUSTRIES = ("agriculture", "power_grid", "telecom")  # a case without one runs as agriculture
+FARM_WORDING = "<farm-wording>"  # pseudo first tool: a non-agriculture reply that talked about farming
 KINDS = ("single", "multi_turn", "chain")
 LAYER_TYPES = ("raster", "vector", "postgis", "point_cloud")
 _JSON_TYPES = {
@@ -67,6 +69,8 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
         raise CorpusError(f"{cid}: stratum must be one of {STRATA}")
     if case["lang"] not in LANGS:
         raise CorpusError(f"{cid}: lang must be one of {LANGS}")
+    if case.get("industry", "agriculture") not in INDUSTRIES:
+        raise CorpusError(f"{cid}: industry must be one of {INDUSTRIES}")
     expect = case["expect"]
     any_of = expect.get("any_of")
     no_tool = expect.get("no_tool") is True

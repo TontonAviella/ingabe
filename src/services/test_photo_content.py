@@ -38,3 +38,47 @@ def test_remembered_photo_is_found_only_while_it_is_stored():
         assert await photo_content.find(s3, "b", "sha", "EPSG:3857") is None  # photo gone: optimise again
 
     asyncio.run(run())
+
+
+class _S3WithDelete(_S3WithHead):
+    async def list_objects_v2(self, Bucket, Prefix):
+        return {"Contents": [{"Key": k} for k in self.objects if k.startswith(Prefix)]}
+
+    async def delete_object(self, Bucket, Key):
+        self.objects.pop(Key, None)
+
+
+class _Layers:
+    """map_layers as seen by a worker connection: how many layers still point at a photo."""
+
+    def __init__(self, using: int):
+        self.using = using
+
+    async def fetchval(self, sql, cog_key):
+        return self.using
+
+
+def test_a_photo_and_its_analyses_go_with_its_last_layer():
+    """Copies share one optimised photo: it, its index entry and its found plots stay while any layer uses it and
+    are deleted with the last one; another photo's index entry for the same bytes is left alone (audit R1-23)."""
+    from src.services import drone_plots
+
+    cog = "cog/layer/L1.cog.tif"
+    meta = {"cog_key": cog, "content_sha256": "sha"}
+
+    async def run():
+        s3 = _S3WithDelete()
+        s3.objects[cog] = b"cog"
+        s3.objects[drone_plots.stored_plots_key(cog)] = b"{}"
+        await photo_content.remember(s3, "b", "sha", "EPSG:3857", cog, "EPSG:3857")
+        await photo_content.remember(s3, "b", "sha", "EPSG:4326", "cog/layer/L2.cog.tif", "EPSG:4326")
+
+        assert await photo_content.forget_if_unused(_Layers(using=1), s3, "b", meta) == []  # a copy still uses it
+        assert cog in s3.objects
+
+        deleted = await photo_content.forget_if_unused(_Layers(using=0), s3, "b", meta)
+        assert set(deleted) == {cog, drone_plots.stored_plots_key(cog), photo_content.index_key("sha", "EPSG:3857")}
+        assert photo_content.index_key("sha", "EPSG:4326") in s3.objects  # the other CRS's photo is not this one
+        assert await photo_content.forget_if_unused(_Layers(using=0), s3, "b", {}) == []  # no photo: nothing to do
+
+    asyncio.run(run())
