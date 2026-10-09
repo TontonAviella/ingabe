@@ -1,4 +1,3 @@
-import json
 import datetime
 import logging
 import math
@@ -106,7 +105,7 @@ async def render_basemap(
             height=256,
             renderer="mbgl",
             bgcolor="white",
-            style_json=json.dumps(style_json),
+            style_json=style_json,
         )
     except Exception as e:
         logger.warning("Basemap render failed for %s (falling back to placeholder): %s", basemap, e)
