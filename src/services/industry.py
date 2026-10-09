@@ -128,7 +128,9 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
     """None if the tool may run for this project; otherwise the error the model gets back instead of running it."""
     if serves(tool_name, industry):
         return None
-    if industry not in INDUSTRIES:
+    if tool_name not in CAPABILITIES:  # still refused (fail closed), but not blamed on the industry
+        reason = f"There is no tool named {tool_name} here. Use one of the tools you were given."
+    elif industry not in INDUSTRIES:
         reason = f"{tool_name} cannot run here: this project's industry could not be found, so only the map and imagery tools are available."
     else:
         label = INDUSTRIES[industry]["label"]

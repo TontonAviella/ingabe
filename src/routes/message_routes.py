@@ -63,7 +63,7 @@ from src.services.life_harness import (
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
-from src.services import data_coverage, industry, llm_cache
+from src.services import data_coverage, industry, llm_cache, project_partner
 from src.database.pool import set_request_industry
 from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
@@ -2173,6 +2173,20 @@ async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
     return project_industry
 
 
+def chat_lock_key(conversation_id: int) -> str:
+    """Redis lock for one conversation's turn, per database (conversation ids repeat across databases)."""
+    return f"chat_lock:{os.environ.get('POSTGRES_DB', 'mundidb')}:{conversation_id}"
+
+
+async def _act_for_project(map_id: str, session: UserContext) -> UserContext:
+    """The session acting for the map's project's organization (see src.services.project_partner)."""
+    async with async_conn("request.project_partner") as conn:
+        project_id = await conn.fetchval("SELECT project_id FROM user_mundiai_maps WHERE id = $1", map_id)
+        partner = await project_partner.partner_for_project(conn, project_id, session.get_user_id(),
+                                                            session.get_org_id())
+    return session.for_partner(partner)
+
+
 async def process_chat_interaction_task(
     request: Request,  # Keep request for get_map_messages
     map_id: str,
@@ -2225,7 +2239,7 @@ async def process_chat_interaction_task(
     await asyncio.sleep(0.1)
     partner_id = session.get_org_id()
 
-    _lock_key = f"chat_lock:{conversation.id}"
+    _lock_key = chat_lock_key(conversation.id)
     # tool_call_id -> (tool name, arguments), for result checks.
     _tool_calls_by_id: dict[str, tuple[str, Any]] = {}
 
@@ -2975,7 +2989,9 @@ async def process_chat_interaction_task(
 
             # Process each tool call returned by the assistant
             # Wrap tool processing in its own connection scope
-            async with async_conn("tool_execution") as conn:
+            # Tools run as the signed-in user and partner: with no user on the connection, row-level security treats
+            # it as a background worker and every user's rows are visible (audit 2026-10-09, round 2).
+            async with async_conn("tool_execution", user_id=user_id, partner_id=partner_id) as conn:
                 for tool_call in assistant_message.tool_calls:
                     tool_call: ChatCompletionMessageToolCall = tool_call
                     function_name = tool_call.function.name
@@ -3148,7 +3164,7 @@ async def process_chat_interaction_task_safely(
     user_message_id: str | None = None,
 ):
     started_at = time.monotonic()
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
 
     async def clear_streaming_state() -> None:
         try:
@@ -3313,7 +3329,7 @@ async def send_map_message(
     )
 
     # Check if map is already being processed
-    lock_key = f"chat_lock:{conversation.id}"
+    lock_key = chat_lock_key(conversation.id)
     try:
         if redis.get(lock_key):
             raise HTTPException(
@@ -3330,6 +3346,9 @@ async def send_map_message(
     # Before any database work (the Brain memory packet below included): this request reads and writes only
     # the project's industry. The background turn runs in this request's context and keeps the same scope.
     await _scope_request_to_map_industry(map_id)
+    # And to the project's organization, whichever one the user has active (Brain's partner-only notes).
+    session = await _act_for_project(map_id, session)
+    partner_id = session.get_org_id()
 
     # Use map state provider to generate system messages
     messages_response = await get_all_conversation_messages(conversation.id, session)

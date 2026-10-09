@@ -68,7 +68,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look, industry, photo_content
+from src.services import drone_first_look, industry, photo_content, project_partner
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -263,14 +263,16 @@ async def create_map(
             await conn.execute(
                 """
                 INSERT INTO user_mundiai_projects
-                (id, owner_uuid, maps, title, industry)
+                (id, owner_uuid, maps, title, industry, partner_id)
                 VALUES ($1, $2, ARRAY[$3], $4,
-                        COALESCE((SELECT industry FROM users WHERE internal_uuid = ($2::uuid)::text), 'agriculture'))
+                        COALESCE((SELECT industry FROM users WHERE internal_uuid = ($2::uuid)::text), 'agriculture'),
+                        $5::uuid)
                 """,
                 project_id,
                 owner_id,
                 map_id,
                 map_request.title,
+                session.get_org_id(),  # the organization it acts for (src.services.project_partner)
             )
 
             # Then insert map with data including project_id and layer_ids
@@ -1885,10 +1887,12 @@ async def complete_layer_upload(
                             conn, mundi_map.project_id, user_id, body.conversation_id,
                             f"Drone image: {result.first_layer_name or layer_name}",
                         )
+                        first_look_partner = await project_partner.partner_for_project(
+                            conn, mundi_map.project_id, user_id, session.get_org_id())
                 if first_look_conversation is not None:
                     background_tasks.add_task(
                         drone_first_look.post_first_look,
-                        primary_id, map_id, user_id, session.get_org_id(), first_look_conversation,
+                        primary_id, map_id, user_id, first_look_partner, first_look_conversation,
                     )
             except Exception:  # noqa: BLE001 - the upload succeeded; only the automatic summary is skipped
                 logger.exception("first look not scheduled for %s", primary_id)

@@ -65,6 +65,20 @@ PAGE_SCOPE_FILTER = f"""
     END
 """
 
+# Which notes a just-written note (s) may link to (t): only notes its own author could read, of its own industry
+# or general. Hooks and ingestion write with no user or industry set, so without this a feature attribute or a
+# [[slug]] in fetched partner text linked to other partners' private notes and other industries' notes (audit
+# 2026-10-09, round 2). A general note links to general notes only: links are readable wherever the source is.
+_LINKABLE_FROM_SOURCE = """
+    AND (t.industry IS NULL OR t.industry IS NOT DISTINCT FROM s.industry)
+    AND CASE t.access_scope
+        WHEN 'public' THEN true
+        WHEN 'partner_internal' THEN t.partner_id IS NOT NULL AND t.partner_id IS NOT DISTINCT FROM s.partner_id
+        WHEN 'private' THEN t.owner_uuid IS NOT DISTINCT FROM s.owner_uuid
+        ELSE false
+    END
+"""
+
 # Agricultural page types for Rwanda insurance
 PAGE_TYPES = {
     "field",
@@ -445,8 +459,9 @@ class BrainService:
             # Bulk-resolve target types in one round-trip rather than per-edge.
             target_slugs = [slug for slug, _ in link_targets]
             target_rows = await conn.fetch(
-                "SELECT slug, type FROM brain_pages WHERE slug = ANY($1::text[])",
-                target_slugs,
+                f"SELECT t.slug, t.type FROM brain_pages t, brain_pages s "
+                f"WHERE s.id = $2 AND t.slug = ANY($1::text[]) {_LINKABLE_FROM_SOURCE}",
+                target_slugs, result_page.id,
             )
             slug_to_type: dict[str, str] = {
                 r["slug"]: r["type"] for r in target_rows
@@ -460,10 +475,10 @@ class BrainService:
                     page_content=page.compiled_truth or "",
                 )
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO brain_links (from_page_id, to_page_id, link_type, context)
-                    SELECT $1, p.id, $3, $4
-                    FROM brain_pages p WHERE p.slug = $2
+                    SELECT $1, t.id, $3, $4
+                    FROM brain_pages t, brain_pages s WHERE s.id = $1 AND t.slug = $2 {_LINKABLE_FROM_SOURCE}
                     ON CONFLICT (from_page_id, to_page_id) DO UPDATE SET
                         link_type = EXCLUDED.link_type,
                         context = EXCLUDED.context

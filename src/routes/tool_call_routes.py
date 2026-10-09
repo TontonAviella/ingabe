@@ -250,8 +250,13 @@ async def tool_call(
     from src.database.pool import async_conn, set_request_industry
     from src.services import industry
 
+    from src.services import project_partner
+
     async with async_conn("tool_call.project_industry") as ind_conn:
         project_industry = await industry.industry_of_project(ind_conn, project_id)
+        # The call acts for the project's organization, not for whichever one the payload names.
+        acting_partner = await project_partner.partner_for_project(
+            ind_conn, project_id, payload.user_id, payload.partner_id)
     set_request_industry(project_industry)
     refusal = industry.tool_refusal(payload.tool_name, project_industry)
     if refusal:
@@ -296,7 +301,7 @@ async def tool_call(
                     project_id=project_id,
                     session=ServiceUserContext(
                         user_uuid=payload.user_id,
-                        partner_id=payload.partner_id,
+                        partner_id=acting_partner,
                     ),
                 )
                 tool_result = await fn(parsed_args, meta_args)
@@ -307,11 +312,11 @@ async def tool_call(
                 async with async_conn(
                     "tool-call.legacy_shim",
                     user_id=payload.user_id,
-                    partner_id=payload.partner_id,
+                    partner_id=acting_partner,
                 ) as shim_conn:
                     ctx = LegacyToolContext(
                         user_id=payload.user_id,
-                        partner_id=payload.partner_id,
+                        partner_id=acting_partner,
                         conversation_id=conversation_id_int,
                         map_id=map_id,
                         project_id=project_id,
@@ -325,7 +330,7 @@ async def tool_call(
             # the in-process chat-loop uses (src/routes/message_routes.py).
             logger.exception(
                 "tool-call dispatch failed (tool=%s conv=%s partner=%s)",
-                payload.tool_name, conversation_id_int, payload.partner_id,
+                payload.tool_name, conversation_id_int, acting_partner,
             )
             tool_result = {
                 "status": "error",
@@ -339,7 +344,7 @@ async def tool_call(
         payload.arguments or {},
         tool_result,
         open_conn=lambda: async_conn(
-            "tool-call.result_check", user_id=payload.user_id, partner_id=payload.partner_id
+            "tool-call.result_check", user_id=payload.user_id, partner_id=acting_partner
         ),
         project_id=project_id,
         user_id=payload.user_id,

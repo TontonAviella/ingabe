@@ -76,7 +76,7 @@ async def test_safe_chat_task_cancellation_clears_frontend_state(monkeypatch):
     assert error_messages == [
         "Sage stopped before finishing this request. Please try again.",
     ]
-    assert deleted_keys == ["chat_lock:123"]
+    assert deleted_keys == [message_routes.chat_lock_key(123)]
 
 
 @pytest.mark.asyncio

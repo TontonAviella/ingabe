@@ -45,7 +45,8 @@ def test_a_wrong_industry_tool_is_refused_when_called_anyway():
     assert refusal and refusal["error_kind"] == "wrong_industry" and "Power Grid" in refusal["error"]
     assert industry.tool_refusal("get_ndvi_stats", "agriculture") is None
     assert industry.tool_refusal("search_location", "telecom") is None
-    assert industry.tool_refusal("a_tool_nobody_labelled", "telecom") is not None  # unknown: agriculture only
+    invented = industry.tool_refusal("a_tool_nobody_labelled", "telecom")  # unknown: refused, but not "for agriculture"
+    assert invented and "no tool named" in invented["error"] and "agriculture" not in invented["error"]
 
 
 def test_only_other_industries_get_a_prompt_note():
@@ -230,7 +231,9 @@ async def test_notes_made_by_the_upload_hook_take_the_projects_industry():
                 return [h for h in await super().get_pending_hooks(conn, limit=1000) if h["id"] == hook_id]
 
         await process_pending_hooks(conn, OnlyThisHook(), limit=10)
-        assert await conn.fetchval("SELECT industry FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower()) == "telecom"
+        page = await conn.fetchrow("SELECT industry, type FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower())
+        assert page["industry"] == "telecom"
+        assert page["type"] == "layer"  # not 'field': no farm links or field-in-district edges for a mast photo
         assert await conn.fetchval("SELECT current_setting('app.industry', true)") in (None, "")  # reset after the hook
         await conn.execute("DELETE FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower())
 
@@ -328,3 +331,92 @@ async def test_parcel_ndvi_reads_only_this_projects_parcels():
             assert f"my-field-{RUN_TAG}" in text and f"their-field-{RUN_TAG}" not in text
         finally:
             await conn.execute("DELETE FROM ndvi_parcel_cache WHERE layer_id = ANY($1::text[])", [mine, theirs])
+
+
+@pytest.mark.anyio
+async def test_background_writes_link_only_to_notes_the_author_could_read():
+    """Hooks write with no user or industry set; a [[slug]] or a frontmatter reference must still not link a note to
+    another partner's private note or another industry's note (audit 2026-10-09, round 2)."""
+    from src.services.brain_service import BrainService, PageInput
+
+    brain = BrainService()
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    mine, theirs, grid, open_ = (f"{name}-{RUN_TAG}" for name in ("mine", "theirs", "grid", "open"))
+    async with get_async_db_connection() as conn:  # a worker connection: no user, partner or industry
+        try:
+            await brain.put_page(conn, mine, PageInput(type="concept", title="A's note", compiled_truth="a"), owner_uuid=a)
+            await brain.put_page(conn, theirs, PageInput(type="farmer", title="B's farmer", compiled_truth="b"), owner_uuid=b)
+            await brain.put_page(conn, open_, PageInput(type="concept", title="Public", compiled_truth="p"),
+                                 owner_uuid=b, access_scope="public")
+            await conn.execute("UPDATE brain_pages SET industry = 'agriculture' WHERE slug = ANY($1)", [mine, theirs, open_])
+            await conn.execute("SELECT set_config('app.industry', 'agriculture', false)")
+            page = await brain.put_page(conn, f"src-{RUN_TAG}", PageInput(
+                type="field", title="Upload", compiled_truth=f"see [[{mine}]] [[{theirs}]] [[{open_}]]",
+                frontmatter={"related": [theirs]}), owner_uuid=a)
+            linked = {r["slug"] for r in await conn.fetch(
+                "SELECT t.slug FROM brain_links l JOIN brain_pages t ON t.id = l.to_page_id WHERE l.from_page_id = $1",
+                page.id)}
+            assert linked == {mine, open_}  # never B's private farmer
+
+            await conn.execute("SELECT set_config('app.industry', 'power_grid', false)")
+            grid_page = await brain.put_page(conn, grid, PageInput(
+                type="asset", title="Substation", compiled_truth=f"near [[{open_}]] [[{mine}]]"), owner_uuid=a)
+            assert await conn.fetchval("SELECT count(*) FROM brain_links WHERE from_page_id = $1", grid_page.id) == 0
+        finally:
+            await conn.execute("RESET app.industry")
+            await conn.execute("DELETE FROM brain_pages WHERE slug = ANY($1)", [mine, theirs, open_, grid, f"src-{RUN_TAG}"])
+
+
+# --- A project acts for one organization (audit 2026-10-09, round 2) ------------------------------------------------
+
+@pytest.mark.anyio
+async def test_a_project_acts_for_its_own_organization_whichever_one_is_active():
+    from src.services.project_partner import partner_for_project
+
+    user, outsider = str(uuid.uuid4()), str(uuid.uuid4())
+    alpha, beta = str(uuid.uuid4()), str(uuid.uuid4())
+    project_id = f"P{RUN_TAG}pp"[:12]
+    async with get_async_db_connection() as conn:
+        await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
+        for org in (alpha, beta):
+            await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, $2, $2)", org, f"o-{org[:8]}")
+            await conn.execute("INSERT INTO user_organizations (user_id, org_id, role) VALUES ($1, $2::uuid, 'member')",
+                               user, org)
+        await conn.execute("INSERT INTO user_mundiai_projects (id, owner_uuid, maps) VALUES ($1, $2::uuid, '{}')",
+                           project_id, user)
+        try:
+            assert await partner_for_project(conn, project_id, user, alpha) == alpha  # first turn binds it
+            assert await partner_for_project(conn, project_id, user, beta) == alpha   # switching org changes nothing
+            assert await partner_for_project(conn, project_id, outsider, beta) is None  # not a member: no partner notes
+            assert await partner_for_project(conn, None, user, beta) is None
+        finally:
+            await conn.execute("DELETE FROM user_mundiai_projects WHERE id = $1", project_id)
+            await conn.execute("DELETE FROM user_organizations WHERE user_id = $1", user)
+            await conn.execute("DELETE FROM organizations WHERE id = ANY($1::uuid[])", [alpha, beta])
+            await conn.execute("DELETE FROM users WHERE internal_uuid = $1", user)
+
+
+@pytest.mark.anyio
+async def test_a_placeholder_partner_does_not_bind_a_project():
+    from src.services.project_partner import partner_for_project
+
+    user, project_id = str(uuid.uuid4()), f"P{RUN_TAG}ph"[:12]
+    async with get_async_db_connection() as conn:
+        await conn.execute("INSERT INTO user_mundiai_projects (id, owner_uuid, maps) VALUES ($1, $2::uuid, '{}')",
+                           project_id, user)
+        try:
+            placeholder = str(uuid.uuid4())  # Hermes' local stand-in when no sign-in provider is set
+            assert await partner_for_project(conn, project_id, user, placeholder) == placeholder
+            assert await partner_for_project(conn, project_id, user, None) is None
+            assert await conn.fetchval("SELECT partner_id FROM user_mundiai_projects WHERE id = $1", project_id) is None
+        finally:
+            await conn.execute("DELETE FROM user_mundiai_projects WHERE id = $1", project_id)
+
+
+def test_a_session_acting_for_a_partner_keeps_its_class():
+    from src.dependencies.session import LegacyUserContext, WorkOSUserContext
+
+    workos = WorkOSUserContext("u", "w", org_id="beta").for_partner("alpha")
+    assert isinstance(workos, WorkOSUserContext) and workos.get_org_id() == "alpha" and workos.get_user_id() == "u"
+    legacy = LegacyUserContext().for_partner(None)
+    assert isinstance(legacy, LegacyUserContext) and legacy.get_org_id() is None
