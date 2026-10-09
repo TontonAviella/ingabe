@@ -17,14 +17,33 @@ def _survey(crops):
     return drone_vision.Survey(looks=looks, plots=len(looks), model="m", done_at="t", cost_usd=0.0)
 
 
-def test_checks_are_kept_per_photo_and_a_later_check_replaces_an_earlier_one():
+class _Plots:
+    def __init__(self, source="found", found_at="2026-10-01T00:00:00"):
+        self.source, self.found_at = source, found_at
+
+
+def test_checks_are_kept_per_project_and_plot_set_and_a_later_check_replaces_an_earlier_one():
     s3 = _FakeS3()
-    asyncio.run(field_checks.add_check(s3, "b", "cog/a.tif", 3, "maize"))
-    checks = asyncio.run(field_checks.add_check(s3, "b", "cog/a.tif", 3, "cassava"))
+    found = field_checks.plot_set_id("cog/a.tif", _Plots())
+    asyncio.run(field_checks.add_check(s3, "b", "PfarmA", found, 3, "maize"))
+    checks = asyncio.run(field_checks.add_check(s3, "b", "PfarmA", found, 3, "cassava"))
     assert {n: c.crop for n, c in checks.items()} == {3: "cassava"}
-    assert asyncio.run(field_checks.load_checks(s3, "b", "cog/other.tif")) == {}
     with pytest.raises(ValueError):
-        asyncio.run(field_checks.add_check(s3, "b", "cog/a.tif", 4, "unsure"))
+        asyncio.run(field_checks.add_check(s3, "b", "PfarmA", found, 4, "unsure"))
+
+
+def test_checks_never_cross_projects_partners_or_plot_sets():
+    """Identical photos share one optimised file across partners; their checks must not follow it (audit R1-7),
+    and a check must not land on a different polygon with the same number (R1-24)."""
+    s3 = _FakeS3()
+    found = field_checks.plot_set_id("cog/shared.tif", _Plots())
+    asyncio.run(field_checks.add_check(s3, "b", "PpartnerA", found, 7, "maize"))
+    assert asyncio.run(field_checks.load_checks(s3, "b", "PpartnerB", found)) == {}  # same photo, other project
+    own_map = field_checks.plot_set_id("cog/shared.tif", _Plots(source="map:Lfields@3"))
+    assert asyncio.run(field_checks.load_checks(s3, "b", "PpartnerA", own_map)) == {}  # same project, other plots
+    assert asyncio.run(field_checks.load_checks(s3, "b", None, found)) == {}  # no project, no checks
+    with pytest.raises(ValueError):
+        asyncio.run(field_checks.add_check(s3, "b", "", found, 1, "maize"))
 
 
 def test_the_model_is_scored_only_where_it_named_a_crop():

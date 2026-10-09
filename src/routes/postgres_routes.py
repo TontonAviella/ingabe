@@ -1350,87 +1350,6 @@ async def _prewarm_raster_tiles_after_cog(
         logger.warning("Raster tile prewarm failed for %s (non-fatal)", layer_id, exc_info=True)
 
 
-async def _try_reuse_existing_cog(layer_id: str) -> bool:
-    """Link duplicate raster uploads to an existing optimized COG when possible."""
-    from src.structures import get_async_db_connection
-    from src.utils import s3_op
-
-    bucket_name = get_bucket_name()
-    s3 = await get_async_s3_client(signature_version="s3v4")
-
-    async with get_async_db_connection() as conn:
-        current = await conn.fetchrow(
-            """
-            SELECT layer_id, name, size_bytes, metadata, bounds
-            FROM map_layers
-            WHERE layer_id = $1 AND type = $2
-            """,
-            layer_id,
-            LAYER_TYPE_RASTER,
-        )
-        if not current:
-            return False
-
-        current_meta = current["metadata"] or {}
-        if isinstance(current_meta, str):
-            current_meta = json.loads(current_meta)
-        current_etag = current_meta.get("upload_etag")
-
-        candidates = await conn.fetch(
-            """
-            SELECT layer_id, metadata, bounds
-            FROM map_layers
-            WHERE layer_id <> $1
-              AND type = $2
-              AND name = $3
-              AND size_bytes = $4
-              AND metadata ? 'cog_key'
-            ORDER BY last_edited DESC
-            LIMIT 10
-            """,
-            layer_id,
-            LAYER_TYPE_RASTER,
-            current["name"],
-            current["size_bytes"],
-        )
-
-        for candidate in candidates:
-            metadata = candidate["metadata"] or {}
-            if isinstance(metadata, str):
-                metadata = json.loads(metadata)
-            candidate_etag = metadata.get("upload_etag")
-            if current_etag and candidate_etag and current_etag != candidate_etag:
-                continue
-
-            cog_key = metadata.get("cog_key")
-            if not cog_key:
-                continue
-
-            try:
-                await s3_op(
-                    s3.head_object(Bucket=bucket_name, Key=cog_key),
-                    "head_object",
-                    f"reusable COG {cog_key}",
-                )
-            except Exception:
-                continue
-
-            extra = {"reused_cog_from_layer_id": candidate["layer_id"]}
-            if metadata.get("content_sha256"):
-                extra["content_sha256"] = metadata["content_sha256"]
-            await _point_layer_at_cog(conn, layer_id, cog_key, metadata.get("cog_srs") or "EPSG:3857",
-                                      "reused_existing", extra)
-            logger.info(
-                "Background COG: reused existing COG %s for %s from %s",
-                cog_key,
-                layer_id,
-                candidate["layer_id"],
-            )
-            return True
-
-    return False
-
-
 async def _point_layer_at_cog(conn, layer_id: str, cog_key: str, cog_srs: str | None, source: str,
                               extra: dict[str, Any]) -> None:
     """Make a layer use an optimised photo that already exists. Plots, surveys and spots are kept per optimised
@@ -1478,16 +1397,8 @@ async def _background_generate_cog(
 
     started_at = time.monotonic()
     bucket_name = get_bucket_name()
-    if await _try_reuse_existing_cog(layer_id):
-        capture_backend_event(
-            "backend_cog_generation_completed",
-            properties={
-                "layer_id": layer_id,
-                "duration_ms": elapsed_ms(started_at),
-                "cog_source": "reused_existing",
-            },
-        )
-        return
+    # Reuse happens only for byte-identical uploads (photo_content, below). A name-and-size guess used to run
+    # here; it could attach another partner's different photo (audit 2026-10-09, R1-6).
 
     tmp_dir = cleanup_dir or tempfile.mkdtemp()
     try:

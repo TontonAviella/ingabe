@@ -12,7 +12,6 @@ import os
 import json
 import re
 import time
-from urllib.parse import quote
 from fastapi import BackgroundTasks
 from opentelemetry import trace
 import asyncio
@@ -66,6 +65,7 @@ from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache
 from src.database.pool import set_request_industry
+from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES, READER_ROLE, reader_uri
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
     get_tools,
@@ -132,26 +132,7 @@ tracer = trace.get_tracer(__name__)
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
 # connection. The database column is varchar(12), so keep these short.
 RWANDA_INTERNAL_CONNECTION_NAME = "Rwanda Agriculture (internal)"
-INTERNAL_RWANDA_ALLOWED_TABLES = frozenset(
-    {
-        "rwanda_province_boundaries",
-        "rwanda_district_boundaries",
-        "rwanda_sector_boundaries",
-        "rwanda_cell_boundaries",
-        "rwanda_village_boundaries",
-        "ndvi_cell_cache",
-        "ndvi_field_cache",
-        "ndvi_parcel_cache",
-        "agri_indices_cache",
-        "anomaly_alerts_cache",
-        "crop_classification_cache",
-        "drought_cache",
-        "emissions_annual_cache",
-        "phenology_cache",
-        "weather_daily_cache",
-        "yield_risk_cache",
-    }
-)
+# The approved tables and the read-only login that enforces them: src/database/rwanda_reader.py.
 _SQL_TABLE_REF_RE = re.compile(
     r'\b(?:from|join)\s+((?:"?[a-zA-Z_][a-zA-Z0-9_]*"?\.)?"?[a-zA-Z_][a-zA-Z0-9_]*"?)',
     re.IGNORECASE,
@@ -231,15 +212,8 @@ async def _ensure_rwanda_postgis_connection(
             """,
             connection_id,
         )
-        pg_host = os.environ.get("POSTGRES_HOST", "postgresdb")
-        pg_port = os.environ.get("POSTGRES_PORT", "5432")
-        pg_db = os.environ.get("POSTGRES_DB", "mundidb")
-        pg_user = os.environ.get("POSTGRES_USER", "mundiuser")
-        pg_pass = os.environ.get("POSTGRES_PASSWORD", "changeme")
-        uri = (
-            f"postgresql://{quote(pg_user, safe='')}:{quote(pg_pass, safe='')}"
-            f"@{pg_host}:{pg_port}/{quote(pg_db, safe='')}?sslmode=disable"
-        )
+        # Logs in as the read-only reader role, which can SELECT only the approved Rwanda tables.
+        uri = reader_uri()
 
         if existing:
             if existing["project_id"] != project_id:
@@ -348,6 +322,8 @@ async def _ensure_rwanda_postgis_connection(
                 GROUP BY province
                 """
             )
+            # Grants survive CREATE OR REPLACE; this covers a view first created after the reader-role migration.
+            await conn.execute(f"GRANT SELECT ON rwanda_province_boundaries TO {READER_ROLE}")
 
         # Dynamically count which Rwanda admin tables actually exist
         _RWANDA_TABLES = [

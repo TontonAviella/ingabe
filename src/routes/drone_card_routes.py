@@ -103,7 +103,8 @@ async def get_drone_card_answer(
     if spot_plots and here.plots is not None:
         metadata = _photo_ready(layer)
         s3, bucket = await get_async_s3_client(), get_bucket_name()
-        key = (f"{drone_vision.survey_key(photo_plots.photo_key(metadata), here.plots)}|"
+        # Bare spots come from pixels alone, so every reader of this photo and plot set shares them.
+        key = (f"{field_checks.plot_set_id(photo_plots.photo_key(metadata), here.plots)}|"
                f"{','.join(str(f['properties']['number']) for f in spot_plots)}")
         spots = await drone_plots.kept_spots(s3, bucket, key)
         job = drone_plots.spots_job(key)
@@ -205,13 +206,22 @@ async def check_drone_plot(
     feature = next((f for f in (plots.geojson["features"] if plots else []) if f["properties"]["number"] == number), None)
     if feature is None:
         raise HTTPException(404, f"No plot {number} on this photo")
+    # The check belongs to this project (never to the photo, which identical uploads share across partners).
+    async with async_read_conn("drone_check.project", user_id=session.get_user_id()) as conn:
+        project_id = await photo_context.project_of(conn, layer.layer_id)
+    if not project_id:
+        raise HTTPException(404, "This photo is not in a project")
     try:
-        checks = await field_checks.add_check(s3, get_bucket_name(), photo_plots.photo_key(metadata), number, check.crop)
+        checks = await field_checks.add_check(s3, get_bucket_name(), project_id,
+                                              field_checks.plot_set_id(photo_plots.photo_key(metadata), plots),
+                                              number, check.crop)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     if check.crop not in ("fallow_or_bare", "other", "grass_or_pasture", "woodlot"):
         square = await asyncio.to_thread(drone_vision.closeup_of_plot, await _cog_url(s3, metadata), feature)
-        await drone_vision.add_reference(s3, get_bucket_name(), check.crop, square, "checked in the field")
+        await drone_vision.add_reference(s3, get_bucket_name(),
+                                         drone_vision.reference_scope(session.get_org_id(), session.get_user_id()),
+                                         check.crop, square, "checked in the field")
     return {"number": number, "crop": check.crop, "checks": len(checks)}
 
 

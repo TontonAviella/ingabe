@@ -59,7 +59,7 @@ async def _context(row: dict[str, Any], meta: IngabeToolCallMetaArgs) -> Optiona
     return await photo_context.load(
         await get_async_s3_client(), get_bucket_name(), layer_id=row["layer_id"], name=row["name"],
         bounds=list(row["bounds"]) if row["bounds"] else None, metadata=row["metadata"], user_id=meta.user_uuid,
-        org_id=None, audience=None, start_jobs=False)
+        org_id=meta.session.get_org_id() if meta.session is not None else None, audience=None, start_jobs=False)
 
 
 async def get_drone_photo_findings(args: DronePhotoArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
@@ -130,7 +130,9 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
         except plant_counts.CannotCount as why:
             return {"status": "error", "error": str(why)}
         await plant_counts.save_count(s3, bucket, key, feature, count)
-    look = await _crop_seen(s3, bucket, key, plots, args.plot_number)
+    org_id = meta.session.get_org_id() if meta.session is not None else None
+    look = await _crop_seen(s3, bucket, key, plots, args.plot_number, meta.project_id,
+                            drone_vision.reference_scope(org_id, meta.user_uuid))
     name = feature["properties"].get("name") or f"Plot {args.plot_number}"
     # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
     async with kue_ephemeral_action(meta.conversation_id, f"Drawing the {count.plants:,} plants counted in {name}",
@@ -161,10 +163,13 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     }
 
 
-async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: int) -> Optional[str]:
-    """The crop in this plot: checked on the ground, else named by the vision survey; None if neither."""
-    survey = await drone_vision.load_survey(s3, bucket, drone_vision.survey_key(photo_key, plots))
-    survey = field_checks.apply(survey, await field_checks.load_checks(s3, bucket, photo_key))
+async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: int, project_id: Optional[str],
+                     scope: str) -> Optional[str]:
+    """The crop in this plot: checked on the ground (this project's checks), else named by this scope's vision
+    survey; None if neither."""
+    survey = await drone_vision.load_survey(s3, bucket, drone_vision.survey_key(photo_key, plots, scope))
+    survey = field_checks.apply(survey, await field_checks.load_checks(
+        s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots)))
     look = survey.look(number) if survey else None
     if look is None or look.main_crop == "unsure":
         return None
