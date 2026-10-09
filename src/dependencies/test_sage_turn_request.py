@@ -94,8 +94,9 @@ async def test_apply_tool_shortlist_ranks_the_full_catalog_and_skips_small_talk(
     shortlisted = await apply_tool_shortlist(plan, text, [], tools, k=10, embed=None)
     names = _names(shortlisted.tools)
     assert len(names) == 10 and shortlisted.shortlist == "bm25"
-    # The category filter drops this tool for this request; the shortlist keeps it.
-    assert "get_cell_ndvi_stats" in names and "get_cell_ndvi_stats" not in _names(plan.tools)
+    # The shortlist ranks this tool in; since 2026-10-08 the category filter keeps it too
+    # (vegetation words bring in the agriculture tools).
+    assert "get_cell_ndvi_stats" in names and "get_cell_ndvi_stats" in _names(plan.tools)
 
     small_talk = plan_sage_turn("hi", [{"role": "user", "content": "hi"}], tools, lambda: "P")
     assert await apply_tool_shortlist(small_talk, "hi", [], tools, k=10, embed=None) is small_talk
