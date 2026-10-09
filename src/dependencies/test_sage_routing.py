@@ -11,6 +11,9 @@ These cover the three observable contracts:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from src.dependencies.sage_routing import (
@@ -170,6 +173,57 @@ def test_classify_intent_uncertain_returns_empty(msg: str) -> None:
 @pytest.mark.parametrize("msg", ["show the terrain around Kigali", "the marsh drained after the dam"])
 def test_rain_words_do_not_match_inside_other_words(msg: str) -> None:
     assert AGRICULTURE not in classify_intent(msg)
+
+
+@pytest.mark.parametrize(
+    "msg, expected",
+    [
+        # NDVI by place and the anomaly alerts are agriculture tools (2026-10-08 picker test).
+        ("NDVI for Nyagatare district", {AGRICULTURE, SATELLITE}),
+        ("vegetation indices for Kirehe district", {AGRICULTURE}),
+        ("display the latest optical image for Kayonza", {SATELLITE}),
+        ("show me the problem zones in Plot9_NDVI", {USER_RASTER}),
+        ("show us where there's crops in Farm_A_Orthophoto ?", {USER_RASTER}),
+        ("compare my two NDVI flights of plot 7", {USER_RASTER}),
+        ("okay analyze greenness using the GRVI index then", {USER_RASTER}),
+        ("search our notes on Ruhango maize growers", {BRAIN}),
+        ("remember that the farmer at plot 4 planted maize on 3 March", {BRAIN}),
+    ],
+)
+def test_vegetation_named_rasters_and_notes_reach_their_tools(msg: str, expected: set[str]) -> None:
+    assert expected.issubset(classify_intent(msg)), f"{msg!r} -> {classify_intent(msg)}"
+
+
+_EVAL = Path(__file__).resolve().parents[2] / "evals" / "sage_routing"
+
+
+def _eval_cases_with_a_tool() -> list[dict]:
+    """Single requests, paraphrases and chains. Follow-ups are left out: the
+    keyword rules read only the new message, so "break that down by sector"
+    gets the full tool list or a guess, by design."""
+    rows = [json.loads(line) for name in ("single.jsonl", "paraphrases.jsonl", "chains.jsonl")
+            for line in (_EVAL / "cases" / name).read_text().splitlines() if line.strip()]
+    return [row for row in rows if "any_of" in row["expect"]]
+
+
+def test_routing_keeps_a_right_tool_for_every_eval_request() -> None:
+    """The category filter must never hide every right answer from Sage."""
+    tools = [{"function": {"name": n}} for n in json.loads((_EVAL / "tool_catalog.json").read_text())["model_tools"]]
+    offered_names = {t["function"]["name"] for t in tools}
+    dropped = []
+    for case in _eval_cases_with_a_tool():
+        decision = route_chat(case["text"])
+        if decision.is_small_talk:
+            dropped.append((case["id"], "small talk"))
+            continue
+        kept = tools
+        if decision.selected_categories:
+            kept = filter_tools_by_categories(tools, decision.selected_categories, decision.excluded_tool_names)
+        names = {t["function"]["name"] for t in kept}
+        # Fast-path tools (e.g. show_admin_boundary) never reach the model's list.
+        if not any(tool in names or tool not in offered_names for tool in case["expect"]["any_of"]):
+            dropped.append((case["id"], sorted(decision.selected_categories)))
+    assert not dropped, dropped
 
 
 # ---------------------------------------------------------------------------
