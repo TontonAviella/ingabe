@@ -14,7 +14,10 @@ until it is labelled.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
+
+from src.database.pool import get_request_industry
 
 INDUSTRIES: dict[str, dict[str, str]] = {
     "agriculture": {"label": "Agriculture", "note": "Farms, plots and crops"},
@@ -102,14 +105,17 @@ def check_industry(industry: str) -> str:
 
 
 def serves(capability: str, industry: Optional[str]) -> bool:
-    """Whether a capability may be used for a project of this industry (unknown capability: agriculture only)."""
-    return (industry or DEFAULT_INDUSTRY) in CAPABILITIES.get(capability, AGRICULTURE)
+    """Whether a capability may be used for a project of this industry. An unknown capability is agriculture-only;
+    an unknown industry (None: the project or layer could not be resolved) gets only what every industry may use,
+    so a failed lookup never unlocks agriculture (audit R1-17)."""
+    served = CAPABILITIES.get(capability, AGRICULTURE)
+    if industry is None:
+        return served == SHARED
+    return industry in served
 
 
 def request_is_agriculture() -> bool:
     """Whether the current request works for an agriculture project (also outside a request: the default)."""
-    from src.database.pool import get_request_industry
-
     return (get_request_industry() or DEFAULT_INDUSTRY) == "agriculture"
 
 
@@ -122,7 +128,7 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
     """None if the tool may run for this project; otherwise the error the model gets back instead of running it."""
     if serves(tool_name, industry):
         return None
-    label = INDUSTRIES[industry or DEFAULT_INDUSTRY]["label"]
+    label = INDUSTRIES[industry]["label"] if industry in INDUSTRIES else "of an unknown industry"
     return {
         "status": "error",
         "error_kind": "wrong_industry",
@@ -145,6 +151,53 @@ def prompt_note(industry: Optional[str]) -> Optional[str]:
     )
 
 
+_FARM_INTRO = "specialising in Rwanda agriculture, satellite imagery analysis, and geospatial data processing."
+_FARM_BLOCKS = re.compile(r"<(AgricultureCapabilities|DroneAndSatellite|UserUploadedRasters)>.*?</\1>\n?", re.S)
+_NEUTRAL_RASTERS = """<UserUploadedRasters>
+When the user asks about a raster they uploaded (drone orthophotos, other GeoTIFFs), read the pixels with
+describe_user_raster (the file itself: bands, area, date), compute_zonal_stats, get_value_distribution and
+read_pixel_at; find visible objects (structures, roads, trees, vegetation) with analyze_raster_object_candidates;
+map attention zones with create_raster_h3_context_layer. Say what the pixels show and what they cannot show.
+</UserUploadedRasters>
+"""
+
+
+def prompt_for(prompt: str, industry: Optional[str]) -> str:
+    """Sage's base prompt for a project's industry. Agriculture (and no request at all) keeps it unchanged; other
+    industries lose the farm-only instructions (crop, insurance and NDVI workflows that name agriculture tools)
+    and get the industry note, so Sage is never told to call tools it does not have (audit R1-19)."""
+    if industry is None or industry == "agriculture":
+        return prompt
+    label = INDUSTRIES[industry]["label"]
+    out = prompt.replace(_FARM_INTRO, f"for {label} work: maps, imagery and geospatial data processing in Rwanda.")
+    out = _FARM_BLOCKS.sub("", out, count=0)
+    # Any other line that names an agriculture-only tool is a farm instruction: drop it with its indented
+    # continuation lines, wherever it sits (examples, citation table, intent rules).
+    farm_tool = re.compile(r"\b(?:" + "|".join(sorted(n for n, v in CAPABILITIES.items() if v == AGRICULTURE)) + r")\b")
+    kept: list[str] = []
+    dropping_indent: Optional[int] = None
+    for line in out.split("\n"):
+        indent = len(line) - len(line.lstrip())
+        if dropping_indent is not None and line.strip() and indent > dropping_indent:
+            continue  # continuation of a dropped line
+        dropping_indent = None
+        if farm_tool.search(line):
+            dropping_indent = indent
+            continue
+        kept.append(line)
+    out = "\n".join(kept)
+    return f"{out.rstrip()}\n\n{_NEUTRAL_RASTERS}\n{prompt_note(industry)}\n"
+
+
+def small_talk_prompt(industry: Optional[str]) -> Optional[str]:
+    """The small-talk prompt for non-agriculture projects (None: keep the default, which mentions agriculture)."""
+    if industry is None or industry == "agriculture":
+        return None
+    label = INDUSTRIES[industry]["label"]
+    return (f"You are Sage, a friendly AI GIS assistant for Ingabe, working on a {label} project. Reply in 1-2 short "
+            "sentences. If the user has a real question about maps, imagery or their project, ask them to clarify.")
+
+
 async def industry_of(conn: Any, user_id: Optional[str]) -> Optional[str]:
     """The user's industry, or None when they have not chosen one (or have no account row)."""
     if not user_id:
@@ -160,28 +213,34 @@ async def save_industry(conn: Any, user_id: str, industry: str) -> bool:
     return status.endswith(" 1")
 
 
-async def industry_of_project(conn: Any, project_id: Optional[str]) -> str:
-    """The project's industry (agriculture for an unknown project)."""
+async def industry_of_project(conn: Any, project_id: Optional[str]) -> Optional[str]:
+    """The project's industry; None when the project cannot be found (callers fail closed)."""
     if not project_id:
-        return DEFAULT_INDUSTRY
+        return None
     value = await conn.fetchval("SELECT industry FROM user_mundiai_projects WHERE id = $1", project_id)
-    return value if value in INDUSTRIES else DEFAULT_INDUSTRY
+    return value if value in INDUSTRIES else None
 
 
-async def industry_of_map(conn: Any, map_id: Optional[str]) -> str:
-    """The industry of the project a map belongs to."""
+async def industry_of_map(conn: Any, map_id: Optional[str]) -> Optional[str]:
+    """The industry of the project a map belongs to; None when it cannot be found."""
     if not map_id:
-        return DEFAULT_INDUSTRY
+        return None
     value = await conn.fetchval(
         "SELECT p.industry FROM user_mundiai_maps m JOIN user_mundiai_projects p ON p.id = m.project_id "
         "WHERE m.id = $1", map_id)
-    return value if value in INDUSTRIES else DEFAULT_INDUSTRY
+    return value if value in INDUSTRIES else None
 
 
-async def industry_of_layer(conn: Any, layer_id: str) -> str:
-    """The industry of the project whose maps show this layer (agriculture if none is found)."""
+async def industry_of_layer(conn: Any, layer_id: str) -> Optional[str]:
+    """The industry a layer belongs to: that of the project it was created in (map_layers.source_map_id). A layer
+    with no recorded origin takes the one industry of the live projects showing it; several or none -> None.
+    Never "whichever map was edited last" (audit R1-15)."""
     value = await conn.fetchval(
-        "SELECT p.industry FROM user_mundiai_maps m JOIN user_mundiai_projects p ON p.id = m.project_id "
-        "WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL ORDER BY m.last_edited DESC NULLS LAST LIMIT 1",
-        layer_id)
-    return value if value in INDUSTRIES else DEFAULT_INDUSTRY
+        "SELECT p.industry FROM map_layers l JOIN user_mundiai_maps m ON m.id = l.source_map_id "
+        "JOIN user_mundiai_projects p ON p.id = m.project_id WHERE l.layer_id = $1", layer_id)
+    if value is None:
+        rows = await conn.fetch(
+            "SELECT DISTINCT p.industry FROM user_mundiai_maps m JOIN user_mundiai_projects p ON p.id = m.project_id "
+            "WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL AND p.soft_deleted_at IS NULL", layer_id)
+        value = rows[0]["industry"] if len(rows) == 1 else None
+    return value if value in INDUSTRIES else None

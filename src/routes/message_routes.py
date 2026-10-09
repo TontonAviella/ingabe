@@ -162,7 +162,7 @@ def _referenced_sql_tables(query: str) -> set[str]:
     return tables
 
 
-def validate_internal_rwanda_query(query: str, industry: str = "agriculture") -> None:
+def validate_internal_rwanda_query(query: str, industry: Optional[str] = "agriculture") -> None:
     """A friendly early error for tables this project's industry may not read (the reader roles enforce it)."""
     referenced = _referenced_sql_tables(query)
     if not referenced:
@@ -2163,9 +2163,10 @@ async def _maybe_run_deterministic_turn_before_hermes(
     ) is not None
 
 
-async def _scope_request_to_map_industry(map_id: str) -> str:
+async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
     """Look up the industry of the map's project and scope every connection this request opens from now on to it
-    (app.industry, which Brain's row-level security reads). Returns the industry."""
+    (app.industry, which Brain's row-level security reads). Returns the industry; None if the map's project cannot
+    be found, in which case everything fails closed (shared tools only, general Brain notes only)."""
     async with async_conn("request.project_industry") as conn:
         project_industry = await industry.industry_of_map(conn, map_id)
     set_request_industry(project_industry)
@@ -2420,11 +2421,15 @@ async def process_chat_interaction_task(
 
             with tracer.start_as_current_span("kue.fetch_unattached_layers"):
                 async with async_conn("fetch_unattached_layers") as ul_conn:
+                    # Only layers made in a project of this industry (audit R1-16).
                     unattached_layers = await ul_conn.fetch(
                         """
                         SELECT ml.layer_id, ml.created_on, ml.last_edited, ml.type, ml.name
                         FROM map_layers ml
+                        JOIN user_mundiai_maps sm ON sm.id = ml.source_map_id
+                        JOIN user_mundiai_projects sp ON sp.id = sm.project_id
                         WHERE ml.owner_uuid = $1
+                        AND sp.industry = $3
                         AND NOT EXISTS (
                             SELECT 1 FROM user_mundiai_maps m
                             WHERE ml.layer_id = ANY(m.layers) AND m.owner_uuid = $2
@@ -2434,6 +2439,7 @@ async def process_chat_interaction_task(
                         """,
                         user_id,
                         user_id,
+                        project_industry,
                     )
 
             layer_enum = {}
@@ -2508,9 +2514,6 @@ async def process_chat_interaction_task(
                     len(_last_user_text),
                 )
 
-            _industry_note = industry.prompt_note(project_industry)
-            if _industry_note and not _routing.is_small_talk:
-                _system_prompt_content = f"{_system_prompt_content}\n\n{_industry_note}"
             _llm_messages = [
                 {
                     "role": "system",

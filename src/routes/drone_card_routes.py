@@ -40,7 +40,7 @@ async def _agriculture_project(layer_id: str) -> None:
     async with async_read_conn("drone_cards.industry") as conn:
         project_industry = await industry.industry_of_layer(conn, layer_id)
     if not industry.serves("drone_cards", project_industry):
-        label = industry.INDUSTRIES[project_industry]["label"]
+        label = industry.INDUSTRIES[project_industry]["label"] if project_industry else "not a farm project"
         raise HTTPException(404, f"No question cards here: they are for farm photos, and this project is {label}.")
 
 

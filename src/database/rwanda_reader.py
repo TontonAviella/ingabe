@@ -55,7 +55,8 @@ INTERNAL_RWANDA_ALLOWED_TABLES = BOUNDARY_TABLES | AGRICULTURE_TABLES
 
 
 def role_for(industry: Optional[str]) -> str:
-    return READER_ROLE if (industry or "agriculture") == "agriculture" else GENERAL_READER_ROLE
+    """Agriculture projects read the farm caches; every other (or unknown) industry reads boundaries only."""
+    return READER_ROLE if industry == "agriculture" else GENERAL_READER_ROLE
 
 
 def tables_for(industry: Optional[str]) -> frozenset[str]:

@@ -266,3 +266,28 @@ def test_forecasts_lose_crop_advice_outside_agriculture():
     assert "crop" not in text.lower() and "irrigation" not in text.lower()
     assert "Dry spell ahead" in text and "high temperatures" in text and "very hot" in text
     assert "Crops without irrigation" in farm["briefing"]["headline"]  # the cached original is untouched
+
+
+def test_other_industries_get_no_farm_instructions_and_no_forced_tool_after_an_honest_no():
+    """Prompt per industry (R1-19, Hermes R1-18 shares the provider) and the abdication guard (R1-20)."""
+    from src.dependencies.sage_routing import RoutingDecision
+    from src.dependencies.sage_turn_request import SageTurnPlan, _small_talk_prompt, is_abdication
+    from src.dependencies.system_prompt import DefaultSystemPromptProvider
+
+    farm_prompt = DefaultSystemPromptProvider().get_system_prompt()
+    try:
+        set_request_industry("telecom")
+        grid_prompt = DefaultSystemPromptProvider().get_system_prompt()
+        for farm_block in ("<AgricultureCapabilities>", "<DroneAndSatellite>", "interpret_raster_health",
+                           "specialising in Rwanda agriculture"):
+            assert farm_block not in grid_prompt
+        assert "Telecom Towers" in grid_prompt and "<UserUploadedRasters>" in grid_prompt  # the neutral block
+        assert "agricultu" not in _small_talk_prompt().lower()
+        plan = SageTurnPlan(routing=RoutingDecision(is_small_talk=False, selected_categories=frozenset({"agriculture"}),
+                                                    primary_model_override=None, reason="intent:agriculture"),
+                            system_prompt="P", tools=[{"function": {"name": "get_forecast"}}], model_override=None)
+        assert not is_abdication(plan, "is the maize stressed near the mast?", "Ingabe cannot assess crops for a "
+                                 "Telecom Towers project yet.", has_tool_calls=False)
+    finally:
+        set_request_industry(None)
+    assert "<AgricultureCapabilities>" in farm_prompt  # agriculture unchanged

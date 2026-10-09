@@ -21,7 +21,8 @@ import asyncpg
 
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
-from src.services import ndvi_classes
+from src.services import industry, ndvi_classes
+from src.services.forecast_openmeteo import without_farm_advice
 from src.services import satellite_analytics
 
 
@@ -153,9 +154,7 @@ async def _handle_new_layer_from_postgis(
         str(postgis_connection_id), ctx.project_id, connection_result["connection_name"]
     ):
         try:
-            from src.services import industry as _industry
-
-            validate_internal_rwanda_query(query, await _industry.industry_of_project(ctx.conn, ctx.project_id))
+            validate_internal_rwanda_query(query, await industry.industry_of_project(ctx.conn, ctx.project_id))
         except HTTPException as e:
             return {"status": "error", "error": f"Query validation failed: {e.detail}"}
 
@@ -490,6 +489,16 @@ async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
         return {
             "status": "error",
             "error": "Missing required parameters (layer_id or new_name).",
+        }
+    # A layer belongs to the industry of the project it was made in; it never joins another industry's map
+    # (audit R1-16). An unknown origin is refused too.
+    _layer_industry = await industry.industry_of_layer(ctx.conn, layer_id_to_add)
+    _project_industry = await industry.industry_of_project(ctx.conn, ctx.project_id)
+    if _layer_industry is None or _layer_industry != _project_industry:
+        return {
+            "status": "error",
+            "error_kind": "wrong_industry",
+            "error": "That layer belongs to a project of another industry, so it cannot be added to this map.",
         }
 
     _layer_bounds = None
@@ -831,9 +840,6 @@ async def _handle_get_forecast(ctx: LegacyToolContext) -> Dict[str, Any]:
             None,
             lambda: get_farm_forecast(lat, lon, forecast_days=days),
         )
-        from src.services import industry
-        from src.services.forecast_openmeteo import without_farm_advice
-
         if not industry.request_is_agriculture():  # power lines and masts get weather, not crop advice
             result = without_farm_advice(result)
         return {"status": "success", **result}

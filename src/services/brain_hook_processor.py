@@ -21,6 +21,7 @@ from typing import Optional
 
 import asyncpg
 
+from src.services import industry
 from src.services.brain_embeddings import embed_stale_if_pages_changed
 from src.services.brain_service import BrainService, PageInput, TimelineInput, _validate_slug
 
@@ -78,8 +79,6 @@ async def process_pending_hooks(
 
 async def _hook_industry(conn: asyncpg.Connection, hook_type: str, payload: dict) -> Optional[str]:
     """The industry of the project an upload hook came from; None (general) for partner-wide hooks."""
-    from src.services import industry
-
     if hook_type == "raster_upload" and payload.get("layer_id"):
         return await industry.industry_of_layer(conn, payload["layer_id"])
     if hook_type == "vector_upload":

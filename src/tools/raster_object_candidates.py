@@ -85,11 +85,11 @@ class AnalyzeRasterObjectCandidatesArgs(BaseModel):
 
 def args_for_industry(args: AnalyzeRasterObjectCandidatesArgs, agriculture: bool) -> AnalyzeRasterObjectCandidatesArgs:
     """Outside agriculture there are no crop patches: vegetation is found as vegetation."""
-    from src.services.raster_object_candidates import _normalize_targets
+    from src.services.raster_object_candidates import normalize_targets
 
     if agriculture or not args.target_classes:
         return args
-    targets = ["vegetation_patch" if t == "crop_patch" else t for t in _normalize_targets(list(args.target_classes))]
+    targets = ["vegetation_patch" if t == "crop_patch" else t for t in normalize_targets(list(args.target_classes))]
     return args.model_copy(update={"target_classes": list(dict.fromkeys(targets))})
 
 
