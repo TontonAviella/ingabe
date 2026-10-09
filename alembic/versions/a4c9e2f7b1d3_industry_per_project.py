@@ -35,14 +35,18 @@ _INDUSTRY_CHOICE_LIVE = "2026-10-09 01:08:46+00"  # PR #166 merged: users.indust
 _SCOPE = "NULLIF(current_setting('app.industry', true), '')"
 # Unrestricted only for background workers: no user and no industry on the connection.
 _WORKER = f"({_SCOPE} IS NULL AND COALESCE(current_setting('app.user_id', true), '') = '')"
+# Every table whose rows hang off a note: (column, the note column it points at). Audit R1-25 added the last three.
 _PAGE_CHILDREN = {
-    "brain_content_chunks": "page_id",
-    "brain_facts": "page_id",
-    "brain_timeline_entries": "page_id",
-    "brain_tags": "page_id",
-    "brain_entity_refs": "page_id",
-    "brain_page_versions": "page_id",
-    "brain_links": "from_page_id",
+    "brain_content_chunks": ("page_id", "id"),
+    "brain_facts": ("page_id", "id"),
+    "brain_timeline_entries": ("page_id", "id"),
+    "brain_tags": ("page_id", "id"),
+    "brain_entity_refs": ("page_id", "id"),
+    "brain_page_versions": ("page_id", "id"),
+    "brain_links": ("from_page_id", "id"),
+    "brain_raw_data": ("page_id", "id"),
+    "brain_tables": ("page_id", "id"),
+    "brain_files": ("page_slug", "slug"),
 }
 
 
@@ -77,11 +81,11 @@ def upgrade() -> None:
         "CREATE POLICY industry_isolation_brain_pages ON brain_pages AS RESTRICTIVE FOR ALL "
         f"USING ({page_read}) WITH CHECK ({page_write})"
     )
-    for table, column in _PAGE_CHILDREN.items():
+    for table, (column, note_column) in _PAGE_CHILDREN.items():
         # Readable when the note is; writable only on a note of exactly the writer's scope.
-        child_read = f"{_WORKER} OR {column} IS NULL OR {column} IN (SELECT id FROM brain_pages)"
+        child_read = f"{_WORKER} OR {column} IS NULL OR {column} IN (SELECT {note_column} FROM brain_pages)"
         child_write = (f"{_WORKER} OR {column} IN "
-                       f"(SELECT id FROM brain_pages WHERE industry IS NOT DISTINCT FROM {_SCOPE})")
+                       f"(SELECT {note_column} FROM brain_pages WHERE industry IS NOT DISTINCT FROM {_SCOPE})")
         op.execute(
             f"CREATE POLICY industry_isolation_{table} ON {table} AS RESTRICTIVE FOR ALL "
             f"USING ({child_read}) WITH CHECK ({child_write})"

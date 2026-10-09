@@ -170,8 +170,9 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
             Which world do <em className="text-[#D9A066]">you</em> work in?
           </h1>
           <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-[#B8A99B]">
-            Ingabe reads drone and satellite pictures for three industries. Choose yours and Ingabe opens with what matters to it. You can
-            change this at any time.
+            {canClose
+              ? 'Each project belongs to one industry. Projects you already have keep theirs; new projects you create use the industry you choose here.'
+              : 'Ingabe reads drone and satellite pictures for three industries. Choose yours and Ingabe opens with what matters to it. Each project belongs to one industry; you can choose another for new projects at any time.'}
           </p>
         </div>
 

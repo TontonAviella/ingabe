@@ -110,10 +110,19 @@ async def test_cards_and_first_look_are_for_agriculture_projects_only():
     async with get_async_db_connection() as conn:
         grid_map = await _project(conn, owner, "power_grid", grid_layer)
         await _project(conn, owner, "agriculture", farm_layer)
+    from types import SimpleNamespace
+
+    # Layers created on those maps (their source map decides their industry).
+    async with get_async_db_connection() as conn:
+        for layer_id, source_map in ((grid_layer, grid_map), (farm_layer, None)):
+            await conn.execute("INSERT INTO map_layers (layer_id, owner_uuid, name, type, source_map_id) "
+                               "VALUES ($1, $2, 'photo', 'raster', $3)", layer_id, owner, source_map)
     with pytest.raises(HTTPException) as refused:
-        await _agriculture_project(grid_layer)
+        await _agriculture_project(SimpleNamespace(layer_id=grid_layer))
     assert refused.value.status_code == 404 and "Power Grid" in refused.value.detail
-    await _agriculture_project(farm_layer)  # allowed: no exception
+    await _agriculture_project(SimpleNamespace(layer_id=farm_layer))  # allowed: no exception
+    with pytest.raises(HTTPException):  # a layer on no map at all: unknown industry, no crop cards (R1-17)
+        await _agriculture_project(SimpleNamespace(layer_id=f"L{RUN_TAG}orph"[:12]))
     # The first look stops before it even looks for the photo.
     assert await post_first_look(grid_layer, grid_map, owner, None, conversation_id=0, wait_s=0) is None
 
@@ -213,10 +222,14 @@ async def test_notes_made_by_the_upload_hook_take_the_projects_industry():
     layer_id = f"L{RUN_TAG}hk"[:12]
     async with get_async_db_connection() as conn:
         await _project(conn, owner, "telecom", layer_id)
-        brain = BrainService()
-        await brain.enqueue_hook(conn, "raster_upload", {"layer_id": layer_id, "layer_name": "Mast site", "user_id": owner,
-                                                         "bounds": [30.0, -2.0, 30.01, -1.99]})
-        await process_pending_hooks(conn, brain, limit=50)
+        hook_id = await BrainService().enqueue_hook(conn, "raster_upload", {
+            "layer_id": layer_id, "layer_name": "Mast site", "user_id": owner, "bounds": [30.0, -2.0, 30.01, -1.99]})
+
+        class OnlyThisHook(BrainService):  # other tests' hooks in the shared test database are not ours to run
+            async def get_pending_hooks(self, conn, limit=10):
+                return [h for h in await super().get_pending_hooks(conn, limit=1000) if h["id"] == hook_id]
+
+        await process_pending_hooks(conn, OnlyThisHook(), limit=10)
         assert await conn.fetchval("SELECT industry FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower()) == "telecom"
         assert await conn.fetchval("SELECT current_setting('app.industry', true)") in (None, "")  # reset after the hook
         await conn.execute("DELETE FROM brain_pages WHERE slug = $1", f"raster-{layer_id}".lower())

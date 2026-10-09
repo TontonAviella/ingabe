@@ -128,13 +128,13 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
     """None if the tool may run for this project; otherwise the error the model gets back instead of running it."""
     if serves(tool_name, industry):
         return None
-    label = INDUSTRIES[industry]["label"] if industry in INDUSTRIES else "of an unknown industry"
-    return {
-        "status": "error",
-        "error_kind": "wrong_industry",
-        "error": f"{tool_name} is for agriculture projects; this project is {label}. "
-                 f"Answer with the map and imagery tools, and say plainly what Ingabe cannot do for {label} yet.",
-    }
+    if industry not in INDUSTRIES:
+        reason = f"{tool_name} cannot run here: this project's industry could not be found, so only the map and imagery tools are available."
+    else:
+        label = INDUSTRIES[industry]["label"]
+        reason = (f"{tool_name} is for agriculture projects; this project is {label}. Answer with the map and imagery "
+                  f"tools, and say plainly what Ingabe cannot do for {label} yet.")
+    return {"status": "error", "error_kind": "wrong_industry", "error": reason}
 
 
 def prompt_note(industry: Optional[str]) -> Optional[str]:
