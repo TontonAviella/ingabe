@@ -4,6 +4,7 @@ from src.llm_defaults import (
     DEFAULT_OLLAMA_BASE_URL,
     resolve_chat_endpoint,
     supports_strict_tool_schema,
+    usage_extra_body,
 )
 from src.utils import _uses_only_local_ollama_models
 
@@ -52,3 +53,11 @@ def test_supported_brain_models_preserve_strict_tool_schemas():
     assert supports_strict_tool_schema("openai/gpt-6-luna") is True  # OpenAI models through OpenRouter
     assert supports_strict_tool_schema("nvidia/nemotron-3-super-120b-a12b:free") is True
     assert supports_strict_tool_schema("deepseek-chat") is False
+
+
+def test_usage_field_goes_only_to_openrouter():
+    # Google's OpenAI-compatible endpoint answers 400 'Unknown name "usage"' (recorded 2026-10-10).
+    assert usage_extra_body("https://openrouter.ai/api/v1/") == {"usage": {"include": True}}
+    assert usage_extra_body("https://generativelanguage.googleapis.com/v1beta/openai/") == {}
+    assert usage_extra_body("http://ollama:11434/v1") == {}
+    assert usage_extra_body(None) == {}
