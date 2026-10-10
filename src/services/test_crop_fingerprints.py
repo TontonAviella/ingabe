@@ -143,3 +143,12 @@ def test_the_model_file_is_used_only_when_its_sha256_matches(tmp_path, monkeypat
         cf.ensure_model(Store(b"something else"), "b")
     assert cf.ensure_model(Store(good), "b") == str(tmp_path / "models" / "fp.pt")
     assert cf.ensure_model(Store(b"never fetched again"), "b")  # a good file on disk is kept
+
+
+def test_picture_examples_are_kept_per_project_without_unsure_answers():
+    s3 = _FakeS3()
+    asyncio.run(cf.save_examples(s3, "b", "proj-a", "cog/x.tif|found|t", {1: "maize", 2: "unsure", 3: "banana"},
+                                 "Roger, drone pictures 2026-10-10"))
+    assert asyncio.run(cf.load_examples(s3, "b", "proj-a", "cog/x.tif|found|t")) == {1: "maize", 3: "banana"}
+    assert asyncio.run(cf.load_examples(s3, "b", "proj-b", "cog/x.tif|found|t")) == {}
+    assert asyncio.run(cf.load_examples(s3, "b", None, "cog/x.tif|found|t")) == {}

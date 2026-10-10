@@ -1058,11 +1058,13 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
     record = here.record
     fingerprinted = crops and any(look.source == "fingerprints" for look in survey.looks.values())
     if fingerprinted:
-        because = [f"Each plot compared with the plots checked on the ground ({crop_fingerprints.MODEL_NAME}): a "
-                   f"crop is named only when the {crop_fingerprints.NEIGHBOURS} most similar checked plots mostly "
-                   f"agree and at least {crop_fingerprints.MIN_EXAMPLES} plots of that crop are checked"]
+        because = [f"Each plot compared with the plots people named, on the ground or from the drone pictures "
+                   f"({crop_fingerprints.MODEL_NAME}): a crop is named only when the "
+                   f"{crop_fingerprints.NEIGHBOURS} most similar named plots mostly agree and at least "
+                   f"{crop_fingerprints.MIN_EXAMPLES} plots of that crop are named"]
         if unsure:
-            because.append(f"{unsure} plots stay 'not sure': unlike the checked plots, or too few checks of their crop")
+            because.append(f"{unsure} plots stay 'not sure': unlike the named plots, or too few plots of their crop "
+                           "named")
     elif crops:
         because = [f"Two separate looks by an AI vision model ({model}) at each plot; a crop is named only where "
                    "both looks name the same one"]
@@ -1109,14 +1111,14 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
     def guess(look: drone_vision.PlotLook) -> str:
         if look.source == "fingerprints":
             if look.main_crop != "unsure":
-                return f"Looks most like the checked {_crop_words(look.main_crop)} plots."
+                return f"Looks most like the plots people named {_crop_words(look.main_crop)}."
             if len(look.candidates) > 1:
                 return (" or ".join(_crop_words(c) for c in look.candidates).capitalize()
-                        + "? Its most similar checked plots disagree.")
+                        + "? Its most similar named plots disagree.")
             if look.candidates:
                 return (f"{_crop_words(look.candidates[0]).capitalize()}? Too few "
-                        f"{_crop_words(look.candidates[0])} plots are checked to name it.")
-            return "Not like any checked plot yet."
+                        f"{_crop_words(look.candidates[0])} plots are named to name it.")
+            return "Not like any named plot yet."
         if len(look.candidates) > 1:
             return " or ".join(_crop_words(c) for c in look.candidates).capitalize() + "? The two looks disagreed."
         if look.candidates:

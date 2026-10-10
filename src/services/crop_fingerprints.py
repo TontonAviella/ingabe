@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import math
 import os
 import random
@@ -218,6 +219,38 @@ def looked(survey: Optional[drone_vision.Survey], prints: Optional[dict[int, np.
     """The survey with crops from the calls when there are fingerprints and checks; as it was otherwise. The one
     way the cards and Sage take a plot's crop (checks are applied on top by field_checks.apply)."""
     return apply(survey, calls(prints, checks)) if prints else survey
+
+
+# --- Plots people named from the drone pictures ------------------------------------------------
+
+_EXAMPLES_PREFIX = "crop_examples/v1"
+
+
+def _examples_key(project_id: str, plot_set: str) -> str:
+    return f"{_EXAMPLES_PREFIX}/{project_id}/{hashlib.sha256(plot_set.encode()).hexdigest()[:32]}.json"
+
+
+async def load_examples(s3: Any, bucket: str, project_id: Optional[str], plot_set: str) -> dict[int, str]:
+    """Crops people named by looking at the drone pictures (not in the field), per project and plot set. They
+    teach the calls but are never shown or counted as checks on the ground."""
+    if not project_id:
+        return {}
+    try:
+        response = await s3.get_object(Bucket=bucket, Key=_examples_key(project_id, plot_set))
+    except s3.exceptions.NoSuchKey:
+        return {}
+    async with response["Body"] as body:
+        data = json.loads(await body.read())
+    return {int(n): c for n, c in data.get("examples", {}).items() if c in drone_vision.CROPS and c != "unsure"}
+
+
+async def save_examples(s3: Any, bucket: str, project_id: str, plot_set: str, examples: dict[int, str],
+                        source: str) -> None:
+    """Keep the crops people named from the pictures ("unsure" answers are left out); `source` says who and how."""
+    kept = {str(n): c for n, c in sorted(examples.items()) if c in drone_vision.CROPS and c != "unsure"}
+    body = json.dumps({"examples": kept, "source": source}).encode()
+    await s3.put_object(Bucket=bucket, Key=_examples_key(project_id, plot_set), Body=body,
+                        ContentType="application/json")
 
 
 # --- Kept fingerprints and running jobs -------------------------------------------------------

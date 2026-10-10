@@ -178,7 +178,9 @@ async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: i
     survey = await drone_vision.load_survey(s3, bucket, drone_vision.survey_key(photo_key, plots, scope))
     checks = await field_checks.load_checks(s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots))
     prints = await crop_fingerprints.load(s3, bucket, crop_fingerprints.store_key(photo_key, plots))
-    survey = field_checks.apply(crop_fingerprints.looked(survey, prints, {n: c.crop for n, c in checks.items()}),
+    examples = await crop_fingerprints.load_examples(s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots))
+    survey = field_checks.apply(crop_fingerprints.looked(survey, prints, {**examples,
+                                                                         **{n: c.crop for n, c in checks.items()}}),
                                 checks)
     look = survey.look(number) if survey else None
     if look is None or look.main_crop == "unsure":

@@ -132,7 +132,10 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
     # with its own check hidden) with the checks.
     prints = (await _fingerprints(s3, bucket, metadata, plots, start=start_jobs, retry_failed=retry_failed)
               if plots is not None else None)
-    looked = crop_fingerprints.looked(survey, prints, {n: c.crop for n, c in checks.items()})
+    examples = (await crop_fingerprints.load_examples(
+        s3, bucket, project_id, field_checks.plot_set_id(photo_plots.photo_key(metadata), plots))
+        if plots is not None else {})
+    looked = crop_fingerprints.looked(survey, prints, {**examples, **{n: c.crop for n, c in checks.items()}})
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=field_checks.apply(looked, checks), survey_job=survey_job, seed=seed,
