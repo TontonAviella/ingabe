@@ -40,6 +40,7 @@ from shapely.ops import transform as reproject, unary_union
 
 from src.services import (
     background_jobs,
+    crop_fingerprints,
     drone_first_look,
     drone_plots,
     drone_vision,
@@ -1055,7 +1056,14 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
                      crops: bool = False) -> dict[str, Any]:
     model = survey.model.split('/')[-1]
     record = here.record
-    if crops:
+    fingerprinted = crops and any(look.source == "fingerprints" for look in survey.looks.values())
+    if fingerprinted:
+        because = [f"Each plot compared with the plots checked on the ground ({crop_fingerprints.MODEL_NAME}): a "
+                   f"crop is named only when the {crop_fingerprints.NEIGHBOURS} most similar checked plots mostly "
+                   f"agree and at least {crop_fingerprints.MIN_EXAMPLES} plots of that crop are checked"]
+        if unsure:
+            because.append(f"{unsure} plots stay 'not sure': unlike the checked plots, or too few checks of their crop")
+    elif crops:
         because = [f"Two separate looks by an AI vision model ({model}) at each plot; a crop is named only where "
                    "both looks name the same one"]
         if unsure:
@@ -1067,7 +1075,8 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
         because.append("Not checked against what is really in the plots")
         return _how_sure(level, because + extra, "Walk to the plots listed and look: a close-up phone photo helps.")
     if record is not None and record.named:
-        because.append(f"Checked on the ground: the model was right in {record.right} of {record.named} plots")
+        because.append(f"Checked on the ground: the model was right in {record.right} of {record.named} plots"
+                       + (" (each judged with its own check hidden)" if fingerprinted else ""))
         share = record.share or 0
         if record.named >= FIELD_CHECKS_FOR_HIGH and share >= 0.95:
             level = "high"
@@ -1098,6 +1107,16 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
         return None
 
     def guess(look: drone_vision.PlotLook) -> str:
+        if look.source == "fingerprints":
+            if look.main_crop != "unsure":
+                return f"Looks most like the checked {_crop_words(look.main_crop)} plots."
+            if len(look.candidates) > 1:
+                return (" or ".join(_crop_words(c) for c in look.candidates).capitalize()
+                        + "? Its most similar checked plots disagree.")
+            if look.candidates:
+                return (f"{_crop_words(look.candidates[0]).capitalize()}? Too few "
+                        f"{_crop_words(look.candidates[0])} plots are checked to name it.")
+            return "Not like any checked plot yet."
         if len(look.candidates) > 1:
             return " or ".join(_crop_words(c) for c in look.candidates).capitalize() + "? The two looks disagreed."
         if look.candidates:

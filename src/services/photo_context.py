@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from src.services import (
     background_jobs,
+    crop_fingerprints,
     drone_cards,
     drone_plots,
     drone_vision,
@@ -86,6 +87,17 @@ async def _survey(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_p
     return survey, (None if survey is not None else job)
 
 
+async def _fingerprints(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_plots.PlotSet, *, start: bool,
+                        retry_failed: bool) -> Optional[dict[int, Any]]:
+    """The plots' fingerprints when kept; otherwise they are started in the background (minutes per photo)."""
+    key = crop_fingerprints.store_key(photo_plots.photo_key(metadata), plots)
+    prints = await crop_fingerprints.load(s3, bucket, key)
+    job = crop_fingerprints.job(key)
+    if start and prints is None and (job is None or (retry_failed and job.state == "failed")):
+        crop_fingerprints.start(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS), plots)
+    return prints
+
+
 async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, metadata: dict[str, Any],
                user_id: str, org_id: Optional[str], audience: Optional[str], start_jobs: bool = True,
                retry_failed: bool = False, seed: int = 0) -> Optional[PhotoContext]:
@@ -115,9 +127,15 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
     checks = (await field_checks.load_checks(s3, bucket, project_id,
                                              field_checks.plot_set_id(photo_plots.photo_key(metadata), plots))
               if plots is not None else {})
+    # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
+    # keep stage, weeds and problems. Checks then override both, and the record compares the calls (each made
+    # with its own check hidden) with the checks.
+    prints = (await _fingerprints(s3, bucket, metadata, plots, start=start_jobs, retry_failed=retry_failed)
+              if plots is not None else None)
+    looked = crop_fingerprints.looked(survey, prints, {n: c.crop for n, c in checks.items()})
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
-                            survey=field_checks.apply(survey, checks), survey_job=survey_job, seed=seed,
+                            survey=field_checks.apply(looked, checks), survey_job=survey_job, seed=seed,
                             records=tuple(records), checked=frozenset(checks),
-                            record=field_checks.model_record(survey, checks) if checks else None)
+                            record=field_checks.model_record(looked, checks) if checks else None)
     return PhotoContext(analysis=analysis, here=here, reader=reader)

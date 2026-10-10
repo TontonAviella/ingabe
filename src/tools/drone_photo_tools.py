@@ -15,7 +15,15 @@ from pydantic import BaseModel, Field
 from shapely.geometry import shape
 
 from src.routes.websocket import kue_ephemeral_action
-from src.services import drone_cards, drone_vision, field_checks, photo_context, photo_plots, plant_counts
+from src.services import (
+    crop_fingerprints,
+    drone_cards,
+    drone_vision,
+    field_checks,
+    photo_context,
+    photo_plots,
+    plant_counts,
+)
 from src.structures import async_read_conn
 from src.tools.geojson_transport import geojson_layer_update
 from src.tools.pyd import IngabeToolCallMetaArgs
@@ -165,11 +173,13 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
 
 async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: int, project_id: Optional[str],
                      scope: str) -> Optional[str]:
-    """The crop in this plot: checked on the ground (this project's checks), else named by this scope's vision
-    survey; None if neither."""
+    """The crop in this plot: checked on the ground (this project's checks), else named from the plot's fingerprint
+    and the checked plots, else by this scope's vision survey; None if none names it."""
     survey = await drone_vision.load_survey(s3, bucket, drone_vision.survey_key(photo_key, plots, scope))
-    survey = field_checks.apply(survey, await field_checks.load_checks(
-        s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots)))
+    checks = await field_checks.load_checks(s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots))
+    prints = await crop_fingerprints.load(s3, bucket, crop_fingerprints.store_key(photo_key, plots))
+    survey = field_checks.apply(crop_fingerprints.looked(survey, prints, {n: c.crop for n, c in checks.items()}),
+                                checks)
     look = survey.look(number) if survey else None
     if look is None or look.main_crop == "unsure":
         return None
