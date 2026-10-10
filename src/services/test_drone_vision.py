@@ -162,3 +162,43 @@ async def test_vision_calls_are_not_paced_when_no_rate_is_set(monkeypatch):
     for _ in range(20):
         await drone_vision.pace("openai/gpt-6-luna")
     assert time.monotonic() - t < 0.05
+
+
+def test_kept_surveys_from_before_still_match_and_anthropic_thinking_is_in_the_key(monkeypatch):
+    """OpenAI-style providers keep the old survey key (no survey is redone); Claude's thinking budget is part of
+    its key, so looks made without thinking are not taken for looks made with it."""
+    class Plots:
+        source, found_at = "found", "t"
+
+    monkeypatch.setenv("DRONE_VISION_MODEL", "openai/gpt-6-luna")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+    assert drone_vision.survey_key("cog/x.tif", Plots(), "org-a") == \
+        "drone_vision/v2|cog/x.tif|found|t|openai/gpt-6-luna|org-a"
+    monkeypatch.setenv("DRONE_VISION_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.anthropic.com/v1/")
+    assert drone_vision.survey_key("cog/x.tif", Plots(), "org-a") == (
+        'drone_vision/v2|cog/x.tif|found|t|claude-haiku-5-5|{"budget_tokens": 8000, "type": "enabled"}|org-a')
+
+
+async def test_a_look_through_anthropic_asks_for_a_thinking_budget(monkeypatch):
+    sent = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            sent.update(kwargs)
+            message = type("M", (), {"content": '{"main_crop": "maize"}'})
+            return type("R", (), {"choices": [type("C", (), {"message": message})], "usage": None})
+
+    client = type("Client", (), {"base_url": "https://api.anthropic.com/v1/",
+                                 "chat": type("Chat", (), {"completions": Completions()})})
+
+    async def no_cache(kind, key, compute):
+        return await compute(), False
+
+    monkeypatch.delenv("DRONE_VISION_REQUESTS_PER_MINUTE", raising=False)
+    monkeypatch.setattr(drone_vision.llm_cache, "answer", no_cache)
+    monkeypatch.setattr(drone_vision.llm_cache, "record", lambda kind, usage: 0.0)
+    answer, _ = await drone_vision._ask(client, "claude-haiku-5-5", "system", [], {}, "plot_look")
+    assert answer == {"main_crop": "maize"}
+    assert sent["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 8000}
+    assert sent["max_tokens"] > 8000 and "reasoning_effort" not in sent

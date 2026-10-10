@@ -43,7 +43,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
-from src.llm_defaults import resolve_chat_endpoint, usage_extra_body
+from src.llm_defaults import resolve_chat_endpoint, thinking_kwargs
 from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -205,10 +205,22 @@ async def pace(model: str) -> None:
     await asyncio.sleep(start - now)
 
 
+def _how(base_url: Any) -> list[Any]:
+    """How the provider is asked to think at EFFORT, as key parts for kept looks and surveys: answers depend on
+    it. Empty where the effort says it all (OpenAI-style providers), so looks kept before still match; Anthropic's
+    thinking budget is added."""
+    thinking = thinking_kwargs(base_url, EFFORT)["extra_body"].get("thinking")
+    return [thinking] if thinking else []
+
+
+def _endpoint() -> Any:
+    return resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
+                                 base_url=os.environ.get("OPENAI_BASE_URL"),
+                                 ollama_base_url=os.environ.get("OLLAMA_BASE_URL"))
+
+
 def _client() -> tuple[AsyncOpenAI, str]:
-    endpoint = resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
-                                     base_url=os.environ.get("OPENAI_BASE_URL"),
-                                     ollama_base_url=os.environ.get("OLLAMA_BASE_URL"))
+    endpoint = _endpoint()
     return AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key), endpoint.model
 
 
@@ -294,16 +306,15 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
     async def look() -> dict[str, Any]:
         await pace(model)
         response = await client.chat.completions.create(
-            model=model, reasoning_effort=EFFORT,
+            model=model, **thinking_kwargs(client.base_url, EFFORT),
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-            extra_body=usage_extra_body(client.base_url),
         )
         cost = llm_cache.record(f"vision_{name}", response.usage)
         return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}
 
     # The same pictures with the same instructions (a survey run again, plots found again) cost nothing.
-    kept, reused = await llm_cache.answer("vision", llm_cache.key_of(model, EFFORT, system, content, schema), look)
+    kept, reused = await llm_cache.answer("vision", llm_cache.key_of(model, EFFORT, *_how(client.base_url), system, content, schema), look)
     return kept["answer"], 0.0 if reused else kept["cost"]
 
 
@@ -463,7 +474,8 @@ _surveys: dict[str, Survey] = {}
 def survey_key(photo_key: str, plots: drone_plots.PlotSet, scope: str) -> str:
     """One survey per photo, plot set, model, way of looking (the store prefix's version) and reference scope:
     the second look is judged against the scope's references, so partners never share a survey run on another's."""
-    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}|{scope}"
+    how = "".join(f"|{json.dumps(part, sort_keys=True)}" for part in _how(_endpoint().base_url))
+    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}{how}|{scope}"
 
 
 def _store_key(key: str) -> str:
