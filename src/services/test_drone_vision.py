@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 
 import numpy as np
 import pytest
@@ -139,3 +140,25 @@ def test_references_and_surveys_never_cross_partners():
         source, found_at = "found", "t"
 
     assert drone_vision.survey_key("cog/x.tif", Plots(), a) != drone_vision.survey_key("cog/x.tif", Plots(), b)
+
+
+async def test_vision_calls_are_spaced_under_the_free_tier_rate(monkeypatch):
+    monkeypatch.setenv("DRONE_VISION_REQUESTS_PER_MINUTE", "600")  # one call every 0.1 s
+    monkeypatch.setattr(drone_vision, "_next_call_at", {})
+    starts: list[float] = []
+
+    async def call() -> None:
+        await drone_vision.pace("gemini-3.5-flash-lite")
+        starts.append(time.monotonic())
+
+    await asyncio.gather(*(call() for _ in range(4)))
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(g >= 0.09 for g in gaps), gaps
+
+
+async def test_vision_calls_are_not_paced_when_no_rate_is_set(monkeypatch):
+    monkeypatch.delenv("DRONE_VISION_REQUESTS_PER_MINUTE", raising=False)
+    t = time.monotonic()
+    for _ in range(20):
+        await drone_vision.pace("openai/gpt-6-luna")
+    assert time.monotonic() - t < 0.05

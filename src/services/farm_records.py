@@ -210,6 +210,7 @@ async def read_document(content: bytes, filename: str, content_type: str) -> tup
     part = _content_part(content, filename, content_type)
 
     async def read() -> dict[str, Any]:
+        await drone_vision.pace(model)
         response = await client.chat.completions.create(
             model=model, reasoning_effort="low",
             messages=[{"role": "system", "content": _PROMPT}, {"role": "user", "content": [part]}],
