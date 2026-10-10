@@ -2632,7 +2632,7 @@ async def process_chat_interaction_task(
                             # A per-minute rate limit (free models: 20/min) is
                             # waited out and the same model retried, as long as
                             # nothing has streamed; a daily cap is not.
-                            _rl_wait = rate_limit_retry_after(_api_err)
+                            _rl_wait = rate_limit_retry_after(_api_err, _attempt_client.base_url)
                             if (
                                 _rl_wait is not None
                                 and _rate_limit_retries < RATE_LIMIT_RETRIES
@@ -2768,7 +2768,7 @@ async def process_chat_interaction_task(
                             or "context length" in str(e).lower()
                             or "maximum context" in str(e).lower()
                         )
-                        _quota_message = rate_limit_user_message(e)
+                        _quota_message = rate_limit_user_message(e, client.base_url)
                         if _quota_message:
                             turn_trace.flag("rate_limited")
                             await kue_notify_error(conversation.id, _quota_message)

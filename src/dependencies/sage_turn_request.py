@@ -325,6 +325,22 @@ async def apply_tool_shortlist(
 RATE_LIMIT_RETRIES = 2
 _RATE_LIMIT_DEFAULT_WAIT_S = 5.0
 _RATE_LIMIT_MAX_WAIT_S = 15.0
+# Google's free tier counts requests per model per minute (5 for Gemini 3.8 Flash, 15 for 3.5 Flash-Lite,
+# AI Studio 2026-10-10) and documents no wait in its 429, only "retry with backoff": wait into the next minute.
+_GOOGLE_DEFAULT_WAIT_S = 20.0
+_GOOGLE_MAX_WAIT_S = 60.0
+# How each provider names a daily cap in its 429 (OpenRouter "free-models-per-day", Google quota ids
+# "...PerDayPerProjectPerModel-FreeTier").
+_DAILY_MARKERS = ("per-day", "per_day", "perday", "daily")
+
+
+def _is_google(base_url: Any) -> bool:
+    return "generativelanguage.googleapis.com" in str(base_url or "")
+
+
+def _is_daily_cap(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in _DAILY_MARKERS)
 
 
 def _header(headers: Any, name: str) -> str | None:
@@ -336,13 +352,13 @@ def _header(headers: Any, name: str) -> str | None:
     return None
 
 
-def rate_limit_retry_after(error: Exception) -> float | None:
+def rate_limit_retry_after(error: Exception, base_url: Any = None) -> float | None:
     """Seconds to wait before retrying a call that hit a per-minute rate
-    limit, or None when the error is not one (other errors, daily caps)."""
+    limit, or None when the error is not one (other errors, daily caps).
+    `base_url` is the provider's: Google's per-minute windows need longer waits."""
     if getattr(error, "status_code", None) != 429:
         return None
-    text = str(error).lower()
-    if "per-day" in text or "per_day" in text or "daily" in text:
+    if _is_daily_cap(error):
         return None
     body = getattr(error, "body", None)
     body_headers = None
@@ -363,23 +379,35 @@ def rate_limit_retry_after(error: Exception) -> float | None:
             wait = None
         if wait is not None:
             break
+    google = _is_google(base_url)
     if wait is None:
-        wait = _RATE_LIMIT_DEFAULT_WAIT_S
-    return max(1.0, min(wait, _RATE_LIMIT_MAX_WAIT_S))
+        wait = _GOOGLE_DEFAULT_WAIT_S if google else _RATE_LIMIT_DEFAULT_WAIT_S
+    return max(1.0, min(wait, _GOOGLE_MAX_WAIT_S if google else _RATE_LIMIT_MAX_WAIT_S))
 
 
-def rate_limit_user_message(error: Exception) -> str | None:
+def _daily_reset_text(base_url: Any) -> str:
+    """When today's quota comes back, in Kigali time: Google resets at midnight Pacific time (its rate-limit
+    docs), OpenRouter at 00:00 UTC."""
+    if not _is_google(base_url):
+        return "02:00 Kigali time (00:00 UTC)"
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+    midnight = (pacific + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return f"{midnight.astimezone(ZoneInfo('Africa/Kigali')):%H:%M} Kigali time (midnight Pacific time)"
+
+
+def rate_limit_user_message(error: Exception, base_url: Any = None) -> str | None:
     """What to tell the user when a rate limit ends the turn, or None.
 
     A daily cap does not clear by retrying or by starting a new chat, so
     the generic connection-error advice would mislead."""
     if getattr(error, "status_code", None) != 429:
         return None
-    text = str(error).lower()
-    if "per-day" in text or "per_day" in text or "daily" in text:
+    if _is_daily_cap(error):
         return (
-            "Sage has used today's AI quota. It resets at 02:00 Kigali time "
-            "(00:00 UTC); please try again after that."
+            f"Sage has used today's AI quota. It resets at {_daily_reset_text(base_url)}; "
+            "please try again after that."
         )
     return "Sage is receiving too many requests right now. Please try again in a minute."
 

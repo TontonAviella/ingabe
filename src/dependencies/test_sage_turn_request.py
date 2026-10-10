@@ -235,6 +235,23 @@ def test_rate_limit_user_message_explains_daily_and_minute_limits() -> None:
     assert sage_turn_request.rate_limit_user_message(_RateLimitError("boom", status=500)) is None
 
 
+_GOOGLE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+def test_google_per_minute_limit_waits_into_the_next_minute() -> None:
+    # Google documents only "429 RESOURCE_EXHAUSTED, retry with backoff": no wait in the body or headers.
+    assert sage_turn_request.rate_limit_retry_after(_RateLimitError("Resource has been exhausted"), _GOOGLE) == 20.0
+    assert sage_turn_request.rate_limit_retry_after(
+        _RateLimitError("too many", headers={"retry-after": "600"}), _GOOGLE) == 60.0
+
+
+def test_google_daily_quota_is_not_retried_and_names_the_pacific_midnight_reset() -> None:
+    daily = _RateLimitError("Quota exceeded for quota id GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    assert sage_turn_request.rate_limit_retry_after(daily, _GOOGLE) is None
+    text = sage_turn_request.rate_limit_user_message(daily, _GOOGLE)
+    assert text and "midnight Pacific time" in text and "Kigali" in text
+
+
 # Gemini's streamed tool calls, exactly as gemini-3.5-flash-lite sent them (2026-10-10, signature shortened).
 _GEMINI_DELTAS = [
     {"index": None, "id": "call_824201", "type": "function",
