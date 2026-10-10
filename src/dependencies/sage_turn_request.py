@@ -456,6 +456,37 @@ async def guard_tools(
     return shortlist.tools + [_KEEP_ANSWER]
 
 
+def add_tool_call_delta(acc: dict[int, dict], delta: Any) -> None:
+    """Merge one streamed tool-call delta into the turn's accumulator ({position: call}).
+
+    OpenAI-style providers stream a call in pieces under one `index`. Gemini sends every call whole with
+    `index` None and its own id, so each new id is a new call; it also attaches `extra_content` (the Gemini 3
+    thought signature), which must go back with the call or the next request is refused (400 'Function call
+    is missing a thought_signature', recorded 2026-10-10)."""
+    position = delta.index
+    if position is None:
+        position = next((k for k, call in acc.items() if delta.id and call["id"] == delta.id), len(acc))
+    call = acc.setdefault(position, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+    if delta.id:
+        call["id"] = delta.id
+    if delta.function:
+        if delta.function.name:
+            call["function"]["name"] += delta.function.name
+        if delta.function.arguments:
+            call["function"]["arguments"] += delta.function.arguments
+    extra = (getattr(delta, "model_extra", None) or {}).get("extra_content")
+    if extra:
+        call["extra_content"] = extra
+
+
+def tool_call_for_provider(call: dict, base_url: Any) -> dict:
+    """A stored tool call as it is sent back: Gemini's signature (`extra_content`) only to Google, whose
+    endpoint needs it; other providers never asked for it."""
+    if "extra_content" in call and "generativelanguage.googleapis.com" not in str(base_url or ""):
+        return {k: v for k, v in call.items() if k != "extra_content"}
+    return call
+
+
 def guard_tool_calls(calls: list[Any]) -> list[Any]:
     """The retry's tool calls, or none when it chose to keep the written answer."""
     if any(getattr(getattr(call, "function", None), "name", None) == KEEP_ANSWER_TOOL for call in calls):

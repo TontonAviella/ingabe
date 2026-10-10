@@ -96,6 +96,7 @@ from src.dependencies.sage_routing import (
 )
 from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
+    add_tool_call_delta,
     apply_tool_shortlist,
     build_sage_tools_payload,
     guard_tool_calls,
@@ -105,6 +106,7 @@ from src.dependencies.sage_turn_request import (
     plan_sage_turn,
     rate_limit_retry_after,
     rate_limit_user_message,
+    tool_call_for_provider,
     tool_shortlist_k,
 )
 from src.dependencies.session import (
@@ -988,7 +990,9 @@ async def _run_abdication_guard(
     )
     return {
         i: {"id": c.id, "type": "function",
-            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"},
+            **({"extra_content": c.model_extra["extra_content"]}
+               if (getattr(c, "model_extra", None) or {}).get("extra_content") else {})}
         for i, c in enumerate(calls)
     }
 
@@ -2212,6 +2216,10 @@ async def process_chat_interaction_task(
                     # args + repair name via longest-prefix match.
                     _tcs = m.get("tool_calls")
                     if _tcs:
+                        _tcs = m["tool_calls"] = [
+                            tool_call_for_provider(_tc, os.environ.get("OPENAI_BASE_URL")) if isinstance(_tc, dict) else _tc
+                            for _tc in _tcs
+                        ]
                         # Full tool name universe: pydantic/tools.json tools + hardcoded
                         # message_routes tools that aren't in get_tools().
                         _HARDCODED_TOOL_NAMES = {
@@ -2568,19 +2576,7 @@ async def process_chat_interaction_task(
                                             await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
-                                        idx = tc.index
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
-                                                "id": "", "type": "function",
-                                                "function": {"name": "", "arguments": ""},
-                                            }
-                                        if tc.id:
-                                            tool_calls_acc[idx]["id"] = tc.id
-                                        if tc.function:
-                                            if tc.function.name:
-                                                tool_calls_acc[idx]["function"]["name"] += tc.function.name
-                                            if tc.function.arguments:
-                                                tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                                        add_tool_call_delta(tool_calls_acc, tc)
                             # End of stream — flush the XML scrubber's lookback
                             # tail. Anything still inside an unclosed `<tool_call>`
                             # is silently dropped (real tool_call already routed
