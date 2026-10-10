@@ -42,7 +42,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
-from src.llm_defaults import resolve_chat_endpoint
+from src.llm_defaults import resolve_chat_endpoint, usage_extra_body
 from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -269,7 +269,7 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
             model=model, reasoning_effort=EFFORT,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-            extra_body={"usage": {"include": True}},
+            extra_body=usage_extra_body(client.base_url),
         )
         cost = llm_cache.record(f"vision_{name}", response.usage)
         return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}

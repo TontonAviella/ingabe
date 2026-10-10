@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b-it-qat"
@@ -73,3 +74,10 @@ def supports_strict_tool_schema(model: str | None) -> bool:
     if model_name.startswith("ollama:"):
         return True
     return "gemma" in model_name or "nemotron" in model_name
+
+
+def usage_extra_body(base_url: Any) -> dict[str, Any]:
+    """Request fields that make the provider report each call's tokens and cost (llm_cache.record logs them).
+
+    OpenRouter adds the cost when asked with its `usage` field."""
+    return {"usage": {"include": True}}

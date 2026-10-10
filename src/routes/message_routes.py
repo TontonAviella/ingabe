@@ -49,7 +49,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_chat_client_for_model, get_openai_client
-from src.llm_defaults import supports_strict_tool_schema
+from src.llm_defaults import supports_strict_tool_schema, usage_extra_body
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
@@ -504,7 +504,7 @@ async def label_conversation_inline(conversation_id: int):
                     # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
                     max_tokens=150,
                     temperature=0.3,
-                    extra_body={"usage": {"include": True}},
+                    extra_body=usage_extra_body(openai_client.base_url),
                 )
                 llm_cache.record("chat_title", response.usage)
                 return {"title": response.choices[0].message.content or ""}
@@ -974,7 +974,7 @@ async def _run_abdication_guard(
     try:
         response = await client.chat.completions.create(
             **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
-               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), **usage_extra_body(client.base_url)}}, stream=False,
         )
         llm_cache.record("sage_guard", getattr(response, "usage", None))
     except Exception:
@@ -2549,7 +2549,7 @@ async def process_chat_interaction_task(
                                 # the provider served from its cache (llm_cache.record logs it).
                                 _attempt_kwargs["stream_options"] = {"include_usage": True}
                                 _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
-                                                                 "usage": {"include": True}}
+                                                                 **usage_extra_body(_attempt_client.base_url)}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
