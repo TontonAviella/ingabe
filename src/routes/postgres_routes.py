@@ -69,7 +69,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look, industry, photo_content, photo_inspections, project_partner
+from src.services import drone_first_look, industry, photo_content, photo_inspections, project_partner, stored_files
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -1449,7 +1449,7 @@ async def _background_generate_cog(
             logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
 
         # Same bytes uploaded before (any name, any partner): share that optimised photo and all its analyses.
-        content_sha = await asyncio.to_thread(photo_content.file_sha256, local_input)
+        content_sha = await asyncio.to_thread(stored_files.file_sha256, local_input)
         same = await photo_content.find(s3, bucket_name, content_sha, target_srs)
         if same:
             async with get_async_db_connection() as conn:

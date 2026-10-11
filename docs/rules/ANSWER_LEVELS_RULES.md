@@ -116,6 +116,11 @@ YOLOE-11s with visual prompts, AP50 against people's boxes, all on
 2026-10-11. Same-picture protocol unless noted: 3 boxes on a test picture
 are the user's marks, the finder finds the rest there, scored on the rest.
 "Read at" is the finder's input size; "pictures" is the long side as given.
+Each measurement also says which way its pictures looked (`view`): the
+tower photos are **oblique** (taken at an angle from a drone flying around
+the tower), every other set is **nadir** (orthophoto or UAV tiles looking
+straight down), as the datasets describe them. A value holds only for
+pictures taken the same way (`OBLIQUE`, `NADIR`).
 
 | Target | Value | Pictures | Data | Read at | Look-alike marks | Max level |
 |---|---|---|---|---|---|---|
@@ -143,7 +148,7 @@ them, and every size floor against the marks. The scripts and pictures are
 yet. The table says so in each `where` field.
 
 Loading the table fails (ValueError) when a target lacks a provenance field;
-has a value outside 0-1; has a measured value without its data, protocol,
+has a value outside 0-1; has a measured value without its data, view (one of `VIEWS`), protocol,
 picture count, picture size, finder size, date, metric, evidence or place;
 has an unknown kind or level; is given `AREA`; is given a level above
 `CANT_TELL` without a measured value or without marked pictures for its
