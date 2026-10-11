@@ -22,6 +22,7 @@ from src.services import (
     photo_plots,
 )
 from src.services.insurance_engine import resolve_audience
+from src.services.remote_cog_layer import validate_remote_cog_bounds
 from src.structures import async_read_conn
 
 _LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
@@ -55,6 +56,19 @@ class PhotoContext:
 
 def is_photo_ready(metadata: dict[str, Any]) -> bool:
     return metadata.get("cog_status") == "ready" and bool(metadata.get("cog_key"))
+
+
+def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
+    """Whether the photo has a place on the map. The upload marks a file with no coordinate system (`crs_missing`:
+    a phone picture of a mast); its outline is then its pixel corners, so the outline must also be an ordered
+    WGS84 box (the remote-COG layers' rule)."""
+    if metadata.get("crs_missing"):
+        return False
+    try:
+        validate_remote_cog_bounds(list(bounds or ()))
+    except (TypeError, ValueError):
+        return False
+    return True
 
 
 async def project_of(conn: Any, layer_id: str) -> Optional[str]:

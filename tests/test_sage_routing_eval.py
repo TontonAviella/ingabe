@@ -65,6 +65,17 @@ def test_non_agriculture_cases_exist_and_farm_wording_is_scored_wrong() -> None:
     assert scoring.classify_attempt({"no_tool": True}, scoring.FARM_WORDING) == scoring.FALSE_TOOL
 
 
+def test_tower_questions_are_cases_in_every_language() -> None:
+    """Telecom tower questions in English, French and Kinyarwanda, and photos the fast paths cannot read
+    (no place on the map, COG not ready). Whether a fast path fires on them is checked with the app in
+    src/dependencies/test_sage_turn_request.py."""
+    towers = [c for c in _cases() if c.get("industry") == "telecom" and c["intent"].startswith("tel-")]
+    assert {c["lang"] for c in towers if c["expect"].get("no_tool")} == set(scoring.LANGS)
+    unreadable = [layer for c in _cases() for layer in (c.get("map_state") or {}).get("layers", [])
+                  if layer.get("georeferenced") is False or layer.get("cog", "ready") != "ready"]
+    assert {layer.get("georeferenced", True) for layer in unreadable} == {True, False}
+
+
 @pytest.mark.parametrize(("builder", "files"), [
     ("build_paraphrases", ["paraphrases.jsonl"]),
     ("build_conversations", ["multi_turn.jsonl", "chains.jsonl"]),
@@ -93,6 +104,12 @@ BASE = {"id": "x", "intent": "i", "text": "t", "category": "c", "stratum": "obse
         ({"expect": {"any_of": ["get_forecast"], "args": {"search_location": {"query": "x"}}}}, "not in any_of"),
         ({"expect": {"no_tool": True}, "history": [{"role": "user", "content": "hi"}]}, "end before"),
         ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "tiff"}]}}, "map_state"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "vector", "cog": "ready"}]}},
+         "only a raster"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "raster", "georeferenced": "no"}]}},
+         "georeferenced"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "raster", "cog": "done"}]}},
+         "cog must"),
         ({"expect": {"any_of": ["get_forecast"]}, "chain": {"must_call": ["get_forecast"], "max_steps": 0}}, "max_steps"),
     ],
 )

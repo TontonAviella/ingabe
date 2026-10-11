@@ -29,14 +29,19 @@ more latency than the problem we're trying to solve.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services import industry, photo_context
 from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool category map
@@ -50,6 +55,7 @@ AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
 SPATIAL_INSIGHT = "spatial_insight"
+TOWERS = "towers"
 
 
 @dataclass(frozen=True)
@@ -169,6 +175,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "add_observation": BRAIN,
     "brain_graph_query": BRAIN,
     "brain_trajectory": BRAIN,
+    # --- Telecom towers (TOWERS): no tools yet. Tower tools are filed here as they are built. ---
 }
 
 
@@ -272,8 +279,71 @@ def detect_small_talk(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tower and telecom equipment
+# ---------------------------------------------------------------------------
+# English, French (antenne, pylône, mât, parabole = dish, faisceau hertzien = microwave link, abri = shelter,
+# station de base, unité radio, télécom) and Kinyarwanda (umunara / iminara = tower, "ku munara" = on the tower,
+# antene = antenna, itumanaho = telecommunication); the French and Kinyarwanda terms need native-speaker review.
+# "sector" alone is not here: it is also Rwanda's umurenge. Antenna sectors are found by their antenna or panel
+# word. Bounded by letters and digits only, so a word inside a layer name joined by "_" ("Mast_site_Kicukiro") is
+# found. Literal alternatives only, so the search stays linear (CODING_STANDARDS 2026-10-11): ~0.1-0.4 s on a
+# crafted 1 MB message, measured; the helpers below read at most _ROUTED_CHARS.
+_TOWER_WORDS = re.compile(
+    r"(?<![^\W_])(?:"
+    r"towers?|masts?|monopoles?|pyl[oô]ne?s?|antenn?(?:a|ae|as|e|es)|"
+    r"rrus?|rrhs?|radio\s+(?:units?|heads?)|microwaves?|dish(?:es)?|panels?|shelters?|"
+    r"base\s+stations?|bts|cell\s+sites?|telcos?|t[eé]l[eé]com(?:munications?|s)?|"
+    r"mâts?|paraboles?|faisceaux?\s+hertziens?|abris?|stations?\s+de\s+base|unit[eé]s?\s+radio|micro-?ondes?|"
+    r"[ui]?m[ui]nara|itumanaho"
+    r")(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+# A question to Sage is far shorter; a pasted document is read only this far by the word checks below.
+_ROUTED_CHARS = 20_000
+
+
+def mentions_tower_equipment(text: str) -> bool:
+    """True when a message talks about masts, antennas, dishes or other telecom equipment."""
+    return bool(_TOWER_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
+
+
+# ---------------------------------------------------------------------------
 # Intent classification
 # ---------------------------------------------------------------------------
+# Weather and hazard words select the agriculture category, where the weather and flood tools are filed, but those
+# tools serve every industry (industry.CAPABILITIES): on a Power Grid or Telecom project such a question is not a
+# farm question.
+_WEATHER_HAZARD_WORDS = re.compile(
+    r"\b(flood|water|rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_about_weather_or_hazards(text: str) -> bool:
+    """True when a message asks about rain, weather, forecasts, temperature, water or floods."""
+    return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
+
+
+# Farm and vegetation words, whose tools are agriculture-only (industry.CAPABILITIES): crops, farms, harvests, soil,
+# drought and dry spells, crop insurance, farm data products, and vegetation indices. The agriculture category is also
+# selected by words said in every industry ("field team", "yield", "alarm trigger", "Season A") and by data sources
+# ("SAR", "CHIRPS"); those are kept apart below and are not farm questions.
+_FARM_WORDS = re.compile(
+    r"\b(farm|crop|harvest|drought|soil|evapo|ndre|insurance|payout|wapor|food\s+security|fewsnet|"
+    r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|growing\s+season|dry\s+spell)\b",
+    re.IGNORECASE,
+)
+_VEGETATION_WORDS = re.compile(r"\b(ndvi|ndwi|evi|savi|vegetation)\b", re.IGNORECASE)
+
+
+def asks_about_farming(text: str) -> bool:
+    """True when a message names crops, farms, harvests, soil, vegetation, drought or crop insurance."""
+    head = str(text or "")[:_ROUTED_CHARS]
+    return bool(_FARM_WORDS.search(head) or _VEGETATION_WORDS.search(head))
+
+
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Rwanda administrative boundaries / plain place display.
@@ -317,32 +387,23 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Vegetation questions. The NDVI-by-place and anomaly tools are filed under
     # agriculture, so "NDVI for Nyagatare" offered only the imagery tools and
     # Sage could not answer it (2026-10-08 picker test: 27 of 216 right tools dropped).
-    (
-        re.compile(
-            r"\b(ndvi|ndwi|evi|savi|vegetation|indices|anomal(?:y|ies|ous))\b",
-            re.IGNORECASE,
-        ),
-        frozenset({SATELLITE, AGRICULTURE}),
-    ),
+    (_VEGETATION_WORDS, frozenset({SATELLITE, AGRICULTURE})),
+    (re.compile(r"\b(indices|anomal(?:y|ies|ous))\b", re.IGNORECASE), frozenset({SATELLITE, AGRICULTURE})),
     # Greenness indices made from red, green and blue only fit a drone photo.
     (
         re.compile(r"\b(greenness|grvi|vari|exg|rgb\s+ind(?:ex|ices))\b", re.IGNORECASE),
         frozenset({USER_RASTER, SATELLITE}),
     ),
-    # Agriculture / weather / insurance
+    # Agriculture / insurance
+    (_FARM_WORDS, frozenset({AGRICULTURE})),
+    # Words said in every industry, and data sources, whose tools are filed under agriculture.
     (
-        re.compile(
-            r"\b(field|farm|crop|harvest|yield|drought|flood|water|"
-            r"rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature|"
-            r"soil|moisture|evapo|ndre|emission|"
-            r"insurance|trigger|payout|"
-            r"sar|alos|cygnss|wapor|chirps|food\s+security|fewsnet|"
-            r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|"
-            r"season\s*[abc]|growing\s+season|dry\s+spell)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(field|yield|moisture|emission|trigger|sar|alos|cygnss|chirps|season\s*[abc])\b",
+                   re.IGNORECASE),
         frozenset({AGRICULTURE}),
     ),
+    # Weather and hazards: their tools are filed under agriculture.
+    (_WEATHER_HAZARD_WORDS, frozenset({AGRICULTURE})),
     # User-uploaded raster (drone ortho, custom COG). Layer names join words with "_" ("Cyampirita_Orthophoto"),
     # so "ortho" and "drone" match inside a name; plots, plants and weeds are only seen on drone photos.
     (
@@ -381,6 +442,8 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({SPATIAL_INSIGHT, MAP_EDIT, USER_RASTER}),
     ),
+    # Masts, antennas, dishes and other telecom equipment.
+    (_TOWER_WORDS, frozenset({TOWERS})),
     # Knowledge graph / Brain
     (
         re.compile(
@@ -1254,10 +1317,11 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
 
 
 def select_fast_raster_layer(question: str, rows: list) -> dict | None:
-    """The raster a deterministic fast path should use, or None to fall back.
+    """The raster the question points at, or None to fall back.
 
     ``rows`` are the raster layers on the map (mappings with a ``name``).
-    Used by message_routes' fast-path handlers and the routing eval.
+    The fast paths go through select_ready_fast_raster_layer, which also
+    checks the raster can be read.
     """
     if not rows:
         return None
@@ -1276,6 +1340,28 @@ def select_fast_raster_layer(question: str, rows: list) -> dict | None:
     if len(rows) == 1:
         return dict(rows[0])
     return None
+
+
+def select_ready_fast_raster_layer(question: str, rows: list) -> dict | None:
+    """The raster a raster fast path may read, or None to let the model plan the turn: the one the question
+    points at (select_fast_raster_layer), and only when it has a place on the map and its optimised copy (COG)
+    is ready. A phone picture of a mast has no place on the map, and a photo still being optimised cannot be
+    read yet. ``rows`` also carry each raster's ``metadata`` and ``bounds``. Used by message_routes' fast-path
+    handlers and the routing eval."""
+    layer = select_fast_raster_layer(question, rows)
+    if layer is None:
+        return None
+    metadata = layer.get("metadata") or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    if not photo_context.is_photo_ready(metadata):
+        logger.info("sage_routing: no raster fast path, %s has no ready COG (cog_status=%s)",
+                    layer.get("layer_id"), metadata.get("cog_status"))
+        return None
+    if not photo_context.is_georeferenced(metadata, layer.get("bounds")):
+        logger.info("sage_routing: no raster fast path, %s has no place on the map", layer.get("layer_id"))
+        return None
+    return layer
 
 # Questions about the plots, plants and crops on a drone photo go to the model, which reads what the
 # question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
@@ -1299,7 +1385,9 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
-    if is_drone_plot_question(text):
+    # The fast paths' house masks, screening cells and area facts cannot answer questions about masts, antennas
+    # or dishes: "how many antennas are on this tower photo?" drew screening cells.
+    if is_drone_plot_question(text) or mentions_tower_equipment(text):
         return None
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
@@ -1331,6 +1419,16 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             "fast:raster_context",
         )
     return None
+
+
+def build_project_fast_tool_call(text: str, project_industry: str | None) -> FastToolCall | None:
+    """The fast path for a turn in a project of this industry: build_fast_tool_call, kept only when the project's
+    industry may use its tool (industry.serves; an industry that could not be found gets only the tools every
+    industry may use)."""
+    fast = build_fast_tool_call(text)
+    if fast is None or not industry.serves(fast.tool_name, project_industry):
+        return None
+    return fast
 
 
 def _raster_object_max_area_m2(targets: list[str]) -> float:
@@ -1374,6 +1472,13 @@ def filter_tools_by_categories(
         if cat is None or cat in cat_set:
             out.append(tool)
     return out
+
+
+def categories_with_tools(project_industry: str | None) -> frozenset[str]:
+    """The categories holding a tool a project of this industry may use (industry.serves). TOWERS joins them once
+    tower tools are built and filed under it."""
+    return frozenset(category for name, category in _TOOL_CATEGORIES.items()
+                     if industry.serves(name, project_industry))
 
 
 def tool_category_for_name(tool_name: str) -> str:
@@ -1439,6 +1544,9 @@ class RoutingDecision:
         excluded_tool_names: Tool names to remove even when their category is
             selected. Used when a proxy/rendering tool would be misleading for
             the question's evidence requirement.
+        named_categories: Every category the question's words named, also one
+            with no tools yet (TOWERS), which selected_categories leaves out.
+            The abdication guard reads it.
     """
 
     is_small_talk: bool
@@ -1446,6 +1554,7 @@ class RoutingDecision:
     primary_model_override: str | None
     reason: str
     excluded_tool_names: frozenset[str] = frozenset()
+    named_categories: frozenset[str] = frozenset()
 
 
 def _tool_round_in_flight(history: list[dict] | None) -> bool:
@@ -1509,21 +1618,25 @@ def route_chat(
         excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
-    if cats:
+    # A category narrows the list only once it has tools (TOWERS has none yet); until then the full list is sent.
+    if cats & set(_TOOL_CATEGORIES.values()):
         return RoutingDecision(
             is_small_talk=False,
             selected_categories=cats,
             primary_model_override=None,
             reason=f"intent:{','.join(sorted(cats))}",
             excluded_tool_names=excluded_tool_names,
+            named_categories=cats,
         )
 
     return RoutingDecision(
         is_small_talk=False,
         selected_categories=frozenset(),
         primary_model_override=None,
-        reason="default",
+        # "intent:towers;no_tools_yet": the question names a category that has no tools yet.
+        reason=f"intent:{','.join(sorted(cats))};no_tools_yet" if cats else "default",
         excluded_tool_names=excluded_tool_names,
+        named_categories=cats,
     )
 
 
