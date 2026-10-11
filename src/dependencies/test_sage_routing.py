@@ -24,6 +24,7 @@ from src.dependencies.sage_routing import (
     MAP_EDIT,
     SATELLITE,
     SPATIAL_INSIGHT,
+    TOWERS,
     USER_RASTER,
     asks_about_farming,
     build_admin_boundary_tool_args,
@@ -1241,6 +1242,51 @@ def test_the_tower_tools_are_filed_under_towers():
     assert tool_category_for_name("tower_photos_needing_review") == TOWERS
 
 
+@pytest.mark.parametrize(("text", "expected"), [
+    ("How many antennas are on this tower photo?", True),
+    ("What equipment is on the Rebero tower?", True),
+    ("Count the RRUs and microwave dishes on Mast_site_Kicukiro", True),
+    ("Which photos of the Rebero mast still need checking?", True),
+    ("Combien d'antennes y a-t-il sur cette photo du pylône ?", True),
+    ("Quelles photos du pylône de Rebero reste-t-il à vérifier ?", True),
+    ("Ni antene zingahe ziri ku munara uri kuri iyi foto?", True),
+    ("Ni izihe foto z'umunara wa Rebero zitaragenzurwa?", True),
+    # Tower words alone: the weather, a flood, a description or damage is not what the tower tools answer.
+    ("Is strong wind or a storm expected in Karongi in the next days? We have tower climbs planned.", False),
+    ("Describe the tower photo", False),
+    ("Describe the Mast_site_Kicukiro photo", False),
+    ("Is there flooding near our tower in Rubavu?", False),
+    ("Y a-t-il des dégâts sur le mât dans cette image ?", False),
+    ("Add a point for a new mast at -1.94, 30.08", False),
+])
+def test_tower_work_is_a_count_the_equipment_or_photos_to_check(text, expected):
+    from src.dependencies.sage_routing import asks_about_tower_work
+
+    assert asks_about_tower_work(text) is expected
+    assert TOWERS in classify_intent(text)  # every one of them still names the towers category
+
+
+@pytest.mark.parametrize("text", [
+    "Is strong wind or a storm expected in Karongi in the next days? We have tower climbs planned.",
+    "Describe the tower photo",
+    "Is there flooding near our tower in Rubavu?",
+])
+def test_tower_words_alone_never_narrow_the_list_to_the_tower_tools(text):
+    """Offered the tower tools (TOWERS on, Telecom), a question that only says "tower" keeps the full list, so the
+    weather, flood and raster tools that answer it stay offered; the tower tools are in that list too."""
+    from src.dependencies.sage_routing import offered_categories
+
+    tools = [{"function": {"name": n}} for n in ("get_tower_inspection_findings", "get_forecast",
+                                                 "detect_flood_extent", "describe_user_raster", "search_location")]
+    decision = route_chat(text, offered=offered_categories(tools))
+    assert decision.selected_categories == frozenset() and decision.named_categories == frozenset({TOWERS})
+    assert decision.reason == "intent:towers;named_only"
+    work = route_chat("How many antennas are on the Rebero tower?", offered=offered_categories(tools))
+    assert work.selected_categories == frozenset({TOWERS})
+    assert _tool_names(filter_tools_by_categories(tools, work.selected_categories)) == [
+        "get_tower_inspection_findings", "search_location"]
+
+
 def test_a_tool_filed_under_towers_is_offered_for_tower_questions(monkeypatch):
     from src.dependencies import sage_routing
 
@@ -1257,13 +1303,20 @@ def test_the_word_checks_take_milliseconds_on_a_crafted_message():
     characters of a message, with literal alternatives only."""
     import time
 
-    from src.dependencies.sage_routing import asks_about_weather_or_hazards, mentions_tower_equipment
+    from src.dependencies.sage_routing import (
+        asks_about_tower_work,
+        asks_about_weather_or_hazards,
+        mentions_tower_equipment,
+    )
 
     crafted = ("radio" + " " * 1000 + "stations" + " " * 500 + "de ") * 700  # ~1 MB of near-misses
     started = time.perf_counter()
     assert mentions_tower_equipment(crafted) is False
     assert asks_about_weather_or_hazards(crafted) is False
     assert asks_about_farming(crafted) is False
+    assert asks_about_tower_work(crafted) is False
+    # Near-misses of the bounded repeats: "-ngahe" and "genzur-" words, and a photo word without a check word.
+    assert asks_about_tower_work("abcngah " * 3000 + "photo " + "ngenzu" * 2000) is False
     assert time.perf_counter() - started < 0.2
     assert mentions_tower_equipment("x" * 30_000 + " antenna") is False  # past the cap: not read
     assert asks_about_farming("x" * 30_000 + " maize") is False

@@ -59,7 +59,10 @@ async def _inspection(layer: MapLayer, session: UserContext) -> _Inspection:
     if prefix is None:
         raise HTTPException(404, "This layer is not a photo inspection")
     async with async_read_conn("towers.project", user_id=session.get_user_id()) as conn:
-        project_id = await photo_context.project_of(conn, layer.layer_id)
+        try:
+            project_id = tower_inspection.work_project(await photo_context.projects_of(conn, layer.layer_id))
+        except tower_inspection.TowerConflict as e:
+            raise HTTPException(409, str(e)) from None
         project_industry = await industry.industry_of_project(conn, project_id)
     if project_id is None or not industry.available("tower_inspection", project_industry):
         raise HTTPException(404, "Tower work is for photo inspections in Telecom Towers projects")

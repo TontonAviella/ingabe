@@ -15,7 +15,7 @@ from src.services.test_tower_inspection import _found
 from src.tools import tower_tools
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.utils import get_async_s3_client, get_bucket_name
-from test_fixtures.towers import MARKS, Inspections, tower_facts
+from test_fixtures.towers import MARKS, Inspections, admin, tower_facts
 
 DISH = tower_inspection.PARTS[0]
 
@@ -53,22 +53,27 @@ async def test_nothing_checked_gives_no_count_and_says_what_to_do(seeded):
     assert found["answer"] == tower_cards.NOTHING_COUNTED and "mark 3" in found["what_to_do"]
     assert all(part["at_least"] is None for part in found["equipment"].values())
     assert found["rule"] == tower_cards.NEVER_COUNT_YOURSELF
-    assert set(found) >= {"inspection", "photos", "photos_checked", "equipment", "camera", "how_sure", "source"}
+    assert set(found) >= {"inspection", "photos", "photos_with_every_marked_part_counted",
+                          "photos_with_nothing_marked", "complete", "equipment", "camera", "how_sure", "source"}
     review = await tower_tools.tower_photos_needing_review(_args(ids), _meta(ids))
     assert review["status"] == "success" and review["photos_to_check"] == 1
     assert review["first_photos"] == [{"photo": "DJI_0395.JPG", "why": "nothing marked yet"}]
+
+
+async def _found_on_dishes(redis, ids):
+    s3, bucket, photo = await get_async_s3_client(), get_bucket_name(), tower_facts()
+    metadata = {"photo_inspection": {"storage_prefix": f"inspections/{ids['project']}/{ids['layer']}/"}}
+    await tower_inspection.set_marks(redis, s3, bucket, ids["project"], ids["layer"], photo, DISH, MARKS, [])
+    await tower_inspection.start_find(redis, s3, bucket, ids["project"], ids["owner"], ids["layer"], metadata,
+                                      photo, DISH)
+    return s3, bucket, photo, await _found(redis, s3, bucket, ids["project"], ids["layer"], photo, DISH)
 
 
 @pytest.mark.anyio
 async def test_suggestions_are_never_a_count_until_a_person_checked_them(seeded):
     inspections, redis = seeded
     ids = await inspections.make()
-    s3, bucket, photo = await get_async_s3_client(), get_bucket_name(), tower_facts()
-    metadata = {"photo_inspection": {"storage_prefix": f"inspections/{ids['project']}/{ids['layer']}/"}}
-    await tower_inspection.set_marks(redis, s3, bucket, ids["project"], ids["layer"], photo, DISH, MARKS, [])
-    await tower_inspection.start_find(redis, s3, bucket, ids["project"], ids["owner"], ids["layer"], metadata,
-                                      photo, DISH)
-    work = await _found(redis, s3, bucket, ids["project"], ids["layer"], photo, DISH)
+    s3, bucket, photo, work = await _found_on_dishes(redis, ids)
     waiting = await tower_tools.get_tower_inspection_findings(_args(ids), _meta(ids))
     dish = waiting["equipment"][DISH]
     assert waiting["counted"] is False and dish["at_least"] is None
@@ -98,3 +103,25 @@ async def test_a_layer_not_on_this_map_or_not_an_inspection_or_not_telecom_is_re
     farm = await inspections.make(industry="agriculture")
     assert (await tower_tools.get_tower_inspection_findings(_args(farm), _meta(farm)))["error"] == (
         "Tower work is for Telecom Towers projects only.")
+
+
+@pytest.mark.anyio
+async def test_the_work_read_is_the_chats_projects_never_the_last_edited_maps(seeded):
+    """The same inspection layer on a map of another Telecom project: a chat there reads that project's work (none),
+    not this one's counts, although that project's map was edited last."""
+    inspections, redis = seeded
+    ids = await inspections.make()
+    other = await inspections.make(owner=ids["owner"])  # another Telecom project of the same owner
+    conn = await admin()
+    try:
+        await conn.execute("UPDATE user_mundiai_maps SET layers = array_append(layers, $1), "
+                           "last_edited = now() + interval '1 hour' WHERE id = $2", ids["layer"], other["map"])
+    finally:
+        await conn.close()
+    s3, bucket, photo, work = await _found_on_dishes(redis, ids)
+    await tower_inspection.set_review(redis, s3, bucket, ids["project"], ids["layer"], photo, DISH,
+                                      [s.id for s in work.suggestions], [], [], [])
+    theirs = await tower_tools.get_tower_inspection_findings(_args(ids), _meta(other))  # a chat in `other`
+    assert theirs["status"] == "success" and theirs["counted"] is False  # project `other` has no work on it
+    ours = await tower_tools.get_tower_inspection_findings(_args(ids), _meta(ids))
+    assert ours["counted"] is True and ours["equipment"][DISH]["at_least"] == len(MARKS) + len(work.suggestions)

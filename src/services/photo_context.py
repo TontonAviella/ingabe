@@ -46,6 +46,12 @@ SELECT m.project_id FROM user_mundiai_maps m
  ORDER BY m.last_edited DESC NULLS LAST LIMIT 1
 """
 
+_PROJECTS_SQL = """
+SELECT DISTINCT m.project_id FROM user_mundiai_maps m
+ WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL AND m.project_id IS NOT NULL
+ ORDER BY m.project_id
+"""
+
 
 @dataclass(frozen=True)
 class PhotoContext:
@@ -73,6 +79,12 @@ def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
 
 async def project_of(conn: Any, layer_id: str) -> Optional[str]:
     return await conn.fetchval(_PROJECT_SQL, layer_id)
+
+
+async def projects_of(conn: Any, layer_id: str) -> list[str]:
+    """Every project with a live map showing the layer (as `conn` may see them): more than one when the layer was
+    added to another project's map."""
+    return [row["project_id"] for row in await conn.fetch(_PROJECTS_SQL, layer_id)]
 
 
 async def cog_url(s3: Any, bucket: str, metadata: dict[str, Any], seconds: int = 900) -> str:

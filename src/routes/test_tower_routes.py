@@ -15,7 +15,7 @@ from src.dependencies.session import LegacyUserContext, ServiceUserContext, veri
 from src.services import example_finder, tower_cards, tower_inspection
 from src.services.test_example_finder import RecordedModel, _redis
 from src.wsgi import app
-from test_fixtures.towers import MARKS, SHA, Inspections, sha_of, tower_facts, variant
+from test_fixtures.towers import MARKS, SHA, Inspections, admin, sha_of, tower_facts, variant
 
 RUN_TAG = uuid.uuid4().hex[:6]
 VIEWER, EDITOR = str(uuid.uuid4()), str(uuid.uuid4())
@@ -116,6 +116,26 @@ async def test_a_layer_that_is_not_an_inspection_or_has_no_kept_facts(client, se
     _as(old["owner"])
     response = await client.get(f"{_base(old['layer'])}/photos")
     assert response.status_code == 409 and "upload the photos again" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_an_inspection_on_maps_of_two_projects_is_refused_not_followed(client, seeded, switched_on):
+    """Its work would otherwise follow whichever project's map was edited last (photo_context.project_of)."""
+    ids = await seeded.make()
+    other = await seeded.make(owner=ids["owner"])  # another Telecom project of the same owner
+    _as(ids["owner"])
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 200
+    conn = await admin()
+    try:
+        await conn.execute("UPDATE user_mundiai_maps SET layers = array_append(layers, $1) WHERE id = $2",
+                           ids["layer"], other["map"])
+    finally:
+        await conn.close()
+    codes = await _every_route(client, ids["layer"])
+    assert codes == [409] * 7
+    detail = (await client.get(f"{_base(ids['layer'])}/cards")).json()["detail"]
+    assert "on maps of 2 projects" in detail and "remove it from the maps of the others" in detail
+    assert switched_on.calls == []
 
 
 # --- The contract ---------------------------------------------------------------------------------------------------
@@ -296,7 +316,8 @@ async def test_changes_compare_with_the_earlier_inspection_of_the_same_site_in_t
     _as(earlier["owner"])
 
     alone = (await client.get(f"{_base(now['layer'])}/cards/changes")).json()
-    assert alone["status"] == "needs_flight" and "1 earlier inspection of this site" in alone["what"]
+    # An earlier inspection of the site exists, nothing counted on it yet: count there, no second inspection needed.
+    assert alone["status"] == "cant_tell" and "1 earlier inspection of this site" in alone["what"]
 
     photo = f"{_base(earlier['layer'])}/photos/{april.sha256}"
     await client.put(f"{photo}/marks", json={"part": DISH, "marks": MARKS})

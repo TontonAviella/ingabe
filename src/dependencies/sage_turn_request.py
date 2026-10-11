@@ -20,6 +20,7 @@ from src.dependencies.sage_routing import (
     RoutingDecision,
     asks_about_farming,
     asks_about_weather_or_hazards,
+    categories_answering,
     categories_with_tools,
     filter_tools_by_categories,
     offered_categories,
@@ -461,15 +462,16 @@ def abdication_guard_enabled() -> bool:
 def _no_tool_here_answers(routing: RoutingDecision, last_user_text: str) -> bool:
     """Whether the project has no tool for what the question asks, so prose that says plainly what Ingabe cannot do
     yet is the right answer, not abdication (audit R1-20). Two cases:
-    - no category the question names has a tool here: masts, antennas and dishes, whose category (towers) has tools
-      only for Telecom projects with the TOWERS switch on; there these questions are guarded;
+    - no category the question names has a tool here that answers it: masts, antennas and dishes, whose category
+      (towers) has tools only for Telecom projects with the TOWERS switch on, and only for a count, the equipment or
+      photos to check (categories_answering); there those questions are guarded, while damage on a mast is not;
     - outside agriculture, a farm question (crops, farms, soil, vegetation, drought, crop insurance), whose tools are
       agriculture-only. Not when it also asks about weather or floods, or to log, remember or search notes: those tools
       serve every industry. Words every industry says ("field team", "yield", "trigger") do not make a farm question.
     """
     project_industry = get_request_industry() or DEFAULT_INDUSTRY
     named = routing.named_categories
-    if named and not named & categories_with_tools(project_industry):
+    if named and not categories_answering(last_user_text, named) & categories_with_tools(project_industry):
         return True
     return (project_industry != "agriculture" and asks_about_farming(last_user_text)
             and not asks_about_weather_or_hazards(last_user_text) and BRAIN not in named)

@@ -138,6 +138,16 @@ def _box(values: Sequence[float]) -> Box:
     return (x0, y0, x1, y1)
 
 
+def work_project(projects: Sequence[str]) -> Optional[str]:
+    """The project a photo inspection's work is kept in, from the projects whose live maps show the layer
+    (photo_context.projects_of): the one there is (None: none). TowerConflict when there are several: following the
+    last edited map would move the work between projects, so the person removes the layer from all but one."""
+    if len(projects) > 1:
+        raise TowerConflict(f"this inspection is on maps of {len(projects)} projects; its tower work is kept in one "
+                            f"project, so remove it from the maps of the others")
+    return projects[0] if projects else None
+
+
 def record_key(project_id: str, layer_id: str, sha256: str) -> str:
     for name, value in (("project", project_id), ("layer", layer_id)):
         if not value or "/" in value:
@@ -250,18 +260,35 @@ class PartWork:
         }
 
 
+def _others_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
+    """The other two parts' marks on the photo, when this part's measured settings use look-alikes (as measured);
+    otherwise none."""
+    if not example_finder.settings(part).look_alike_marks:
+        return ()
+    return tuple(b for other in PARTS if other != part for b in record.parts[other].marks)
+
+
 def lookalike_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
     """The look-alike marks the finder is given for this part: when the part's measured settings use look-alikes,
     the other two parts' marks on the photo (as measured), then the person's own, without repeats, at most
     MAX_LOOKALIKE_MARKS; otherwise none."""
-    if not example_finder.settings(part).look_alike_marks:
-        return ()
-    boxes = [b for other in PARTS if other != part for b in record.parts[other].marks]
     unique: list[Box] = []
-    for b in boxes + list(record.parts[part].own_lookalikes):
+    for b in _others_marks(part, record) + record.parts[part].own_lookalikes:
         if b not in unique:
             unique.append(b)
     return tuple(unique[:example_finder.MAX_LOOKALIKE_MARKS])
+
+
+def own_lookalikes(part: str, record: PhotoRecord, given: Sequence[Box]) -> tuple[Box, ...]:
+    """The person's own look-alike marks among the look-alike marks given for a part: a box that is another part's
+    mark on the photo is a look-alike already (lookalike_marks adds it), so it is not kept as the person's own. So
+    the list the work shows (`lookalike_marks`) can be sent back unchanged without changing anything."""
+    others = set(_others_marks(part, record))
+    own: list[Box] = []
+    for b in given:
+        if b not in others and b not in own:
+            own.append(b)
+    return tuple(own)
 
 
 def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts) -> Optional[answer_levels.Answer]:
@@ -333,15 +360,18 @@ def _in_photo(given: Any, what: str, most: int, photo: PhotoFacts) -> tuple[Box,
 
 async def set_marks(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, photo: PhotoFacts, part: str,
                     marks: Any, lookalikes: Any) -> PartWork:
-    """Save a part's marks (0 to MAX_MARKS boxes) and the person's own look-alike marks for it (only for a part
-    measured with look-alikes). Changed marks drop the part's finder job and review: they were for the old marks."""
+    """Save a part's marks (0 to MAX_MARKS boxes) and its look-alike marks (only for a part measured with
+    look-alikes): the list the work shows, the other parts' marks and the person's own, of which only the person's
+    own are kept (own_lookalikes). Changed marks or own look-alike marks drop the part's finder job and review: they
+    were for the old ones."""
     check_part(part)
     marks_px = _in_photo(marks, "mark", example_finder.MAX_MARKS, photo)
     looks = example_finder.check_lookalikes(lookalikes, example_finder.settings(part))
     width, height = photo.upright_size
-    own = tuple(example_finder.check_inside(looks, width, height, "look-alike mark"))
+    given = example_finder.check_inside(looks, width, height, "look-alike mark")
     async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
         record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
+        own = own_lookalikes(part, record, given)
         current = record.parts[part]
         if (current.marks, current.own_lookalikes) != (marks_px, own):
             record = record.with_part(part, PartRecord(marks=marks_px, own_lookalikes=own))
@@ -533,14 +563,24 @@ def inventory(inspection: Inspection) -> dict[str, PartInventory]:
     return out
 
 
-def photos_reviewed(inspection: Inspection) -> int:
-    """Photos where something is counted and nothing marked is still open (waiting, being found or not found)."""
+def _anything_marked(parts: Optional[dict[str, PartWork]]) -> bool:
+    return parts is not None and any(w.marks for w in parts.values())
+
+
+def photos_with_marked_parts_counted(inspection: Inspection) -> int:
+    """Photos where something is marked and every marked part is counted. Not "checked for every part": a part
+    nobody marked on a photo was not looked for there (there is no "none on this photo")."""
     done = 0
     for parts in inspection.work.values():
         marked = [w for w in parts.values() if w.marks]
         if marked and all(w.counted_by_you is not None for w in marked):
             done += 1
     return done
+
+
+def photos_unmarked(inspection: Inspection) -> int:
+    """Photos nothing is marked on yet: nobody has looked for parts on them."""
+    return sum(1 for p in inspection.photos if not _anything_marked(inspection.work.get(p.sha256)))
 
 
 # Why a photo is on the technician's list, in the order they are listed.
@@ -573,7 +613,7 @@ def photos_to_check(inspection: Inspection) -> list[PhotoToCheck]:
     out = []
     for photo in sorted(inspection.photos, key=_flight_order):
         parts = inspection.work.get(photo.sha256)
-        if parts is None or not any(w.marks for w in parts.values()):
+        if parts is None or not _anything_marked(parts):
             out.append(PhotoToCheck(photo=photo, reason=UNMARKED, waiting=0, parts=()))
             continue
         waiting = sum(w.waiting for w in parts.values())

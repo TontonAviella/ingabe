@@ -5,7 +5,9 @@ count nobody checked. The inspections are built in memory with the domain's own 
 
 from __future__ import annotations
 
+import json
 import re
+from dataclasses import replace
 
 import pytest
 
@@ -36,6 +38,10 @@ COUNTED = {
     "b" * 64: parts(tower_dish=dict(marks=3, suggestions=2, reviewed=2, added=1)),  # 6 dishes
 }
 OPEN = {**COUNTED, "c" * 64: parts(tower_dish=dict(marks=3, suggestions=5, reviewed=1))}  # 4 waiting
+# Every part counted on every photo, nothing open: the only state the equipment answer is "ready" in.
+EVERY_PART = dict(marks=3, suggestions=1, reviewed=1)
+COMPLETE = {p.sha256: parts(tower_dish=EVERY_PART, tower_antenna=EVERY_PART, tower_radio_unit=EVERY_PART)
+            for p in PHOTOS}
 
 
 def _numbers(text: str) -> set[str]:
@@ -85,28 +91,90 @@ def test_equipment_without_a_checked_photo_gives_no_number():
     assert working["status"] == WORKING and working["progress"] == {"done": 0, "parts": 1, "minutes_left": None}
 
 
+def _marked_never_found(part):
+    return {p: replace(_work(p), marks=((0.0, 0.0, 60.0, 60.0),) * 3) if p == part else _work(p)
+            for p in tower_inspection.PARTS}
+
+
+@pytest.mark.parametrize("state, technician_todo", [
+    # The finder working, a finder that found no more (the review saving the missed ones is due), marks never found.
+    ({"d" * 64: parts(tower_radio_unit=dict(marks=3, done=False))},
+     "Next, DJI_0004.JPG: the finder is working on radio units."),
+    ({"a" * 64: parts(tower_dish=dict(marks=3, suggestions=0))},
+     "Next, DJI_0001.JPG: the finder found no more dishes: add any it missed, then save."),
+    ({"b" * 64: _marked_never_found(ANTENNA)}, "Next, DJI_0002.JPG: antennas marked; press Find."),
+])
+def test_equipment_with_marked_photos_open_says_what_is_open_not_how_to_start(state, technician_todo):
+    """Started work is never answered with "mark 3 to start": the answer says what is open and what comes next."""
+    for audience in ("owner", "technician"):
+        answer = tower_cards.answer_card("equipment", here(state), audience)
+        assert answer["what"] != tower_cards.NOTHING_COUNTED and "mark 3" not in answer["todo"].lower()
+        assert answer["what"].startswith("Nothing is counted yet: the marked photos are still being checked.")
+        assert "Still open:" in answer["what"] and "at least" not in answer["what"]
+        assert "Some marked photos are still being checked: they add nothing yet" in answer["how_sure"]["because"]
+    assert tower_cards.answer_card("equipment", here(state), "technician")["todo"] == technician_todo
+    assert tower_cards.answer_card("equipment", here(state), "owner")["todo"] == (
+        "Ask a technician to finish the 1 marked photo still open: their counts appear once every suggestion on "
+        "them is checked.")
+    preview = tower_cards.deck(here(state), "owner")["cards"][0]
+    assert preview["id"] == "equipment" and "mark 3" not in preview["preview"]
+    sage = tower_cards.findings(here(state))
+    assert sage["answer"] != tower_cards.NOTHING_COUNTED and "mark 3" not in sage["what_to_do"].lower()
+
+
 def _cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
 def test_equipment_is_at_least_the_most_counted_on_one_photo_never_the_sum():
     answer = tower_cards.answer_card("equipment", here(COUNTED), "owner")
-    assert answer["status"] == READY
     assert "Dishes: at least 7, counted by you on DJI_0001.JPG (the most on one photo)" in answer["what"]
     assert "Antennas: at least 5" in answer["what"] and "Radio units: not counted yet." in answer["what"]
     assert "13" not in _numbers(answer["what"])  # 7 + 6 dishes over two photos is not the number on the tower
     facts_ = {f["label"]: f["value"] for f in answer["facts"]}
     assert facts_["Dishes"] == "at least 7"
     assert facts_["Dishes added up over photos"] == "13 on 2 photos (a part seen on two photos counts twice)"
-    assert facts_["Photos checked"] == "2 of 5"
+    # What it measures: a photo with only dishes counted is not checked for antennas or radio units.
+    assert facts_["Photos with every marked part counted"] == "2 of 5" and "Photos checked" not in facts_
+    assert facts_["Photos with nothing marked"] == "3 of 5"
     assert [i["title"] for i in answer["items"]] == ["DJI_0001.JPG", "DJI_0001.JPG"]
     assert answer["items"][0]["picture"] == f"/api/layer/L/photos/{'a' * 64}"
-    assert answer["how_sure"]["level"] == "medium"
 
     still_open = tower_cards.answer_card("equipment", here(OPEN), "owner")
     assert still_open["status"] == PARTLY and still_open["how_sure"]["level"] == "low"
     assert "Still open: 4 suggestions waiting on 1 photo." in still_open["what"]
     assert still_open["todo"] == "Ask a technician to check the 4 suggestions waiting before using these numbers."
+
+
+def test_equipment_is_ready_only_when_every_part_and_every_photo_is_covered():
+    """A part nobody counted, or a photo nobody marked anything on, leaves the answer partly ready and not sure,
+    and says which."""
+    some = tower_cards.answer_card("equipment", here(COUNTED), "owner")  # 2 of 5 photos; radio units never counted
+    assert some["status"] == PARTLY and some["status_label"] == "Partly ready"
+    assert some["how_sure"]["level"] == "low"
+    assert "Radio units not counted on any photo yet" in some["how_sure"]["because"]
+    assert "Nothing marked on 3 photos of 5: nobody has looked for parts there" in some["how_sure"]["because"]
+    assert some["what"].endswith("Nothing is marked yet on 3 photos of 5: parts seen only there are not counted.")
+    assert some["todo"] == "Ask a technician to count the radio units too: until then this answer leaves them out."
+    technician = tower_cards.answer_card("equipment", here(COUNTED), "technician")
+    assert technician["todo"] == ("Mark 3 radio units on a photo where they are clear, press Find, then keep, fix or "
+                                  "reject each suggestion and add any it missed.")
+    deck = {c["id"]: c for c in tower_cards.deck(here(COUNTED), "owner")["cards"]}
+    assert deck["equipment"]["status"] == PARTLY
+    assert deck["equipment"]["preview"].endswith("Radio units not counted yet. Nothing marked yet on 3 photos.")
+
+    every_part_some_photos = {sha: work for sha, work in COMPLETE.items() if sha != "e" * 64}
+    unopened = tower_cards.answer_card("equipment", here(every_part_some_photos), "owner")
+    assert unopened["status"] == PARTLY and unopened["how_sure"]["level"] == "low"
+    assert unopened["todo"] == "Ask a technician to look at the 1 photo with nothing marked: it may show more."
+
+    ready = tower_cards.answer_card("equipment", here(COMPLETE), "owner")
+    assert ready["status"] == READY and ready["how_sure"]["level"] == "medium"
+    assert not any(b.startswith(("Some marked", "Nothing marked")) or "not counted" in b
+                   for b in ready["how_sure"]["because"])
+    assert ready["todo"] == "Use these as the least on the tower; a photo from another side may show more."
+    assert tower_cards.findings(here(COMPLETE))["complete"] is True
+    assert tower_cards.findings(here(COUNTED))["complete"] is False
 
 
 def test_the_answer_level_shows_only_with_the_ladder_on(monkeypatch):
@@ -134,7 +202,8 @@ def test_photos_to_check_with_and_without_work():
                                      "2 photos with nothing marked.")
     everything = {p.sha256: parts(tower_dish=dict(marks=3, suggestions=1, reviewed=1)) for p in PHOTOS}
     done = tower_cards.answer_card("photos_to_check", here(everything), "owner")
-    assert done["items"] == [] and done["what"].startswith("Every photo is checked")
+    assert done["items"] == [] and done["what"].startswith(
+        "Every photo has something marked and every part marked on it is counted.")
 
 
 # --- Where were the photos taken from? ------------------------------------------------------------------------------
@@ -165,8 +234,15 @@ def test_changes_need_an_earlier_inspection_with_counts():
     alone = tower_cards.answer_card("changes", here(COUNTED), "owner")
     assert alone["status"] == NEEDS_FLIGHT and alone["status_label"] == "Needs a second inspection"
     assert "only inspection of this site" in alone["what"] and "at least" not in alone["what"]
+    # An earlier inspection of the site exists, with nothing counted on it: counting there answers it, not a new one.
     uncounted = tower_cards.answer_card("changes", here(COUNTED, Earlier(same_site=2, inspection=None)), "owner")
+    assert uncounted["status"] == CANT_TELL and uncounted["status_label"] == "Can't tell yet"
     assert uncounted["what"].startswith("2 earlier inspections of this site, but nothing is counted on them")
+    assert uncounted["todo"] == "Count parts on the earlier inspection too, then come back here."
+    one_before = here(COUNTED, Earlier(same_site=1, inspection=None))
+    card = {c["id"]: c for c in tower_cards.deck(one_before, "owner")["cards"]}
+    assert card["changes"]["status"] == CANT_TELL
+    assert card["changes"]["preview"] == "1 earlier inspection of this site, nothing counted on it yet."
 
     before_photos = [facts(sha="9" * 64, name="OLD_0001.JPG", taken="2026-04-01T10:00:00")]
     before = tower_inspection.Inspection(project_id="P", layer_id="L0", name="Rebero April", photos=tuple(before_photos),
@@ -203,7 +279,7 @@ def test_the_learn_card_reads_what_the_finder_was_measured_to_do():
 def test_sage_gets_no_count_before_a_person_checked_one():
     nothing = tower_cards.findings(here())
     assert nothing["counted"] is False and nothing["answer"] == tower_cards.NOTHING_COUNTED
-    assert all(p["at_least"] is None and p["added_up_over_photos"] is None for p in nothing["equipment"].values())
+    assert all(p["at_least"] is None for p in nothing["equipment"].values())
     assert nothing["rule"] == tower_cards.NEVER_COUNT_YOURSELF and "mark 3" in nothing["what_to_do"]
     waiting = tower_cards.findings(here({"c" * 64: parts(tower_dish=dict(marks=3, suggestions=5))}))
     assert waiting["counted"] is False and waiting["equipment"][DISH]["suggestions_waiting"] == 5
@@ -215,6 +291,19 @@ def test_sage_gets_no_count_before_a_person_checked_one():
     assert counted["equipment"][RADIO]["at_least"] is None
     assert counted["camera"]["facts"][0] == {"label": "Photos", "value": "5"}
 
+    assert counted["photos_with_every_marked_part_counted"] == 2 and counted["photos_with_nothing_marked"] == 3
+
     review = tower_cards.photos_needing_review(here(OPEN))
     assert review["photos_to_check"] == 3 and review["first_photos"][0] == {
         "photo": "DJI_0003.JPG", "why": "4 suggestions waiting for you"}
+
+
+def test_sage_never_gets_the_sum_over_photos():
+    """7 and 6 dishes on two photos add up to 13, which counts the dishes seen on both twice: Sage gets "at least 7"
+    and never the 13, so it cannot give the sum as the number on the tower (TOWERS_RULES.md)."""
+    counted = tower_cards.findings(here(COUNTED))
+    assert all(set(p) == {"part", "at_least", "counted_on_photo", "photos_counted", "photos_marked",
+                          "suggestions_waiting", "photos_with_suggestions_waiting", "photos_to_confirm",
+                          "photos_marked_not_found", "photos_being_found"} for p in counted["equipment"].values())
+    shown = json.dumps({k: v for k, v in counted.items() if k != "camera"})
+    assert "13" not in _numbers(shown) and "added up" not in shown

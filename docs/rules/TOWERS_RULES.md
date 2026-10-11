@@ -28,7 +28,13 @@ Parts: `tower_dish`, `tower_antenna`, `tower_radio_unit` (answer_levels' targets
 - **Look-alike marks**: only for a part whose measured settings use them (`answer_levels` via
   `example_finder.settings(part).look_alike_marks`: antennas and radio units, not dishes): the other two parts'
   marks on the same photo (as measured), then the person's own look-alike marks, without repeats, at most 20. A
-  person's own look-alike marks for dishes are refused (422), never ignored.
+  person's own look-alike marks for dishes are refused (422), never ignored. The work shows this whole list as
+  `lookalike_marks`; `PUT marks` takes the same list back and keeps only the person's own: a box that is another
+  part's mark on the photo is a look-alike already, so it is not stored as the person's own
+  (`tower_inspection.own_lookalikes`). Sending the shown list back unchanged changes nothing (the job and the
+  review stay); leaving a box out removes that own look-alike (a changed look-alike drops the job, as changed
+  marks do). When the other parts' marks alone fill the 20 places, the own ones are not shown, and sending the
+  shown list back removes them.
 - **Find**: the example finder (`example_finder.start`) on the photo read from this inspection's own storage only
   (`example_finder_pictures.InspectionPhoto`), taken the way `photo_inspections.view_of` says (from the DJI gimbal
   pitch; a photo without one is refused with the reason, never guessed). Every refusal of the finder (a photo
@@ -63,7 +69,10 @@ Parts: `tower_dish`, `tower_antenna`, `tower_radio_unit` (answer_levels' targets
   only as "added up over photos (a part seen on two photos counts twice)", never as the number on the tower.
 - Per part: photos marked, photos counted, suggestions waiting (and on how many photos), photos to confirm, photos
   the finder is working on, photos marked but not found yet (or the finder failed).
-- **Photos checked**: photos where something is marked and every marked part is counted.
+- **Photos with every marked part counted** (`photos_with_marked_parts_counted`): photos where something is marked
+  and every marked part is counted. Not "checked for every part": a part nobody marked on a photo was not looked for
+  there (there is no "none on this photo"). **Photos with nothing marked** (`photos_unmarked`): nobody has looked
+  for parts on them.
 
 ## Photos to check (`photos_to_check`), the technician's order
 
@@ -93,8 +102,11 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
   projects, even for byte-identical photos; the finder keeps its finds per project too (`finds/v1/<project>/`).
 - Changes to one photo's work are made one at a time across app workers (a Redis lock per project, layer and photo,
   `towers:v1:...:lock`, 60 s; a change waits up to 10 s, then 409).
-- The project of a layer is `photo_context.project_of` (the most recently edited live map showing it), as for the
-  finder, the farm records and the field checks; its industry gates every route and tool.
+- The project whose work the routes read and write is the one project with a live map showing the layer
+  (`photo_context.projects_of`, `tower_inspection.work_project`); a layer on maps of more than one project (added to
+  another project's map) is refused with 409 "remove it from the maps of the others", never followed to the last
+  edited map (which would move its work between projects). Sage's tower tools use the chat's own project
+  (`meta.project_id`, whose map must show the layer). That project's industry gates every route and tool.
 - The inspection's photos come from the facts kept at upload (`photo_inspections.load_facts`), one per stored photo
   (a photo uploaded twice keeps its first name); an inspection uploaded before 2026-10-11 has none: 409 "upload the
   photos again". Kept in memory per inspection (they never change).
@@ -102,13 +114,16 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
 ## Routes (`src/routes/tower_routes.py`, the shared API contract)
 
 All under `/api/towers/layer/{layer_id}`; 404 with a switch off, for a layer that is not a photo inspection, or in a
-project that is not Telecom Towers; reads need view rights (`get_layer`), writes edit rights (`edit_layer`).
+project that is not Telecom Towers; 409 for a layer on maps of more than one project; reads need view rights
+(`get_layer`), writes edit rights (`edit_layer`).
 
 - `GET /photos` -> `{"photos": [{sha256, url, width, height, taken_at, lat, lon, relative_altitude_m,
   gimbal_pitch, gimbal_yaw}]}` (width and height as shown; url is the photo route of `PHOTO_INSPECTIONS_RULES.md`).
 - `GET /photos/{sha256}/work` -> `{"parts": {<part>: {marks, lookalike_marks, job: {job_id, status} | null,
   suggestions: [{id, box, score}], reviewed: {kept, rejected, fixed: [{id, box}], added}, counted_by_you, waiting}}}`.
-- `PUT /photos/{sha256}/marks` `{part, marks, lookalike_marks}` -> the part's work.
+- `PUT /photos/{sha256}/marks` `{part, marks, lookalike_marks}` -> the part's work. `lookalike_marks` is the list
+  the work shows (the other parts' marks, then the person's own) or any part of it: the other parts' marks in it are
+  not stored, the rest are the person's own look-alikes (above).
 - `POST /photos/{sha256}/find` `{part}` -> `{job_id, status}`; 422 with the reason (size gate, view, marks), 429 /
   503 when the finder's line is full (per user / for the app), 502 when the photo could not be read, 404 while
   `EXAMPLE_FINDER` is off. Rate limit: the heavy tier, per user.
@@ -129,14 +144,15 @@ counted, since its answer says how to start; the technician's photos to check fi
 
 | Card | Status | Answer |
 |---|---|---|
-| `equipment` "What equipment is on this tower?" | can't tell (nothing counted), working (only the finder working), partly (counted, some open), ready | at least N per part, counted by you, on which photo; photos checked X of Y; suggestions waiting; the sum over photos named as such. Nothing counted: says so and how to start, no number. |
+| `equipment` "What equipment is on this tower?" | can't tell (nothing counted), working (only the finder working), partly (counted, but a part counted on no photo, a marked photo still open, or a photo with nothing marked), ready (every part counted, nothing open, something marked on every photo) | at least N per part, counted by you, on which photo; photos with every marked part counted X of Y; photos with nothing marked; suggestions waiting; the sum over photos named as such. Nothing marked: says so and how to start, no number. Marked but nothing counted: what is still open and the next step, never "mark 3 to start". |
 | `photos_to_check` "Which photos still need checking?" | ready | the list in the technician's order, with why each is listed |
 | `camera_positions` "Where were the photos taken from?" | ready (can't tell without photos) | heights, tilt, directions, times, cameras; photos without GPS listed; the directions no photo faces |
-| `changes` "What changed since the last inspection?" | needs a second inspection / can't tell (nothing counted now) / ready | at least N then and now per part, the change in plain words, both photos |
+| `changes` "What changed since the last inspection?" | needs a second inspection (none of the site) / can't tell (an earlier one with nothing counted on it, or nothing counted now) / ready | at least N then and now per part, the change in plain words, both photos |
 | `learn_review` "Why does a person check every suggestion?" | learn | what the finder was measured to do (value, photos, data, date read from `answer_levels`), AP50 explained plainly, and the person's own checks so far (kept or fixed of those checked, missed ones added) |
 
-- How sure: "medium" for equipment only when every marked photo is counted, else "low"; the camera facts "high"
-  (read from the photos); the changes "low".
+- How sure: "medium" for equipment only when it is ready (every part counted, nothing open, something marked on
+  every photo), else "low", naming the parts counted on no photo and the photos with nothing marked; the camera
+  facts "high" (read from the photos); the changes "low".
 - With `ANSWER_LADDER` on, the level's label and meaning (`answer_levels`: "Count after checking: ...") open the
   "how sure" reasons; off, no level words are shown (answer_levels' rule for its consumers).
 - No money in any card.
@@ -146,9 +162,19 @@ counted, since its answer says how to start; the technician's photos to check fi
 `get_tower_inspection_findings` and `tower_photos_needing_review` (telecom only, `TOWERS` on; routing category
 `towers`) return the equipment and camera cards' facts and the photos-to-check list (`tower_cards.findings` /
 `photos_needing_review`), with the rule "give only the counts listed here; never count equipment from a photo
-yourself, never present suggestions as a count". With nothing checked they say there is no count and how to start.
-With `TOWERS` on, the Telecom prompt note says the same (`industry.prompt_note`). A towers question narrows the tool
-list only when the turn is offered a tower tool (`sage_routing.route_chat(offered=...)`).
+yourself, never present suggestions as a count". Sage gets "at least N" per part and never the sum over photos
+(it would count a part seen on two photos twice). With nothing marked they say there is no count and how to start;
+with marked photos still open, what is open. They read the chat's own project's work. With `TOWERS` on, the Telecom
+prompt note says the same (`industry.prompt_note`).
+
+Routing: tower words name the `towers` category; it narrows the tool list to the tower tools only when the turn is
+offered a tower tool (`sage_routing.route_chat(offered=...)`) and the question asks what they answer: a count, the
+equipment, or photos to check (`asks_about_tower_work`, `categories_answering`). Tower words alone (a storm before
+tower climbs, "describe the tower photo", a flood near a mast, damage on a mast) keep the full list, which holds
+the tower tools, so the weather, flood and raster tools that answer them stay offered; the abdication guard lets
+an honest "Ingabe cannot tell" stand on them as before tower tools existed. A count question about a single raster
+photo is narrowed to the tower tools (Sage never counts from a picture); whether the model then answers in words
+is the routing eval's to measure with `TOWERS=1` (not run yet).
 
 ## Not done yet (open)
 
@@ -156,7 +182,7 @@ list only when the turn is offered a tower tool (`sage_routing.route_chat(offere
   phone photos of a tower are almost always at an angle; accepting them needs Roger's decision.
 - **The 10 degrees** for "straight down" and **the 100 m** for "same site" are cut-offs, not measured.
 - **Inspections uploaded before 2026-10-11** have no kept facts: they must be uploaded again.
-- **A layer shown in two projects** follows `project_of` (the last edited map), so its work can seem to move between
-  projects; the same holds for the finder and field checks.
+- **A layer shown in two projects** is refused by the tower routes (409) until it is removed from all but one
+  project's maps; the finder and field checks still follow `project_of` (the last edited map).
 - **No "none on this photo" action**: a part not visible on a photo stays unmarked there (not counted, never 0).
 - **Rights gap** above; **Hermes** (`MUNDI_USE_HERMES`) does not have the tower tools (nor the drone tools).

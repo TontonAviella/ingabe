@@ -196,9 +196,26 @@ def _anything_counted(inventory: dict[str, PartInventory]) -> bool:
     return any(i.at_least is not None for i in inventory.values())
 
 
+def _anything_marked(inventory: dict[str, PartInventory]) -> bool:
+    return any(i.photos_marked for i in inventory.values())
+
+
 def _open(inventory: dict[str, PartInventory]) -> bool:
     return any(i.photos_waiting or i.photos_to_confirm or i.photos_not_found or i.photos_finding
                for i in inventory.values())
+
+
+def _uncounted(inventory: dict[str, PartInventory]) -> list[str]:
+    """The parts counted on no photo yet, as the reader names them."""
+    return [i.noun for i in inventory.values() if i.at_least is None]
+
+
+def _complete(here: Here) -> bool:
+    """Whether the equipment answer covers the whole inspection: every part counted on some photo, no marked photo
+    still open, and something marked on every photo (a photo nothing is marked on was not looked at)."""
+    inventory = here.inventory
+    return (not _uncounted(inventory) and not _open(inventory)
+            and not tower_inspection.photos_unmarked(here.inspection))
 
 
 def _status(card_id: str, here: Here) -> str:
@@ -206,14 +223,15 @@ def _status(card_id: str, here: Here) -> str:
     if card_id == "equipment":
         if not _anything_counted(inventory):
             return WORKING if any(i.photos_finding for i in inventory.values()) else CANT_TELL
-        return PARTLY if _open(inventory) else READY
+        return READY if _complete(here) else PARTLY
     if card_id == "photos_to_check":
         return READY
     if card_id == "camera_positions":
         return READY if here.inspection.photos else CANT_TELL
     if card_id == "changes":
         if here.earlier.inspection is None:
-            return NEEDS_FLIGHT
+            # An earlier inspection of the site with nothing counted on it: counting there answers it, no new one.
+            return CANT_TELL if here.earlier.same_site else NEEDS_FLIGHT
         return READY if _anything_counted(inventory) else CANT_TELL
     return LEARN
 
@@ -227,21 +245,24 @@ def _preview(card_id: str, here: Here) -> str:
     if card_id == "equipment":
         counted = [i for i in inventory.values() if i.at_least is not None]
         if counted:
-            rest = [i.noun for i in inventory.values() if i.at_least is None]
+            rest, unmarked = _uncounted(inventory), tower_inspection.photos_unmarked(here.inspection)
             text = _cap(", ".join(_part_phrase(i) for i in counted)) + ", counted by you."
-            return text + (f" {_cap(_names(rest))} not counted yet." if rest else "")
+            text += f" {_cap(_names(rest))} not counted yet." if rest else ""
+            return text + (f" Nothing marked yet on {_n(unmarked, 'photo')}." if unmarked else "")
         waiting = sum(i.waiting for i in inventory.values())
         if waiting:
             return f"{_n(waiting, 'suggestion')} wait for checking; nothing is counted yet."
         finding = sum(i.photos_finding for i in inventory.values())
         if finding:
             return f"The finder is working on {_n(finding, 'photo')}; nothing is counted yet."
+        if _anything_marked(inventory):
+            return "Nothing counted yet: the marked photos are still being checked."
         return "Nothing counted yet: mark 3 of a part on a photo to start."
     if card_id == "photos_to_check":
         to_check = tower_inspection.photos_to_check(here.inspection)
         waiting = [c for c in to_check if c.reason == WAITING]
         if not to_check:
-            return "Every photo is checked."
+            return "Every photo has something marked and every marked part counted."
         text = f"{_n(len(to_check), 'photo')} to check"
         return text + (f", {len(waiting)} with suggestions waiting." if waiting else ".")
     if card_id == "camera_positions":
@@ -251,8 +272,11 @@ def _preview(card_id: str, here: Here) -> str:
             text += f", taken {_metres(facts.height_m.least)} to {_metres(facts.height_m.most)} above take-off"
         return text + "."
     if card_id == "changes":
+        if here.earlier.inspection is None and here.earlier.same_site:
+            return (f"{_n(here.earlier.same_site, 'earlier inspection')} of this site, nothing counted on "
+                    f"{'it' if here.earlier.same_site == 1 else 'them'} yet.")
         if here.earlier.inspection is None:
-            return "No earlier inspection of this site with counted parts: a second one shows what changed."
+            return "No earlier inspection of this site in this project: a second one shows what changed."
         if not _anything_counted(inventory):
             return f"{here.earlier.inspection.name} has counts; nothing is counted on this inspection yet."
         return f"Compared with {here.earlier.inspection.name}."
@@ -329,25 +353,42 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
         else:
             lines.append(f"{_cap(i.noun)}: not counted yet.{still}")
             facts.append({"label": _cap(i.noun), "value": "not counted yet"})
-    reviewed = tower_inspection.photos_reviewed(inspection)
+    marked_counted = tower_inspection.photos_with_marked_parts_counted(inspection)
+    unmarked = tower_inspection.photos_unmarked(inspection)
+    uncounted = _uncounted(inventory)
     waiting = sum(i.waiting for i in inventory.values())
-    facts.append({"label": "Photos checked", "value": f"{reviewed} of {total}"})
+    facts.append({"label": "Photos with every marked part counted", "value": f"{marked_counted} of {total}"})
+    facts.append({"label": "Photos with nothing marked", "value": f"{unmarked} of {total}"})
     facts.append({"label": "Suggestions waiting", "value": str(waiting)})
-    if not _anything_counted(inventory):
-        what = NOTHING_COUNTED if not waiting else (
-            f"Nothing is counted yet: {_n(waiting, 'suggestion')} wait for a person to check them. "
-            + " ".join(lines))
+    marked = _anything_marked(inventory)
+    if not marked:
+        what = NOTHING_COUNTED
+    elif not _anything_counted(inventory):
+        what = "Nothing is counted yet: " + (f"{_n(waiting, 'suggestion')} wait for a person to check them. "
+                                             if waiting else "the marked photos are still being checked. ")
+        what += " ".join(lines)
     else:
         what = " ".join(lines)
+    if marked and unmarked:
+        what += (f" Nothing is marked yet on {_n(unmarked, 'photo')} of {total}: parts seen only there are not "
+                 "counted.")
     to_check = tower_inspection.photos_to_check(inspection)
-    first = next((c for c in to_check if c.reason == WAITING), None)
+    first = next((c for c in to_check if c.reason != UNMARKED), None)  # the first marked photo still open
+    still_open = len([c for c in to_check if c.reason != UNMARKED])
     if audience == TECHNICIAN:
         why = ("A photo's count exists only once you have checked every suggestion on it. Photos overlap, so each "
                "number is the most you counted on one photo.")
-        if first is not None:
+        if first is not None and first.reason == WAITING:
             todo = f"Open {first.photo.filename} first: {_n(first.waiting, 'suggestion')} wait for you."
-        elif not _anything_counted(inventory):
+        elif first is not None:
+            todo = f"Next, {first.photo.filename}: {_check_detail(first)}."
+        elif not marked:
             todo = _cap(_START.format(noun="dishes (or antennas, or radio units)")) + "."
+        elif uncounted:
+            todo = _cap(_START.format(noun=" or ".join(uncounted))) + "."
+        elif unmarked:
+            todo = (f"Open the {_n(unmarked, 'photo')} with nothing marked: {'it' if unmarked == 1 else 'they'} "
+                    "may show parts not counted yet.")
         else:
             todo = "Count the parts again on a photo from another side: it may show parts hidden on these."
     else:
@@ -355,18 +396,29 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
                "suggestion by suggestion; photos overlap, so it is the most seen on one photo, not a sum of photos.")
         if waiting:
             todo = f"Ask a technician to check the {_n(waiting, 'suggestion')} waiting before using these numbers."
-        elif not _anything_counted(inventory):
+        elif still_open:
+            todo = (f"Ask a technician to finish the {_n(still_open, 'marked photo')} still open: their counts "
+                    "appear once every suggestion on them is checked.")
+        elif not marked:
             todo = "Ask a technician to " + _START.format(noun="dishes, antennas and radio units") + "."
+        elif uncounted:
+            todo = f"Ask a technician to count the {_names(uncounted)} too: until then this answer leaves them out."
+        elif unmarked:
+            todo = (f"Ask a technician to look at the {_n(unmarked, 'photo')} with nothing marked: "
+                    f"{'it' if unmarked == 1 else 'they'} may show more.")
         else:
             todo = "Use these as the least on the tower; a photo from another side may show more."
-    counted_all = _anything_counted(inventory) and not _open(inventory)
+    complete = _complete(here)
     best = next((i.answer for i in inventory.values() if i.answer is not None), None)
-    sure = how_sure("medium" if counted_all else "low", _level_words(best) + [
+    gaps = ((["Some marked photos are still being checked: they add nothing yet"] if _open(inventory) else [])
+            + ([f"{_cap(_names(uncounted))} not counted on any photo yet"] if uncounted else [])
+            + ([f"Nothing marked on {_n(unmarked, 'photo')} of {total}: nobody has looked for parts there"]
+               if unmarked else []))
+    sure = how_sure("medium" if complete else "low", _level_words(best) + [
         "Counted by you: every suggestion on a counted photo was kept, fixed or rejected by a person",
         "Photos overlap: the same part on two photos counts on both, so only the most on one photo is given",
         "Parts hidden behind others on every photo cannot be counted",
-    ] + ([] if counted_all else ["Some marked photos are still being checked: they add nothing yet"]),
-        "Check a photo taken from another side of the tower.")
+    ] + gaps, "Check a photo taken from another side of the tower.")
     return _answer("equipment", here, what=what, why=why, todo=todo, sure=sure, audience=audience,
                    terms=["counted_by_you", "at_least", "suggestion"], facts=facts, items=items,
                    progress=_finder_progress(inspection))
@@ -398,7 +450,8 @@ def _photos_to_check(here: Here, audience: str) -> dict[str, Any]:
              {"label": "Finder working", "value": _n(len(by_reason[FINDING]), "photo")},
              {"label": "Nothing marked", "value": _n(len(by_reason[UNMARKED]), "photo")}]
     if not to_check:
-        what = "Every photo is checked: each photo with marks has its count."
+        what = ("Every photo has something marked and every part marked on it is counted. A part nobody marked on "
+                "a photo was not looked for there.")
         todo = "Nothing to check." if audience == TECHNICIAN else "The equipment counts include every marked photo."
     else:
         parts = []
@@ -500,7 +553,9 @@ def _changes(here: Here, audience: str) -> dict[str, Any]:
                 f"{'it' if earlier.same_site == 1 else 'them'}") + ", so there is nothing to compare with yet."
         todo = ("Count parts on the earlier inspection too, then come back here." if earlier.same_site else
                 "Upload the next inspection of this site to this project; this card then shows what changed.")
-        sure = how_sure("low", ["Needs a second inspection of the same site with parts counted by you"], None)
+        sure = how_sure("low", ["Needs parts counted by you on an earlier inspection of the same site"
+                                if earlier.same_site else
+                                "Needs a second inspection of the same site with parts counted by you"], None)
         return _answer("changes", here, what=what, why="A change can only be seen between two inspections.",
                        todo=todo, sure=sure, audience=audience, terms=["at_least"])
     before = tower_inspection.inventory(earlier.inspection)
@@ -596,14 +651,15 @@ def answer_card(card_id: str, here: Here, audience: Optional[str]) -> dict[str, 
 
 def findings(here: Here) -> dict[str, Any]:
     """What a person counted on the inspection, what is still open, and where the photos were taken from: the
-    equipment and camera cards' facts, for Sage."""
+    equipment and camera cards' facts, for Sage. Only "at least N" per part: the sum over photos counts a part seen on
+    two photos twice, so it is not given (TOWERS_RULES.md). `complete` is the equipment card's "ready": every part
+    counted, nothing marked still open, something marked on every photo."""
     inventory = here.inventory
     equipment = _equipment(here, OWNER)
     camera = _camera_positions(here, TECHNICIAN)
     parts = {
         part: {"part": i.noun, "at_least": i.at_least,
                "counted_on_photo": i.at_least_photo.filename if i.at_least_photo else None,
-               "added_up_over_photos": i.counted_in_photos if i.at_least is not None else None,
                "photos_counted": i.photos_counted, "photos_marked": i.photos_marked,
                "suggestions_waiting": i.waiting, "photos_with_suggestions_waiting": i.photos_waiting,
                "photos_to_confirm": i.photos_to_confirm,
@@ -613,8 +669,10 @@ def findings(here: Here) -> dict[str, Any]:
     return {
         "inspection": here.inspection.name,
         "photos": len(here.inspection.photos),
-        "photos_checked": tower_inspection.photos_reviewed(here.inspection),
+        "photos_with_every_marked_part_counted": tower_inspection.photos_with_marked_parts_counted(here.inspection),
+        "photos_with_nothing_marked": tower_inspection.photos_unmarked(here.inspection),
         "counted": _anything_counted(inventory),
+        "complete": _complete(here),
         "equipment": parts,
         "answer": equipment["what"],
         "what_to_do": equipment["todo"],

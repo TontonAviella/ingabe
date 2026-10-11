@@ -11,7 +11,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from src.dependencies.redis_client import get_async_redis
-from src.services import industry, photo_context, photo_inspections, tower_cards, tower_inspection
+from src.services import industry, photo_inspections, tower_cards, tower_inspection
 from src.structures import async_read_conn
 from src.tools.pyd import IngabeToolCallMetaArgs
 from src.utils import get_async_s3_client, get_bucket_name
@@ -39,9 +39,9 @@ async def _here(layer_id: str, meta: IngabeToolCallMetaArgs) -> tuple[Optional[t
         prefix = photo_inspections.stored_prefix(metadata, layer_id)
         if prefix is None:
             return None, f"{row['name']} is not a photo inspection (a ZIP of tower photos uploaded as camera points)."
-        project_id = await photo_context.project_of(conn, layer_id)
-        if project_id is None:
-            return None, "This inspection is not in a project, so no work on it is kept."
+        # The chat's own project (its map shows the layer), never the last edited map's: a layer added to another
+        # project's map keeps each project's work apart, as every Sage tool keys on meta.project_id.
+        project_id = meta.project_id
         if not industry.available("tower_inspection", await industry.industry_of_project(conn, project_id)):
             return None, "Tower work is for Telecom Towers projects only."
         s3, bucket = await get_async_s3_client(), get_bucket_name()

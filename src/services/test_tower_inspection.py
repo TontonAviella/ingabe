@@ -234,6 +234,51 @@ async def test_look_alikes_are_the_other_parts_marks_only_where_the_measurement_
         await redis.aclose()
 
 
+def test_the_look_alike_marks_shown_are_kept_only_as_the_persons_own():
+    """PUT marks takes the look-alike list the work shows (the other parts' marks, then the person's own): the other
+    parts' marks in it are not kept as the person's own, so sending the shown list back changes nothing."""
+    dishes, antennas = ((10.0, 10.0, 50.0, 50.0),), ((100.0, 10.0, 140.0, 90.0),)
+    mine = (900.0, 100.0, 960.0, 160.0)
+    record = tower_inspection.PhotoRecord.empty(SHA).with_part(DISH, tower_inspection.PartRecord(marks=dishes))
+    record = record.with_part(ANTENNA, tower_inspection.PartRecord(marks=antennas, own_lookalikes=(mine,)))
+    shown = tower_inspection.lookalike_marks(ANTENNA, record)
+    assert shown == dishes + (mine,)
+    assert tower_inspection.own_lookalikes(ANTENNA, record, shown) == (mine,)
+    assert tower_inspection.own_lookalikes(ANTENNA, record, dishes) == ()  # the other parts' marks alone
+    assert tower_inspection.own_lookalikes(ANTENNA, record, [mine, mine]) == (mine,)
+    assert tower_inspection.own_lookalikes(RADIO, record, dishes + antennas + (mine,)) == (mine,)
+    # Dishes use no look-alikes: nothing given for them is taken for another part's mark (set_marks refuses it).
+    assert tower_inspection.own_lookalikes(DISH, record, antennas) == antennas
+
+
+@pytest.mark.anyio
+async def test_sending_the_shown_look_alike_marks_back_keeps_the_job_and_the_review(towers):
+    redis, s3, bucket = await _services()
+    project, layer, metadata = towers()
+    photo = facts()
+    try:
+        await tower_inspection.set_marks(redis, s3, bucket, project, layer, photo, DISH, MARKS, [])
+        own = [[900.0, 100.0, 960.0, 160.0]]
+        await tower_inspection.set_marks(redis, s3, bucket, project, layer, photo, ANTENNA, ANTENNA_MARKS, own)
+        await tower_inspection.start_find(redis, s3, bucket, project, USER, layer, metadata, photo, ANTENNA)
+        found = await _found(redis, s3, bucket, project, layer, photo, ANTENNA)
+        ids = [s.id for s in found.suggestions]
+        reviewed = await tower_inspection.set_review(redis, s3, bucket, project, layer, photo, ANTENNA, ids, [],
+                                                     [], [])
+        assert reviewed.counted_by_you is not None
+        shown = [list(b) for b in reviewed.as_dict()["lookalike_marks"]]  # the dishes' marks, then the own
+        assert len(shown) == len(MARKS) + 1
+        again = await tower_inspection.set_marks(redis, s3, bucket, project, layer, photo, ANTENNA,
+                                                 reviewed.as_dict()["marks"], shown)
+        assert again.job.job_id == found.job.job_id and again.counted_by_you == reviewed.counted_by_you
+        assert again.as_dict()["lookalike_marks"] == shown
+        dropped = await tower_inspection.set_marks(redis, s3, bucket, project, layer, photo, ANTENNA,
+                                                   reviewed.as_dict()["marks"], shown[:-1])
+        assert dropped.job is None and dropped.counted_by_you is None  # the own look-alike removed: a new find
+    finally:
+        await redis.aclose()
+
+
 # --- The photo the finder reads ----------------------------------------------------------------------------------
 
 @pytest.mark.anyio
@@ -338,7 +383,10 @@ def test_the_inventory_gives_the_most_on_one_photo_and_names_the_sum_over_photos
     assert dish.answer.level is answer_levels.Level.FULL_REVIEW
     assert inv[ANTENNA].at_least is None and inv[ANTENNA].photos_finding == 1  # missing is None, never 0
     assert inv[RADIO].at_least is None and inv[RADIO].photos_marked == 0
-    assert tower_inspection.photos_reviewed(_inspection(PHOTOS, work)) == 2
+    # Photos a and b (dishes counted); c and d are marked but open; e has nothing marked.
+    assert tower_inspection.photos_with_marked_parts_counted(_inspection(PHOTOS, work)) == 2
+    assert tower_inspection.photos_unmarked(_inspection(PHOTOS, work)) == 1
+    assert tower_inspection.photos_unmarked(_inspection(PHOTOS, {})) == len(PHOTOS)
 
 
 def test_photos_to_check_come_nearly_done_first_then_in_flight_order():
@@ -391,6 +439,13 @@ def test_the_same_site_before_is_near_and_finished_earlier():
     undated = [facts(taken=None)]
     assert not tower_inspection.is_earlier_same_site(now, undated)  # unknown time: not compared
     assert not tower_inspection.is_earlier_same_site(now, [facts(lat=None, lon=None, taken="2026-04-01T10:00:00")])
+
+
+def test_the_work_is_kept_in_the_one_project_showing_the_layer():
+    assert tower_inspection.work_project(["P1"]) == "P1"
+    assert tower_inspection.work_project([]) is None
+    with pytest.raises(TowerConflict, match="on maps of 2 projects"):
+        tower_inspection.work_project(["P1", "P2"])  # never the last edited map's: the work would move
 
 
 def test_the_switch_reads_towers_only(monkeypatch):
