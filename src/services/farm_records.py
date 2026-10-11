@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from src.llm_defaults import thinking_kwargs
 from src.services import drone_vision, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -209,14 +210,14 @@ async def read_document(content: bytes, filename: str, content_type: str) -> tup
     part = _content_part(content, filename, content_type)
 
     async def read() -> dict[str, Any]:
+        await drone_vision.pace(model)
         response = await client.chat.completions.create(
-            model=model, reasoning_effort="low",
+            model=model, **thinking_kwargs(client.base_url, "low"),
             messages=[{"role": "system", "content": _PROMPT}, {"role": "user", "content": [part]}],
             response_format={"type": "json_schema", "json_schema": {"name": "farm_document", "strict": True,
                                                                     "schema": _SCHEMA}},
-            extra_body={"usage": {"include": True}},
         )
-        llm_cache.record("document", response.usage)
+        llm_cache.record("document", response.usage, model)
         return json.loads(response.choices[0].message.content or "{}")
 
     # The same file read again (another upload, another project) costs nothing.

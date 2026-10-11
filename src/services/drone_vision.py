@@ -13,9 +13,14 @@ squares at full detail with sizes spelt out, 83%; two looks that must agree (siz
 squares of checked crops), 27 of 27, with 9 of 36 left "not sure". Field checks (field_checks.py)
 override the model and say how often it is right.
 
-Model: GPT-6 Luna through OpenRouter (Roger's choice, 2026-10-06), at high reasoning effort: about
-$0.0015 a plot for both looks. Fixed instructions go first as text, so the provider's prompt cache can
-serve them; pictures go last.
+Switch: DRONE_VISION_SURVEY (survey_enabled(); on by default). Off ("0"), no plot is looked at and no paid call is
+made: each plot's crop then comes from its fingerprint call and the checks alone (no_looks()), and stage, cover,
+weeds and problems are unknown (None), which the cards say plainly.
+
+Model: DRONE_VISION_MODEL, at high reasoning effort; readers see its name from model_name(). It was GPT-6 Luna
+through OpenRouter (Roger's choice, 2026-10-06; about $0.0015 a plot for both looks); since 2026-10-10 the Mac and
+the server run claude-haiku-5-5 through Anthropic's OpenAI-compatible endpoint. Fixed instructions go first as
+text, so the provider's prompt cache can serve them; pictures go last.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ import io
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -42,7 +48,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
-from src.llm_defaults import resolve_chat_endpoint
+from src.llm_defaults import model_name as llm_model_name, resolve_chat_endpoint, thinking_kwargs
 from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -136,14 +142,18 @@ class PlotLook:
     number: int
     main_crop: str  # "unsure" unless both looks named the same crop
     other_crops: list[str]
-    stage: str
-    crop_cover_percent: int
-    weeds: str
-    problems: list[str]
+    # What the looks saw; None when no look was taken (the survey is switched off): unknown, never a default.
+    stage: Optional[str]
+    crop_cover_percent: Optional[int]
+    weeds: Optional[str]
+    problems: Optional[list[str]]
     note: str
     confidence: str
     candidates: tuple[str, ...] = ()  # when the two looks named different crops: both, for a field check
     evidence: str = ""  # what the first look says it saw
+    # What named the crop: "vision" (the looks), "fingerprints" (crop_fingerprints), or "checks" (no looks and no
+    # fingerprint calls: only plots checked on the ground are named, by field_checks.apply).
+    source: str = "vision"
 
 
 @dataclass(frozen=True)
@@ -161,16 +171,28 @@ class Survey:
 
     looks: dict[int, PlotLook]
     plots: int  # plots asked about
-    model: str
-    done_at: str
+    model: Optional[str]  # None when no model looked (no_looks)
+    done_at: Optional[str]
     cost_usd: float
 
     def look(self, number: int) -> Optional[PlotLook]:
         return self.looks.get(number)
 
 
+def survey_enabled() -> bool:
+    """DRONE_VISION_SURVEY: the vision model looks at each plot (default). "0", "false", "no" or "off" switch the
+    looks off: no survey is started and no paid call is made."""
+    return os.environ.get("DRONE_VISION_SURVEY", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _model() -> str:
     return os.environ.get("DRONE_VISION_MODEL", VISION_MODEL)
+
+
+def model_name(model: Optional[str] = None) -> str:
+    """How the vision model is named to readers: `model` (the id a kept survey was made with), else the one
+    configured (DRONE_VISION_MODEL)."""
+    return llm_model_name(model or _endpoint().model)
 
 
 def vision_client() -> tuple[AsyncOpenAI, str]:
@@ -178,10 +200,48 @@ def vision_client() -> tuple[AsyncOpenAI, str]:
     return _client()
 
 
+# A free tier counts requests per model per minute (Google: 15 for Gemini 3.5 Flash-Lite, 5 for 3.8 Flash).
+# DRONE_VISION_REQUESTS_PER_MINUTE spaces this model's calls evenly so a survey (two looks per plot, many
+# plots at once) stays under it; unset or 0 sends them as fast as CONCURRENT_LOOKS allows (paid models).
+_next_call_at: dict[str, float] = {}
+_pace_lock = asyncio.Lock()
+
+
+def _per_minute() -> float:
+    try:
+        return max(0.0, float(os.environ.get("DRONE_VISION_REQUESTS_PER_MINUTE") or 0))
+    except ValueError:
+        return 0.0
+
+
+async def pace(model: str) -> None:
+    """Wait for this model's next free slot under DRONE_VISION_REQUESTS_PER_MINUTE (no wait when unset)."""
+    per_minute = _per_minute()
+    if not per_minute:
+        return
+    async with _pace_lock:
+        now = time.monotonic()
+        start = max(now, _next_call_at.get(model, 0.0))
+        _next_call_at[model] = start + 60.0 / per_minute
+    await asyncio.sleep(start - now)
+
+
+def _how(base_url: Any) -> list[Any]:
+    """How the provider is asked to think at EFFORT, as key parts for kept looks and surveys: answers depend on
+    it. Empty where the effort says it all (OpenAI-style providers), so looks kept before still match; Anthropic's
+    thinking budget is added."""
+    thinking = thinking_kwargs(base_url, EFFORT)["extra_body"].get("thinking")
+    return [thinking] if thinking else []
+
+
+def _endpoint() -> Any:
+    return resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
+                                 base_url=os.environ.get("OPENAI_BASE_URL"),
+                                 ollama_base_url=os.environ.get("OLLAMA_BASE_URL"))
+
+
 def _client() -> tuple[AsyncOpenAI, str]:
-    endpoint = resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
-                                     base_url=os.environ.get("OPENAI_BASE_URL"),
-                                     ollama_base_url=os.environ.get("OLLAMA_BASE_URL"))
+    endpoint = _endpoint()
     return AsyncOpenAI(base_url=endpoint.base_url, api_key=endpoint.api_key), endpoint.model
 
 
@@ -265,17 +325,17 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
     """The model's answers, and what the call cost in USD. The fixed instructions come first, as text, so the
     provider can serve them from its prompt cache; the pictures come last."""
     async def look() -> dict[str, Any]:
+        await pace(model)
         response = await client.chat.completions.create(
-            model=model, reasoning_effort=EFFORT,
+            model=model, **thinking_kwargs(client.base_url, EFFORT),
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-            extra_body={"usage": {"include": True}},
         )
-        cost = llm_cache.record(f"vision_{name}", response.usage)
+        cost = llm_cache.record(f"vision_{name}", response.usage, model)
         return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}
 
     # The same pictures with the same instructions (a survey run again, plots found again) cost nothing.
-    kept, reused = await llm_cache.answer("vision", llm_cache.key_of(model, EFFORT, system, content, schema), look)
+    kept, reused = await llm_cache.answer("vision", llm_cache.key_of(model, EFFORT, *_how(client.base_url), system, content, schema), look)
     return kept["answer"], 0.0 if reused else kept["cost"]
 
 
@@ -329,13 +389,28 @@ def _look(number: int, answer: dict[str, Any], check: Optional[dict[str, Any]] =
     )
 
 
+def _measured(plots: drone_plots.PlotSet) -> list[dict[str, Any]]:
+    """The plot features a survey asks about: those measured on the photo (plots off the photo are skipped)."""
+    return [f for f in plots.geojson["features"] if f["properties"].get("greenness") is not None]
+
+
+def no_looks(plots: drone_plots.PlotSet) -> Survey:
+    """What stands for the survey when it is switched off: one look per measured plot, its crop not named yet
+    ("unsure", for the fingerprint calls and the checks to name) and its stage, cover, weeds and problems unknown."""
+    looks = {f["properties"]["number"]: PlotLook(number=f["properties"]["number"], main_crop="unsure", other_crops=[],
+                                                 stage=None, crop_cover_percent=None, weeds=None, problems=None,
+                                                 note="", confidence="low", source="checks")
+             for f in _measured(plots)}
+    return Survey(looks=looks, plots=len(looks), model=None, done_at=None, cost_usd=0.0)
+
+
 async def survey(cog_url: str, plots: drone_plots.PlotSet, place: Optional[str],
                  progress: background_jobs.Progress, references: Optional[list[Reference]] = None) -> Survey:
     """Look at every measured plot twice (plots off the photo are skipped): once with the crops' sizes spelt
     out, once against reference squares of checked crops, each look on its own squares from inside the plot."""
     client, model = _client()
     refs = references or []
-    asked = [f for f in plots.geojson["features"] if f["properties"].get("greenness") is not None]
+    asked = _measured(plots)
     looks: dict[int, PlotLook] = {}
     failed = 0
     cost = 0.0
@@ -435,7 +510,8 @@ _surveys: dict[str, Survey] = {}
 def survey_key(photo_key: str, plots: drone_plots.PlotSet, scope: str) -> str:
     """One survey per photo, plot set, model, way of looking (the store prefix's version) and reference scope:
     the second look is judged against the scope's references, so partners never share a survey run on another's."""
-    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}|{scope}"
+    how = "".join(f"|{json.dumps(part, sort_keys=True)}" for part in _how(_endpoint().base_url))
+    return f"{_STORE_PREFIX}|{photo_key}|{plots.source}|{plots.found_at}|{_model()}{how}|{scope}"
 
 
 def _store_key(key: str) -> str:
@@ -473,7 +549,10 @@ def job(key: str) -> Optional[background_jobs.Job]:
 
 def start_survey(s3: Any, bucket: str, key: str, cog_url: str, plots: drone_plots.PlotSet,
                  place: Optional[str], scope: str) -> background_jobs.Job:
-    """Look at every plot in the background, once; the running or failed job is returned."""
+    """Look at every plot in the background, once; the running or failed job is returned. Refused while the survey
+    is switched off (survey_enabled)."""
+    if not survey_enabled():
+        raise RuntimeError("the vision survey is switched off (DRONE_VISION_SURVEY)")
 
     async def work(progress: background_jobs.Progress) -> None:
         result = await survey(cog_url, plots, place, progress, await load_references(s3, bucket, scope))

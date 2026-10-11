@@ -135,9 +135,15 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
         reason = f"{tool_name} cannot run here: this project's industry could not be found, so only the map and imagery tools are available."
     else:
         label = INDUSTRIES[industry]["label"]
-        reason = (f"{tool_name} is for agriculture projects; this project is {label}. Answer with the map and imagery "
-                  f"tools, and say plainly what Ingabe cannot do for {label} yet.")
+        reason = (f"{tool_name} is for {_labels(CAPABILITIES[tool_name])} projects; this project is {label}. Answer "
+                  f"with the map and imagery tools, and say plainly what Ingabe cannot do for {label} yet.")
     return {"status": "error", "error_kind": "wrong_industry", "error": reason}
+
+
+def _labels(industries: frozenset[str]) -> str:
+    """The industries' labels in INDUSTRIES order: "Agriculture", "Agriculture and Telecom Towers". A refused tool
+    serves at most two of the three industries."""
+    return " and ".join(INDUSTRIES[name]["label"] for name in INDUSTRIES if name in industries)
 
 
 def prompt_note(industry: Optional[str]) -> Optional[str]:

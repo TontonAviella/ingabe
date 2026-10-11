@@ -11,13 +11,21 @@ import logging
 import os
 import re
 import time
+from typing import Optional
 from urllib.parse import urlparse
 
+from fastapi import HTTPException, status
+
+from src.services.photo_inspections import PHOTO_EXTENSIONS
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INLINE_STATS_MAX_BYTES = 16 * 1024 * 1024
+
+NO_MAP_POSITION = (
+    "This photo has no map position. Upload a georeferenced GeoTIFF, or turn on photo inspections."
+)
 
 
 class RasterUploadHandler(BaseUploadHandler):
@@ -82,40 +90,22 @@ class RasterUploadHandler(BaseUploadHandler):
         ALL in-process GDAL/rasterio calls can segfault on certain rasters
         (e.g. multi-band NDVI/NDRE), killing the uvicorn worker.
         Using ``gdalinfo -json`` as a subprocess is 100% isolated.
+
+        A JPG or PNG that GDAL cannot place on the map is refused (400): its
+        pixel corners are not coordinates and would break the map style.
         """
-        cmd = ["gdalinfo", "-json"]
-        if (
+        stats = (
             os.environ.get("RASTER_UPLOAD_COMPUTE_STATS", "0") == "1"
             or _should_compute_inline_stats(ctx)
-        ):
-            cmd.append("-stats")
-
-        started = time.monotonic()
-        env = os.environ.copy()
-        if ctx.temp_file_path.startswith("/vsis3/"):
-            endpoint = urlparse(os.environ.get("S3_ENDPOINT_URL", "http://minio:9000"))
-            env.setdefault("AWS_ACCESS_KEY_ID", os.environ.get("S3_ACCESS_KEY_ID", ""))
-            env.setdefault("AWS_SECRET_ACCESS_KEY", os.environ.get("S3_SECRET_ACCESS_KEY", ""))
-            env.setdefault("AWS_REGION", os.environ.get("S3_DEFAULT_REGION", "us-east-1"))
-            env.setdefault("AWS_S3_ENDPOINT", endpoint.netloc)
-            env.setdefault("AWS_HTTPS", "YES" if endpoint.scheme == "https" else "NO")
-            env.setdefault("AWS_VIRTUAL_HOSTING", "FALSE")
-            env.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-            env.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff")
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, ctx.temp_file_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
         )
-        stdout, stderr = await proc.communicate()
+        started = time.monotonic()
+        info = await gdalinfo_json(ctx.temp_file_path, stats=stats)
         elapsed = time.monotonic() - started
-        if proc.returncode != 0:
-            logger.warning("gdalinfo failed for %s: %s", ctx.layer_id, stderr.decode())
+        if info is None:
+            logger.warning("gdalinfo failed for %s", ctx.layer_id)
             return None
-
-        info = json.loads(stdout)
+        if ctx.file_ext.lower() in PHOTO_EXTENSIONS and not has_map_position(info):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NO_MAP_POSITION)
 
         # Extract bounds in EPSG:4326
         bounds = None
@@ -170,6 +160,44 @@ class RasterUploadHandler(BaseUploadHandler):
             elapsed,
         )
         return bounds
+
+
+async def gdalinfo_json(path: str, *, stats: bool = False) -> Optional[dict]:
+    """``gdalinfo -json`` of `path` (a local file or a /vsis3/ object), run in a subprocess so a GDAL crash cannot
+    take the worker down. None when gdalinfo fails (its error is logged)."""
+    cmd = ["gdalinfo", "-json"]
+    if stats:
+        cmd.append("-stats")
+
+    env = os.environ.copy()
+    if path.startswith("/vsis3/"):
+        endpoint = urlparse(os.environ.get("S3_ENDPOINT_URL", "http://minio:9000"))
+        env.setdefault("AWS_ACCESS_KEY_ID", os.environ.get("S3_ACCESS_KEY_ID", ""))
+        env.setdefault("AWS_SECRET_ACCESS_KEY", os.environ.get("S3_SECRET_ACCESS_KEY", ""))
+        env.setdefault("AWS_REGION", os.environ.get("S3_DEFAULT_REGION", "us-east-1"))
+        env.setdefault("AWS_S3_ENDPOINT", endpoint.netloc)
+        env.setdefault("AWS_HTTPS", "YES" if endpoint.scheme == "https" else "NO")
+        env.setdefault("AWS_VIRTUAL_HOSTING", "FALSE")
+        env.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+        env.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff")
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("gdalinfo failed for %s: %s", path, stderr.decode())
+        return None
+    return json.loads(stdout)
+
+
+def has_map_position(info: dict) -> bool:
+    """True when gdalinfo places the raster on the map: it has a WGS84 extent or a coordinate system. A plain
+    photo has neither, only pixel corners."""
+    return bool(info.get("wgs84Extent")) or bool((info.get("coordinateSystem") or {}).get("wkt"))
 
 
 def _should_compute_inline_stats(ctx: UploadContext) -> bool:

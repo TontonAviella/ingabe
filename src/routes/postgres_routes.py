@@ -69,7 +69,7 @@ from src.services.posthog_analytics import (
     elapsed_ms,
 )
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import drone_first_look, industry, photo_content, project_partner
+from src.services import drone_first_look, industry, photo_content, photo_inspections, project_partner, stored_files
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -78,6 +78,7 @@ redis = get_redis_client()
 
 
 # Upload models — imported from src.upload.models (canonical location)
+from src.upload.keys import NotYourUpload, check_upload_key, upload_key  # noqa: E402
 from src.upload.models import (  # noqa: E402
     VectorProcessingResult,
 )
@@ -853,7 +854,7 @@ async def presign_layer_upload(
     user_id = session.get_user_id()
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
-    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+    s3_key = upload_key(user_id, forked_map.project_id, layer_id, file_ext)
 
     s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
     upload_url = await s3_client.generate_presigned_url(
@@ -959,6 +960,15 @@ async def _r2_delete_object(s3_key: str):
         )
 
 
+def _own_upload(s3_key: str, session: UserContext, *, project_id: Optional[str] = None,
+                layer_id: Optional[str] = None) -> None:
+    """403 unless `s3_key` is the caller's own upload (of this project and layer when given)."""
+    try:
+        check_upload_key(s3_key, session.get_user_id(), project_id=project_id, layer_id=layer_id)
+    except NotYourUpload as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+
 @router.post(
     "/{original_map_id}/upload-multipart-init",
     response_model=MultipartInitResponse,
@@ -978,7 +988,7 @@ async def init_multipart_upload(
     user_id = session.get_user_id()
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
-    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+    s3_key = upload_key(user_id, forked_map.project_id, layer_id, file_ext)
 
     total_parts = max(1, -(-file_size // MULTIPART_CHUNK_SIZE))  # ceil division
 
@@ -1024,6 +1034,7 @@ async def presign_multipart_parts(
     body: MultipartPresignRequest,
     session: UserContext = Depends(verify_session_required),
 ):
+    _own_upload(body.s3_key, session)
     s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
 
     urls = {}
@@ -1065,6 +1076,7 @@ async def upload_multipart_part(
     """
     if part_number < 1:
         raise HTTPException(status_code=400, detail="part_number must be >= 1")
+    _own_upload(s3_key, session)
 
     body = await request.body()
     if not body:
@@ -1101,6 +1113,7 @@ async def get_multipart_upload_status(
     a hint, S3 is the source of truth. If the upload was aborted or expired,
     returns exists=false so the client can clear its local state.
     """
+    _own_upload(s3_key, session)
     s3_client, bucket_name = await _get_upload_client_and_bucket()
 
     try:
@@ -1144,6 +1157,7 @@ async def complete_multipart_upload(
     import time
 
     started_at = time.monotonic()
+    _own_upload(body.s3_key, session, layer_id=body.layer_id)
     s3_client, bucket_name = await _get_upload_client_and_bucket()
 
     parts = [
@@ -1435,7 +1449,7 @@ async def _background_generate_cog(
             logger.info("Background COG: download complete for %s (size=%d bytes)", layer_id, os.path.getsize(local_input))
 
         # Same bytes uploaded before (any name, any partner): share that optimised photo and all its analyses.
-        content_sha = await asyncio.to_thread(photo_content.file_sha256, local_input)
+        content_sha = await asyncio.to_thread(stored_files.file_sha256, local_input)
         same = await photo_content.find(s3, bucket_name, content_sha, target_srs)
         if same:
             async with get_async_db_connection() as conn:
@@ -1685,12 +1699,13 @@ async def complete_layer_upload(
     as the regular upload endpoint.
     """
     from src.upload.base import UploadContext
-    from src.upload.registry import get_handler, get_layer_type
+    from src.upload.registry import get_layer_type, handler_for
     from boto3.s3.transfer import TransferConfig
     import time
 
     started_at = time.monotonic()
     user_id = session.get_user_id()
+    _own_upload(body.s3_key, session, project_id=mundi_map.project_id, layer_id=body.layer_id)
     bucket_name = get_bucket_name()
     s3_client = await get_async_s3_client()
 
@@ -1818,44 +1833,57 @@ async def complete_layer_upload(
                 bucket_name=bucket_name,
             )
 
-            handler = get_handler(file_ext)
-            result = await handler.preprocess(ctx)
-            logger.info("upload-complete preprocessed %s in %.2fs", body.layer_id, time.monotonic() - started_at)
+            handler = await handler_for(file_ext, tmp_path)
+            layer_created = False
+            try:
+                result = await handler.preprocess(ctx)
+                logger.info("upload-complete preprocessed %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
-            # If preprocessing changed the file, re-upload the new version
-            upload_path = result.updated_temp_file_path or tmp_path
-            upload_key = result.updated_s3_key or body.s3_key
-            if result.updated_temp_file_path or result.updated_s3_key:
-                ctx.s3_key = upload_key
-                await s3_op(
-                    s3_client.upload_file(upload_path, bucket_name, upload_key, Config=one_shot),
-                    "re-upload", f"layer {body.layer_id}",
-                )
-
-            async with conn.transaction():
-                result = await handler.create_layers(ctx, result)
-                logger.info("upload-complete created DB layers for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
-
-                if body.add_layer_to_map and result.created_layer_ids:
-                    map_data = await conn.fetchrow(
-                        "SELECT layers FROM user_mundiai_maps WHERE id = $1", map_id,
+                # If preprocessing changed the file, re-upload the new version
+                upload_path = result.updated_temp_file_path or tmp_path
+                stored_key = result.updated_s3_key or body.s3_key
+                if result.updated_temp_file_path or result.updated_s3_key:
+                    ctx.s3_key = stored_key
+                    await s3_op(
+                        s3_client.upload_file(upload_path, bucket_name, stored_key, Config=one_shot),
+                        "re-upload", f"layer {body.layer_id}",
                     )
-                    current_layers = (map_data["layers"] if map_data and map_data["layers"] else [])
-                    await conn.execute(
-                        """
-                        UPDATE user_mundiai_maps
-                        SET layers = $1, last_edited = CURRENT_TIMESTAMP
-                        WHERE id = $2
-                        """,
-                        current_layers + result.created_layer_ids,
-                        map_id,
-                    )
+
+                async with conn.transaction():
+                    result = await handler.create_layers(ctx, result)
+                    logger.info("upload-complete created DB layers for %s in %.2fs", body.layer_id, time.monotonic() - started_at)
+
+                    if body.add_layer_to_map and result.created_layer_ids:
+                        map_data = await conn.fetchrow(
+                            "SELECT layers FROM user_mundiai_maps WHERE id = $1", map_id,
+                        )
+                        current_layers = (map_data["layers"] if map_data and map_data["layers"] else [])
+                        await conn.execute(
+                            """
+                            UPDATE user_mundiai_maps
+                            SET layers = $1, last_edited = CURRENT_TIMESTAMP
+                            WHERE id = $2
+                            """,
+                            current_layers + result.created_layer_ids,
+                            map_id,
+                        )
+                layer_created = bool(result.created_layer_ids)
+            finally:
+                if not layer_created:
+                    await handler.discard(ctx)  # e.g. the photos a photo inspection stored before it failed
 
         if not result.created_layer_ids:
             raise HTTPException(status_code=400, detail="No features found in uploaded file.")
 
+        # A photo inspection stored each photo on its own: the uploaded ZIP (or photo) would be a second copy.
+        if not result.keep_uploaded_file and stored_key != body.s3_key:
+            try:
+                await s3_client.delete_object(Bucket=bucket_name, Key=body.s3_key)
+            except Exception:  # noqa: BLE001 - the layer exists; a leftover upload is only storage
+                logger.warning("could not delete the uploaded file of layer %s", body.layer_id, exc_info=True)
+
         primary_id = result.created_layer_ids[0]
-        layer_type = layer_type_for_file
+        layer_type = result.layer_type  # what the handler made: a photo (JPG) can become a vector photo inspection
         background_seed_dir = None
         background_seed_path = None
         if layer_type == LAYER_TYPE_RASTER and upload_path and os.path.exists(upload_path):
@@ -1881,7 +1909,7 @@ async def complete_layer_upload(
             background_tasks.add_task(
                 _background_generate_cog,
                 primary_id,
-                upload_key,
+                stored_key,
                 background_seed_path,
                 background_seed_dir,
             )
@@ -2369,6 +2397,7 @@ async def remove_layer_from_map(
         )
 
     photo_to_check = None
+    inspection_prefix = None
     async with get_async_db_connection() as conn:
         async with conn.transaction():
             # Get layer name and metadata for response and S3 cleanup
@@ -2423,6 +2452,8 @@ async def remove_layer_from_map(
                 # The optimised photo (cog_key) is shared by copies and identical uploads: it goes only once no
                 # layer uses it, checked after this transaction commits (photo_content.forget_if_unused).
                 photo_to_check = layer_metadata if isinstance(layer_metadata, dict) else None
+                # A photo inspection's original photos go with the row too (photo_inspections.forget_if_unused).
+                inspection_prefix = photo_inspections.stored_prefix(layer_metadata, layer_id)
                 s3_keys_to_delete = [
                     layer_metadata[key_name]
                     for key_name in ("pmtiles_key", "s3_key")
@@ -2455,6 +2486,12 @@ async def remove_layer_from_map(
                                                      photo_to_check)
             except Exception:  # noqa: BLE001 - the layer is removed; a leftover photo is only storage
                 logger.warning("Unused optimised photo cleanup failed for layer %s", layer_id, exc_info=True)
+        if inspection_prefix:
+            try:
+                await photo_inspections.forget_if_unused(conn, await get_async_s3_client(), get_bucket_name(),
+                                                         inspection_prefix, layer_id)
+            except Exception:  # noqa: BLE001 - the layer is removed; leftover photos are only storage
+                logger.warning("Photo inspection cleanup failed for layer %s", layer_id, exc_info=True)
 
     return LayerRemovalResponse(
         dag_child_map_id=forked_map.id,

@@ -147,6 +147,7 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import VersionVisualization from '@/components/VersionVisualization';
 import { featureFieldRows } from '@/lib/featureFields';
+import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import type {
@@ -1692,6 +1693,9 @@ export default function MapLibreMap({
   // override the text box
   const criticalErrors = errors.filter((e) => e.shouldOverrideMessages);
 
+  // A camera point of a photo inspection shows its photo in the feature panel.
+  const selectedPhotoUrl = selectedFeature ? inspectionPhotoUrl(selectedFeature.source, selectedFeature.properties) : null;
+
   return (
     <>
       <div className={`relative map-container ${className} grow max-h-screen`} style={{ width, height }}>
@@ -1813,6 +1817,11 @@ export default function MapLibreMap({
               </CardTitle>
             </CardHeader>
             <CardContent className="px-2 max-h-[50vh] overflow-auto">
+              {selectedPhotoUrl && (
+                <a href={selectedPhotoUrl} target="_blank" rel="noreferrer" title="Open the full photo">
+                  <img src={selectedPhotoUrl} alt="Inspection photo" loading="lazy" className="mb-2 w-full rounded-sm" />
+                </a>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>

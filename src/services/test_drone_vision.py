@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 
 import numpy as np
 import pytest
@@ -139,3 +140,93 @@ def test_references_and_surveys_never_cross_partners():
         source, found_at = "found", "t"
 
     assert drone_vision.survey_key("cog/x.tif", Plots(), a) != drone_vision.survey_key("cog/x.tif", Plots(), b)
+
+
+async def test_vision_calls_are_spaced_under_the_free_tier_rate(monkeypatch):
+    monkeypatch.setenv("DRONE_VISION_REQUESTS_PER_MINUTE", "600")  # one call every 0.1 s
+    monkeypatch.setattr(drone_vision, "_next_call_at", {})
+    starts: list[float] = []
+
+    async def call() -> None:
+        await drone_vision.pace("gemini-3.5-flash-lite")
+        starts.append(time.monotonic())
+
+    await asyncio.gather(*(call() for _ in range(4)))
+    gaps = [b - a for a, b in zip(starts, starts[1:])]
+    assert all(g >= 0.09 for g in gaps), gaps
+
+
+async def test_vision_calls_are_not_paced_when_no_rate_is_set(monkeypatch):
+    monkeypatch.delenv("DRONE_VISION_REQUESTS_PER_MINUTE", raising=False)
+    t = time.monotonic()
+    for _ in range(20):
+        await drone_vision.pace("openai/gpt-6-luna")
+    assert time.monotonic() - t < 0.05
+
+
+def test_kept_surveys_from_before_still_match_and_anthropic_thinking_is_in_the_key(monkeypatch):
+    """OpenAI-style providers keep the old survey key (no survey is redone); Claude's thinking budget is part of
+    its key, so looks made without thinking are not taken for looks made with it."""
+    class Plots:
+        source, found_at = "found", "t"
+
+    monkeypatch.setenv("DRONE_VISION_MODEL", "openai/gpt-6-luna")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+    assert drone_vision.survey_key("cog/x.tif", Plots(), "org-a") == \
+        "drone_vision/v2|cog/x.tif|found|t|openai/gpt-6-luna|org-a"
+    monkeypatch.setenv("DRONE_VISION_MODEL", "claude-haiku-5-5")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.anthropic.com/v1/")
+    assert drone_vision.survey_key("cog/x.tif", Plots(), "org-a") == (
+        'drone_vision/v2|cog/x.tif|found|t|claude-haiku-5-5|{"budget_tokens": 8000, "type": "enabled"}|org-a')
+
+
+async def test_a_look_through_anthropic_asks_for_a_thinking_budget(monkeypatch):
+    sent = {}
+
+    class Completions:
+        async def create(self, **kwargs):
+            sent.update(kwargs)
+            message = type("M", (), {"content": '{"main_crop": "maize"}'})
+            return type("R", (), {"choices": [type("C", (), {"message": message})], "usage": None})
+
+    client = type("Client", (), {"base_url": "https://api.anthropic.com/v1/",
+                                 "chat": type("Chat", (), {"completions": Completions()})})
+
+    async def no_cache(kind, key, compute):
+        return await compute(), False
+
+    monkeypatch.delenv("DRONE_VISION_REQUESTS_PER_MINUTE", raising=False)
+    monkeypatch.setattr(drone_vision.llm_cache, "answer", no_cache)
+    monkeypatch.setattr(drone_vision.llm_cache, "record", lambda kind, usage, model=None: 0.0)
+    answer, _ = await drone_vision._ask(client, "claude-haiku-5-5", "system", [], {}, "plot_look")
+    assert answer == {"main_crop": "maize"}
+    assert sent["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 8000}
+    assert sent["max_tokens"] > 8000 and "reasoning_effort" not in sent
+
+
+def test_the_survey_is_on_unless_switched_off(monkeypatch):
+    monkeypatch.delenv("DRONE_VISION_SURVEY", raising=False)
+    assert drone_vision.survey_enabled() is True
+    for off in ("0", "false", "off", " NO "):
+        monkeypatch.setenv("DRONE_VISION_SURVEY", off)
+        assert drone_vision.survey_enabled() is False
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "1")
+    assert drone_vision.survey_enabled() is True
+
+
+def test_without_looks_every_measured_plot_is_unnamed_and_nothing_else_is_guessed(plots):
+    survey = drone_vision.no_looks(plots)
+    assert sorted(survey.looks) == [1, 2, 3] and survey.plots == 3
+    for look in survey.looks.values():
+        assert (look.main_crop, look.candidates, look.source) == ("unsure", (), "checks")
+        # unknown, not "no weeds", "no problems" or 0% cover
+        assert (look.stage, look.crop_cover_percent, look.weeds, look.problems) == (None, None, None, None)
+    assert (survey.model, survey.done_at, survey.cost_usd) == (None, None, 0.0)
+
+
+def test_a_survey_is_never_started_while_switched_off(monkeypatch, plots):
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    monkeypatch.setattr(drone_vision, "AsyncOpenAI", lambda **kwargs: pytest.fail("vision client built"))
+    with pytest.raises(RuntimeError, match="switched off"):
+        drone_vision.start_survey(None, "b", "key-off", "https://store.test/x.tif", plots, None, "org-a")
+    assert drone_vision.job("key-off") is None

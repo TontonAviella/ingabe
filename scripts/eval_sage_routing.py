@@ -1,8 +1,8 @@
 """Sage routing eval: right first tool, right arguments, whole chains.
 
 Builds each turn's model request with the live code
-(src/dependencies/sage_turn_request.py, sage_routing.build_fast_tool_call /
-select_fast_raster_layer, DefaultMapStateProvider), sends it to the
+(src/dependencies/sage_turn_request.py, sage_routing.build_project_fast_tool_call /
+select_ready_fast_raster_layer, DefaultMapStateProvider), sends it to the
 configured model, and scores it against evals/sage_routing/cases/*.jsonl.
 See evals/sage_routing/README.md.
 
@@ -174,6 +174,33 @@ def map_layers(case: dict[str, Any]) -> list[dict[str, str]]:
             for layer in (case.get("map_state") or {}).get("layers", [])]
 
 
+# A raster on a case's map is a drone photo as the upload and the background COG job leave it
+# (src/upload/handlers/raster_handler.py, postgres_routes._background_generate_cog): it has a coordinate system
+# and a WGS84 outline, and its COG is ready. A case can say otherwise with "georeferenced": false (no coordinate
+# system: the upload marks crs_missing and the outline is the photo's pixel corners) or "cog": "generating" /
+# "failed".
+RASTER_BOUNDS = [30.0589, -1.9536, 30.0646, -1.9489]  # a small drone flight over Kigali, WGS84
+PHOTO_PIXEL_CORNERS = [0.0, 3000.0, 4000.0, 0.0]  # gdalinfo's corners of a 4000 x 3000 photo with no coordinates
+
+
+def map_rasters(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The map's rasters as message_routes._map_rasters returns them (layer_id, name, metadata, bounds)."""
+    rows = []
+    for layer in (case.get("map_state") or {}).get("layers", []):
+        if layer["type"] != "raster":
+            continue
+        layer_id = _layer_id(layer["name"])
+        georeferenced = layer.get("georeferenced", True)
+        cog = layer.get("cog", "ready")
+        metadata: dict[str, Any] = {"band_count": 4, "width": 4000, "height": 3000, "cog_status": cog}
+        metadata.update({"original_srid": 32735} if georeferenced else {"crs_missing": True})
+        if cog == "ready":
+            metadata.update(cog_key=f"cog/layer/{layer_id}.cog.tif", cog_srs="EPSG:3857")
+        rows.append({"layer_id": layer_id, "name": layer["name"], "metadata": metadata,
+                     "bounds": RASTER_BOUNDS if georeferenced else PHOTO_PIXEL_CORNERS})
+    return rows
+
+
 def map_description(case: dict[str, Any]) -> str:
     """Same structure as postgres_routes.get_map_description, with the
     project's internal Rwanda PostGIS connection every map gets."""
@@ -333,20 +360,19 @@ def fast_path_attempt(case: dict[str, Any], fast: Any) -> dict[str, Any]:
 
 def fast_path_applies(fast: Any, text: str, case: dict[str, Any]) -> bool:
     """Mirror message_routes' fall-through: raster fast paths need a matching
-    raster on the map; the admin-boundary path needs the map's project, which
-    every map has."""
+    raster on the map that has a place on the map and a ready COG; the
+    admin-boundary path needs the map's project, which every map has."""
     from src.dependencies.sage_routing import (
         ADMIN_BOUNDARY_TOOL,
         FAST_PATH_TOOLS,
-        select_fast_raster_layer,
+        select_ready_fast_raster_layer,
     )
 
     if fast is None or fast.tool_name not in FAST_PATH_TOOLS:
         return False
     if fast.tool_name == ADMIN_BOUNDARY_TOOL:
         return True
-    rasters = [layer for layer in map_layers(case) if layer["type"] == "raster"]
-    return select_fast_raster_layer(text, rasters) is not None
+    return select_ready_fast_raster_layer(text, map_rasters(case)) is not None
 
 
 def check_industry_cases(cases: list[dict[str, Any]]) -> None:
@@ -363,7 +389,7 @@ def check_industry_cases(cases: list[dict[str, Any]]) -> None:
 async def run(args: argparse.Namespace) -> Path:
     from src.dependencies.map_state import DefaultMapStateProvider
     from src.dependencies.pydantic_tools import get_pydantic_tool_calls
-    from src.dependencies.sage_routing import build_fast_tool_call
+    from src.dependencies.sage_routing import build_project_fast_tool_call
     from src.dependencies.sage_turn_request import build_sage_tools_payload, plan_sage_turn
     from src.database.pool import set_request_industry
     from src.dependencies.system_prompt import get_system_prompt_provider
@@ -447,9 +473,9 @@ async def run(args: argparse.Namespace) -> Path:
             case = {**case, "industry": case_industry}
         set_request_industry(case_industry)
         case_tools = industry.tools_for(tools_payload, case_industry) if case_industry else tools_payload
-        fast = None if args.model_only else build_fast_tool_call(text)
-        if fast is not None and case_industry and industry.tool_refusal(fast.tool_name, case_industry):
-            fast = None  # the live turn refuses another industry's fast path
+        # The live gate: a fast path runs only when the project's industry may use its tool.
+        fast = None if args.model_only else build_project_fast_tool_call(
+            text, case_industry or industry.DEFAULT_INDUSTRY)
         async with slots:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
                 return  # stopping; leave the case for --resume

@@ -49,7 +49,7 @@ from src.structures import (
     convert_mundi_message_to_sanitized,
 )
 from src.utils import get_chat_client_for_model, get_openai_client
-from src.llm_defaults import supports_strict_tool_schema
+from src.llm_defaults import supports_strict_tool_schema, usage_extra_body
 from src.models.messages import _parse_tool_args as _clean_tool_args
 from src.routes.postgres_routes import get_map_description
 from src.services.map_service import (
@@ -65,7 +65,7 @@ from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache, project_partner
-from src.database.pool import set_request_industry
+from src.database.pool import get_request_industry, set_request_industry
 from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
@@ -89,13 +89,14 @@ from src.dependencies.sage_routing import (
     RASTER_FACT_TOOL,
     RASTER_H3_CONTEXT_TOOL,
     RASTER_OBJECT_CANDIDATES_TOOL,
-    build_fast_tool_call,
+    build_project_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
-    select_fast_raster_layer,
+    select_ready_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
+    add_tool_call_delta,
     apply_tool_shortlist,
     build_sage_tools_payload,
     guard_tool_calls,
@@ -105,6 +106,7 @@ from src.dependencies.sage_turn_request import (
     plan_sage_turn,
     rate_limit_retry_after,
     rate_limit_user_message,
+    tool_call_for_provider,
     tool_shortlist_k,
 )
 from src.dependencies.session import (
@@ -504,9 +506,9 @@ async def label_conversation_inline(conversation_id: int):
                     # with 20 Luna returned no title at all; with 150 it used about 70 (CODING_STANDARDS lesson).
                     max_tokens=150,
                     temperature=0.3,
-                    extra_body={"usage": {"include": True}},
+                    extra_body=usage_extra_body(openai_client.base_url),
                 )
-                llm_cache.record("chat_title", response.usage)
+                llm_cache.record("chat_title", response.usage, title_model)
                 return {"title": response.choices[0].message.content or ""}
 
             # Chats that start the same way (an Ask Sage question from a card) get their title for free.
@@ -974,9 +976,9 @@ async def _run_abdication_guard(
     try:
         response = await client.chat.completions.create(
             **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
-               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), "usage": {"include": True}}}, stream=False,
+               "extra_body": {**(attempt_kwargs.get("extra_body") or {}), **usage_extra_body(client.base_url)}}, stream=False,
         )
-        llm_cache.record("sage_guard", getattr(response, "usage", None))
+        llm_cache.record("sage_guard", getattr(response, "usage", None), attempt_kwargs.get("model"))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
@@ -988,7 +990,9 @@ async def _run_abdication_guard(
     )
     return {
         i: {"id": c.id, "type": "function",
-            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"}}
+            "function": {"name": c.function.name, "arguments": c.function.arguments or "{}"},
+            **({"extra_content": c.model_extra["extra_content"]}
+               if (getattr(c, "model_extra", None) or {}).get("extra_content") else {})}
         for i, c in enumerate(calls)
     }
 
@@ -1006,7 +1010,7 @@ async def _maybe_run_fast_admin_boundary_turn(
     }:
         return False
 
-    fast_call = build_fast_tool_call(extract_last_user_text(openai_messages))
+    fast_call = build_project_fast_tool_call(extract_last_user_text(openai_messages), get_request_industry())
     if not fast_call or fast_call.tool_name != ADMIN_BOUNDARY_TOOL:
         return False
 
@@ -1253,6 +1257,24 @@ def _raster_context_fast_reply(
     return reply
 
 
+async def _map_rasters(conn, map_id: str) -> list:
+    """The raster layers on the map, in map order, with what says whether they can be read (metadata, bounds):
+    what the raster fast paths choose from."""
+    return await conn.fetch(
+        """
+        SELECT ml.layer_id, ml.name, ml.metadata, ml.bounds
+        FROM user_mundiai_maps m
+        JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
+          ON TRUE
+        JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
+        WHERE m.id = $1
+          AND ml.type = 'raster'
+        ORDER BY map_layer.ord
+        """,
+        map_id,
+    )
+
+
 async def _maybe_run_fast_raster_context_turn(
     *,
     map_id: str,
@@ -1267,7 +1289,7 @@ async def _maybe_run_fast_raster_context_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_H3_CONTEXT_TOOL:
         return False
 
@@ -1288,21 +1310,9 @@ async def _maybe_run_fast_raster_context_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -1642,7 +1652,7 @@ async def _maybe_run_fast_raster_object_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_OBJECT_CANDIDATES_TOOL:
         return False
 
@@ -1664,21 +1674,9 @@ async def _maybe_run_fast_raster_object_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -1868,7 +1866,7 @@ async def _maybe_run_fast_raster_fact_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_FACT_TOOL:
         return False
 
@@ -1888,21 +1886,9 @@ async def _maybe_run_fast_raster_fact_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -2212,6 +2198,10 @@ async def process_chat_interaction_task(
                     # args + repair name via longest-prefix match.
                     _tcs = m.get("tool_calls")
                     if _tcs:
+                        _tcs = m["tool_calls"] = [
+                            tool_call_for_provider(_tc, os.environ.get("OPENAI_BASE_URL")) if isinstance(_tc, dict) else _tc
+                            for _tc in _tcs
+                        ]
                         # Full tool name universe: pydantic/tools.json tools + hardcoded
                         # message_routes tools that aren't in get_tools().
                         _HARDCODED_TOOL_NAMES = {
@@ -2549,13 +2539,13 @@ async def process_chat_interaction_task(
                                 # the provider served from its cache (llm_cache.record logs it).
                                 _attempt_kwargs["stream_options"] = {"include_usage": True}
                                 _attempt_kwargs["extra_body"] = {**(_attempt_kwargs.get("extra_body") or {}),
-                                                                 "usage": {"include": True}}
+                                                                 **usage_extra_body(_attempt_client.base_url)}
                             stream = await _attempt_client.chat.completions.create(
                                 **_attempt_kwargs, stream=True,
                             )
                             async for chunk in stream:
                                 if getattr(chunk, "usage", None):
-                                    llm_cache.record("sage", chunk.usage)
+                                    llm_cache.record("sage", chunk.usage, _attempt_kwargs.get("model"))
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()
@@ -2568,19 +2558,7 @@ async def process_chat_interaction_task(
                                             await kue_stream_token(conversation.id, _safe, turn_id=turn_id)
                                 if delta.tool_calls:
                                     for tc in delta.tool_calls:
-                                        idx = tc.index
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
-                                                "id": "", "type": "function",
-                                                "function": {"name": "", "arguments": ""},
-                                            }
-                                        if tc.id:
-                                            tool_calls_acc[idx]["id"] = tc.id
-                                        if tc.function:
-                                            if tc.function.name:
-                                                tool_calls_acc[idx]["function"]["name"] += tc.function.name
-                                            if tc.function.arguments:
-                                                tool_calls_acc[idx]["function"]["arguments"] += tc.function.arguments
+                                        add_tool_call_delta(tool_calls_acc, tc)
                             # End of stream — flush the XML scrubber's lookback
                             # tail. Anything still inside an unclosed `<tool_call>`
                             # is silently dropped (real tool_call already routed
@@ -2636,7 +2614,7 @@ async def process_chat_interaction_task(
                             # A per-minute rate limit (free models: 20/min) is
                             # waited out and the same model retried, as long as
                             # nothing has streamed; a daily cap is not.
-                            _rl_wait = rate_limit_retry_after(_api_err)
+                            _rl_wait = rate_limit_retry_after(_api_err, _attempt_client.base_url)
                             if (
                                 _rl_wait is not None
                                 and _rate_limit_retries < RATE_LIMIT_RETRIES
@@ -2772,7 +2750,7 @@ async def process_chat_interaction_task(
                             or "context length" in str(e).lower()
                             or "maximum context" in str(e).lower()
                         )
-                        _quota_message = rate_limit_user_message(e)
+                        _quota_message = rate_limit_user_message(e, client.base_url)
                         if _quota_message:
                             turn_trace.flag("rate_limited")
                             await kue_notify_error(conversation.id, _quota_message)

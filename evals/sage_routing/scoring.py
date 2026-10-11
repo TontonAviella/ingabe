@@ -37,6 +37,7 @@ INDUSTRIES = ("agriculture", "power_grid", "telecom")  # a case without one runs
 FARM_WORDING = "<farm-wording>"  # pseudo first tool: a non-agriculture reply that talked about farming
 KINDS = ("single", "multi_turn", "chain")
 LAYER_TYPES = ("raster", "vector", "postgis", "point_cloud")
+COG_STATES = ("ready", "generating", "failed")  # a raster's optimised copy (metadata cog_status)
 _JSON_TYPES = {
     "string": str, "integer": int, "number": (int, float), "boolean": bool,
     "array": list, "object": dict,
@@ -102,6 +103,13 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
     for layer in (case.get("map_state") or {}).get("layers", []):
         if not layer.get("name") or layer.get("type") not in LAYER_TYPES:
             raise CorpusError(f"{cid}: map_state layers need a name and a type in {LAYER_TYPES}")
+        photo_state = {k: layer[k] for k in ("georeferenced", "cog") if k in layer}
+        if photo_state and layer["type"] != "raster":
+            raise CorpusError(f"{cid}: only a raster layer says whether it is georeferenced or its COG is ready")
+        if not isinstance(photo_state.get("georeferenced", True), bool):
+            raise CorpusError(f"{cid}: a layer's georeferenced must be true or false")
+        if photo_state.get("cog", "ready") not in COG_STATES:
+            raise CorpusError(f"{cid}: a layer's cog must be one of {COG_STATES}")
 
     chain = case.get("chain")
     if chain is not None:

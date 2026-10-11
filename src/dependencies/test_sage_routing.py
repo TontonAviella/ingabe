@@ -24,6 +24,7 @@ from src.dependencies.sage_routing import (
     SATELLITE,
     SPATIAL_INSIGHT,
     USER_RASTER,
+    asks_about_farming,
     build_admin_boundary_tool_args,
     build_fast_tool_call,
     choose_geospatial_evidence_path,
@@ -1082,3 +1083,220 @@ def test_drone_photo_questions_keep_the_drone_tools(text):
     """Layer names join words with '_': 'Cyampirita_Orthophoto' did not match the drone keywords, so the drone
     tools were filtered out and Sage answered a question about the photo from satellites only."""
     assert USER_RASTER in classify_intent(text)
+
+
+# --- Tower and telecom wording, the project's industry, and the raster a fast path reads (PR 7) ---------------------
+
+# Each of these took a raster fast path with no model call: the evidence path would still fast-route them.
+@pytest.mark.parametrize("text", [
+    "how many antennas are on this tower photo?",
+    "where are the dishes in this photo",
+    "describe the tower photo",
+    "is there any damage on the tower in this image?",
+    "Is there damage on the shelter roof in this image?",  # "roof" read as houses: house masks
+    "Describe the Mast_site_Kicukiro photo",  # a word inside a layer name joined by "_"
+])
+def test_tower_questions_never_take_a_fast_path(text):
+    assert choose_geospatial_evidence_path(text).should_fast_route
+    assert build_fast_tool_call(text) is None
+
+
+# French and Kinyarwanda (need native-speaker review): never a fast path either.
+@pytest.mark.parametrize("text", [
+    "Combien d'antennes y a-t-il sur cette photo du pylône ?",
+    "Où sont les paraboles sur cette image du site télécom ?",
+    "Y a-t-il des dégâts sur le mât dans cette image ?",
+    "Ni antene zingahe ziri ku munara uri kuri iyi foto?",
+    "Umunara w'itumanaho uri kuri iyi foto ufite ibyangiritse?",
+])
+def test_tower_questions_in_french_and_kinyarwanda_never_take_a_fast_path(text):
+    assert build_fast_tool_call(text) is None
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("how many antennas are on this tower photo?", True),
+    ("count the RRUs and the microwave dishes", True),
+    ("which antenna sectors face north?", True),
+    ("Describe the Mast_site_Kicukiro photo", True),
+    ("Combien d'antennes sur le pylône ?", True),
+    ("faisceaux hertziens du site", True),
+    ("Ni antene zingahe ziri ku munara?", True),
+    ("iminara y'itumanaho i Musanze", True),
+    # Not tower words: an admin sector, a vegetable, a farm question.
+    ("show the sectors of Gasabo district", False),
+    ("radishes in plot 4", False),
+    ("count the houses in Farm_A_Orthophoto", False),
+])
+def test_tower_vocabulary(text, expected):
+    from src.dependencies.sage_routing import mentions_tower_equipment
+
+    assert mentions_tower_equipment(text) is expected
+
+
+def test_house_questions_still_take_the_fast_path_after_the_tower_check():
+    call = build_fast_tool_call("where are most houses in Farm_A_Orthophoto?")
+    assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+@pytest.mark.parametrize("project_industry", ["agriculture", "telecom", "power_grid", None])
+def test_shared_fast_paths_run_for_every_industry(project_industry):
+    from src.dependencies.sage_routing import build_project_fast_tool_call
+
+    call = build_project_fast_tool_call("describe this orthophoto", project_industry)
+    assert call is not None and call.tool_name == "create_raster_h3_context_layer"
+    admin = build_project_fast_tool_call("show me Rulindo district", project_industry)
+    assert admin is not None and admin.tool_name == "show_admin_boundary"
+
+
+def test_a_fast_path_runs_only_when_the_projects_industry_serves_its_tool(monkeypatch):
+    """Every fast-path tool serves every industry today; one that did not must not run for another industry."""
+    from src.dependencies.sage_routing import build_project_fast_tool_call
+    from src.services import industry
+
+    monkeypatch.setitem(industry.CAPABILITIES, "create_raster_h3_context_layer", industry.AGRICULTURE)
+    text = "describe this orthophoto"
+    assert build_project_fast_tool_call(text, "agriculture").tool_name == "create_raster_h3_context_layer"
+    assert build_project_fast_tool_call(text, "telecom") is None
+    assert build_project_fast_tool_call(text, None) is None  # industry not found: fail closed
+
+
+def _raster(name="Site_photo", *, cog="ready", crs=True, bounds=(30.0589, -1.9536, 30.0646, -1.9489)):
+    """A map_layers row as message_routes._map_rasters returns it (metadata as the upload and COG job leave it)."""
+    metadata = {"band_count": 3, "cog_status": cog}
+    metadata.update({"original_srid": 32735} if crs else {"crs_missing": True})
+    if cog == "ready":
+        metadata["cog_key"] = f"cog/layer/{name}.cog.tif"
+    return {"layer_id": f"L{name}"[:12], "name": name, "metadata": metadata, "bounds": list(bounds)}
+
+
+def test_a_raster_fast_path_reads_only_a_georeferenced_photo_with_a_ready_cog():
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    question = "describe this photo"
+    assert select_ready_fast_raster_layer(question, [_raster()])["name"] == "Site_photo"
+    # A phone picture: no coordinate system, its outline is its pixel corners (gdalinfo cornerCoordinates).
+    assert select_ready_fast_raster_layer(question, [_raster(crs=False, bounds=(0, 3000, 4000, 0))]) is None
+    # Pixel corners with no crs_missing mark (older uploads) are not a place either.
+    assert select_ready_fast_raster_layer(question, [_raster(bounds=(0, 3000, 4000, 0))]) is None
+    assert select_ready_fast_raster_layer(question, [_raster(crs=False)]) is None
+    for cog in ("generating", "failed"):
+        assert select_ready_fast_raster_layer(question, [_raster(cog=cog)]) is None
+
+
+def test_the_ready_check_reads_metadata_stored_as_json_text():
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    row = _raster()
+    assert select_ready_fast_raster_layer("describe this photo", [{**row, "metadata": json.dumps(row["metadata"])}])
+    not_placed = _raster(crs=False)
+    assert select_ready_fast_raster_layer(
+        "describe this photo", [{**not_placed, "metadata": json.dumps(not_placed["metadata"])}]) is None
+
+
+def test_the_ready_check_keeps_the_choice_of_raster():
+    """A ready photo is not picked in place of the one asked for: "this photo" with two rasters stays ambiguous."""
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    rows = [_raster("Kabarama_Orthophoto"), _raster("Huye_Orthophoto", cog="generating")]
+    assert select_ready_fast_raster_layer("describe this photo", rows) is None
+    assert select_ready_fast_raster_layer("describe Huye_Orthophoto", rows) is None
+    assert select_ready_fast_raster_layer("describe Kabarama_Orthophoto", rows)["name"] == "Kabarama_Orthophoto"
+
+
+def test_tower_questions_route_to_the_towers_category():
+    from src.dependencies.sage_routing import TOWERS
+
+    for text in ("how many antennas are on this tower photo?", "Combien d'antennes sur le pylône ?",
+                 "Ni antene zingahe ziri ku munara?"):
+        assert TOWERS in classify_intent(text), text
+    assert TOWERS not in classify_intent("show the sectors of Gasabo district")
+
+
+def _tool_names(tools: list[dict]) -> list[str]:
+    return [t["function"]["name"] for t in tools]
+
+
+def test_the_empty_towers_category_does_not_narrow_the_tools():
+    """No tower tools yet: a question that names only towers keeps the full list (as before), and towers next to
+    another category adds nothing to it."""
+    tower_only = route_chat("Is strong wind or a storm expected in Karongi in the next days? We have tower climbs "
+                            "planned.")
+    assert tower_only.selected_categories == frozenset()
+    assert tower_only.reason == "intent:towers;no_tools_yet"
+    tools = [{"function": {"name": n}} for n in ("search_brain", "describe_user_raster", "search_location")]
+    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    assert _tool_names(filter_tools_by_categories(tools, with_notes.selected_categories)) == _tool_names(
+        filter_tools_by_categories(tools, {BRAIN})) == ["search_brain", "search_location"]
+
+
+def test_a_tool_filed_under_towers_is_offered_for_tower_questions(monkeypatch):
+    from src.dependencies import sage_routing
+
+    monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_antennas", sage_routing.TOWERS)
+    decision = route_chat("how many antennas are on the Rebero mast?")
+    assert decision.selected_categories == frozenset({sage_routing.TOWERS})
+    tools = [{"function": {"name": n}} for n in ("count_antennas", "get_ndvi_stats", "search_location")]
+    assert _tool_names(filter_tools_by_categories(tools, decision.selected_categories)) == [
+        "count_antennas", "search_location"]
+
+
+def test_the_word_checks_take_milliseconds_on_a_crafted_message():
+    """Python's re holds the GIL (CODING_STANDARDS 2026-10-11): the tower and weather checks read at most 20,000
+    characters of a message, with literal alternatives only."""
+    import time
+
+    from src.dependencies.sage_routing import asks_about_weather_or_hazards, mentions_tower_equipment
+
+    crafted = ("radio" + " " * 1000 + "stations" + " " * 500 + "de ") * 700  # ~1 MB of near-misses
+    started = time.perf_counter()
+    assert mentions_tower_equipment(crafted) is False
+    assert asks_about_weather_or_hazards(crafted) is False
+    assert asks_about_farming(crafted) is False
+    assert time.perf_counter() - started < 0.2
+    assert mentions_tower_equipment("x" * 30_000 + " antenna") is False  # past the cap: not read
+    assert asks_about_farming("x" * 30_000 + " maize") is False
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("is the maize stressed near the mast?", True),
+    ("Is there drought in Kayonza this season?", True),
+    ("Give me the payout for Season A in Gicumbi", True),
+    ("Is vegetation growing into the line corridor? Check the NDVI.", True),
+    ("food security outlook for Nyamagabe", True),
+    # Words every industry says, and data sources: they select the agriculture category, but are not farm questions.
+    ("Log a field visit to the Rebero mast", False),
+    ("Add a point where the field crew parks", False),
+    ("What is the yield of the Jabana feeder?", False),
+    ("the alarm trigger at the shelter", False),
+    ("Season A rainfall in Musanze", False),
+    ("show the SAR backscatter around the substation", False),
+    ("moisture in the equipment shelter", False),
+])
+def test_farm_vocabulary(text, expected):
+    assert asks_about_farming(text) is expected
+    assert AGRICULTURE in classify_intent(text)  # routing is unchanged: all of them still select agriculture
+
+
+def test_a_tower_question_names_its_empty_category():
+    """The abdication guard reads named_categories: towers stays named though it selects no tools yet."""
+    tower_only = route_chat("How many antennas are on this tower photo?")
+    assert tower_only.named_categories == frozenset({"towers"}) and tower_only.selected_categories == frozenset()
+    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    assert with_notes.named_categories == with_notes.selected_categories == frozenset({BRAIN, "towers"})
+    assert route_chat("hello there").named_categories == frozenset()
+
+
+def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
+    from src.dependencies import sage_routing
+    from src.dependencies.sage_routing import TOWERS, categories_with_tools
+    from src.services import industry
+
+    every = {BRAIN, MAP_EDIT, SATELLITE, SPATIAL_INSIGHT, USER_RASTER, AGRICULTURE}
+    for project_industry in ("agriculture", "telecom", "power_grid", None):
+        assert every <= categories_with_tools(project_industry)  # agriculture also files the weather tools
+        assert TOWERS not in categories_with_tools(project_industry)
+    monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_tower_equipment", TOWERS)
+    monkeypatch.setitem(industry.CAPABILITIES, "count_tower_equipment", frozenset({"telecom"}))
+    assert TOWERS in categories_with_tools("telecom")
+    assert TOWERS not in categories_with_tools("agriculture")
+    assert TOWERS not in categories_with_tools(None)  # industry not found: shared tools only
