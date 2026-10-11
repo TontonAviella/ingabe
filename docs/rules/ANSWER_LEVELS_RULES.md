@@ -142,6 +142,27 @@ The table's `finder` settings are the ones each score was measured at;
 `finder.note` says what was compared and what was not tried. A setting
 nobody compared is not called "best".
 
+`suggestion_filter` (per target: `on`, `evidence`, `note`; exposed as
+`Target.suggestion_filter`) says whether the example finder filters the finds
+it shows (`example_finder.filter_suggestions`: sized 1/4 to 4 times the
+median mark, overlaps at IoU 0.5 dropped, at most 50; rules and the full
+numbers in `EXAMPLE_FINDER_RULES.md`). It is on only where it was measured
+on the target's own pictures, marks and finder size and the filtered AP50
+was at least the raw one. Measured 2026-10-11 (`results/postfilter.jsonl`),
+AP50 without -> with the filter:
+
+| Target | AP50 | Filter |
+|---|---|---|
+| tower_dish | 0.745 -> 0.734 | off (fell) |
+| tower_antenna | 0.695 -> 0.711 | on |
+| tower_radio_unit | 0.291 -> 0.309 | on |
+| maize_seedling | 0.787 -> 0.821 (Nerac; Selommes not measured with the filter) | on |
+| weed | 0.447 -> 0.402 | off (fell) |
+| building, row_crop_plant, tree crowns, banana_mat | not measured | off |
+
+The levels and values above stay the measured ones without the filter: the
+filter changes which finds a person is shown, not how far an answer may go.
+
 Each value's `evidence` selects rows of `answer_levels_evidence.json`, rows
 copied verbatim from the measuring session's `results/*.jsonl` (a field a
 row did not record is filled and named in its `filled`). The tests check
@@ -155,8 +176,10 @@ has a value outside 0-1; has a measured value without its data, view (one of `VI
 picture count, picture size, finder size, date, metric, evidence or place;
 has an unknown kind or level; is given `AREA`; is given a level above
 `CANT_TELL` without a measured value or without marked pictures for its
-size floor; is `CANT_TELL` without a note saying why; names no finder; or
-takes its size floor from pictures read at another size.
+size floor; is `CANT_TELL` without a note saying why; names no finder;
+takes its size floor from pictures read at another size; or has no
+`suggestion_filter` of exactly `on` (true or false), `evidence` and a `note`,
+or has it on without the run it was measured in.
 
 ## Not measured yet (open)
 
@@ -196,7 +219,9 @@ them here needs a measurement of their finder against people's boxes:
 ## Gates
 
 `src/services/test_answer_levels.py`: every rule above, the table against
-its evidence, the size floors against the marks, the gate on every measured
+its evidence, every suggestion filter flag against its raw and filtered
+rows (on only where the filtered AP50 is at least the raw; off where lower or
+never measured), the size floors against the marks, the gate on every measured
 picture, a large photo the finder shrinks, CAN'T TELL reasons, missing facts
 listed, no AREA and no COUNT anywhere, another finder refused, and the switch
 on and off.
