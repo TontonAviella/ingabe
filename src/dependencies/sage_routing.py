@@ -305,6 +305,20 @@ def mentions_tower_equipment(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Intent classification
 # ---------------------------------------------------------------------------
+# Weather and hazard words select the agriculture category, where the weather and flood tools are filed, but those
+# tools serve every industry (industry.CAPABILITIES): on a Power Grid or Telecom project such a question is not a
+# farm question.
+_WEATHER_HAZARD_WORDS = re.compile(
+    r"\b(flood|water|rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_about_weather_or_hazards(text: str) -> bool:
+    """True when a message asks about rain, weather, forecasts, temperature, water or floods."""
+    return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")))
+
+
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Rwanda administrative boundaries / plain place display.
@@ -360,11 +374,10 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(r"\b(greenness|grvi|vari|exg|rgb\s+ind(?:ex|ices))\b", re.IGNORECASE),
         frozenset({USER_RASTER, SATELLITE}),
     ),
-    # Agriculture / weather / insurance
+    # Agriculture / insurance
     (
         re.compile(
-            r"\b(field|farm|crop|harvest|yield|drought|flood|water|"
-            r"rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature|"
+            r"\b(field|farm|crop|harvest|yield|drought|"
             r"soil|moisture|evapo|ndre|emission|"
             r"insurance|trigger|payout|"
             r"sar|alos|cygnss|wapor|chirps|food\s+security|fewsnet|"
@@ -374,6 +387,8 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({AGRICULTURE}),
     ),
+    # Weather and hazards: their tools are filed under agriculture.
+    (_WEATHER_HAZARD_WORDS, frozenset({AGRICULTURE})),
     # User-uploaded raster (drone ortho, custom COG). Layer names join words with "_" ("Cyampirita_Orthophoto"),
     # so "ortho" and "drone" match inside a name; plots, plants and weeds are only seen on drone photos.
     (

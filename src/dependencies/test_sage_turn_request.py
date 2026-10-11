@@ -161,6 +161,42 @@ def test_is_abdication(text: str, reply: str, has_tools: bool, expected: bool) -
     assert is_abdication(_plan_for(text), text, reply, has_tools) is expected
 
 
+@pytest.mark.parametrize(
+    ("project_industry", "text", "expected"),
+    [
+        # What the exemption is for: a farm question outside agriculture; "Ingabe cannot do this yet" is right.
+        ("telecom", "is the maize stressed near the mast?", False),
+        ("telecom", "Is there drought in Kayonza this season?", False),
+        ("power_grid", "Give me the maize yield risk for Gicumbi", False),
+        # The over-reach it had: weather and flood words select the agriculture category too, and their tools
+        # serve every industry, so a prose answer is still abdication.
+        ("telecom", "Will heavy rain hit the Rebero tower site this week?", True),
+        ("telecom", "Did the river flood near Rubavu after last week's rain?", True),
+        ("power_grid", "What temperature is forecast for Musanze tomorrow?", True),
+        # Agriculture is unchanged.
+        ("agriculture", "is the maize stressed in Nyagatare?", True),
+        ("agriculture", "Will heavy rain hit Musanze this week?", True),
+    ],
+)
+def test_the_abdication_exemption_covers_farm_questions_only(project_industry: str, text: str,
+                                                             expected: bool) -> None:
+    from src.database.pool import set_request_industry
+    from src.dependencies.sage_turn_request import is_abdication
+    from src.services import industry
+
+    tools = industry.tools_for(build_sage_tools_payload(get_pydantic_tool_calls(), {}), project_industry)
+    plan = plan_sage_turn(text, [{"role": "user", "content": text}], tools, lambda: "P")
+    assert "agriculture" in plan.routing.selected_categories
+    if expected and project_industry != "agriculture":
+        # The guard has a tool to force: a weather or flood tool this industry is offered.
+        assert {"get_forecast", "get_weather_stats", "detect_flood_extent"} & set(_names(plan.tools))
+    try:
+        set_request_industry(project_industry)
+        assert is_abdication(plan, text, "Ingabe cannot do this for this project yet.", False) is expected
+    finally:
+        set_request_industry(None)
+
+
 def test_abdication_guard_flag(monkeypatch) -> None:
     from src.dependencies.sage_turn_request import abdication_guard_enabled
 

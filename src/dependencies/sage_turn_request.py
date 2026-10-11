@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 from src.dependencies.sage_routing import (
     SMALL_TALK_SYSTEM_PROMPT,
     RoutingDecision,
+    asks_about_weather_or_hazards,
     filter_tools_by_categories,
     route_chat,
 )
@@ -456,10 +457,12 @@ def is_abdication(plan: SageTurnPlan, last_user_text: str, content: str | None, 
     if has_tool_calls or not plan.tools or plan.routing.is_small_talk:
         return False
     # A farm question on a non-agriculture project: its farm tools were withheld and the prompt tells Sage to say
-    # plainly what Ingabe cannot do yet. That prose is the right answer, not abdication (audit R1-20).
+    # plainly what Ingabe cannot do yet. That prose is the right answer, not abdication (audit R1-20). A weather or
+    # flood question also selects the agriculture category, but its tools serve every industry: still guarded.
     from src.database.pool import get_request_industry
 
-    if (get_request_industry() or "agriculture") != "agriculture" and "agriculture" in plan.routing.selected_categories:
+    if ((get_request_industry() or "agriculture") != "agriculture" and "agriculture" in plan.routing.selected_categories
+            and not asks_about_weather_or_hazards(last_user_text)):
         return False
     if _EXPLAIN_REQUEST_RE.search(last_user_text or "") or _ACKNOWLEDGEMENT_RE.search(last_user_text or ""):
         return False
