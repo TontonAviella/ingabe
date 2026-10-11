@@ -151,6 +151,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `ANSWER_LADDER` | `0` (default): consumers behave as before. `1`: they show answer levels for objects the YOLOE visual-prompt finder found in a picture (count / count after checking / estimate / rough / area / can't tell) from `src/services/answer_levels.py`; rules in `docs/rules/ANSWER_LEVELS_RULES.md`. |
 | `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
 | `SAGE_TOOL_TIMEOUT_SECONDS` | Longest one tool call may run in the hand-rolled loop (default 120, at least 15). Past it the tool is stopped and the model told to answer with what it has. Blocking work inside a tool must still run off the event loop (`asyncio.to_thread`), or it freezes every request and this limit cannot fire. |
+| `PHOTO_INSPECTIONS` | `0` (default) keeps today's uploads. `1`: a ZIP of photos (no shapefile in it), or one JPG/PNG with no map position, uploads as one photo inspection: a vector layer of camera points whose photos open from the feature panel. Rules: `docs/rules/PHOTO_INSPECTIONS_RULES.md`. |
 | `CHIRPS_CACHE_DIR` | Where the Rwanda part of each downloaded CHIRPS day is kept (default `/tmp/ingabe_cache/chirps`, the `ingabe-cache` volume; ~12 KB a day). Delete a file to force a fresh download of that day. |
 | `OLLAMA_BASE_URL` | Local Ollama OpenAI-compat endpoint, e.g. `http://ollama:11434/v1` |
 | `BRAIN_EMBEDDINGS_PROVIDER` | `ollama` (default, local nomic-embed-text 768-dim) or `openai` |
