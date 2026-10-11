@@ -1,17 +1,19 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getJson, sendJson } from '@/lib/apiJson';
 import type { ServerError } from '@/lib/serverError';
-import type {
-  FinderJob,
-  InspectionPhotos,
-  MarksPayload,
-  PartWork,
-  PhotoWork,
-  ReviewPayload,
-  TowerAudience,
-  TowerCardAnswer,
-  TowerCards,
-  TowerPart,
+import {
+  type FinderJob,
+  type InspectionPhotos,
+  type MarksPayload,
+  type PartWork,
+  PHOTOS_TO_CHECK_AUDIENCE,
+  PHOTOS_TO_CHECK_CARD,
+  type PhotoWork,
+  type ReviewPayload,
+  type TowerAudience,
+  type TowerCardAnswer,
+  type TowerCards,
+  type TowerPart,
 } from '@/lib/towerContract';
 import { anyJobActive } from '@/lib/towerReview';
 
@@ -51,11 +53,6 @@ export function usePhotoWork(layerId: string, sha256: string) {
     retry: noRetryOn404,
     refetchInterval: (query) => (anyJobActive(query.state.data) ? JOB_POLL_MS : false),
   });
-}
-
-/** The work of a photo for the "next photo to check" search: from the cache when it is fresh. */
-export function photoWorkOnce(queryClient: QueryClient, layerId: string, sha256: string): Promise<PhotoWork> {
-  return queryClient.fetchQuery({ queryKey: workKey(layerId, sha256), queryFn: () => fetchWork(layerId, sha256), staleTime: 30_000 });
 }
 
 function useSetPart(layerId: string, sha256: string) {
@@ -114,11 +111,30 @@ export function useTowerCards(layerId: string | null, audience: TowerAudience) {
   });
 }
 
+const answerKey = (layerId: string | null, cardId: string | null, audience: TowerAudience) => [
+  'tower-card-answer',
+  layerId,
+  cardId,
+  audience,
+];
+
+function fetchAnswer(layerId: string, cardId: string, audience: TowerAudience) {
+  return getJson<TowerCardAnswer>(`${base(layerId)}/cards/${encodeURIComponent(cardId)}?audience=${audience}`);
+}
+
+/** The server's list of the photos still to check, asked afresh: it changes with every mark, find and review. */
+export function photosToCheckNow(queryClient: QueryClient, layerId: string): Promise<TowerCardAnswer> {
+  return queryClient.fetchQuery({
+    queryKey: answerKey(layerId, PHOTOS_TO_CHECK_CARD, PHOTOS_TO_CHECK_AUDIENCE),
+    queryFn: () => fetchAnswer(layerId, PHOTOS_TO_CHECK_CARD, PHOTOS_TO_CHECK_AUDIENCE),
+    staleTime: 0,
+  });
+}
+
 export function useTowerCardAnswer(layerId: string | null, cardId: string | null, audience: TowerAudience) {
   return useQuery<TowerCardAnswer, ServerError>({
-    queryKey: ['tower-card-answer', layerId, cardId, audience],
-    queryFn: () =>
-      getJson<TowerCardAnswer>(`${base(layerId as string)}/cards/${encodeURIComponent(cardId as string)}?audience=${audience}`),
+    queryKey: answerKey(layerId, cardId, audience),
+    queryFn: () => fetchAnswer(layerId as string, cardId as string, audience),
     enabled: !!layerId && !!cardId,
     staleTime: 60_000,
     retry: false,

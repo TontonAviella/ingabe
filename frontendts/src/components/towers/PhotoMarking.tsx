@@ -4,7 +4,7 @@ import { Check, ChevronLeft, ChevronRight, Hand, LoaderCircle, PenLine, ScanSear
 import { useCallback, useEffect, useReducer, useState } from 'react';
 import { PANEL_FONT } from '@/components/CardAnswer';
 import { BOX_STYLE, type BoxKind, type CanvasBox, PhotoCanvas } from '@/components/towers/PhotoCanvas';
-import { photoWorkOnce, useFindTheRest, usePhotoWork, useSaveMarks, useSaveReview } from '@/hooks/useTowers';
+import { photosToCheckNow, useFindTheRest, usePhotoWork, useSaveMarks, useSaveReview } from '@/hooks/useTowers';
 import type { Box } from '@/lib/photoView';
 import { type InspectionPhoto, TOWER_PARTS, type TowerPart } from '@/lib/towerContract';
 import {
@@ -13,11 +13,13 @@ import {
   jobState,
   MARKS_TO_FIND,
   marksPayload,
-  nextPhotoToCheck,
+  maySaveReview,
   nextUndecided,
   photoReducer,
+  photoToOpen,
   reviewPayload,
   undecided,
+  unsavedOtherParts,
 } from '@/lib/towerReview';
 
 // The marking screen for one photo of a tower inspection: mark a few of one part, let the finder suggest the rest,
@@ -89,8 +91,9 @@ function PhotoWorkspace({
   const partDraft = draft[part];
   const label = TOWER_PARTS.find((p) => p.id === part) as (typeof TOWER_PARTS)[number];
   const job = jobState(partWork?.job ?? null);
-  // The suggestions show once a find has ended well; while one runs or after it failed, the marks show.
-  const reviewing = !!partWork && partWork.suggestions.length > 0 && !remarking[part] && !job.active && !job.failed;
+  // Once a find has ended well the person reviews it, also when it found no more (that review is where they add any
+  // it missed, and nothing is counted without it); while one runs or after it failed, the marks show.
+  const reviewing = !!partWork && job.done && !remarking[part];
   const left = partWork ? undecided(partDraft.review, partWork.suggestions) : [];
   const busy = saveMarks.isPending || find.isPending;
 
@@ -105,6 +108,12 @@ function PhotoWorkspace({
     setFindError(null);
     setSelected(null);
     try {
+      // The other parts' changed marks first: the server gives them to this find as look-alikes where it was
+      // measured with them.
+      for (const other of unsavedOtherParts(part, draft)) {
+        const savedOther = await saveMarks.mutateAsync(marksPayload(other, draft));
+        dispatch({ type: 'saved', part: other, work: savedOther });
+      }
       const saved = await saveMarks.mutateAsync(marksPayload(part, draft));
       dispatch({ type: 'saved', part, work: saved });
       await find.mutateAsync({ part });
@@ -315,7 +324,8 @@ function PhotoWorkspace({
           <div className="flex flex-col gap-2.5">
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
               Draw a box around at least {MARKS_TO_FIND} {label.plural}, then let the finder suggest the rest. You can mark the other parts
-              too: they go with your marks as look-alikes, things that are not a {label.label.toLowerCase()}.
+              too: they are saved when you find the rest, and the finder is given them as look-alikes (things that are not a{' '}
+              {label.label.toLowerCase()}) where that was measured to help.
             </p>
             <span className="text-[13px] text-[#B8A99B] tabular-nums">
               {partDraft.marks.length} marked
@@ -331,9 +341,9 @@ function PhotoWorkspace({
                 {busy ? <LoaderCircle className="size-4 animate-spin" /> : <ScanSearch className="size-4" />}
                 Find the rest
               </button>
-              {partWork && partWork.suggestions.length > 0 && remarking[part] && !job.active && (
+              {job.done && remarking[part] && (
                 <button type="button" className={SECONDARY} onClick={() => setRemarking((r) => ({ ...r, [part]: false }))}>
-                  Back to the suggestions
+                  Back to the review
                 </button>
               )}
             </div>
@@ -359,11 +369,17 @@ function PhotoWorkspace({
               {countLine(partWork, partDraft.review)}
             </p>
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
-              Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any {label.label.toLowerCase()} the
-              finder missed. Nothing is counted until you save.
+              {partWork.suggestions.length > 0
+                ? `Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any ${label.label.toLowerCase()} the finder missed. Nothing is counted until you save.`
+                : `The finder found no more ${label.plural}. Draw a box around any it missed, then save your review: nothing is counted until you save.`}
             </p>
             <div className="flex flex-wrap gap-2">
-              <button type="button" className={PRIMARY} disabled={!partDraft.review.dirty || saveReview.isPending} onClick={saveCheck}>
+              <button
+                type="button"
+                className={PRIMARY}
+                disabled={!maySaveReview(partWork, partDraft.review) || saveReview.isPending}
+                onClick={saveCheck}
+              >
                 {saveReview.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Check className="size-4" />}
                 Save review
               </button>
@@ -425,7 +441,7 @@ export function PhotoMarking({
   layerName: string;
   photos: InspectionPhoto[];
   startIndex: number;
-  /** A line shown when the screen opens (every photo checked already). */
+  /** A line shown when the screen opens (the server's words when no photo is left to check). */
   note?: string | null;
   onClose: () => void;
 }) {
@@ -450,10 +466,9 @@ export function PhotoMarking({
     setSearching(true);
     setMessage(null);
     try {
-      const found = await nextPhotoToCheck(photos.length, index, (i) => photoWorkOnce(queryClient, layerId, photos[i].sha256));
-      if (found === null) setMessage('Every photo has been checked.');
-      else if (found === index) setMessage('No other photo needs a check.');
-      else go(found);
+      const next = photoToOpen(await photosToCheckNow(queryClient, layerId), photos, photo?.sha256 ?? null);
+      if (next.index === null) setMessage(next.note);
+      else go(next.index);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {

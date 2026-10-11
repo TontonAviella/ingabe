@@ -15,10 +15,11 @@ import {
   writeCollapsed,
 } from '@/components/CardAnswer';
 import { PhotoMarking } from '@/components/towers/PhotoMarking';
-import { photoWorkOnce, useInspectionPhotos, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
+import { photosToCheckNow, useInspectionPhotos, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
+import type { AnswerItem } from '@/lib/cardAnswer';
 import { isPhotoInspectionLayer } from '@/lib/inspectionPhoto';
 import { TOWER_AUDIENCES, type TowerAudience, type TowerCardAnswer } from '@/lib/towerContract';
-import { nextPhotoToCheck } from '@/lib/towerReview';
+import { photoToOpen } from '@/lib/towerReview';
 import type { MapLayer } from '@/lib/types';
 
 // The tower cards for a photo inspection in a telecom project, over the map where the drone cards show for farms.
@@ -31,11 +32,13 @@ function AnswerView({
   answer,
   onBack,
   onGoTo,
+  openItem,
   onAskSage,
 }: {
   answer: TowerCardAnswer;
   onBack: () => void;
   onGoTo: (lon: number, lat: number) => void;
+  openItem: (item: AnswerItem) => (() => void) | null;
   onAskSage: (prompt: string) => void;
 }) {
   return (
@@ -53,7 +56,7 @@ function AnswerView({
         </span>
         <h3 className="m-0 text-[22px] font-bold leading-tight tracking-[-0.015em] text-[#F3EDE6]">{answer.title}</h3>
       </div>
-      <AnswerBody answer={answer} onGoTo={onGoTo} />
+      <AnswerBody answer={answer} onGoTo={onGoTo} openItem={openItem} />
       <AskSageChips asks={answer.ask_sage ?? []} onAsk={onAskSage} label="Ask Sage for more" />
       <AnswerDownloads downloads={answer.downloads ?? []} />
       <AnswerTerms terms={answer.terms ?? []} />
@@ -112,13 +115,20 @@ export function TowerCards({
     setSearching(true);
     setSearchError(null);
     try {
-      const found = await nextPhotoToCheck(photoList.length, -1, (i) => photoWorkOnce(queryClient, layerId, photoList[i].sha256));
-      setMarking({ index: found ?? 0, note: found === null ? 'Every photo has been checked.' : null });
+      const next = photoToOpen(await photosToCheckNow(queryClient, layerId), photoList, null);
+      setMarking({ index: next.index ?? 0, note: next.note });
     } catch (error) {
       setSearchError(error instanceof Error ? error.message : String(error));
     } finally {
       setSearching(false);
     }
+  };
+
+  // The tower cards' places are photos (ids their sha256): one opens on the marking screen, not on the map, since
+  // many have no GPS position.
+  const openPhoto = (item: AnswerItem) => {
+    const index = photoList.findIndex((p) => p.sha256 === item.id);
+    return index < 0 ? null : () => setMarking({ index, note: null });
   };
 
   const setCollapsedAndSave = (value: boolean) => {
@@ -235,6 +245,7 @@ export function TowerCards({
             answer={answer.data}
             onBack={() => setOpenCard(null)}
             onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, offset: panelOffset(), duration: 900 })}
+            openItem={openPhoto}
             onAskSage={onAskSage}
           />
         )}

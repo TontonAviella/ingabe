@@ -16,13 +16,14 @@ export interface HowSure {
   surer: string | null;
 }
 
-/** A place to go first, with a point to fly to. */
+/** A place to go first, with a point to fly to. The point is null when the place is not known (a tower photo with no
+ * GPS position): such an item is never flown to, since a missing position is not 0, 0. */
 export interface AnswerItem {
   id: string;
   title: string;
   detail: string;
-  lon: number;
-  lat: number;
+  lon: number | null;
+  lat: number | null;
   picture?: string;
 }
 

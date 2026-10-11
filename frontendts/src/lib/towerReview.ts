@@ -1,12 +1,14 @@
 import type { Box } from '@/lib/photoView';
 import {
   type FinderJob,
+  type InspectionPhoto,
   type MarksPayload,
   type PartWork,
   type PhotoWork,
   type ReviewPayload,
   type Suggestion,
   TOWER_PARTS,
+  type TowerCardAnswer,
   type TowerPart,
 } from '@/lib/towerContract';
 
@@ -155,13 +157,17 @@ export function photoReducer(state: PhotoDraft, action: PhotoAction): PhotoDraft
   }
 }
 
-/** PUT .../marks for one part: its own marks, and the other parts' marks as look-alikes (things that are not it). */
+/** PUT .../marks for one part: its own marks only. Which look-alikes the finder gets is the server's rule: the other
+ * parts' saved marks, for the parts measured with them (MarksPayload); sending them here would be refused for a part
+ * measured without them. */
 export function marksPayload(part: TowerPart, draft: PhotoDraft): MarksPayload {
-  return {
-    part,
-    marks: draft[part].marks,
-    lookalike_marks: TOWER_PARTS.filter(({ id }) => id !== part).flatMap(({ id }) => draft[id].marks),
-  };
+  return { part, marks: draft[part].marks, lookalike_marks: [] };
+}
+
+/** The other parts whose marks changed since they were saved: they are saved before a find of `part`, so the server
+ * has them when it picks that find's look-alikes. */
+export function unsavedOtherParts(part: TowerPart, draft: PhotoDraft): TowerPart[] {
+  return TOWER_PARTS.map(({ id }) => id).filter((id) => id !== part && draft[id].marksDirty);
 }
 
 /** PUT .../review for one part: each decision about the suggestions on screen, in their order, and the boxes added. */
@@ -196,7 +202,8 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /** The one line about a part's count. Only the server's counted_by_you is ever shown as a count, and never while a
- * suggestion waits for the person's check (on the server or in their unsaved draft): then it says how many wait. */
+ * suggestion waits for the person's check (on the server or in their unsaved draft): then it says how many wait. A
+ * finder that found no more is not a count either: the server counts once the person saved their review of it. */
 export function countLine(work: PartWork, review: ReviewDraft | null): string | null {
   if (review?.dirty) {
     const left = undecided(review, work.suggestions).length;
@@ -204,23 +211,34 @@ export function countLine(work: PartWork, review: ReviewDraft | null): string | 
   }
   if (work.waiting > 0) return `${plural(work.waiting, 'suggestion', 'suggestions')} waiting for your check`;
   if (work.counted_by_you !== null) return `${work.counted_by_you} counted by you`;
+  if (jobState(work.job).done && work.suggestions.length === 0) return 'The finder found no more: save your review to count them';
   return null;
 }
 
-/** Where a find job is, in the words the screen shows; `active` jobs are asked about again until they end. */
-export function jobState(job: FinderJob | null): { active: boolean; line: string | null; failed: boolean } {
+/** Whether the person's review can be saved: they changed it, or the finder has finished, the server has no count
+ * yet and nothing in the draft waits. The server counts a part only once a review of its finder's suggestions is
+ * saved, also when it found none (that review is where the missed ones are added), so that empty review is allowed. */
+export function maySaveReview(work: PartWork, review: ReviewDraft): boolean {
+  if (review.dirty) return true;
+  return jobState(work.job).done && work.counted_by_you === null && undecided(review, work.suggestions).length === 0;
+}
+
+/** Where a find job is, in the words the screen shows; `active` jobs are asked about again until they end, and a
+ * `done` one is reviewed. */
+export function jobState(job: FinderJob | null): { active: boolean; done: boolean; line: string | null; failed: boolean } {
   switch (job?.status) {
     case undefined:
+      return { active: false, done: false, line: null, failed: false };
     case 'done':
-      return { active: false, line: null, failed: false };
+      return { active: false, done: true, line: null, failed: false };
     case 'queued':
-      return { active: true, line: 'Waiting in line for the finder…', failed: false };
+      return { active: true, done: false, line: 'Waiting in line for the finder…', failed: false };
     case 'running':
-      return { active: true, line: 'Finding the rest…', failed: false };
+      return { active: true, done: false, line: 'Finding the rest…', failed: false };
     case 'failed':
-      return { active: false, line: 'The finder could not finish this photo. Try again.', failed: true };
+      return { active: false, done: false, line: 'The finder could not finish this photo. Try again.', failed: true };
     default:
-      return { active: false, line: `The finder answered "${job?.status}".`, failed: true };
+      return { active: false, done: false, line: `The finder answered "${job?.status}".`, failed: true };
   }
 }
 
@@ -229,18 +247,22 @@ export function anyJobActive(work: PhotoWork | undefined): boolean {
   return !!work && TOWER_PARTS.some(({ id }) => jobState(work.parts[id]?.job ?? null).active);
 }
 
-/** A photo needs the person when suggestions wait for their check, or when nothing on it has been counted yet. */
-export function photoNeedsCheck(work: PhotoWork): boolean {
-  const parts = TOWER_PARTS.map(({ id }) => work.parts[id]);
-  return parts.some((p) => p.waiting > 0) || parts.every((p) => p.counted_by_you === null);
-}
-
-/** The index of the next photo after `from` (going round once) that needs the person, or null when none does.
- * Photos are asked one at a time and the search stops at the first that needs a check. */
-export async function nextPhotoToCheck(count: number, from: number, workOf: (index: number) => Promise<PhotoWork>): Promise<number | null> {
-  for (let step = 1; step <= count; step++) {
-    const index = (from + step) % count;
-    if (photoNeedsCheck(await workOf(index))) return index;
-  }
-  return null;
+/** Which photo to open from the server's list of photos still to check (the PHOTOS_TO_CHECK_CARD answer: its items
+ * are photos, ids their sha256, in the order to work on them). Goes down that list from `current` (going round
+ * once), so stepping on from a photo the person left unfinished does not send them straight back to it. When no
+ * other photo is listed, `note` says why in the server's words. This screen never decides itself which photo needs a
+ * check. */
+export function photoToOpen(
+  list: TowerCardAnswer,
+  photos: InspectionPhoto[],
+  current: string | null,
+): { index: number; note: null } | { index: null; note: string } {
+  if (list.items.length === 0) return { index: null, note: list.what };
+  const indexOf = new Map(photos.map((p, i) => [p.sha256, i]));
+  const listed = list.items.filter((item) => indexOf.has(item.id));
+  if (listed.length === 0) throw new Error('The photos to check are not among the photos of this inspection; reload the page.');
+  const at = listed.findIndex((item) => item.id === current);
+  const order = at < 0 ? listed : [...listed.slice(at + 1), ...listed.slice(0, at)];
+  if (order.length > 0) return { index: indexOf.get(order[0].id) as number, note: null };
+  return { index: null, note: `This is the only photo left to check: ${listed[at].detail}.` };
 }

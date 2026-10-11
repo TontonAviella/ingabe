@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { type FakePhoto, towerServer } from '@/test/towerServer';
 import type { Box } from './photoView';
 import type { PartWork, PhotoWork, Suggestion } from './towerContract';
 import {
@@ -7,13 +8,14 @@ import {
   emptyPhotoDraft,
   jobState,
   marksPayload,
-  nextPhotoToCheck,
+  maySaveReview,
   nextUndecided,
   type PhotoDraft,
-  photoNeedsCheck,
   photoReducer,
+  photoToOpen,
   reviewPayload,
   syncPart,
+  unsavedOtherParts,
 } from './towerReview';
 
 // Shapes copied from the shared API contract (GET .../photos/{sha256}/work).
@@ -45,6 +47,20 @@ function work(over: Partial<PhotoWork['parts']> = {}): PhotoWork {
 
 const SUGGESTIONS = [suggestion('s1', [900, 100, 1010, 215]), suggestion('s2', [1100, 90, 1205, 200]), suggestion('s3', [40, 40, 60, 60])];
 
+const PHOTO: FakePhoto = {
+  sha256: 'c'.repeat(64),
+  url: `/api/layer/L/photos/${'c'.repeat(64)}`,
+  filename: 'DJI_0001.JPG',
+  width: 2000,
+  height: 1400,
+  taken_at: '2026-10-09T10:31:00',
+  lat: -1.9441,
+  lon: 30.0619,
+  relative_altitude_m: 42.3,
+  gimbal_pitch: -12.5,
+  gimbal_yaw: 88,
+};
+
 function synced(w: PhotoWork): PhotoDraft {
   return photoReducer(emptyPhotoDraft(), { type: 'sync', work: w });
 }
@@ -71,13 +87,41 @@ describe('marking: add, delete and fix marks', () => {
     expect(s.tower_dish.marks).toEqual([D1, fixed]);
   });
 
-  it('sends the other parts’ marks as look-alikes', () => {
+  it("sends only the part's own marks: which look-alikes the finder gets is the server's rule", () => {
     let s = synced(work());
     for (const box of [D1, D2, D3]) s = photoReducer(s, { type: 'mark/add', part: 'tower_dish', box });
     s = photoReducer(s, { type: 'mark/add', part: 'tower_antenna', box: A1 });
-    expect(marksPayload('tower_dish', s)).toEqual({ part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [A1] });
-    expect(marksPayload('tower_antenna', s)).toEqual({ part: 'tower_antenna', marks: [A1], lookalike_marks: [D1, D2, D3] });
-    expect(marksPayload('tower_radio_unit', s)).toEqual({ part: 'tower_radio_unit', marks: [], lookalike_marks: [D1, D2, D3, A1] });
+    expect(marksPayload('tower_dish', s)).toEqual({ part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [] });
+    expect(marksPayload('tower_antenna', s)).toEqual({ part: 'tower_antenna', marks: [A1], lookalike_marks: [] });
+  });
+
+  it("every part's marks save on the real rules, dishes too, and the server adds the look-alikes", () => {
+    let s = synced(work());
+    for (const box of [D1, D2, D3]) s = photoReducer(s, { type: 'mark/add', part: 'tower_dish', box });
+    s = photoReducer(s, { type: 'mark/add', part: 'tower_antenna', box: A1 });
+    const server = towerServer('L', [PHOTO]);
+    // What the old payload sent, the other parts' marks as look-alikes: refused for dishes.
+    expect(server.setMarks(PHOTO.sha256, { part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [A1] })).toMatchObject({
+      status: 422,
+      body: { detail: 'look-alike marks are not used for dishes: they were measured not to help, or not tried' },
+    });
+    for (const part of ['tower_antenna', 'tower_dish'] as const) {
+      expect(server.setMarks(PHOTO.sha256, marksPayload(part, s)).status).toBe(200);
+    }
+    const parts = server.work(PHOTO.sha256).parts;
+    expect(parts.tower_dish.lookalike_marks).toEqual([]);
+    expect(parts.tower_antenna.lookalike_marks).toEqual([D1, D2, D3]);
+    expect(parts.tower_radio_unit.lookalike_marks).toEqual([D1, D2, D3, A1]);
+  });
+
+  it('names the other parts whose marks are not saved yet, to save them before a find', () => {
+    let s = synced(work({ tower_radio_unit: part({ marks: [D3] }) }));
+    s = photoReducer(s, { type: 'mark/add', part: 'tower_dish', box: D1 });
+    s = photoReducer(s, { type: 'mark/add', part: 'tower_antenna', box: A1 });
+    expect(unsavedOtherParts('tower_radio_unit', s)).toEqual(['tower_dish', 'tower_antenna']);
+    expect(unsavedOtherParts('tower_dish', s)).toEqual(['tower_antenna']);
+    s = photoReducer(s, { type: 'saved', part: 'tower_antenna', work: part({ marks: [A1] }) });
+    expect(unsavedOtherParts('tower_dish', s)).toEqual([]);
   });
 
   it("keeps unsaved marks when the server's work refreshes, and takes the server's once saved", () => {
@@ -170,6 +214,15 @@ describe('never a total while suggestions wait', () => {
     expect(line).not.toContain('7');
   });
 
+  it('a finder that found no more asks for the review, with no number, until the server counts', () => {
+    const none = part({ marks: [D1, D2, D3], job: { job_id: 'j', status: 'done' }, suggestions: [], waiting: 0, counted_by_you: null });
+    const line = countLine(none, draftFromServer(none));
+    expect(line).toBe('The finder found no more: save your review to count them');
+    expect(line).not.toMatch(/\d/);
+    expect(countLine({ ...none, counted_by_you: 3 }, null)).toBe('3 counted by you');
+    expect(countLine(part({ marks: [D1, D2, D3] }), null)).toBeNull();
+  });
+
   it("shows the server's counted_by_you once nothing waits", () => {
     expect(countLine(part({ suggestions: SUGGESTIONS, waiting: 0, counted_by_you: 5 }), null)).toBe('5 counted by you');
     expect(countLine(part({ waiting: 0, counted_by_you: 0 }), null)).toBe('0 counted by you');
@@ -205,6 +258,36 @@ describe('never a total while suggestions wait', () => {
   });
 });
 
+describe('saving the review', () => {
+  const done = { job_id: 'j', status: 'done' };
+
+  it('may save the empty review of a finder that found no more, and the server then counts the marks', () => {
+    const server = towerServer('L', [PHOTO]);
+    server.setMarks(PHOTO.sha256, { part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [] });
+    server.startFind(PHOTO.sha256, { part: 'tower_dish' });
+    server.finish(PHOTO.sha256, 'tower_dish', []);
+    const found = server.work(PHOTO.sha256).parts.tower_dish;
+    expect(found).toMatchObject({ suggestions: [], waiting: 0, counted_by_you: null });
+
+    const review = draftFromServer(found);
+    expect(review.dirty).toBe(false);
+    expect(maySaveReview(found, review)).toBe(true);
+    const saved = server.setReview(PHOTO.sha256, reviewPayload('tower_dish', review, found.suggestions));
+    expect(saved).toMatchObject({ status: 200, body: { counted_by_you: 3, waiting: 0 } });
+    expect(maySaveReview(saved.body as PartWork, draftFromServer(saved.body as PartWork))).toBe(false);
+  });
+
+  it('may not save an untouched review while suggestions wait or before the finder is done', () => {
+    const waiting = part({ marks: [D1], job: done, suggestions: SUGGESTIONS, waiting: 3 });
+    expect(maySaveReview(waiting, draftFromServer(waiting))).toBe(false);
+    expect(maySaveReview(part({ marks: [D1], job: { job_id: 'j', status: 'running' } }), draftFromServer(part()))).toBe(false);
+    expect(maySaveReview(part({ marks: [D1] }), draftFromServer(part()))).toBe(false);
+    let s = synced(work({ tower_dish: waiting }));
+    s = photoReducer(s, { type: 'review/keep', part: 'tower_dish', id: 's1' });
+    expect(maySaveReview(waiting, s.tower_dish.review)).toBe(true);
+  });
+});
+
 describe('stepping through the suggestions', () => {
   it('goes to the next one still to check, after the one just decided', () => {
     let s = synced(work({ tower_dish: part({ suggestions: SUGGESTIONS, waiting: 3 }) }));
@@ -218,35 +301,69 @@ describe('stepping through the suggestions', () => {
   });
 });
 
-describe('find jobs and the next photo to check', () => {
+describe('find jobs', () => {
   it('asks again only while a job is in line or running', () => {
-    expect(jobState(null)).toEqual({ active: false, line: null, failed: false });
+    expect(jobState(null)).toEqual({ active: false, done: false, line: null, failed: false });
     expect(jobState({ job_id: 'j', status: 'queued' }).active).toBe(true);
     expect(jobState({ job_id: 'j', status: 'running' }).active).toBe(true);
-    expect(jobState({ job_id: 'j', status: 'done' }).active).toBe(false);
+    expect(jobState({ job_id: 'j', status: 'done' })).toMatchObject({ active: false, done: true });
     expect(jobState({ job_id: 'j', status: 'failed' })).toMatchObject({ active: false, failed: true });
     expect(jobState({ job_id: 'j', status: 'exploded' })).toMatchObject({ active: false, failed: true });
   });
+});
 
-  it('a photo needs a check when suggestions wait or nothing is counted yet', () => {
-    expect(photoNeedsCheck(work())).toBe(true);
-    expect(photoNeedsCheck(work({ tower_dish: part({ counted_by_you: 4 }) }))).toBe(false);
-    expect(photoNeedsCheck(work({ tower_dish: part({ counted_by_you: 4 }), tower_antenna: part({ waiting: 2 }) }))).toBe(true);
+describe("the next photo to check comes from the server's list", () => {
+  const photo = (i: number, over: Partial<FakePhoto> = {}): FakePhoto => ({
+    ...PHOTO,
+    sha256: String(i).repeat(64),
+    url: `/api/layer/L/photos/${String(i).repeat(64)}`,
+    filename: `DJI_000${i}.JPG`,
+    taken_at: `2026-10-09T10:3${i}:00`,
+    ...over,
   });
 
-  it('finds the next photo that needs a check, going round once and asking no further than needed', async () => {
-    const done = work({ tower_dish: part({ counted_by_you: 3 }) });
-    const waiting = work({ tower_antenna: part({ waiting: 1 }) });
-    const works = [waiting, done, done, waiting, done];
-    const asked: number[] = [];
-    const workOf = async (i: number) => {
-      asked.push(i);
-      return works[i];
-    };
-    expect(await nextPhotoToCheck(works.length, 0, workOf)).toBe(3);
-    expect(asked).toEqual([1, 2, 3]);
-    expect(await nextPhotoToCheck(works.length, 3, workOf)).toBe(0);
-    expect(await nextPhotoToCheck(works.length, -1, workOf)).toBe(0);
-    expect(await nextPhotoToCheck(2, 0, async () => done)).toBeNull();
+  it('opens what the server lists first, where the old client rule saw nothing to check', () => {
+    // Photo 1: dishes counted (review saved); antennas marked, never found. Photo 2: dishes counted. The client rule
+    // this replaces said neither needs a check (nothing waits, something is counted); the server lists photo 1.
+    const photos = [photo(1), photo(2)];
+    const server = towerServer('L', photos);
+    for (const p of photos) {
+      server.setMarks(p.sha256, { part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [] });
+      server.startFind(p.sha256, { part: 'tower_dish' });
+      server.finish(p.sha256, 'tower_dish', []);
+      server.setReview(p.sha256, { part: 'tower_dish', kept: [], rejected: [], fixed: [], added: [] });
+    }
+    server.setMarks(photos[0].sha256, { part: 'tower_antenna', marks: [A1], lookalike_marks: [] });
+    const list = server.photosToCheck();
+    expect(list.items.map((i) => [i.title, i.detail])).toEqual([['DJI_0001.JPG', 'antennas marked; press Find']]);
+    expect(photoToOpen(list, photos, null)).toEqual({ index: 0, note: null });
+    expect(photoToOpen(list, photos, photos[0].sha256)).toEqual({
+      index: null,
+      note: 'This is the only photo left to check: antennas marked; press Find.',
+    });
+  });
+
+  it("goes down the server's order from the current photo, and says the server's words when none is left", () => {
+    const photos = [photo(1), photo(2), photo(3)];
+    const server = towerServer('L', photos);
+    // Photo 3 has suggestions waiting, so the server lists it first; then the unmarked ones in flight order.
+    server.setMarks(photos[2].sha256, { part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [] });
+    server.startFind(photos[2].sha256, { part: 'tower_dish' });
+    server.finish(photos[2].sha256, 'tower_dish', [{ box: [900, 100, 1010, 215], score: 0.6 }]);
+    const list = server.photosToCheck();
+    expect(list.items.map((i) => i.title)).toEqual(['DJI_0003.JPG', 'DJI_0001.JPG', 'DJI_0002.JPG']);
+    expect(photoToOpen(list, photos, null)).toEqual({ index: 2, note: null });
+    expect(photoToOpen(list, photos, photos[2].sha256)).toEqual({ index: 0, note: null });
+    expect(photoToOpen(list, photos, photos[0].sha256)).toEqual({ index: 1, note: null });
+    // From the last listed photo it goes round to the first, never back to itself.
+    expect(photoToOpen(list, photos, photos[1].sha256)).toEqual({ index: 2, note: null });
+
+    const empty = towerServer('L', []).photosToCheck();
+    expect(photoToOpen(empty, photos, null)).toEqual({ index: null, note: 'Every photo is checked: each photo with marks has its count.' });
+  });
+
+  it('refuses a list of photos this screen does not have', () => {
+    const list = towerServer('L', [photo(7)]).photosToCheck();
+    expect(() => photoToOpen(list, [photo(1)], null)).toThrow(/not among the photos of this inspection/);
   });
 });

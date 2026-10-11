@@ -78,7 +78,9 @@ export interface PhotoWork {
   parts: Record<TowerPart, PartWork>;
 }
 
-/** PUT .../marks */
+/** PUT .../marks. `lookalike_marks` are look-alikes the person drew for this part only; this screen draws none. The
+ * server gives the finder the other parts' saved marks as look-alikes itself, for the parts measured with them, and
+ * refuses any look-alikes (422) for a part measured without them (tower_inspection.lookalike_marks, set_marks). */
 export interface MarksPayload {
   part: TowerPart;
   marks: Box[];
@@ -101,6 +103,12 @@ export interface TowerCard {
 export interface TowerCards {
   cards: TowerCard[];
 }
+
+/** The server's card listing the photos still to check, in the order to work on them (tower_cards `_photos_to_check`,
+ * from tower_inspection.photos_to_check); each item is a photo, its id the photo's sha256, and the list is the same
+ * for both readers. The screens open photos from this list: they never decide themselves which photo needs a check. */
+export const PHOTOS_TO_CHECK_CARD = 'photos_to_check';
+export const PHOTOS_TO_CHECK_AUDIENCE: TowerAudience = 'technician';
 
 /** GET /api/towers/layer/{layer_id}/cards/{card_id}?audience= : the drone cards' answer shape. */
 export interface TowerCardAnswer extends TowerCard, CardAnswerCore {

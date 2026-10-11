@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { AnswerDownload, AnswerProgress, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
+import type { AnswerDownload, AnswerItem, AnswerProgress, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
 
 // The pieces every card panel over the map shares: the drone photo cards (DroneCards.tsx) and the tower cards
 // (towers/TowerCards.tsx). Everything shown comes from the server; these only lay it out.
@@ -147,8 +147,49 @@ function Progress({ progress }: { progress: AnswerProgress }) {
   );
 }
 
-/** What and where (with its places and facts), why it matters, what to do and how sure: the body of every answer. */
-export function AnswerBody({ answer, onGoTo }: { answer: CardAnswerCore; onGoTo: (lon: number, lat: number) => void }) {
+/** What tapping a place does: the panel's own action when it has one for the item (a tower photo opens on the marking
+ * screen), else flying to the item's position. An item with neither (no position: never flown to 0, 0) has none. */
+function itemAction(
+  item: AnswerItem,
+  onGoTo: (lon: number, lat: number) => void,
+  openItem?: (item: AnswerItem) => (() => void) | null,
+): (() => void) | null {
+  const open = openItem?.(item);
+  if (open) return open;
+  const { lon, lat } = item;
+  return lon !== null && lat !== null ? () => onGoTo(lon, lat) : null;
+}
+
+function ItemRow({ item }: { item: AnswerItem }) {
+  return (
+    <>
+      {item.picture && (
+        <img
+          src={item.picture}
+          alt={`What the vision model saw of ${item.title}`}
+          loading="lazy"
+          className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
+        />
+      )}
+      <span className="flex flex-col flex-1 min-w-0">
+        <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
+        <span className="text-[13px] leading-snug text-[#B8A99B] tabular-nums">{item.detail}</span>
+      </span>
+    </>
+  );
+}
+
+/** What and where (with its places and facts), why it matters, what to do and how sure: the body of every answer.
+ * `openItem` gives a panel's own action for a place (see itemAction). */
+export function AnswerBody({
+  answer,
+  onGoTo,
+  openItem,
+}: {
+  answer: CardAnswerCore;
+  onGoTo: (lon: number, lat: number) => void;
+  openItem?: (item: AnswerItem) => (() => void) | null;
+}) {
   return (
     <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
       <Section label="What and where">
@@ -162,28 +203,26 @@ export function AnswerBody({ answer, onGoTo }: { answer: CardAnswerCore; onGoTo:
       {answer.items.length > 0 && (
         <div className="flex flex-col py-1 border-b border-white/[0.07]">
           <span className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">Go here first</span>
-          {answer.items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onGoTo(item.lon, item.lat)}
-              className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5 text-left hover:bg-white/[0.04] cursor-pointer"
-            >
-              {item.picture && (
-                <img
-                  src={item.picture}
-                  alt={`What the vision model saw of ${item.title}`}
-                  loading="lazy"
-                  className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
-                />
-              )}
-              <span className="flex flex-col flex-1 min-w-0">
-                <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
-                <span className="text-[13px] leading-snug text-[#B8A99B] tabular-nums">{item.detail}</span>
-              </span>
-              <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
-            </button>
-          ))}
+          {answer.items.map((item) => {
+            // One photo can be listed twice (once per part), so the id alone is not a key.
+            const key = `${item.id} ${item.detail}`;
+            const action = itemAction(item, onGoTo, openItem);
+            return action ? (
+              <button
+                key={key}
+                type="button"
+                onClick={action}
+                className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5 text-left hover:bg-white/[0.04] cursor-pointer"
+              >
+                <ItemRow item={item} />
+                <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
+              </button>
+            ) : (
+              <div key={key} className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5">
+                <ItemRow item={item} />
+              </div>
+            );
+          })}
         </div>
       )}
       {answer.facts.length > 0 && (
