@@ -152,3 +152,40 @@ def test_picture_examples_are_kept_per_project_without_unsure_answers():
     assert asyncio.run(cf.load_examples(s3, "b", "proj-a", "cog/x.tif|found|t")) == {1: "maize", 3: "banana"}
     assert asyncio.run(cf.load_examples(s3, "b", "proj-b", "cog/x.tif|found|t")) == {}
     assert asyncio.run(cf.load_examples(s3, "b", None, "cog/x.tif|found|t")) == {}
+
+
+def test_a_long_run_resumes_checkpoints_and_renews_its_photo_link(tmp_path, monkeypatch):
+    import torch
+    from pyproj import Transformer
+    from shapely.geometry import mapping
+    from shapely.ops import transform as reproject
+
+    path = tmp_path / "photo.tif"
+    with rasterio.open(path, "w", driver="GTiff", width=1000, height=400, count=3, dtype="uint8", crs="EPSG:32735",
+                       transform=from_origin(X0, Y0, PIXEL_M, PIXEL_M)) as ds:
+        ds.write(np.random.default_rng(2).integers(0, 255, (3, 400, 1000), dtype="uint8"))
+    to_wgs84 = Transformer.from_crs("EPSG:32735", "EPSG:4326", always_xy=True).transform
+    features = [{"type": "Feature", "properties": {"number": n},
+                 "geometry": mapping(reproject(to_wgs84, box(X0 + 1 + 16 * i, Y0 - 15, X0 + 15 + 16 * i, Y0 - 1)))}
+                for i, n in enumerate((1, 2, 3))]
+
+    class Plots:
+        geojson = {"type": "FeatureCollection", "features": features}
+
+    class Fake:
+        def __call__(self, batch):
+            return torch.ones(batch.shape[0], 768)
+
+    links, saved = [], []
+    monkeypatch.setattr(cf, "_load_model", lambda p: Fake())
+    monkeypatch.setattr(cf, "REOPEN_S", 0)  # reopen before every plot
+    monkeypatch.setattr(cf, "CHECKPOINT_PLOTS", 2)
+    done = {1: np.zeros(768, np.float32)}  # plot 1 came from an earlier run's checkpoint
+
+    def link():
+        links.append(1)
+        return str(path)
+
+    prints = cf.fingerprint_plots(link, Plots(), "unused", lambda d, n: None, done, lambda p: saved.append(sorted(p)))
+    assert sorted(prints) == [1, 2, 3] and not prints[1].any()  # plot 1 kept, not recomputed
+    assert saved == [[1, 2]] and len(links) == 3  # one checkpoint at plot 2; opened once, reopened for plots 2 and 3

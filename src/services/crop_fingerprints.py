@@ -21,12 +21,14 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import random
+import time
 from collections import Counter
 from dataclasses import dataclass, replace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 import rasterio
@@ -54,6 +56,11 @@ _MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 _STD = np.array([0.229, 0.224, 0.225], np.float32)
 _STORE_PREFIX = "crop_fingerprints/v1"
 _BATCH = 16
+CHECKPOINT_PLOTS = 50  # fingerprints so far are kept this often, so a failed run resumes
+REOPEN_S = 1800  # a long run reopens the photo with a fresh link this often (links last an hour)
+_LINK_SECONDS = 3600
+
+logger = logging.getLogger(__name__)
 
 _model: Any = None
 _kept: dict[str, dict[int, np.ndarray]] = {}
@@ -154,21 +161,40 @@ def plot_squares(ds: Any, outline: Any, number: int, lat: float) -> list[np.ndar
     return squares
 
 
-def fingerprint_plots(cog_url: str, plots: drone_plots.PlotSet, model_path: str,
-                      progress: background_jobs.Progress) -> dict[int, np.ndarray]:
-    """The fingerprint of every plot that holds at least one whole square (blocking: minutes per photo)."""
+def fingerprint_plots(photo_url: Callable[[], str], plots: drone_plots.PlotSet, model_path: str,
+                      progress: background_jobs.Progress, done: Optional[dict[int, np.ndarray]] = None,
+                      checkpoint: Callable[[dict[int, np.ndarray]], None] = lambda prints: None
+                      ) -> dict[int, np.ndarray]:
+    """The fingerprint of every plot that holds at least one whole square (blocking: minutes per photo). Plots in
+    `done` are kept as they are; `checkpoint` gets the fingerprints so far every CHECKPOINT_PLOTS plots, and the
+    photo is reopened with a fresh link (`photo_url`) every REOPEN_S seconds, so a long run neither loses its work
+    nor outlives its link."""
     model = _load_model(model_path)
     features = plots.geojson["features"]
-    prints: dict[int, np.ndarray] = {}
-    with rasterio.open(cog_url) as ds:
+    prints: dict[int, np.ndarray] = dict(done or {})
+    started = opened = time.monotonic()
+    squares_seen = 0
+    ds = rasterio.open(photo_url())
+    try:
         to_photo = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True).transform
-        for done, feature in enumerate(features, 1):
-            outline_wgs84 = shape(feature["geometry"])
-            squares = plot_squares(ds, reproject(to_photo, outline_wgs84), feature["properties"]["number"],
-                                   outline_wgs84.centroid.y)
-            if squares:
-                prints[feature["properties"]["number"]] = fingerprint(squares, model)
-            progress(done, len(features))
+        for count, feature in enumerate(features, 1):
+            number = feature["properties"]["number"]
+            if number not in prints:
+                if time.monotonic() - opened > REOPEN_S:
+                    ds.close()
+                    ds, opened = rasterio.open(photo_url()), time.monotonic()
+                outline_wgs84 = shape(feature["geometry"])
+                squares = plot_squares(ds, reproject(to_photo, outline_wgs84), number, outline_wgs84.centroid.y)
+                if squares:
+                    prints[number] = fingerprint(squares, model)
+                    squares_seen += len(squares)
+            if count % CHECKPOINT_PLOTS == 0:
+                checkpoint(prints)
+                logger.info("crop fingerprints: %d of %d plots, %.2f squares/s", count, len(features),
+                            squares_seen / max(time.monotonic() - started, 1e-6))
+            progress(count, len(features))
+    finally:
+        ds.close()
     return prints
 
 
@@ -294,11 +320,33 @@ def job(key: str) -> Optional[background_jobs.Job]:
     return background_jobs.status(f"fingerprints:{key}")
 
 
-def start(s3: Any, bucket: str, key: str, cog_url: str, plots: drone_plots.PlotSet) -> background_jobs.Job:
-    """Fingerprint every plot in the background, once; the running or failed job is returned."""
+def _partial_key(key: str) -> str:
+    return _object_key(key + "|partial")
+
+
+def start(s3: Any, bucket: str, key: str, cog_key: str, plots: drone_plots.PlotSet) -> background_jobs.Job:
+    """Fingerprint every plot in the background, once, resuming from the last checkpoint of a failed run; the
+    running or failed job is returned."""
+    store = get_s3_client()
+
+    def photo_url() -> str:
+        return store.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": cog_key},
+                                            ExpiresIn=_LINK_SECONDS)
+
+    def earlier() -> dict[int, np.ndarray]:
+        try:
+            return _from_bytes(store.get_object(Bucket=bucket, Key=_partial_key(key))["Body"].read())
+        except store.exceptions.NoSuchKey:
+            return {}
+
+    def checkpoint(prints: dict[int, np.ndarray]) -> None:
+        store.put_object(Bucket=bucket, Key=_partial_key(key), Body=_to_bytes(prints),
+                         ContentType="application/octet-stream")
+
     async def work(progress: background_jobs.Progress) -> None:
-        path = await asyncio.to_thread(ensure_model, get_s3_client(), bucket)
-        prints = await asyncio.to_thread(fingerprint_plots, cog_url, plots, path, progress)
+        path = await asyncio.to_thread(ensure_model, store, bucket)
+        done = await asyncio.to_thread(earlier)
+        prints = await asyncio.to_thread(fingerprint_plots, photo_url, plots, path, progress, done, checkpoint)
         await s3.put_object(Bucket=bucket, Key=_object_key(key), Body=_to_bytes(prints),
                             ContentType="application/octet-stream")
         _kept[key] = prints

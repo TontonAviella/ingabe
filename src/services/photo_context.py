@@ -94,7 +94,7 @@ async def _fingerprints(s3: Any, bucket: str, metadata: dict[str, Any], plots: d
     prints = await crop_fingerprints.load(s3, bucket, key)
     job = crop_fingerprints.job(key)
     if start and prints is None and (job is None or (retry_failed and job.state == "failed")):
-        crop_fingerprints.start(s3, bucket, key, await cog_url(s3, bucket, metadata, _LONG_URL_SECONDS), plots)
+        crop_fingerprints.start(s3, bucket, key, metadata["cog_key"], plots)
     return prints
 
 
