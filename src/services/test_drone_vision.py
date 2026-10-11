@@ -197,7 +197,7 @@ async def test_a_look_through_anthropic_asks_for_a_thinking_budget(monkeypatch):
 
     monkeypatch.delenv("DRONE_VISION_REQUESTS_PER_MINUTE", raising=False)
     monkeypatch.setattr(drone_vision.llm_cache, "answer", no_cache)
-    monkeypatch.setattr(drone_vision.llm_cache, "record", lambda kind, usage: 0.0)
+    monkeypatch.setattr(drone_vision.llm_cache, "record", lambda kind, usage, model=None: 0.0)
     answer, _ = await drone_vision._ask(client, "claude-haiku-5-5", "system", [], {}, "plot_look")
     assert answer == {"main_crop": "maize"}
     assert sent["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 8000}
