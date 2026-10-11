@@ -215,8 +215,7 @@ def test_camera_positions_from_the_photos_own_data():
     assert "Taken from 45 m to 45 m above the take-off point" in answer["what"]
     assert "Facing north 1, east 1, south 1, west 1." in answer["what"]
     assert "1 photo without a direction" in answer["what"]
-    assert answer["todo"].startswith("Next visit, also take photos facing north-east, south-east, south-west and "
-                                     "north-west")
+    assert "no photo of this inspection faces north-east, south-east, south-west and north-west" in answer["todo"]
     assert answer["items"] == []
     no_gps = PHOTOS + [facts(sha="f" * 64, name="phone.jpg", lat=None, lon=None, pitch=None, gimbal_yaw=None,
                              relative_altitude_m=None)]
@@ -225,7 +224,7 @@ def test_camera_positions_from_the_photos_own_data():
     assert listed["items"][0]["title"] == "phone.jpg" and listed["items"][0]["lon"] is None
     bare = [facts(sha="e" * 64, name="plain.jpg", pitch=None, gimbal_yaw=None, relative_altitude_m=None)]
     plain = tower_cards.answer_card("camera_positions", here(photos=bare), "owner")
-    assert "above the take-off" not in plain["what"] and plain["todo"].startswith("These photos carry no DJI")
+    assert "above the take-off" not in plain["what"] and plain["todo"].startswith("These photos carry no camera tilt or direction")
 
 
 # --- What changed since the last inspection? ------------------------------------------------------------------------
@@ -307,3 +306,16 @@ def test_sage_never_gets_the_sum_over_photos():
                           "photos_marked_not_found", "photos_being_found"} for p in counted["equipment"].values())
     shown = json.dumps({k: v for k, v in counted.items() if k != "camera"})
     assert "13" not in _numbers(shown) and "added up" not in shown
+
+
+def test_no_card_tells_anyone_how_or_when_to_fly():
+    """Roger (2026-10-11): the app works with whatever data arrives and says in data terms what it supports; it never
+    gives flight or data-collection instructions (feedback memory: data, not collection)."""
+    banned = re.compile(r"\b(next visit|fly|flying|re-fly|pilot|take (more )?photos|use a drone|shoot again)\b", re.I)
+    no_gps = PHOTOS + [facts(sha="f" * 64, name="phone.jpg", lat=None, lon=None, pitch=None, gimbal_yaw=None,
+                             relative_altitude_m=None)]
+    for photos in (PHOTOS, no_gps):
+        for audience in ("owner", "technician"):
+            for card in tower_cards.deck(here(photos=photos), audience)["cards"]:
+                text = json.dumps(tower_cards.answer_card(card["id"], here(photos=photos), audience))
+                assert not banned.search(text), (card["id"], banned.search(text).group(0))

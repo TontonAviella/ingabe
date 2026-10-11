@@ -514,17 +514,19 @@ def _camera_positions(here: Here, audience: str) -> dict[str, Any]:
         facts.append({"label": "Camera", "value": ", ".join(c.cameras)})
     unseen = [word for word in tower_inspection.COMPASS if word not in c.facing] if c.facing else []
     if audience == TECHNICIAN:
-        why = ("Gaps in heights or directions are where to fly or shoot again on the next visit; tower parts can be "
+        why = ("A side or height no photo looks at is a part of the tower these photos cannot count; tower parts can be "
                "found only on photos taken at an angle.")
     else:
         why = ("Photos from every side and from above and below the equipment are what let parts be counted; a side "
                "no photo looks at is a side nobody can count.")
     if c.photos and unseen:
-        todo = f"Next visit, also take photos facing {_names(unseen)}: no photo of this inspection does."
+        todo = (f"Count what these photos show; no photo of this inspection faces {_names(unseen)}, so parts seen only "
+                "from there are not in any count.")
     elif c.no_pitch == c.photos:
-        todo = "These photos carry no DJI flight data: use a drone that records it so parts can be found on them."
+        todo = ("These photos carry no camera tilt or direction, so the finder cannot run on them: parts on them are "
+                "not counted.")
     else:
-        todo = "Every direction is covered; keep flying the same way next time so inspections compare."
+        todo = "Every direction is covered by at least one photo of this inspection."
     items = [_item(inspection, p, "no GPS position") for p in inspection.photos if not p.has_position][:LISTED_PHOTOS]
     sure = how_sure("high", ["Read from each photo's own EXIF and DJI flight data",
                              "Heights are above the take-off point, not the ground at the tower"], None)
