@@ -10,8 +10,8 @@ picture that never finishes can be killed (a pool cannot stop a running task).
 * Torch threads capped by FINDER_THREADS (default 4); YOLO_OFFLINE and YOLO_AUTOINSTALL are set in the finder
   process only, so Ultralytics never reaches the internet there (the app's FastSAM path is left as it was).
 * Weights come only from object storage (MODEL_KEY), fetched once and checked by sha256 (stored_files).
-* The process is started on first use and stops itself after IDLE_EXIT_S without a picture, giving back its
-  memory; the next picture starts it again.
+* The process is started on first use and stops itself after IDLE_EXIT_S (2 minutes) without a picture, giving
+  back its ~1 GB; the next picture starts it again.
 """
 
 from __future__ import annotations
@@ -40,7 +40,10 @@ DEFAULT_THREADS = 4
 # One picture, including starting the process (importing torch took ~20 s in the amd64 image on an M1 Mac, a
 # picture read at 1280 px 11-19 s, measured 2026-10-11). Past this the process is killed.
 WAIT_LIMIT_S = 600.0
-IDLE_EXIT_S = 900.0
+# The process holds ~1.0 GB after a picture (1.1 GB at its peak; amd64 image on the M1, 2026-10-11), and each app
+# worker that ran a job has its own: it stops after this long without a picture, so a burst of pictures keeps it
+# warm and an idle app gives the memory back.
+IDLE_EXIT_S = 120.0
 # Set in the finder process before Ultralytics is imported. Ultralytics 8.4 reads YOLO_OFFLINE as offline only
 # when it is "true" (utils.is_online), not "1"; YOLO_AUTOINSTALL=False stops it pip-installing what it misses.
 OFFLINE_ENV = {"YOLO_OFFLINE": "true", "YOLO_AUTOINSTALL": "False"}
@@ -97,8 +100,8 @@ def _predict(weights: str, rgb: np.ndarray, prompts: Sequence[Sequence[float]], 
     return result_rows(result)
 
 
-def _serve(conn: Connection, n_threads: int) -> None:
-    """The finder process: one picture at a time, until the app goes away or it has been idle IDLE_EXIT_S."""
+def _serve(conn: Connection, n_threads: int, idle_s: float) -> None:
+    """The finder process: one picture at a time, until the app goes away or it has been idle `idle_s`."""
     os.environ.update(OFFLINE_ENV)
     import torch  # lazy: only the finder process holds torch
     import ultralytics.utils.torch_utils as ultralytics_torch  # lazy: as above
@@ -107,7 +110,7 @@ def _serve(conn: Connection, n_threads: int) -> None:
     # Ultralytics resets torch's threads to its own NUM_THREADS (CPU count - 1, at most 8) whenever a model is set
     # up on the CPU (torch_utils.select_device): measured at ~5.8 cores busy with FINDER_THREADS=1.
     ultralytics_torch.NUM_THREADS = n_threads
-    while conn.poll(IDLE_EXIT_S):
+    while conn.poll(idle_s):
         try:
             request = conn.recv()
         except EOFError:  # the app process went away
@@ -122,7 +125,7 @@ class _Process:
     def __init__(self) -> None:
         ctx = multiprocessing.get_context("spawn")  # not fork: the app runs threads (uvicorn, GDAL)
         self.conn, child = ctx.Pipe()
-        self.process = ctx.Process(target=_serve, args=(child, threads()), daemon=True, name="example-finder")
+        self.process = ctx.Process(target=_serve, args=(child, threads(), IDLE_EXIT_S), daemon=True, name="example-finder")
         self.process.start()
         child.close()
 

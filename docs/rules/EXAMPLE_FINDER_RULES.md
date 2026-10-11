@@ -97,8 +97,10 @@ are two pictures, because their finds are written in different coordinates.
   `raster_process` (a module-level function, plain values in and out, the
   caller waits without the GIL) but is one long-lived process with a pipe,
   so a picture that never finishes can be killed (`WAIT_LIMIT_S`, 600 s,
-  counting the send too). It stops itself after 15 idle minutes
-  (`IDLE_EXIT_S`), giving its memory back; the next picture starts it again.
+  counting the send too). It holds about 1.0 GB after a picture (1.1 GB at
+  its peak) and stops itself after 2 idle minutes (`IDLE_EXIT_S`), giving it
+  back; the next picture starts it again. Each app worker that ran a job has
+  its own, so with 4 workers up to ~4.4 GB can be held for those 2 minutes.
 - One picture at a time per app process (a lock) and in the whole app (the
   Redis slot, below).
 - Torch threads: `FINDER_THREADS` (default 4). Ultralytics resets torch to

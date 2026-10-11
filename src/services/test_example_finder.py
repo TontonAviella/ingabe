@@ -288,13 +288,22 @@ def test_the_finder_process_settings_keep_ultralytics_offline():
 
 
 @pytest.mark.timeout(600)
-def test_a_model_failure_in_the_finder_process_comes_back_to_the_caller(tmp_path):
+def test_a_model_failure_comes_back_and_an_idle_finder_process_stops_itself(tmp_path, monkeypatch):
+    if example_finder_model._process is not None:  # a process started earlier, with the usual idle time
+        example_finder_model._process.stop()
+    monkeypatch.setattr(example_finder_model, "_process", None)
+    monkeypatch.setattr(example_finder_model, "IDLE_EXIT_S", 3.0)
     junk = tmp_path / "junk.pt"
     junk.write_bytes(b"these are not weights")
     with pytest.raises(RuntimeError, match="the finder failed"):
         example_finder_model.run(str(junk), PIXELS, MARKS, [0, 0, 0], 1280, 0.01, 300)
     process = example_finder_model._process
     assert process is not None and process.process.is_alive() and process.process.pid != os.getpid()
+    process.process.join(30)  # idle for 3 s: it stops by itself, giving its memory back
+    assert process.process.exitcode == 0
+    with pytest.raises(RuntimeError, match="the finder failed"):  # the next picture starts a new one
+        example_finder_model.run(str(junk), PIXELS, MARKS, [0, 0, 0], 1280, 0.01, 300)
+    assert example_finder_model._process is not process
 
 
 # --------------------------------------------------------------------------- #
