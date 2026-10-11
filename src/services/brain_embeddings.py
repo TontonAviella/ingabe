@@ -31,6 +31,7 @@ from src.llm_defaults import (
     DEFAULT_BRAIN_QUERY_EXPANSION_MODEL,
     DEFAULT_CHAT_MODEL,
     resolve_chat_endpoint,
+    usage_extra_body,
 )
 from src.services import llm_cache
 from src.services.brain_service import (
@@ -452,7 +453,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
             # Thinking models can emit reasoning tokens that count toward this
             # budget; tight caps truncate the alternative-query list.
             max_tokens=400,
-            extra_body={"usage": {"include": True}},
+            extra_body=usage_extra_body(client.base_url),
         )
         llm_cache.record("brain_query_expansion", resp.usage)
         return {"text": resp.choices[0].message.content or ""}

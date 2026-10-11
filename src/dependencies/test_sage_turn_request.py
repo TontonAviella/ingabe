@@ -233,3 +233,68 @@ def test_rate_limit_user_message_explains_daily_and_minute_limits() -> None:
         _RateLimitError("Rate limit exceeded: free-models-per-min."))
     assert minute and "in a minute" in minute
     assert sage_turn_request.rate_limit_user_message(_RateLimitError("boom", status=500)) is None
+
+
+_GOOGLE = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
+def test_google_per_minute_limit_waits_into_the_next_minute() -> None:
+    # Google documents only "429 RESOURCE_EXHAUSTED, retry with backoff": no wait in the body or headers.
+    assert sage_turn_request.rate_limit_retry_after(_RateLimitError("Resource has been exhausted"), _GOOGLE) == 20.0
+    assert sage_turn_request.rate_limit_retry_after(
+        _RateLimitError("too many", headers={"retry-after": "600"}), _GOOGLE) == 60.0
+
+
+def test_google_daily_quota_is_not_retried_and_names_the_pacific_midnight_reset() -> None:
+    daily = _RateLimitError("Quota exceeded for quota id GenerateRequestsPerDayPerProjectPerModel-FreeTier")
+    assert sage_turn_request.rate_limit_retry_after(daily, _GOOGLE) is None
+    text = sage_turn_request.rate_limit_user_message(daily, _GOOGLE)
+    assert text and "midnight Pacific time" in text and "Kigali" in text
+
+
+# Gemini's streamed tool calls, exactly as gemini-3.5-flash-lite sent them (2026-10-10, signature shortened).
+_GEMINI_DELTAS = [
+    {"index": None, "id": "call_824201", "type": "function",
+     "function": {"arguments": "{\"district\":\"Huye\"}", "name": "get_forecast"},
+     "extra_content": {"google": {"thought_signature": "EmAKXgFpFH0T"}}},
+    {"index": None, "id": "call_824202", "type": "function",
+     "function": {"arguments": "{\"district\":\"Musanze\"}", "name": "get_forecast"}},
+]
+
+
+def _deltas(raw: list[dict]):
+    """Built the way the OpenAI SDK builds streamed chunks (no validation), so `index` None survives as it did."""
+    from openai._models import construct_type
+    from openai.types.chat.chat_completion_chunk import ChoiceDeltaToolCall
+    return [construct_type(type_=ChoiceDeltaToolCall, value=d) for d in raw]
+
+
+def test_gemini_whole_tool_calls_without_index_stay_separate_and_keep_the_signature() -> None:
+    acc: dict = {}
+    for d in _deltas(_GEMINI_DELTAS):
+        sage_turn_request.add_tool_call_delta(acc, d)
+    assert [acc[k]["function"]["arguments"] for k in sorted(acc)] == ['{"district":"Huye"}', '{"district":"Musanze"}']
+    assert [acc[k]["id"] for k in sorted(acc)] == ["call_824201", "call_824202"]
+    assert acc[0]["extra_content"] == {"google": {"thought_signature": "EmAKXgFpFH0T"}}
+    assert "extra_content" not in acc[1]
+
+
+def test_openai_style_split_tool_call_deltas_still_join() -> None:
+    acc: dict = {}
+    for d in _deltas([
+        {"index": 0, "id": "call_a", "type": "function", "function": {"name": "get_forecast", "arguments": ""}},
+        {"index": 0, "function": {"arguments": "{\"district\":"}},
+        {"index": 0, "function": {"arguments": "\"Huye\"}"}},
+    ]):
+        sage_turn_request.add_tool_call_delta(acc, d)
+    assert acc == {0: {"id": "call_a", "type": "function",
+                       "function": {"name": "get_forecast", "arguments": "{\"district\":\"Huye\"}"}}}
+
+
+def test_signature_goes_back_only_to_google() -> None:
+    call = {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"},
+            "extra_content": {"google": {"thought_signature": "abc"}}}
+    google = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    assert sage_turn_request.tool_call_for_provider(call, google) is call
+    assert "extra_content" not in sage_turn_request.tool_call_for_provider(call, "https://openrouter.ai/api/v1")
+    assert "extra_content" in call  # the stored call is not changed

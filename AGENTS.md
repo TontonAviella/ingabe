@@ -145,6 +145,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `OPENAI_BASE_URL` | LLM endpoint. **Prod: `https://openrouter.ai/api/v1`.** |
 | `OPENAI_MODEL` | Primary chat model. **Prod: `openai/gpt-6-luna`** (paid credits; `nvidia/nemotron-3-super-120b-a12b:free` is the no-cost way back). Local Docker/offline default can use `ollama:gemma4:12b-it-qat`. Reasoning model → reasoning tokens count toward `max_tokens`; floor `max_tokens` at 150 for short outputs (Luna gave no chat title at 20). |
 | `DRONE_VISION_MODEL` | Vision model that looks at each drone plot for the cards (default `openai/gpt-6-luna`). |
+| `DRONE_VISION_REQUESTS_PER_MINUTE` | Spaces the vision model's calls under a free tier's per-minute limit (e.g. 12 for Gemini 3.5 Flash-Lite's 15); unset or 0 for paid models. |
 | `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain, tried on upstream 5xx, payload 400s and a daily-cap 429. `ollama:<tag>` entries route to the local Ollama container. Empty by decision (no paid fallback). |
 | `MUNDI_USE_HERMES` | `0` (default) → existing hand-rolled chat loop in `process_chat_interaction_task`. `1` → route through `src/services/hermes_runtime.py` (Hermes Agent runtime). Toggle this flag for the Phase 2 cutover. Rollback = back to `0` + restart. |
 | `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
