@@ -49,6 +49,17 @@ from src.services import (
     isdasoil_service,
     wapor_service,
 )
+from src.services.card_status import (
+    CANT_TELL,
+    LEARN,
+    NEEDS_CAMERA,
+    NEEDS_FLIGHT,
+    PARTLY,
+    READY,
+    TO_BUILD,
+    WORKING,
+)
+from src.services.card_status import how_sure as _how_sure
 from src.services.grvi import BARE_PIXEL, LOW_GREEN, grvi
 from src.services.insurance_engine import AUDIENCE_LABELS, normalize_audience
 
@@ -70,14 +81,7 @@ SERVICES = {
     11: "Soil NPK",
 }
 
-READY = "ready"
-PARTLY = "partly"
-NEEDS_FLIGHT = "needs_flight"
-NEEDS_CAMERA = "needs_camera"
-TO_BUILD = "to_build"
-LEARN = "learn"
-WORKING = "working"
-CANT_TELL = "cant_tell"
+# Status values: the vocabulary every set of cards shares (card_status); the labels are the drone cards' own.
 
 STATUS_LABELS = {
     READY: "Answer ready",
@@ -387,11 +391,6 @@ def _terms(ids: list[str], audience: str) -> list[dict[str, str]]:
     return [{"id": term_id, "word": TERMS[term_id]["word"],
              "simple": TERMS[term_id][tone][0].replace("VISION_MODEL_NAME", model),
              "why": TERMS[term_id][tone][1]} for term_id in ids]
-
-
-def _how_sure(level: str, because: list[str], surer: Optional[str]) -> dict[str, Any]:
-    return {"level": level, "label": level.capitalize(), "bars": {"low": 1, "medium": 2, "high": 3}[level],
-            "because": because, "surer": surer}
 
 
 # --- The cards -------------------------------------------------------------------------

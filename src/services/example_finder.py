@@ -178,7 +178,9 @@ def check_inside(boxes_px: Sequence[Box], width: int, height: int, what: str) ->
     return out
 
 
-def _lookalike_shape(given: Any, s: Settings) -> list[Box]:
+def check_lookalikes(given: Any, s: Settings) -> list[Box]:
+    """Look-alike marks as given (any coordinates): at most MAX_LOOKALIKE_MARKS boxes, and only for a target whose
+    measured settings use them (FinderInputError otherwise: refused, never ignored)."""
     looks = check_shape(given or [], "look-alike mark", 0, MAX_LOOKALIKE_MARKS)
     if looks and not s.look_alike_marks:
         raise FinderInputError(f"look-alike marks are not used for {answer_levels.target(s.target).noun}: they "
@@ -287,7 +289,7 @@ def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, ta
     pixels = check_pixels(picture) if isinstance(picture, np.ndarray) else decode_photo(picture)
     height, width = pixels.shape[:2]
     marks_px = check_inside(check_shape(marks, "mark", MIN_MARKS, MAX_MARKS), width, height, "mark")
-    looks_px = check_inside(_lookalike_shape(lookalike_marks, s), width, height, "look-alike mark")
+    looks_px = check_inside(check_lookalikes(lookalike_marks, s), width, height, "look-alike mark")
     check_picture(s, view, width, height, marks_px)
     return _find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model())
 
@@ -499,7 +501,7 @@ async def start(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str,
     """
     s = settings(target)
     given_marks = check_shape(marks, "mark", MIN_MARKS, MAX_MARKS)
-    given_looks = _lookalike_shape(lookalike_marks, s)
+    given_looks = check_lookalikes(lookalike_marks, s)
     picture = await source.read()
     marks_px = check_inside([picture.to_pixels(b) for b in given_marks], picture.width, picture.height, "mark")
     looks_px = check_inside([picture.to_pixels(b) for b in given_looks], picture.width, picture.height,
