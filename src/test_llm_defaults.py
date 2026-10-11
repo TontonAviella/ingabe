@@ -2,6 +2,7 @@ from src.llm_defaults import (
     DEFAULT_CLOUD_BRAIN_MODEL,
     DEFAULT_CHAT_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
+    model_base,
     resolve_chat_endpoint,
     supports_strict_tool_schema,
     thinking_kwargs,
@@ -74,3 +75,12 @@ def test_thinking_is_a_budget_on_anthropic_and_an_effort_elsewhere():
         "reasoning_effort": "low", "extra_body": {"usage": {"include": True}}}
     assert thinking_kwargs("https://generativelanguage.googleapis.com/v1beta/openai/", "high") == {
         "reasoning_effort": "high", "extra_body": {}}
+
+
+def test_a_routed_or_dated_model_id_is_a_version_of_its_base_model():
+    bases = ("claude-haiku-5-5", "gemini-3.8-flash", "gemini-3.8-flash-lite")
+    assert model_base("anthropic/claude-haiku-5-5", bases) == "claude-haiku-5-5"
+    assert model_base("claude-haiku-5-5-20261001", bases) == "claude-haiku-5-5"
+    assert model_base("gemini-3.8-flash-lite", bases) == "gemini-3.8-flash-lite"  # the longest base, not a prefix
+    assert model_base("claude-haiku-5", bases) is None
+    assert model_base(None, bases) is None

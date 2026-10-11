@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 
 DEFAULT_LOCAL_BRAIN_MODEL = "ollama:gemma4:12b-it-qat"
@@ -58,6 +58,15 @@ def resolve_chat_endpoint(
         api_key=(api_key or "").strip(),
         is_local_ollama=False,
     )
+
+
+def model_base(model: str | None, bases: Iterable[str]) -> str | None:
+    """Which of `bases` a model id is a version of: a routed id ("anthropic/claude-haiku-5-5") or a dated one
+    ("claude-haiku-5-5-20261001") is its base model; the longest base wins; None when it is none of them."""
+    if not model:
+        return None
+    name = model.split("/")[-1]
+    return max((base for base in bases if name == base or name.startswith(base + "-")), key=len, default=None)
 
 
 def supports_strict_tool_schema(model: str | None) -> bool:
