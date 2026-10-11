@@ -89,14 +89,15 @@ async def _survey(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_p
 
 
 async def _fingerprints(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_plots.PlotSet, *, start: bool,
-                        retry_failed: bool) -> Optional[dict[int, Any]]:
-    """The plots' fingerprints when kept; otherwise they are started in the background (minutes per photo)."""
+                        retry_failed: bool) -> tuple[Optional[dict[int, Any]], Optional[background_jobs.Job]]:
+    """The plots' fingerprints when kept, else the job making them (running or failed; None when not started). With
+    `start` they are started in the background (minutes per photo), and a failed run again with `retry_failed`."""
     key = crop_fingerprints.store_key(photo_plots.photo_key(metadata), plots)
     prints = await crop_fingerprints.load(s3, bucket, key)
     job = crop_fingerprints.job(key)
     if start and prints is None and (job is None or (retry_failed and job.state == "failed")):
-        crop_fingerprints.start(s3, bucket, key, metadata["cog_key"], plots)
-    return prints
+        job = crop_fingerprints.start(s3, bucket, key, metadata["cog_key"], plots)
+    return prints, (None if prints is not None else job)
 
 
 def _picture_record(looked: Optional[drone_vision.Survey], examples: dict[int, str],
@@ -117,6 +118,10 @@ class PlotLooks:
     checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground
     record: Optional[field_checks.Record] = None  # how the calls did on the checked plots
     picture_record: Optional[field_checks.Record] = None  # how they agree with the plots named from the pictures
+    # Plots with a kept fingerprint (None: none kept yet; 0: kept, but no plot holds a whole square), and the job
+    # making them while none are kept. With the survey off they are how a plot nobody checked gets a crop.
+    fingerprinted: Optional[int] = None
+    fingerprint_job: Optional[background_jobs.Job] = None
 
 
 async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: drone_plots.PlotSet,
@@ -124,7 +129,8 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
                      retry_failed: bool) -> PlotLooks:
     """The looks at a plot set, the one way the cards and Sage take a plot's crop. With `start`, the vision survey
     and the fingerprints are started in the background when they have not run yet. With the survey switched off
-    (drone_vision.survey_enabled), no plot is looked at: the crops come from the fingerprint calls and the checks."""
+    (drone_vision.survey_enabled), no plot is looked at: the crops come from the fingerprint calls and the checks,
+    and until fingerprints are kept, their job says how naming the other plots stands."""
     if drone_vision.survey_enabled():
         survey, survey_job = await _survey(s3, bucket, metadata, plots, place, scope=scope, start=start,
                                            retry_failed=retry_failed)
@@ -135,12 +141,13 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
     # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
     # keep stage, weeds and problems. Checks then override both, and the record compares the calls (each made
     # with its own check hidden) with the checks.
-    prints = await _fingerprints(s3, bucket, metadata, plots, start=start, retry_failed=retry_failed)
+    prints, fingerprint_job = await _fingerprints(s3, bucket, metadata, plots, start=start, retry_failed=retry_failed)
     examples = await crop_fingerprints.load_examples(s3, bucket, project_id, plot_set)
     looked = crop_fingerprints.looked(survey, prints, {**examples, **{n: c.crop for n, c in checks.items()}})
     return PlotLooks(survey=field_checks.apply(looked, checks), survey_job=survey_job, checked=frozenset(checks),
                      record=field_checks.model_record(looked, checks) if checks else None,
-                     picture_record=_picture_record(looked, examples, checks) if prints else None)
+                     picture_record=_picture_record(looked, examples, checks) if prints else None,
+                     fingerprinted=None if prints is None else len(prints), fingerprint_job=fingerprint_job)
 
 
 async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, metadata: dict[str, Any],
@@ -173,5 +180,6 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                             survey=looks.survey, survey_job=looks.survey_job,
                             vision_looks=drone_vision.survey_enabled(), seed=seed,
                             records=tuple(records), checked=looks.checked, record=looks.record,
-                            picture_record=looks.picture_record)
+                            picture_record=looks.picture_record, fingerprinted=looks.fingerprinted,
+                            fingerprint_job=looks.fingerprint_job)
     return PhotoContext(analysis=analysis, here=here, reader=reader)

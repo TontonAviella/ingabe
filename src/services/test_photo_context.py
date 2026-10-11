@@ -3,6 +3,8 @@ vision survey, kept fingerprints, plots named from the pictures and plots checke
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import uuid
 
 import numpy as np
@@ -133,6 +135,7 @@ async def test_switched_off_no_survey_is_started_and_crops_come_from_fingerprint
                for look in looks.survey.looks.values())
     assert looks.record == field_checks.Record(right=1, named=1, unsure=1)
     assert not any(key.startswith("survey:") for key in background_jobs._jobs)
+    assert (looks.fingerprinted, looks.fingerprint_job) == (10, None)  # kept: no job to report
 
 
 async def test_switched_off_sage_still_names_the_crop(photo, monkeypatch):
@@ -159,6 +162,7 @@ async def test_switched_off_before_the_fingerprints_only_checked_plots_are_named
     named = {n: look.main_crop for n, look in looks.survey.looks.items() if look.main_crop != "unsure"}
     assert named == CHECKS and {look.source for look in looks.survey.looks.values()} == {"checks"}
     assert looks.picture_record is None
+    assert (looks.fingerprinted, looks.fingerprint_job) == (None, None)  # not kept, not started (Sage starts none)
 
 
 async def test_switched_on_the_survey_starts_as_before(photo, monkeypatch):
@@ -174,3 +178,78 @@ async def test_switched_on_the_survey_starts_as_before(photo, monkeypatch):
     looks = await _looks(s3, metadata, plots, start=True)
     assert len(started) == 1 and started[0][2] == SCOPE and started[0][1].endswith(metadata["cog_key"])
     assert looks.survey is None and looks.survey_job.state == "running"  # the cards wait for the looks
+
+
+# --- The fingerprint job, which names the unchecked plots with the survey off -----------------------------------
+
+MODEL_FAILURE = f"the fingerprint model in storage ({crop_fingerprints.MODEL_KEY}) does not match its sha256"
+
+
+def _model_fails(monkeypatch, wait: threading.Event | None = None) -> None:
+    """The fingerprint job's first step (crop_fingerprints.ensure_model) raises as it does when the model in storage
+    is missing or does not match its sha256; with `wait`, only once it is set (the job runs meanwhile)."""
+    def ensure_model(store, bucket):
+        if wait is not None:
+            wait.wait(10)
+        raise RuntimeError(MODEL_FAILURE)
+
+    monkeypatch.setattr(crop_fingerprints, "ensure_model", ensure_model)
+
+
+async def _settled(key: str) -> background_jobs.Job | None:
+    for _ in range(500):
+        job = crop_fingerprints.job(key)
+        if job is None or job.state != "running":
+            return job
+        await asyncio.sleep(0.01)
+    raise AssertionError("the fingerprint job never finished")
+
+
+async def _switched_off_without_fingerprints(photo, monkeypatch):
+    s3, metadata, plots, plot_set = photo
+    s3.objects.clear()  # no fingerprints kept
+    await _named(s3, plot_set)
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    _no_model(monkeypatch)
+    return s3, metadata, plots, crop_fingerprints.store_key(metadata["cog_key"], plots)
+
+
+async def test_switched_off_the_running_fingerprint_job_reaches_the_cards_and_sage(photo, monkeypatch):
+    s3, metadata, plots, key = await _switched_off_without_fingerprints(photo, monkeypatch)
+    release = threading.Event()
+    _model_fails(monkeypatch, wait=release)
+    try:
+        looks = await _looks(s3, metadata, plots, start=True)
+        assert looks.fingerprinted is None and looks.fingerprint_job.state == "running"
+        assert looks.survey_job is None
+        named = {n: look.main_crop for n, look in looks.survey.looks.items() if look.main_crop != "unsure"}
+        assert named == CHECKS  # meanwhile only the checked plots are named
+        assert (await _looks(s3, metadata, plots, start=False)).fingerprint_job.state == "running"
+    finally:
+        release.set()
+    assert (await _settled(key)).state == "failed"
+
+
+async def test_switched_off_a_failed_fingerprint_job_reaches_the_cards_and_opening_a_card_retries_it(
+        photo, monkeypatch):
+    s3, metadata, plots, key = await _switched_off_without_fingerprints(photo, monkeypatch)
+    _model_fails(monkeypatch)
+    assert (await _looks(s3, metadata, plots, start=True)).fingerprint_job.state == "running"
+    assert (await _settled(key)).error == MODEL_FAILURE
+    looks = await _looks(s3, metadata, plots, start=True)  # the deck does not start it again
+    assert looks.fingerprinted is None
+    assert (looks.fingerprint_job.state, looks.fingerprint_job.error) == ("failed", MODEL_FAILURE)
+    retried = await photo_context.plot_looks(s3, BUCKET, metadata, plots, PROJECT, place=None, scope=SCOPE,
+                                             start=True, retry_failed=True)  # opening a card does
+    assert retried.fingerprint_job.state == "running"
+    assert (await _settled(key)).state == "failed"
+
+
+async def test_fingerprints_kept_for_no_plot_are_not_missing(photo, monkeypatch):
+    s3, metadata, plots, _ = photo
+    key = crop_fingerprints.store_key(metadata["cog_key"], plots)
+    s3.objects[crop_fingerprints._object_key(key)] = crop_fingerprints._to_bytes({})  # no plot held a whole square
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    _no_model(monkeypatch)
+    looks = await _looks(s3, metadata, plots, start=True)
+    assert (looks.fingerprinted, looks.fingerprint_job) == (0, None)  # done, nothing to start again

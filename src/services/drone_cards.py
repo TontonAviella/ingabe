@@ -168,6 +168,11 @@ class Here:
     # How the crop calls agree with the plots people named from the drone pictures (each with its own name hidden):
     # agreement with people's reading of the pictures, not a check in the field.
     picture_record: Optional[field_checks.Record] = None
+    # Plots with a kept fingerprint (None: none kept yet; 0: kept, but no plot holds a whole square) and the job
+    # making them (running or failed; None when not started) while none are kept. Read only with the looks off:
+    # then a plot nobody checked is named from its fingerprint or not at all.
+    fingerprinted: Optional[int] = None
+    fingerprint_job: Optional[background_jobs.Job] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
 
 
@@ -463,11 +468,52 @@ _LOOK_ONLY_CARDS = {
 CANT_TELL_WORDS = "Can't tell yet from this photo."
 
 
+def _fingerprints_pending(here: Here) -> bool:
+    """With the looks off and no plot fingerprinted yet, only the checked plots can be named."""
+    return not here.vision_looks and not here.fingerprinted
+
+
+def _running(job: Optional[background_jobs.Job]) -> bool:
+    return job is not None and job.state == "running"
+
+
+def _names_unchecked(here: Here) -> bool:
+    """Whether plots nobody checked can be named from how they look: by the looks or kept fingerprints, or once the
+    fingerprints being made are kept."""
+    return not _fingerprints_pending(here) or _running(here.fingerprint_job)
+
+
+def _fingerprint_job_words(here: Here) -> str:
+    """With the looks off and no plot fingerprinted yet: where naming the plots from how they look stands."""
+    job = here.fingerprint_job
+    if here.fingerprinted == 0:
+        return (f"No plot holds a whole {crop_fingerprints.SIDE_M:g} m square, so none can be compared by how it "
+                "looks.")
+    if job is None:
+        return "Ingabe has not compared how the plots look yet."
+    if job.state == "failed":
+        return "Naming plots from their look did not work this time."
+    left = job.minutes_left
+    if not job.parts_done:
+        return "Ingabe is comparing how each plot looks. It takes a few minutes."
+    return (f"Ingabe is comparing how each plot looks ({job.parts_done} of {job.parts} plots done"
+            + (f", about {left} minute{'s' if left != 1 else ''} left)." if left is not None else ")."))
+
+
+def _naming_promise(here: Here) -> str:
+    """What naming a few plots leads to, said only while it can come true."""
+    return (f" Once {crop_fingerprints.MIN_EXAMPLES} plots of a crop are named, Ingabe names the plots that look like "
+            "them." if _names_unchecked(here) else "")
+
+
 def _survey_status(here: Here) -> str:
-    if here.survey is not None:
+    if here.survey is None:
+        jobs = (here.plot_job, here.survey_job)
+    elif not _fingerprints_pending(here):
         return READY
-    running = [job for job in (here.plot_job, here.survey_job) if job is not None and job.state == "running"]
-    return WORKING if running else PARTLY
+    else:  # the looks are off and no plot has a fingerprint yet: only the checked plots are named
+        jobs = (here.fingerprint_job,)
+    return WORKING if any(_running(job) for job in jobs) else PARTLY
 
 
 def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
@@ -526,6 +572,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     if card_id in _SURVEY_CARDS:
         if here.survey is None or plots is None:
             return _survey_job_words(here)
+        if card_id == "crop_types" and _fingerprints_pending(here) and here.fingerprint_job is not None:
+            return _fingerprint_job_words(here)
         return _survey_preview(card_id, plots, here.survey)
     if card_id == "plots_green" and plots is not None:
         least = _least_green(plots)
@@ -1112,7 +1160,8 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
         because = ([f"Named only in the {named} plot{'s' if named != 1 else ''} checked on the ground"] if named
                    else ["No plot is checked on the ground yet"])
         because.append(f"The other plots are named once {crop_fingerprints.MIN_EXAMPLES} plots of their crop are "
-                       "named and they look alike")
+                       "named and they look alike" if _names_unchecked(here)
+                       else _fingerprint_job_words(here).rstrip("."))
         return _how_sure("high" if named else "low", because + extra,
                          "Say what really grows in the plots listed below.")
     if fingerprinted:
@@ -1198,9 +1247,7 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
 
     return {
         "title": "What really grows here?",
-        "detail": ("Tap the crop you find in each plot. Once "
-                   f"{crop_fingerprints.MIN_EXAMPLES} plots of a crop are named, Ingabe names the plots that look like them."
-                   if named_by_checks else
+        "detail": ("Tap the crop you find in each plot." + _naming_promise(here) if named_by_checks else
                    "Tap the crop you find in each plot. Your answer replaces the model's, and shows how often it is right."),
         "plots": [{**_plot_item(analysis, p, guess(look)), "number": p["number"]} for p, look in chosen],
         "options": [{"id": c, "label": drone_vision.CROP_LABELS[c]} for c in field_checks.CHECK_CROPS],
@@ -1299,7 +1346,7 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
                 + (f" {unsure} plots are 'not sure' rather than a guess." if unsure else ""))
     elif named_by_checks:
         what = (f"No crop is named yet in the {len(pairs)} plots: Ingabe names a plot's crop from the plots people "
-                "check on the ground, and then the plots that look like them.")
+                "check on the ground" + (", and then the plots that look like them." if _names_unchecked(here) else "."))
     else:
         what = f"No crop could be named with certainty in the {len(pairs)} plots looked at."
     if here.checked:
@@ -1307,6 +1354,9 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     mixed = sum(1 for _, look in pairs if look.other_crops)
     if mixed:
         what += f" {mixed} plot{'s' if mixed != 1 else ''} look{'s' if mixed == 1 else ''} intercropped."
+    pending, job = _fingerprints_pending(here), here.fingerprint_job
+    if pending:
+        what += " " + _fingerprint_job_words(here)
     looks = {p["number"]: look for p, look in pairs}
     features = []
     for f in plots.geojson["features"]:
@@ -1335,16 +1385,18 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         why = "A crop label per plot lets stage, greenness and yield be compared within the same crop."
     else:
         why = "Knowing what grows where lets every answer talk about your crop: its stage, its needs, its harvest."
-    todo = ("Walk to the plots listed below and tap what you find. Once "
-            f"{crop_fingerprints.MIN_EXAMPLES} plots of a crop are named, Ingabe names the plots that look like them."
-            if named_by_checks else
+    todo = ("Walk to the plots listed below and tap what you find." + _naming_promise(here) if named_by_checks else
             "Walk to the plots listed below and tap what you find: the 'not sure' plots first. Each answer "
             "replaces the model's guess and shows how often it is right.")
+    if pending and job is not None and job.state == "failed":
+        todo = "Open this question again to try once more. " + todo
+    progress = ({"done": job.parts_done, "parts": job.parts, "minutes_left": job.minutes_left}
+                if pending and job is not None and job.state == "running" else None)
     return _answer(
         "crop_types", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, unsure, [], here, crops=True),
         terms=["vision_model"] if here.vision_looks else [], audience=audience, overlay=overlay, facts=facts,
-        downloads=_plot_downloads(analysis), choices=_plot_choices(analysis, here),
+        downloads=_plot_downloads(analysis), progress=progress, choices=_plot_choices(analysis, here),
         field_check=_field_check(analysis, plots, survey, here))
 
 

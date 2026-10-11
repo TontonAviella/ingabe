@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import time
 
 import numpy as np
 import pytest
@@ -558,9 +559,11 @@ def test_the_vision_model_is_named_from_its_setting(photo, monkeypatch, model, b
 LOOK_ONLY = ("plot_problems", "plot_stage", "weeds")
 
 
-def _no_looks(plots, crops=None, checks=None):
-    """The looks with the survey off: crops named by fingerprint calls (crops[i] for plot i + 1; "unsure" for none)
-    and then by ground checks, as photo_context.plot_looks makes them."""
+def _no_looks(plots, crops=None, checks=None, *, fingerprinted=None, job=None):
+    """The looks with the survey off: crops named by fingerprint calls (crops[i] for plot i + 1; "unsure" for none;
+    every plot then has a fingerprint) and then by ground checks, as photo_context.plot_looks makes them. Without
+    calls, `fingerprinted` (plots with a kept fingerprint; None: none kept) and `job` (the fingerprint job) say
+    where the fingerprints stand."""
     from src.services import crop_fingerprints, field_checks
 
     survey = drone_vision.no_looks(plots)
@@ -570,10 +573,12 @@ def _no_looks(plots, crops=None, checks=None):
                                                    neighbours=())
                  for i, c in enumerate(crops)}
         survey = crop_fingerprints.apply(survey, calls)
+        fingerprinted = len(crops)
     checks = {n: field_checks.Check(number=n, crop=c, at="2026-10-11") for n, c in (checks or {}).items()}
     return drone_cards.Here(plots=plots, survey=field_checks.apply(survey, checks), vision_looks=False,
                             checked=frozenset(checks),
-                            record=field_checks.model_record(survey, checks) if checks else None)
+                            record=field_checks.model_record(survey, checks) if checks else None,
+                            fingerprinted=fingerprinted, fingerprint_job=job)
 
 
 def test_with_the_looks_off_crop_types_are_named_from_the_fingerprints(photo):
@@ -610,7 +615,14 @@ def test_with_the_looks_off_stage_weeds_and_problems_say_they_cannot_tell(photo,
         assert crop["terms"] == []
 
 
-def test_with_the_looks_off_and_no_fingerprint_calls_only_checked_plots_are_named(photo):
+def _fingerprint_job(state, parts_done=3, parts=10):
+    """The fingerprint job as background_jobs keeps it: running a minute so far, or failed as ensure_model fails."""
+    return background_jobs.Job(state=state, parts_done=parts_done, parts=parts, started=time.time() - 60,
+                               error=None if state == "running" else
+                               "the fingerprint model in storage (models/x.pt) does not match its sha256")
+
+
+def test_with_the_looks_off_while_the_fingerprints_are_made_only_checked_plots_are_named(photo):
     plots = _plot_set()
     for f in plots.geojson["features"]:
         p = f["properties"]
@@ -618,9 +630,9 @@ def test_with_the_looks_off_and_no_fingerprint_calls_only_checked_plots_are_name
             p["group"], p["area_ha"] = drone_plots.MOSTLY_SOIL, 2.0
         if p["number"] == 10:
             p["area_ha"] = 1.5
-    here = _no_looks(plots, checks={1: "maize", 2: "beans"})
+    here = _no_looks(plots, checks={1: "maize", 2: "beans"}, job=_fingerprint_job("running"))
     answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
-    assert answer["status"] == drone_cards.READY
+    assert answer["status"] == drone_cards.WORKING
     assert answer["what"].startswith("The crop is named in 2 of 10 plots: maize in 1 plot")
     assert answer["how_sure"]["level"] == "high"
     assert answer["how_sure"]["because"][0] == "Named only in the 2 plots checked on the ground"
@@ -632,14 +644,100 @@ def test_with_the_looks_off_and_no_fingerprint_calls_only_checked_plots_are_name
 
 def test_with_the_looks_off_and_nothing_named_the_crop_card_asks_for_names(photo):
     plots = _plot_set()
-    here = _no_looks(plots)
+    here = _no_looks(plots, fingerprinted=10)  # every plot fingerprinted, none checked: nothing to name them from
     answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
-    assert answer["what"].startswith("No crop is named yet in the 10 plots")
+    assert answer["status"] == drone_cards.READY and answer["progress"] is None
+    assert answer["what"] == ("No crop is named yet in the 10 plots: Ingabe names a plot's crop from the plots people "
+                              "check on the ground, and then the plots that look like them.")
     assert answer["how_sure"]["level"] == "low" and answer["how_sure"]["because"][0] == "No plot is checked on the ground yet"
     assert answer["field_check"]["plots"]
     deck = drone_cards.build_deck(_analysis(photo), "farmer", here)
     preview = next(c for s in deck["services"] for c in s["cards"] if c["id"] == "crop_types")["preview"]
     assert preview == "No crop named yet: say what grows in a few plots."
+
+
+PROMISES = ("look like them", "look alike")  # the promise that plots like the named ones get named
+
+
+def _crop_card(photo, here):
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    card = next(c for s in drone_cards.build_deck(_analysis(photo), "farmer", here)["services"] for c in s["cards"]
+                if c["id"] == "crop_types")
+    promised = json.dumps([answer["what"], answer["todo"], answer["how_sure"], answer["field_check"]])
+    return answer, card, any(words in promised for words in PROMISES)
+
+
+def test_with_the_looks_off_the_crop_card_shows_the_fingerprints_being_made(photo):
+    here = _no_looks(_plot_set(), checks={1: "maize", 2: "beans"}, job=_fingerprint_job("running"))
+    answer, card, promised = _crop_card(photo, here)
+    words = "Ingabe is comparing how each plot looks (3 of 10 plots done, about 2 minutes left)."
+    assert answer["status"] == card["status"] == drone_cards.WORKING  # the deck and the answer refresh themselves
+    assert card["preview"] == words and answer["what"].endswith(" " + words)
+    assert answer["progress"] == {"done": 3, "parts": 10, "minutes_left": 2}
+    assert promised and answer["how_sure"]["because"][1].startswith("The other plots are named once 3 plots")
+    assert not answer["todo"].startswith("Open this question again")
+
+
+def test_with_the_looks_off_the_crop_card_says_the_fingerprints_just_started(photo):
+    here = _no_looks(_plot_set(), checks={1: "maize"}, job=_fingerprint_job("running", parts_done=0, parts=1))
+    answer, card, promised = _crop_card(photo, here)
+    assert card["preview"] == "Ingabe is comparing how each plot looks. It takes a few minutes."
+    assert answer["status"] == drone_cards.WORKING and promised and "0 of 1" not in answer["what"]
+
+
+def test_with_the_looks_off_a_failed_fingerprint_job_is_said_plainly_and_nothing_is_promised(photo):
+    here = _no_looks(_plot_set(), checks={1: "maize", 2: "beans"}, job=_fingerprint_job("failed"))
+    answer, card, promised = _crop_card(photo, here)
+    failed = "Naming plots from their look did not work this time."
+    assert answer["status"] == card["status"] == drone_cards.PARTLY  # never "Answer ready" with naming broken
+    assert card["preview"] == failed and answer["what"].endswith(" " + failed)
+    assert answer["what"].startswith("The crop is named in 2 of 10 plots")  # the checked plots still show
+    assert not promised
+    assert answer["how_sure"]["because"][:2] == ["Named only in the 2 plots checked on the ground", failed.rstrip(".")]
+    assert answer["todo"] == "Open this question again to try once more. Walk to the plots listed below and tap what you find."
+    assert answer["progress"] is None
+    assert answer["field_check"]["detail"] == "Tap the crop you find in each plot."
+    assert answer["field_check"]["plots"]  # people can still name plots
+
+
+def test_with_the_looks_off_and_nothing_named_a_failed_job_is_not_hidden(photo):
+    here = _no_looks(_plot_set(), job=_fingerprint_job("failed"))
+    answer, _, promised = _crop_card(photo, here)
+    assert answer["what"] == ("No crop is named yet in the 10 plots: Ingabe names a plot's crop from the plots people "
+                              "check on the ground. Naming plots from their look did not work this time.")
+    assert not promised and answer["status"] == drone_cards.PARTLY
+
+
+@pytest.mark.parametrize("fingerprinted, words", [
+    (None, "Ingabe has not compared how the plots look yet."),  # Sage reads the cards without starting jobs
+    (0, "No plot holds a whole 4.5 m square, so none can be compared by how it looks."),
+])
+def test_with_the_looks_off_and_no_fingerprints_to_come_nothing_is_promised(photo, fingerprinted, words):
+    here = _no_looks(_plot_set(), checks={1: "maize", 2: "maize"}, fingerprinted=fingerprinted)
+    answer, card, promised = _crop_card(photo, here)
+    assert answer["status"] == card["status"] == drone_cards.PARTLY
+    assert answer["what"].endswith(" " + words) and not promised and answer["progress"] is None
+    assert card["preview"] == "Mostly maize (2 plots)."  # no job to report on: what is named
+    assert not answer["todo"].startswith("Open this question again")
+
+
+def test_with_the_looks_off_and_the_fingerprints_kept_the_card_is_ready_without_job_words(photo):
+    here = _no_looks(_plot_set(), ["maize"] * 5 + ["unsure"] * 5, checks={1: "maize"})
+    answer, card, _ = _crop_card(photo, here)
+    assert answer["status"] == card["status"] == drone_cards.READY and answer["progress"] is None
+    assert not any(w in answer["what"] for w in ("comparing", "did not work", "has not compared"))
+
+
+def test_with_the_looks_on_the_fingerprint_job_changes_nothing(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 6 + ["unsure"] * 4))
+    analysis = _analysis(photo)
+    for job in (_fingerprint_job("failed"), _fingerprint_job("running")):
+        with_job = dataclasses.replace(here, fingerprint_job=job)
+        for card_id in ("crop_types",) + LOOK_ONLY:
+            assert drone_cards.answer_card(card_id, analysis, "farmer", with_job) == \
+                drone_cards.answer_card(card_id, analysis, "farmer", here)
+        assert drone_cards.build_deck(analysis, "farmer", with_job) == drone_cards.build_deck(analysis, "farmer", here)
 
 
 def test_with_the_looks_on_nothing_changes_for_the_stage_weeds_and_problems_cards(photo):
