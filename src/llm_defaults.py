@@ -82,3 +82,21 @@ def usage_extra_body(base_url: Any) -> dict[str, Any]:
     OpenRouter adds the cost when asked with its `usage` field. Other providers report tokens without it, and
     Google's OpenAI-compatible endpoint rejects it ("Unknown name \"usage\"", HTTP 400, 2026-10-10)."""
     return {"usage": {"include": True}} if "openrouter.ai" in str(base_url or "") else {}
+
+
+# Anthropic's OpenAI-compatible endpoint ignores `reasoning_effort` and refuses adaptive thinking ("Adaptive
+# thinking is not available via the OpenAI compatibility endpoint", HTTP 400, 2026-10-10); it takes a fixed
+# thinking budget, which must fit under max_tokens with room left for the answer.
+ANTHROPIC_THINKING_BUDGET = {"low": 1024, "medium": 4000, "high": 8000}
+ANTHROPIC_ANSWER_TOKENS = 4096
+
+
+def thinking_kwargs(base_url: Any, effort: str) -> dict[str, Any]:
+    """Request fields that ask the provider to think at `effort` ("low", "medium", "high") before answering,
+    with the fields that report the call's cost (usage_extra_body) already in `extra_body`."""
+    extra_body = usage_extra_body(base_url)
+    if "api.anthropic.com" in str(base_url or ""):
+        budget = ANTHROPIC_THINKING_BUDGET[effort]
+        return {"max_tokens": budget + ANTHROPIC_ANSWER_TOKENS,
+                "extra_body": {**extra_body, "thinking": {"type": "enabled", "budget_tokens": budget}}}
+    return {"reasoning_effort": effort, "extra_body": extra_body}
