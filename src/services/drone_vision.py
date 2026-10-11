@@ -311,7 +311,7 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
         )
-        cost = llm_cache.record(f"vision_{name}", response.usage)
+        cost = llm_cache.record(f"vision_{name}", response.usage, model)
         return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}
 
     # The same pictures with the same instructions (a survey run again, plots found again) cost nothing.

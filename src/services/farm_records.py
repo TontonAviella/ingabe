@@ -217,7 +217,7 @@ async def read_document(content: bytes, filename: str, content_type: str) -> tup
             response_format={"type": "json_schema", "json_schema": {"name": "farm_document", "strict": True,
                                                                     "schema": _SCHEMA}},
         )
-        llm_cache.record("document", response.usage)
+        llm_cache.record("document", response.usage, model)
         return json.loads(response.choices[0].message.content or "{}")
 
     # The same file read again (another upload, another project) costs nothing.

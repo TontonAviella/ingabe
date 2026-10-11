@@ -9,6 +9,9 @@ Two savings, both measured on GPT-6 Luna through OpenRouter (2026-10-07):
   at about a tenth of the input price (3,232 cached tokens cost $0.000036 against $0.00041). Writing the
   cache costs 25% more than plain input, once. Callers put the fixed text first and the changing parts
   (pictures, the question) last; `record` logs how much of each prompt came from the cache.
+
+What a call cost comes from the provider when it says (OpenRouter's usage `cost`); Anthropic's OpenAI-compatible
+endpoint says nothing, so its calls are priced here from their tokens and the published per-model prices.
 """
 
 from __future__ import annotations
@@ -25,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 _STORE_PREFIX = "llm_cache/v1"
 
+# USD per million tokens (input, output), from Anthropic's price list (2026-10). Haiku 5.5 charges more once a
+# prompt passes 100k tokens. Used only when the provider sends no cost of its own.
+_LONG_PROMPT_TOKENS = 100_000
+_PRICES_PER_MILLION: dict[str, tuple[tuple[float, float], Optional[tuple[float, float]]]] = {
+    "claude-haiku-5-5": ((0.10, 0.50), (0.50, 2.50)),
+    "claude-sonnet-5-5": ((2.0, 10.0), None),
+    "claude-opus-5-5": ((4.0, 20.0), None),
+}
+
 
 @dataclass
 class Spend:
@@ -33,6 +45,7 @@ class Spend:
     calls: int = 0
     kept: int = 0  # answers served from the store, free
     cost_usd: float = 0.0
+    unpriced: int = 0  # calls whose cost nobody could tell (no provider cost, no known price)
     prompt_tokens: int = 0
     cached_tokens: int = 0  # prompt tokens served from the provider's cache
     output_tokens: int = 0
@@ -52,19 +65,40 @@ def _field(obj: Any, name: str) -> Any:
     return value
 
 
-def record(kind: str, usage: Any) -> float:
-    """Count one call's usage under `kind` and log it; returns its cost in USD (0 when the provider gave none)."""
-    cost = float(_field(usage, "cost") or 0)
+def price(model: Optional[str], prompt_tokens: int, output_tokens: int) -> Optional[float]:
+    """What a call cost in USD from its tokens and the model's published prices; None for a model with no known price.
+    A model id with a date suffix ("claude-haiku-5-5-20261001") is priced as its base model."""
+    if not model:
+        return None
+    name = model.split("/")[-1]
+    prices = next((p for base, p in _PRICES_PER_MILLION.items() if name == base or name.startswith(base + "-")), None)
+    if prices is None:
+        return None
+    short, long = prices
+    per_input, per_output = long if long is not None and prompt_tokens > _LONG_PROMPT_TOKENS else short
+    return (prompt_tokens * per_input + output_tokens * per_output) / 1_000_000
+
+
+def record(kind: str, usage: Any, model: Optional[str] = None) -> float:
+    """Count one call's usage under `kind` and log it; returns its cost in USD. The provider's own cost wins; without
+    it the cost is priced from the tokens (`price`). A call nobody can price counts as unpriced and returns 0."""
     prompt = int(_field(usage, "prompt_tokens") or 0)
     details = _field(usage, "prompt_tokens_details")
     cached = int(_field(details, "cached_tokens") or 0)
     output = int(_field(usage, "completion_tokens") or 0)
+    reported = _field(usage, "cost")
+    cost = float(reported) if reported is not None else price(model, prompt, output)
     spend = _spent.setdefault(kind, Spend())
     spend.calls += 1
-    spend.cost_usd += cost
     spend.prompt_tokens += prompt
     spend.cached_tokens += cached
     spend.output_tokens += output
+    if cost is None:
+        spend.unpriced += 1
+        logger.info("llm %s: cost unknown (no price for %s), prompt %d tokens (%d from the provider's cache), output %d",
+                    kind, model, prompt, cached, output)
+        return 0.0
+    spend.cost_usd += cost
     logger.info("llm %s: $%.5f, prompt %d tokens (%d from the provider's cache), output %d", kind, cost, prompt, cached,
                 output)
     return cost

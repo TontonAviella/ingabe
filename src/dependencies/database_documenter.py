@@ -25,7 +25,7 @@ async def _kept_answer(client: AsyncOpenAI, chat_args: dict, messages: list[dict
         response = await client.chat.completions.create(
             **chat_args, messages=messages,
             extra_body={**(chat_args.get("extra_body") or {}), **usage_extra_body(client.base_url)})
-        llm_cache.record("database_docs", response.usage)
+        llm_cache.record("database_docs", response.usage, chat_args.get("model"))
         return {"text": response.choices[0].message.content or ""}
 
     kept, _ = await llm_cache.answer("database_docs", llm_cache.key_of(str(chat_args.get("model")), messages), ask)

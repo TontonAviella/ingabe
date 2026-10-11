@@ -455,7 +455,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
             max_tokens=400,
             extra_body=usage_extra_body(client.base_url),
         )
-        llm_cache.record("brain_query_expansion", resp.usage)
+        llm_cache.record("brain_query_expansion", resp.usage, endpoint.model)
         return {"text": resp.choices[0].message.content or ""}
 
     try:

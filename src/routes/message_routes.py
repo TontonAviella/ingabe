@@ -508,7 +508,7 @@ async def label_conversation_inline(conversation_id: int):
                     temperature=0.3,
                     extra_body=usage_extra_body(openai_client.base_url),
                 )
-                llm_cache.record("chat_title", response.usage)
+                llm_cache.record("chat_title", response.usage, title_model)
                 return {"title": response.choices[0].message.content or ""}
 
             # Chats that start the same way (an Ask Sage question from a card) get their title for free.
@@ -978,7 +978,7 @@ async def _run_abdication_guard(
             **{**attempt_kwargs, "tools": tools, "tool_choice": "required",
                "extra_body": {**(attempt_kwargs.get("extra_body") or {}), **usage_extra_body(client.base_url)}}, stream=False,
         )
-        llm_cache.record("sage_guard", getattr(response, "usage", None))
+        llm_cache.record("sage_guard", getattr(response, "usage", None), attempt_kwargs.get("model"))
     except Exception:
         logger.warning("sage_routing: abdication guard retry failed; keeping the prose answer", exc_info=True)
         return {}
@@ -2563,7 +2563,7 @@ async def process_chat_interaction_task(
                             )
                             async for chunk in stream:
                                 if getattr(chunk, "usage", None):
-                                    llm_cache.record("sage", chunk.usage)
+                                    llm_cache.record("sage", chunk.usage, _attempt_kwargs.get("model"))
                                 if not chunk.choices:
                                     continue
                                 _generation.first_token()
