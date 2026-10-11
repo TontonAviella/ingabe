@@ -28,6 +28,7 @@ from src.utils import (
     generate_id,
     s3_op,
 )
+from src.upload.keys import upload_key
 from src.upload.models import InternalLayerUploadResponse
 from src.dependencies.base_map import BaseMapProvider
 from src.postgis_tiles import MVT_LAYER_NAME
@@ -335,7 +336,7 @@ async def internal_upload_layer(
 
         metadata_dict = {"original_filename": filename}
         layer_id = generate_id(prefix="L")
-        s3_key = f"uploads/{user_id}/{project_id}/{layer_id}{file_ext}"
+        s3_key = upload_key(user_id, project_id, layer_id, file_ext)
         s3_client = await get_async_s3_client()
 
         # Stream file to temp disk (never buffer entire file in RAM)
@@ -371,11 +372,11 @@ async def internal_upload_layer(
 
             # Apply any path/key/ext overrides from preprocessing
             upload_path = result.updated_temp_file_path or temp_file_path
-            upload_key = result.updated_s3_key or s3_key
-            ctx.s3_key = upload_key
+            stored_key = result.updated_s3_key or s3_key
+            ctx.s3_key = stored_key
 
             # Phase 2: Upload to S3
-            await s3_op(s3_client.upload_file(upload_path, bucket_name, upload_key, Config=one_shot_config),
+            await s3_op(s3_client.upload_file(upload_path, bucket_name, stored_key, Config=one_shot_config),
                         "upload", f"layer {ctx.layer_id}")
 
             # Phase 3 + 4: Create layer rows and update map in a single transaction

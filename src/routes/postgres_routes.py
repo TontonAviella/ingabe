@@ -78,6 +78,7 @@ redis = get_redis_client()
 
 
 # Upload models — imported from src.upload.models (canonical location)
+from src.upload.keys import NotYourUpload, check_upload_key, upload_key  # noqa: E402
 from src.upload.models import (  # noqa: E402
     VectorProcessingResult,
 )
@@ -853,7 +854,7 @@ async def presign_layer_upload(
     user_id = session.get_user_id()
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
-    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+    s3_key = upload_key(user_id, forked_map.project_id, layer_id, file_ext)
 
     s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
     upload_url = await s3_client.generate_presigned_url(
@@ -959,6 +960,15 @@ async def _r2_delete_object(s3_key: str):
         )
 
 
+def _own_upload(s3_key: str, session: UserContext, *, project_id: Optional[str] = None,
+                layer_id: Optional[str] = None) -> None:
+    """403 unless `s3_key` is the caller's own upload (of this project and layer when given)."""
+    try:
+        check_upload_key(s3_key, session.get_user_id(), project_id=project_id, layer_id=layer_id)
+    except NotYourUpload as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+
+
 @router.post(
     "/{original_map_id}/upload-multipart-init",
     response_model=MultipartInitResponse,
@@ -978,7 +988,7 @@ async def init_multipart_upload(
     user_id = session.get_user_id()
     file_ext = os.path.splitext(filename)[1].lower() or ".bin"
     layer_id = generate_id(prefix="L")
-    s3_key = f"uploads/{user_id}/{forked_map.project_id}/{layer_id}{file_ext}"
+    s3_key = upload_key(user_id, forked_map.project_id, layer_id, file_ext)
 
     total_parts = max(1, -(-file_size // MULTIPART_CHUNK_SIZE))  # ceil division
 
@@ -1024,6 +1034,7 @@ async def presign_multipart_parts(
     body: MultipartPresignRequest,
     session: UserContext = Depends(verify_session_required),
 ):
+    _own_upload(body.s3_key, session)
     s3_client, bucket_name = await _get_browser_upload_presign_client_and_bucket()
 
     urls = {}
@@ -1065,6 +1076,7 @@ async def upload_multipart_part(
     """
     if part_number < 1:
         raise HTTPException(status_code=400, detail="part_number must be >= 1")
+    _own_upload(s3_key, session)
 
     body = await request.body()
     if not body:
@@ -1101,6 +1113,7 @@ async def get_multipart_upload_status(
     a hint, S3 is the source of truth. If the upload was aborted or expired,
     returns exists=false so the client can clear its local state.
     """
+    _own_upload(s3_key, session)
     s3_client, bucket_name = await _get_upload_client_and_bucket()
 
     try:
@@ -1144,6 +1157,7 @@ async def complete_multipart_upload(
     import time
 
     started_at = time.monotonic()
+    _own_upload(body.s3_key, session, layer_id=body.layer_id)
     s3_client, bucket_name = await _get_upload_client_and_bucket()
 
     parts = [
@@ -1691,6 +1705,7 @@ async def complete_layer_upload(
 
     started_at = time.monotonic()
     user_id = session.get_user_id()
+    _own_upload(body.s3_key, session, project_id=mundi_map.project_id, layer_id=body.layer_id)
     bucket_name = get_bucket_name()
     s3_client = await get_async_s3_client()
 
@@ -1824,11 +1839,11 @@ async def complete_layer_upload(
 
             # If preprocessing changed the file, re-upload the new version
             upload_path = result.updated_temp_file_path or tmp_path
-            upload_key = result.updated_s3_key or body.s3_key
+            stored_key = result.updated_s3_key or body.s3_key
             if result.updated_temp_file_path or result.updated_s3_key:
-                ctx.s3_key = upload_key
+                ctx.s3_key = stored_key
                 await s3_op(
-                    s3_client.upload_file(upload_path, bucket_name, upload_key, Config=one_shot),
+                    s3_client.upload_file(upload_path, bucket_name, stored_key, Config=one_shot),
                     "re-upload", f"layer {body.layer_id}",
                 )
 
@@ -1881,7 +1896,7 @@ async def complete_layer_upload(
             background_tasks.add_task(
                 _background_generate_cog,
                 primary_id,
-                upload_key,
+                stored_key,
                 background_seed_path,
                 background_seed_dir,
             )
