@@ -145,6 +145,7 @@ class PlotLook:
     confidence: str
     candidates: tuple[str, ...] = ()  # when the two looks named different crops: both, for a field check
     evidence: str = ""  # what the first look says it saw
+    source: str = "vision"  # what named the crop: "vision" (the looks) or "fingerprints" (crop_fingerprints)
 
 
 @dataclass(frozen=True)

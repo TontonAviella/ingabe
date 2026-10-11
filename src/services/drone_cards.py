@@ -40,6 +40,7 @@ from shapely.ops import transform as reproject, unary_union
 
 from src.services import (
     background_jobs,
+    crop_fingerprints,
     drone_first_look,
     drone_plots,
     drone_vision,
@@ -158,6 +159,9 @@ class Here:
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
     checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground (already in `survey`)
     record: Optional[field_checks.Record] = None  # how the model did on those plots
+    # How the crop calls agree with the plots people named from the drone pictures (each with its own name hidden):
+    # agreement with people's reading of the pictures, not a check in the field.
+    picture_record: Optional[field_checks.Record] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
 
 
@@ -1055,7 +1059,21 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
                      crops: bool = False) -> dict[str, Any]:
     model = survey.model.split('/')[-1]
     record = here.record
-    if crops:
+    fingerprinted = crops and any(look.source == "fingerprints" for look in survey.looks.values())
+    if fingerprinted:
+        because = [f"Each plot compared with the plots people named, on the ground or from the drone pictures "
+                   f"({crop_fingerprints.MODEL_NAME}): a crop is named only when the "
+                   f"{crop_fingerprints.NEIGHBOURS} most similar named plots mostly agree and at least "
+                   f"{crop_fingerprints.MIN_EXAMPLES} plots of that crop are named"]
+        if unsure:
+            because.append(f"{unsure} plots stay 'not sure': unlike the named plots, too few plots of their crop "
+                           "named, or too small to compare")
+        pictures = here.picture_record
+        if pictures is not None and pictures.named:
+            because.append(f"Agrees with the plots people named from the drone pictures in {pictures.right} of "
+                           f"{pictures.named} (each judged with its own name hidden); that is agreement with "
+                           "people's reading of the pictures, not a check in the field")
+    elif crops:
         because = [f"Two separate looks by an AI vision model ({model}) at each plot; a crop is named only where "
                    "both looks name the same one"]
         if unsure:
@@ -1067,7 +1085,8 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
         because.append("Not checked against what is really in the plots")
         return _how_sure(level, because + extra, "Walk to the plots listed and look: a close-up phone photo helps.")
     if record is not None and record.named:
-        because.append(f"Checked on the ground: the model was right in {record.right} of {record.named} plots")
+        because.append(f"Checked on the ground: the model was right in {record.right} of {record.named} plots"
+                       + (" (each judged with its own check hidden)" if fingerprinted else ""))
         share = record.share or 0
         if record.named >= FIELD_CHECKS_FOR_HIGH and share >= 0.95:
             level = "high"
@@ -1098,6 +1117,16 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
         return None
 
     def guess(look: drone_vision.PlotLook) -> str:
+        if look.source == "fingerprints":
+            if look.main_crop != "unsure":
+                return f"Looks most like the plots people named {_crop_words(look.main_crop)}."
+            if len(look.candidates) > 1:
+                return (" or ".join(_crop_words(c) for c in look.candidates).capitalize()
+                        + "? Its most similar named plots disagree.")
+            if look.candidates:
+                return (f"{_crop_words(look.candidates[0]).capitalize()}? Too few "
+                        f"{_crop_words(look.candidates[0])} plots are named to name it.")
+            return "Not like any named plot yet."
         if len(look.candidates) > 1:
             return " or ".join(_crop_words(c) for c in look.candidates).capitalize() + "? The two looks disagreed."
         if look.candidates:
