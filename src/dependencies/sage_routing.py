@@ -286,7 +286,8 @@ def detect_small_talk(text: str) -> bool:
 # antene = antenna, itumanaho = telecommunication); the French and Kinyarwanda terms need native-speaker review.
 # "sector" alone is not here: it is also Rwanda's umurenge. Antenna sectors are found by their antenna or panel
 # word. Bounded by letters and digits only, so a word inside a layer name joined by "_" ("Mast_site_Kicukiro") is
-# found. Literal alternatives only, so the search stays linear on any message (CODING_STANDARDS 2026-10-11).
+# found. Literal alternatives only, so the search stays linear (CODING_STANDARDS 2026-10-11): ~0.1-0.4 s on a
+# crafted 1 MB message, measured; the helpers below read at most _ROUTED_CHARS.
 _TOWER_WORDS = re.compile(
     r"(?<![^\W_])(?:"
     r"towers?|masts?|monopoles?|pyl[oô]ne?s?|antenn?(?:a|ae|as|e|es)|"
@@ -299,9 +300,13 @@ _TOWER_WORDS = re.compile(
 )
 
 
+# A question to Sage is far shorter; a pasted document is read only this far by the word checks below.
+_ROUTED_CHARS = 20_000
+
+
 def mentions_tower_equipment(text: str) -> bool:
     """True when a message talks about masts, antennas, dishes or other telecom equipment."""
-    return bool(_TOWER_WORDS.search(str(text or "")))
+    return bool(_TOWER_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +323,7 @@ _WEATHER_HAZARD_WORDS = re.compile(
 
 def asks_about_weather_or_hazards(text: str) -> bool:
     """True when a message asks about rain, weather, forecasts, temperature, water or floods."""
-    return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")))
+    return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
 
 
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.

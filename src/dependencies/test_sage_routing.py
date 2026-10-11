@@ -1237,3 +1237,18 @@ def test_a_tool_filed_under_towers_is_offered_for_tower_questions(monkeypatch):
     tools = [{"function": {"name": n}} for n in ("count_antennas", "get_ndvi_stats", "search_location")]
     assert _tool_names(filter_tools_by_categories(tools, decision.selected_categories)) == [
         "count_antennas", "search_location"]
+
+
+def test_the_word_checks_take_milliseconds_on_a_crafted_message():
+    """Python's re holds the GIL (CODING_STANDARDS 2026-10-11): the tower and weather checks read at most 20,000
+    characters of a message, with literal alternatives only."""
+    import time
+
+    from src.dependencies.sage_routing import asks_about_weather_or_hazards, mentions_tower_equipment
+
+    crafted = ("radio" + " " * 1000 + "stations" + " " * 500 + "de ") * 700  # ~1 MB of near-misses
+    started = time.perf_counter()
+    assert mentions_tower_equipment(crafted) is False
+    assert asks_about_weather_or_hazards(crafted) is False
+    assert time.perf_counter() - started < 0.2
+    assert mentions_tower_equipment("x" * 30_000 + " antenna") is False  # past the cap: not read
