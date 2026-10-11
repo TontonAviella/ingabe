@@ -44,7 +44,7 @@ from shapely import STRtree
 from shapely.geometry import MultiPolygon, Polygon, box, mapping, shape
 from shapely.ops import transform as reproject, unary_union
 
-from src.services import background_jobs
+from src.services import background_jobs, stored_files
 from src.services.grvi import BARE_PIXEL, grvi
 
 logger = logging.getLogger(__name__)
@@ -158,14 +158,6 @@ def _model_path() -> Path:
     return Path(os.environ.get("INGABE_FIELD_MODEL_PATH", _DEFAULT_MODEL_PATH))
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def ensure_model() -> Path:
     """The model weights on disk, downloaded and checked on first use."""
     path = _model_path()
@@ -175,7 +167,7 @@ def ensure_model() -> Path:
     partial = path.with_suffix(".part")
     logger.info("downloading %s to %s", FIELD_MODEL_NAME, path)
     urllib.request.urlretrieve(FIELD_MODEL_URL, partial)
-    if _sha256(partial) != FIELD_MODEL_SHA256:
+    if stored_files.file_sha256(partial) != FIELD_MODEL_SHA256:
         partial.unlink()
         raise RuntimeError(f"{FIELD_MODEL_NAME} download does not match its checksum")
     partial.rename(path)

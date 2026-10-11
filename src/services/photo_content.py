@@ -11,7 +11,6 @@ The optimised photo depends on the bytes and the target CRS, so both are in the 
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -22,16 +21,6 @@ from src.services import drone_plots
 logger = logging.getLogger(__name__)
 
 _INDEX_PREFIX = "photo_content/v1"
-_CHUNK = 8 * 1024 * 1024
-
-
-def file_sha256(path: str) -> str:
-    """SHA-256 of a file, read in 8 MB pieces (a 5 GB orthophoto takes about 10 s)."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(_CHUNK):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def index_key(sha256: str, target_srs: str) -> str:
