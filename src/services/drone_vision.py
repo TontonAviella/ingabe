@@ -13,6 +13,10 @@ squares at full detail with sizes spelt out, 83%; two looks that must agree (siz
 squares of checked crops), 27 of 27, with 9 of 36 left "not sure". Field checks (field_checks.py)
 override the model and say how often it is right.
 
+Switch: DRONE_VISION_SURVEY (survey_enabled(); on by default). Off ("0"), no plot is looked at and no paid call is
+made: each plot's crop then comes from its fingerprint call and the checks alone (no_looks()), and stage, cover,
+weeds and problems are unknown (None), which the cards say plainly.
+
 Model: DRONE_VISION_MODEL, at high reasoning effort; readers see its name from model_name(). It was GPT-6 Luna
 through OpenRouter (Roger's choice, 2026-10-06; about $0.0015 a plot for both looks); since 2026-10-10 the Mac and
 the server run claude-haiku-5-5 through Anthropic's OpenAI-compatible endpoint. Fixed instructions go first as
@@ -138,15 +142,18 @@ class PlotLook:
     number: int
     main_crop: str  # "unsure" unless both looks named the same crop
     other_crops: list[str]
-    stage: str
-    crop_cover_percent: int
-    weeds: str
-    problems: list[str]
+    # What the looks saw; None when no look was taken (the survey is switched off): unknown, never a default.
+    stage: Optional[str]
+    crop_cover_percent: Optional[int]
+    weeds: Optional[str]
+    problems: Optional[list[str]]
     note: str
     confidence: str
     candidates: tuple[str, ...] = ()  # when the two looks named different crops: both, for a field check
     evidence: str = ""  # what the first look says it saw
-    source: str = "vision"  # what named the crop: "vision" (the looks) or "fingerprints" (crop_fingerprints)
+    # What named the crop: "vision" (the looks), "fingerprints" (crop_fingerprints), or "checks" (no looks and no
+    # fingerprint calls: only plots checked on the ground are named, by field_checks.apply).
+    source: str = "vision"
 
 
 @dataclass(frozen=True)
@@ -164,12 +171,18 @@ class Survey:
 
     looks: dict[int, PlotLook]
     plots: int  # plots asked about
-    model: str
-    done_at: str
+    model: Optional[str]  # None when no model looked (no_looks)
+    done_at: Optional[str]
     cost_usd: float
 
     def look(self, number: int) -> Optional[PlotLook]:
         return self.looks.get(number)
+
+
+def survey_enabled() -> bool:
+    """DRONE_VISION_SURVEY: the vision model looks at each plot (default). "0", "false", "no" or "off" switch the
+    looks off: no survey is started and no paid call is made."""
+    return os.environ.get("DRONE_VISION_SURVEY", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _model() -> str:
@@ -376,13 +389,28 @@ def _look(number: int, answer: dict[str, Any], check: Optional[dict[str, Any]] =
     )
 
 
+def _measured(plots: drone_plots.PlotSet) -> list[dict[str, Any]]:
+    """The plot features a survey asks about: those measured on the photo (plots off the photo are skipped)."""
+    return [f for f in plots.geojson["features"] if f["properties"].get("greenness") is not None]
+
+
+def no_looks(plots: drone_plots.PlotSet) -> Survey:
+    """What stands for the survey when it is switched off: one look per measured plot, its crop not named yet
+    ("unsure", for the fingerprint calls and the checks to name) and its stage, cover, weeds and problems unknown."""
+    looks = {f["properties"]["number"]: PlotLook(number=f["properties"]["number"], main_crop="unsure", other_crops=[],
+                                                 stage=None, crop_cover_percent=None, weeds=None, problems=None,
+                                                 note="", confidence="low", source="checks")
+             for f in _measured(plots)}
+    return Survey(looks=looks, plots=len(looks), model=None, done_at=None, cost_usd=0.0)
+
+
 async def survey(cog_url: str, plots: drone_plots.PlotSet, place: Optional[str],
                  progress: background_jobs.Progress, references: Optional[list[Reference]] = None) -> Survey:
     """Look at every measured plot twice (plots off the photo are skipped): once with the crops' sizes spelt
     out, once against reference squares of checked crops, each look on its own squares from inside the plot."""
     client, model = _client()
     refs = references or []
-    asked = [f for f in plots.geojson["features"] if f["properties"].get("greenness") is not None]
+    asked = _measured(plots)
     looks: dict[int, PlotLook] = {}
     failed = 0
     cost = 0.0
@@ -521,7 +549,10 @@ def job(key: str) -> Optional[background_jobs.Job]:
 
 def start_survey(s3: Any, bucket: str, key: str, cog_url: str, plots: drone_plots.PlotSet,
                  place: Optional[str], scope: str) -> background_jobs.Job:
-    """Look at every plot in the background, once; the running or failed job is returned."""
+    """Look at every plot in the background, once; the running or failed job is returned. Refused while the survey
+    is switched off (survey_enabled)."""
+    if not survey_enabled():
+        raise RuntimeError("the vision survey is switched off (DRONE_VISION_SURVEY)")
 
     async def work(progress: background_jobs.Progress) -> None:
         result = await survey(cog_url, plots, place, progress, await load_references(s3, bucket, scope))

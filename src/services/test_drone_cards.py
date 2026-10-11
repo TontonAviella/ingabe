@@ -551,3 +551,109 @@ def test_the_vision_model_is_named_from_its_setting(photo, monkeypatch, model, b
             assert "Luna" not in term["simple"] and "OpenRouter" not in term["simple"]
     # how sure names the model that made the looks, by its name
     assert "(GPT-6 Luna)" in answer["how_sure"]["because"][0]
+
+
+# --- With the vision survey switched off (DRONE_VISION_SURVEY=0) -------------------------------------------------
+
+LOOK_ONLY = ("plot_problems", "plot_stage", "weeds")
+
+
+def _no_looks(plots, crops=None, checks=None):
+    """The looks with the survey off: crops named by fingerprint calls (crops[i] for plot i + 1; "unsure" for none)
+    and then by ground checks, as photo_context.plot_looks makes them."""
+    from src.services import crop_fingerprints, field_checks
+
+    survey = drone_vision.no_looks(plots)
+    if crops:
+        calls = {i + 1: crop_fingerprints.CropCall(number=i + 1, crop=c, share=1.0 if c != "unsure" else 0.5,
+                                                   candidates=() if c != "unsure" else ("cassava", "maize"),
+                                                   neighbours=())
+                 for i, c in enumerate(crops)}
+        survey = crop_fingerprints.apply(survey, calls)
+    checks = {n: field_checks.Check(number=n, crop=c, at="2026-10-11") for n, c in (checks or {}).items()}
+    return drone_cards.Here(plots=plots, survey=field_checks.apply(survey, checks), vision_looks=False,
+                            checked=frozenset(checks),
+                            record=field_checks.model_record(survey, checks) if checks else None)
+
+
+def test_with_the_looks_off_crop_types_are_named_from_the_fingerprints(photo):
+    plots = _plot_set()
+    here = _no_looks(plots, ["maize"] * 5 + ["beans"] * 3 + ["unsure"] * 2)
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.READY  # not "Partly ready" forever
+    assert answer["what"].startswith("The crop is named in 8 of 10 plots: maize in 5 plots")
+    assert "compared with the plots people named" in answer["how_sure"]["because"][0]
+    assert [t["id"] for t in answer["terms"]] == []  # no vision model looked
+    labels = [f["properties"]["label"] for f in answer["overlay"]["geojson"]["features"]]
+    assert labels[0] == "Plot 1 · Maize · 0.79 ha"  # no stage: none was seen
+    assert drone_cards.build_deck(_analysis(photo), "farmer", here)["for_you"]
+
+
+@pytest.mark.parametrize("plots_found", [True, False])
+def test_with_the_looks_off_stage_weeds_and_problems_say_they_cannot_tell(photo, plots_found):
+    plots = _plot_set()
+    job = background_jobs.Job(state="running", parts_done=2, parts=8, started=0.0)
+    here = _no_looks(plots, ["maize"] * 10) if plots_found else drone_cards.Here(plot_job=job, vision_looks=False)
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", here)
+    cards = {c["id"]: c for s in deck["services"] for c in s["cards"]}
+    for card_id in LOOK_ONLY:
+        assert cards[card_id]["status"] == drone_cards.CANT_TELL and cards[card_id]["status_label"] == "Can't tell yet"
+        assert cards[card_id]["preview"] == "Can't tell yet from this photo."
+        answer = drone_cards.answer_card(card_id, _analysis(photo), "farmer", here)
+        assert answer["status"] == drone_cards.CANT_TELL
+        assert answer["what"].startswith("Can't tell yet from this photo: ")
+        assert "turned off" in answer["what"] and "has not looked" not in answer["what"]
+        assert answer["how_sure"]["level"] == "low" and answer["items"] == [] and answer["progress"] is None
+    if not plots_found:  # the crop card waits for the plots without promising a look
+        crop = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+        assert crop["status"] == drone_cards.WORKING and "looked at" not in crop["what"]
+        assert crop["terms"] == []
+
+
+def test_with_the_looks_off_and_no_fingerprint_calls_only_checked_plots_are_named(photo):
+    plots = _plot_set()
+    for f in plots.geojson["features"]:
+        p = f["properties"]
+        if p["number"] == 3:  # the largest plot, but mostly soil showing
+            p["group"], p["area_ha"] = drone_plots.MOSTLY_SOIL, 2.0
+        if p["number"] == 10:
+            p["area_ha"] = 1.5
+    here = _no_looks(plots, checks={1: "maize", 2: "beans"})
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    assert answer["status"] == drone_cards.READY
+    assert answer["what"].startswith("The crop is named in 2 of 10 plots: maize in 1 plot")
+    assert answer["how_sure"]["level"] == "high"
+    assert answer["how_sure"]["because"][0] == "Named only in the 2 plots checked on the ground"
+    check = answer["field_check"]  # the plots to name next: unchecked ones, plots with a crop first
+    assert len(check["plots"]) == drone_cards.FIELD_CHECK_PLOTS and {1, 2}.isdisjoint(p["number"] for p in check["plots"])
+    assert check["plots"][0]["number"] == 10 and check["plots"][-1]["number"] == 3  # mostly soil: offered last
+    assert all(p["detail"] == "Not named yet." for p in check["plots"]) and "3 plots of a crop" in check["detail"]
+
+
+def test_with_the_looks_off_and_nothing_named_the_crop_card_asks_for_names(photo):
+    plots = _plot_set()
+    here = _no_looks(plots)
+    answer = drone_cards.answer_card("crop_types", _analysis(photo), "farmer", here)
+    assert answer["what"].startswith("No crop is named yet in the 10 plots")
+    assert answer["how_sure"]["level"] == "low" and answer["how_sure"]["because"][0] == "No plot is checked on the ground yet"
+    assert answer["field_check"]["plots"]
+    deck = drone_cards.build_deck(_analysis(photo), "farmer", here)
+    preview = next(c for s in deck["services"] for c in s["cards"] if c["id"] == "crop_types")["preview"]
+    assert preview == "No crop named yet: say what grows in a few plots."
+
+
+def test_with_the_looks_on_nothing_changes_for_the_stage_weeds_and_problems_cards(photo):
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10, {2: {"weeds": "many"}}))
+    assert here.vision_looks is True
+    assert [drone_cards.answer_card(c, _analysis(photo), "farmer", here)["status"] for c in LOOK_ONLY] == \
+        [drone_cards.READY] * 3
+
+
+@pytest.mark.parametrize("audience", ["farmer", "insurer", "agronomist", "scientist"])
+def test_no_card_talks_about_money_with_the_looks_off(photo, audience):
+    plots = _plot_set()
+    here = _no_looks(plots, ["maize"] * 6 + ["unsure"] * 4, checks={1: "maize"})
+    answers = [drone_cards.answer_card(c, _analysis(photo), audience, here) for c in ("crop_types",) + LOOK_ONLY]
+    text = json.dumps([{k: a[k] for k in ("what", "why", "todo", "items", "facts")} for a in answers])
+    assert not MONEY.search(text)

@@ -2,7 +2,8 @@
 model's looks with field checks applied, and the project's farm documents.
 
 One home for this, so a card and Sage answer from the same facts. With `start_jobs`, plot finding and the
-vision survey are started (or retried) in the background when they have not run yet.
+vision survey are started (or retried) in the background when they have not run yet; the survey only while
+DRONE_VISION_SURVEY is on (drone_vision.survey_enabled).
 """
 
 from __future__ import annotations
@@ -122,9 +123,13 @@ async def plot_looks(s3: Any, bucket: str, metadata: dict[str, Any], plots: dron
                      project_id: Optional[str], *, place: Optional[str], scope: str, start: bool,
                      retry_failed: bool) -> PlotLooks:
     """The looks at a plot set, the one way the cards and Sage take a plot's crop. With `start`, the vision survey
-    and the fingerprints are started in the background when they have not run yet."""
-    survey, survey_job = await _survey(s3, bucket, metadata, plots, place, scope=scope, start=start,
-                                       retry_failed=retry_failed)
+    and the fingerprints are started in the background when they have not run yet. With the survey switched off
+    (drone_vision.survey_enabled), no plot is looked at: the crops come from the fingerprint calls and the checks."""
+    if drone_vision.survey_enabled():
+        survey, survey_job = await _survey(s3, bucket, metadata, plots, place, scope=scope, start=start,
+                                           retry_failed=retry_failed)
+    else:
+        survey, survey_job = drone_vision.no_looks(plots), None
     plot_set = field_checks.plot_set_id(photo_plots.photo_key(metadata), plots)
     checks = await field_checks.load_checks(s3, bucket, project_id, plot_set)
     # The crop of each plot comes from its fingerprint and the checked plots when there are any; the looks
@@ -165,7 +170,8 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
              if plots is not None else PlotLooks())
     here = drone_cards.Here(photos=max(1, int(photos_here or 0)), plots=plots, plot_job=plot_job,
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
-                            survey=looks.survey, survey_job=looks.survey_job, seed=seed,
+                            survey=looks.survey, survey_job=looks.survey_job,
+                            vision_looks=drone_vision.survey_enabled(), seed=seed,
                             records=tuple(records), checked=looks.checked, record=looks.record,
                             picture_record=looks.picture_record)
     return PhotoContext(analysis=analysis, here=here, reader=reader)

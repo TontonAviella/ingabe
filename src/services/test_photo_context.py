@@ -8,7 +8,7 @@ import uuid
 import numpy as np
 import pytest
 
-from src.services import crop_fingerprints, drone_plots, drone_vision, field_checks, photo_context
+from src.services import background_jobs, crop_fingerprints, drone_plots, drone_vision, field_checks, photo_context
 from src.services.test_farm_records import _FakeS3
 
 RUN_TAG = uuid.uuid4().hex[:8]  # the modules keep surveys and fingerprints in memory by key: one photo per test
@@ -107,3 +107,70 @@ async def test_sage_names_the_crop_the_cards_show(photo):
         return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE)
 
     assert [await crop(n) for n in (4, 5, 9, 10)] == ["Maize", "Maize", "Banana", None]
+
+
+def _no_model(monkeypatch) -> None:
+    """Any survey, any vision client: the test fails."""
+    def refuse(*args, **kwargs):
+        pytest.fail("the vision survey or its client was used with the survey switched off")
+
+    for name in ("AsyncOpenAI", "_client", "vision_client", "start_survey", "survey", "load_survey", "survey_key"):
+        monkeypatch.setattr(drone_vision, name, refuse)
+
+
+async def test_switched_off_no_survey_is_started_and_crops_come_from_fingerprints_and_checks(photo, monkeypatch):
+    s3, metadata, plots, plot_set = photo
+    await _named(s3, plot_set)
+    _keep_survey(s3, metadata, plots)  # paid for earlier: not read while the survey is off
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    _no_model(monkeypatch)
+    looks = await _looks(s3, metadata, plots, start=True)
+    assert looks.survey_job is None
+    crops = {n: look.main_crop for n, look in looks.survey.looks.items()}
+    assert crops == {1: "maize", 2: "maize", 3: "maize", 4: "maize", 5: "maize", 6: "unsure", 7: "unsure",
+                     8: "banana", 9: "banana", 10: "unsure"}  # the same crops as with the survey on
+    assert all((look.stage, look.weeds, look.problems, look.crop_cover_percent) == (None, None, None, None)
+               for look in looks.survey.looks.values())
+    assert looks.record == field_checks.Record(right=1, named=1, unsure=1)
+    assert not any(key.startswith("survey:") for key in background_jobs._jobs)
+
+
+async def test_switched_off_sage_still_names_the_crop(photo, monkeypatch):
+    from src.tools import drone_photo_tools
+
+    s3, metadata, plots, plot_set = photo
+    await _named(s3, plot_set)
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    _no_model(monkeypatch)
+
+    async def crop(number):
+        return await drone_photo_tools._crop_seen(s3, BUCKET, metadata, plots, number, PROJECT, SCOPE)
+
+    assert [await crop(n) for n in (4, 5, 9, 10)] == ["Maize", "Maize", "Banana", None]
+
+
+async def test_switched_off_before_the_fingerprints_only_checked_plots_are_named(photo, monkeypatch):
+    s3, metadata, plots, plot_set = photo
+    s3.objects.clear()  # no fingerprints yet
+    await _named(s3, plot_set)
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    _no_model(monkeypatch)
+    looks = await _looks(s3, metadata, plots, start=False)
+    named = {n: look.main_crop for n, look in looks.survey.looks.items() if look.main_crop != "unsure"}
+    assert named == CHECKS and {look.source for look in looks.survey.looks.values()} == {"checks"}
+    assert looks.picture_record is None
+
+
+async def test_switched_on_the_survey_starts_as_before(photo, monkeypatch):
+    s3, metadata, plots, _ = photo
+    monkeypatch.delenv("DRONE_VISION_SURVEY", raising=False)
+    started = []
+
+    def start_survey(s3_, bucket, key, url, plots_, place, scope):
+        started.append((key, url, scope))
+        return background_jobs.Job(state="running", parts_done=0, parts=10, started=0.0)
+
+    monkeypatch.setattr(drone_vision, "start_survey", start_survey)
+    looks = await _looks(s3, metadata, plots, start=True)
+    assert len(started) == 1 and started[0][2] == SCOPE and started[0][1].endswith(metadata["cog_key"])
+    assert looks.survey is None and looks.survey_job.state == "running"  # the cards wait for the looks

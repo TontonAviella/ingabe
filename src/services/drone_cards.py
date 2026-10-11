@@ -77,6 +77,7 @@ NEEDS_CAMERA = "needs_camera"
 TO_BUILD = "to_build"
 LEARN = "learn"
 WORKING = "working"
+CANT_TELL = "cant_tell"
 
 STATUS_LABELS = {
     READY: "Answer ready",
@@ -86,10 +87,12 @@ STATUS_LABELS = {
     TO_BUILD: "Coming soon",
     LEARN: "Learn · 1 minute",
     WORKING: "Working on it",
+    CANT_TELL: "Can't tell yet",
 }
 
 # How the cards are ranked: readiness first, then the situation, then the reader.
-_BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, TO_BUILD: 10, LEARN: 0}
+_BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, CANT_TELL: 20, TO_BUILD: 10,
+               LEARN: 0}
 _READER_BOOST = {
     "farmer": {"plots_green": 20, "weeds": 18, "plot_problems": 16, "weak_spots": 15, "crop_types": 10,
                "plant_count": 10, "bare_ground": 5},
@@ -154,6 +157,9 @@ class Here:
     plot_map_error: Optional[str] = None  # why the chosen map could not be used
     survey: Optional[drone_vision.Survey] = None  # the vision model's look at each plot
     survey_job: Optional[background_jobs.Job] = None
+    # Whether the vision model looks at each plot (DRONE_VISION_SURVEY). Off, `survey` holds no looks
+    # (drone_vision.no_looks): crops come from fingerprints and checks, and stage, weeds and problems cannot be told.
+    vision_looks: bool = True
     spots: Optional[dict[str, Any]] = None  # bare soil inside plots seen with gaps (GeoJSON), when measured
     spots_job: Optional[background_jobs.Job] = None  # measuring those spots, while it runs
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
@@ -441,6 +447,20 @@ def _plot_status(here: Here) -> str:
 
 
 _SURVEY_CARDS = ("crop_types", "plot_problems", "plot_stage", "weeds")
+# Cards only the vision model's look at each plot can answer (stage, weeds, problems): with the looks switched off
+# they say so plainly, with what was needed and what to do instead.
+_LOOK_ONLY_CARDS = {
+    "plot_stage": ("judging each plot's stage needs a look at its plants",
+                   "Ask when each plot was planted, or fly again in a few weeks: plots that grow less between flights "
+                   "are behind. Meanwhile the least-green question shows where to look first."),
+    "weeds": ("telling weeds from young crop needs a close look at each plot",
+              "Walk the plots you know are weedy first. The least-green and bare-ground questions show where the crop "
+              "is thin."),
+    "plot_problems": ("naming yellowing, gaps or standing water needs a close look at each plot",
+                      "Walk to the least-green plots and the weak parts of the photo first (their questions show them). "
+                      "A phone close-up of a leaf can name a pest or disease."),
+}
+CANT_TELL_WORDS = "Can't tell yet from this photo."
 
 
 def _survey_status(here: Here) -> str:
@@ -455,6 +475,8 @@ def _status(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
         return READY
     if card_id in _PLOT_CARDS:
         return _plot_status(here)
+    if card_id in _LOOK_ONLY_CARDS and not here.vision_looks:
+        return CANT_TELL
     if card_id in _SURVEY_CARDS:
         return _survey_status(here)
     if card_id == "soil" and farm_records.soil_samples(list(here.records)):
@@ -484,7 +506,7 @@ def _plot_job_words(job: Optional[background_jobs.Job]) -> str:
 
 def _survey_job_words(here: Here) -> str:
     if here.plots is None:
-        return _plot_job_words(here.plot_job) + " The plots are looked at once found."
+        return _plot_job_words(here.plot_job) + (" The plots are looked at once found." if here.vision_looks else "")
     job = here.survey_job
     if job is None:
         return "Ingabe's AI vision model has not looked at the plots yet."
@@ -499,6 +521,8 @@ def _preview(card_id: str, analysis: PhotoAnalysis, here: Here) -> str:
     look, bare, plots = analysis.look, analysis.bare, here.plots
     if card_id in _PLOT_CARDS and plots is None:
         return _plot_job_words(here.plot_job)
+    if card_id in _LOOK_ONLY_CARDS and not here.vision_looks:
+        return CANT_TELL_WORDS
     if card_id in _SURVEY_CARDS:
         if here.survey is None or plots is None:
             return _survey_job_words(here)
@@ -1018,12 +1042,20 @@ def _crop_words(crop: str) -> str:
     return drone_vision.CROP_LABELS[crop].lower() if crop != "unsure" else "not sure"
 
 
+def _crop_source(survey: drone_vision.Survey) -> str:
+    """What named the crops on this photo: "fingerprints" (the calls), "checks" (only the plots checked on the
+    ground: no looks and no calls yet) or "vision" (the looks)."""
+    sources = {look.source for look in survey.looks.values()}
+    return "fingerprints" if "fingerprints" in sources else "checks" if "checks" in sources else "vision"
+
+
 def _survey_preview(card_id: str, plots: drone_plots.PlotSet, survey: drone_vision.Survey) -> str:
     pairs = _looked(plots, survey)
     if card_id == "crop_types":
         named = [(c, n) for c, n, _ in _crop_totals(pairs) if c != "unsure"]
         if not named:
-            return "The AI vision model could not tell the crops apart in this photo."
+            return ("No crop named yet: say what grows in a few plots." if _crop_source(survey) == "checks"
+                    else "The AI vision model could not tell the crops apart in this photo.")
         return "Mostly " + " and ".join(f"{_crop_words(c)} ({n} plots)" for c, n in named[:2]) + "."
     if card_id == "plot_problems":
         seen = [p for p, look in pairs if look.problems]
@@ -1045,12 +1077,24 @@ def _survey_pending(card_id: str, analysis: PhotoAnalysis, audience: str, here: 
     return _answer(
         card_id, analysis, here,
         what=_survey_job_words(here) + ("" if failed else " This answer fills in by itself."),
-        why="Each plot is looked at once; the crop, stage, weeds and problems then answer several questions.",
+        why=("Each plot is looked at once; the crop, stage, weeds and problems then answer several questions."
+             if here.vision_looks else "Once the plots are found, each plot's crop is named from the plots people check."),
         todo=("Open this question again to try once more." if failed
               else "Keep the photo open, or come back later: what is seen is kept."),
         how_sure=_how_sure("low", ["Not answered yet"], None),
-        terms=["vision_model"], audience=audience, overlay=_photo_outline(analysis), progress=progress,
-        choices=_plot_choices(analysis, here))
+        terms=["vision_model"] if here.vision_looks else [], audience=audience, overlay=_photo_outline(analysis),
+        progress=progress, choices=_plot_choices(analysis, here))
+
+
+def _cant_tell(card_id: str, analysis: PhotoAnalysis, audience: str, here: Here, why: str) -> dict[str, Any]:
+    """A card only the looks at each plot answer, while the looks are switched off."""
+    needs, todo = _LOOK_ONLY_CARDS[card_id]
+    return _answer(
+        card_id, analysis, here,
+        what=f"{CANT_TELL_WORDS.rstrip('.')}: {needs}, and Ingabe's AI look at each plot is turned off.",
+        why=why, todo=todo,
+        how_sure=_how_sure("low", ["Not answered: the plants in each plot are not looked at"], None),
+        terms=[], audience=audience, overlay=_photo_outline(analysis), choices=_plot_choices(analysis, here))
 
 
 FIELD_CHECKS_FOR_MEDIUM = 10  # checked plots (with ≥ 90% right) before a crop answer can say "medium"
@@ -1061,7 +1105,16 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
                      crops: bool = False) -> dict[str, Any]:
     model = drone_vision.model_name(survey.model)
     record = here.record
-    fingerprinted = crops and any(look.source == "fingerprints" for look in survey.looks.values())
+    source = _crop_source(survey)
+    fingerprinted = crops and source == "fingerprints"
+    if crops and source == "checks":
+        named = sum(1 for look in survey.looks.values() if look.main_crop != "unsure")
+        because = ([f"Named only in the {named} plot{'s' if named != 1 else ''} checked on the ground"] if named
+                   else ["No plot is checked on the ground yet"])
+        because.append(f"The other plots are named once {crop_fingerprints.MIN_EXAMPLES} plots of their crop are "
+                       "named and they look alike")
+        return _how_sure("high" if named else "low", because + extra,
+                         "Say what really grows in the plots listed below.")
     if fingerprinted:
         because = [f"Each plot compared with the plots people named, on the ground or from the drone pictures "
                    f"({crop_fingerprints.MODEL_NAME}): a crop is named only when the "
@@ -1115,10 +1168,16 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
         if look.main_crop not in ("unsure",) and look.main_crop not in by_crop:
             by_crop[look.main_crop] = (p, look)
     chosen = (disputed[: FIELD_CHECK_PLOTS // 2] + list(by_crop.values()))[:FIELD_CHECK_PLOTS]
+    named_by_checks = _crop_source(survey) == "checks"
+    if not chosen and named_by_checks:  # nothing named but the checks: the largest plots with a crop first
+        chosen = sorted(pairs, key=lambda t: (t[0].get("group") == drone_plots.MOSTLY_SOIL,
+                                              -t[0]["area_ha"]))[:FIELD_CHECK_PLOTS]
     if not chosen:
         return None
 
     def guess(look: drone_vision.PlotLook) -> str:
+        if look.source == "checks":
+            return "Not named yet."
         if look.source == "fingerprints":
             if look.main_crop != "unsure":
                 return f"Looks most like the plots people named {_crop_words(look.main_crop)}."
@@ -1139,7 +1198,10 @@ def _field_check(analysis: PhotoAnalysis, plots: drone_plots.PlotSet, survey: dr
 
     return {
         "title": "What really grows here?",
-        "detail": "Tap the crop you find in each plot. Your answer replaces the model's, and shows how often it is right.",
+        "detail": ("Tap the crop you find in each plot. Once "
+                   f"{crop_fingerprints.MIN_EXAMPLES} plots of a crop are named, Ingabe names the plots that look like them."
+                   if named_by_checks else
+                   "Tap the crop you find in each plot. Your answer replaces the model's, and shows how often it is right."),
         "plots": [{**_plot_item(analysis, p, guess(look)), "number": p["number"]} for p, look in chosen],
         "options": [{"id": c, "label": drone_vision.CROP_LABELS[c]} for c in field_checks.CHECK_CROPS],
         "href": f"/api/layer/{analysis.layer_id}/plots/{{number}}/check",
@@ -1225,6 +1287,7 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
     if plots is None or survey is None:
         return _survey_pending("crop_types", analysis, audience, here)
     pairs = _looked(plots, survey)
+    named_by_checks = _crop_source(survey) == "checks"
     totals = _crop_totals(pairs)
     unsure = next((n for c, n, _ in totals if c == "unsure"), 0)
     crops = [(c, n, ha) for c, n, ha in totals if c not in _NOT_A_CROP]
@@ -1234,6 +1297,9 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
                 + ", ".join(f"{_crop_words(c)} in {n} plot{'s' if n != 1 else ''} ({_ha(ha)})" for c, n, ha in crops[:4])
                 + "." + (f" {no_crop} more look fallow, bare, grass or woodland." if no_crop else "")
                 + (f" {unsure} plots are 'not sure' rather than a guess." if unsure else ""))
+    elif named_by_checks:
+        what = (f"No crop is named yet in the {len(pairs)} plots: Ingabe names a plot's crop from the plots people "
+                "check on the ground, and then the plots that look like them.")
     else:
         what = f"No crop could be named with certainty in the {len(pairs)} plots looked at."
     if here.checked:
@@ -1249,7 +1315,7 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         crop = look.main_crop if look else "unsure"
         checked = p["number"] in here.checked
         extra = f" + {', '.join(_crop_words(c) for c in look.other_crops)}" if look and look.other_crops else ""
-        stage = f" · {look.stage.replace('_', ' ')}" if look and look.stage != "unsure" else ""
+        stage = f" · {look.stage.replace('_', ' ')}" if look and look.stage not in (None, "unsure") else ""
         named = (" or ".join(drone_vision.CROP_LABELS[c] for c in look.candidates) + "?" if look and look.candidates
                  else drone_vision.CROP_LABELS[crop])
         label = (f"{_plot_label(p)} · {named}{extra}{stage} · {_ha(p['area_ha'])}"
@@ -1269,17 +1335,23 @@ def _crop_types(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         why = "A crop label per plot lets stage, greenness and yield be compared within the same crop."
     else:
         why = "Knowing what grows where lets every answer talk about your crop: its stage, its needs, its harvest."
+    todo = ("Walk to the plots listed below and tap what you find. Once "
+            f"{crop_fingerprints.MIN_EXAMPLES} plots of a crop are named, Ingabe names the plots that look like them."
+            if named_by_checks else
+            "Walk to the plots listed below and tap what you find: the 'not sure' plots first. Each answer "
+            "replaces the model's guess and shows how often it is right.")
     return _answer(
-        "crop_types", analysis, here, what=what, why=why,
-        todo=("Walk to the plots listed below and tap what you find: the 'not sure' plots first. Each answer "
-              "replaces the model's guess and shows how often it is right."),
+        "crop_types", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, unsure, [], here, crops=True),
-        terms=["vision_model"], audience=audience, overlay=overlay, facts=facts,
+        terms=["vision_model"] if here.vision_looks else [], audience=audience, overlay=overlay, facts=facts,
         downloads=_plot_downloads(analysis), choices=_plot_choices(analysis, here),
         field_check=_field_check(analysis, plots, survey, here))
 
 
 def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    why = "Gaps, yellowing or standing water found early can still be fixed this season."
+    if not here.vision_looks:
+        return _cant_tell("plot_problems", analysis, audience, here, why)
     plots, survey = here.plots, here.survey
     if plots is None or survey is None:
         return _survey_pending("plot_problems", analysis, audience, here)
@@ -1329,9 +1401,8 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
         overlay["spots_legend"] = "Bare soil inside those plots, measured from the photo"
         what += f" The bare soil inside them is filled in bright on the photo ({len(spots)} spots of 1 m² or more)."
     return _answer(
-        "plot_problems", analysis, here, what=what,
-        why="Gaps, yellowing or standing water found early can still be fixed this season.",
-        todo=todo, how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"], here),
+        "plot_problems", analysis, here, what=what, why=why, todo=todo,
+        how_sure=_vision_how_sure(survey, 0, ["A colour photo shows signs, not causes"], here),
         terms=["vision_model", "colour_camera"], audience=audience,
         overlay=overlay, items=items, progress=progress,
         facts=[{"label": drone_vision.PROBLEM_LABELS[k].capitalize(), "value": f"{n} plots"} for k, n in counts.items()],
@@ -1339,6 +1410,9 @@ def _plot_problems(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[s
 
 
 def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    why = "Weeds take the water and food meant for the crop, most of all while the crop is young."
+    if not here.vision_looks:
+        return _cant_tell("weeds", analysis, audience, here, why)
     plots, survey = here.plots, here.survey
     if plots is None or survey is None:
         return _survey_pending("weeds", analysis, audience, here)
@@ -1359,9 +1433,8 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
         todo = "No urgent weeding seen from the air. Check again after the next rains."
     items = [_plot_item(analysis, p, f"{_ha(p['area_ha'])}" + (f" · {look.note}" if look.note else "")) for p, look in weedy[:5]]
     return _answer(
-        "weeds", analysis, here, what=what,
-        why="Weeds take the water and food meant for the crop, most of all while the crop is young.",
-        todo=todo, how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"], here),
+        "weeds", analysis, here, what=what, why=why, todo=todo,
+        how_sure=_vision_how_sure(survey, 0, ["Young weeds and young crop can look alike from above"], here),
         terms=["vision_model"], audience=audience, overlay=_flag_overlay(analysis, plots, flagged, "Plots that look weedy", {n: "Weeds" for n in flagged}),
         items=items, facts=[{"label": "Look weedy", "value": f"{len(weedy)} plots, {_ha(weedy_ha)}"},
                             {"label": "A few weeds", "value": f"{some} plots"}],
@@ -1369,6 +1442,11 @@ def _weeds(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]
 
 
 def _plot_stage(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str, Any]:
+    why = ("A plot behind its neighbours was planted later or is held back; either way it changes when it can be "
+           "harvested." if audience != "insurance" else
+           "Plots planted late carry a different risk; a plot held back may be an early sign of loss.")
+    if not here.vision_looks:
+        return _cant_tell("plot_stage", analysis, audience, here, why)
     plots, survey = here.plots, here.survey
     if plots is None or survey is None:
         return _survey_pending("plot_stage", analysis, audience, here)
@@ -1389,9 +1467,6 @@ def _plot_stage(analysis: PhotoAnalysis, audience: str, here: Here) -> dict[str,
         what = f"The {compared} plots compared look at a similar stage to the rest of their crop."
         todo = "Nothing behind from this photo. Fly again in a few weeks to see who keeps up."
     items = [_plot_item(analysis, p, flagged[p["number"]]) for p, _, _ in behind[:5]]
-    why = ("A plot behind its neighbours was planted later or is held back; either way it changes when it can be "
-           "harvested." if audience != "insurance" else
-           "Plots planted late carry a different risk; a plot held back may be an early sign of loss.")
     return _answer(
         "plot_stage", analysis, here, what=what, why=why, todo=todo,
         how_sure=_vision_how_sure(survey, 0, ["Stage judged from one photo, without planting dates"], here),
