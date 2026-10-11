@@ -29,14 +29,19 @@ more latency than the problem we're trying to solve.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services import industry, photo_context
 from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool category map
@@ -269,6 +274,32 @@ def detect_small_talk(text: str) -> bool:
     if not normalized:
         return False
     return any(p.match(normalized) for p in _SMALL_TALK_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# Tower and telecom equipment
+# ---------------------------------------------------------------------------
+# English, French (antenne, pylône, mât, parabole = dish, faisceau hertzien = microwave link, abri = shelter,
+# station de base, unité radio, télécom) and Kinyarwanda (umunara / iminara = tower, "ku munara" = on the tower,
+# antene = antenna, itumanaho = telecommunication); the French and Kinyarwanda terms need native-speaker review.
+# "sector" alone is not here: it is also Rwanda's umurenge. Antenna sectors are found by their antenna or panel
+# word. Bounded by letters and digits only, so a word inside a layer name joined by "_" ("Mast_site_Kicukiro") is
+# found. Literal alternatives only, so the search stays linear on any message (CODING_STANDARDS 2026-10-11).
+_TOWER_WORDS = re.compile(
+    r"(?<![^\W_])(?:"
+    r"towers?|masts?|monopoles?|pyl[oô]ne?s?|antenn?(?:a|ae|as|e|es)|"
+    r"rrus?|rrhs?|radio\s+(?:units?|heads?)|microwaves?|dish(?:es)?|panels?|shelters?|"
+    r"base\s+stations?|bts|cell\s+sites?|telcos?|t[eé]l[eé]com(?:munications?|s)?|"
+    r"mâts?|paraboles?|faisceaux?\s+hertziens?|abris?|stations?\s+de\s+base|unit[eé]s?\s+radio|micro-?ondes?|"
+    r"[ui]?m[ui]nara|itumanaho"
+    r")(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+def mentions_tower_equipment(text: str) -> bool:
+    """True when a message talks about masts, antennas, dishes or other telecom equipment."""
+    return bool(_TOWER_WORDS.search(str(text or "")))
 
 
 # ---------------------------------------------------------------------------
@@ -1254,10 +1285,11 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
 
 
 def select_fast_raster_layer(question: str, rows: list) -> dict | None:
-    """The raster a deterministic fast path should use, or None to fall back.
+    """The raster the question points at, or None to fall back.
 
     ``rows`` are the raster layers on the map (mappings with a ``name``).
-    Used by message_routes' fast-path handlers and the routing eval.
+    The fast paths go through select_ready_fast_raster_layer, which also
+    checks the raster can be read.
     """
     if not rows:
         return None
@@ -1276,6 +1308,28 @@ def select_fast_raster_layer(question: str, rows: list) -> dict | None:
     if len(rows) == 1:
         return dict(rows[0])
     return None
+
+
+def select_ready_fast_raster_layer(question: str, rows: list) -> dict | None:
+    """The raster a raster fast path may read, or None to let the model plan the turn: the one the question
+    points at (select_fast_raster_layer), and only when it has a place on the map and its optimised copy (COG)
+    is ready. A phone picture of a mast has no place on the map, and a photo still being optimised cannot be
+    read yet. ``rows`` also carry each raster's ``metadata`` and ``bounds``. Used by message_routes' fast-path
+    handlers and the routing eval."""
+    layer = select_fast_raster_layer(question, rows)
+    if layer is None:
+        return None
+    metadata = layer.get("metadata") or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    if not photo_context.is_photo_ready(metadata):
+        logger.info("sage_routing: no raster fast path, %s has no ready COG (cog_status=%s)",
+                    layer.get("layer_id"), metadata.get("cog_status"))
+        return None
+    if not photo_context.is_georeferenced(metadata, layer.get("bounds")):
+        logger.info("sage_routing: no raster fast path, %s has no place on the map", layer.get("layer_id"))
+        return None
+    return layer
 
 # Questions about the plots, plants and crops on a drone photo go to the model, which reads what the
 # question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
@@ -1299,7 +1353,9 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
-    if is_drone_plot_question(text):
+    # The fast paths' house masks, screening cells and area facts cannot answer questions about masts, antennas
+    # or dishes: "how many antennas are on this tower photo?" drew screening cells.
+    if is_drone_plot_question(text) or mentions_tower_equipment(text):
         return None
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
@@ -1331,6 +1387,16 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             "fast:raster_context",
         )
     return None
+
+
+def build_project_fast_tool_call(text: str, project_industry: str | None) -> FastToolCall | None:
+    """The fast path for a turn in a project of this industry: build_fast_tool_call, kept only when the project's
+    industry may use its tool (industry.serves; an industry that could not be found gets only the tools every
+    industry may use)."""
+    fast = build_fast_tool_call(text)
+    if fast is None or not industry.serves(fast.tool_name, project_industry):
+        return None
+    return fast
 
 
 def _raster_object_max_area_m2(targets: list[str]) -> float:

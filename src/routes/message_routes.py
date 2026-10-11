@@ -65,7 +65,7 @@ from src.services.posthog_analytics import capture_for_session, elapsed_ms
 from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache, project_partner
-from src.database.pool import set_request_industry
+from src.database.pool import get_request_industry, set_request_industry
 from src.database.rwanda_reader import READER_ROLES, reader_uri, tables_for
 from src.services.sage_result_checks import apply_result_checks
 from src.geoprocessing.dispatch import (
@@ -89,10 +89,10 @@ from src.dependencies.sage_routing import (
     RASTER_FACT_TOOL,
     RASTER_H3_CONTEXT_TOOL,
     RASTER_OBJECT_CANDIDATES_TOOL,
-    build_fast_tool_call,
+    build_project_fast_tool_call,
     detect_raster_building_count_question,
     extract_last_user_text,
-    select_fast_raster_layer,
+    select_ready_fast_raster_layer,
 )
 from src.dependencies.sage_turn_request import (
     abdication_guard_enabled,
@@ -1010,7 +1010,7 @@ async def _maybe_run_fast_admin_boundary_turn(
     }:
         return False
 
-    fast_call = build_fast_tool_call(extract_last_user_text(openai_messages))
+    fast_call = build_project_fast_tool_call(extract_last_user_text(openai_messages), get_request_industry())
     if not fast_call or fast_call.tool_name != ADMIN_BOUNDARY_TOOL:
         return False
 
@@ -1258,10 +1258,11 @@ def _raster_context_fast_reply(
 
 
 async def _map_rasters(conn, map_id: str) -> list:
-    """The raster layers on the map, in map order: what the raster fast paths choose from."""
+    """The raster layers on the map, in map order, with what says whether they can be read (metadata, bounds):
+    what the raster fast paths choose from."""
     return await conn.fetch(
         """
-        SELECT ml.layer_id, ml.name
+        SELECT ml.layer_id, ml.name, ml.metadata, ml.bounds
         FROM user_mundiai_maps m
         JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
           ON TRUE
@@ -1288,7 +1289,7 @@ async def _maybe_run_fast_raster_context_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_H3_CONTEXT_TOOL:
         return False
 
@@ -1311,7 +1312,7 @@ async def _maybe_run_fast_raster_context_turn(
 
         rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -1651,7 +1652,7 @@ async def _maybe_run_fast_raster_object_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_OBJECT_CANDIDATES_TOOL:
         return False
 
@@ -1675,7 +1676,7 @@ async def _maybe_run_fast_raster_object_turn(
 
         rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 
@@ -1865,7 +1866,7 @@ async def _maybe_run_fast_raster_fact_turn(
         return False
 
     user_text = extract_last_user_text(openai_messages)
-    fast_call = build_fast_tool_call(user_text)
+    fast_call = build_project_fast_tool_call(user_text, get_request_industry())
     if not fast_call or fast_call.tool_name != RASTER_FACT_TOOL:
         return False
 
@@ -1887,7 +1888,7 @@ async def _maybe_run_fast_raster_fact_turn(
 
         rows = await _map_rasters(conn, map_id)
 
-    layer = select_fast_raster_layer(user_text, rows)
+    layer = select_ready_fast_raster_layer(user_text, rows)
     if not layer:
         return False
 

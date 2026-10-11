@@ -1082,3 +1082,121 @@ def test_drone_photo_questions_keep_the_drone_tools(text):
     """Layer names join words with '_': 'Cyampirita_Orthophoto' did not match the drone keywords, so the drone
     tools were filtered out and Sage answered a question about the photo from satellites only."""
     assert USER_RASTER in classify_intent(text)
+
+
+# --- Tower and telecom wording, the project's industry, and the raster a fast path reads (PR 7) ---------------------
+
+# Each of these took a raster fast path with no model call: the evidence path would still fast-route them.
+@pytest.mark.parametrize("text", [
+    "how many antennas are on this tower photo?",
+    "where are the dishes in this photo",
+    "describe the tower photo",
+    "is there any damage on the tower in this image?",
+    "Is there damage on the shelter roof in this image?",  # "roof" read as houses: house masks
+    "Describe the Mast_site_Kicukiro photo",  # a word inside a layer name joined by "_"
+])
+def test_tower_questions_never_take_a_fast_path(text):
+    assert choose_geospatial_evidence_path(text).should_fast_route
+    assert build_fast_tool_call(text) is None
+
+
+# French and Kinyarwanda (need native-speaker review): never a fast path either.
+@pytest.mark.parametrize("text", [
+    "Combien d'antennes y a-t-il sur cette photo du pylône ?",
+    "Où sont les paraboles sur cette image du site télécom ?",
+    "Y a-t-il des dégâts sur le mât dans cette image ?",
+    "Ni antene zingahe ziri ku munara uri kuri iyi foto?",
+    "Umunara w'itumanaho uri kuri iyi foto ufite ibyangiritse?",
+])
+def test_tower_questions_in_french_and_kinyarwanda_never_take_a_fast_path(text):
+    assert build_fast_tool_call(text) is None
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("how many antennas are on this tower photo?", True),
+    ("count the RRUs and the microwave dishes", True),
+    ("which antenna sectors face north?", True),
+    ("Describe the Mast_site_Kicukiro photo", True),
+    ("Combien d'antennes sur le pylône ?", True),
+    ("faisceaux hertziens du site", True),
+    ("Ni antene zingahe ziri ku munara?", True),
+    ("iminara y'itumanaho i Musanze", True),
+    # Not tower words: an admin sector, a vegetable, a farm question.
+    ("show the sectors of Gasabo district", False),
+    ("radishes in plot 4", False),
+    ("count the houses in Farm_A_Orthophoto", False),
+])
+def test_tower_vocabulary(text, expected):
+    from src.dependencies.sage_routing import mentions_tower_equipment
+
+    assert mentions_tower_equipment(text) is expected
+
+
+def test_house_questions_still_take_the_fast_path_after_the_tower_check():
+    call = build_fast_tool_call("where are most houses in Farm_A_Orthophoto?")
+    assert call is not None and call.tool_name == RASTER_OBJECT_CANDIDATES_TOOL
+
+
+@pytest.mark.parametrize("project_industry", ["agriculture", "telecom", "power_grid", None])
+def test_shared_fast_paths_run_for_every_industry(project_industry):
+    from src.dependencies.sage_routing import build_project_fast_tool_call
+
+    call = build_project_fast_tool_call("describe this orthophoto", project_industry)
+    assert call is not None and call.tool_name == "create_raster_h3_context_layer"
+    admin = build_project_fast_tool_call("show me Rulindo district", project_industry)
+    assert admin is not None and admin.tool_name == "show_admin_boundary"
+
+
+def test_a_fast_path_runs_only_when_the_projects_industry_serves_its_tool(monkeypatch):
+    """Every fast-path tool serves every industry today; one that did not must not run for another industry."""
+    from src.dependencies.sage_routing import build_project_fast_tool_call
+    from src.services import industry
+
+    monkeypatch.setitem(industry.CAPABILITIES, "create_raster_h3_context_layer", industry.AGRICULTURE)
+    text = "describe this orthophoto"
+    assert build_project_fast_tool_call(text, "agriculture").tool_name == "create_raster_h3_context_layer"
+    assert build_project_fast_tool_call(text, "telecom") is None
+    assert build_project_fast_tool_call(text, None) is None  # industry not found: fail closed
+
+
+def _raster(name="Site_photo", *, cog="ready", crs=True, bounds=(30.0589, -1.9536, 30.0646, -1.9489)):
+    """A map_layers row as message_routes._map_rasters returns it (metadata as the upload and COG job leave it)."""
+    metadata = {"band_count": 3, "cog_status": cog}
+    metadata.update({"original_srid": 32735} if crs else {"crs_missing": True})
+    if cog == "ready":
+        metadata["cog_key"] = f"cog/layer/{name}.cog.tif"
+    return {"layer_id": f"L{name}"[:12], "name": name, "metadata": metadata, "bounds": list(bounds)}
+
+
+def test_a_raster_fast_path_reads_only_a_georeferenced_photo_with_a_ready_cog():
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    question = "describe this photo"
+    assert select_ready_fast_raster_layer(question, [_raster()])["name"] == "Site_photo"
+    # A phone picture: no coordinate system, its outline is its pixel corners (gdalinfo cornerCoordinates).
+    assert select_ready_fast_raster_layer(question, [_raster(crs=False, bounds=(0, 3000, 4000, 0))]) is None
+    # Pixel corners with no crs_missing mark (older uploads) are not a place either.
+    assert select_ready_fast_raster_layer(question, [_raster(bounds=(0, 3000, 4000, 0))]) is None
+    assert select_ready_fast_raster_layer(question, [_raster(crs=False)]) is None
+    for cog in ("generating", "failed"):
+        assert select_ready_fast_raster_layer(question, [_raster(cog=cog)]) is None
+
+
+def test_the_ready_check_reads_metadata_stored_as_json_text():
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    row = _raster()
+    assert select_ready_fast_raster_layer("describe this photo", [{**row, "metadata": json.dumps(row["metadata"])}])
+    not_placed = _raster(crs=False)
+    assert select_ready_fast_raster_layer(
+        "describe this photo", [{**not_placed, "metadata": json.dumps(not_placed["metadata"])}]) is None
+
+
+def test_the_ready_check_keeps_the_choice_of_raster():
+    """A ready photo is not picked in place of the one asked for: "this photo" with two rasters stays ambiguous."""
+    from src.dependencies.sage_routing import select_ready_fast_raster_layer
+
+    rows = [_raster("Kabarama_Orthophoto"), _raster("Huye_Orthophoto", cog="generating")]
+    assert select_ready_fast_raster_layer("describe this photo", rows) is None
+    assert select_ready_fast_raster_layer("describe Huye_Orthophoto", rows) is None
+    assert select_ready_fast_raster_layer("describe Kabarama_Orthophoto", rows)["name"] == "Kabarama_Orthophoto"
