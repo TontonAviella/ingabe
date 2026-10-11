@@ -41,6 +41,9 @@ DEFAULT_THREADS = 4
 # picture read at 1280 px 11-19 s, measured 2026-10-11). Past this the process is killed.
 WAIT_LIMIT_S = 600.0
 IDLE_EXIT_S = 900.0
+# Set in the finder process before Ultralytics is imported. Ultralytics 8.4 reads YOLO_OFFLINE as offline only
+# when it is "true" (utils.is_online), not "1"; YOLO_AUTOINSTALL=False stops it pip-installing what it misses.
+OFFLINE_ENV = {"YOLO_OFFLINE": "true", "YOLO_AUTOINSTALL": "False"}
 
 # (x0, y0, x1, y1, score, class) in the pixels of the picture the model was given
 Row = tuple[float, float, float, float, float, int]
@@ -96,9 +99,7 @@ def _predict(weights: str, rgb: np.ndarray, prompts: Sequence[Sequence[float]], 
 
 def _serve(conn: Connection, n_threads: int) -> None:
     """The finder process: one picture at a time, until the app goes away or it has been idle IDLE_EXIT_S."""
-    # Ultralytics 8.4 reads YOLO_OFFLINE as offline only when it is "true" (utils.is_online), not "1".
-    os.environ["YOLO_OFFLINE"] = "true"
-    os.environ["YOLO_AUTOINSTALL"] = "False"
+    os.environ.update(OFFLINE_ENV)
     import torch  # lazy: only the finder process holds torch
     import ultralytics.utils.torch_utils as ultralytics_torch  # lazy: as above
 

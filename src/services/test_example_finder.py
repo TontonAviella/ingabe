@@ -14,6 +14,8 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -273,6 +275,16 @@ def test_a_picture_that_takes_too_long_stops_the_finder_process(monkeypatch):
     with pytest.raises(TimeoutError):
         example_finder_model.run("/nowhere.pt", PIXELS, MARKS, [0, 0, 0], 1280, 0.01, 300)
     assert example_finder_model._process is None
+
+
+@pytest.mark.timeout(600)
+def test_the_finder_process_settings_keep_ultralytics_offline():
+    """What the finder process sets before importing Ultralytics, checked against Ultralytics itself."""
+    code = "import ultralytics.utils as u; print(repr((u.ONLINE, u.AUTOINSTALL)))"
+    done = subprocess.run([sys.executable, "-c", code], env={**os.environ, **example_finder_model.OFFLINE_ENV},
+                          capture_output=True, text=True, timeout=500)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert done.stdout.strip().splitlines()[-1] == "(False, False)"
 
 
 @pytest.mark.timeout(600)

@@ -194,8 +194,9 @@ and has not been measured.
 numbers), input checks, the protocol around a recorded real Ultralytics result
 (`test_fixtures/example_finder/recorded_yoloe_result.json`, recorded by
 `scripts/finder_eval/record_test_result.py`), shrinking and mapping back, the
-weights' storage key and sha256 check, `FINDER_THREADS`, the process time
-limit and a model failure coming back from the process, kept finds reused,
+weights' storage key and sha256 check, `FINDER_THREADS`, the offline flags
+checked against Ultralytics itself, the process time limit and a model
+failure coming back from the process, kept finds reused,
 two workers running a request once, per-project keys, failures and retries,
 one picture at a time. `test_example_finder_pictures.py`: windows read
 through the raster workers, frames and their round trips, refused windows,
@@ -203,4 +204,5 @@ photos. `test_example_finder_routes.py`: switch off 404, rights, kept finds,
 422 reasons, the per-user rate limit. `test_example_finder_model.py` (only
 with `FINDER_TEST_WEIGHTS`): the real model on the tower photo, marks not
 given back, unmarked dishes found, a 2x picture giving the same finds in its
-own pixels, and the recorded result reproduced.
+own pixels, the recorded result reproduced, and the CPU it used within
+`FINDER_THREADS` (Lessons log 2026-10-11).

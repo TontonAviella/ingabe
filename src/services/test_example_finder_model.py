@@ -49,6 +49,8 @@ def test_the_real_finder_finds_unmarked_dishes_and_answers_in_the_pictures_own_p
           f"start, torch import, model); next picture {warm_s:.1f} s wall / {warm_cpu:.1f} s CPU; "
           f"{len(small)} finds")
 
+    # FINDER_THREADS caps the CPU the model uses (Ultralytics resets torch's threads unless told otherwise)
+    assert warm_cpu <= warm_s * (example_finder_model.threads() + 0.5)
     # the marks themselves are not given back as finds
     assert all(boxes.iou(f.box, m) < example_finder.MARK_IOU for f in small for m in MARKS)
     assert all(boxes.iou(f.box, m) < example_finder.MARK_IOU for f in large for m in big_marks)

@@ -177,6 +177,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-11** The example finder's FINDER_THREADS=1 still kept ~5.8 cores busy: Ultralytics' select_device resets torch to CPU-1 threads
+  on every model setup; and the spec's YOLO_OFFLINE=1 is not offline (Ultralytics 8.4 reads only "true"). Rule: a cap or switch handed to a
+  library is checked against the library (CPU time over wall time; the library's own flag), not assumed. Gate: `test_example_finder_model.py`, `test_example_finder.py`.
 - **2026-10-11** A regex reading the XMP packet of an uploaded photo backtracked quadratically (9.8 s on one crafted 60,000-letter
   field); Python's `re` holds the GIL, so `asyncio.to_thread` did not keep the app answering. Rule: a regex run on uploaded text is
   linear (anchored on a literal) and its input is length-capped. Gate: `test_a_crafted_xmp_packet_is_read_in_linear_time`.
