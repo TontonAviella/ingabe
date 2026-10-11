@@ -43,7 +43,7 @@ import numpy as np
 from PIL import Image
 from redis.exceptions import LockError
 
-from src.services import answer_levels, boxes, example_finder_model
+from src.services import answer_levels, boxes, example_finder_model, stored_files
 from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Runner
 from src.services.example_finder_pictures import (
     LONLAT,
@@ -451,15 +451,6 @@ async def _take_slot(redis: Any, request: _Request, held: list[Any]) -> None:
         await asyncio.sleep(QUEUE_POLL_S)
 
 
-async def _load(s3: Any, bucket: str, key: str) -> Optional[dict[str, Any]]:
-    try:
-        response = await s3.get_object(Bucket=bucket, Key=key)
-    except s3.exceptions.NoSuchKey:
-        return None
-    async with response["Body"] as body:
-        return json.loads(await body.read())
-
-
 def _done(job_id: str, stored: dict[str, Any]) -> Job:
     return Job(job_id=job_id, status=DONE, finds=stored["finds"])
 
@@ -475,7 +466,7 @@ async def status(redis: Any, s3: Any, bucket: str, project_id: str, job_id: str)
     there is no such job here (never started, or the worker running it stopped: starting it again is safe)."""
     if not is_job_id(job_id):
         return None
-    stored = await _load(s3, bucket, result_key(project_id, job_id))
+    stored = await stored_files.load_json(s3, bucket, result_key(project_id, job_id))
     if stored is not None:
         return _done(job_id, stored)
     raw = await redis.get(_status_key(project_id, job_id))
@@ -508,7 +499,7 @@ async def start(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str,
                             "look-alike mark")
     gate = check_picture(s, picture.view, picture.width, picture.height, marks_px)
     job_id = content_sha(picture.sha256, marks_px, looks_px, s)
-    stored = await _load(s3, bucket, result_key(project_id, job_id))
+    stored = await stored_files.load_json(s3, bucket, result_key(project_id, job_id))
     if stored is not None:
         return _done(job_id, stored)
     request = _Request(project_id=project_id, job_id=job_id, user_id=user_id, settings=s,
@@ -583,7 +574,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
 async def _work(redis: Any, s3: Any, bucket: str, request: _Request, runner: Optional[Runner],
                 held: list[Any]) -> None:
     key = result_key(request.project_id, request.job_id)
-    if await _load(s3, bucket, key) is not None:  # another worker finished it between the check and the lock
+    if await stored_files.load_json(s3, bucket, key) is not None:  # another worker finished it between the check and the lock
         return
     await _take_slot(redis, request, held)
     await _set_status(redis, request.project_id, request.job_id, RUNNING, LOCK_TTL_S)

@@ -997,9 +997,8 @@ async def get_inspection_photo(
 
     bucket_name = get_bucket_name()
     s3 = await get_async_s3_client()
-    listing = await s3_op(s3.list_objects_v2(Bucket=bucket_name, Prefix=f"{prefix}{sha256}", MaxKeys=10),
-                          "list_objects_v2", f"inspection photo {layer.layer_id}")
-    key = photo_inspections.photo_key_in(prefix, sha256, [o["Key"] for o in listing.get("Contents", [])])
+    key = await s3_op(photo_inspections.stored_photo_key(s3, bucket_name, prefix, sha256),
+                      "list_objects_v2", f"inspection photo {layer.layer_id}")
     if key is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such photo in this inspection")
 

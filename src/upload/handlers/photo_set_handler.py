@@ -32,8 +32,8 @@ _UPLOAD_CONCURRENCY = 8
 class PhotoSetUploadHandler(BaseUploadHandler):
     """Handles photo inspections (a ZIP of JPG/PNG photos, or a single photo GDAL cannot place on the map).
 
-    Preprocessing unpacks the photos, reads their facts, stores the originals under the inspection's prefix and
-    writes the camera points as GeoJSON. Layer creation is the vector path's. An upload that creates no layer
+    Preprocessing unpacks the photos, reads their facts, stores the originals and every photo's facts under the
+    inspection's prefix and writes the camera points as GeoJSON. Layer creation is the vector path's. An upload that creates no layer
     removes the stored originals (discard); once the layer exists, the uploaded file itself is not kept.
     """
 
@@ -82,6 +82,9 @@ class PhotoSetUploadHandler(BaseUploadHandler):
         prefix = photo_inspections.storage_prefix(ctx.project_id, ctx.layer_id)
         await _store_originals([path for path, _ in photos], facts, prefix, ctx.bucket_name)
         shutil.rmtree(photos_dir, ignore_errors=True)  # stored; only the camera points are needed from here
+        # Every photo's facts, also those with no GPS position that the camera points leave out.
+        await s3_op(photo_inspections.save_facts(await get_async_s3_client(), ctx.bucket_name, prefix, facts),
+                    "upload", f"inspection facts {prefix}")
 
         geojson_path = os.path.join(temp_dir, "cameras.geojson")
         with open(geojson_path, "w", encoding="utf-8") as f:

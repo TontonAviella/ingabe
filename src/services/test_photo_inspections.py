@@ -265,3 +265,81 @@ async def test_forget_refuses_a_prefix_that_is_not_the_layers_own(prefix, layer_
     with pytest.raises(ValueError):
         await pi.forget_if_unused(_Rows(0), store, "b", prefix, layer_id)
     assert store.deleted == []
+
+
+# --- Facts the tower work reads: the photo upright, which way it looked, all photos kept ------------------------------
+
+def _rotated_jpg(orientation: int) -> bytes:
+    """A 64 x 48 photo whose EXIF says to turn it (6: a quarter clockwise, as phones write portrait photos)."""
+    image = Image.new("RGB", (64, 48), (90, 140, 60))
+    exif = Image.Exif()
+    exif[274] = orientation
+    out = io.BytesIO()
+    image.save(out, "JPEG", exif=exif)
+    return out.getvalue()
+
+
+def test_a_photo_is_sized_as_it_is_shown(tmp_path):
+    turned = pi.read_photo(_write(tmp_path, "p.jpg", _rotated_jpg(6)), "p.jpg")
+    assert (turned.width, turned.height, turned.orientation) == (64, 48, 6)  # the stored pixels
+    assert turned.upright_size == (48, 64)  # as a browser and the finder show it
+    level = pi.read_photo(_write(tmp_path, "q.jpg", _rotated_jpg(1)), "q.jpg")
+    assert level.upright_size == (64, 48)
+    plain = pi.read_photo(_write(tmp_path, "r.jpg", drone_jpg()), "r.jpg")
+    assert plain.orientation is None and plain.upright_size == (64, 48)
+
+
+@pytest.mark.parametrize("pitch, view", [(-90.0, "nadir"), (-80.0, "nadir"), (-79.9, "oblique"), (-30.1, "oblique"),
+                                         (0.0, "oblique"), (15.0, "oblique"), (None, None)])
+def test_which_way_a_photo_looked_comes_from_its_gimbal_pitch_only(tmp_path, pitch, view):
+    xmp = None if pitch is None else (
+        b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF><rdf:Description drone-dji:GimbalPitchDegree="'
+        + f"{pitch:+.2f}".encode() + b'"/></rdf:RDF></x:xmpmeta>')
+    facts = pi.read_photo(_write(tmp_path, "v.jpg", drone_jpg(-1.9, 30.1, xmp=xmp)), "v.jpg")
+    assert facts.gimbal_pitch == (None if pitch is None else pytest.approx(pitch))
+    assert pi.view_of(facts) == view  # no pitch: not known, never guessed
+
+
+class _Store:
+    """put_object / get_object as aiobotocore answers them (a body read through an async context manager)."""
+
+    class exceptions:
+        class NoSuchKey(Exception):
+            pass
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    async def put_object(self, Bucket, Key, Body, ContentType):
+        self.objects[Key] = Body
+        return {}
+
+    async def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise self.exceptions.NoSuchKey(Key)
+        data = self.objects[Key]
+
+        class Body:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def read(self):
+                return data
+
+        return {"Body": Body()}
+
+
+@pytest.mark.anyio
+async def test_every_photos_facts_are_kept_beside_the_originals(tmp_path):
+    placed = pi.read_photo(_write(tmp_path, "a.jpg", drone_jpg(-1.9, 30.1, xmp=DJI_XMP)), "a.jpg")
+    unplaced = pi.read_photo(_write(tmp_path, "b.jpg", _rotated_jpg(6)), "b.jpg")
+    prefix = pi.storage_prefix("Pproj", "Llayer")
+    store = _Store()
+    assert await pi.load_facts(store, "b", prefix) is None  # an inspection uploaded before facts were kept
+    await pi.save_facts(store, "b", prefix, [placed, unplaced])
+    assert list(store.objects) == [f"{prefix}facts.json"] == [pi.facts_key(prefix)]
+    assert await pi.load_facts(store, "b", prefix) == [placed, unplaced]
+    assert pi.photo_key_in(prefix, "facts", list(store.objects)) is None  # never taken for a photo
