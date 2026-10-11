@@ -9,7 +9,6 @@ Every fact is read from the photo itself. A value the photo does not carry is No
 
 from __future__ import annotations
 
-import hashlib
 import math
 import os
 import re
@@ -17,6 +16,8 @@ import struct
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Iterable, Optional
+
+from src.services import photo_content
 
 # The switch: photo inspections are off unless PHOTO_INSPECTIONS is set to a true value.
 _SWITCH = "PHOTO_INSPECTIONS"
@@ -33,7 +34,6 @@ MAX_UNPACKED_BYTES = 15 * 1024 ** 3  # 15 GiB
 _STORAGE_ROOT = "inspections"
 _SEGMENT = r"[A-Za-z0-9_-]+"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_HASH_CHUNK = 1024 * 1024
 # A JPEG keeps its XMP packet near the start of the file (an APP segment); a PNG in a text chunk before the pixels.
 _XMP_SCAN_BYTES = 1024 * 1024
 
@@ -115,10 +115,7 @@ def read_photo(path: str, filename: str) -> PhotoFacts:
     the headers only (not the pixels) for the rest. Raises UnreadablePhoto for a file that is not a photo."""
     from PIL import Image  # lazy: Pillow is heavy and only photo uploads need it
 
-    sha = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(_HASH_CHUNK):
-            sha.update(chunk)
+    sha256 = photo_content.file_sha256(path)
     try:
         with Image.open(path) as image:
             found_format = image.format
@@ -136,7 +133,7 @@ def read_photo(path: str, filename: str) -> PhotoFacts:
 
     lat, lon = _gps_position(gps)
     return PhotoFacts(
-        sha256=sha.hexdigest(),
+        sha256=sha256,
         filename=filename,
         width=width,
         height=height,

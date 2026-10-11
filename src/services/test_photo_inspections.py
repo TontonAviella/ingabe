@@ -7,6 +7,7 @@ import io
 import pytest
 from PIL import Image, PngImagePlugin
 
+from src.services import photo_content
 from src.services import photo_inspections as pi
 from test_fixtures.drone_photos import DJI_XMP, drone_jpg
 
@@ -152,3 +153,12 @@ def test_the_switch_is_off_unless_set(monkeypatch):
 def test_the_limits():
     assert pi.MAX_PHOTOS == 1_000
     assert pi.MAX_UNPACKED_BYTES == 15 * 1024 ** 3
+
+
+def test_the_photo_is_hashed_by_the_one_file_hash_owner(tmp_path, monkeypatch):
+    path = _write(tmp_path, "a.jpg", drone_jpg(-1.9, 30.1))
+    calls = []
+    real = photo_content.file_sha256
+    monkeypatch.setattr(photo_content, "file_sha256", lambda p: calls.append(p) or real(p))
+    assert pi.read_photo(path, "a.jpg").sha256 == hashlib.sha256(open(path, "rb").read()).hexdigest()
+    assert calls == [path]
