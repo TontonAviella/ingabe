@@ -135,6 +135,15 @@ def test_the_weed_data_is_named():
     assert "cotton and weed UAV tiles" in al.target("row_crop_plant").measured["dataset"]
 
 
+def test_every_measurement_says_which_way_its_pictures_looked():
+    # As the datasets describe them: the tower photos are taken at an angle, every other set looks straight down.
+    views = {t.name: t.measured["view"] for t in al.targets()}
+    assert views == {"tower_dish": al.OBLIQUE, "tower_antenna": al.OBLIQUE, "tower_radio_unit": al.OBLIQUE,
+                     "building": al.NADIR, "maize_seedling": al.NADIR, "row_crop_plant": al.NADIR, "weed": al.NADIR,
+                     "tree_crown_forest": al.NADIR, "tree_crown_savanna": al.NADIR, "banana_mat": None}
+    assert all("tower photos" in al.target(n).measured["dataset"] for n, v in views.items() if v == al.OBLIQUE)
+
+
 def test_no_size_is_guessed():
     # Nobody measured object sizes on the ground: the gate uses the user's marks instead.
     assert all(t.object_size_m is None and t.object_size_note for t in al.targets())
@@ -158,6 +167,8 @@ def test_a_broken_table_fails_on_load(tmp_path):
     broken(lambda d: d["building"]["measured"].update(value=1.3), "not a share")
     broken(lambda d: d["building"]["measured"].update(date=None), "must say")
     broken(lambda d: d["weed"]["measured"].update(dataset=None), "must say")
+    broken(lambda d: d["weed"]["measured"].update(view=None), "must say")
+    broken(lambda d: d["weed"]["measured"].update(view="sideways"), "view 'sideways' is not one of")
     broken(lambda d: d["building"]["measured"].update(finder_input_px=None), "must say")
     broken(lambda d: d["building"]["measured"].update(n_images=0), "whole number")
     broken(lambda d: d["banana_mat"]["measured"].update(note=None), "no note")

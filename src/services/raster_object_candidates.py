@@ -12,6 +12,8 @@ from typing import Any
 
 from shapely.geometry import shape
 
+from src.services import boxes
+
 # Sample cap measured in docs/FASTSAM_HERMES_EVALUATION.md (building F1 0.646
 # at 2 MP -> 0.729 at 4 MP on Cyampirita). MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS
 # may only LOWER it: a larger sample is unmeasured memory and latency.
@@ -1353,7 +1355,7 @@ def _dedupe_candidate_features(features: list[dict[str, Any]]) -> list[dict[str,
             level_feature_indexes, tree = level
             for local_index in tree.query(bbox_geometries[feature_index]):
                 other_index = level_feature_indexes[int(local_index)]
-                if _bbox_iou(bounds, parsed_bounds[other_index]) >= 0.72:
+                if boxes.iou(bounds, parsed_bounds[other_index]) >= 0.72:
                     is_duplicate = True
                     break
             if is_duplicate:
@@ -1385,25 +1387,6 @@ def _dedupe_candidate_features(features: list[dict[str, Any]]) -> list[dict[str,
             index_levels[level_index] = None
             level_index += 1
     return deduped
-
-
-def _bbox_iou(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-) -> float:
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    if ix2 <= ix1 or iy2 <= iy1:
-        return 0.0
-    intersection = (ix2 - ix1) * (iy2 - iy1)
-    area_a = max((ax2 - ax1) * (ay2 - ay1), 0.0)
-    area_b = max((bx2 - bx1) * (by2 - by1), 0.0)
-    union = area_a + area_b - intersection
-    return intersection / union if union > 0 else 0.0
 
 
 def _fastsam_imgsz(width: int, height: int) -> int:

@@ -83,11 +83,17 @@ KINDS = (STRUCTURE, ANNUAL_CROP, WEED, PERENNIAL_CROWN)
 # A cut-off set with the spec on 2026-10-11, not measured; the share itself is measured by the caller.
 CLOSED_CANOPY_SHARE = 0.8
 
-PROVENANCE_KEYS = ("dataset", "protocol", "n_images", "image_px", "finder_input_px", "date", "metric", "value",
-                   "evidence", "where", "note")
-# A measured value must say what, how, when, on how many pictures of what size, read at what size, from which rows.
-_REQUIRED_WHEN_MEASURED = ("dataset", "protocol", "n_images", "image_px", "finder_input_px", "date", "metric",
-                           "evidence", "where")
+# Which way the measured pictures looked: a value holds only for pictures taken the same way.
+OBLIQUE = "oblique"  # photos taken at an angle, from the side (the tower photos)
+NADIR = "nadir"  # pictures looking straight down (orthophoto and UAV tiles)
+VIEWS = (OBLIQUE, NADIR)
+
+PROVENANCE_KEYS = ("dataset", "view", "protocol", "n_images", "image_px", "finder_input_px", "date", "metric",
+                   "value", "evidence", "where", "note")
+# A measured value must say what, seen which way, how, when, on how many pictures of what size, read at what size,
+# from which rows.
+_REQUIRED_WHEN_MEASURED = ("dataset", "view", "protocol", "n_images", "image_px", "finder_input_px", "date",
+                           "metric", "evidence", "where")
 _WHOLE_PX = ("n_images", "image_px", "finder_input_px")
 
 TARGETS_PATH = Path(__file__).parent / "answer_levels_targets.json"
@@ -129,6 +135,8 @@ def _check_provenance(name: str, measured: dict[str, Any]) -> None:
     unsaid = [key for key in _REQUIRED_WHEN_MEASURED if measured[key] is None]
     if unsaid:
         raise ValueError(f"answer target {name}: a measured value must say {unsaid}")
+    if measured["view"] not in VIEWS:
+        raise ValueError(f"answer target {name}: view {measured['view']!r} is not one of {VIEWS}")
     for key in _WHOLE_PX:
         if not isinstance(measured[key], int) or isinstance(measured[key], bool) or measured[key] < 1:
             raise ValueError(f"answer target {name}: {key} {measured[key]!r} is not a whole number of 1 or more")

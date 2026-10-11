@@ -79,6 +79,11 @@ services:
       # Answer levels for objects in a picture: count / check / estimate / rough / area / can't tell
       # (src/services/answer_levels.py). Off: consumers behave as before.
       - ANSWER_LADDER=${ANSWER_LADDER:-0}
+      # Example finder: mark a few objects in a drone photo, YOLOE-11s finds the rest
+      # (src/services/example_finder.py). Off: its routes answer 404.
+      - EXAMPLE_FINDER=${EXAMPLE_FINDER:-0}
+      # Torch threads in the example finder's own process (src/services/example_finder_model.py).
+      - FINDER_THREADS=${FINDER_THREADS:-4}
       - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
