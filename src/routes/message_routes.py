@@ -1257,6 +1257,23 @@ def _raster_context_fast_reply(
     return reply
 
 
+async def _map_rasters(conn, map_id: str) -> list:
+    """The raster layers on the map, in map order: what the raster fast paths choose from."""
+    return await conn.fetch(
+        """
+        SELECT ml.layer_id, ml.name
+        FROM user_mundiai_maps m
+        JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
+          ON TRUE
+        JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
+        WHERE m.id = $1
+          AND ml.type = 'raster'
+        ORDER BY map_layer.ord
+        """,
+        map_id,
+    )
+
+
 async def _maybe_run_fast_raster_context_turn(
     *,
     map_id: str,
@@ -1292,19 +1309,7 @@ async def _maybe_run_fast_raster_context_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
     layer = select_fast_raster_layer(user_text, rows)
     if not layer:
@@ -1668,19 +1673,7 @@ async def _maybe_run_fast_raster_object_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
     layer = select_fast_raster_layer(user_text, rows)
     if not layer:
@@ -1892,19 +1885,7 @@ async def _maybe_run_fast_raster_fact_turn(
         if not project_row:
             return False
 
-        rows = await conn.fetch(
-            """
-            SELECT ml.layer_id, ml.name
-            FROM user_mundiai_maps m
-            JOIN LATERAL unnest(m.layers) WITH ORDINALITY AS map_layer(layer_id, ord)
-              ON TRUE
-            JOIN map_layers ml ON ml.layer_id = map_layer.layer_id
-            WHERE m.id = $1
-              AND ml.type = 'raster'
-            ORDER BY map_layer.ord
-            """,
-            map_id,
-        )
+        rows = await _map_rasters(conn, map_id)
 
     layer = select_fast_raster_layer(user_text, rows)
     if not layer:
