@@ -18,6 +18,7 @@ import pytest
 
 from src.dependencies.sage_routing import (
     AGRICULTURE,
+    ALWAYS_ON,
     RASTER_OBJECT_CANDIDATES_TOOL,
     BRAIN,
     MAP_EDIT,
@@ -1216,17 +1217,28 @@ def _tool_names(tools: list[dict]) -> list[str]:
     return [t["function"]["name"] for t in tools]
 
 
-def test_the_empty_towers_category_does_not_narrow_the_tools():
-    """No tower tools yet: a question that names only towers keeps the full list (as before), and towers next to
-    another category adds nothing to it."""
+def test_a_towers_question_offered_no_tower_tool_does_not_narrow_the_tools():
+    """Outside Telecom projects, or with TOWERS off, the turn is offered no tower tool: a question that names only
+    towers keeps the full list (as before tower tools existed), and towers next to another category adds nothing."""
+    from src.dependencies.sage_routing import offered_categories
+
+    tools = [{"function": {"name": n}} for n in ("search_brain", "describe_user_raster", "search_location")]
+    offered = offered_categories(tools)
+    assert offered == frozenset({BRAIN, USER_RASTER, ALWAYS_ON})
     tower_only = route_chat("Is strong wind or a storm expected in Karongi in the next days? We have tower climbs "
-                            "planned.")
+                            "planned.", offered=offered)
     assert tower_only.selected_categories == frozenset()
     assert tower_only.reason == "intent:towers;no_tools_yet"
-    tools = [{"function": {"name": n}} for n in ("search_brain", "describe_user_raster", "search_location")]
-    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    with_notes = route_chat("Search our notes for the Kigali tower audit", offered=offered)
     assert _tool_names(filter_tools_by_categories(tools, with_notes.selected_categories)) == _tool_names(
         filter_tools_by_categories(tools, {BRAIN})) == ["search_brain", "search_location"]
+
+
+def test_the_tower_tools_are_filed_under_towers():
+    from src.dependencies.sage_routing import TOWERS, tool_category_for_name
+
+    assert tool_category_for_name("get_tower_inspection_findings") == TOWERS
+    assert tool_category_for_name("tower_photos_needing_review") == TOWERS
 
 
 def test_a_tool_filed_under_towers_is_offered_for_tower_questions(monkeypatch):
@@ -1277,11 +1289,14 @@ def test_farm_vocabulary(text, expected):
     assert AGRICULTURE in classify_intent(text)  # routing is unchanged: all of them still select agriculture
 
 
-def test_a_tower_question_names_its_empty_category():
-    """The abdication guard reads named_categories: towers stays named though it selects no tools yet."""
-    tower_only = route_chat("How many antennas are on this tower photo?")
+def test_a_tower_question_names_its_category_whether_or_not_it_is_offered_a_tool():
+    """The abdication guard reads named_categories: towers stays named when the turn is offered no tower tool."""
+    no_towers = frozenset({BRAIN, USER_RASTER, ALWAYS_ON})
+    tower_only = route_chat("How many antennas are on this tower photo?", offered=no_towers)
     assert tower_only.named_categories == frozenset({"towers"}) and tower_only.selected_categories == frozenset()
-    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    offered = route_chat("How many antennas are on this tower photo?")  # every category with a tool
+    assert offered.named_categories == offered.selected_categories == frozenset({"towers"})
+    with_notes = route_chat("Search our notes for the Kigali tower audit", offered=no_towers)
     assert with_notes.named_categories == with_notes.selected_categories == frozenset({BRAIN, "towers"})
     assert route_chat("hello there").named_categories == frozenset()
 
@@ -1292,9 +1307,15 @@ def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
     from src.services import industry
 
     every = {BRAIN, MAP_EDIT, SATELLITE, SPATIAL_INSIGHT, USER_RASTER, AGRICULTURE}
+    monkeypatch.delenv("TOWERS", raising=False)
     for project_industry in ("agriculture", "telecom", "power_grid", None):
         assert every <= categories_with_tools(project_industry)  # agriculture also files the weather tools
+        assert TOWERS not in categories_with_tools(project_industry)  # TOWERS off: no tower tool anywhere
+    monkeypatch.setenv("TOWERS", "1")
+    assert TOWERS in categories_with_tools("telecom")
+    for project_industry in ("agriculture", "power_grid", None):
         assert TOWERS not in categories_with_tools(project_industry)
+    monkeypatch.delenv("TOWERS")
     monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_tower_equipment", TOWERS)
     monkeypatch.setitem(industry.CAPABILITIES, "count_tower_equipment", frozenset({"telecom"}))
     assert TOWERS in categories_with_tools("telecom")

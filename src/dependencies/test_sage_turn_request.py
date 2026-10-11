@@ -241,8 +241,9 @@ def test_the_abdication_exemption_covers_farm_questions_only(project_industry: s
 @pytest.mark.parametrize(
     ("project_industry", "text"),
     [
-        # No tool reads tower equipment yet (the towers category is empty), so "Ingabe cannot count antennas yet"
-        # stands instead of a forced raster tool (the fast paths' house masks drew screening cells for these).
+        # With TOWERS off no tool reads tower equipment (the towers category offers nothing), so "Ingabe cannot
+        # count antennas yet" stands instead of a forced raster tool (the fast paths' house masks drew screening
+        # cells for these).
         ("telecom", "How many antennas are on this tower photo?"),
         ("telecom", "Combien d'antennes y a-t-il sur cette photo du pylône ?"),
         ("telecom", "Ni antene zingahe ziri ku munara uri kuri iyi foto?"),
@@ -253,7 +254,8 @@ def test_the_abdication_exemption_covers_farm_questions_only(project_industry: s
         ("agriculture", "How many antennas are on this tower photo?"),  # no industry has a tower tool
     ],
 )
-def test_prose_stands_on_tower_questions_no_tool_here_answers(project_industry: str, text: str) -> None:
+def test_prose_stands_on_tower_questions_no_tool_here_answers(project_industry: str, text: str, monkeypatch) -> None:
+    monkeypatch.delenv("TOWERS", raising=False)
     abdicated, plan = _abdication_on(project_industry, text)
     assert plan.routing.named_categories == frozenset({"towers"})
     assert plan.routing.selected_categories == frozenset() and plan.tools  # the full list is still sent
@@ -274,6 +276,22 @@ def test_tower_questions_that_name_a_tool_here_stay_guarded(text: str, needed: s
     abdicated, plan = _abdication_on("telecom", text)
     assert "towers" in plan.routing.named_categories
     assert abdicated is True and needed in _names(plan.tools)
+
+
+@pytest.mark.parametrize("text", ["How many antennas are on this tower photo?",
+                                  "Ni antene zingahe ziri ku munara uri kuri iyi foto?",
+                                  "Which photos of the Rebero mast still need checking?"])
+def test_with_towers_on_a_telecom_tower_question_is_offered_the_tower_tools_and_guarded(text, monkeypatch) -> None:
+    monkeypatch.setenv("TOWERS", "1")
+    abdicated, plan = _abdication_on("telecom", text)
+    assert plan.routing.selected_categories == frozenset({"towers"})
+    assert {"get_tower_inspection_findings", "tower_photos_needing_review"} <= set(_names(plan.tools))
+    assert not {"describe_user_raster", "analyze_raster_object_candidates"} & set(_names(plan.tools))
+    assert abdicated is True  # a tool here answers it: prose is abdication
+    for other in ("power_grid", "agriculture"):  # no tower tool there: the honest no stands, the full list is sent
+        abdicated, plan = _abdication_on(other, text)
+        assert abdicated is False and plan.routing.selected_categories == frozenset()
+        assert "get_tower_inspection_findings" not in _names(plan.tools)
 
 
 def test_tower_questions_are_guarded_again_once_a_tower_tool_exists(monkeypatch) -> None:

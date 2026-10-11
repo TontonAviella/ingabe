@@ -175,7 +175,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "add_observation": BRAIN,
     "brain_graph_query": BRAIN,
     "brain_trajectory": BRAIN,
-    # --- Telecom towers (TOWERS): no tools yet. Tower tools are filed here as they are built. ---
+    # --- Telecom towers (TOWERS): a photo inspection's equipment counted by a person (switch TOWERS) ---
+    "get_tower_inspection_findings": TOWERS,
+    "tower_photos_needing_review": TOWERS,
 }
 
 
@@ -1426,7 +1428,7 @@ def build_project_fast_tool_call(text: str, project_industry: str | None) -> Fas
     industry may use its tool (industry.serves; an industry that could not be found gets only the tools every
     industry may use)."""
     fast = build_fast_tool_call(text)
-    if fast is None or not industry.serves(fast.tool_name, project_industry):
+    if fast is None or not industry.available(fast.tool_name, project_industry):
         return None
     return fast
 
@@ -1475,10 +1477,16 @@ def filter_tools_by_categories(
 
 
 def categories_with_tools(project_industry: str | None) -> frozenset[str]:
-    """The categories holding a tool a project of this industry may use (industry.serves). TOWERS joins them once
-    tower tools are built and filed under it."""
+    """The categories holding a tool a project of this industry may use now (industry.available: TOWERS only for
+    Telecom projects, and only while the TOWERS switch is on)."""
     return frozenset(category for name, category in _TOOL_CATEGORIES.items()
-                     if industry.serves(name, project_industry))
+                     if industry.available(name, project_industry))
+
+
+def offered_categories(tools: Iterable[dict]) -> frozenset[str]:
+    """The categories of the tools a turn is offered (its industry's, with switched-off tools left out)."""
+    return frozenset(_TOOL_CATEGORIES[name] for tool in tools
+                     if (name := tool.get("function", {}).get("name", "")) in _TOOL_CATEGORIES)
 
 
 def tool_category_for_name(tool_name: str) -> str:
@@ -1545,8 +1553,9 @@ class RoutingDecision:
             selected. Used when a proxy/rendering tool would be misleading for
             the question's evidence requirement.
         named_categories: Every category the question's words named, also one
-            with no tools yet (TOWERS), which selected_categories leaves out.
-            The abdication guard reads it.
+            with no tool offered to this turn (TOWERS outside Telecom projects or
+            with the switch off), which selected_categories leaves out. The
+            abdication guard reads it.
     """
 
     is_small_talk: bool
@@ -1584,6 +1593,7 @@ def _tool_round_in_flight(history: list[dict] | None) -> bool:
 def route_chat(
     user_message: str,
     history: list[dict] | None = None,
+    offered: frozenset[str] | None = None,
 ) -> RoutingDecision:
     """Decide how to handle one Sage turn.
 
@@ -1593,6 +1603,9 @@ def route_chat(
         history: Prior messages in OpenAI chat format (list of dicts
             with "role" and "content"/"tool_calls"). Used to suppress
             small-talk routing when a tool round is in progress.
+        offered: The categories of the tools this turn is offered
+            (offered_categories). A named category narrows the list only
+            when it is offered a tool; None: every category with a tool.
 
     Returns:
         A RoutingDecision the caller can act on.
@@ -1618,8 +1631,10 @@ def route_chat(
         excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
-    # A category narrows the list only once it has tools (TOWERS has none yet); until then the full list is sent.
-    if cats & set(_TOOL_CATEGORIES.values()):
+    # A category narrows the list only when this turn is offered one of its tools (TOWERS: Telecom projects with the
+    # switch on); otherwise the full list is sent, as before tower tools existed.
+    with_tools = set(_TOOL_CATEGORIES.values()) if offered is None else offered
+    if cats & with_tools:
         return RoutingDecision(
             is_small_talk=False,
             selected_categories=cats,
@@ -1633,7 +1648,7 @@ def route_chat(
         is_small_talk=False,
         selected_categories=frozenset(),
         primary_model_override=None,
-        # "intent:towers;no_tools_yet": the question names a category that has no tools yet.
+        # "intent:towers;no_tools_yet": the question names only categories this turn is offered no tool of.
         reason=f"intent:{','.join(sorted(cats))};no_tools_yet" if cats else "default",
         excluded_tool_names=excluded_tool_names,
         named_categories=cats,

@@ -38,6 +38,7 @@
     "get_parcel_ndvi_stats",
     "get_soil_moisture",
     "get_soil_properties",
+    "get_tower_inspection_findings",
     "get_value_distribution",
     "get_weather_stats",
     "get_yield_risk",
@@ -52,6 +53,7 @@
     "search_location",
     "search_satellite_imagery",
     "set_layer_style",
+    "tower_photos_needing_review",
     "zoom_to_bounds"
   ],
   "fast_path_tools": [
