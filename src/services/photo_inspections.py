@@ -36,6 +36,10 @@ _SEGMENT = r"[A-Za-z0-9_-]+"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 # A JPEG keeps its XMP packet near the start of the file (an APP segment); a PNG in a text chunk before the pixels.
 _XMP_SCAN_BYTES = 1024 * 1024
+# How much of an XMP packet is searched, and the longest value text read. DJI writes its values in the first few KB;
+# the caps keep the search short whatever a file holds (a 1 KB PNG can carry a 1,000,000-character packet).
+_XMP_MAX_CHARS = 256 * 1024
+_XMP_MAX_VALUE = 64
 
 # EXIF tags (TIFF/EXIF 2.32).
 _MAKE, _MODEL, _DATETIME = 271, 272, 306
@@ -297,26 +301,30 @@ def _taken_at(value, offset) -> Optional[str]:
 
 
 def _xmp_packet(info: dict, path: str) -> str:
-    """The photo's XMP packet as text ("" when it has none): from Pillow's reading of the file when it found one,
-    else from the start of the file."""
+    """The first _XMP_MAX_CHARS of the photo's XMP packet as text ("" when it has none): from Pillow's reading of
+    the file when it found one, else from the start of the file."""
     for key in ("xmp", "XML:com.adobe.xmp"):
         packet = info.get(key)
         if isinstance(packet, bytes):
-            return packet.decode("utf-8", errors="replace")
+            return packet[:_XMP_MAX_CHARS].decode("utf-8", errors="replace")
         if isinstance(packet, str) and packet:
-            return packet
+            return packet[:_XMP_MAX_CHARS]
     with open(path, "rb") as f:
         head = f.read(_XMP_SCAN_BYTES)
     start = head.find(b"<x:xmpmeta")
     end = head.find(b"</x:xmpmeta>", start)
     if start < 0 or end < 0:
         return ""
-    return head[start:end].decode("utf-8", errors="replace")
+    return head[start:min(end, start + _XMP_MAX_CHARS)].decode("utf-8", errors="replace")
 
 
 def _xmp_number(packet: str, name: str) -> Optional[float]:
     """A number from the XMP packet, written as an attribute (drone-dji:Name="+12.3") or an element
-    (<drone-dji:Name>+12.3</drone-dji:Name>). Parsed as text: no XML parser, so no entity expansion."""
-    match = (re.search(rf"[\w.-]+:{name}\s*=\s*\"([^\"]*)\"", packet)
-             or re.search(rf"<[\w.-]+:{name}>([^<]*)<", packet))
+    (<drone-dji:Name>+12.3</drone-dji:Name>). Parsed as text: no XML parser, so no entity expansion.
+
+    Both patterns start at a fixed character (the ':' before the name, checked to follow a prefix character, or
+    the '<' of the element), so the search is linear in the packet: a pattern starting with `[\\w.-]+` retried
+    every position of a long run of letters and took minutes on a crafted packet, holding the GIL throughout."""
+    match = (re.search(rf'(?<=[\w.-]):{name}\s*=\s*"([^"]{{0,{_XMP_MAX_VALUE}}})"', packet)
+             or re.search(rf"<[\w.-]+:{name}>([^<]{{0,{_XMP_MAX_VALUE}}})<", packet))
     return _finite(match.group(1).strip()) if match else None

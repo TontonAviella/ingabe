@@ -29,7 +29,11 @@ flight_yaw, make, model`.
 
 - Read from the photo itself: EXIF (Pillow, headers only, pixels are never decoded) and the XMP packet as text
   (DJI `drone-dji:RelativeAltitude`, `GimbalPitchDegree`, `GimbalYawDegree`, `FlightYawDegree`; any namespace prefix,
-  attribute or element form). No XML parser: no entity expansion, no new dependency.
+  attribute or element form). No XML parser: no entity expansion, no new dependency. Only the first 256 KiB of the
+  packet is searched and a value is at most 64 characters, and both patterns start at a fixed character, so a crafted
+  packet (a 1 KB PNG can carry 1,000,000 characters) cannot hold the worker: the regex runs with the GIL held, so a
+  thread does not protect the event loop. A value past the first 256 KiB is not read (None).
+- The SHA-256 is `photo_content.file_sha256` (one owner for hashing an uploaded file).
 - Missing is None, never 0. A real 0 (altitude 0 m, pitch 0 degrees) is kept.
 - Position: EXIF GPS latitude/longitude with their N/S and E/W references. No position (None) when the coordinates
   or a reference are missing, the receiver marked the fix void (`GPSStatus` = `V`), a value is not finite, or it is

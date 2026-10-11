@@ -3,6 +3,7 @@ Pillow as a camera writes it, DJI's XMP packet), storage keys, camera points. Mi
 
 import hashlib
 import io
+import time
 
 import pytest
 from PIL import Image, PngImagePlugin
@@ -153,6 +154,51 @@ def test_the_switch_is_off_unless_set(monkeypatch):
 def test_the_limits():
     assert pi.MAX_PHOTOS == 1_000
     assert pi.MAX_UNPACKED_BYTES == 15 * 1024 ** 3
+
+
+def _png_with_xmp(packet: str) -> bytes:
+    """A small PNG whose XMP packet is a compressed iTXt chunk, as Adobe tools write it (Pillow reports it under
+    "XML:com.adobe.xmp")."""
+    info = PngImagePlugin.PngInfo()
+    info.add_itxt("XML:com.adobe.xmp", packet, zip=True)
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(out, "PNG", pnginfo=info)
+    return out.getvalue()
+
+
+@pytest.mark.parametrize("name,data", [
+    # A 1,000,000-letter packet in a PNG of about 1 KB: the old pattern needed hours per value, holding the GIL.
+    ("letters.png", lambda: _png_with_xmp("a" * 1_000_000)),
+    # The same in a JPEG (an APP1 segment holds at most 64 KB): the old pattern took about 40 s for the photo.
+    ("letters.jpg", lambda: drone_jpg(xmp=b"a" * 60_000)),
+    # A packet that only the scan of the file head finds (a plain text chunk), around a long run of letters.
+    ("scanned.png", lambda: _png_with_comment("<x:xmpmeta " + "a" * 900_000 + "</x:xmpmeta>")),
+    # Many prefixes and spaces before names that never get a value.
+    ("prefixes.png", lambda: _png_with_xmp(("a:RelativeAltitude" + " " * 40 + "<b:GimbalYawDegree ") * 12_000)),
+])
+def test_a_crafted_xmp_packet_is_read_in_linear_time(tmp_path, name, data):
+    path = _write(tmp_path, name, data())
+    started = time.perf_counter()
+    facts = pi.read_photo(path, name)
+    assert time.perf_counter() - started < 1.0
+    for field in ("relative_altitude_m", "gimbal_pitch", "gimbal_yaw", "flight_yaw"):
+        assert getattr(facts, field) is None, field
+
+
+def test_only_the_start_of_a_long_packet_is_searched(tmp_path):
+    early = _png_with_xmp('<x:xmpmeta><rdf:Description drone-dji:RelativeAltitude="+45.20" ' + "a" * 300_000
+                          + ' drone-dji:GimbalYawDegree="-87.30"/></x:xmpmeta>')
+    facts = pi.read_photo(_write(tmp_path, "early.png", early), "early.png")
+    assert facts.relative_altitude_m == pytest.approx(45.2)
+    assert facts.gimbal_yaw is None, "a value past the first 256 KiB is not read, and missing is None"
+
+
+def _png_with_comment(text: str) -> bytes:
+    info = PngImagePlugin.PngInfo()
+    info.add_text("Comment", text)
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(out, "PNG", pnginfo=info)
+    return out.getvalue()
 
 
 def test_the_photo_is_hashed_by_the_one_file_hash_owner(tmp_path, monkeypatch):
