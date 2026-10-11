@@ -1,5 +1,6 @@
 import { apiFetch } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type ServerError, serverError } from '@/lib/serverError';
 
 // Shapes returned by src/routes/drone_card_routes.py. Every word, number and
 // status is decided on the server (src/services/drone_cards.py); the panel only shows them.
@@ -97,30 +98,9 @@ export interface FarmRecordResult {
   warnings: string[];
 }
 
-/** Errors the server explains in words (a photo still processing, not a colour photo). */
-export class DroneCardsError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
-/** The server's own words for a failed request, or its status. */
-async function failure(res: Response): Promise<DroneCardsError> {
-  let detail = `Request failed (${res.status})`;
-  try {
-    detail = (await res.json()).detail ?? detail;
-  } catch {
-    /* not JSON: keep the status */
-  }
-  return new DroneCardsError(res.status, detail);
-}
-
 async function getJson<T>(url: string): Promise<T> {
   const res = await apiFetch(url);
-  if (!res.ok) throw await failure(res);
+  if (!res.ok) throw await serverError(res);
   return res.json();
 }
 
@@ -135,7 +115,7 @@ const WORKING_REFRESH_MS = 15_000;
 
 /** The deck for a photo; another seed picks other wordings and another mix of questions. */
 export function useDroneDeck(layerId: string | null, audience: string | null, seed: number) {
-  return useQuery<DroneDeck, DroneCardsError>({
+  return useQuery<DroneDeck, ServerError>({
     queryKey: ['drone-cards', layerId, audience, seed],
     queryFn: () => getJson<DroneDeck>(`/api/layer/${layerId}/cards${query(audience, seed)}`),
     placeholderData: (previous) => previous,
@@ -149,7 +129,7 @@ export function useDroneDeck(layerId: string | null, audience: string | null, se
 }
 
 export function useDroneCardAnswer(layerId: string | null, cardId: string | null, audience: string | null, seed: number) {
-  return useQuery<DroneCardAnswer, DroneCardsError>({
+  return useQuery<DroneCardAnswer, ServerError>({
     queryKey: ['drone-card-answer', layerId, cardId, audience, seed],
     queryFn: () => getJson<DroneCardAnswer>(`/api/layer/${layerId}/cards/${cardId}${query(audience, seed)}`),
     enabled: !!layerId && !!cardId,
@@ -162,14 +142,14 @@ export function useDroneCardAnswer(layerId: string | null, cardId: string | null
 /** Pick where a photo's plots come from; every card of that photo is asked again. */
 export function useChoosePlotSource(layerId: string | null) {
   const queryClient = useQueryClient();
-  return useMutation<void, DroneCardsError, { href: string; source: string }>({
+  return useMutation<void, ServerError, { href: string; source: string }>({
     mutationFn: async ({ href, source }) => {
       const res = await apiFetch(href, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source }),
       });
-      if (!res.ok) throw await failure(res);
+      if (!res.ok) throw await serverError(res);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
@@ -181,13 +161,13 @@ export function useChoosePlotSource(layerId: string | null) {
 /** Add a soil lab report or harvest records; the photo's cards are asked again once it is read. */
 export function useAddFarmRecord(layerId: string | null) {
   const queryClient = useQueryClient();
-  return useMutation<FarmRecordResult, DroneCardsError, { href: string; file: File }>({
+  return useMutation<FarmRecordResult, ServerError, { href: string; file: File }>({
     mutationFn: async ({ href, file }) => {
       const body = new FormData();
       body.append('file', file);
       // Reading a document takes the vision model about 10 seconds; give it more than the usual 30 s limit.
       const res = await apiFetch(href, { method: 'POST', body, signal: AbortSignal.timeout(120_000) });
-      if (!res.ok) throw await failure(res);
+      if (!res.ok) throw await serverError(res);
       return res.json();
     },
     onSuccess: () => {
@@ -200,14 +180,14 @@ export function useAddFarmRecord(layerId: string | null) {
 /** Say what really grows in a plot; every card of the photo is asked again. */
 export function useCheckPlot(layerId: string | null) {
   const queryClient = useQueryClient();
-  return useMutation<void, DroneCardsError, { href: string; number: number; crop: string }>({
+  return useMutation<void, ServerError, { href: string; number: number; crop: string }>({
     mutationFn: async ({ href, number, crop }) => {
       const res = await apiFetch(href.replace('{number}', String(number)), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ crop }),
       });
-      if (!res.ok) throw await failure(res);
+      if (!res.ok) throw await serverError(res);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
