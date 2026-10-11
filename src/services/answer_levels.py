@@ -1,20 +1,22 @@
-"""How far an answer about objects in a picture may go: a count, a count after checking, an estimate, a rough
-number, an area, or "can't tell".
+"""How far an answer about objects the picture finder found may go: a count, a count after checking, an estimate,
+a rough number, an area, or "can't tell".
 
-The picture finder (YOLOE-11s, shown three marks the user drew on the picture) was measured on 2026-10-11 for
-each kind of object. The results, and where each came from, are in answer_levels_targets.json beside this module.
-Each kind of object has the highest level that evidence supports today; none is trusted to COUNT yet. Two gates
-can lower the level for one picture:
+The finder is YOLOE-11s (yoloe-11s-seg) shown three marks the user drew on the picture. It was measured on
+2026-10-11 for each kind of object; the results are in answer_levels_targets.json, and the rows and marks behind
+them in answer_levels_evidence.json, beside this module. Each kind of object has the highest level that evidence
+supports today; none is trusted to COUNT yet. The levels hold for this finder only: `decide` refuses another
+finder's output. Two gates can lower the level for one picture:
 
-* the size gate: objects under 50 px across were not found reliably (below about 25-30 px every kind failed);
+* the size gate: objects smaller, as the finder reads them, than every picture the kind was measured on are
+  outside the measurement;
 * countability: for example, crop plants whose leaves touch cannot be told apart.
 
 `decide` combines the table and the gates into one Answer whose reason is in data terms. Consumers read
 `ladder_enabled()` (ANSWER_LADDER, off by default) before using any of this. Rules:
 docs/rules/ANSWER_LEVELS_RULES.md.
 
-This module owns the finder's size floor only. src/services/plant_counts.py counts plants with another method
-(green crowns) and keeps its own floor, 5 cm per pixel, checked on Cyampirita maize; see the rules doc.
+src/services/plant_counts.py counts plants with another method (green crowns) and keeps its own floor, 5 cm per
+pixel, checked on Cyampirita maize; see the rules doc.
 """
 
 from __future__ import annotations
@@ -81,11 +83,15 @@ KINDS = (STRUCTURE, ANNUAL_CROP, WEED, PERENNIAL_CROWN)
 # A cut-off set with the spec on 2026-10-11, not measured; the share itself is measured by the caller.
 CLOSED_CANOPY_SHARE = 0.8
 
-PROVENANCE_KEYS = ("dataset", "protocol", "n_images", "image_px", "zoom", "date", "metric", "value", "where", "note")
-# A measured value must say how, when, on how many pictures and where it was measured.
-_REQUIRED_WHEN_MEASURED = ("protocol", "n_images", "date", "metric", "where")
+PROVENANCE_KEYS = ("dataset", "protocol", "n_images", "image_px", "finder_input_px", "date", "metric", "value",
+                   "evidence", "where", "note")
+# A measured value must say what, how, when, on how many pictures of what size, read at what size, from which rows.
+_REQUIRED_WHEN_MEASURED = ("dataset", "protocol", "n_images", "image_px", "finder_input_px", "date", "metric",
+                           "evidence", "where")
+_WHOLE_PX = ("n_images", "image_px", "finder_input_px")
 
 TARGETS_PATH = Path(__file__).parent / "answer_levels_targets.json"
+EVIDENCE_PATH = Path(__file__).parent / "answer_levels_evidence.json"
 
 
 @dataclass(frozen=True)
@@ -97,9 +103,11 @@ class Target:
     kind: str
     object_size_m: Optional[float]  # typical size on the ground; None when nobody measured it
     object_size_note: str  # where the size comes from, or why there is none
-    zoom: int  # finder setting measured best: 2 for plants, 1 for the rest
-    look_alike_marks: bool  # finder setting measured best: also mark things that look alike but are not
+    finder_model: str  # the finder the levels were measured for; another finder's output gets no level
+    finder_input_px: Optional[int]  # the finder reads a picture with its long side scaled to this, as measured
+    look_alike_marks: bool  # also mark things that look alike but are not (see finder.note in the table)
     max_level: Level
+    size_floor_px: Optional[int]  # smallest marked size, as the finder reads it, among the measured pictures
     measured: dict[str, Any]  # provenance: PROVENANCE_KEYS
     also_measured: tuple[dict[str, Any], ...]
 
@@ -116,21 +124,53 @@ def _check_provenance(name: str, measured: dict[str, Any]) -> None:
     if measured["value"] is None:
         if not measured["note"]:
             raise ValueError(f"answer target {name}: no measured value and no note saying why")
-    else:
-        _check_unit_interval(f"answer target {name}", measured["value"])
-        unsaid = [key for key in _REQUIRED_WHEN_MEASURED if measured[key] is None]
-        if unsaid:
-            raise ValueError(f"answer target {name}: a measured value must say {unsaid}")
-        if measured["dataset"] is None and not measured["note"]:
-            raise ValueError(f"answer target {name}: no dataset and no note saying why")
+        return
+    _check_unit_interval(f"answer target {name}", measured["value"])
+    unsaid = [key for key in _REQUIRED_WHEN_MEASURED if measured[key] is None]
+    if unsaid:
+        raise ValueError(f"answer target {name}: a measured value must say {unsaid}")
+    for key in _WHOLE_PX:
+        if not isinstance(measured[key], int) or isinstance(measured[key], bool) or measured[key] < 1:
+            raise ValueError(f"answer target {name}: {key} {measured[key]!r} is not a whole number of 1 or more")
 
 
-def _target(name: str, entry: dict[str, Any]) -> Target:
+def box_px(width_px: float, height_px: float) -> float:
+    """One box's size in pixels: the side of a square of the same area (objects are sized by area, as in COCO)."""
+    if not (width_px > 0 and height_px > 0):
+        raise ValueError(f"a marked box needs a positive width and height, got {width_px!r} x {height_px!r}")
+    return math.sqrt(width_px * height_px)
+
+
+def finder_px(picture_px: float, picture_long_px: float, finder_input_px: int) -> float:
+    """A size in the picture's own pixels as the finder reads it: the finder scales the long side to its input."""
+    if not picture_long_px > 0:
+        raise ValueError(f"the picture's long side must be positive, got {picture_long_px!r} px")
+    return picture_px * finder_input_px / picture_long_px
+
+
+def _marked_px(marked_box_px: Sequence[Sequence[float]]) -> float:
+    return statistics.median(box_px(w, h) for w, h in marked_box_px)
+
+
+def _size_floor(name: str, sets: Sequence[str], finder_input: Optional[int],
+                marks: dict[str, Any]) -> Optional[int]:
+    """The smallest marked size, as the finder read it, among the pictures in `sets` (whole px, rounded down)."""
+    sizes = []
+    for set_name in sets:
+        if set_name not in marks:
+            raise ValueError(f"answer target {name}: no marked pictures named {set_name!r} in the evidence")
+        if marks[set_name]["finder_input_px"] != finder_input:
+            raise ValueError(f"answer target {name}: {set_name} was read at {marks[set_name]['finder_input_px']} px, "
+                             f"not at the target's {finder_input} px")
+        sizes += [finder_px(_marked_px(p["marks_wh"]), p["long_px"], finder_input) for p in marks[set_name]["pictures"]]
+    return math.floor(min(sizes)) if sizes else None
+
+
+def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
     measured = entry["measured"]
     _check_provenance(name, measured)
     for extra in entry["also_measured"]:
-        if "value" in extra:
-            _check_unit_interval(f"answer target {name} ({extra['setting']})", extra["value"])
+        _check_unit_interval(f"answer target {name} ({extra['setting']})", extra["value"])
     if entry["kind"] not in KINDS:
         raise ValueError(f"answer target {name}: kind {entry['kind']!r} is not one of {KINDS}")
     size = entry["object_size_m"]
@@ -140,26 +180,34 @@ def _target(name: str, entry: dict[str, Any]) -> Target:
         raise ValueError(f"answer target {name}: object_size_note must say where the size comes from or why there is none")
     if entry["max_level"] not in Level.__members__:
         raise ValueError(f"answer target {name}: max level {entry['max_level']!r} is not one of {list(Level.__members__)}")
-    zoom = entry["finder"]["zoom"]
-    if not isinstance(zoom, int) or zoom < 1:
-        raise ValueError(f"answer target {name}: zoom {zoom!r} is not a whole number of 1 or more")
+    level = Level[entry["max_level"]]
+    if level is Level.AREA:
+        raise ValueError(f"answer target {name}: no answer about the area objects cover has been measured, so no "
+                         f"target can reach AREA")
+    if level > Level.CANT_TELL and measured["value"] is None:
+        raise ValueError(f"answer target {name}: {level.name} needs a measured value")
+    if level is Level.CANT_TELL and not measured["note"]:
+        raise ValueError(f"answer target {name}: CANT_TELL needs a note saying why")
+    finder = entry["finder"]
+    if not finder.get("model"):
+        raise ValueError(f"answer target {name}: the finder the levels were measured for is not named")
+    floor = _size_floor(name, entry["size_evidence"], measured["finder_input_px"], marks)
+    if level > Level.CANT_TELL and floor is None:
+        raise ValueError(f"answer target {name}: {level.name} needs size_evidence (marked pictures) for the size gate")
     return Target(name=name, noun=entry["noun"], kind=entry["kind"], object_size_m=size,
-                  object_size_note=entry["object_size_note"], zoom=zoom,
-                  look_alike_marks=bool(entry["finder"]["look_alike_marks"]), max_level=Level[entry["max_level"]],
-                  measured=dict(measured), also_measured=tuple(dict(e) for e in entry["also_measured"]))
+                  object_size_note=entry["object_size_note"], finder_model=finder["model"],
+                  finder_input_px=measured["finder_input_px"], look_alike_marks=bool(finder["look_alike_marks"]),
+                  max_level=level, size_floor_px=floor, measured=dict(measured),
+                  also_measured=tuple(dict(e) for e in entry["also_measured"]))
 
 
-def load_targets(path: Path = TARGETS_PATH) -> tuple[int, dict[str, Any], dict[str, Target]]:
-    """(needed px, the size floor's provenance, targets by name) from the committed table; raises if it is broken."""
-    data = json.loads(path.read_text())
-    floor = data["size_floor"]
-    needed_px = floor["needed_px"]
-    if not isinstance(needed_px, int) or needed_px < 1:
-        raise ValueError(f"size floor {needed_px!r} px is not a whole number of 1 or more")
-    return needed_px, dict(floor["measured"]), {name: _target(name, e) for name, e in data["targets"].items()}
+def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:
+    """Targets by name from the committed table and the marks behind it; raises if either is broken."""
+    marks = json.loads(evidence_path.read_text())["marks"]
+    return {name: _target(name, e, marks) for name, e in json.loads(path.read_text())["targets"].items()}
 
 
-NEEDED_PX, SIZE_FLOOR_SOURCE, _TARGETS = load_targets()
+_TARGETS = load_targets()
 
 
 def target(name: str) -> Target:
@@ -184,56 +232,60 @@ def ladder_enabled() -> bool:
 
 @dataclass(frozen=True)
 class SizeGate:
-    object_px: Optional[float]  # one object's size in the picture; None when it cannot be known
-    needed_px: int
-    passes: Optional[bool]  # None: the size is unknown, so the gate cannot pass
+    target: str
+    object_px: Optional[float]  # one object's size as the finder reads it; None when it cannot be known
+    needed_px: Optional[int]  # the target's size floor; None when no size was measured for it
+    passes: Optional[bool]  # None: a size is unknown, so the gate cannot pass
     reason: str
-    cm_per_px: Optional[float]
-    from_marks: bool  # the size came from the boxes the user drew
 
 
-def box_px(width_px: float, height_px: float) -> float:
-    """One box's size in pixels: the side of a square of the same area (objects are sized by area, as in COCO)."""
-    if not (width_px > 0 and height_px > 0):
-        raise ValueError(f"a marked box needs a positive width and height, got {width_px!r} x {height_px!r}")
-    return math.sqrt(width_px * height_px)
+def _size_text(t: Target, floor: int, finder_input: int, object_px: float, picture_px: float,
+               picture_long_px: float, scale: str, from_marks: bool) -> str:
+    """The size gate's reason in data terms, e.g. "the marked dishes are about 12 px wide as the finder reads
+    them (40 px in this 4000 px picture, read at 1280 px); dishes were measured only from 17 px wide, ..."."""
+    fails = object_px < floor
+    shown = math.floor(object_px) if fails else round(object_px)  # never print "17 px" for a 16.6 px that failed
+    who = f"the marked {t.noun}" if from_marks else t.noun
+    where = f"{scale}{picture_px:.0f} px in this {picture_long_px:.0f} px picture, read at {finder_input} px"
+    head = f"{who} are about {shown} px wide as the finder reads them ({where})"
+    if fails:
+        return f"{head}; {t.noun} were measured only from {floor} px wide, so this picture is outside the measurement"
+    return f"{head}; {t.noun} were measured from {floor} px wide"
 
 
-def _size_text(noun: str, object_px: Optional[float], cm_per_px: Optional[float], from_marks: bool) -> str:
-    """The size gate's reason in data terms, e.g. "plants are about 9 px wide at 3.2 cm per pixel; ..."."""
-    if object_px is None:
-        return (f"the size of the {noun} in this picture is not known; mark two or three of them on the picture "
-                f"so it can be measured ({NEEDED_PX} px across or more is needed)")
-    fails = object_px < NEEDED_PX
-    shown = math.floor(object_px) if fails else round(object_px)  # never print "50 px" for 49.6 px that failed
-    who = f"the marked {noun}" if from_marks else noun
-    scale = f" at {cm_per_px:.1f} cm per pixel" if cm_per_px is not None else ""
-    enough = f"at least {NEEDED_PX} px are needed" if fails else f"{NEEDED_PX} px or more is enough"
-    return f"{who} are about {shown} px wide{scale}; {enough}"
+def size_gate(target_name: str, picture_long_px: float, marked_box_px: Optional[Sequence[Sequence[float]]] = None,
+              cm_per_px: Optional[float] = None, object_size_m: Optional[float] = None) -> SizeGate:
+    """Whether objects of this kind are, as the finder reads this picture, at least as big as on the pictures the
+    kind was measured on (the target's size floor).
 
-
-def size_gate(cm_per_px: Optional[float], object_size_m: Optional[float] = None,
-              marked_box_px: Optional[Sequence[tuple[float, float]]] = None) -> SizeGate:
-    """Whether objects are big enough in this picture for the finder: NEEDED_PX across or more.
-
-    `marked_box_px` is the (width, height) in pixels of each box the user drew; their median size is used when
-    given, before `object_size_m` (a size on the ground, needing `cm_per_px`).
+    `picture_long_px` is the long side, in pixels, of the picture (or tile) given to the finder; the finder reads
+    it at the target's measured `finder_input_px`. `marked_box_px` is the (width, height) in the picture's pixels
+    of each box the user drew; their median size is used when given, before `object_size_m` (a size on the ground,
+    needing `cm_per_px`).
     """
+    t = target(target_name)
+    if not picture_long_px > 0:
+        raise ValueError(f"the picture's long side must be positive, got {picture_long_px!r} px")
     if cm_per_px is not None and not cm_per_px > 0:
         raise ValueError(f"cm per pixel must be positive, got {cm_per_px!r}")
     if object_size_m is not None and not object_size_m > 0:
         raise ValueError(f"object size must be positive, got {object_size_m!r} m")
-    from_marks = bool(marked_box_px)
-    if from_marks:
-        object_px: Optional[float] = statistics.median(box_px(w, h) for w, h in marked_box_px or ())
+    floor, finder_input = t.size_floor_px, t.finder_input_px
+    if floor is None or finder_input is None:
+        return SizeGate(target_name, None, None, None,
+                        f"no object size was measured for {t.noun}, so this picture cannot be checked against one")
+    if marked_box_px:
+        picture_px, scale, from_marks = _marked_px(marked_box_px), "", True
     elif object_size_m is not None and cm_per_px is not None:
-        object_px = object_size_m * 100 / cm_per_px
+        picture_px, from_marks = object_size_m * 100 / cm_per_px, False
+        scale = f"{object_size_m:g} m at {cm_per_px:.1f} cm per pixel is "
     else:
-        object_px = None
-    passes = None if object_px is None else object_px >= NEEDED_PX
-    return SizeGate(object_px=object_px, needed_px=NEEDED_PX, passes=passes,
-                    reason=_size_text("objects", object_px, cm_per_px, from_marks), cm_per_px=cm_per_px,
-                    from_marks=from_marks)
+        return SizeGate(target_name, None, floor, None,
+                        f"the size of the {t.noun} in this picture is not known; mark two or three of them on the "
+                        f"picture so it can be measured")
+    object_px = finder_px(picture_px, picture_long_px, finder_input)
+    return SizeGate(target_name, object_px, floor, object_px >= floor,
+                    _size_text(t, floor, finder_input, object_px, picture_px, picture_long_px, scale, from_marks))
 
 
 # --------------------------------------------------------------------------- #
@@ -247,7 +299,6 @@ class Facts:
     planting_date: Optional[date] = None
     capture_date: Optional[date] = None
     green_cover_share: Optional[float] = None  # share of the ground under green leaves, 0-1, measured by the caller
-    size_gate: Optional[SizeGate] = None
 
 
 @dataclass(frozen=True)
@@ -262,7 +313,6 @@ _FACT_WORDS = {
     "planting_date": "the planting date",
     "capture_date": "the date the picture was taken",
     "green_cover_share": "how much of the ground green leaves cover",
-    "size_gate": "how big one of them is in the picture (mark two or three)",
 }
 
 
@@ -273,16 +323,6 @@ def _and_list(items: Sequence[str]) -> str:
 def _needs(noun: str, missing: Sequence[str]) -> Countability:
     words = _and_list([_FACT_WORDS[name] for name in missing])
     return Countability(Verdict.MAYBE, "needs_facts", f"to count {noun} this needs {words}", tuple(missing))
-
-
-def _structure_countability(t: Target, facts: Facts) -> Countability:
-    gate = facts.size_gate
-    if gate is None or gate.passes is None:
-        return _needs(t.noun, ["size_gate"])
-    if not gate.passes:
-        return Countability(Verdict.NO, "too_small", _size_text(t.noun, gate.object_px, gate.cm_per_px,
-                                                                gate.from_marks))
-    return Countability(Verdict.YES, "countable", f"{t.noun} are big enough in this picture to be found one by one")
 
 
 def _plant_countability(t: Target, facts: Facts) -> Countability:
@@ -307,10 +347,11 @@ def _plant_countability(t: Target, facts: Facts) -> Countability:
 
 def countability(target_name: str, facts: Facts) -> Countability:
     """Whether this kind of object can be counted one by one on this picture: YES, MAYBE (listing what is
-    missing, or untested) or NO (with the reason). A NO that the known facts already prove wins over missing ones."""
+    missing, or untested) or NO (with the reason). A NO that the known facts already prove wins over missing ones.
+    Size is not a fact here: `decide` applies the size gate."""
     t = target(target_name)
     if t.kind == STRUCTURE:
-        return _structure_countability(t, facts)
+        return Countability(Verdict.YES, "countable", f"{t.noun} do not grow or touch, so each can be found on its own")
     if t.kind == PERENNIAL_CROWN:
         return Countability(Verdict.MAYBE, "count_untested", f"counting {t.noun} one by one is not proven yet")
     return _plant_countability(t, facts)
@@ -341,26 +382,34 @@ class Answer:
 
 
 def _measured_text(t: Target) -> str:
+    """Why the answer stops at the target's max level, from recorded values only."""
     m = t.measured
+    head = f"for {t.noun} the answer stops at \"{t.max_level.label}\" today"
     if m["value"] is None:
-        return f"for {t.noun} the answer stops at \"{t.max_level.label}\" today: {m['note']}"
-    return (f"for {t.noun} the answer stops at \"{t.max_level.label}\" today: measured on {m['n_images']} "
-            f"pictures ({m['dataset'] or 'dataset not named'}, {m['date']})")
+        return f"{head}: {m['note']}"
+    text = f"{head}: measured on {m['n_images']} pictures on {m['date']}; data: {m['dataset']}"
+    return f"{text}; {m['note']}" if t.max_level is Level.CANT_TELL else text
 
 
-def decide(target_name: str, gate: SizeGate, verdict: Countability, evidence: Optional[Evidence] = None) -> Answer:
+def decide(target_name: str, finder_model: str, gate: SizeGate, verdict: Countability,
+           evidence: Optional[Evidence] = None) -> Answer:
     """The highest level up to the target's max_level that the size gate, countability and any evidence allow.
-    CAN'T TELL whenever the size gate does not pass or countability is NO."""
+    CAN'T TELL whenever the table says so, the size gate does not pass, or countability is not YES (the reason
+    then says what is missing). `finder_model` names the finder that found the objects: the levels were measured
+    for one finder, and another finder's output is refused (ValueError), not given its level."""
     t = target(target_name)
+    if finder_model != t.finder_model:
+        raise ValueError(f"levels for {t.noun} were measured for the {t.finder_model} finder, not {finder_model!r}")
+    if gate.target != target_name:
+        raise ValueError(f"the size gate was worked out for {gate.target!r}, not {target_name!r}")
+    if t.max_level is Level.CANT_TELL:
+        return Answer(Level.CANT_TELL, "measured_limit", _measured_text(t))
     if gate.passes is not True:
-        code = "size_unknown" if gate.passes is None else "too_small"
-        return Answer(Level.CANT_TELL, code, _size_text(t.noun, gate.object_px, gate.cm_per_px, gate.from_marks))
-    if verdict.verdict is Verdict.NO:
+        return Answer(Level.CANT_TELL, "size_unknown" if gate.passes is None else "too_small", gate.reason)
+    if verdict.verdict is not Verdict.YES:
         return Answer(Level.CANT_TELL, verdict.reason_code, verdict.reason_text)
-    level, code, text = t.max_level, "measured_limit", _measured_text(t)
-    if verdict.verdict is Verdict.MAYBE:
-        level = min(level, Level.AREA)
-        code, text = verdict.reason_code, f"{verdict.reason_text}; the area they cover is offered instead"
-    if evidence is not None and evidence.max_level < level:
-        level, code, text = evidence.max_level, "evidence_limit", evidence.reason_text
-    return Answer(level, code, text)
+    if evidence is not None and evidence.max_level < t.max_level:
+        # No answer about the area objects cover has been measured, so a limit at AREA leaves nothing to offer.
+        level = Level.CANT_TELL if evidence.max_level is Level.AREA else evidence.max_level
+        return Answer(level, "evidence_limit", evidence.reason_text)
+    return Answer(t.max_level, "measured_limit", _measured_text(t))
