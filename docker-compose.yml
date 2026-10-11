@@ -66,6 +66,8 @@ services:
       - SAGE_SMALL_TALK_MODEL=${SAGE_SMALL_TALK_MODEL:-ollama:gemma4:12b-it-qat}
       # Looks at each drone plot for the question cards (src/services/drone_vision.py).
       - DRONE_VISION_MODEL=${DRONE_VISION_MODEL:-openai/gpt-6-luna}
+      - DRONE_VISION_REQUESTS_PER_MINUTE=${DRONE_VISION_REQUESTS_PER_MINUTE:-}
+      - BRAIN_QUERY_EXPANSION_MODEL=${BRAIN_QUERY_EXPANSION_MODEL:-}
       # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
       - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
       # Retry once with a tool when Sage answers in prose but a tool fits (src/dependencies/sage_turn_request.py).

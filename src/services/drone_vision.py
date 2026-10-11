@@ -28,6 +28,7 @@ import io
 import json
 import logging
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -42,7 +43,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
-from src.llm_defaults import resolve_chat_endpoint
+from src.llm_defaults import resolve_chat_endpoint, usage_extra_body
 from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,32 @@ def vision_client() -> tuple[AsyncOpenAI, str]:
     return _client()
 
 
+# A free tier counts requests per model per minute (Google: 15 for Gemini 3.5 Flash-Lite, 5 for 3.8 Flash).
+# DRONE_VISION_REQUESTS_PER_MINUTE spaces this model's calls evenly so a survey (two looks per plot, many
+# plots at once) stays under it; unset or 0 sends them as fast as CONCURRENT_LOOKS allows (paid models).
+_next_call_at: dict[str, float] = {}
+_pace_lock = asyncio.Lock()
+
+
+def _per_minute() -> float:
+    try:
+        return max(0.0, float(os.environ.get("DRONE_VISION_REQUESTS_PER_MINUTE") or 0))
+    except ValueError:
+        return 0.0
+
+
+async def pace(model: str) -> None:
+    """Wait for this model's next free slot under DRONE_VISION_REQUESTS_PER_MINUTE (no wait when unset)."""
+    per_minute = _per_minute()
+    if not per_minute:
+        return
+    async with _pace_lock:
+        now = time.monotonic()
+        start = max(now, _next_call_at.get(model, 0.0))
+        _next_call_at[model] = start + 60.0 / per_minute
+    await asyncio.sleep(start - now)
+
+
 def _client() -> tuple[AsyncOpenAI, str]:
     endpoint = resolve_chat_endpoint(_model(), api_key=os.environ.get("OPENAI_API_KEY"),
                                      base_url=os.environ.get("OPENAI_BASE_URL"),
@@ -265,11 +292,12 @@ async def _ask(client: AsyncOpenAI, model: str, system: str, content: list[dict[
     """The model's answers, and what the call cost in USD. The fixed instructions come first, as text, so the
     provider can serve them from its prompt cache; the pictures come last."""
     async def look() -> dict[str, Any]:
+        await pace(model)
         response = await client.chat.completions.create(
             model=model, reasoning_effort=EFFORT,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             response_format={"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-            extra_body={"usage": {"include": True}},
+            extra_body=usage_extra_body(client.base_url),
         )
         cost = llm_cache.record(f"vision_{name}", response.usage)
         return {"answer": json.loads(response.choices[0].message.content or ""), "cost": cost}

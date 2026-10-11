@@ -9,6 +9,7 @@ from src.structures import get_async_db_connection
 from src.dependencies.postgres_connection import PostgresConnectionManager
 from src.dependencies.chat_completions import ChatArgsProvider
 from src.dependencies.redis_client import get_redis_client
+from src.llm_defaults import usage_extra_body
 from src.services import llm_cache
 from src.utils import generate_id
 from openai import AsyncOpenAI
@@ -23,7 +24,7 @@ async def _kept_answer(client: AsyncOpenAI, chat_args: dict, messages: list[dict
     async def ask() -> dict:
         response = await client.chat.completions.create(
             **chat_args, messages=messages,
-            extra_body={**(chat_args.get("extra_body") or {}), "usage": {"include": True}})
+            extra_body={**(chat_args.get("extra_body") or {}), **usage_extra_body(client.base_url)})
         llm_cache.record("database_docs", response.usage)
         return {"text": response.choices[0].message.content or ""}
 
