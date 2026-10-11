@@ -8,6 +8,7 @@ import uuid
 from fastapi import HTTPException, status
 
 from src.symbology.llm import generate_maplibre_layers_for_layer_id
+from src.upload.archive import ArchiveTooLarge
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 from src.upload.pmtiles import process_vector_layer_common
 from src.utils import process_kmz_to_kml, process_zip_with_shapefile, generate_id as _generate_id
@@ -33,6 +34,8 @@ class VectorUploadHandler(BaseUploadHandler):
                     result.updated_temp_file_path = kml_file_path
                     result.updated_file_ext = ".kml"
                     result.temp_dir_to_cleanup = temp_dir
+                except ArchiveTooLarge as e:
+                    raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
                 except ValueError:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -68,6 +71,9 @@ class VectorUploadHandler(BaseUploadHandler):
                         "converted_to": "geoparquet",
                     }
                 )
+            except ArchiveTooLarge as e:
+                logger.warning("ZIP refused: %s", e)
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(e))
             except ValueError as e:
                 logger.warning("Error processing ZIP file: %s", e)
                 raise HTTPException(
