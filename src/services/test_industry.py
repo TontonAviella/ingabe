@@ -49,6 +49,20 @@ def test_a_wrong_industry_tool_is_refused_when_called_anyway():
     assert invented and "no tool named" in invented["error"] and "agriculture" not in invented["error"]
 
 
+def test_a_refusal_names_the_industries_the_tool_serves(monkeypatch):
+    """Not "is for agriculture projects" for every refusal: once Telecom tools exist, an Agriculture project asking
+    for one is told it is a Telecom Towers tool."""
+    assert industry.tool_refusal("get_ndvi_stats", "telecom")["error"].startswith(
+        "get_ndvi_stats is for Agriculture projects; this project is Telecom Towers.")
+    monkeypatch.setitem(industry.CAPABILITIES, "count_antennas", frozenset({"telecom"}))
+    monkeypatch.setitem(industry.CAPABILITIES, "inspect_line_and_mast", frozenset({"power_grid", "telecom"}))
+    assert industry.tool_refusal("count_antennas", "telecom") is None
+    assert industry.tool_refusal("count_antennas", "agriculture")["error"].startswith(
+        "count_antennas is for Telecom Towers projects; this project is Agriculture.")
+    assert industry.tool_refusal("inspect_line_and_mast", "agriculture")["error"].startswith(
+        "inspect_line_and_mast is for Power Grid and Telecom Towers projects; this project is Agriculture.")
+
+
 def test_only_other_industries_get_a_prompt_note():
     assert industry.prompt_note("agriculture") is None and industry.prompt_note(None) is None
     note = industry.prompt_note("telecom")
