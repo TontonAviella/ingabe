@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from src.services import photo_content
+from src.services import stored_files
 
 # The switch: photo inspections are off unless PHOTO_INSPECTIONS is set to a true value.
 _SWITCH = "PHOTO_INSPECTIONS"
@@ -122,7 +122,7 @@ def read_photo(path: str, filename: str) -> PhotoFacts:
     the headers only (not the pixels) for the rest. Raises UnreadablePhoto for a file that is not a photo."""
     from PIL import Image  # lazy: Pillow is heavy and only photo uploads need it
 
-    sha256 = photo_content.file_sha256(path)
+    sha256 = stored_files.file_sha256(path)
     try:
         with Image.open(path) as image:
             found_format = image.format

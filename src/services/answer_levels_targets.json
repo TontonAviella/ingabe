@@ -1,5 +1,5 @@
 {
-  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from.",
+  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from.",
   "targets": {
     "tower_dish": {
       "noun": "dishes",
@@ -11,6 +11,7 @@
       "size_evidence": ["tower_mw"],
       "measured": {
         "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 1333,
@@ -38,6 +39,7 @@
       "size_evidence": ["tower_antenna"],
       "measured": {
         "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 15,
         "image_px": 1333,
@@ -64,6 +66,7 @@
       "size_evidence": ["tower_rru"],
       "measured": {
         "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 14,
         "image_px": 1333,
@@ -92,6 +95,7 @@
       "size_evidence": ["kenol_building"],
       "measured": {
         "dataset": "Kenol tiles (512 px), 8.8 cm per pixel",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 512,
@@ -115,6 +119,7 @@
       "size_evidence": ["maize_nerac", "maize_selommes"],
       "measured": {
         "dataset": "INRAe UAVmulticrop, Nerac (640 px tiles)",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 640,
@@ -143,6 +148,7 @@
       "size_evidence": ["field_cotton"],
       "measured": {
         "dataset": "cotton and weed UAV tiles (585 px), cotton boxes",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 585,
@@ -166,6 +172,7 @@
       "size_evidence": ["field_weed"],
       "measured": {
         "dataset": "cotton and weed UAV tiles (585 px), weed boxes; the same tiles as row_crop_plant",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 585,
@@ -192,6 +199,7 @@
       "size_evidence": [],
       "measured": {
         "dataset": "NEON TEAK (400 px tiles)",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
         "n_images": 20,
         "image_px": 400,
@@ -215,6 +223,7 @@
       "size_evidence": [],
       "measured": {
         "dataset": "NEON SJER (370-400 px tiles)",
+        "view": "nadir",
         "protocol": "YOLOE-11s visual prompts, 10 marks taken from OTHER pictures (not the same picture), mean of 3 draws",
         "n_images": 41,
         "image_px": 400,
@@ -241,6 +250,7 @@
       "size_evidence": [],
       "measured": {
         "dataset": null,
+        "view": null,
         "protocol": null,
         "n_images": null,
         "image_px": null,

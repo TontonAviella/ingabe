@@ -1,6 +1,6 @@
 import asyncio
 
-from src.services import photo_content
+from src.services import photo_content, stored_files
 from src.services.test_farm_records import _FakeS3
 
 
@@ -16,7 +16,7 @@ def test_same_bytes_hash_the_same_whatever_the_name(tmp_path):
     a.write_bytes(b"orthophoto" * 1000)
     b.write_bytes(b"orthophoto" * 1000)
     c.write_bytes(b"orthophoto" * 999 + b"x")
-    assert photo_content.file_sha256(str(a)) == photo_content.file_sha256(str(b)) != photo_content.file_sha256(str(c))
+    assert stored_files.file_sha256(str(a)) == stored_files.file_sha256(str(b)) != stored_files.file_sha256(str(c))
 
 
 def test_index_keys_differ_by_target_crs():

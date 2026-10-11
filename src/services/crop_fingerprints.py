@@ -39,7 +39,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import box, shape
 from shapely.ops import transform as reproject
 
-from src.services import background_jobs, drone_plots, drone_vision
+from src.services import background_jobs, drone_plots, drone_vision, stored_files
 from src.utils import get_s3_client
 
 SIDE_M = 4.5  # metres across each square (the size of the Rwandan drone squares the method was tried on)
@@ -77,25 +77,9 @@ class CropCall:
 
 # --- The model ---------------------------------------------------------------------------------
 
-def _sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def ensure_model(s3: Any, bucket: str) -> str:
     """The local path of the fingerprint model, fetched from object storage once and checked by sha256."""
-    if not (os.path.exists(_MODEL_PATH) and _sha256(_MODEL_PATH) == MODEL_SHA256):
-        os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
-        partial = _MODEL_PATH + ".part"
-        s3.download_file(bucket, MODEL_KEY, partial)
-        if _sha256(partial) != MODEL_SHA256:
-            os.remove(partial)
-            raise RuntimeError(f"the fingerprint model in storage ({MODEL_KEY}) does not match its sha256")
-        os.replace(partial, _MODEL_PATH)
-    return _MODEL_PATH
+    return stored_files.ensure_local_copy(s3, bucket, MODEL_KEY, MODEL_SHA256, _MODEL_PATH, "fingerprint model")
 
 
 def _load_model(path: str) -> Any:

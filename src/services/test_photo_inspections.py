@@ -8,7 +8,7 @@ import time
 import pytest
 from PIL import Image, PngImagePlugin
 
-from src.services import photo_content
+from src.services import stored_files
 from src.services import photo_inspections as pi
 from test_fixtures.drone_photos import DJI_XMP, drone_jpg
 
@@ -204,8 +204,8 @@ def _png_with_comment(text: str) -> bytes:
 def test_the_photo_is_hashed_by_the_one_file_hash_owner(tmp_path, monkeypatch):
     path = _write(tmp_path, "a.jpg", drone_jpg(-1.9, 30.1))
     calls = []
-    real = photo_content.file_sha256
-    monkeypatch.setattr(photo_content, "file_sha256", lambda p: calls.append(p) or real(p))
+    real = stored_files.file_sha256
+    monkeypatch.setattr(stored_files, "file_sha256", lambda p: calls.append(p) or real(p))
     assert pi.read_photo(path, "a.jpg").sha256 == hashlib.sha256(open(path, "rb").read()).hexdigest()
     assert calls == [path]
 
