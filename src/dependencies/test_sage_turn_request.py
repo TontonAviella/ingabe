@@ -180,40 +180,116 @@ def test_is_abdication(text: str, reply: str, has_tools: bool, expected: bool) -
     assert is_abdication(_plan_for(text), text, reply, has_tools) is expected
 
 
-@pytest.mark.parametrize(
-    ("project_industry", "text", "expected"),
-    [
-        # What the exemption is for: a farm question outside agriculture; "Ingabe cannot do this yet" is right.
-        ("telecom", "is the maize stressed near the mast?", False),
-        ("telecom", "Is there drought in Kayonza this season?", False),
-        ("power_grid", "Give me the maize yield risk for Gicumbi", False),
-        # The over-reach it had: weather and flood words select the agriculture category too, and their tools
-        # serve every industry, so a prose answer is still abdication.
-        ("telecom", "Will heavy rain hit the Rebero tower site this week?", True),
-        ("telecom", "Did the river flood near Rubavu after last week's rain?", True),
-        ("power_grid", "What temperature is forecast for Musanze tomorrow?", True),
-        # Agriculture is unchanged.
-        ("agriculture", "is the maize stressed in Nyagatare?", True),
-        ("agriculture", "Will heavy rain hit Musanze this week?", True),
-    ],
-)
-def test_the_abdication_exemption_covers_farm_questions_only(project_industry: str, text: str,
-                                                             expected: bool) -> None:
+def _abdication_on(project_industry: str, text: str, tools: list[dict] | None = None):
+    """(is_abdication of an honest no, the turn's plan) for a turn on a project of this industry, as the live loop
+    builds it: the industry's tools, then routing."""
     from src.database.pool import set_request_industry
     from src.dependencies.sage_turn_request import is_abdication
     from src.services import industry
 
-    tools = industry.tools_for(build_sage_tools_payload(get_pydantic_tool_calls(), {}), project_industry)
-    plan = plan_sage_turn(text, [{"role": "user", "content": text}], tools, lambda: "P")
-    assert "agriculture" in plan.routing.selected_categories
-    if expected and project_industry != "agriculture":
-        # The guard has a tool to force: a weather or flood tool this industry is offered.
-        assert {"get_forecast", "get_weather_stats", "detect_flood_extent"} & set(_names(plan.tools))
+    offered = industry.tools_for(tools or build_sage_tools_payload(get_pydantic_tool_calls(), {}), project_industry)
+    plan = plan_sage_turn(text, [{"role": "user", "content": text}], offered, lambda: "P")
     try:
         set_request_industry(project_industry)
-        assert is_abdication(plan, text, "Ingabe cannot do this for this project yet.", False) is expected
+        return is_abdication(plan, text, "Ingabe cannot do this for this project yet.", False), plan
     finally:
         set_request_industry(None)
+
+
+@pytest.mark.parametrize(
+    ("project_industry", "text", "needed"),
+    [
+        # What the exemption is for: a farm question outside agriculture; "Ingabe cannot do this yet" is right.
+        ("telecom", "is the maize stressed near the mast?", None),
+        ("telecom", "Is there drought in Kayonza this season?", None),
+        ("power_grid", "Give me the maize yield risk for Gicumbi", None),
+        ("power_grid", "Is vegetation growing into the Jabana line corridor? Check the NDVI.", None),
+        # The over-reach it had: weather and flood words select the agriculture category too, and their tools
+        # serve every industry, so a prose answer is still abdication.
+        ("telecom", "Will heavy rain hit the Rebero tower site this week?", "get_forecast"),
+        ("telecom", "Did the river flood near Rubavu after last week's rain?", "detect_flood_extent"),
+        ("power_grid", "What temperature is forecast for Musanze tomorrow?", "get_forecast"),
+        # Words every industry says ("field visit", "field team", "field crew", "trigger") select the agriculture
+        # category too, but they do not make a farm question: the notes and point tools serve every industry.
+        ("telecom", "Log a field visit to the Rebero mast: the shelter door is broken", "add_observation"),
+        ("telecom", "Search our notes from the field team about the Kigali tower audit", "search_brain"),
+        ("telecom", "Remember that the field engineer replaced the RRU on the Gasabo mast", "add_observation"),
+        ("telecom", "Add a point for the generator yard where the field crew parks at -1.94, 30.08",
+         "create_point_layer"),
+        ("power_grid", "Log a field visit to the Jabana substation: the fence is down", "add_observation"),
+        ("power_grid", "Remember the trigger level our field crews use for the Jabana line", "add_observation"),
+        # A farm word does not excuse prose on a request to keep a note.
+        ("power_grid", "Log a field visit: the maize under the Jabana line was cut back", "add_observation"),
+        # Agriculture is unchanged.
+        ("agriculture", "is the maize stressed in Nyagatare?", "get_field_health"),
+        ("agriculture", "Will heavy rain hit Musanze this week?", "get_forecast"),
+        ("agriculture", "Log a field visit to Kabarama: the beans are flowering", "add_observation"),
+    ],
+)
+def test_the_abdication_exemption_covers_farm_questions_only(project_industry: str, text: str,
+                                                             needed: str | None) -> None:
+    abdicated, plan = _abdication_on(project_industry, text)
+    assert "agriculture" in plan.routing.selected_categories
+    if needed is None:
+        assert abdicated is False
+    else:
+        # Still guarded, and the guard has a tool this industry is offered to force.
+        assert abdicated is True
+        assert needed in _names(plan.tools)
+
+
+@pytest.mark.parametrize(
+    ("project_industry", "text"),
+    [
+        # No tool reads tower equipment yet (the towers category is empty), so "Ingabe cannot count antennas yet"
+        # stands instead of a forced raster tool (the fast paths' house masks drew screening cells for these).
+        ("telecom", "How many antennas are on this tower photo?"),
+        ("telecom", "Combien d'antennes y a-t-il sur cette photo du pylône ?"),
+        ("telecom", "Ni antene zingahe ziri ku munara uri kuri iyi foto?"),
+        ("telecom", "Y a-t-il des dégâts sur le mât dans cette image ?"),
+        ("telecom", "Umunara w'itumanaho uri kuri iyi foto ufite ibyangiritse?"),
+        ("telecom", "Count the RRUs and microwave dishes on Mast_site_Kicukiro"),
+        ("power_grid", "How many antennas are on this tower photo?"),
+        ("agriculture", "How many antennas are on this tower photo?"),  # no industry has a tower tool
+    ],
+)
+def test_prose_stands_on_tower_questions_no_tool_here_answers(project_industry: str, text: str) -> None:
+    abdicated, plan = _abdication_on(project_industry, text)
+    assert plan.routing.named_categories == frozenset({"towers"})
+    assert plan.routing.selected_categories == frozenset() and plan.tools  # the full list is still sent
+    assert abdicated is False
+
+
+@pytest.mark.parametrize(
+    ("text", "needed"),
+    [
+        # A tower question that also names something a tool here does: still guarded.
+        ("Will heavy rain hit the Rebero tower site this week?", "get_forecast"),
+        ("Search our notes for the Kigali tower audit", "search_brain"),
+        ("Show me the Rebero mast on the map", "search_location"),
+        ("Describe the image of the Rebero mast I uploaded", "describe_user_raster"),
+    ],
+)
+def test_tower_questions_that_name_a_tool_here_stay_guarded(text: str, needed: str) -> None:
+    abdicated, plan = _abdication_on("telecom", text)
+    assert "towers" in plan.routing.named_categories
+    assert abdicated is True and needed in _names(plan.tools)
+
+
+def test_tower_questions_are_guarded_again_once_a_tower_tool_exists(monkeypatch) -> None:
+    """The exemption follows what the project can do: a tower tool for telecom ends it there, not elsewhere."""
+    from src.dependencies import sage_routing
+    from src.services import industry
+
+    monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_tower_equipment", sage_routing.TOWERS)
+    monkeypatch.setitem(industry.CAPABILITIES, "count_tower_equipment", frozenset({"telecom"}))
+    tools = build_sage_tools_payload(get_pydantic_tool_calls(), {}) + [
+        {"type": "function", "function": {"name": "count_tower_equipment", "parameters": {"type": "object"}}}]
+    text = "How many antennas are on this tower photo?"
+    abdicated, plan = _abdication_on("telecom", text, tools)
+    assert abdicated is True and "count_tower_equipment" in _names(plan.tools)
+    abdicated, plan = _abdication_on("power_grid", text, tools)
+    assert abdicated is False and "count_tower_equipment" not in _names(plan.tools)
 
 
 def test_abdication_guard_flag(monkeypatch) -> None:

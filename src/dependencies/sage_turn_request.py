@@ -13,15 +13,20 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Mapping
 
+from src.database.pool import get_request_industry
 from src.dependencies.sage_routing import (
+    BRAIN,
     SMALL_TALK_SYSTEM_PROMPT,
     RoutingDecision,
+    asks_about_farming,
     asks_about_weather_or_hazards,
+    categories_with_tools,
     filter_tools_by_categories,
     route_chat,
 )
 from src.geoprocessing.dispatch import get_tools
 from src.services.brain_embeddings import embed_texts
+from src.services.industry import DEFAULT_INDUSTRY
 from src.services.life_harness import (
     apply_life_harness_system_prompt,
     apply_life_harness_tool_contracts,
@@ -452,17 +457,28 @@ def abdication_guard_enabled() -> bool:
     return os.environ.get("SAGE_ABDICATION_GUARD", "0").strip().lower() in {"1", "true", "yes"}
 
 
+def _no_tool_here_answers(routing: RoutingDecision, last_user_text: str) -> bool:
+    """Whether the project has no tool for what the question asks, so prose that says plainly what Ingabe cannot do
+    yet is the right answer, not abdication (audit R1-20). Two cases:
+    - no category the question names has a tool here: masts, antennas and dishes, whose category (towers) is empty
+      until tower tools are built; then these questions are guarded again;
+    - outside agriculture, a farm question (crops, farms, soil, vegetation, drought, crop insurance), whose tools are
+      agriculture-only. Not when it also asks about weather or floods, or to log, remember or search notes: those tools
+      serve every industry. Words every industry says ("field team", "yield", "trigger") do not make a farm question.
+    """
+    project_industry = get_request_industry() or DEFAULT_INDUSTRY
+    named = routing.named_categories
+    if named and not named & categories_with_tools(project_industry):
+        return True
+    return (project_industry != "agriculture" and asks_about_farming(last_user_text)
+            and not asks_about_weather_or_hazards(last_user_text) and BRAIN not in named)
+
+
 def is_abdication(plan: SageTurnPlan, last_user_text: str, content: str | None, has_tool_calls: bool) -> bool:
     """True when a first-step answer is prose although the turn needs a tool."""
     if has_tool_calls or not plan.tools or plan.routing.is_small_talk:
         return False
-    # A farm question on a non-agriculture project: its farm tools were withheld and the prompt tells Sage to say
-    # plainly what Ingabe cannot do yet. That prose is the right answer, not abdication (audit R1-20). A weather or
-    # flood question also selects the agriculture category, but its tools serve every industry: still guarded.
-    from src.database.pool import get_request_industry
-
-    if ((get_request_industry() or "agriculture") != "agriculture" and "agriculture" in plan.routing.selected_categories
-            and not asks_about_weather_or_hazards(last_user_text)):
+    if _no_tool_here_answers(plan.routing, last_user_text):
         return False
     if _EXPLAIN_REQUEST_RE.search(last_user_text or "") or _ACKNOWLEDGEMENT_RE.search(last_user_text or ""):
         return False

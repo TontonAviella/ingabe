@@ -24,6 +24,7 @@ from src.dependencies.sage_routing import (
     SATELLITE,
     SPATIAL_INSIGHT,
     USER_RASTER,
+    asks_about_farming,
     build_admin_boundary_tool_args,
     build_fast_tool_call,
     choose_geospatial_evidence_path,
@@ -1250,5 +1251,52 @@ def test_the_word_checks_take_milliseconds_on_a_crafted_message():
     started = time.perf_counter()
     assert mentions_tower_equipment(crafted) is False
     assert asks_about_weather_or_hazards(crafted) is False
+    assert asks_about_farming(crafted) is False
     assert time.perf_counter() - started < 0.2
     assert mentions_tower_equipment("x" * 30_000 + " antenna") is False  # past the cap: not read
+    assert asks_about_farming("x" * 30_000 + " maize") is False
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("is the maize stressed near the mast?", True),
+    ("Is there drought in Kayonza this season?", True),
+    ("Give me the payout for Season A in Gicumbi", True),
+    ("Is vegetation growing into the line corridor? Check the NDVI.", True),
+    ("food security outlook for Nyamagabe", True),
+    # Words every industry says, and data sources: they select the agriculture category, but are not farm questions.
+    ("Log a field visit to the Rebero mast", False),
+    ("Add a point where the field crew parks", False),
+    ("What is the yield of the Jabana feeder?", False),
+    ("the alarm trigger at the shelter", False),
+    ("Season A rainfall in Musanze", False),
+    ("show the SAR backscatter around the substation", False),
+    ("moisture in the equipment shelter", False),
+])
+def test_farm_vocabulary(text, expected):
+    assert asks_about_farming(text) is expected
+    assert AGRICULTURE in classify_intent(text)  # routing is unchanged: all of them still select agriculture
+
+
+def test_a_tower_question_names_its_empty_category():
+    """The abdication guard reads named_categories: towers stays named though it selects no tools yet."""
+    tower_only = route_chat("How many antennas are on this tower photo?")
+    assert tower_only.named_categories == frozenset({"towers"}) and tower_only.selected_categories == frozenset()
+    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    assert with_notes.named_categories == with_notes.selected_categories == frozenset({BRAIN, "towers"})
+    assert route_chat("hello there").named_categories == frozenset()
+
+
+def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
+    from src.dependencies import sage_routing
+    from src.dependencies.sage_routing import TOWERS, categories_with_tools
+    from src.services import industry
+
+    every = {BRAIN, MAP_EDIT, SATELLITE, SPATIAL_INSIGHT, USER_RASTER, AGRICULTURE}
+    for project_industry in ("agriculture", "telecom", "power_grid", None):
+        assert every <= categories_with_tools(project_industry)  # agriculture also files the weather tools
+        assert TOWERS not in categories_with_tools(project_industry)
+    monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_tower_equipment", TOWERS)
+    monkeypatch.setitem(industry.CAPABILITIES, "count_tower_equipment", frozenset({"telecom"}))
+    assert TOWERS in categories_with_tools("telecom")
+    assert TOWERS not in categories_with_tools("agriculture")
+    assert TOWERS not in categories_with_tools(None)  # industry not found: shared tools only

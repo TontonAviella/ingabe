@@ -338,6 +338,12 @@ _FARM_WORDS = re.compile(
 _VEGETATION_WORDS = re.compile(r"\b(ndvi|ndwi|evi|savi|vegetation)\b", re.IGNORECASE)
 
 
+def asks_about_farming(text: str) -> bool:
+    """True when a message names crops, farms, harvests, soil, vegetation, drought or crop insurance."""
+    head = str(text or "")[:_ROUTED_CHARS]
+    return bool(_FARM_WORDS.search(head) or _VEGETATION_WORDS.search(head))
+
+
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Rwanda administrative boundaries / plain place display.
@@ -1468,6 +1474,13 @@ def filter_tools_by_categories(
     return out
 
 
+def categories_with_tools(project_industry: str | None) -> frozenset[str]:
+    """The categories holding a tool a project of this industry may use (industry.serves). TOWERS joins them once
+    tower tools are built and filed under it."""
+    return frozenset(category for name, category in _TOOL_CATEGORIES.items()
+                     if industry.serves(name, project_industry))
+
+
 def tool_category_for_name(tool_name: str) -> str:
     """Return the router category for a tool name.
 
@@ -1531,6 +1544,9 @@ class RoutingDecision:
         excluded_tool_names: Tool names to remove even when their category is
             selected. Used when a proxy/rendering tool would be misleading for
             the question's evidence requirement.
+        named_categories: Every category the question's words named, also one
+            with no tools yet (TOWERS), which selected_categories leaves out.
+            The abdication guard reads it.
     """
 
     is_small_talk: bool
@@ -1538,6 +1554,7 @@ class RoutingDecision:
     primary_model_override: str | None
     reason: str
     excluded_tool_names: frozenset[str] = frozenset()
+    named_categories: frozenset[str] = frozenset()
 
 
 def _tool_round_in_flight(history: list[dict] | None) -> bool:
@@ -1609,6 +1626,7 @@ def route_chat(
             primary_model_override=None,
             reason=f"intent:{','.join(sorted(cats))}",
             excluded_tool_names=excluded_tool_names,
+            named_categories=cats,
         )
 
     return RoutingDecision(
@@ -1618,6 +1636,7 @@ def route_chat(
         # "intent:towers;no_tools_yet": the question names a category that has no tools yet.
         reason=f"intent:{','.join(sorted(cats))};no_tools_yet" if cats else "default",
         excluded_tool_names=excluded_tool_names,
+        named_categories=cats,
     )
 
 
