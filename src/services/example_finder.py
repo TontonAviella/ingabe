@@ -9,14 +9,20 @@ and finds overlapping one of the user's marks at IoU >= MARK_IOU are dropped. A 
 measured on (its image_px, the long side) is first shrunk so its long side is image_px, the marks with it; the finds
 are mapped back to the picture's own pixels.
 
-Per-target settings (image_px, finder_input_px, look_alike_marks) are read from answer_levels, which owns the
+It runs only on pictures like the measured ones: taken the same way (answer_levels: oblique tower photos, or
+pictures looking straight down), with the marked objects at least as big, as the finder reads them, as the smallest
+the target was measured on (answer_levels.size_gate). Anything else is refused with the reason, never run.
+
+Per-target settings (image_px, finder_input_px, look_alike_marks, view) are read from answer_levels, which owns the
 measured table; none are copied here. How far an answer about the finds may go is answer_levels' decision, not this
 module's.
 
 Jobs: a request is identified by its content (`content_sha`: the picture, the marks, the look-alikes, the target,
 the model and the settings). Its result is kept in object storage per project (finds/v1/<project>/<sha>.json) and
 never computed twice. Every app worker shares the jobs through Redis: one worker runs a request, the others report
-its status; and only one picture is run at a time in the whole app (the slot). Switch: EXAMPLE_FINDER (off).
+its status; jobs wait in one line for the whole app, first come first served, and only the one at the front runs
+(the slot). The line is capped per user and for the whole app, and a waiting job keeps only the picture as the
+finder will be given it (at most image_px a side). Switch: EXAMPLE_FINDER (off).
 Rules: docs/rules/EXAMPLE_FINDER_RULES.md.
 """
 
@@ -43,9 +49,10 @@ from src.services.example_finder_pictures import (
     LONLAT,
     Box,
     FinderInputError,
-    Picture,
+    MapFrame,
     PictureSource,
     check_pixels,
+    check_view,
     decode_photo,
 )
 from src.utils import get_bucket_name, get_s3_client
@@ -65,7 +72,7 @@ MAX_LOOKALIKE_MARKS = 20
 _EDGE_PX = 0.01  # a mark this close outside the picture (rounding of a reprojected box) is pulled onto the edge
 
 # Job states, owned here: compare against these, never against a literal.
-QUEUED = "queued"  # waiting for the app-wide slot
+QUEUED = "queued"  # waiting in line for the app-wide slot
 RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
@@ -75,12 +82,31 @@ REDIS_PREFIX = "example_finder:v1"
 LOCK_TTL_S = 60  # a job's lock and status live this long without a heartbeat (the worker running it died)
 HEARTBEAT_S = 15
 FAILED_KEEP_S = 3600  # a failure stays visible this long; starting the same request again retries it
-QUEUE_LIMIT_S = 1800  # a job waits this long for the slot before it fails as "busy"
+QUEUE_POLL_S = 1.0  # how often a waiting job looks at the front of the line
+# Jobs waiting or running at once. The slowest measured setting (radio units read at 2560 px, a square 1333 px
+# picture) took 137 s in a new finder process and 89 s in a warm one, in the app image on the M1 Mac (2026-10-11),
+# so a full line drains in at most about 23 minutes: inside QUEUE_LIMIT_S, which is only a backstop. One user can
+# hold MAX_JOBS_PER_USER places, so no user waits behind more than MAX_JOBS - 1 others and none fills the line alone.
+MAX_JOBS = 10
+MAX_JOBS_PER_USER = 3
+QUEUE_LIMIT_S = 1800  # a job waits this long at most for the slot before it fails as "busy"
+
+_VIEW_WORDS = {answer_levels.OBLIQUE: "photos taken at an angle",
+               answer_levels.NADIR: "pictures looking straight down (orthophotos)"}
 
 
 def finder_enabled() -> bool:
     """EXAMPLE_FINDER: 1/true/yes turns the example finder on (default off: its routes answer 404)."""
     return os.environ.get("EXAMPLE_FINDER", "0").strip().lower() in {"1", "true", "yes"}
+
+
+class FinderBusy(RuntimeError):
+    """The line of finder jobs is full, for this user (`whole_app` False) or for everyone (True); nothing was
+    queued. Asking again once a job is done works."""
+
+    def __init__(self, message: str, whole_app: bool) -> None:
+        super().__init__(message)
+        self.whole_app = whole_app
 
 
 # --------------------------------------------------------------------------- #
@@ -95,10 +121,11 @@ class Settings:
     image_px: int  # long side of the measured pictures: a larger picture is shrunk to it first
     finder_input_px: int  # the finder reads the picture with its long side scaled to this (imgsz)
     look_alike_marks: bool  # the target's measured settings use look-alike marks
+    view: str  # answer_levels.OBLIQUE or NADIR: the way the measured pictures looked
 
     def as_dict(self) -> dict[str, Any]:
         return {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
-                "look_alike_marks": self.look_alike_marks}
+                "look_alike_marks": self.look_alike_marks, "view": self.view}
 
 
 def settings(target_name: str) -> Settings:
@@ -109,11 +136,11 @@ def settings(target_name: str) -> Settings:
         raise FinderInputError(str(e)) from None
     if t.finder_model != MODEL_NAME:
         raise FinderInputError(f"{t.noun} were measured with the {t.finder_model} finder, not {MODEL_NAME}")
-    image_px = t.measured["image_px"]
-    if t.finder_input_px is None or image_px is None:
+    image_px, view = t.measured["image_px"], t.measured["view"]
+    if t.finder_input_px is None or image_px is None or view is None:
         raise FinderInputError(f"the finder has never been measured on {t.noun}, so it has no settings to run with")
     return Settings(target=target_name, image_px=int(image_px), finder_input_px=int(t.finder_input_px),
-                    look_alike_marks=t.look_alike_marks)
+                    look_alike_marks=t.look_alike_marks, view=view)
 
 
 def _is_number(v: Any) -> bool:
@@ -159,6 +186,22 @@ def _lookalike_shape(given: Any, s: Settings) -> list[Box]:
     return looks
 
 
+def check_picture(s: Settings, view: str, width: int, height: int,
+                  marks_px: Sequence[Box]) -> answer_levels.SizeGate:
+    """The picture is like the ones the target was measured on, or FinderInputError says how it is not: taken the
+    same way (`view`), and the marked objects, as the finder reads this picture, at least as big as the smallest
+    measured (answer_levels.size_gate, from the marks' sizes in the picture's pixels). A target with no measured
+    size cannot be checked, so it is refused too. Returns the passing gate."""
+    view = check_view(view)
+    if view != s.view:
+        raise FinderInputError(f"{answer_levels.target(s.target).noun} were measured only on {_VIEW_WORDS[s.view]}, "
+                               f"not on {_VIEW_WORDS[view]}")
+    gate = answer_levels.size_gate(s.target, max(width, height), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks_px])
+    if gate.passes is not True:
+        raise FinderInputError(gate.reason)
+    return gate
+
+
 # --------------------------------------------------------------------------- #
 # Finding
 # --------------------------------------------------------------------------- #
@@ -167,6 +210,19 @@ def _lookalike_shape(given: Any, s: Settings) -> list[Box]:
 class Find:
     box: Box  # in the picture's own pixels
     score: float  # the finder's confidence, 0-1 (not a measured probability of being right)
+
+
+@dataclass(frozen=True)
+class Shown:
+    """The picture as the finder is given it (shrunk to the target's measured size) and how to map back."""
+
+    pixels: np.ndarray  # at most image_px a side
+    sx: float  # picture pixels -> shown pixels
+    sy: float
+    width: int  # the picture's own size
+    height: int
+    marks: list[Box]  # in the shown pixels
+    looks: list[Box]
 
 
 def _shrink(pixels: np.ndarray, image_px: int) -> tuple[np.ndarray, float, float]:
@@ -186,24 +242,28 @@ def _scaled(box: Sequence[float], sx: float, sy: float) -> Box:
     return (box[0] * sx, box[1] * sy, box[2] * sx, box[3] * sy)
 
 
-def _find(pixels: np.ndarray, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings,
-          runner: Runner) -> list[Find]:
+def for_finder(pixels: np.ndarray, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings) -> Shown:
+    """The picture and marks as the finder is given them. Blocking (a resize): async code uses a thread."""
     height, width = pixels.shape[:2]
-    shown, sx, sy = _shrink(pixels, s.image_px)
-    marks = [_scaled(b, sx, sy) for b in marks_px]
-    looks = [_scaled(b, sx, sy) for b in looks_px]
-    rows = runner(shown, marks + looks, [TARGET_CLASS] * len(marks) + [LOOKALIKE_CLASS] * len(looks),
+    small, sx, sy = _shrink(pixels, s.image_px)
+    return Shown(pixels=small, sx=sx, sy=sy, width=width, height=height,
+                 marks=[_scaled(b, sx, sy) for b in marks_px], looks=[_scaled(b, sx, sy) for b in looks_px])
+
+
+def _find(picture: Shown, s: Settings, runner: Runner) -> list[Find]:
+    rows = runner(picture.pixels, picture.marks + picture.looks,
+                  [TARGET_CLASS] * len(picture.marks) + [LOOKALIKE_CLASS] * len(picture.looks),
                   s.finder_input_px, CONF, MAX_DET)
     finds = []
     for x0, y0, x1, y1, score, cls in rows:
         if cls != TARGET_CLASS:
             continue
         box = (x0, y0, x1, y1)
-        if any(boxes.iou(box, mark) >= MARK_IOU for mark in marks):
+        if any(boxes.iou(box, mark) >= MARK_IOU for mark in picture.marks):
             continue
-        bx0, by0, bx1, by1 = _scaled(box, 1 / sx, 1 / sy)
-        finds.append(Find(box=(round(max(0.0, bx0), 2), round(max(0.0, by0), 2), round(min(width, bx1), 2),
-                               round(min(height, by1), 2)), score=round(score, 4)))
+        bx0, by0, bx1, by1 = _scaled(box, 1 / picture.sx, 1 / picture.sy)
+        finds.append(Find(box=(round(max(0.0, bx0), 2), round(max(0.0, by0), 2), round(min(picture.width, bx1), 2),
+                               round(min(picture.height, by1), 2)), score=round(score, 4)))
     return sorted(finds, key=lambda f: -f.score)
 
 
@@ -212,21 +272,24 @@ def _stored_model() -> Runner:
     return example_finder_model.runner(example_finder_model.ensure_weights(get_s3_client(), get_bucket_name()))
 
 
-def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, target: str, *,
+def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, target: str, *, view: str,
          runner: Optional[Runner] = None) -> list[Find]:
     """The objects like the marked ones on the same picture, best first, in the picture's own pixels.
 
-    `picture` is a photo file's bytes or RGB pixels (height x width x 3, uint8); `marks` 1 to 20 boxes
-    (left, top, right, bottom) in its pixels; `lookalike_marks` up to 20 boxes of things that look alike but are
-    not wanted, only for targets measured with them. Raises FinderInputError for anything else. Blocking (seconds
-    on a CPU): async code calls it through asyncio.to_thread, or uses `start`.
+    `picture` is a photo file's bytes or RGB pixels (height x width x 3, uint8), taken the way `view` says
+    (answer_levels.OBLIQUE or NADIR); `marks` 1 to 20 boxes (left, top, right, bottom) in its pixels;
+    `lookalike_marks` up to 20 boxes of things that look alike but are not wanted, only for targets measured with
+    them. Raises FinderInputError for anything else, including a picture unlike the measured ones (check_picture).
+    Blocking (seconds on a CPU): async code calls it through asyncio.to_thread, or uses `start`.
     """
     s = settings(target)
+    view = check_view(view)
     pixels = check_pixels(picture) if isinstance(picture, np.ndarray) else decode_photo(picture)
     height, width = pixels.shape[:2]
     marks_px = check_inside(check_shape(marks, "mark", MIN_MARKS, MAX_MARKS), width, height, "mark")
     looks_px = check_inside(_lookalike_shape(lookalike_marks, s), width, height, "look-alike mark")
-    return _find(pixels, marks_px, looks_px, s, runner or _stored_model())
+    check_picture(s, view, width, height, marks_px)
+    return _find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model())
 
 
 def content_sha(picture_sha: str, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings) -> str:
@@ -276,6 +339,28 @@ class Job:
         return out
 
 
+@dataclass(frozen=True)
+class _Request:
+    """What a job keeps while it waits and runs: the picture only as the finder will be given it (`shown`, at most
+    image_px a side), never the whole window."""
+
+    project_id: str
+    job_id: str
+    user_id: str
+    settings: Settings
+    shown: Shown
+    picture_sha256: str
+    frame: Optional[MapFrame]
+    marks_px: list[Box]  # in the picture's own pixels
+    looks_px: list[Box]
+    gate: answer_levels.SizeGate
+
+    @property
+    def place(self) -> str:
+        """This job's entry in the line."""
+        return json.dumps([self.user_id, self.project_id, self.job_id], separators=(",", ":"))
+
+
 def _status_key(project_id: str, job_id: str) -> str:
     return f"{REDIS_PREFIX}:{project_id}:{job_id}:status"
 
@@ -287,6 +372,81 @@ def _lock_key(project_id: str, job_id: str) -> str:
 def slot_key() -> str:
     """The app-wide slot: one picture at a time in the whole app, whichever worker runs it."""
     return f"{REDIS_PREFIX}:slot"
+
+
+def queue_key() -> str:
+    """The line of jobs waiting or running (a sorted set: members are places, scores are tickets in arrival order)."""
+    return f"{REDIS_PREFIX}:queue"
+
+
+def _ticket_key() -> str:
+    return f"{REDIS_PREFIX}:ticket"
+
+
+def _text(value: Any) -> str:
+    return value.decode() if isinstance(value, bytes) else value
+
+
+# Join the back of the line unless the user (ARGV[3]) or everyone (ARGV[4]) already holds the most places allowed
+# (the user's own count first: it is the one they can do something about). Counting and joining are one step, so
+# two workers cannot both take the last place. 0 joined, 1 the user's places are taken, 2 the app's are.
+_JOIN = """
+local places = redis.call('ZRANGE', KEYS[1], 0, -1)
+local mine = 0
+for _, place in ipairs(places) do
+  if cjson.decode(place)[1] == ARGV[2] then mine = mine + 1 end
+end
+if mine >= tonumber(ARGV[3]) then return 1 end
+if #places >= tonumber(ARGV[4]) then return 2 end
+redis.call('ZADD', KEYS[1], redis.call('INCR', KEYS[2]), ARGV[1])
+return 0
+"""
+
+
+async def _leave_if_gone(redis: Any, place: Any) -> bool:
+    """Removes a place whose job is gone (its lock expired: the worker running it died); True when removed. A live
+    job holds its lock from before it joins until after it leaves."""
+    _, project_id, job_id = json.loads(_text(place))
+    if await redis.exists(_lock_key(project_id, job_id)):
+        return False
+    await redis.zrem(queue_key(), place)
+    logger.warning("example finder job %s left the line: its worker stopped", job_id)
+    return True
+
+
+async def _join(redis: Any, request: _Request) -> None:
+    """Takes a place at the back of the line, or FinderBusy when the user's or the app's places are taken."""
+    for place in await redis.zrange(queue_key(), 0, -1):
+        await _leave_if_gone(redis, place)
+    joined = await redis.eval(_JOIN, 2, queue_key(), _ticket_key(), request.place, request.user_id,
+                              MAX_JOBS_PER_USER, MAX_JOBS)
+    if joined == 1:
+        raise FinderBusy(f"you already have {MAX_JOBS_PER_USER} finder jobs waiting or running; start another when "
+                         f"one is done", whole_app=False)
+    if joined == 2:
+        raise FinderBusy(f"the finder already has {MAX_JOBS} pictures waiting or running; try again in a few "
+                         f"minutes", whole_app=True)
+
+
+async def _take_slot(redis: Any, request: _Request, held: list[Any]) -> None:
+    """Waits in line, first come first served, and takes the app-wide slot once this job is at the front."""
+    slot = redis.lock(slot_key(), timeout=LOCK_TTL_S, thread_local=False)
+    deadline = time.monotonic() + QUEUE_LIMIT_S
+    while True:
+        rank = await redis.zrank(queue_key(), request.place)
+        if rank is None:
+            raise RuntimeError("the job lost its place in line (its lock expired while it waited)")
+        if rank == 0:
+            if await slot.acquire(blocking=False):
+                held.append(slot)
+                return
+        else:
+            front = await redis.zrange(queue_key(), 0, 0)
+            if front and await _leave_if_gone(redis, front[0]):
+                continue
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"the finder was busy with other pictures for {QUEUE_LIMIT_S // 60} minutes")
+        await asyncio.sleep(QUEUE_POLL_S)
 
 
 async def _load(s3: Any, bucket: str, key: str) -> Optional[dict[str, Any]]:
@@ -324,16 +484,18 @@ async def status(redis: Any, s3: Any, bucket: str, project_id: str, job_id: str)
 
 
 _tasks: set[asyncio.Task] = set()  # running jobs, kept so they are not garbage-collected mid-run
+_places_here: set[str] = set()  # places in line of the jobs this app worker runs
 
 
-async def start(redis: Any, s3: Any, bucket: str, project_id: str, source: PictureSource, marks: Any,
+async def start(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str, source: PictureSource, marks: Any,
                 lookalike_marks: Any, target: str, *, runner: Optional[Runner] = None) -> Job:
     """Find the objects like the marked ones in the source's picture, once per content and project.
 
     Returns at once: DONE with the finds when this project asked the same before; otherwise the job, run in the
     background by this worker (QUEUED, then RUNNING) or already running in another worker. `marks` and
-    `lookalike_marks` are boxes in the picture source's coordinates. FinderInputError for a bad request,
-    PictureReadError when the picture could not be read.
+    `lookalike_marks` are boxes in the picture source's coordinates; `user_id` is who asks (places in line are
+    counted per user). FinderInputError for a bad request or a picture unlike the measured ones, PictureReadError
+    when the picture could not be read, FinderBusy when the line is full (nothing is queued then).
     """
     s = settings(target)
     given_marks = check_shape(marks, "mark", MIN_MARKS, MAX_MARKS)
@@ -342,16 +504,26 @@ async def start(redis: Any, s3: Any, bucket: str, project_id: str, source: Pictu
     marks_px = check_inside([picture.to_pixels(b) for b in given_marks], picture.width, picture.height, "mark")
     looks_px = check_inside([picture.to_pixels(b) for b in given_looks], picture.width, picture.height,
                             "look-alike mark")
+    gate = check_picture(s, picture.view, picture.width, picture.height, marks_px)
     job_id = content_sha(picture.sha256, marks_px, looks_px, s)
     stored = await _load(s3, bucket, result_key(project_id, job_id))
     if stored is not None:
         return _done(job_id, stored)
+    request = _Request(project_id=project_id, job_id=job_id, user_id=user_id, settings=s,
+                       shown=await asyncio.to_thread(for_finder, picture.pixels, marks_px, looks_px, s),
+                       picture_sha256=picture.sha256, frame=picture.frame, marks_px=marks_px, looks_px=looks_px,
+                       gate=gate)
     lock = redis.lock(_lock_key(project_id, job_id), timeout=LOCK_TTL_S, thread_local=False)
     if not await lock.acquire(blocking=False):  # another worker runs it
         return await status(redis, s3, bucket, project_id, job_id) or Job(job_id=job_id, status=QUEUED)
+    try:
+        await _join(redis, request)
+    except BaseException:
+        await lock.release()
+        raise
+    _places_here.add(request.place)
     await _set_status(redis, project_id, job_id, QUEUED, LOCK_TTL_S)
-    task = asyncio.get_running_loop().create_task(
-        _run(redis, s3, bucket, project_id, job_id, picture, marks_px, looks_px, s, runner, lock))
+    task = asyncio.get_running_loop().create_task(_run(redis, s3, bucket, request, runner, lock))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return Job(job_id=job_id, status=QUEUED)
@@ -378,71 +550,104 @@ def _round_box(box: Sequence[float], digits: int) -> list[float]:
     return [round(float(v), digits) for v in box]
 
 
-def _record(job_id: str, picture: Picture, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings,
-            finds: Sequence[Find], seconds: float) -> dict[str, Any]:
+def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[str, Any]:
     """What is kept for one request: the finds in the picture's pixels and in the caller's coordinates, and every
     input that made them."""
-    digits = 2 if picture.frame is None else (8 if picture.frame.crs == LONLAT else 3)
+    frame, s, gate = request.frame, request.settings, request.gate
+    digits = 2 if frame is None else (8 if frame.crs == LONLAT else 3)
+
+    def caller_box(box: Box) -> list[float]:
+        return _round_box(box if frame is None else frame.from_pixels(box), digits)
+
     return {
         "version": 1,
-        "job_id": job_id,
+        "job_id": request.job_id,
         "target": s.target,
         "model": {"name": MODEL_NAME, "sha256": MODEL_SHA256},
         "settings": s.as_dict(),
         "protocol": {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU},
-        "picture": {"sha256": picture.sha256, "width": picture.width, "height": picture.height,
-                    "frame": picture.frame.as_dict() if picture.frame else None},
-        "marks_px": [list(b) for b in marks_px],
-        "lookalike_marks_px": [list(b) for b in looks_px],
-        "finds": [{"box": _round_box(picture.from_pixels(f.box), digits), "box_px": list(f.box), "score": f.score}
-                  for f in finds],
+        "picture": {"sha256": request.picture_sha256, "width": request.shown.width, "height": request.shown.height,
+                    "frame": frame.as_dict() if frame else None},
+        "size_gate": {"object_px": round(gate.object_px, 1) if gate.object_px is not None else None,
+                      "needed_px": gate.needed_px, "reason": gate.reason},
+        "marks_px": [list(b) for b in request.marks_px],
+        "lookalike_marks_px": [list(b) for b in request.looks_px],
+        "finds": [{"box": caller_box(f.box), "box_px": list(f.box), "score": f.score} for f in finds],
         "seconds": round(seconds, 2),
         "made_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
 
-async def _work(redis: Any, s3: Any, bucket: str, project_id: str, job_id: str, picture: Picture,
-                marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings, runner: Optional[Runner],
+async def _work(redis: Any, s3: Any, bucket: str, request: _Request, runner: Optional[Runner],
                 held: list[Any]) -> None:
-    key = result_key(project_id, job_id)
+    key = result_key(request.project_id, request.job_id)
     if await _load(s3, bucket, key) is not None:  # another worker finished it between the check and the lock
         return
-    slot = redis.lock(slot_key(), timeout=LOCK_TTL_S, sleep=1.0, blocking_timeout=QUEUE_LIMIT_S,
-                      thread_local=False)
-    if not await slot.acquire():
-        raise TimeoutError(f"the finder was busy with other pictures for {QUEUE_LIMIT_S // 60} minutes")
-    held.append(slot)
-    await _set_status(redis, project_id, job_id, RUNNING, LOCK_TTL_S)
+    await _take_slot(redis, request, held)
+    await _set_status(redis, request.project_id, request.job_id, RUNNING, LOCK_TTL_S)
     run_model = runner or await asyncio.to_thread(_stored_model)
     began = time.monotonic()
-    finds = await asyncio.to_thread(_find, picture.pixels, marks_px, looks_px, s, run_model)
+    finds = await asyncio.to_thread(_find, request.shown, request.settings, run_model)
     seconds = time.monotonic() - began
-    record = await asyncio.to_thread(_record, job_id, picture, marks_px, looks_px, s, finds, seconds)
+    await _hand_over(redis, request)
+    await redis.zrem(queue_key(), request.place)  # out of the line before the finds show, so it no longer counts
+    record = await asyncio.to_thread(_record, request, finds, seconds)
     await s3.put_object(Bucket=bucket, Key=key, Body=json.dumps(record).encode(), ContentType="application/json")
-    await redis.delete(_status_key(project_id, job_id))
-    logger.info("example finder job %s (%s, project %s): %d finds in %.1f s", job_id, s.target, project_id,
-                len(finds), seconds)
+    await redis.delete(_status_key(request.project_id, request.job_id))
+    logger.info("example finder job %s (%s, project %s): %d finds in %.1f s", request.job_id, request.settings.target,
+                request.project_id, len(finds), seconds)
 
 
-async def _run(redis: Any, s3: Any, bucket: str, project_id: str, job_id: str, picture: Picture,
-               marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings, runner: Optional[Runner],
-               lock: Any) -> None:
+async def _next_runs_here(redis: Any, request: _Request) -> bool:
+    """Whether the next job in line after `request` (which just ran, at the front) is one of this worker's."""
+    for place in await redis.zrange(queue_key(), 0, 1):
+        if _text(place) != request.place:
+            return _text(place) in _places_here
+    return False
+
+
+async def _hand_over(redis: Any, request: _Request) -> None:
+    """After a picture, with the slot still held: the finder process stops unless this worker runs the next job, so
+    only one finder process (one model's memory) lives in the whole app at a time. Never raises: a failure here
+    must not fail the job that just ran."""
+    try:
+        keep = await _next_runs_here(redis, request)
+    except Exception:
+        logger.warning("example finder: could not read the line; stopping the finder process", exc_info=True)
+        keep = False
+    if not keep:
+        try:
+            await asyncio.to_thread(example_finder_model.stop)
+        except Exception:  # it also stops by itself once idle (IDLE_EXIT_S)
+            logger.warning("example finder: could not stop the finder process after job %s", request.job_id,
+                           exc_info=True)
+
+
+async def _run(redis: Any, s3: Any, bucket: str, request: _Request, runner: Optional[Runner], lock: Any) -> None:
     held = [lock]
-    beat = asyncio.get_running_loop().create_task(_heartbeat(redis, project_id, job_id, held))
+    beat = asyncio.get_running_loop().create_task(_heartbeat(redis, request.project_id, request.job_id, held))
     failure: Optional[BaseException] = None
     try:
-        await _work(redis, s3, bucket, project_id, job_id, picture, marks_px, looks_px, s, runner, held)
+        await _work(redis, s3, bucket, request, runner, held)
     except Exception as e:  # shown to the caller as a FAILED job; the next start of the same request retries
-        logger.exception("example finder job %s failed", job_id)
+        logger.exception("example finder job %s failed", request.job_id)
         failure = e
     finally:
         beat.cancel()
     try:
         if failure is not None:
-            await _set_status(redis, project_id, job_id, FAILED, FAILED_KEEP_S, error=str(failure)[:300])
+            if any(held_lock.name == slot_key() for held_lock in held):
+                await _hand_over(redis, request)
+            await _set_status(redis, request.project_id, request.job_id, FAILED, FAILED_KEEP_S,
+                              error=str(failure)[:300])
     finally:
-        for held_lock in held:
-            try:
-                await held_lock.release()
-            except LockError:
-                logger.warning("example finder job %s: the lock %s had already expired", job_id, held_lock.name)
+        _places_here.discard(request.place)
+        try:
+            await redis.zrem(queue_key(), request.place)  # before the lock goes: a place without a lock is a dead job
+        finally:
+            for held_lock in held:
+                try:
+                    await held_lock.release()
+                except LockError:
+                    logger.warning("example finder job %s: the lock %s had already expired", request.job_id,
+                                   held_lock.name)

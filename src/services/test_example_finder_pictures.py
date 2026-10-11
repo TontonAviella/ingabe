@@ -14,6 +14,7 @@ from rasterio.transform import from_origin
 from rasterio.warp import transform_bounds
 
 from src.services import example_finder_pictures as pictures
+from src.services.answer_levels import NADIR, OBLIQUE
 from src.services.example_finder_pictures import FinderInputError, PictureReadError
 
 CRS = "EPSG:32735"  # UTM 35S, as Rwandan drone photos
@@ -41,6 +42,7 @@ async def test_a_window_in_the_layers_crs_is_read_at_the_photos_own_pixels(tmp_p
     path, data = _ortho(tmp_path / "ortho.tif")
     picture = await pictures.OrthophotoWindow(path, _layer_box(100, 50, 300, 250), pictures.LAYER).read()
     assert picture.pixels.shape == (200, 200, 3) and picture.pixels.dtype == np.uint8
+    assert picture.view == NADIR  # an orthophoto looks straight down
     assert np.array_equal(picture.pixels, data[:, 50:250, 100:300].transpose(1, 2, 0))
     assert picture.to_pixels(_layer_box(110, 60, 130, 90)) == pytest.approx((10, 10, 30, 40))
     assert picture.from_pixels((10, 10, 30, 40)) == pytest.approx(_layer_box(110, 60, 130, 90))
@@ -116,11 +118,17 @@ def _jpeg(width, height, orientation=None) -> bytes:
 
 @pytest.mark.anyio
 async def test_a_photo_is_read_upright_as_its_exif_says():
-    picture = await pictures.Photo(_jpeg(40, 20, orientation=6)).read()  # 6: shown turned a quarter right
-    assert picture.pixels.shape == (40, 20, 3) and picture.frame is None
+    picture = await pictures.Photo(_jpeg(40, 20, orientation=6), OBLIQUE).read()  # 6: shown turned a quarter right
+    assert picture.pixels.shape == (40, 20, 3) and picture.frame is None and picture.view == OBLIQUE
     assert picture.to_pixels((1, 2, 3, 4)) == (1, 2, 3, 4)
-    plain = await pictures.Photo(_jpeg(40, 20)).read()
-    assert plain.pixels.shape == (20, 40, 3) and plain.sha256 != picture.sha256
+    plain = await pictures.Photo(_jpeg(40, 20), NADIR).read()
+    assert plain.pixels.shape == (20, 40, 3) and plain.sha256 != picture.sha256 and plain.view == NADIR
+
+
+@pytest.mark.anyio
+async def test_a_photo_says_which_way_it_looks_or_is_refused():
+    with pytest.raises(FinderInputError, match="a picture looks one of"):
+        await pictures.Photo(_jpeg(40, 20), "from above, roughly").read()
 
 
 def test_photos_that_are_not_pictures_or_too_large_are_refused(monkeypatch):

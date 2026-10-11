@@ -29,5 +29,7 @@ Set `FINDER_EVAL_DIR` to a work folder holding `raw/` (the downloads), `w/` (wei
 6. `run_yoloe26.py` — YOLOE-11s vs YOLOE-26s/26n on the same pictures and marks -> `results/yoloe26.jsonl`.
 7. `record_test_result.py` — not a measurement: records one real result on the committed tower photo for the app's
    example finder tests (`test_fixtures/example_finder/recorded_yoloe_result.json`); runs inside the app image.
+8. `measure_finder_process.py` — not a measurement of finding: run time and memory of the app's finder process per
+   picture and input size (the table in `docs/rules/EXAMPLE_FINDER_RULES.md`); runs inside the app image.
 
 Run them one at a time: each loads a model on the CPU; parallel runs on a 16 GB Mac swapped and skewed timings.

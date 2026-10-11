@@ -72,16 +72,19 @@ async def start_example_finder(
     session: UserContext = Depends(_limit_per_user),
 ) -> dict[str, Any]:
     """Find the objects like the marked ones in a window of the photo. Returns the job: "done" with the finds when
-    this project asked the same before, otherwise "queued" or "running" (ask GET .../finder/{job_id})."""
+    this project asked the same before, otherwise "queued" or "running" (ask GET .../finder/{job_id}). 429 when this
+    user already has the most jobs waiting, 503 when the whole app has."""
     metadata, project_id = await _photo_project(layer, session)
     s3, bucket = await get_async_s3_client(), get_bucket_name()
     source = example_finder_pictures.OrthophotoWindow(
         cog_url=await photo_context.cog_url(s3, bucket, metadata), bbox=body.window.bbox, crs=body.window.crs)
     try:
-        job = await example_finder.start(get_async_redis(), s3, bucket, project_id, source, body.marks,
-                                         body.lookalike_marks, body.target)
+        job = await example_finder.start(get_async_redis(), s3, bucket, project_id, session.get_user_id(), source,
+                                         body.marks, body.lookalike_marks, body.target)
     except example_finder_pictures.FinderInputError as e:
         raise HTTPException(422, str(e)) from None
+    except example_finder.FinderBusy as e:
+        raise HTTPException(503 if e.whole_app else 429, str(e)) from None
     except example_finder_pictures.PictureReadError as e:
         logger.warning("example finder on layer %s: %s", layer.layer_id, e)
         raise HTTPException(502, "The photo could not be read; try again") from None

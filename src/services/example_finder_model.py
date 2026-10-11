@@ -6,12 +6,13 @@ src/services/raster_process.py (spawn, a function defined at module level, plain
 waits without holding the GIL) with one difference: it is a single long-lived process with a pipe, not a pool, so a
 picture that never finishes can be killed (a pool cannot stop a running task).
 
-* One picture at a time per app process (a lock); the app-wide limit is in example_finder (Redis).
+* One picture at a time per app process (a lock); the app-wide limit is in example_finder (Redis), which also calls
+  `stop` after a picture unless this app worker runs the next one, so one finder process lives in the whole app.
 * Torch threads capped by FINDER_THREADS (default 4); YOLO_OFFLINE and YOLO_AUTOINSTALL are set in the finder
   process only, so Ultralytics never reaches the internet there (the app's FastSAM path is left as it was).
 * Weights come only from object storage (MODEL_KEY), fetched once and checked by sha256 (stored_files).
-* The process is started on first use and stops itself after IDLE_EXIT_S (2 minutes) without a picture, giving
-  back its ~1 GB; the next picture starts it again.
+* The process is started on first use and stops when told (`stop`) or by itself after IDLE_EXIT_S (2 minutes)
+  without a picture, giving its memory back; the next picture starts it again.
 """
 
 from __future__ import annotations
@@ -37,12 +38,14 @@ MODEL_SHA256 = "8e439445c87338b79d9ce21dec109f4621e26df67e94d26ea1a98c1e64dce3e3
 _WEIGHTS_PATH = "/tmp/ingabe_cache/models/yoloe-11s-seg-8e439445c87338b7.pt"
 
 DEFAULT_THREADS = 4
-# One picture, including starting the process (importing torch took ~20 s in the amd64 image on an M1 Mac, a
-# picture read at 1280 px 11-19 s, measured 2026-10-11). Past this the process is killed.
+# One picture, including starting the process. Measured 2026-10-11 in the amd64 app image on the M1 Mac with 4
+# threads, a new process then a warm one (docs/rules/EXAMPLE_FINDER_RULES.md has the table): read at 640 px 18/5 s,
+# at 1280 px 28-39/14-18 s, at 2560 px 78/60 s (1333 x 750 px) and 137/89 s (1333 x 1333 px). Past this the
+# process is killed.
 WAIT_LIMIT_S = 600.0
-# The process holds ~1.0 GB after a picture (1.1 GB at its peak; amd64 image on the M1, 2026-10-11), and each app
-# worker that ran a job has its own: it stops after this long without a picture, so a burst of pictures keeps it
-# warm and an idle app gives the memory back.
+# The process peaks at 0.9-1.4 GB reading at 640-1280 px and 2.8-3.3 GB at 2560 px, and keeps 0.9-1.5 GB after a
+# picture (same measurement). example_finder stops it after each picture unless the same app worker runs the next
+# one, so one lives in the whole app; this is the fallback: a process with no picture for this long stops itself.
 IDLE_EXIT_S = 120.0
 # Set in the finder process before Ultralytics is imported. Ultralytics 8.4 reads YOLO_OFFLINE as offline only
 # when it is "true" (utils.is_online), not "1"; YOLO_AUTOINSTALL=False stops it pip-installing what it misses.
@@ -176,6 +179,16 @@ def _ask(request: tuple[Any, ...]) -> tuple[str, Any]:
                 continue
             raise RuntimeError(f"the finder process stopped (exit code {current.process.exitcode})") from e
     raise AssertionError("unreachable")
+
+
+def stop() -> None:
+    """Stops the finder process now, if there is one, giving its memory back; the next picture starts a new one.
+    Waits for a picture this app process is running to finish first (the lock), so it never cuts one short."""
+    global _process
+    with _lock:
+        if _process is not None:
+            _process.stop()
+            _process = None
 
 
 def run(weights: str, rgb: np.ndarray, prompts: Sequence[Sequence[float]], classes: Sequence[int], imgsz: int,

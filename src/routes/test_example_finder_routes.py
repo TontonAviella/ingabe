@@ -1,7 +1,11 @@
 """The example finder's routes (src/routes/example_finder_routes.py) end to end: a real orthophoto in object storage
 read through the raster workers, the real rights checks (edit_layer / get_layer), Redis jobs, the switch, the rate
-limit. The model is replaced by the recorded Ultralytics result (RecordedModel, test_example_finder.py); the
-orthophoto is the recorded tower photo given map coordinates, so the recording fits it exactly."""
+limit and the line's caps. The model is replaced by the recorded Ultralytics result (RecordedModel,
+test_example_finder.py), which does not care what the picture shows.
+
+An orthophoto looks straight down, so the requests name a target measured on such pictures: maize seedlings
+(640 px pictures read at 1280 px, plants from 34 px). The orthophoto is a 640 x 640 px part of the recorded tower
+photo given map coordinates, and the marks are three dishes in it: about 63 px as the finder reads them."""
 
 from __future__ import annotations
 
@@ -21,7 +25,8 @@ from src.database.pool import _build_postgres_url
 from src.dependencies.session import LegacyUserContext, ServiceUserContext, verify_session_required
 from src.routes import example_finder_routes
 from src.services import example_finder
-from src.services.test_example_finder import MARKS, PIXELS, RecordedModel, _expected_finds, _redis
+from src.services.answer_levels import NADIR
+from src.services.test_example_finder import MARKS, PIXELS, RecordedModel, _redis
 from src.utils import get_bucket_name, get_s3_client
 from src.wsgi import app
 
@@ -30,25 +35,29 @@ EDITOR, VIEWER = str(uuid.uuid4()), str(uuid.uuid4())
 LEGACY = LegacyUserContext().get_user_id()
 CRS = "EPSG:32735"
 WEST, NORTH, PX_M = 800_000.0, 9_790_000.0, 0.01
+TARGET = "maize_seedling"
+LEFT, TOP, SIDE = 350, 50, 640
+ORTHO = np.ascontiguousarray(PIXELS[TOP:TOP + SIDE, LEFT:LEFT + SIDE])
+ORTHO_MARKS = [[x0 - LEFT, y0 - TOP, x1 - LEFT, y1 - TOP] for x0, y0, x1, y1 in MARKS]
 
 
 def _to_layer(box):
-    """A box in the tower photo's pixels as (west, south, east, north) in the orthophoto's CRS."""
+    """A box in the orthophoto's pixels as (west, south, east, north) in its CRS."""
     x0, y0, x1, y1 = box
     return [WEST + x0 * PX_M, NORTH - y1 * PX_M, WEST + x1 * PX_M, NORTH - y0 * PX_M]
 
 
-WHOLE_PHOTO = {"bbox": _to_layer((0, 0, PIXELS.shape[1], PIXELS.shape[0])), "crs": "layer"}
-LAYER_MARKS = [_to_layer(m) for m in MARKS]
+WHOLE_PHOTO = {"bbox": _to_layer((0, 0, SIDE, SIDE)), "crs": "layer"}
+LAYER_MARKS = [_to_layer(m) for m in ORTHO_MARKS]
 
 
 def _orthophoto_bytes() -> bytes:
-    height, width = PIXELS.shape[:2]
+    height, width = ORTHO.shape[:2]
     with rasterio.MemoryFile() as memfile:
         with memfile.open(driver="GTiff", width=width, height=height, count=3, dtype="uint8", crs=CRS,
                           transform=from_origin(WEST, NORTH, PX_M, PX_M), tiled=True, blockxsize=256,
                           blockysize=256) as dst:
-            dst.write(PIXELS.transpose(2, 0, 1))
+            dst.write(ORTHO.transpose(2, 0, 1))
         return memfile.read()
 
 
@@ -124,7 +133,7 @@ def _as(user) -> None:
 
 
 def _body(**changes):
-    return {"target": "tower_dish", "window": WHOLE_PHOTO, "marks": LAYER_MARKS, **changes}
+    return {"target": TARGET, "window": WHOLE_PHOTO, "marks": LAYER_MARKS, **changes}
 
 
 async def _settled(client, layer, job_id, limit_s=30.0):
@@ -160,23 +169,63 @@ async def test_the_owner_finds_the_rest_in_the_photos_coordinates_once(client, p
     job = started.json()
     assert job["status"] in (example_finder.QUEUED, example_finder.RUNNING) and example_finder.is_job_id(job["job_id"])
     done = await _settled(client, ids["layer"], job["job_id"])
-    expected = _expected_finds(MARKS)
-    assert done["status"] == example_finder.DONE and len(done["finds"]) == len(expected)
+    expected = example_finder.find(ORTHO, ORTHO_MARKS, [], TARGET, view=NADIR, runner=RecordedModel())
+    assert done["status"] == example_finder.DONE and len(done["finds"]) == len(expected) > 0
     first = done["finds"][0]
-    assert first["box_px"] == pytest.approx(expected[0][:4], abs=0.01)
+    assert first["box_px"] == pytest.approx(expected[0].box, abs=0.01)
     assert first["box"] == pytest.approx(_to_layer(first["box_px"]), abs=0.001)  # metres in the photo's CRS
     (call,) = finder.calls
-    assert np.array_equal(call["rgb"], PIXELS) and np.allclose(call["prompts"], MARKS, atol=0.001)
+    assert np.array_equal(call["rgb"], ORTHO) and np.allclose(call["prompts"], ORTHO_MARKS, atol=0.001)
     again = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
     assert again.json() == done and len(finder.calls) == 1  # kept, not found twice
 
 
 @pytest.mark.anyio
-async def test_a_viewer_cannot_start_the_finder(client, photo, finder):
+async def test_a_project_viewer_never_starts_the_finder(client, photo, finder):
+    """Today both routes answer 404 to anyone but the layer's owner: map_layers' row-level security shows a layer
+    only to its owner, so get_layer finds nothing before any rights check runs (the xfail tests below say what the
+    spec wants)."""
     ids = await photo()
     _as(VIEWER)
     refused = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
-    assert refused.status_code in (403, 404) and finder.calls == []
+    assert refused.status_code == 404 and finder.calls == []
+
+
+# The spec: project editors start jobs (EDIT rights), project viewers read them (VIEW rights). Not so today:
+RLS_GAP = pytest.mark.xfail(
+    strict=True, raises=AssertionError,
+    reason="map_layers row-level security (alembic c1d2e3f4a5b9) shows a layer only to its owner, so get_layer and "
+           "edit_layer answer 404 to project editors and viewers; a decision for Roger (EXAMPLE_FINDER_RULES.md)")
+
+
+@RLS_GAP
+@pytest.mark.anyio
+async def test_spec_a_project_viewer_is_told_403_when_starting(client, photo, finder):
+    ids = await photo()
+    _as(VIEWER)
+    refused = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
+    assert refused.status_code == 403, refused.text
+
+
+@RLS_GAP
+@pytest.mark.anyio
+async def test_spec_a_project_editor_starts_the_finder(client, photo, finder):
+    ids = await photo()
+    _as(EDITOR)
+    started = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
+    assert started.status_code == 200, started.text
+
+
+@RLS_GAP
+@pytest.mark.anyio
+async def test_spec_a_project_viewer_reads_the_finds(client, photo, finder):
+    ids = await photo()
+    _as(ids["owner"])
+    job = (await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())).json()
+    await _settled(client, ids["layer"], job["job_id"])
+    _as(VIEWER)
+    read = await client.get(f"/api/layer/{ids['layer']}/finder/{job['job_id']}")
+    assert read.status_code == 200, read.text
 
 
 @pytest.mark.anyio
@@ -210,7 +259,11 @@ async def test_a_job_of_another_photo_or_an_unknown_job_is_not_found(client, pho
     ({"target": "banana_mat"}, "never been measured on banana mats"),
     ({"marks": []}, "give 1 to 20 marks"),
     ({"marks": [[WEST - 5, NORTH - 1, WEST - 4, NORTH]]}, "mark 1 is not inside the picture"),
-    ({"lookalike_marks": LAYER_MARKS[:1]}, "look-alike marks are not used for dishes"),
+    ({"lookalike_marks": LAYER_MARKS[:1]}, "look-alike marks are not used for maize plants"),
+    ({"target": "tower_dish"}, "dishes were measured only on photos taken at an angle"),
+    ({"target": "tree_crown_forest"}, "no object size was measured for tree crowns"),
+    ({"marks": [_to_layer((x, 300, x + 10, 310)) for x in (100, 200, 300)]},
+     "maize plants were measured only from 34 px wide, so this picture is outside the measurement"),
     ({"window": {"bbox": [WEST - 100, NORTH + 50, WEST - 90, NORTH + 60], "crs": "layer"}}, "does not overlap"),
     ({"window": {"bbox": WHOLE_PHOTO["bbox"], "crs": "EPSG:3857"}}, "must be one of"),
 ])
@@ -233,3 +286,29 @@ async def test_starting_the_finder_is_rate_limited_per_user(client, photo, finde
     _as(other["owner"])
     assert (await client.post(f"/api/layer/{other['layer']}/finder",
                               json=_body(target="banana_mat"))).status_code == 422  # another user is not limited
+
+
+@pytest.mark.anyio
+async def test_a_full_line_is_told_429_for_the_user_and_503_for_the_app(client, photo, finder, monkeypatch):
+    monkeypatch.setattr(example_finder, "MAX_JOBS_PER_USER", 1)
+    monkeypatch.setattr(example_finder, "MAX_JOBS", 2)
+    finder.delay_s = 6.0  # the first job is still running while the others ask
+    ids, other = await photo(), await photo()
+    _as(ids["owner"])
+    first = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
+    assert first.status_code == 200, first.text
+    mine = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body(marks=LAYER_MARKS[:2]))
+    assert mine.status_code == 429 and "you already have 1 finder jobs" in mine.json()["detail"]
+    _as(other["owner"])
+    theirs = await client.post(f"/api/layer/{other['layer']}/finder", json=_body())
+    assert theirs.status_code == 200, theirs.text
+    full = await client.post(f"/api/layer/{other['layer']}/finder", json=_body(marks=LAYER_MARKS[1:]))
+    assert full.status_code == 429  # this user's own place counts first
+    monkeypatch.setattr(example_finder, "MAX_JOBS_PER_USER", 5)  # now only the app's two places are taken
+    _as(ids["owner"])
+    busy = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body(marks=LAYER_MARKS[1:]))
+    assert busy.status_code == 503 and "the finder already has 2 pictures" in busy.json()["detail"]
+    _as(ids["owner"])
+    await _settled(client, ids["layer"], first.json()["job_id"])
+    _as(other["owner"])
+    await _settled(client, other["layer"], theirs.json()["job_id"])

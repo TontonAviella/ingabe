@@ -29,6 +29,7 @@ from PIL import Image
 from redis.asyncio import Redis
 
 from src.services import answer_levels, boxes, example_finder, example_finder_model
+from src.services.answer_levels import NADIR, OBLIQUE
 from src.services.example_finder_pictures import FinderInputError, Picture
 from src.utils import get_async_s3_client, get_bucket_name, get_s3_client
 
@@ -39,6 +40,17 @@ PHOTO = (FIXTURES / SPEC["picture"]).read_bytes()
 PIXELS = np.asarray(Image.open(io.BytesIO(PHOTO)).convert("RGB"))
 MARKS = SPEC["marks"]
 RUN_TAG = uuid.uuid4().hex[:8]
+USER = f"user-{RUN_TAG}"
+
+
+def _grown(box, factor):
+    """The box grown around its centre (a larger object at the same place)."""
+    cx, cy, half_w, half_h = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2, (box[2] - box[0]) / 2, (box[3] - box[1]) / 2
+    return [cx - half_w * factor, cy - half_h * factor, cx + half_w * factor, cy + half_h * factor]
+
+
+# Antennas were measured from 33 px wide as the finder reads them; the marked dishes are about 30 px: grown 1.3x.
+ANTENNA_MARKS = [_grown(m, 1.3) for m in MARKS]
 
 
 def recorded_result() -> SimpleNamespace:
@@ -115,8 +127,8 @@ def test_settings_are_read_from_the_measured_table():
     assert {t.name for t in with_settings} >= {"tower_dish", "tower_antenna", "maize_seedling", "weed"}
     for t in with_settings:
         s = example_finder.settings(t.name)
-        assert (s.image_px, s.finder_input_px, s.look_alike_marks) == (t.measured["image_px"], t.finder_input_px,
-                                                                       t.look_alike_marks)
+        assert (s.image_px, s.finder_input_px, s.look_alike_marks, s.view) == (
+            t.measured["image_px"], t.finder_input_px, t.look_alike_marks, t.measured["view"])
 
 
 @pytest.mark.parametrize("name", ["banana_mat", "no_such_thing"])
@@ -143,22 +155,74 @@ def test_finder_model_matches_the_one_the_levels_were_measured_for():
 ])
 def test_marks_are_checked(marks, says):
     with pytest.raises(FinderInputError) as raised:
-        example_finder.find(PIXELS, marks, [], "tower_dish", runner=RecordedModel())
+        example_finder.find(PIXELS, marks, [], "tower_dish", view=OBLIQUE, runner=RecordedModel())
     assert says in str(raised.value)
 
 
 def test_lookalike_marks_only_for_targets_measured_with_them():
     with pytest.raises(FinderInputError, match="look-alike marks are not used for dishes"):
-        example_finder.find(PIXELS, MARKS, [[10, 10, 30, 30]], "tower_dish", runner=RecordedModel())
+        example_finder.find(PIXELS, MARKS, [[10, 10, 30, 30]], "tower_dish", view=OBLIQUE, runner=RecordedModel())
     with pytest.raises(FinderInputError, match="at most 20 look-alike marks"):
-        example_finder.find(PIXELS, MARKS, [[10, 10, 30, 30]] * 21, "tower_antenna", runner=RecordedModel())
+        example_finder.find(PIXELS, MARKS, [[10, 10, 30, 30]] * 21, "tower_antenna", view=OBLIQUE,
+                            runner=RecordedModel())
 
 
 def test_a_picture_that_is_not_rgb8_is_refused():
     with pytest.raises(FinderInputError):
-        example_finder.find(PIXELS.astype(np.float32), MARKS, [], "tower_dish", runner=RecordedModel())
+        example_finder.find(PIXELS.astype(np.float32), MARKS, [], "tower_dish", view=OBLIQUE,
+                            runner=RecordedModel())
     with pytest.raises(FinderInputError):
-        example_finder.find(b"not a picture", MARKS, [], "tower_dish", runner=RecordedModel())
+        example_finder.find(b"not a picture", MARKS, [], "tower_dish", view=OBLIQUE, runner=RecordedModel())
+
+
+# --------------------------------------------------------------------------- #
+# Only pictures like the measured ones (answer_levels: the way they look, the size gate)
+# --------------------------------------------------------------------------- #
+
+def _field(side: int) -> np.ndarray:
+    """A nadir picture of side x side px (its content does not matter to the recorded model)."""
+    return np.asarray(Image.fromarray(PIXELS).resize((side, side), Image.Resampling.BOX))
+
+
+PLANT_MARKS = [[100, 100, 140, 140], [300, 200, 340, 240], [200, 400, 240, 440]]  # 40 px plants
+
+
+def test_a_picture_taken_another_way_than_measured_is_refused():
+    model = RecordedModel()
+    with pytest.raises(FinderInputError, match="dishes were measured only on photos taken at an angle, not on "
+                                               "pictures looking straight down"):
+        example_finder.find(PIXELS, MARKS, [], "tower_dish", view=NADIR, runner=model)
+    with pytest.raises(FinderInputError, match="maize plants were measured only on pictures looking straight down"):
+        example_finder.find(_field(600), PLANT_MARKS, [], "maize_seedling", view=OBLIQUE, runner=model)
+    with pytest.raises(FinderInputError, match="a picture looks one of"):
+        example_finder.find(PIXELS, MARKS, [], "tower_dish", view="sideways", runner=model)
+    assert model.calls == []
+
+
+def test_marked_objects_smaller_than_measured_are_refused_and_the_same_marks_pass_on_a_smaller_window():
+    """40 px plants in a 2048 px window are read at 25 px (shrunk to 640, read at 1280): below the 34 px maize
+    plants were measured from. In a 600 px window the same plants are read at 85 px and the finder runs."""
+    model = RecordedModel()
+    with pytest.raises(FinderInputError) as refused:
+        example_finder.find(_field(2048), PLANT_MARKS, [], "maize_seedling", view=NADIR, runner=model)
+    assert str(refused.value) == answer_levels.size_gate("maize_seedling", 2048, [(40, 40)] * 3).reason
+    assert "were measured only from 34 px wide, so this picture is outside the measurement" in str(refused.value)
+    assert model.calls == []
+    example_finder.find(_field(600), PLANT_MARKS, [], "maize_seedling", view=NADIR, runner=model)
+    (call,) = model.calls
+    assert call["rgb"].shape == (600, 600, 3) and call["imgsz"] == 1280  # 600 px is under the measured 640
+
+
+def test_a_target_whose_size_was_never_measured_is_refused():
+    with pytest.raises(FinderInputError, match="no object size was measured for tree crowns"):
+        example_finder.find(_field(600), PLANT_MARKS, [], "tree_crown_forest", view=NADIR, runner=RecordedModel())
+
+
+def test_the_gate_reads_the_marks_in_the_pictures_own_pixels():
+    s = example_finder.settings("tower_dish")
+    gate = example_finder.check_picture(s, OBLIQUE, 2666, 1500, [[v * 2 for v in m] for m in MARKS])
+    same = example_finder.check_picture(s, OBLIQUE, 1333, 750, MARKS)  # the finder reads both alike
+    assert gate.passes and gate.object_px == pytest.approx(same.object_px) and gate.needed_px == 17
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +231,7 @@ def test_a_picture_that_is_not_rgb8_is_refused():
 
 def test_the_model_is_called_as_measured_and_finds_on_the_marks_are_dropped():
     model = RecordedModel()
-    finds = example_finder.find(PHOTO, MARKS, [], "tower_dish", runner=model)
+    finds = example_finder.find(PHOTO, MARKS, [], "tower_dish", view=OBLIQUE, runner=model)
     (call,) = model.calls
     s = example_finder.settings("tower_dish")
     assert np.array_equal(call["rgb"], PIXELS)  # 1333 px is the measured size: not shrunk
@@ -187,11 +251,11 @@ def test_a_larger_picture_is_shrunk_to_the_measured_size_and_finds_come_back_in_
     big = PIXELS.repeat(2, axis=0).repeat(2, axis=1)  # 2666 x 1500: each pixel a 2 x 2 block
     big_marks = [[v * 2 for v in m] for m in MARKS]
     model = RecordedModel()
-    finds = example_finder.find(big, big_marks, [], "tower_dish", runner=model)
+    finds = example_finder.find(big, big_marks, [], "tower_dish", view=OBLIQUE, runner=model)
     (call,) = model.calls
     assert np.array_equal(call["rgb"], PIXELS)  # shrunk back to 1333 px, exactly the measured picture
     assert np.allclose(call["prompts"], MARKS)
-    small = example_finder.find(PIXELS, MARKS, [], "tower_dish", runner=RecordedModel())
+    small = example_finder.find(PIXELS, MARKS, [], "tower_dish", view=OBLIQUE, runner=RecordedModel())
     assert len(finds) == len(small)
     for f, g in zip(finds, small):
         assert f.box == pytest.approx([v * 2 for v in g.box], abs=0.02)
@@ -201,11 +265,11 @@ def test_a_larger_picture_is_shrunk_to_the_measured_size_and_finds_come_back_in_
 def test_lookalike_marks_are_a_second_class_and_its_finds_are_not_given():
     looks = [SPEC["dish_boxes"][1]]  # any box: a look-alike prompt
     model = RecordedModel(lookalike_rows=2)
-    finds = example_finder.find(PIXELS, MARKS, looks, "tower_antenna", runner=model)
+    finds = example_finder.find(PIXELS, ANTENNA_MARKS, looks, "tower_antenna", view=OBLIQUE, runner=model)
     (call,) = model.calls
     assert call["classes"] == [0, 0, 0, 1] and call["prompts"][-1] == looks[0]
     rows = example_finder_model.result_rows(recorded_result())[2:]
-    kept = [r for r in rows if not any(boxes.iou(r[:4], m) >= 0.3 for m in MARKS)]
+    kept = [r for r in rows if not any(boxes.iou(r[:4], m) >= 0.3 for m in call["prompts"][:3])]
     assert len(finds) == len(kept)
 
 
@@ -303,7 +367,11 @@ def test_a_model_failure_comes_back_and_an_idle_finder_process_stops_itself(tmp_
     assert process.process.exitcode == 0
     with pytest.raises(RuntimeError, match="the finder failed"):  # the next picture starts a new one
         example_finder_model.run(str(junk), PIXELS, MARKS, [0, 0, 0], 1280, 0.01, 300)
-    assert example_finder_model._process is not process
+    started = example_finder_model._process
+    assert started is not process and started.process.is_alive()
+    example_finder_model.stop()  # told to stop (the next job is another worker's): its memory goes back at once
+    assert example_finder_model._process is None and not started.process.is_alive()
+    example_finder_model.stop()  # nothing to stop: nothing happens
 
 
 # --------------------------------------------------------------------------- #
@@ -317,7 +385,7 @@ class TowerPhoto:
         self.pixels = pixels
 
     async def read(self) -> Picture:
-        return Picture(pixels=self.pixels, sha256=hashlib.sha256(self.pixels.tobytes()).hexdigest())
+        return Picture(pixels=self.pixels, sha256=hashlib.sha256(self.pixels.tobytes()).hexdigest(), view=OBLIQUE)
 
 
 def _redis() -> Redis:
@@ -357,13 +425,13 @@ async def test_a_second_request_reuses_the_kept_finds(isolated):
     redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
     model = RecordedModel()
     try:
-        job = await example_finder.start(redis, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish",
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                          runner=model)
         assert job.status == example_finder.QUEUED
         done = await _until_settled(redis, s3, bucket, project, job.job_id)
         assert done.status == example_finder.DONE and len(done.finds) == len(_expected_finds(MARKS))
         assert set(done.finds[0]) == {"box", "box_px", "score"} and done.finds[0]["box"] == done.finds[0]["box_px"]
-        again = await example_finder.start(redis, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish",
+        again = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                            runner=model)
         assert again.status == example_finder.DONE and again.finds == done.finds and again.job_id == job.job_id
         assert len(model.calls) == 1  # never analysed twice
@@ -382,8 +450,8 @@ async def test_two_workers_sharing_redis_run_the_request_once(isolated):
     model = RecordedModel(delay_s=1.0)
     try:
         first, second = await asyncio.gather(
-            example_finder.start(one, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish", runner=model),
-            example_finder.start(two, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish", runner=model))
+            example_finder.start(one, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish", runner=model),
+            example_finder.start(two, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish", runner=model))
         assert first.job_id == second.job_id
         assert {first.status, second.status} <= {example_finder.QUEUED, example_finder.RUNNING}
         done_one = await _until_settled(one, s3, bucket, project, first.job_id)
@@ -401,11 +469,11 @@ async def test_finds_are_kept_per_project(isolated):
     mine, theirs = isolated(), isolated()
     model = RecordedModel()
     try:
-        job = await example_finder.start(redis, s3, bucket, mine, TowerPhoto(), MARKS, [], "tower_dish",
+        job = await example_finder.start(redis, s3, bucket, mine, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                          runner=model)
         await _until_settled(redis, s3, bucket, mine, job.job_id)
         assert await example_finder.status(redis, s3, bucket, theirs, job.job_id) is None
-        other = await example_finder.start(redis, s3, bucket, theirs, TowerPhoto(), MARKS, [], "tower_dish",
+        other = await example_finder.start(redis, s3, bucket, theirs, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                            runner=model)
         assert other.job_id == job.job_id and other.status == example_finder.QUEUED  # not served from `mine`
         await _until_settled(redis, s3, bucket, theirs, job.job_id)
@@ -419,13 +487,13 @@ async def test_finds_are_kept_per_project(isolated):
 async def test_a_failed_job_says_why_and_starting_it_again_retries(isolated):
     redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
     try:
-        job = await example_finder.start(redis, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish",
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                          runner=RecordedModel(fail="the model ran out of memory"))
         failed = await _until_settled(redis, s3, bucket, project, job.job_id)
         assert failed.status == example_finder.FAILED and "ran out of memory" in failed.error
         assert failed.as_dict() == {"job_id": job.job_id, "status": "failed", "error": failed.error}
         model = RecordedModel()
-        again = await example_finder.start(redis, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish",
+        again = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish",
                                            runner=model)
         assert again.status == example_finder.QUEUED
         assert (await _until_settled(redis, s3, bucket, project, job.job_id)).status == example_finder.DONE
@@ -441,8 +509,9 @@ async def test_one_picture_at_a_time_in_the_whole_app(isolated):
     model = RecordedModel(delay_s=0.5)
     try:
         jobs = await asyncio.gather(
-            example_finder.start(one, s3, bucket, project, TowerPhoto(), MARKS, [], "tower_dish", runner=model),
-            example_finder.start(two, s3, bucket, project, TowerPhoto(), MARKS[:2], [], "tower_dish", runner=model))
+            example_finder.start(one, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish", runner=model),
+            example_finder.start(two, s3, bucket, project, USER, TowerPhoto(), MARKS[:2], [], "tower_dish",
+                                 runner=model))
         assert jobs[0].job_id != jobs[1].job_id  # two different requests
         for job, redis in zip(jobs, (one, two)):
             assert (await _until_settled(redis, s3, bucket, project, job.job_id)).status == example_finder.DONE
@@ -462,12 +531,146 @@ async def test_a_bad_request_is_refused_before_anything_is_read_or_kept(isolated
 
     try:
         with pytest.raises(FinderInputError):
-            await example_finder.start(redis, s3, bucket, project, NeverRead(), [], [], "tower_dish")
+            await example_finder.start(redis, s3, bucket, project, USER, NeverRead(), [], [], "tower_dish")
         with pytest.raises(FinderInputError):
-            await example_finder.start(redis, s3, bucket, project, NeverRead(), MARKS, [], "banana_mat")
+            await example_finder.start(redis, s3, bucket, project, USER, NeverRead(), MARKS, [], "banana_mat")
         with pytest.raises(FinderInputError, match="not inside the picture"):
-            await example_finder.start(redis, s3, bucket, project, TowerPhoto(), [[1300, 700, 1400, 800]], [],
+            await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), [[1300, 700, 1400, 800]], [],
                                        "tower_dish")
+    finally:
+        await redis.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# The line: capped, first come first served, waiting jobs keep only the shrunk picture, one finder process
+# --------------------------------------------------------------------------- #
+
+# Six different requests on the tower photo (each passes the size gate for dishes).
+VARIANTS = [MARKS, MARKS[:2], MARKS[1:], MARKS[:1], MARKS[1:2], MARKS[2:]]
+
+
+@pytest.fixture
+def small_line(monkeypatch):
+    monkeypatch.setattr(example_finder, "MAX_JOBS_PER_USER", 2)
+    monkeypatch.setattr(example_finder, "MAX_JOBS", 3)
+    monkeypatch.setattr(example_finder, "QUEUE_POLL_S", 0.05)
+
+
+@pytest.mark.anyio
+async def test_the_line_is_capped_per_user_and_for_the_whole_app(isolated, small_line):
+    redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
+    model = RecordedModel(delay_s=0.3)
+
+    async def ask(user, marks):
+        return await example_finder.start(redis, s3, bucket, project, user, TowerPhoto(), marks, [], "tower_dish",
+                                          runner=model)
+
+    try:
+        first = [await ask("ann", VARIANTS[0]), await ask("ann", VARIANTS[1])]
+        with pytest.raises(example_finder.FinderBusy, match="you already have 2 finder jobs") as mine:
+            await ask("ann", VARIANTS[2])
+        assert mine.value.whole_app is False
+        first.append(await ask("bob", VARIANTS[2]))  # another user still has room
+        with pytest.raises(example_finder.FinderBusy, match="the finder already has 3 pictures") as everyone:
+            await ask("cat", VARIANTS[3])
+        assert everyone.value.whole_app is True
+        assert await redis.zcard(example_finder.queue_key()) == 3
+        for job in first:
+            assert (await _until_settled(redis, s3, bucket, project, job.job_id)).status == example_finder.DONE
+        assert await redis.zcard(example_finder.queue_key()) == 0  # finished jobs leave the line
+        later = await ask("cat", VARIANTS[3])  # refused requests left nothing behind: asking again works
+        assert later.status == example_finder.QUEUED
+        assert (await _until_settled(redis, s3, bucket, project, later.job_id)).status == example_finder.DONE
+        assert len(model.calls) == 4
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_jobs_run_first_come_first_served_across_workers(isolated, monkeypatch):
+    monkeypatch.setattr(example_finder, "QUEUE_POLL_S", 0.05)
+    one, two = _redis(), _redis()
+    s3, bucket, project = await get_async_s3_client(), get_bucket_name(), isolated()
+    model = RecordedModel(delay_s=0.2)
+    try:
+        jobs = []
+        for i, marks in enumerate(VARIANTS):  # alternating workers and users, in this order
+            jobs.append(await example_finder.start((one, two)[i % 2], s3, bucket, project, f"user{i}", TowerPhoto(),
+                                                   marks, [], "tower_dish", runner=model))
+        for job in jobs:
+            assert (await _until_settled(one, s3, bucket, project, job.job_id)).status == example_finder.DONE
+        assert [call["prompts"] for call in model.calls] == [[list(m) for m in v] for v in VARIANTS]
+        assert model.most_at_once == 1
+    finally:
+        await one.aclose()
+        await two.aclose()
+
+
+@pytest.mark.anyio
+async def test_a_place_whose_worker_died_neither_blocks_the_line_nor_counts(isolated, small_line):
+    redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
+    model = RecordedModel()
+    dead = [json.dumps(["ghost", project, f"{i:064x}"], separators=(",", ":")) for i in range(3)]
+    try:
+        await redis.zadd(example_finder.queue_key(), {place: -1 - i for i, place in enumerate(dead)})  # in front
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), MARKS, [], "tower_dish",
+                                         runner=model)  # the line looked full, but those jobs have no lock
+        assert (await _until_settled(redis, s3, bucket, project, job.job_id)).status == example_finder.DONE
+        assert await redis.zcard(example_finder.queue_key()) == 0
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_a_waiting_job_keeps_only_the_picture_the_finder_is_given(isolated, monkeypatch):
+    redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
+    kept = []
+    real_run = example_finder._run
+
+    def run(redis_, s3_, bucket_, request, runner, lock):  # called by start(); the job runs later, in a task
+        kept.append(request)
+        return real_run(redis_, s3_, bucket_, request, runner, lock)
+
+    monkeypatch.setattr(example_finder, "_run", run)
+    big = PIXELS.repeat(2, axis=0).repeat(2, axis=1)  # a 2666 x 1500 picture, 12 MB
+    try:
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(big),
+                                         [[v * 2 for v in m] for m in MARKS], [], "tower_dish", runner=RecordedModel())
+        (request,) = kept
+        arrays = [v for v in vars(request.shown).values() if isinstance(v, np.ndarray)]
+        arrays += [v for v in vars(request).values() if isinstance(v, np.ndarray)]
+        assert [a.shape for a in arrays] == [(750, 1333, 3)]  # shrunk to the measured 1333 px before waiting
+        done = await _until_settled(redis, s3, bucket, project, job.job_id)
+        assert max(f["box_px"][2] for f in done.finds) > PIXELS.shape[1]  # finds in the large picture's pixels
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_the_finder_process_stops_unless_this_worker_runs_the_next_job(isolated, monkeypatch):
+    monkeypatch.setattr(example_finder, "QUEUE_POLL_S", 0.05)
+    stops = []
+    monkeypatch.setattr(example_finder_model, "stop", lambda: stops.append(time.monotonic()))
+    redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
+    model = RecordedModel(delay_s=0.3)
+    try:
+        # Two jobs of this worker in a row: the process is kept for the second, stopped after it.
+        mine = [await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), marks, [], "tower_dish",
+                                           runner=model) for marks in VARIANTS[:2]]
+        for job in mine:
+            await _until_settled(redis, s3, bucket, project, job.job_id)
+        assert len(stops) == 1
+        # A job of another worker waits behind this worker's: the process stops, so only one lives in the app.
+        theirs = json.dumps(["other", project, "f" * 64], separators=(",", ":"))
+        other_lock = redis.lock(example_finder._lock_key(project, "f" * 64), timeout=30, thread_local=False)
+        assert await other_lock.acquire(blocking=False)
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), VARIANTS[2], [],
+                                         "tower_dish", runner=model)
+        await redis.zadd(example_finder.queue_key(), {theirs: 10**9})
+        await _until_settled(redis, s3, bucket, project, job.job_id)
+        assert len(stops) == 2
+        await redis.zrem(example_finder.queue_key(), theirs)
+        await other_lock.release()
     finally:
         await redis.aclose()
 

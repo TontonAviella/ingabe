@@ -12,6 +12,7 @@ import time
 import pytest
 
 from src.services import boxes, example_finder, example_finder_model, stored_files
+from src.services.answer_levels import OBLIQUE
 from src.services.test_example_finder import MARKS, PHOTO, PIXELS, SPEC, _expected_finds
 
 WEIGHTS = os.environ.get("FINDER_TEST_WEIGHTS", "")
@@ -30,7 +31,8 @@ def _timed(picture, marks):
     began = time.perf_counter()
     process = example_finder_model._process
     cpu_before = _cpu_seconds(process.process.pid) if process is not None else 0.0
-    finds = example_finder.find(picture, marks, [], SPEC["target"], runner=example_finder_model.runner(WEIGHTS))
+    finds = example_finder.find(picture, marks, [], SPEC["target"], view=OBLIQUE,
+                                runner=example_finder_model.runner(WEIGHTS))
     cpu = _cpu_seconds(example_finder_model._process.process.pid) - cpu_before
     return finds, time.perf_counter() - began, cpu
 

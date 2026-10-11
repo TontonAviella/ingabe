@@ -1,13 +1,15 @@
 """Pictures the example finder looks at, and how the caller's boxes map to their pixels.
 
-A picture source reads a Picture: its pixels (RGB, 8 bits a channel), a sha256 that identifies them, and the frame
-the caller's boxes are given in. Two sources:
+A picture source reads a Picture: its pixels (RGB, 8 bits a channel), a sha256 that identifies them, which way it
+looks (answer_levels.OBLIQUE or NADIR: the finder runs only on pictures taken the way its target was measured), and
+the frame the caller's boxes are given in. Two sources:
 
-* `Photo`: a photo given as bytes (an inspection photo, later). Boxes are in the photo's own pixels.
-* `OrthophotoWindow`: a window of a drone orthophoto layer, given as a box in lon/lat or in the layer's CRS, read
-  through src/services/raster_process.py (remote COG reads must not run in threads: Lessons log 2026-10-07) at the
-  photo's own resolution, at most MAX_WINDOW_PX a side. Boxes are in the window's coordinates; the finds come back
-  in them too.
+* `Photo`: a photo given as bytes (an inspection photo, later), with the way it looks said by the caller (DJI's
+  gimbal pitch, read by photo_inspections, tells it). Boxes are in the photo's own pixels.
+* `OrthophotoWindow`: a window of a drone orthophoto layer (NADIR), given as a box in lon/lat or in the layer's CRS,
+  read through src/services/raster_process.py (remote COG reads must not run in threads: Lessons log 2026-10-07) at
+  the photo's own resolution, at most MAX_WINDOW_PX a side. Boxes are in the window's coordinates; the finds come
+  back in them too.
 
 A new source (a photo-of-a-photo inspection) implements `PictureSource.read`.
 """
@@ -29,7 +31,7 @@ from PIL import Image, ImageOps
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window, from_bounds
 
-from src.services import raster_process
+from src.services import answer_levels, raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 Box = tuple[float, float, float, float]
@@ -91,10 +93,17 @@ def _bounds(points: Sequence[tuple[float, float]]) -> Box:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
+def check_view(view: str) -> str:
+    if view not in answer_levels.VIEWS:
+        raise FinderInputError(f"a picture looks one of {list(answer_levels.VIEWS)}, not {view!r}")
+    return view
+
+
 @dataclass(frozen=True)
 class Picture:
     pixels: np.ndarray  # height x width x 3, uint8, RGB
     sha256: str  # identifies the pixels and, for a window, where they are and the frame of its boxes
+    view: str  # answer_levels.OBLIQUE or NADIR: which way the picture looks
     frame: Optional[MapFrame] = None  # None: boxes are in the picture's own pixels
 
     @property
@@ -147,10 +156,12 @@ class Photo:
     """A photo given as bytes; boxes are in its own pixels (after its EXIF orientation is applied)."""
 
     data: bytes
+    view: str  # answer_levels.OBLIQUE or NADIR, as the caller knows it (never guessed here)
 
     async def read(self) -> Picture:
+        view = check_view(self.view)
         pixels = await asyncio.to_thread(decode_photo, self.data)
-        return Picture(pixels=pixels, sha256=hashlib.sha256(self.data).hexdigest())
+        return Picture(pixels=pixels, sha256=hashlib.sha256(self.data).hexdigest(), view=view)
 
 
 def _window_raw(url: str, bbox: Box, bbox_crs: Optional[str], max_px: int, env: dict[str, str]) -> tuple[str, Any]:
@@ -202,7 +213,8 @@ def check_window(bbox: Sequence[Any], crs: str) -> Box:
 
 @dataclass(frozen=True)
 class OrthophotoWindow:
-    """A window of an orthophoto's optimised photo (COG), read at the photo's own resolution."""
+    """A window of an orthophoto's optimised photo (COG), read at the photo's own resolution. An orthophoto looks
+    straight down (NADIR)."""
 
     cog_url: str
     bbox: Sequence[float]  # west, south, east, north in `crs`
@@ -228,4 +240,4 @@ class OrthophotoWindow:
                                    f"{MAX_WINDOW_PX} px are read at once, so choose a smaller window")
         pixels, transform, crs_wkt = got
         frame = MapFrame(crs=self.crs, layer_crs=crs_wkt, transform=tuple(float(v) for v in transform))
-        return Picture(pixels=pixels, sha256=window_sha256(pixels, frame), frame=frame)
+        return Picture(pixels=pixels, sha256=window_sha256(pixels, frame), view=answer_levels.NADIR, frame=frame)
