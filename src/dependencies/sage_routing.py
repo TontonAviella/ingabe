@@ -326,6 +326,18 @@ def asks_about_weather_or_hazards(text: str) -> bool:
     return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
 
 
+# Farm and vegetation words, whose tools are agriculture-only (industry.CAPABILITIES): crops, farms, harvests, soil,
+# drought and dry spells, crop insurance, farm data products, and vegetation indices. The agriculture category is also
+# selected by words said in every industry ("field team", "yield", "alarm trigger", "Season A") and by data sources
+# ("SAR", "CHIRPS"); those are kept apart below and are not farm questions.
+_FARM_WORDS = re.compile(
+    r"\b(farm|crop|harvest|drought|soil|evapo|ndre|insurance|payout|wapor|food\s+security|fewsnet|"
+    r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|growing\s+season|dry\s+spell)\b",
+    re.IGNORECASE,
+)
+_VEGETATION_WORDS = re.compile(r"\b(ndvi|ndwi|evi|savi|vegetation)\b", re.IGNORECASE)
+
+
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Rwanda administrative boundaries / plain place display.
@@ -369,29 +381,19 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Vegetation questions. The NDVI-by-place and anomaly tools are filed under
     # agriculture, so "NDVI for Nyagatare" offered only the imagery tools and
     # Sage could not answer it (2026-10-08 picker test: 27 of 216 right tools dropped).
-    (
-        re.compile(
-            r"\b(ndvi|ndwi|evi|savi|vegetation|indices|anomal(?:y|ies|ous))\b",
-            re.IGNORECASE,
-        ),
-        frozenset({SATELLITE, AGRICULTURE}),
-    ),
+    (_VEGETATION_WORDS, frozenset({SATELLITE, AGRICULTURE})),
+    (re.compile(r"\b(indices|anomal(?:y|ies|ous))\b", re.IGNORECASE), frozenset({SATELLITE, AGRICULTURE})),
     # Greenness indices made from red, green and blue only fit a drone photo.
     (
         re.compile(r"\b(greenness|grvi|vari|exg|rgb\s+ind(?:ex|ices))\b", re.IGNORECASE),
         frozenset({USER_RASTER, SATELLITE}),
     ),
     # Agriculture / insurance
+    (_FARM_WORDS, frozenset({AGRICULTURE})),
+    # Words said in every industry, and data sources, whose tools are filed under agriculture.
     (
-        re.compile(
-            r"\b(field|farm|crop|harvest|yield|drought|"
-            r"soil|moisture|evapo|ndre|emission|"
-            r"insurance|trigger|payout|"
-            r"sar|alos|cygnss|wapor|chirps|food\s+security|fewsnet|"
-            r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|"
-            r"season\s*[abc]|growing\s+season|dry\s+spell)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(field|yield|moisture|emission|trigger|sar|alos|cygnss|chirps|season\s*[abc])\b",
+                   re.IGNORECASE),
         frozenset({AGRICULTURE}),
     ),
     # Weather and hazards: their tools are filed under agriculture.
