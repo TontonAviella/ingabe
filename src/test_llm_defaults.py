@@ -4,6 +4,7 @@ from src.llm_defaults import (
     DEFAULT_OLLAMA_BASE_URL,
     resolve_chat_endpoint,
     supports_strict_tool_schema,
+    thinking_kwargs,
     usage_extra_body,
 )
 from src.utils import _uses_only_local_ollama_models
@@ -61,3 +62,15 @@ def test_usage_field_goes_only_to_openrouter():
     assert usage_extra_body("https://generativelanguage.googleapis.com/v1beta/openai/") == {}
     assert usage_extra_body("http://ollama:11434/v1") == {}
     assert usage_extra_body(None) == {}
+
+
+def test_thinking_is_a_budget_on_anthropic_and_an_effort_elsewhere():
+    # Anthropic's OpenAI-compatible endpoint ignores reasoning_effort and refuses adaptive thinking (2026-10-10).
+    anthropic = thinking_kwargs("https://api.anthropic.com/v1/", "high")
+    assert anthropic["extra_body"] == {"thinking": {"type": "enabled", "budget_tokens": 8000}}
+    assert anthropic["max_tokens"] > 8000
+    assert "reasoning_effort" not in anthropic
+    assert thinking_kwargs("https://openrouter.ai/api/v1", "low") == {
+        "reasoning_effort": "low", "extra_body": {"usage": {"include": True}}}
+    assert thinking_kwargs("https://generativelanguage.googleapis.com/v1beta/openai/", "high") == {
+        "reasoning_effort": "high", "extra_body": {}}
