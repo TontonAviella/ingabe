@@ -318,7 +318,7 @@ async def internal_upload_layer(
     See ``src/upload/handlers/`` for handler implementations.
     """
     from src.upload.base import UploadContext
-    from src.upload.registry import get_handler, get_layer_type
+    from src.upload.registry import get_layer_type, handler_for
 
     async with get_async_db_connection() as conn:
         bucket_name = get_bucket_name()
@@ -367,44 +367,50 @@ async def internal_upload_layer(
             )
 
             # Phase 1: Format-specific preprocessing (conversion, metadata)
-            handler = get_handler(file_ext)
-            result = await handler.preprocess(ctx)
+            handler = await handler_for(file_ext, temp_file_path)
+            layer_created = False
+            try:
+                result = await handler.preprocess(ctx)
 
-            # Apply any path/key/ext overrides from preprocessing
-            upload_path = result.updated_temp_file_path or temp_file_path
-            stored_key = result.updated_s3_key or s3_key
-            ctx.s3_key = stored_key
+                # Apply any path/key/ext overrides from preprocessing
+                upload_path = result.updated_temp_file_path or temp_file_path
+                stored_key = result.updated_s3_key or s3_key
+                ctx.s3_key = stored_key
 
-            # Phase 2: Upload to S3
-            await s3_op(s3_client.upload_file(upload_path, bucket_name, stored_key, Config=one_shot_config),
-                        "upload", f"layer {ctx.layer_id}")
+                # Phase 2: Upload to S3
+                await s3_op(s3_client.upload_file(upload_path, bucket_name, stored_key, Config=one_shot_config),
+                            "upload", f"layer {ctx.layer_id}")
 
-            # Phase 3 + 4: Create layer rows and update map in a single transaction
-            async with conn.transaction():
-                result = await handler.create_layers(ctx, result)
+                # Phase 3 + 4: Create layer rows and update map in a single transaction
+                async with conn.transaction():
+                    result = await handler.create_layers(ctx, result)
 
-                # Phase 4: Update map layer list
-                if add_layer_to_map and result.created_layer_ids:
-                    map_data = await conn.fetchrow(
-                        """
-                        SELECT layers FROM user_mundiai_maps
-                        WHERE id = $1
-                        """,
-                        map_id,
-                    )
-                    current_layers = (
-                        map_data["layers"] if map_data and map_data["layers"] else []
-                    )
-                    await conn.execute(
-                        """
-                        UPDATE user_mundiai_maps
-                        SET layers = $1,
-                            last_edited = CURRENT_TIMESTAMP
-                        WHERE id = $2
-                        """,
-                        current_layers + result.created_layer_ids,
-                        map_id,
-                    )
+                    # Phase 4: Update map layer list
+                    if add_layer_to_map and result.created_layer_ids:
+                        map_data = await conn.fetchrow(
+                            """
+                            SELECT layers FROM user_mundiai_maps
+                            WHERE id = $1
+                            """,
+                            map_id,
+                        )
+                        current_layers = (
+                            map_data["layers"] if map_data and map_data["layers"] else []
+                        )
+                        await conn.execute(
+                            """
+                            UPDATE user_mundiai_maps
+                            SET layers = $1,
+                                last_edited = CURRENT_TIMESTAMP
+                            WHERE id = $2
+                            """,
+                            current_layers + result.created_layer_ids,
+                            map_id,
+                        )
+                layer_created = bool(result.created_layer_ids)
+            finally:
+                if not layer_created:
+                    await handler.discard(ctx)  # e.g. the photos a photo inspection stored before it failed
 
         # Cleanup temp directories from preprocessing
         if result.temp_dir_to_cleanup:

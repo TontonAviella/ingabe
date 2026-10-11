@@ -52,6 +52,8 @@ services:
       - RASTER_TILE_ENGINE_DIRECT_S3=${RASTER_TILE_ENGINE_DIRECT_S3:-1}
       - RASTER_COG_TARGET_SRS=${RASTER_COG_TARGET_SRS:-EPSG:3857}
       - RASTER_SOURCE_MAXZOOM=${RASTER_SOURCE_MAXZOOM:-20}
+      # 1 = a ZIP of photos (or one photo with no map position) uploads as one photo inspection (src/services/photo_inspections.py).
+      - PHOTO_INSPECTIONS=${PHOTO_INSPECTIONS:-0}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - OPENAI_MODEL=${OPENAI_MODEL:-ollama:gemma4:12b-it-qat}

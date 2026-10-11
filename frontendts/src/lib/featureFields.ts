@@ -1,7 +1,7 @@
 // Readable rows for the selected-feature panel: plain labels instead of raw
 // property names, and internal fields hidden.
 
-const HIDDEN_FIELDS = new Set(['h3_index', 'screening_model', 'analysis_goal', 'domain', 'has_exposure', 'color']);
+const HIDDEN_FIELDS = new Set(['h3_index', 'screening_model', 'analysis_goal', 'domain', 'has_exposure', 'color', 'photo_key']);
 
 // Auto-enriched metric columns added by the (now removed) enrichment API:
 // computed values, not original layer attributes.

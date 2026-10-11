@@ -186,7 +186,7 @@ class VectorUploadHandler(BaseUploadHandler):
                 result.first_layer_name = display_name
 
         # Enqueue brain hook: auto-create brain pages from vector features
-        if result.created_layer_ids:
+        if result.created_layer_ids and result.brain_pages_per_feature:
             try:
                 from src.dependencies.brain_dep import get_brain_service
                 brain_svc = get_brain_service()
