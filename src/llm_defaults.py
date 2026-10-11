@@ -69,6 +69,27 @@ def model_base(model: str | None, bases: Iterable[str]) -> str | None:
     return max((base for base in bases if name == base or name.startswith(base + "-")), key=len, default=None)
 
 
+# How a model is named to readers (the drone cards name the vision model). A model not listed here is named by its
+# own id, never by a guessed name.
+MODEL_NAMES = {
+    "gpt-6-luna": "GPT-6 Luna",
+    "claude-haiku-5-5": "Claude Haiku 5.5",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "claude-opus-5-5": "Claude Opus 5.5",
+    "gemini-3.8-flash": "Gemini 3.8 Flash",
+    "gemini-3.5-flash-lite": "Gemini 3.5 Flash-Lite",
+    "nemotron-3-super-120b-a12b:free": "Nemotron 3 Super",
+    "gemma4:12b-it-qat": "Gemma 4 12B",
+}
+
+
+def model_name(model: str) -> str:
+    """How a model id, as configured or as a provider reports it, is named to readers ("claude-haiku-5-5" is
+    "Claude Haiku 5.5"); an id not in MODEL_NAMES is named by itself."""
+    base = model_base(model, MODEL_NAMES)
+    return MODEL_NAMES[base] if base is not None else model.split("/")[-1]
+
+
 def supports_strict_tool_schema(model: str | None) -> bool:
     """Return whether we should preserve OpenAI strict tool schemas.
 

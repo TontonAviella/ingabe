@@ -349,14 +349,14 @@ TERMS: dict[str, dict[str, Any]] = {
                       "one model standard deviation either side (about 68%).",
                       "A prior for sampling design and first rates; it does not replace laboratory analysis."),
     },
-    "vision_model": {
+    "vision_model": {  # VISION_MODEL_NAME: the configured model's name (drone_vision.model_name), filled in by _terms
         "word": "AI vision model",
         "plain": ("A computer program that looks at a photo and says what it sees, as a person would. Ingabe uses "
-                  "GPT-6 Luna to look at each plot.",
+                  "VISION_MODEL_NAME.",
                   "It can look at hundreds of plots in minutes, but it makes mistakes: check a few plots it named "
                   "before you rely on it."),
-        "technical": ("A multimodal language model (GPT-6 Luna through OpenRouter) asked the same questions about a "
-                      "picture of each plot, answering only from fixed lists of crops, stages and problems.",
+        "technical": ("A multimodal language model (VISION_MODEL_NAME) asked the same questions about each picture "
+                      "(a plot, a page of a report), answering only from fixed lists.",
                       "Labels plots at scale; its accuracy here is unknown until compared with what is planted on a "
                       "sample of plots."),
     },
@@ -372,7 +372,9 @@ TERMS: dict[str, dict[str, Any]] = {
 
 def _terms(ids: list[str], audience: str) -> list[dict[str, str]]:
     tone = _tone(audience)
-    return [{"id": term_id, "word": TERMS[term_id]["word"], "simple": TERMS[term_id][tone][0],
+    model = drone_vision.model_name() if "vision_model" in ids else ""
+    return [{"id": term_id, "word": TERMS[term_id]["word"],
+             "simple": TERMS[term_id][tone][0].replace("VISION_MODEL_NAME", model),
              "why": TERMS[term_id][tone][1]} for term_id in ids]
 
 
@@ -1057,7 +1059,7 @@ FIELD_CHECKS_FOR_HIGH = 30  # and ≥ 95% right for "high"
 
 def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str], here: Here,
                      crops: bool = False) -> dict[str, Any]:
-    model = survey.model.split('/')[-1]
+    model = drone_vision.model_name(survey.model)
     record = here.record
     fingerprinted = crops and any(look.source == "fingerprints" for look in survey.looks.values())
     if fingerprinted:

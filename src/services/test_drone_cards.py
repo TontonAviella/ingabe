@@ -530,3 +530,24 @@ def test_crop_names_from_checked_plots_say_so():
     vision = dataclasses.replace(survey, looks={1: dataclasses.replace(look, source="vision")})
     assert "Two separate looks" in drone_cards._vision_how_sure(vision, 0, [], drone_cards.Here(photos=1),
                                                                 crops=True)["because"][0]
+
+
+@pytest.mark.parametrize("model, base_url, name", [
+    ("claude-haiku-5-5", "https://api.anthropic.com/v1/", "Claude Haiku 5.5"),
+    ("openai/gpt-6-luna", "https://openrouter.ai/api/v1", "GPT-6 Luna"),
+    ("some-lab/new-vision-1", "https://example.org/v1", "new-vision-1"),
+])
+def test_the_vision_model_is_named_from_its_setting(photo, monkeypatch, model, base_url, name):
+    """The cards named GPT-6 Luna whatever DRONE_VISION_MODEL said (claude-haiku-5-5 since 2026-10-10)."""
+    monkeypatch.setenv("DRONE_VISION_MODEL", model)
+    monkeypatch.setenv("OPENAI_BASE_URL", base_url)
+    plots = _plot_set()
+    here = drone_cards.Here(plots=plots, survey=_survey(plots, ["maize"] * 10))
+    for audience in ("farmer", "scientist"):
+        answer = drone_cards.answer_card("crop_types", _analysis(photo), audience, here)
+        term = next(t for t in answer["terms"] if t["id"] == "vision_model")
+        assert name in term["simple"] and "VISION_MODEL_NAME" not in term["simple"]
+        if name != "GPT-6 Luna":
+            assert "Luna" not in term["simple"] and "OpenRouter" not in term["simple"]
+    # how sure names the model that made the looks, by its name
+    assert "(GPT-6 Luna)" in answer["how_sure"]["because"][0]

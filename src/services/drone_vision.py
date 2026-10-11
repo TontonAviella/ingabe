@@ -13,9 +13,10 @@ squares at full detail with sizes spelt out, 83%; two looks that must agree (siz
 squares of checked crops), 27 of 27, with 9 of 36 left "not sure". Field checks (field_checks.py)
 override the model and say how often it is right.
 
-Model: GPT-6 Luna through OpenRouter (Roger's choice, 2026-10-06), at high reasoning effort: about
-$0.0015 a plot for both looks. Fixed instructions go first as text, so the provider's prompt cache can
-serve them; pictures go last.
+Model: DRONE_VISION_MODEL, at high reasoning effort; readers see its name from model_name(). It was GPT-6 Luna
+through OpenRouter (Roger's choice, 2026-10-06; about $0.0015 a plot for both looks); since 2026-10-10 the Mac and
+the server run claude-haiku-5-5 through Anthropic's OpenAI-compatible endpoint. Fixed instructions go first as
+text, so the provider's prompt cache can serve them; pictures go last.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, shape
 from shapely.ops import transform as reproject
 
-from src.llm_defaults import resolve_chat_endpoint, thinking_kwargs
+from src.llm_defaults import model_name as llm_model_name, resolve_chat_endpoint, thinking_kwargs
 from src.services import background_jobs, drone_plots, llm_cache
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,12 @@ class Survey:
 
 def _model() -> str:
     return os.environ.get("DRONE_VISION_MODEL", VISION_MODEL)
+
+
+def model_name(model: Optional[str] = None) -> str:
+    """How the vision model is named to readers: `model` (the id a kept survey was made with), else the one
+    configured (DRONE_VISION_MODEL)."""
+    return llm_model_name(model or _endpoint().model)
 
 
 def vision_client() -> tuple[AsyncOpenAI, str]:
