@@ -50,7 +50,16 @@ flight_yaw, make, model`.
 - At least one photo must have a GPS position, else 400 ("None of the N photos has a GPS position..." or, for one
   photo, "This photo has no map position and no GPS position...").
 - Each original is stored once, streamed from disk, at `inspections/<project_id>/<layer_id>/<sha256><ext>` (`ext` the
-  original's, lower case). Identical photos share one object.
+  original's, lower case). Identical photos share one object. On the browser path (`upload-complete`) the uploaded ZIP
+  or photo under `uploads/` is deleted once the layer exists (`HandlerResult.keep_uploaded_file = False`); the other
+  path never stores it.
+- Photos go when their layer does not exist (`photo_inspections.forget_if_unused`, which deletes everything under the
+  layer's own prefix only while no `map_layers` row holds that layer id):
+  - the layer's row is deleted (layer removal, when no map version shows the layer any more; earlier map versions keep
+    the row, and with it the photos, like every other file of the layer);
+  - an upload creates no layer after photos were stored (a failure anywhere from storing the originals to committing
+    the row): both upload paths call `handler.discard`. A retried upload that fails because the layer already exists
+    leaves that layer's photos alone. A storage error while removing is logged; what is left is only storage.
 - The layer is a normal vector layer: one Point per photo with a position, properties = the facts + `photo_key`.
   Its metadata holds `{"photo_inspection": {"photos", "with_gps", "without_gps": [filenames], "storage_prefix"}}`.
 - Camera points are not turned into Brain pages (they are not fields or places).

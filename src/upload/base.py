@@ -55,6 +55,10 @@ class HandlerResult:
     # False: the vector path does not turn each feature into a Brain page
     # (a photo inspection's camera positions are not fields or places).
     brain_pages_per_feature: bool = True
+    # False: once the layer exists, the uploaded file itself is not kept (a
+    # photo inspection stores each photo on its own, so the uploaded ZIP or
+    # photo would be a second copy). Only the browser path stores it.
+    keep_uploaded_file: bool = True
 
 
 class BaseUploadHandler(ABC):
@@ -85,3 +89,11 @@ class BaseUploadHandler(ABC):
         ``created_layer_ids``, ``first_layer_url``, ``first_layer_name``.
         """
         ...
+
+    async def discard(self, ctx: UploadContext) -> None:
+        """Remove what ``preprocess`` stored outside the upload's own key,
+        after an upload that created no layer (it failed, or found nothing).
+        Both upload paths call it. Most handlers store nothing else, so by
+        default there is nothing to remove.
+        """
+        return None

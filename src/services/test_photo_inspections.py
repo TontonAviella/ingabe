@@ -208,3 +208,60 @@ def test_the_photo_is_hashed_by_the_one_file_hash_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(photo_content, "file_sha256", lambda p: calls.append(p) or real(p))
     assert pi.read_photo(path, "a.jpg").sha256 == hashlib.sha256(open(path, "rb").read()).hexdigest()
     assert calls == [path]
+
+
+class _Listing:
+    """Object storage answering list_objects_v2 / delete_object as S3 does (Contents, IsTruncated,
+    NextContinuationToken; at most `page` keys a page)."""
+
+    def __init__(self, keys, page=2):
+        self.keys, self.page, self.deleted = sorted(keys), page, []
+
+    async def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):
+        matching = [k for k in self.keys if k.startswith(Prefix)]
+        start = int(ContinuationToken or 0)
+        chunk = matching[start:start + self.page]
+        answer = {"KeyCount": len(chunk), "IsTruncated": start + self.page < len(matching)}
+        if chunk:
+            answer["Contents"] = [{"Key": k, "Size": 1} for k in chunk]
+        if answer["IsTruncated"]:
+            answer["NextContinuationToken"] = str(start + self.page)
+        return answer
+
+    async def delete_object(self, Bucket, Key):
+        self.deleted.append(Key)
+        return {}
+
+
+class _Rows:
+    def __init__(self, count):
+        self.count = count
+
+    async def fetchval(self, query, *args):
+        assert "map_layers" in query and args == ("Llayer",)
+        return self.count
+
+
+@pytest.mark.anyio
+async def test_forget_deletes_every_page_of_the_layers_own_prefix_only_without_its_row():
+    prefix = pi.storage_prefix("Pproj", "Llayer")
+    own = [f"{prefix}{c * 64}.jpg" for c in "abcde"]
+    others = ["inspections/Pproj/Llayer2/" + "f" * 64 + ".jpg", "uploads/u/Pproj/Llayer.zip"]
+    store = _Listing(own + others)
+
+    assert await pi.forget_if_unused(_Rows(1), store, "b", prefix, "Llayer") == []  # the layer exists: kept
+    assert store.deleted == []
+    assert sorted(await pi.forget_if_unused(_Rows(0), store, "b", prefix, "Llayer")) == own  # 3 pages of 2
+    assert sorted(store.deleted) == own
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("prefix,layer_id", [
+    ("", "Llayer"), ("inspections/", "Llayer"), ("uploads/u/P/Llayer/", "Llayer"),
+    ("inspections/P/Lother/", "Llayer"), ("inspections/P//", ""), ("inspections/P/Llayer", "Llayer"),
+])
+async def test_forget_refuses_a_prefix_that_is_not_the_layers_own(prefix, layer_id):
+    store = _Listing([])
+    with pytest.raises(ValueError):
+        await pi.forget_if_unused(_Rows(0), store, "b", prefix, layer_id)
+    assert store.deleted == []

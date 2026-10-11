@@ -33,7 +33,8 @@ class PhotoSetUploadHandler(BaseUploadHandler):
     """Handles photo inspections (a ZIP of JPG/PNG photos, or a single photo GDAL cannot place on the map).
 
     Preprocessing unpacks the photos, reads their facts, stores the originals under the inspection's prefix and
-    writes the camera points as GeoJSON. Layer creation is the vector path's.
+    writes the camera points as GeoJSON. Layer creation is the vector path's. An upload that creates no layer
+    removes the stored originals (discard); once the layer exists, the uploaded file itself is not kept.
     """
 
     async def preprocess(self, ctx: UploadContext) -> HandlerResult:
@@ -56,6 +57,19 @@ class PhotoSetUploadHandler(BaseUploadHandler):
     async def create_layers(self, ctx: UploadContext, result: HandlerResult) -> HandlerResult:
         """The camera points become a vector layer like any other GeoJSON."""
         return await VectorUploadHandler().create_layers(ctx, result)
+
+    async def discard(self, ctx: UploadContext) -> None:
+        """The upload created no layer: remove the originals it stored (unless a layer with this id exists, as when
+        a retried upload fails because the first one finished)."""
+        prefix = photo_inspections.storage_prefix(ctx.project_id, ctx.layer_id)
+        try:
+            removed = await photo_inspections.forget_if_unused(ctx.conn, await get_async_s3_client(),
+                                                               ctx.bucket_name, prefix, ctx.layer_id)
+        except Exception:  # noqa: BLE001 - the upload already failed with its own error; a leftover is only storage
+            logger.warning("could not remove the stored photos of failed inspection %s", ctx.layer_id, exc_info=True)
+            return
+        if removed:
+            logger.info("failed photo inspection %s: removed %d stored photos", ctx.layer_id, len(removed))
 
     async def _inspection(self, ctx: UploadContext, temp_dir: str) -> HandlerResult:
         photos_dir = os.path.join(temp_dir, "photos")
@@ -86,6 +100,7 @@ class PhotoSetUploadHandler(BaseUploadHandler):
             updated_s3_key=upload_key(ctx.user_id, ctx.project_id, ctx.layer_id, ".geojson"),
             temp_dir_to_cleanup=temp_dir,
             brain_pages_per_feature=False,
+            keep_uploaded_file=False,
         )
 
 
@@ -115,7 +130,8 @@ def _single_photo(ctx: UploadContext) -> tuple[str, str]:
 async def _store_originals(paths: list[str], facts: list[photo_inspections.PhotoFacts], prefix: str,
                            bucket: str) -> None:
     """Upload each original photo (streamed from disk, never read whole into memory) to its key under `prefix`;
-    identical photos are stored once."""
+    identical photos are stored once. Every upload has finished before a failure is raised, so removing what was
+    stored (discard) does not race an upload still running."""
     s3 = await get_async_s3_client()
     limit = asyncio.Semaphore(_UPLOAD_CONCURRENCY)
     by_key = {photo_inspections.photo_key(prefix, f): path for path, f in zip(paths, facts, strict=True)}
@@ -127,4 +143,7 @@ async def _store_originals(paths: list[str], facts: list[photo_inspections.Photo
                 "upload", f"inspection photo {key}",
             )
 
-    await asyncio.gather(*(put(key, path) for key, path in by_key.items()))
+    outcomes = await asyncio.gather(*(put(key, path) for key, path in by_key.items()), return_exceptions=True)
+    failure = next((o for o in outcomes if isinstance(o, BaseException)), None)
+    if failure is not None:
+        raise failure

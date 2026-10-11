@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
+from src.database.models import MundiMap
+from src.routes.postgres_routes import remove_layer_from_map
 from src.services import photo_inspections
 from src.structures import get_async_db_connection
 from src.upload.base import HandlerResult, UploadContext
@@ -158,28 +160,139 @@ async def test_switch_on_a_single_photo_without_map_position_is_a_one_photo_insp
     assert feature["properties"]["sha256"] == hashlib.sha256(data).hexdigest()
 
 
-@pytest.mark.anyio
-async def test_switch_on_the_browser_upload_path_makes_a_vector_inspection_not_a_raster(auth_client, switch_on):
-    created = await _new_map(auth_client, "Browser photo")
-    data = drone_jpg(*TOWER[1])
-    init = (await auth_client.post(f"/api/maps/{created['id']}/upload-multipart-init",
-                                   params={"filename": "DJI_0007.JPG", "file_size": len(data)})).json()
+async def _browser_upload(auth_client, map_id: str, filename: str, data: bytes):
+    """The app's own upload: multipart to storage, then upload-complete. Returns (init answer, completion)."""
+    init = (await auth_client.post(f"/api/maps/{map_id}/upload-multipart-init",
+                                   params={"filename": filename, "file_size": len(data)})).json()
     child = init["dag_child_map_id"]
     part = await auth_client.put(f"/api/maps/{child}/upload-multipart-part", content=data,
                                  params={"upload_id": init["upload_id"], "s3_key": init["s3_key"], "part_number": 1})
     assert part.status_code == 200, part.text
     assembled = await auth_client.post(f"/api/maps/{child}/upload-multipart-complete", json={
         "s3_key": init["s3_key"], "upload_id": init["upload_id"], "layer_id": init["layer_id"],
-        "filename": "DJI_0007.JPG", "parts": [{"part_number": 1, "etag": part.json()["etag"]}]})
+        "filename": filename, "parts": [{"part_number": 1, "etag": part.json()["etag"]}]})
     assert assembled.status_code == 200, assembled.text
     done = await auth_client.post(f"/api/maps/{child}/upload-complete", json={
-        "s3_key": init["s3_key"], "layer_id": init["layer_id"], "filename": "DJI_0007.JPG"})
+        "s3_key": init["s3_key"], "layer_id": init["layer_id"], "filename": filename})
+    return init, done
+
+
+@pytest.mark.anyio
+async def test_switch_on_the_browser_upload_path_makes_a_vector_inspection_not_a_raster(auth_client, switch_on):
+    created = await _new_map(auth_client, "Browser photo")
+    init, done = await _browser_upload(auth_client, created["id"], "DJI_0007.JPG", drone_jpg(*TOWER[1]))
     assert done.status_code == 200, done.text
     assert done.json()["type"] == "vector"
     assert done.json()["url"] == f"/api/layer/{init['layer_id']}.pmtiles"
     metadata = await _metadata(init["layer_id"])
     assert metadata["photo_inspection"]["with_gps"] == 1
     assert "cog_status" not in metadata, "no raster optimisation was started for the photo"
+
+
+@pytest.mark.anyio
+async def test_switch_on_the_browser_path_keeps_each_photo_once_not_the_uploaded_zip_too(auth_client, switch_on):
+    photos = _three_tower_photos()
+    created = await _new_map(auth_client, "Browser zip")
+    init, done = await _browser_upload(auth_client, created["id"], "tower.zip", photo_zip(photos))
+    assert done.status_code == 200, done.text
+    prefix = f"inspections/{created['project_id']}/{init['layer_id']}/"
+    assert len(await _stored_keys(prefix)) == 3
+    assert await _stored_keys(init["s3_key"]) == [], "the uploaded ZIP is not kept next to the photos"
+    async with get_async_db_connection() as conn:
+        layer_key = await conn.fetchval("SELECT s3_key FROM map_layers WHERE layer_id = $1", init["layer_id"])
+    assert layer_key.endswith(".geojson") and await _stored_keys(layer_key) == [layer_key]  # the camera points
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("switch", ["0", "1"])
+async def test_the_browser_path_keeps_other_uploads_as_today(auth_client, monkeypatch, switch):
+    monkeypatch.setenv("PHOTO_INSPECTIONS", switch)
+    created = await _new_map(auth_client, f"Browser shapefile {switch}")
+    init, done = await _browser_upload(auth_client, created["id"], "trails.zip", SHAPEFILE_ZIP.read_bytes())
+    assert done.status_code == 200, done.text
+    assert await _stored_keys(init["s3_key"]) == [init["s3_key"]], "a shapefile upload keeps its uploaded file"
+
+
+async def _fail_after_the_photos_are_stored(monkeypatch) -> list[str]:
+    """Make creating the layer fail once the photos are stored; returns the keys that were stored at that moment."""
+    stored: list[str] = []
+
+    async def create_layers(self, ctx, result):
+        stored.extend(await _stored_keys(photo_inspections.storage_prefix(ctx.project_id, ctx.layer_id)))
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(VectorUploadHandler, "create_layers", create_layers)
+    return stored
+
+
+@pytest.mark.anyio
+async def test_switch_on_a_failed_upload_removes_the_photos_it_stored(auth_client, switch_on, monkeypatch):
+    stored = await _fail_after_the_photos_are_stored(monkeypatch)
+    created = await _new_map(auth_client, "Failed inspection")
+    response = await _upload(auth_client, created["id"], "tower.zip", photo_zip(_three_tower_photos()))
+    assert response.status_code == 500
+    assert len(stored) == 3, "the photos were stored before the failure"
+    assert await _stored_keys(f"inspections/{created['project_id']}/") == []
+
+
+@pytest.mark.anyio
+async def test_switch_on_a_failed_browser_upload_removes_the_photos_it_stored(auth_client, switch_on, monkeypatch):
+    stored = await _fail_after_the_photos_are_stored(monkeypatch)
+    created = await _new_map(auth_client, "Failed browser inspection")
+    init, done = await _browser_upload(auth_client, created["id"], "tower.zip", photo_zip(_three_tower_photos()))
+    assert done.status_code == 500
+    assert len(stored) == 3, "the photos were stored before the failure"
+    assert await _stored_keys(f"inspections/{created['project_id']}/") == []
+    assert await _metadata(init["layer_id"]) is None
+
+
+@pytest.mark.anyio
+async def test_the_photos_of_an_existing_layer_are_never_removed_by_a_failed_retry(auth_client, switch_on):
+    created = await _new_map(auth_client, "Retry")
+    layer_id = (await _upload(auth_client, created["id"], "a.zip", photo_zip(_three_tower_photos()))).json()["id"]
+    prefix = photo_inspections.storage_prefix(created["project_id"], layer_id)
+    async with get_async_db_connection() as conn:
+        removed = await photo_inspections.forget_if_unused(conn, await get_async_s3_client(), get_bucket_name(),
+                                                           prefix, layer_id)
+    assert removed == []
+    assert len(await _stored_keys(prefix)) == 3
+
+
+@pytest.mark.anyio
+async def test_switch_off_other_handlers_have_nothing_to_discard(switch_off):
+    conn = MagicMock()
+    ctx = UploadContext(map_id="M", layer_id="L", layer_name="x", file_basename="x", user_id="U", project_id="P",
+                        temp_file_path="/nonexistent", file_ext=".geojson", file_size_bytes=1,
+                        s3_key="uploads/U/P/L.geojson", metadata_dict={}, conn=conn, bucket_name="b")
+    for handler in (VectorUploadHandler(), RasterUploadHandler()):
+        assert await handler.discard(ctx) is None
+    assert conn.mock_calls == []
+
+
+@pytest.mark.anyio
+async def test_the_photos_go_with_the_layers_row(auth_client, switch_on, monkeypatch):
+    created = await _new_map(auth_client, "Delete inspection")
+    response = await _upload(auth_client, created["id"], "tower.zip", photo_zip(_three_tower_photos()))
+    layer_id, child_id = response.json()["id"], response.json()["dag_child_map_id"]
+    prefix = photo_inspections.storage_prefix(created["project_id"], layer_id)
+
+    # Through the API the earlier map version still shows the layer: its row stays, and with it the photos.
+    removed = await auth_client.delete(f"/api/maps/{child_id}/layer/{layer_id}")
+    assert removed.status_code == 200, removed.text
+    assert len(await _stored_keys(prefix)) == 3
+
+    # Once no map version holds the layer, its row is deleted and the photos go too (whatever the switch says:
+    # the files follow the row). Through the API that branch is not reached today (the earlier version above holds
+    # the layer, and its style rows reference it), so the test removes the style links and calls the route
+    # function on the only map that shows the layer.
+    monkeypatch.setenv("PHOTO_INSPECTIONS", "0")
+    async with get_async_db_connection() as conn:
+        await conn.execute("DELETE FROM map_layer_styles WHERE layer_id = $1", layer_id)
+        await conn.execute("DELETE FROM layer_styles WHERE layer_id = $1", layer_id)
+        child = MundiMap(**dict(await conn.fetchrow("SELECT * FROM user_mundiai_maps WHERE id = $1", child_id)))
+    await remove_layer_from_map(child_id, layer_id, forked_map=child)
+    assert await _metadata(layer_id) is None
+    assert await _stored_keys(prefix) == []
 
 
 @pytest.mark.anyio

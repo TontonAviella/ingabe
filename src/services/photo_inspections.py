@@ -9,13 +9,14 @@ Every fact is read from the photo itself. A value the photo does not carry is No
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
 import struct
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from src.services import photo_content
 
@@ -34,6 +35,8 @@ MAX_UNPACKED_BYTES = 15 * 1024 ** 3  # 15 GiB
 _STORAGE_ROOT = "inspections"
 _SEGMENT = r"[A-Za-z0-9_-]+"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+# Stored photos deleted at the same time.
+_DELETE_CONCURRENCY = 8
 # A JPEG keeps its XMP packet near the start of the file (an APP segment); a PNG in a text chunk before the pixels.
 _XMP_SCAN_BYTES = 1024 * 1024
 # How much of an XMP packet is searched, and the longest value text read. DJI writes its values in the first few KB;
@@ -191,11 +194,31 @@ def stored_prefix(layer_metadata: dict, layer_id: str) -> Optional[str]:
     prefix is not this layer's own)."""
     inspection = layer_metadata.get("photo_inspection") if isinstance(layer_metadata, dict) else None
     prefix = inspection.get("storage_prefix") if isinstance(inspection, dict) else None
-    if not isinstance(prefix, str):
-        return None
-    if not re.fullmatch(rf"{_STORAGE_ROOT}/{_SEGMENT}/{re.escape(layer_id)}/", prefix):
+    if not isinstance(prefix, str) or not _is_layers_prefix(prefix, layer_id):
         return None
     return prefix
+
+
+async def forget_if_unused(conn: Any, s3: Any, bucket: str, prefix: str, layer_id: str) -> list[str]:
+    """Delete the original photos stored under `prefix`, the inspection of layer `layer_id`, once no map_layers row
+    holds that layer: after its row is deleted, or after an upload that did not create it. A retried upload that
+    fails because the layer already exists leaves the photos alone.
+
+    Call on a connection without a user (row security would hide the row). Returns the deleted keys. Raises
+    ValueError for a prefix that is not this layer's, and on a storage error (what is left is only storage)."""
+    if not _is_layers_prefix(prefix, layer_id):
+        raise ValueError(f"{prefix!r} is not where the photos of layer {layer_id!r} are stored")
+    if await conn.fetchval("SELECT count(*) FROM map_layers WHERE layer_id = $1", layer_id):
+        return []
+    keys = await _keys_under(s3, bucket, prefix)
+    limit = asyncio.Semaphore(_DELETE_CONCURRENCY)
+
+    async def delete(key: str) -> None:
+        async with limit:
+            await s3.delete_object(Bucket=bucket, Key=key)
+
+    await asyncio.gather(*(delete(key) for key in keys))
+    return keys
 
 
 def photo_key_in(prefix: str, sha256: str, keys: Iterable[str]) -> Optional[str]:
@@ -232,6 +255,24 @@ def summary(facts: list[PhotoFacts], prefix: str) -> dict:
         "without_gps": [f.filename for f in facts if not f.has_position],
         "storage_prefix": prefix,
     }
+
+
+def _is_layers_prefix(prefix: str, layer_id: str) -> bool:
+    """True when `prefix` is shaped like storage_prefix(<a project>, layer_id)."""
+    return (re.fullmatch(_SEGMENT, layer_id) is not None
+            and re.fullmatch(rf"{_STORAGE_ROOT}/{_SEGMENT}/{re.escape(layer_id)}/", prefix) is not None)
+
+
+async def _keys_under(s3: Any, bucket: str, prefix: str) -> list[str]:
+    """Every stored key under `prefix` (a listing returns at most 1,000 keys a page)."""
+    keys: list[str] = []
+    page_from: dict = {}
+    while True:
+        page = await s3.list_objects_v2(Bucket=bucket, Prefix=prefix, **page_from)
+        keys += [item["Key"] for item in page.get("Contents", [])]
+        if not page.get("IsTruncated"):
+            return keys
+        page_from = {"ContinuationToken": page["NextContinuationToken"]}
 
 
 def _text(value) -> Optional[str]:
