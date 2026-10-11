@@ -1,25 +1,17 @@
-import {
-  BookOpen,
-  Camera,
-  Check,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  CircleDashed,
-  Download,
-  EyeOff,
-  FileUp,
-  Hammer,
-  LoaderCircle,
-  MessageCircle,
-  Plane,
-  Shuffle,
-  X,
-} from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, FileUp, LoaderCircle, Shuffle } from 'lucide-react';
 import { type ExpressionSpecification, type GeoJSONSource, type MapLayerMouseEvent, type Map as MLMap, Popup } from 'maplibre-gl';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  type AskSage,
+  AnswerBody,
+  AnswerDownloads,
+  AnswerTerms,
+  AskSageChips,
+  CardsPanel,
+  readCollapsed,
+  StatusIcon,
+  writeCollapsed,
+} from '@/components/CardAnswer';
+import {
   type DroneCard,
   type DroneCardAnswer,
   type DroneDeck,
@@ -35,7 +27,6 @@ import type { MapLayer } from '@/lib/types';
 // from the server (src/services/drone_cards.py); this file only lays it out
 // and draws the answer's outlines on the photo.
 
-const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', system-ui, sans-serif";
 const COLLAPSED_KEY = 'ingabe.droneCards.collapsed';
 
 // On phones the panel is a sheet over the lower part of the map, above the chat box. On larger screens it
@@ -171,36 +162,10 @@ function panelOffset(): [number, number] {
   return [(p.left - p.right) / 2, (p.top - p.bottom) / 2];
 }
 
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeCollapsed(collapsed: boolean) {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, collapsed ? '1' : '0');
-  } catch {
-    /* private window: the choice holds for this session */
-  }
-}
-
 function StatusLine({ card }: { card: DroneCard }) {
-  const icon = {
-    ready: <Check className="size-3.5 text-[#D9A066]" strokeWidth={2.5} />,
-    partly: <CircleDashed className="size-3.5 text-[#D9A066]" strokeWidth={2.5} />,
-    needs_flight: <Plane className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />,
-    needs_camera: <Camera className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />,
-    cant_tell: <EyeOff className="size-3.5 text-[#B8A99B]" strokeWidth={2.2} />,
-    to_build: <Hammer className="size-3.5 text-[#8C7B6E]" strokeWidth={2.2} />,
-    learn: <BookOpen className="size-3.5 text-[#D9A066]" strokeWidth={2.2} />,
-    working: <LoaderCircle className="size-3.5 text-[#D9A066] animate-spin" strokeWidth={2.5} />,
-  }[card.status];
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D8CCBF]">
-      {icon}
+      <StatusIcon status={card.status} />
       {card.status_label}
     </span>
   );
@@ -217,48 +182,6 @@ function CardButton({ card, onOpen }: { card: DroneCard; onOpen: (id: string) =>
       <span className="text-[17px] font-bold leading-snug tracking-[-0.01em] text-[#F3EDE6]">{card.question}</span>
       <span className="text-[14px] leading-snug text-[#B8A99B]">{card.preview}</span>
     </button>
-  );
-}
-
-function SureBars({ bars }: { bars: number }) {
-  return (
-    <span className="flex gap-[3px]" aria-hidden="true">
-      {[1, 2, 3].map((i) => (
-        <span key={i} className={`h-4 w-[6px] rounded-[3px] ${i <= bars ? 'bg-[#D9A066]' : 'bg-[#F3EDE6]/20'}`} />
-      ))}
-    </span>
-  );
-}
-
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1 px-4 py-3 border-b border-white/[0.07] last:border-b-0">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">{label}</span>
-      {children}
-    </div>
-  );
-}
-
-function AskSageChips({ asks, onAsk, label }: { asks: AskSage[]; onAsk: (prompt: string) => void; label: string }) {
-  if (asks.length === 0) return null;
-  return (
-    <div className="flex flex-col gap-2">
-      <span className="text-[13px] font-semibold text-[#B8A99B]">{label}</span>
-      <div className="flex flex-col gap-1.5">
-        {asks.map((ask) => (
-          <button
-            key={ask.label}
-            type="button"
-            title={ask.prompt}
-            onClick={() => onAsk(ask.prompt)}
-            className="flex items-center gap-2.5 min-h-11 px-3.5 rounded-[14px] text-left text-[14px] font-semibold text-[#F3EDE6] bg-[#D9A066]/[0.1] border border-[#D9A066]/35 hover:bg-[#D9A066]/[0.18] cursor-pointer"
-          >
-            <MessageCircle className="size-4 shrink-0 text-[#D9A066]" />
-            <span className="leading-snug">{ask.label}</span>
-          </button>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -373,24 +296,6 @@ function FieldCheck({
   );
 }
 
-function Progress({ progress }: { progress: NonNullable<DroneCardAnswer['progress']> }) {
-  const share = progress.parts ? progress.done / progress.parts : 0;
-  return (
-    <div className="flex flex-col gap-1.5" role="status">
-      <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
-        <div
-          className="h-full rounded-full bg-[#D9A066] transition-[width] duration-700"
-          style={{ width: `${Math.max(4, share * 100)}%` }}
-        />
-      </div>
-      <span className="text-[12px] text-[#B8A99B] tabular-nums">
-        Part {progress.done} of {progress.parts}
-        {progress.minutes_left !== null && ` · about ${progress.minutes_left} min left`}
-      </span>
-    </div>
-  );
-}
-
 function Choices({ layerId, choices }: { layerId: string; choices: NonNullable<DroneCardAnswer['choices']> }) {
   const choose = useChoosePlotSource(layerId);
   return (
@@ -440,13 +345,7 @@ function AnswerView({
   onGoTo: (lon: number, lat: number) => void;
   onAskSage: (prompt: string) => void;
 }) {
-  const [openTerm, setOpenTerm] = useState<string | null>(null);
-  const termRef = useRef<HTMLDivElement>(null);
   const style = answer.overlay ? OVERLAY_STYLE[answer.overlay.kind] : null;
-  const term = answer.terms.find((t) => t.id === openTerm);
-  useEffect(() => {
-    if (openTerm) termRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [openTerm]);
   return (
     <div className="flex flex-col gap-3">
       <button
@@ -503,73 +402,7 @@ function AnswerView({
 
       {answer.choices && <Choices layerId={layerId} choices={answer.choices} />}
 
-      <div className="flex flex-col rounded-[18px] bg-[#1E1612] border border-white/[0.06]">
-        <Section label="What and where">
-          <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.what}</p>
-          {answer.progress && (
-            <div className="mt-2">
-              <Progress progress={answer.progress} />
-            </div>
-          )}
-        </Section>
-        {answer.items.length > 0 && (
-          <div className="flex flex-col py-1 border-b border-white/[0.07]">
-            <span className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-[#B8A99B]">Go here first</span>
-            {answer.items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onGoTo(item.lon, item.lat)}
-                className="flex items-center justify-between gap-3 min-h-11 px-4 py-1.5 text-left hover:bg-white/[0.04] cursor-pointer"
-              >
-                {item.picture && (
-                  <img
-                    src={item.picture}
-                    alt={`What the vision model saw of ${item.title}`}
-                    loading="lazy"
-                    className="size-14 shrink-0 rounded-[10px] object-cover border border-white/10 bg-[#221813]"
-                  />
-                )}
-                <span className="flex flex-col flex-1 min-w-0">
-                  <span className="text-[15px] font-semibold text-[#F3EDE6]">{item.title}</span>
-                  <span className="text-[13px] leading-snug text-[#B8A99B] tabular-nums">{item.detail}</span>
-                </span>
-                <ChevronRight className="size-4 shrink-0 text-[#B8A99B]" />
-              </button>
-            ))}
-          </div>
-        )}
-        {answer.facts.length > 0 && (
-          <div className="flex flex-col px-4 py-2 border-b border-white/[0.07]">
-            {answer.facts.map((fact) => (
-              <div key={fact.label} className="flex justify-between gap-3 py-1 text-[14px]">
-                <span className="text-[#B8A99B]">{fact.label}</span>
-                <span className="font-semibold text-[#F3EDE6] text-right tabular-nums">{fact.value}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        <Section label="Why it matters">
-          <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.why}</p>
-        </Section>
-        <Section label="What to do">
-          <p className="m-0 text-[15px] leading-snug text-[#F3EDE6]">{answer.todo}</p>
-        </Section>
-        <Section label="How sure">
-          <div className="flex items-center gap-2.5">
-            <SureBars bars={answer.how_sure.bars} />
-            <span className="text-[15px] font-bold text-[#F3EDE6]">{answer.how_sure.label}</span>
-          </div>
-          <ul className="m-0 mt-1 pl-4 list-disc text-[13px] leading-snug text-[#B8A99B]">
-            {answer.how_sure.because.map((reason) => (
-              <li key={reason}>{reason}</li>
-            ))}
-          </ul>
-          {answer.how_sure.surer && (
-            <p className="m-0 mt-1 text-[13px] leading-snug text-[#E9B987]">To be surer: {answer.how_sure.surer}</p>
-          )}
-        </Section>
-      </div>
+      <AnswerBody answer={answer} onGoTo={onGoTo} />
 
       {answer.field_check && <FieldCheck layerId={layerId} check={answer.field_check} onGoTo={onGoTo} />}
 
@@ -577,57 +410,9 @@ function AnswerView({
 
       <AskSageChips asks={answer.ask_sage} onAsk={onAskSage} label="Ask Sage for more" />
 
-      {answer.downloads.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-[13px] font-semibold text-[#B8A99B]">Take it with you</span>
-          <div className="flex flex-wrap gap-2">
-            {answer.downloads.map((d) => (
-              <a
-                key={d.href}
-                href={d.href}
-                download
-                className="inline-flex items-center gap-1.5 min-h-9 px-3.5 rounded-full text-[13px] font-semibold bg-white/[0.06] text-[#F3EDE6] border border-white/10 hover:bg-white/10 no-underline"
-              >
-                <Download className="size-3.5 text-[#D9A066]" />
-                {d.label}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
+      <AnswerDownloads downloads={answer.downloads} />
 
-      {answer.terms.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-[13px] font-semibold text-[#B8A99B]">Words in this answer</span>
-          <div className="flex flex-wrap gap-2">
-            {answer.terms.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                aria-expanded={openTerm === t.id}
-                onClick={() => setOpenTerm(openTerm === t.id ? null : t.id)}
-                className={`min-h-9 px-3.5 rounded-full text-[13px] font-semibold border cursor-pointer ${
-                  openTerm === t.id
-                    ? 'bg-[#F3EDE6] text-[#140E0B] border-transparent'
-                    : 'bg-white/[0.06] text-[#F3EDE6] border-white/10 hover:bg-white/10'
-                }`}
-              >
-                {t.word}
-              </button>
-            ))}
-          </div>
-          {term && (
-            <div ref={termRef} className="flex flex-col gap-2 rounded-[16px] bg-[#D9A066]/[0.12] border border-[#D9A066]/30 px-4 py-3">
-              <span className="text-[15px] font-bold text-[#F3EDE6]">{term.word}</span>
-              <p className="m-0 text-[14px] leading-snug text-[#F3EDE6]">{term.simple}</p>
-              <p className="m-0 text-[14px] leading-snug text-[#E6DCD1]">
-                <span className="font-semibold">Why it helps you: </span>
-                {term.why}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
+      <AnswerTerms terms={answer.terms} />
     </div>
   );
 }
@@ -895,7 +680,7 @@ export function DroneCards({
   const [layerId, setLayerId] = useState<string | null>(null);
   const [audience, setAudience] = useState<string | null>(null);
   const [openCard, setOpenCard] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(COLLAPSED_KEY));
 
   // Follow the photos on the map: keep the chosen one while it is shown, else the first.
   useEffect(() => {
@@ -914,85 +699,63 @@ export function DroneCards({
 
   const setCollapsedAndSave = (value: boolean) => {
     setCollapsed(value);
-    writeCollapsed(value);
+    writeCollapsed(COLLAPSED_KEY, value);
   };
 
-  if (collapsed) {
-    return (
-      <button
-        type="button"
-        onClick={() => setCollapsedAndSave(false)}
-        style={{ fontFamily: FONT }}
-        className={`absolute top-16 right-4 sm:right-14 xl:top-4 z-30 min-h-11 px-4 rounded-full bg-[#110C0A]/85 backdrop-blur-xl border border-white/10 text-[14px] font-semibold text-[#F3EDE6] shadow-lg cursor-pointer ${historyOpen ? 'max-xl:hidden' : ''}`}
-      >
-        Questions{deck.data ? ` · ${deck.data.for_you.length}` : ''}
-      </button>
-    );
-  }
-
   return (
-    <section
-      aria-label="Questions for this drone photo"
-      style={{ fontFamily: FONT }}
-      className={`absolute z-30 inset-x-2 bottom-[100px] max-h-[52vh] sm:inset-auto sm:bottom-auto sm:top-16 xl:top-4 sm:right-14 sm:w-[372px] sm:max-h-[calc(100%-328px)] xl:max-h-[calc(100%-280px)] flex flex-col rounded-[26px] bg-[#110C0A]/[0.9] backdrop-blur-2xl border border-white/[0.09] shadow-2xl text-[#F3EDE6] ${historyOpen ? 'max-xl:hidden' : ''}`}
+    <CardsPanel
+      ariaLabel="Questions for this drone photo"
+      heading="Questions"
+      hideLabel="Hide the questions"
+      collapsed={collapsed}
+      collapsedLabel={`Questions${deck.data ? ` · ${deck.data.for_you.length}` : ''}`}
+      onCollapsedChange={setCollapsedAndSave}
+      historyOpen={historyOpen}
     >
-      <div className="flex items-center justify-between px-5 pt-4 pb-1">
-        <span className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[#D9A066]">Questions</span>
-        <button
-          type="button"
-          aria-label="Hide the questions"
-          onClick={() => setCollapsedAndSave(true)}
-          className="flex size-8 items-center justify-center rounded-full text-[#B8A99B] hover:bg-white/10 hover:text-[#F3EDE6] cursor-pointer"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
-      <div className="overflow-y-auto px-5 pb-5 pt-1">
-        {deck.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Ingabe is looking at your photo…</p>}
-        {deck.error?.status === 409 && (
-          <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">
-            The photo is still being prepared. The questions will appear when it is ready.
-          </p>
-        )}
-        {deck.error && deck.error.status !== 409 && <p className="m-0 py-6 text-[15px] text-[#E9B987]">{deck.error.message}</p>}
-        {deck.data && !openCard && (
-          <DeckView
-            deck={deck.data}
-            photos={photos}
-            layerId={layerId}
-            onPickPhoto={(id) => {
-              setLayerId(id);
-              setOpenCard(null);
-            }}
-            onPickAudience={setAudience}
-            onOpen={setOpenCard}
-            onShuffle={() => setSeed(newSeed())}
-            onAskSage={onAskSage}
-          />
-        )}
-        {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Working out the answer…</p>}
-        {openCard && answer.error && (
-          <div className="flex flex-col gap-3 py-4">
-            <p className="m-0 text-[15px] text-[#E9B987]">{answer.error.message}</p>
-            <button
-              type="button"
-              onClick={() => setOpenCard(null)}
-              className="self-start text-[14px] font-semibold text-[#D9A066] cursor-pointer"
-            >
-              Back to the questions
-            </button>
-          </div>
-        )}
-        {openCard && answer.data && (
-          <AnswerView
-            answer={answer.data}
-            layerId={layerId}
-            onBack={() => setOpenCard(null)}
-            onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, offset: panelOffset(), duration: 900 })}
-            onAskSage={onAskSage}
-          />
-        )}
-      </div>
-    </section>
+      {deck.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Ingabe is looking at your photo…</p>}
+      {deck.error?.status === 409 && (
+        <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">
+          The photo is still being prepared. The questions will appear when it is ready.
+        </p>
+      )}
+      {deck.error && deck.error.status !== 409 && <p className="m-0 py-6 text-[15px] text-[#E9B987]">{deck.error.message}</p>}
+      {deck.data && !openCard && (
+        <DeckView
+          deck={deck.data}
+          photos={photos}
+          layerId={layerId}
+          onPickPhoto={(id) => {
+            setLayerId(id);
+            setOpenCard(null);
+          }}
+          onPickAudience={setAudience}
+          onOpen={setOpenCard}
+          onShuffle={() => setSeed(newSeed())}
+          onAskSage={onAskSage}
+        />
+      )}
+      {openCard && answer.isPending && <p className="m-0 py-6 text-[15px] text-[#D8CCBF]">Working out the answer…</p>}
+      {openCard && answer.error && (
+        <div className="flex flex-col gap-3 py-4">
+          <p className="m-0 text-[15px] text-[#E9B987]">{answer.error.message}</p>
+          <button
+            type="button"
+            onClick={() => setOpenCard(null)}
+            className="self-start text-[14px] font-semibold text-[#D9A066] cursor-pointer"
+          >
+            Back to the questions
+          </button>
+        </div>
+      )}
+      {openCard && answer.data && (
+        <AnswerView
+          answer={answer.data}
+          layerId={layerId}
+          onBack={() => setOpenCard(null)}
+          onGoTo={(lon, lat) => map?.flyTo({ center: [lon, lat], zoom: 18.5, offset: panelOffset(), duration: 900 })}
+          onAskSage={onAskSage}
+        />
+      )}
+    </CardsPanel>
   );
 }

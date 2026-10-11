@@ -1,5 +1,7 @@
 import { apiFetch } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { getJson, sendJson } from '@/lib/apiJson';
+import type { AnswerDownload, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
 import { type ServerError, serverError } from '@/lib/serverError';
 
 // Shapes returned by src/routes/drone_card_routes.py. Every word, number and
@@ -38,17 +40,7 @@ export interface DroneDeck {
   seed: number;
 }
 
-/** A question to send to Sage: a short label, and the full prompt with the photo and place named. */
-export interface AskSage {
-  label: string;
-  prompt: string;
-}
-
-export interface DroneCardAnswer extends DroneCard {
-  what: string;
-  why: string;
-  todo: string;
-  how_sure: { level: 'low' | 'medium' | 'high'; label: string; bars: number; because: string[]; surer: string | null };
+export interface DroneCardAnswer extends DroneCard, CardAnswerCore {
   overlay: {
     kind: 'bare' | 'attention' | 'good' | 'outline' | 'plots' | 'plot_groups' | 'crop_map' | 'plot_flags';
     legend: string;
@@ -61,13 +53,8 @@ export interface DroneCardAnswer extends DroneCard {
     spots?: GeoJSON.FeatureCollection;
     spots_legend?: string;
   } | null;
-  facts: { label: string; value: string }[];
-  terms: { id: string; word: string; simple: string; why: string }[];
-  /** Places to go first, each with a point to fly to. */
-  items: { id: string; title: string; detail: string; lon: number; lat: number; picture?: string }[];
-  downloads: { label: string; href: string }[];
-  /** Set while the answer is still being worked out on the server. */
-  progress: { done: number; parts: number; minutes_left: number | null } | null;
+  terms: AnswerTerm[];
+  downloads: AnswerDownload[];
   /** Options that change the answer (where the plots come from); picking one is sent to href. */
   choices: {
     label: string;
@@ -96,12 +83,6 @@ export interface FarmRecordResult {
   soil_samples: number;
   harvests: number;
   warnings: string[];
-}
-
-async function getJson<T>(url: string): Promise<T> {
-  const res = await apiFetch(url);
-  if (!res.ok) throw await serverError(res);
-  return res.json();
 }
 
 function query(audience: string | null, seed: number) {
@@ -144,12 +125,7 @@ export function useChoosePlotSource(layerId: string | null) {
   const queryClient = useQueryClient();
   return useMutation<void, ServerError, { href: string; source: string }>({
     mutationFn: async ({ href, source }) => {
-      const res = await apiFetch(href, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
-      });
-      if (!res.ok) throw await serverError(res);
+      await sendJson(href, 'PUT', { source });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
@@ -182,12 +158,7 @@ export function useCheckPlot(layerId: string | null) {
   const queryClient = useQueryClient();
   return useMutation<void, ServerError, { href: string; number: number; crop: string }>({
     mutationFn: async ({ href, number, crop }) => {
-      const res = await apiFetch(href.replace('{number}', String(number)), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ crop }),
-      });
-      if (!res.ok) throw await serverError(res);
+      await sendJson(href.replace('{number}', String(number)), 'POST', { crop });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['drone-cards', layerId] });
