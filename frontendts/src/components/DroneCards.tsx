@@ -6,7 +6,10 @@ import {
   AnswerDownloads,
   AnswerTerms,
   AskSageChips,
+  CardButton,
   CardsPanel,
+  panelOffset,
+  panelPadding,
   readCollapsed,
   StatusIcon,
   writeCollapsed,
@@ -28,10 +31,6 @@ import type { MapLayer } from '@/lib/types';
 // and draws the answer's outlines on the photo.
 
 const COLLAPSED_KEY = 'ingabe.droneCards.collapsed';
-
-// On phones the panel is a sheet over the lower part of the map, above the chat box. On larger screens it
-// stops 280px above the bottom: the chat box and Sage's reply above it take about 260px there.
-const PHONE_SHEET_SHARE = 0.52;
 
 const SOURCE = 'drone-card-overlay';
 const LAYERS = { fill: 'drone-card-fill', casing: 'drone-card-casing', line: 'drone-card-line', label: 'drone-card-label' };
@@ -148,20 +147,6 @@ function byZoom<T>(far: Paint<T>, near: Paint<T>): ExpressionSpecification {
   return ['interpolate', ['linear'], ['zoom'], FAR_ZOOM, far, NEAR_ZOOM, near] as ExpressionSpecification;
 }
 
-/** Room the panel takes on the map, so what an answer points at stays in view beside or above it. */
-function panelPadding() {
-  return window.innerWidth >= 640
-    ? { top: 70, bottom: 170, left: 60, right: 440 }
-    : { top: 70, bottom: Math.round(window.innerHeight * PHONE_SHEET_SHARE) + 110, left: 20, right: 20 };
-}
-
-/** Shift that puts a point in the middle of the free part of the map. An offset, not `padding`: padding given to
- * flyTo stays on the map and adds to the next fitBounds, which then cannot fit on a phone and does nothing. */
-function panelOffset(): [number, number] {
-  const p = panelPadding();
-  return [(p.left - p.right) / 2, (p.top - p.bottom) / 2];
-}
-
 function StatusLine({ card }: { card: DroneCard }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#D8CCBF]">
@@ -171,18 +156,8 @@ function StatusLine({ card }: { card: DroneCard }) {
   );
 }
 
-function CardButton({ card, onOpen }: { card: DroneCard; onOpen: (id: string) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onOpen(card.id)}
-      className="w-full text-left flex flex-col gap-1.5 rounded-[18px] bg-[#221813] border border-white/[0.07] px-4 py-3.5 hover:border-[#D9A066]/50 focus-visible:outline-2 focus-visible:outline-[#D9A066] transition-colors cursor-pointer"
-    >
-      <StatusLine card={card} />
-      <span className="text-[17px] font-bold leading-snug tracking-[-0.01em] text-[#F3EDE6]">{card.question}</span>
-      <span className="text-[14px] leading-snug text-[#B8A99B]">{card.preview}</span>
-    </button>
-  );
+function DroneCardButton({ card, onOpen }: { card: DroneCard; onOpen: (id: string) => void }) {
+  return <CardButton status={<StatusLine card={card} />} title={card.question} preview={card.preview} onClick={() => onOpen(card.id)} />;
 }
 
 function AddDocument({ layerId, upload }: { layerId: string; upload: NonNullable<DroneCardAnswer['upload']> }) {
@@ -490,7 +465,7 @@ function DeckView({
           </button>
         </div>
         {deck.for_you.map((card) => (
-          <CardButton key={card.id} card={card} onOpen={onOpen} />
+          <DroneCardButton key={card.id} card={card} onOpen={onOpen} />
         ))}
       </div>
 
