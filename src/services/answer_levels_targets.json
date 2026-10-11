@@ -1,0 +1,236 @@
+{
+  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number here was measured on 2026-10-11 with YOLOE-11s visual prompts (3 marks on the same picture unless a protocol says otherwise), scored as AP50 against people's boxes, on 20 pictures unless n_images says otherwise. The scripts that produced them are in the measuring session's scratchpad (contest/src) and are NOT in this repository, so these numbers cannot be re-run from the repo yet.",
+  "size_floor": {
+    "needed_px": 50,
+    "measured": {
+      "dataset": "every target below that has a value",
+      "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture; object size in pixels compared with the score per target",
+      "n_images": null,
+      "image_px": null,
+      "zoom": null,
+      "date": "2026-10-11",
+      "metric": "AP50 against people's boxes",
+      "value": null,
+      "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+      "note": "Below about 25-30 px across, every target failed; at about 50 px and more, targets did well. 50 px is that measured floor, not a fitted cut-off."
+    }
+  },
+  "targets": {
+    "tower_dish": {
+      "noun": "dishes",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": true},
+      "max_level": "FULL_REVIEW",
+      "measured": {
+        "dataset": "celltower test set",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 1280,
+        "zoom": 1,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.74,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "Look-alike marks were measured to help antennas and radio units; dishes use the same setting as the other tower parts."
+      },
+      "also_measured": []
+    },
+    "tower_antenna": {
+      "noun": "antennas",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": true},
+      "max_level": "FULL_REVIEW",
+      "measured": {
+        "dataset": "celltower test set",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 1280,
+        "zoom": 1,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.69,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": null
+      },
+      "also_measured": [
+        {"setting": "with look-alike marks", "change": 0.02, "note": "AP50 went up by 0.02 over the value above."}
+      ]
+    },
+    "tower_radio_unit": {
+      "noun": "radio units",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": true},
+      "max_level": "FULL_REVIEW",
+      "measured": {
+        "dataset": "celltower test set",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 14,
+        "image_px": 2560,
+        "zoom": 1,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.29,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "Radio units are small: measured at 2560 px, not 1280."
+      },
+      "also_measured": [
+        {"setting": "with look-alike marks", "value": 0.32, "note": "Mean over 3 draws of the look-alike marks; higher than without them in 4 of 4 runs."}
+      ]
+    },
+    "building": {
+      "noun": "buildings",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": false},
+      "max_level": "ROUGH",
+      "measured": {
+        "dataset": "Kenol tiles, 8.8 cm per pixel",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": null,
+        "zoom": 1,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.53,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "maize_seedling": {
+      "noun": "maize plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"zoom": 2, "look_alike_marks": false},
+      "max_level": "ROUGH",
+      "measured": {
+        "dataset": "INRAe UAVmulticrop, Nerac",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": null,
+        "zoom": 2,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.79,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "Plants about 56 px across. The notes do not say whether that is before or after the 2x zoom."
+      },
+      "also_measured": [
+        {"setting": "INRAe UAVmulticrop, Selommes, 2x zoom, plants about 24 px across", "value": 0.44, "note": "Same protocol, smaller plants: the score falls with plant size."}
+      ]
+    },
+    "row_crop_plant": {
+      "noun": "plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"zoom": 2, "look_alike_marks": false},
+      "max_level": "ROUGH",
+      "measured": {
+        "dataset": "cotton UAV pictures",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": null,
+        "zoom": null,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.53,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "The zoom used in this measurement is not recorded; 2x is the setting measured best for plants."
+      },
+      "also_measured": []
+    },
+    "weed": {
+      "noun": "weeds",
+      "kind": "weed",
+      "object_size_m": null,
+      "object_size_note": "Changes with the weeds' age; the gate uses the user's marks.",
+      "finder": {"zoom": 2, "look_alike_marks": false},
+      "max_level": "ROUGH",
+      "measured": {
+        "dataset": null,
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 896,
+        "zoom": null,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.45,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "The dataset is not named in the notes. Its labels are incomplete: weeds nobody boxed count as false finds, so the true score is likely higher. The zoom used is not recorded; 2x is the setting measured best for plants."
+      },
+      "also_measured": []
+    },
+    "tree_crown_forest": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": false},
+      "max_level": "AREA",
+      "measured": {
+        "dataset": "NEON TEAK",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": null,
+        "zoom": null,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.22,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "tree_crown_savanna": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": false},
+      "max_level": "AREA",
+      "measured": {
+        "dataset": "NEON SJER",
+        "protocol": "YOLOE-11s visual prompts, 3 marks taken from OTHER pictures (not the same picture)",
+        "n_images": 20,
+        "image_px": null,
+        "zoom": null,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.06,
+        "where": "measuring session scratchpad, contest/src (scripts not in this repository)",
+        "note": "Marks came from other pictures, unlike every other target; not comparable with the same-picture numbers."
+      },
+      "also_measured": []
+    },
+    "banana_mat": {
+      "noun": "banana mats",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size measured on our pictures; the gate uses the user's marks.",
+      "finder": {"zoom": 1, "look_alike_marks": false},
+      "max_level": "AREA",
+      "measured": {
+        "dataset": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "zoom": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "where": null,
+        "note": "Untested: there is no answer key (no pictures with people's boxes around banana mats)."
+      },
+      "also_measured": []
+    }
+  }
+}

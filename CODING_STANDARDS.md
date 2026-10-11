@@ -84,6 +84,7 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
+| Answer levels for objects in a picture (count / check / estimate / rough / area / can't tell; the finder's 50 px size gate; countability; measured limits per object kind) | `src/services/answer_levels.py` (+ `answer_levels_targets.json`), rules `docs/rules/ANSWER_LEVELS_RULES.md` | New 2026-10-11, behind `ANSWER_LADDER` (off). `src/services/plant_counts.py` keeps its own 5 cm per pixel floor: a different method (green crowns) with its own check, see the rules doc |
 
 Add a row when a new domain appears. Each owner gets a rules doc under
 `docs/rules/<DOMAIN>_RULES.md` when it is consolidated.
