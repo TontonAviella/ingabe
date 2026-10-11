@@ -13,6 +13,7 @@ from src.services import industry
 RUN_TAG = uuid.uuid4().hex[:8]
 CATALOG = json.loads((Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "tool_catalog.json").read_text())
 AGRI_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.AGRICULTURE}
+TELECOM_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.TELECOM}
 
 
 # --- The capability list --------------------------------------------------------------------------------------------
@@ -37,7 +38,30 @@ def test_other_industries_get_no_agriculture_tool(other):
     offered = {t["function"]["name"] for t in industry.tools_for(tools, other)}
     assert offered and not offered & AGRI_ONLY
     assert {"search_location", "display_layer", "describe_user_raster", "search_brain"} <= offered
-    assert {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")} == set(CATALOG["model_tools"])
+    assert {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")} == (
+        set(CATALOG["model_tools"]) - TELECOM_ONLY)
+
+
+def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatch):
+    tools = [{"function": {"name": n}} for n in CATALOG["model_tools"]]
+    tower_tools = {"get_tower_inspection_findings", "tower_photos_needing_review"}
+    assert tower_tools <= TELECOM_ONLY and tower_tools <= set(CATALOG["model_tools"])
+    monkeypatch.delenv("TOWERS", raising=False)
+    for every in industry.INDUSTRIES:
+        assert not tower_tools & {t["function"]["name"] for t in industry.tools_for(tools, every)}
+    off = industry.tool_refusal("get_tower_inspection_findings", "telecom")
+    assert off and "no tool named get_tower_inspection_findings" in off["error"]  # as if it did not exist
+    assert "Tower" not in industry.prompt_note("telecom").split("still being built")[1]
+    assert not industry.available("tower_cards", "telecom") and industry.serves("tower_cards", "telecom")
+
+    monkeypatch.setenv("TOWERS", "1")
+    assert tower_tools <= {t["function"]["name"] for t in industry.tools_for(tools, "telecom")}
+    assert not tower_tools & {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")}
+    assert industry.tool_refusal("get_tower_inspection_findings", "telecom") is None
+    assert industry.tool_refusal("tower_photos_needing_review", "agriculture")["error"].startswith(
+        "tower_photos_needing_review is for Telecom Towers projects; this project is Agriculture.")
+    assert "never count equipment from a photo yourself" in industry.prompt_note("telecom")
+    assert industry.prompt_note("power_grid") and "tower photo" not in industry.prompt_note("power_grid")
 
 
 def test_a_wrong_industry_tool_is_refused_when_called_anyway():

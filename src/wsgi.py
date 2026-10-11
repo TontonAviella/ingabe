@@ -25,6 +25,7 @@ from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
 from src.routes import drone_card_routes
 from src.routes import example_finder_routes
+from src.routes import tower_routes
 from src.routes.attribute_table import attribute_table_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
@@ -624,6 +625,11 @@ app.include_router(
     example_finder_routes.router,
     prefix="/api",
     tags=["Example finder"],
+)
+app.include_router(
+    tower_routes.router,
+    prefix="/api",
+    tags=["Towers"],
 )
 app.include_router(
     attribute_table_router,

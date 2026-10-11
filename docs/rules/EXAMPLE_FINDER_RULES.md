@@ -96,11 +96,15 @@ with the reason (`FinderInputError`, 422), never run and never kept:
 ## Pictures (`example_finder_pictures.py`)
 
 A source implements `async read() -> Picture` (pixels, a sha256, and the
-frame its boxes are in). Two exist:
+frame its boxes are in). Three exist:
 
 - `Photo(bytes, view)`: boxes in the photo's own pixels; `view` is said by
-  the caller, never guessed. For photo inspections (their photos plug in
-  here).
+  the caller, never guessed.
+- `InspectionPhoto(s3, bucket, layer_id, layer_metadata, sha256, view)`: an
+  original photo of a photo inspection, read only from the storage prefix
+  recorded on that layer and checked to be the layer's own
+  (`photo_inspections.stored_prefix`), at most 100 MB, then read as a
+  `Photo`; its sha256 must be the one it is named by.
 - `OrthophotoWindow(cog_url, bbox, crs)`: a window of a drone orthophoto's
   optimised photo (looking straight down, `NADIR`), as a box in lon/lat
   (`"lonlat"`) or in the photo's own CRS
@@ -251,9 +255,10 @@ and has not been measured. Script:
 
 ## Not done yet (open)
 
-- **Inspections** (PR #177, now in the base branch) are not wired: their
-  photos plug in through `Photo(bytes, view)` / `PictureSource` with a route
-  of their own, the view from the photo's gimbal pitch.
+- **Inspections** are wired for towers only (`TOWERS_RULES.md`): an
+  inspection's original photo is read through `InspectionPhoto` (only from
+  the prefix recorded on its layer), the view from the photo's gimbal pitch
+  (`photo_inspections.view_of`); the tower routes start the jobs.
 - **No caller shows answer levels** for the finds yet; a consumer must read
   `answer_levels.ladder_enabled()` and `decide` (with the kept size gate)
   before saying how far a number may go.

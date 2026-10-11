@@ -15,9 +15,12 @@ so FastSAM candidate polygons or green-crown counts never get a level from
 this table (see "Other count wording in the repo" below).
 
 Switch: `ANSWER_LADDER` (default off), read only by `ladder_enabled()`.
-This module adds the rules; the consumers that show levels come in later PRs
-and must check `ladder_enabled()` first. With the switch off they behave as
-before.
+This module adds the rules; the consumers that show levels must check
+`ladder_enabled()` first. With the switch off they behave as before. The
+tower work (`src/services/tower_inspection.py`, `TOWERS_RULES.md`) calls
+`decide` on every photo's marks to know whether a person's count may be
+used (FULL_REVIEW: only after every suggestion is checked), and its cards
+show the level's words only with the switch on.
 
 ## Levels
 
