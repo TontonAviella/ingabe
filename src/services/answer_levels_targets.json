@@ -1,0 +1,258 @@
+{
+  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from.",
+  "targets": {
+    "tower_dish": {
+      "noun": "dishes",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 1280 and 2304 px: the same score (0.745), so 1280. Look-alike marks did not help dishes (2 draws on 24 pictures: 0.653 with, 0.660 without)."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_mw"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 1333,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.745,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_mw", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": [
+        {"setting": "read at 2304 px", "value": 0.745, "evidence": {"source": "results/scale.jsonl", "task": "tower_mw", "imgsz": 2304}},
+        {"setting": "with look-alike marks, 2 draws, 24 pictures", "value": 0.653, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_mw", "method": "with look-alike"}},
+        {"setting": "without look-alike marks, the same 2 draws", "value": 0.66, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_mw", "method": "alone"}}
+      ]
+    },
+    "tower_antenna": {
+      "noun": "antennas",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280 px only. Look-alike marks helped in 2 of 2 draws (0.677 with, 0.657 without)."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_antenna"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 15,
+        "image_px": 1333,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.695,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_antenna", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Only 15 test photos have 4 or more antennas (3 to mark, at least 1 to find)."
+      },
+      "also_measured": [
+        {"setting": "with look-alike marks, 2 draws", "value": 0.677, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_antenna", "method": "with look-alike"}},
+        {"setting": "without look-alike marks, the same 2 draws", "value": 0.657, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_antenna", "method": "alone"}}
+      ]
+    },
+    "tower_radio_unit": {
+      "noun": "radio units",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280, 2560 and 3200 px: 2560 scored best. Look-alike marks helped in 4 of 4 runs (3 draws of 3 marks: 0.325 with, 0.280 without)."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_rru"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 14,
+        "image_px": 1333,
+        "finder_input_px": 2560,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.291,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_rru", "model": "yoloe-11s-seg.pt", "imgsz": 2560},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Only 14 test photos have 4 or more radio units."
+      },
+      "also_measured": [
+        {"setting": "read at 1280 px", "value": 0.246, "evidence": {"source": "results/scale.jsonl", "task": "tower_rru", "imgsz": 1280}},
+        {"setting": "read at 3200 px", "value": 0.194, "evidence": {"source": "results/scale.jsonl", "task": "tower_rru", "imgsz": 3200}},
+        {"setting": "with look-alike marks, 3 draws", "value": 0.325, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_rru", "method": "with look-alike", "k": 3}},
+        {"setting": "without look-alike marks, the same 3 draws", "value": 0.28, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_rru", "method": "alone", "k": 3}}
+      ]
+    },
+    "building": {
+      "noun": "buildings",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only; look-alike marks not tried."},
+      "max_level": "ROUGH",
+      "size_evidence": ["kenol_building"],
+      "measured": {
+        "dataset": "Kenol tiles (512 px), 8.8 cm per pixel",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 512,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.525,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "kenol_building", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "maize_seedling": {
+      "noun": "maize plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "640 px tiles read at 640 and 1280 px: 1280 scored better on both fields (Selommes at 1920 px: 0.469, but 52 s per picture). Look-alike marks not tried."},
+      "max_level": "ROUGH",
+      "size_evidence": ["maize_nerac", "maize_selommes"],
+      "measured": {
+        "dataset": "INRAe UAVmulticrop, Nerac (640 px tiles)",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 640,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.787,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "maize_nerac", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Plants about 116 px across as the finder read them. Smaller plants (Selommes, about 53 px) scored 0.437 at the same settings, which still supports a rough number; the size floor covers both fields."
+      },
+      "also_measured": [
+        {"setting": "Nerac read at 640 px", "value": 0.573, "evidence": {"source": "results/scale.jsonl", "task": "maize_nerac", "imgsz": 640}},
+        {"setting": "INRAe UAVmulticrop, Selommes, 20 tiles of 640 px read at 1280 px", "value": 0.437, "evidence": {"source": "results/yoloe26.jsonl", "task": "maize_selommes", "model": "yoloe-11s-seg.pt", "imgsz": 1280}},
+        {"setting": "Selommes read at 640 px", "value": 0.277, "evidence": {"source": "results/scale.jsonl", "task": "maize_selommes", "imgsz": 640}},
+        {"setting": "Selommes read at 1920 px", "value": 0.469, "evidence": {"source": "results/scale.jsonl", "task": "maize_selommes", "imgsz": 1920}}
+      ]
+    },
+    "row_crop_plant": {
+      "noun": "plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (585 px tiles); other sizes and look-alike marks not tried."},
+      "max_level": "ROUGH",
+      "size_evidence": ["field_cotton"],
+      "measured": {
+        "dataset": "cotton and weed UAV tiles (585 px), cotton boxes",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 585,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.533,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "field_cotton", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "weed": {
+      "noun": "weeds",
+      "kind": "weed",
+      "object_size_m": null,
+      "object_size_note": "Changes with the weeds' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "585 px tiles read at 640 and 896 px: 896 scored slightly better. Marking cotton as the look-alike did not help: on the 20 test tiles 0.448 with, 0.447 without (only 2 had cotton to mark); on 20 tiles holding both weeds and cotton it hurt, 0.152 with, 0.200 without (fewer wrong boxes, more weeds missed)."},
+      "max_level": "ROUGH",
+      "size_evidence": ["field_weed"],
+      "measured": {
+        "dataset": "cotton and weed UAV tiles (585 px), weed boxes; the same tiles as row_crop_plant",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 585,
+        "finder_input_px": 896,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.447,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "field_weed", "model": "yoloe-11s-seg.pt", "imgsz": 896},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "The labels are incomplete: weeds nobody boxed count as false finds, so the true score is likely higher."
+      },
+      "also_measured": [
+        {"setting": "read at 640 px", "value": 0.428, "evidence": {"source": "results/scale.jsonl", "task": "field_weed", "imgsz": 640}},
+        {"setting": "with cotton marked as the look-alike", "value": 0.448, "evidence": {"source": "results/contrast.jsonl", "task": "field_weed", "method": "with look-alike"}}
+      ]
+    },
+    "tree_crown_forest": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (400 px tiles); look-alike marks not tried."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": "NEON TEAK (400 px tiles)",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 400,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.216,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "trees_forest", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "too few crowns were found one by one for even a rough number, and no answer about the area they cover has been measured"
+      },
+      "also_measured": []
+    },
+    "tree_crown_savanna": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (370-400 px tiles); look-alike marks not tried."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": "NEON SJER (370-400 px tiles)",
+        "protocol": "YOLOE-11s visual prompts, 10 marks taken from OTHER pictures (not the same picture), mean of 3 draws",
+        "n_images": 41,
+        "image_px": 400,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.059,
+        "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 10},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "almost no crowns were found one by one (marks came from other pictures, unlike every other target), and no answer about the area they cover has been measured"
+      },
+      "also_measured": [
+        {"setting": "5 marks from other pictures, mean of 3 draws", "value": 0.031, "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 5}},
+        {"setting": "1 mark from another picture, mean of 3 draws", "value": 0.003, "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 1}}
+      ]
+    },
+    "banana_mat": {
+      "noun": "banana mats",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Never run on banana mats."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested: there is no answer key (no pictures with people's boxes around banana mats)"
+      },
+      "also_measured": []
+    }
+  }
+}

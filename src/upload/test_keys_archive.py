@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from src.upload.archive import ArchiveTooLarge, extract_zip
+from src.upload.archive import ArchiveTooLarge, extract_zip, member_names
 from src.upload.keys import NotYourUpload, check_upload_key, upload_key
 
 
@@ -92,3 +92,14 @@ def test_a_file_that_is_not_a_zip_raises_bad_zip(tmp_path):
     bad.write_bytes(b"not a zip")
     with pytest.raises(zipfile.BadZipFile):
         extract_zip(str(bad), str(tmp_path / "out"))
+
+
+def test_only_unpacks_just_the_accepted_entries_and_counts_only_them(tmp_path):
+    archive = _zip(tmp_path / "photos.zip", [("a.jpg", b"1"), ("b.jpg", b"2"), ("clip.mp4", b"\0" * 4096),
+                                              ("log.mrk", b"x"), ("__MACOSX/._a.jpg", b"x")])
+    assert sorted(member_names(str(archive))) == ["a.jpg", "b.jpg", "clip.mp4", "log.mrk"]
+    only_jpg = lambda name: name.endswith(".jpg")  # noqa: E731
+    written = extract_zip(str(archive), str(tmp_path / "out"), max_entries=2, max_total_bytes=10, only=only_jpg)
+    assert sorted(os.path.basename(p) for p in written) == ["a.jpg", "b.jpg"]
+    with pytest.raises(ArchiveTooLarge):
+        extract_zip(str(archive), str(tmp_path / "out2"), max_entries=1, only=only_jpg)

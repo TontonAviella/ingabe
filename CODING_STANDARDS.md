@@ -84,6 +84,8 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
+| Answer levels for objects the YOLOE visual-prompt finder (yoloe-11s-seg) finds in a picture (count / check / estimate / rough / area / can't tell; the per-target size gate in the finder's pixels; countability; measured limits per object kind) | `src/services/answer_levels.py` (+ `answer_levels_targets.json`, `answer_levels_evidence.json`), rules `docs/rules/ANSWER_LEVELS_RULES.md` | New 2026-10-11, behind `ANSWER_LADDER` (off). Scattered for other finders: `src/services/raster_object_candidates.py` and `src/routes/message_routes.py` (FastSAM candidates: `count_semantics`, `evidence_level`), `src/dependencies/sage_routing.py` (`candidate_count_until_validated`) and `src/services/plant_counts.py` (green crowns, 5 cm per pixel floor) word their own counts; they stay separate until their finder is measured, and `decide` refuses another finder's output |
+| Photo inspections (which uploads are photo sets, limits, photo facts from EXIF/XMP, storage keys, camera points) | `src/services/photo_inspections.py` | Rules: `docs/rules/PHOTO_INSPECTIONS_RULES.md` |
 
 Add a row when a new domain appears. Each owner gets a rules doc under
 `docs/rules/<DOMAIN>_RULES.md` when it is consolidated.
@@ -174,6 +176,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-11** A regex reading the XMP packet of an uploaded photo backtracked quadratically (9.8 s on one crafted 60,000-letter
+  field); Python's `re` holds the GIL, so `asyncio.to_thread` did not keep the app answering. Rule: a regex run on uploaded text is
+  linear (anchored on a literal) and its input is length-capped. Gate: `test_a_crafted_xmp_packet_is_read_in_linear_time`.
 - **2026-10-08** "Remera sector in Gasabo district" drew all four Remera sectors: the admin parser dropped the parents after the level
   word, and a name shared by several units was drawn in full ("Matches"). Rule: a request for one thing delivers exactly one or nothing, and
   then says where each candidate is. Gate: `src/services/test_admin_boundary_resolve.py`, `tests/test_admin_boundary_one_unit.py`.
