@@ -1,7 +1,11 @@
 """SAM 3 baseline for run_sameimage.py (dropped 2026-10-11: AP50 0.00-0.04). Calls the sam3.c CLI (github.com/NetraRuntime/sam3.c,
 built with the EfficientViT-B1 config patch described in the README); on one picture with box and/or text prompts; returns [[x0,y0,x1,y1,score]] and seconds."""
 
-import json, os, subprocess, time, tempfile
+import json
+import os
+import subprocess
+import time
+import tempfile
 from pathlib import Path
 
 ROOT = Path(

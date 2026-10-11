@@ -37,3 +37,7 @@ Set `FINDER_EVAL_DIR` to a work folder holding `raw/` (the downloads), `w/` (wei
    picture and input size (the table in `docs/rules/EXAMPLE_FINDER_RULES.md`); runs inside the app image.
 
 Run them one at a time: each loads a model on the CPU; parallel runs on a 16 GB Mac swapped and skewed timings.
+
+`sam3c.py` drives the SAM 3 baseline in `run_sameimage.py` through the sam3.c CLI. Set `SAM3C_DIR` to a sam3.c
+checkout with `src/build/sam3_cli` and `weights/evit.sam3`. sam3.c's EfficientViT config was patched to B1
+(widths 16..256, depths 1,1,2,3,4, attention dim 16). Without it the SAM 3 rows record an error and the YOLOE rows still run.
