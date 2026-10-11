@@ -41,6 +41,7 @@ from src.services import answer_levels, example_finder, photo_inspections, store
 from src.services.example_finder_model import MODEL_NAME
 from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto
 from src.services.photo_inspections import PhotoFacts
+from src.services.shown_maps import SHOWN_MAPS_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -717,11 +718,13 @@ def is_earlier_same_site(current: Sequence[PhotoFacts], other: Sequence[PhotoFac
     return distance_m(here, there) <= SAME_SITE_M and then[1] < now[0]
 
 
-_INSPECTIONS_SQL = """
+# The project's other photo inspections on the maps it shows (shown_maps, the rule the tower routes use): one removed
+# from the map, though still on an older version, is not an earlier inspection of the project any more.
+_INSPECTIONS_SQL = f"""
 SELECT DISTINCT l.layer_id, l.name, l.metadata
   FROM map_layers l
-  JOIN user_mundiai_maps m ON l.layer_id = ANY(m.layers)
- WHERE m.project_id = $1 AND m.soft_deleted_at IS NULL AND l.type = 'vector'
+  JOIN ({SHOWN_MAPS_SQL}) s ON l.layer_id = ANY(s.layers)
+ WHERE s.project_id = $1 AND l.type = 'vector'
    AND l.metadata ? 'photo_inspection' AND l.layer_id <> $2
 """
 

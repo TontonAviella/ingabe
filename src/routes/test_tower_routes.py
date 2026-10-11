@@ -107,6 +107,10 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
     for method, url in (("PUT", f"{photo}/marks"), ("POST", f"{photo}/find"), ("PUT", f"{photo}/review")):
         response = await client.request(method, url, content=b"{", headers={"Content-Type": "application/json"})
         assert response.status_code == 404, (method, url, response.status_code)
+    # Nor a wrong method (405) or a trailing slash (307): while off, the routes do not match at all.
+    for method, url in (("GET", f"{photo}/marks"), ("DELETE", f"{_base('LTnothing0000')}/photos"),
+                        ("GET", f"{_base('LTnothing0000')}/photos/")):
+        assert (await client.request(method, url)).status_code == 404, (method, url)
 
 
 @pytest.mark.anyio
@@ -166,6 +170,52 @@ async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_not_tower_work(
     await _add_to_current_map(ids["layer"], other["project"])
     _as(ids["owner"])
     assert await _every_route(client, ids["layer"]) == [404] * 7
+
+
+@pytest.mark.anyio
+async def test_an_inspection_on_one_of_two_sibling_maps_is_found(client, seeded, switched_on):
+    """Two uploads at once fork two sibling maps from one parent; the inspection on the older sibling is still shown
+    (it is not on the project's last listed map) and its tower work is found."""
+    ids = await seeded.make()
+    parent, sibling = f"MP{uuid.uuid4().hex[:10]}", f"MS{uuid.uuid4().hex[:10]}"
+    conn = await admin()
+    try:
+        await conn.execute("INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) "
+                           "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[]::text[])", parent, ids["project"], ids["owner"])
+        await conn.execute("UPDATE user_mundiai_maps SET parent_map_id = $1 WHERE id = $2", parent, ids["map"])
+        await conn.execute("INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers, parent_map_id) "
+                           "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[]::text[], $4)",
+                           sibling, ids["project"], ids["owner"], parent)
+        await conn.execute("UPDATE user_mundiai_projects SET maps = ARRAY[$1, $2, $3] WHERE id = $4",
+                           parent, ids["map"], sibling, ids["project"])
+    finally:
+        await conn.close()
+    for extra in (parent, sibling):
+        seeded.made.append({**ids, "map": extra, "new_project": False, "layer": f"none{extra}"})
+    _as(ids["owner"])
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 200
+
+
+@pytest.mark.anyio
+async def test_an_earlier_inspection_removed_from_the_map_is_not_compared(client, seeded, switched_on):
+    april = tower_facts(sha=sha_of(variant(3)), name="OLD_0001.JPG", taken_at="2026-04-01T10:00:00")
+    earlier = await seeded.make(facts=[april], files={april.sha256: variant(3)})
+    now = await seeded.make(owner=earlier["owner"], project=earlier["project"])
+    _as(earlier["owner"])
+    before = (await client.get(f"{_base(now['layer'])}/cards/changes")).json()
+    assert "1 earlier inspection of this site" in before["what"]
+    forked = f"MF{uuid.uuid4().hex[:10]}"  # what removing the earlier layer does: a new map without it
+    conn = await admin()
+    try:
+        await conn.execute("INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers, parent_map_id) "
+                           "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[$4], $5)",
+                           forked, earlier["project"], earlier["owner"], now["layer"], earlier["map"])
+    finally:
+        await conn.close()
+    seeded.made.append({**earlier, "map": forked, "new_project": False, "layer": f"none{forked}"})
+    after = (await client.get(f"{_base(now['layer'])}/cards/changes")).json()
+    assert "1 earlier inspection" not in after["what"]
+    assert after["what"].startswith("This is the only inspection of this site in the project")
 
 
 @pytest.mark.anyio

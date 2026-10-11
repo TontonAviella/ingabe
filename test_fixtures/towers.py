@@ -103,6 +103,9 @@ class Inspections:
         try:
             for ids in reversed(self.made):
                 await conn.execute("DELETE FROM map_layers WHERE layer_id = $1", ids["layer"])
+                # A test may fork maps from this one (parent_map_id is a foreign key): unlink them first.
+                await conn.execute("UPDATE user_mundiai_maps SET parent_map_id = NULL WHERE parent_map_id = $1",
+                                   ids["map"])
                 await conn.execute("DELETE FROM user_mundiai_maps WHERE id = $1", ids["map"])
                 if ids["new_project"]:
                     await conn.execute("DELETE FROM user_mundiai_projects WHERE id = $1", ids["project"])

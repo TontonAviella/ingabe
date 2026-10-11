@@ -651,8 +651,11 @@ def check_industry_serves_gate() -> list[Violation]:
         if tree is None:
             continue
         for node in ast.walk(tree):
-            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "serves"
-                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "industry"):
+            called = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "serves"
+                      and isinstance(node.func.value, ast.Name) and node.func.value.id == "industry")
+            imported = (isinstance(node, ast.ImportFrom) and node.module == "src.services.industry"
+                        and any(alias.name == "serves" for alias in node.names))
+            if called or imported:
                 out.append(Violation(
                     "industry-serves-gate", rel, node.lineno, ast.unparse(node)[:80],
                     "gate on industry.available(...) (the industry and its switch), not industry.serves",

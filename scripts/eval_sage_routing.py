@@ -383,11 +383,11 @@ def check_industry_cases(cases: list[dict[str, Any]]) -> set[str]:
 
     switched_off: set[str] = set()
     for case in cases:
-        ind = case.get("industry")
+        ind = scoring.case_industry_for(case)  # a case without one runs as agriculture: a tower case needs its label
         expected = case["expect"].get("any_of") or []
-        refused = [t for t in expected if ind and not industry.serves(t, ind)]
+        refused = [t for t in expected if not industry.serves(t, ind)]
         if refused:
-            raise scoring.CorpusError(f"{case['id']}: {ind} is never offered {refused}")
+            raise scoring.CorpusError(f"{case['id']}: runs as {ind}, which is never offered {refused}")
         if expected and not any(industry.switched_on(t) for t in expected):
             switched_off.add(case["id"])
     return switched_off
@@ -423,6 +423,8 @@ async def run(args: argparse.Namespace) -> Path:
     case_shas = {c["id"]: scoring.case_sha(c) for c in raw}
     cases = [scoring.effective_case(c, catalog) for c in raw if c["id"] not in switched_off]
     if args.case:
+        if asked_off := sorted(set(args.case) & switched_off):
+            raise SystemExit(f"{', '.join(asked_off)}: its tools are switched off (set TOWERS=1 to run tower cases)")
         cases = [c for c in cases if c["id"] in set(args.case)]
     if args.kind:
         cases = [c for c in cases if scoring.case_kind(c) in set(args.kind)]
@@ -443,7 +445,10 @@ async def run(args: argparse.Namespace) -> Path:
         meta = previous["meta"]
         if meta["corpus_sha"] != corpus_sha():
             raise SystemExit("cannot resume: the corpus changed since this run started")
-        if meta.get("switches", feature_switches()) != feature_switches():
+        if "switches" not in meta:
+            raise SystemExit("cannot resume: this run was started by an older harness (no switches recorded, farm "
+                             "cases were offered every tool); start a new run")
+        if meta["switches"] != feature_switches():
             raise SystemExit(f"cannot resume: the run started with switches {meta['switches']}; set them the same")
         args.variant, args.repeats, args.model_only = meta["variant"], meta["repeats"], meta["model_only"]
         args.industry = meta.get("industry")  # the cases without their own run as the run started
@@ -596,6 +601,10 @@ def report(path: Path) -> None:
           f"corpus={meta['corpus_sha']}  git={meta['git_sha']}  fast_path={meta.get('fast_path_cases')}")
     print(f"cases     {s['cases']}  intents={s.get('intents')}  errored={s['errored_cases']}  "
           f"unstable={s['unstable_cases']}")
+    if "switches" in meta:
+        on = [name for name, value in meta["switches"].items() if value]
+        print(f"switches  on: {', '.join(on) or 'none'}  skipped (switched off): "
+              f"{len(meta.get('skipped_switched_off') or [])}")
     guard = meta.get("guard") or {}
     if guard.get("fired"):
         print(f"guard     fired on {guard['fired']} attempts, produced a tool call on {guard['recovered']}")
@@ -613,7 +622,10 @@ def compare_runs(a_path: Path, b_path: Path) -> None:
     a, b = (json.loads(p.read_text()) for p in (a_path, b_path))
     if a["meta"]["corpus_sha"] != b["meta"]["corpus_sha"]:
         print("WARNING: runs used different corpus versions; only shared, unchanged cases are paired")
-    if a["meta"].get("switches") != b["meta"].get("switches"):
+    if a["meta"].get("industry") != b["meta"].get("industry"):
+        raise SystemExit(f"not comparable: the runs used --industry {a['meta'].get('industry')} and "
+                         f"{b['meta'].get('industry')}, so every case without its own industry was asked differently")
+    if a["meta"].get("switches") != b["meta"].get("switches"):  # what an A/B of a switch measures
         print(f"NOTE: switches differ: A {a['meta'].get('switches')}  B {b['meta'].get('switches')}")
     clusters = {c["id"]: c.get("intent", c["id"]) for c in load_cases()}
     shas = [{r["id"]: r.get("case_sha") for r in run["cases"]} for run in (a, b)]

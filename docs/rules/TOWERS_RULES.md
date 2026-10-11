@@ -104,9 +104,10 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
   projects, even for byte-identical photos; the finder keeps its finds per project too (`finds/v1/<project>/`).
 - Changes to one photo's work are made one at a time across app workers (a Redis lock per project, layer and photo,
   `towers:v1:...:lock`, 60 s; a change waits up to 10 s, then 409).
-- The project whose work the routes read and write is the one live project whose current map (the last of
-  `projects.maps`; earlier versions and deleted projects do not count) shows the layer (`photo_context.projects_of`,
-  `tower_inspection.work_project`); a layer on the current maps of more than one Telecom project (added to another
+- The project whose work the routes read and write is the one live project whose shown maps list the layer
+  (`src/services/shown_maps.py`: its live maps no live map was forked from, so an older version still listing a
+  removed layer does not count and two sibling forks from simultaneous uploads both do; deleted projects do not count;
+  `photo_context.projects_of`, `tower_inspection.work_project`; the earlier-inspection lookup uses the same rule); a layer on the current maps of more than one Telecom project (added to another
   project's map) is refused with 409 "remove it from the maps of the others", never followed to the last edited map
   (which would move its work between projects). Removing it from the other map, or deleting that project, clears it.
   The industry is checked first: unless every project showing the layer is Telecom Towers (switch on), it is 404, so a

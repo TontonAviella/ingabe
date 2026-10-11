@@ -182,8 +182,10 @@ def test_a_gate_on_industry_serves_is_flagged_outside_the_industry_module(repo):
     repo("src/routes/thing.py", body)
     repo("src/services/industry.py", body)
     repo("src/routes/test_thing.py", body)
+    repo("src/routes/other.py", "from src.services.industry import available, serves\n")
     found = cs.check_industry_serves_gate()
-    assert [(v.rule, v.path) for v in found] == [("industry-serves-gate", "src/routes/thing.py")]
+    assert sorted((v.rule, v.path) for v in found) == [("industry-serves-gate", "src/routes/other.py"),
+                                                      ("industry-serves-gate", "src/routes/thing.py")]
 
 
 def test_caplog_fixture_is_flagged_in_tests(repo):

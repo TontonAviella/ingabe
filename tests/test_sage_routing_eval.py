@@ -87,6 +87,10 @@ def test_compare_pairs_a_case_only_when_both_runs_asked_it_the_same_way(tmp_path
     same, before, after = {"id": "same", "text": "q"}, {"id": "moved", "text": "q", "expect": {"no_tool": True}}, {
         "id": "moved", "text": "q", "expect": {"any_of": ["t"]}}
     assert scoring.case_sha(before) != scoring.case_sha(after) and scoring.case_sha(same) == scoring.case_sha(dict(same))
+    # A note, category or intent is not what the case asks; the industry it runs as is.
+    assert scoring.case_sha({**same, "note": "reviewed", "category": "x"}) == scoring.case_sha(same)
+    assert scoring.case_sha({**same, "industry": "agriculture"}) == scoring.case_sha(same)
+    assert scoring.case_sha({**same, "industry": "telecom"}) != scoring.case_sha(same)
 
     def run(name: str, moved: dict, moved_right: bool) -> Path:
         cases = [{"id": "same", "case_sha": scoring.case_sha(same), "majority": scoring.CORRECT},

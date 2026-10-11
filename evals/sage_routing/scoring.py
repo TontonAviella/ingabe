@@ -47,10 +47,15 @@ def case_industry_for(case: dict, run_industry: str | None = None) -> str:
     return case.get("industry") or run_industry or INDUSTRIES[0]
 
 
+CASE_DEFINITION = ("text", "history", "map_state", "expect", "chain")
+
+
 def case_sha(case: dict) -> str:
-    """A case's definition (its question, map, history and expected answer): a comparison pairs a case only when both
-    runs asked the same thing and expected the same answer, since an id can be kept for a changed case."""
-    return hashlib.sha256(json.dumps(case, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+    """What a case asks and expects (its question, history, map, expected answer and the industry it runs as): a
+    comparison pairs a case only when both runs asked the same thing and expected the same answer, since an id can be
+    kept for a changed case. A note, category or intent is not part of it."""
+    asked = {key: case.get(key) for key in CASE_DEFINITION} | {"industry": case_industry_for(case)}
+    return hashlib.sha256(json.dumps(asked, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 _JSON_TYPES = {
     "string": str, "integer": int, "number": (int, float), "boolean": bool,
     "array": list, "object": dict,
