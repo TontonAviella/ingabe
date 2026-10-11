@@ -1,12 +1,18 @@
-"""Axis-aligned boxes (x0, y0, x1, y1), in pixels or map units: how much two of them overlap.
+"""Axis-aligned boxes (x0, y0, x1, y1), in pixels or map units: how big one is and how much two of them overlap.
 
-One home for the overlap measure, so candidate de-duplication (raster_object_candidates) and the example finder
-(which drops what it finds on top of the user's own marks) measure overlap the same way.
+One home for these measures, so candidate de-duplication (raster_object_candidates) and the example finder
+(which drops what it finds on top of the user's own marks) measure boxes the same way.
 """
 
 from __future__ import annotations
 
 from typing import Sequence
+
+
+def area(box: Sequence[float]) -> float:
+    """A box's area; 0 for a box with no width or no height."""
+    x0, y0, x1, y1 = box
+    return max((x1 - x0) * (y1 - y0), 0.0)
 
 
 def iou(a: Sequence[float], b: Sequence[float]) -> float:
@@ -20,7 +26,5 @@ def iou(a: Sequence[float], b: Sequence[float]) -> float:
     if ix2 <= ix1 or iy2 <= iy1:
         return 0.0
     intersection = (ix2 - ix1) * (iy2 - iy1)
-    area_a = max((ax2 - ax1) * (ay2 - ay1), 0.0)
-    area_b = max((bx2 - bx1) * (by2 - by1), 0.0)
-    union = area_a + area_b - intersection
+    union = area(a) + area(b) - intersection
     return intersection / union if union > 0 else 0.0

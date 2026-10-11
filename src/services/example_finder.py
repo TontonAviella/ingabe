@@ -294,6 +294,11 @@ def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, ta
     return _find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model())
 
 
+def protocol() -> dict[str, Any]:
+    """The measured protocol's values: part of a request's identity (content_sha) and kept with its finds."""
+    return {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU}
+
+
 def content_sha(picture_sha: str, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings) -> str:
     """What identifies one request: the same picture, marks, look-alikes, target, model and settings give the same
     finds, so they are found once."""
@@ -305,7 +310,7 @@ def content_sha(picture_sha: str, marks_px: Sequence[Box], looks_px: Sequence[Bo
         "target": s.target,
         "model": MODEL_SHA256,
         "settings": s.as_dict(),
-        "protocol": {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU},
+        "protocol": protocol(),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -558,7 +563,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
         "target": s.target,
         "model": {"name": MODEL_NAME, "sha256": MODEL_SHA256},
         "settings": s.as_dict(),
-        "protocol": {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU},
+        "protocol": protocol(),
         "picture": {"sha256": request.picture_sha256, "width": request.shown.width, "height": request.shown.height,
                     "frame": frame.as_dict() if frame else None},
         "size_gate": {"object_px": round(gate.object_px, 1) if gate.object_px is not None else None,
