@@ -226,13 +226,16 @@ def calls(prints: dict[int, np.ndarray], checks: dict[int, str]) -> dict[int, Cr
 
 
 def apply(survey: Optional[drone_vision.Survey], crop_calls: dict[int, CropCall]) -> Optional[drone_vision.Survey]:
-    """The survey with each plot's crop taken from its call instead of the vision model's looks."""
+    """The survey with each plot's crop taken from its call instead of the vision model's looks. Once a photo has
+    calls, a plot without one (too small for a whole square) is "unsure", not left to the looks, so every crop
+    on the photo comes from one method."""
     if survey is None or not crop_calls:
         return survey
     looks = dict(survey.looks)
-    for number, call in crop_calls.items():
-        look = looks.get(number)
-        if look is None:
+    for number, look in survey.looks.items():
+        call = crop_calls.get(number)
+        if call is None:
+            looks[number] = replace(look, main_crop="unsure", candidates=(), confidence="low", source="fingerprints")
             continue
         looks[number] = replace(look, main_crop=call.crop, candidates=call.candidates,
                                 confidence="medium" if call.crop != "unsure" and call.share >= 0.9 else "low",

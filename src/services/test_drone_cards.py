@@ -523,7 +523,10 @@ def test_crop_names_from_checked_plots_say_so():
                                  plots=2, model="claude-haiku-5-5", done_at="t", cost_usd=0.0)
     sure = drone_cards._vision_how_sure(survey, 1, [], drone_cards.Here(photos=1), crops=True)
     assert "compared with the plots people named" in sure["because"][0]
-    assert "too few plots of their crop named" in sure["because"][1]
+    assert "too few plots of their crop" in sure["because"][1]
+    pictures = drone_cards.Here(photos=1, picture_record=drone_cards.field_checks.Record(right=22, named=26, unsure=8))
+    because = drone_cards._vision_how_sure(survey, 1, [], pictures, crops=True)["because"]
+    assert any("22 of 26" in b and "not a check in the field" in b for b in because)
     vision = dataclasses.replace(survey, looks={1: dataclasses.replace(look, source="vision")})
     assert "Two separate looks" in drone_cards._vision_how_sure(vision, 0, [], drone_cards.Here(photos=1),
                                                                 crops=True)["because"][0]

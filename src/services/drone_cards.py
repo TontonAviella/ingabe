@@ -159,6 +159,9 @@ class Here:
     records: tuple[farm_records.FarmDocument, ...] = ()  # the project's soil reports and harvest records
     checked: frozenset[int] = frozenset()  # plots whose crop someone checked on the ground (already in `survey`)
     record: Optional[field_checks.Record] = None  # how the model did on those plots
+    # How the crop calls agree with the plots people named from the drone pictures (each with its own name hidden):
+    # agreement with people's reading of the pictures, not a check in the field.
+    picture_record: Optional[field_checks.Record] = None
     seed: int = 0  # picks the wording of each question and shuffles the deck; 0 keeps both fixed
 
 
@@ -1063,8 +1066,13 @@ def _vision_how_sure(survey: drone_vision.Survey, unsure: int, extra: list[str],
                    f"{crop_fingerprints.NEIGHBOURS} most similar named plots mostly agree and at least "
                    f"{crop_fingerprints.MIN_EXAMPLES} plots of that crop are named"]
         if unsure:
-            because.append(f"{unsure} plots stay 'not sure': unlike the named plots, or too few plots of their crop "
-                           "named")
+            because.append(f"{unsure} plots stay 'not sure': unlike the named plots, too few plots of their crop "
+                           "named, or too small to compare")
+        pictures = here.picture_record
+        if pictures is not None and pictures.named:
+            because.append(f"Agrees with the plots people named from the drone pictures in {pictures.right} of "
+                           f"{pictures.named} (each judged with its own name hidden); that is agreement with "
+                           "people's reading of the pictures, not a check in the field")
     elif crops:
         because = [f"Two separate looks by an AI vision model ({model}) at each plot; a crop is named only where "
                    "both looks name the same one"]

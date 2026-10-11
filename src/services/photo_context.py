@@ -98,6 +98,14 @@ async def _fingerprints(s3: Any, bucket: str, metadata: dict[str, Any], plots: d
     return prints
 
 
+def _picture_record(looked: Optional[drone_vision.Survey], examples: dict[int, str],
+                    checks: dict[int, field_checks.Check]) -> Optional[field_checks.Record]:
+    """How the crop calls agree with the plots named from the pictures (ground checks left out: they have their own
+    record). The calls on those plots were made with their own names hidden."""
+    named = {n: field_checks.Check(number=n, crop=c, at="") for n, c in examples.items() if n not in checks}
+    return field_checks.model_record(looked, named) if named else None
+
+
 async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, metadata: dict[str, Any],
                user_id: str, org_id: Optional[str], audience: Optional[str], start_jobs: bool = True,
                retry_failed: bool = False, seed: int = 0) -> Optional[PhotoContext]:
@@ -140,5 +148,6 @@ async def load(s3: Any, bucket: str, *, layer_id: str, name: str, bounds: Any, m
                             plot_maps=tuple(m for m, _ in maps), plot_map=plot_map, plot_map_error=map_error,
                             survey=field_checks.apply(looked, checks), survey_job=survey_job, seed=seed,
                             records=tuple(records), checked=frozenset(checks),
-                            record=field_checks.model_record(looked, checks) if checks else None)
+                            record=field_checks.model_record(looked, checks) if checks else None,
+                            picture_record=_picture_record(looked, examples, checks) if prints else None)
     return PhotoContext(analysis=analysis, here=here, reader=reader)

@@ -83,6 +83,8 @@ def test_calls_replace_only_the_crop_of_the_looks():
         "maize", "fingerprints", "young", "few", ["gaps"])
     assert look.other_crops == ["beans"]  # the named crop is not also listed as another crop
     assert cf.looked(survey, None, checks) is survey  # no fingerprints yet: the looks as they were
+    small = cf.looked(_survey(list(prints) + [99]), prints, checks).look(99)  # plot 99: too small, no fingerprint
+    assert (small.main_crop, small.source) == ("unsure", "fingerprints")  # not left to the vision looks
 
 
 def test_squares_lie_inside_the_plot_and_are_picked_the_same_way_each_time(tmp_path):
