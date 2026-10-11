@@ -142,6 +142,7 @@ import { DroneCards } from '@/components/DroneCards';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
 import { TerrainOverlay } from '@/components/TerrainOverlay';
+import { TowerCards } from '@/components/towers/TowerCards';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -1704,6 +1705,14 @@ export default function MapLibreMap({
         <AdminLevelsOverlay key={`admin-${mapInstanceId}`} map={mapRef.current} projectId={project.id} />
         <DroneCards
           key={`cards-${mapInstanceId}`}
+          map={mapRef.current}
+          layers={mapData?.layers ?? []}
+          hiddenLayerIDs={hiddenLayerIDs}
+          historyOpen={mobileWorkspacePanel === 'history'}
+          onAskSage={(prompt) => void sendMessage(prompt)}
+        />
+        <TowerCards
+          key={`towers-${mapInstanceId}`}
           map={mapRef.current}
           layers={mapData?.layers ?? []}
           hiddenLayerIDs={hiddenLayerIDs}
