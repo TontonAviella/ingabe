@@ -52,6 +52,9 @@ class HandlerResult:
     updated_file_ext: Optional[str] = None
     # Temporary directory to clean up after upload (e.g. point cloud, zip)
     temp_dir_to_cleanup: Optional[str] = None
+    # False: the vector path does not turn each feature into a Brain page
+    # (a photo inspection's camera positions are not fields or places).
+    brain_pages_per_feature: bool = True
 
 
 class BaseUploadHandler(ABC):

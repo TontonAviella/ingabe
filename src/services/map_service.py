@@ -318,7 +318,7 @@ async def internal_upload_layer(
     See ``src/upload/handlers/`` for handler implementations.
     """
     from src.upload.base import UploadContext
-    from src.upload.registry import get_handler, get_layer_type
+    from src.upload.registry import get_layer_type, handler_for
 
     async with get_async_db_connection() as conn:
         bucket_name = get_bucket_name()
@@ -367,7 +367,7 @@ async def internal_upload_layer(
             )
 
             # Phase 1: Format-specific preprocessing (conversion, metadata)
-            handler = get_handler(file_ext)
+            handler = await handler_for(file_ext, temp_file_path)
             result = await handler.preprocess(ctx)
 
             # Apply any path/key/ext overrides from preprocessing

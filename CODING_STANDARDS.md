@@ -84,6 +84,7 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
+| Photo inspections (which uploads are photo sets, limits, photo facts from EXIF/XMP, storage keys, camera points) | `src/services/photo_inspections.py` | Rules: `docs/rules/PHOTO_INSPECTIONS_RULES.md` |
 
 Add a row when a new domain appears. Each owner gets a rules doc under
 `docs/rules/<DOMAIN>_RULES.md` when it is consolidated.

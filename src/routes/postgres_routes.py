@@ -1699,7 +1699,7 @@ async def complete_layer_upload(
     as the regular upload endpoint.
     """
     from src.upload.base import UploadContext
-    from src.upload.registry import get_handler, get_layer_type
+    from src.upload.registry import get_layer_type, handler_for
     from boto3.s3.transfer import TransferConfig
     import time
 
@@ -1833,7 +1833,7 @@ async def complete_layer_upload(
                 bucket_name=bucket_name,
             )
 
-            handler = get_handler(file_ext)
+            handler = await handler_for(file_ext, tmp_path)
             result = await handler.preprocess(ctx)
             logger.info("upload-complete preprocessed %s in %.2fs", body.layer_id, time.monotonic() - started_at)
 
@@ -1870,7 +1870,7 @@ async def complete_layer_upload(
             raise HTTPException(status_code=400, detail="No features found in uploaded file.")
 
         primary_id = result.created_layer_ids[0]
-        layer_type = layer_type_for_file
+        layer_type = result.layer_type  # what the handler made: a photo (JPG) can become a vector photo inspection
         background_seed_dir = None
         background_seed_path = None
         if layer_type == LAYER_TYPE_RASTER and upload_path and os.path.exists(upload_path):

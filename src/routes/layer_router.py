@@ -237,7 +237,7 @@ from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from src.services.raster_zoom import raster_source_minzoom
-from src.services import raster_display
+from src.services import photo_inspections, raster_display
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
 from src.utils import generate_id
@@ -974,6 +974,51 @@ async def get_layer_laz(
 
     # Return a streaming response with the appropriate status and headers
     return StreamingResponse(stream_s3_file(), status_code=status_code, headers=headers)
+
+
+@layer_router.get(
+    "/layer/{layer_id}/photos/{sha256}",
+    operation_id="view_inspection_photo",
+)
+async def get_inspection_photo(
+    sha256: str,
+    layer: MapLayer = Depends(get_layer),
+):
+    """One original photo of a photo-inspection layer, named by its SHA-256. Needs view rights on the layer's
+    project (the same check as the layer's tiles) and serves only keys under this layer's own inspection prefix."""
+    if not photo_inspections.enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo inspections are switched off")
+    if not photo_inspections.is_sha256(sha256):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="A photo is named by its SHA-256: 64 lower-case hexadecimal characters")
+    prefix = photo_inspections.stored_prefix(layer.metadata_dict, layer.layer_id)
+    if prefix is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This layer is not a photo inspection")
+
+    bucket_name = get_bucket_name()
+    s3 = await get_async_s3_client()
+    listing = await s3_op(s3.list_objects_v2(Bucket=bucket_name, Prefix=f"{prefix}{sha256}", MaxKeys=10),
+                          "list_objects_v2", f"inspection photo {layer.layer_id}")
+    key = photo_inspections.photo_key_in(prefix, sha256, [o["Key"] for o in listing.get("Contents", [])])
+    if key is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such photo in this inspection")
+
+    s3_response = await s3_op(s3.get_object(Bucket=bucket_name, Key=key), "get_object", f"inspection photo {key}")
+
+    body = s3_response["Body"]
+
+    async def stream_photo():
+        async with body:  # releases the storage connection if the viewer goes away
+            while chunk := await body.read(256 * 1024):
+                yield chunk
+
+    headers = {
+        "Content-Length": str(s3_response["ContentLength"]),
+        # Named by its content, so a photo never changes; private because it needs the viewer's rights.
+        "Cache-Control": "private, max-age=86400, immutable",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(stream_photo(), media_type=photo_inspections.content_type(key), headers=headers)
 
 
 @layer_router.get(
