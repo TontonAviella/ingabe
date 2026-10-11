@@ -1916,7 +1916,7 @@ async def complete_layer_upload(
             try:
                 async with get_async_db_connection() as conn:
                     # The first look is a farm capability: other industries get no empty "Drone image" chat (R1-29).
-                    if industry.serves("drone_first_look", await industry.industry_of_project(conn, mundi_map.project_id)):
+                    if industry.available("drone_first_look", await industry.industry_of_project(conn, mundi_map.project_id)):
                         first_look_conversation = await drone_first_look.conversation_for_upload(
                             conn, mundi_map.project_id, user_id, body.conversation_id,
                             f"Drone image: {result.first_layer_name or layer_name}",

@@ -375,15 +375,29 @@ def fast_path_applies(fast: Any, text: str, case: dict[str, Any]) -> bool:
     return select_ready_fast_raster_layer(text, map_rasters(case)) is not None
 
 
-def check_industry_cases(cases: list[dict[str, Any]]) -> None:
-    """A non-agriculture case may expect only tools its industry is offered (a farm tool could never be right)."""
+def check_industry_cases(cases: list[dict[str, Any]]) -> set[str]:
+    """A non-agriculture case may expect only tools its industry is offered (a farm tool could never be right): the
+    corpus is wrong otherwise. A case whose expected tools are all behind a switch that is off (the tower tools
+    without TOWERS) cannot be answered by this run: its id is returned, to be skipped and recorded, not scored wrong."""
     from src.services import industry
 
+    switched_off: set[str] = set()
     for case in cases:
         ind = case.get("industry")
-        refused = [t for t in case["expect"].get("any_of") or [] if ind and not industry.serves(t, ind)]
+        expected = case["expect"].get("any_of") or []
+        refused = [t for t in expected if ind and not industry.serves(t, ind)]
         if refused:
             raise scoring.CorpusError(f"{case['id']}: {ind} is never offered {refused}")
+        if expected and not any(industry.switched_on(t) for t in expected):
+            switched_off.add(case["id"])
+    return switched_off
+
+
+def feature_switches() -> dict[str, bool]:
+    """Which switch-gated capabilities are on (TOWERS): a run records it, and a resume must match it."""
+    from src.services import industry
+
+    return {name: industry.switched_on(name) for name in sorted(industry.SWITCHES)}
 
 
 async def run(args: argparse.Namespace) -> Path:
@@ -402,8 +416,12 @@ async def run(args: argparse.Namespace) -> Path:
         raise SystemExit("tool catalog drifted from tool_catalog.json; run `catalog` for details")
     raw = load_cases()
     scoring.validate_corpus(raw, known_tools(catalog))
-    check_industry_cases(raw)
-    cases = [scoring.effective_case(c, catalog) for c in raw]
+    switched_off = check_industry_cases(raw)
+    if switched_off:
+        logger.warning("skipping %d cases whose tools are switched off: %s", len(switched_off),
+                       ", ".join(sorted(switched_off)))
+    case_shas = {c["id"]: scoring.case_sha(c) for c in raw}
+    cases = [scoring.effective_case(c, catalog) for c in raw if c["id"] not in switched_off]
     if args.case:
         cases = [c for c in cases if c["id"] in set(args.case)]
     if args.kind:
@@ -416,6 +434,7 @@ async def run(args: argparse.Namespace) -> Path:
         "concurrency": args.concurrency, "industry": args.industry,
         "model": os.environ.get("OPENAI_MODEL", ""), "corpus_sha": corpus_sha(),
         "git_sha": _git_sha(), "started_at": datetime.now(timezone.utc).isoformat(),
+        "switches": feature_switches(), "skipped_switched_off": sorted(switched_off),
     }
     records: list[dict[str, Any]] = []
     if args.resume:
@@ -424,7 +443,10 @@ async def run(args: argparse.Namespace) -> Path:
         meta = previous["meta"]
         if meta["corpus_sha"] != corpus_sha():
             raise SystemExit("cannot resume: the corpus changed since this run started")
+        if meta.get("switches", feature_switches()) != feature_switches():
+            raise SystemExit(f"cannot resume: the run started with switches {meta['switches']}; set them the same")
         args.variant, args.repeats, args.model_only = meta["variant"], meta["repeats"], meta["model_only"]
+        args.industry = meta.get("industry")  # the cases without their own run as the run started
         records = previous["cases"]
     else:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -468,14 +490,14 @@ async def run(args: argparse.Namespace) -> Path:
         turn.set_input(text)
         # The case's industry, as the live turn sets it: the prompt, the tools offered, the fast paths and the
         # abdication guard all follow it (audit R1-33). Each case runs in its own task, so the scope is per case.
-        case_industry = case.get("industry") or args.industry
-        if case_industry:
-            case = {**case, "industry": case_industry}
+        # A live project always has an industry, so a case without one runs as agriculture: offered the unfiltered
+        # list it would be given tools no farm project gets (the Telecom tower tools once TOWERS is on).
+        case_industry = scoring.case_industry_for(case, args.industry)
+        case = {**case, "industry": case_industry}
         set_request_industry(case_industry)
-        case_tools = industry.tools_for(tools_payload, case_industry) if case_industry else tools_payload
+        case_tools = industry.tools_for(tools_payload, case_industry)
         # The live gate: a fast path runs only when the project's industry may use its tool.
-        fast = None if args.model_only else build_project_fast_tool_call(
-            text, case_industry or industry.DEFAULT_INDUSTRY)
+        fast = None if args.model_only else build_project_fast_tool_call(text, case_industry)
         async with slots:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
                 return  # stopping; leave the case for --resume
@@ -519,7 +541,7 @@ async def run(args: argparse.Namespace) -> Path:
                              progress["errored_streak"], out_path)
             return  # errored cases are not kept; --resume retries them
         progress["errored_streak"] = 0
-        records.append({"id": case["id"], "source": source, "model": model,
+        records.append({"id": case["id"], "case_sha": case_shas[case["id"]], "source": source, "model": model,
                         "tools_sent": tools_sent, "shortlist": shortlist_method, "attempts": attempts,
                         "outcomes": list(result.outcomes), "majority": result.majority})
         logger.info("[%3d/%d] %-10s args=%-5s chain=%-5s %-9s %-26s %s", progress["finished"],
@@ -590,12 +612,19 @@ def report(path: Path) -> None:
 def compare_runs(a_path: Path, b_path: Path) -> None:
     a, b = (json.loads(p.read_text()) for p in (a_path, b_path))
     if a["meta"]["corpus_sha"] != b["meta"]["corpus_sha"]:
-        print("WARNING: runs used different corpus versions; only shared case ids are paired")
+        print("WARNING: runs used different corpus versions; only shared, unchanged cases are paired")
+    if a["meta"].get("switches") != b["meta"].get("switches"):
+        print(f"NOTE: switches differ: A {a['meta'].get('switches')}  B {b['meta'].get('switches')}")
     clusters = {c["id"]: c.get("intent", c["id"]) for c in load_cases()}
+    shas = [{r["id"]: r.get("case_sha") for r in run["cases"]} for run in (a, b)]
+    changed = sorted(i for i in shas[0].keys() & shas[1].keys()
+                     if shas[0][i] and shas[1][i] and shas[0][i] != shas[1][i])
+    if changed:
+        print(f"left out {len(changed)} cases whose question or expected answer changed: {', '.join(changed)}")
 
     def correct(run: dict) -> dict[str, bool]:
         return {r["id"]: r["majority"] == scoring.CORRECT
-                for r in run["cases"] if r["majority"] != scoring.ERROR}
+                for r in run["cases"] if r["majority"] != scoring.ERROR and r["id"] not in changed}
 
     c = scoring.compare(correct(a), correct(b), clusters=clusters)
     print(f"A {a['meta']['variant']} ({a_path.name})  vs  B {b['meta']['variant']} ({b_path.name})")

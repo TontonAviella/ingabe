@@ -21,6 +21,7 @@ from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.rate_limiter import heavy_limit
 from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
+from src.routes.switched_routes import switched_route
 from src.services import (
     example_finder,
     example_finder_pictures,
@@ -37,12 +38,11 @@ from src.utils import get_async_s3_client, get_bucket_name
 logger = logging.getLogger(__name__)
 
 
-def _towers_switched_on() -> None:
-    if not tower_inspection.enabled() or not photo_inspections.enabled():
-        raise HTTPException(404, "Not Found")
+def _towers_switched_on() -> bool:
+    return tower_inspection.enabled() and photo_inspections.enabled()
 
 
-router = APIRouter(dependencies=[Depends(_towers_switched_on)])
+router = APIRouter(route_class=switched_route(_towers_switched_on))
 
 
 @dataclass(frozen=True)
@@ -59,13 +59,19 @@ async def _inspection(layer: MapLayer, session: UserContext) -> _Inspection:
     if prefix is None:
         raise HTTPException(404, "This layer is not a photo inspection")
     async with async_read_conn("towers.project", user_id=session.get_user_id()) as conn:
-        try:
-            project_id = tower_inspection.work_project(await photo_context.projects_of(conn, layer.layer_id))
-        except tower_inspection.TowerConflict as e:
-            raise HTTPException(409, str(e)) from None
-        project_industry = await industry.industry_of_project(conn, project_id)
-    if project_id is None or not industry.available("tower_inspection", project_industry):
-        raise HTTPException(404, "Tower work is for photo inspections in Telecom Towers projects")
+        projects = await photo_context.projects_of(conn, layer.layer_id)
+        industries = [await industry.industry_of_project(conn, p) for p in projects]
+    # Tower work only when every project showing the layer may have it, checked before any conflict between them is
+    # reported: a farm inspection on the maps of two farm projects is "not found", not a tower conflict.
+    not_tower_work = HTTPException(404, "Tower work is for photo inspections in Telecom Towers projects")
+    if not all(industry.available("tower_inspection", i) for i in industries):
+        raise not_tower_work
+    try:
+        project_id = tower_inspection.work_project(projects)
+    except tower_inspection.TowerConflict as e:
+        raise HTTPException(409, str(e)) from None
+    if project_id is None:  # no live project's current map shows the layer
+        raise not_tower_work
     photos = await tower_inspection.inspection_photos(await get_async_s3_client(), get_bucket_name(), prefix)
     if photos is None:
         raise HTTPException(409, "This inspection was uploaded before its photo facts were kept; upload the photos "

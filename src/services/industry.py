@@ -156,7 +156,9 @@ def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
     """None if the tool may run for this project; otherwise the error the model gets back instead of running it."""
     if available(tool_name, industry):
         return None
-    if tool_name not in CAPABILITIES or not switched_on(tool_name):  # refused (fail closed), not blamed on the industry
+    # Refused (fail closed) without naming an industry: an unknown tool, and a tool behind a switch (the tower tools),
+    # which is offered nowhere but where it is available, so for any other project it simply does not exist.
+    if tool_name not in CAPABILITIES or tool_name in SWITCHES:
         reason = f"There is no tool named {tool_name} here. Use one of the tools you were given."
     elif industry not in INDUSTRIES:
         reason = f"{tool_name} cannot run here: this project's industry could not be found, so only the map and imagery tools are available."

@@ -99,6 +99,17 @@ async def test_with_a_switch_off_no_route_exists(client, seeded, switched_on, mo
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("off", ["TOWERS", "PHOTO_INSPECTIONS"])
+async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, switched_on, monkeypatch, off):
+    """The switch is checked before the body is read: bad JSON, signed out, still 404 (not a 422 showing the route)."""
+    monkeypatch.setenv(off, "0")
+    photo = f"{_base('LTnothing0000')}/photos/{SHA}"
+    for method, url in (("PUT", f"{photo}/marks"), ("POST", f"{photo}/find"), ("PUT", f"{photo}/review")):
+        response = await client.request(method, url, content=b"{", headers={"Content-Type": "application/json"})
+        assert response.status_code == 404, (method, url, response.status_code)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("other", ["agriculture", "power_grid"])
 async def test_outside_telecom_no_route_exists(client, seeded, switched_on, other):
     ids = await seeded.make(industry=other)
@@ -136,6 +147,54 @@ async def test_an_inspection_on_maps_of_two_projects_is_refused_not_followed(cli
     detail = (await client.get(f"{_base(ids['layer'])}/cards")).json()["detail"]
     assert "on maps of 2 projects" in detail and "remove it from the maps of the others" in detail
     assert switched_on.calls == []
+
+
+async def _add_to_current_map(layer: str, project: str) -> None:
+    conn = await admin()
+    try:
+        await conn.execute("UPDATE user_mundiai_maps SET layers = array_append(layers, $1) WHERE id = "
+                           "(SELECT maps[array_length(maps, 1)] FROM user_mundiai_projects WHERE id = $2)", layer, project)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.anyio
+async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_not_tower_work(client, seeded, switched_on):
+    """Not a tower conflict (409) that would put the Tower checks panel on a farm map: not found, as for one project."""
+    ids = await seeded.make(industry="agriculture")
+    other = await seeded.make(owner=ids["owner"], industry="agriculture")
+    await _add_to_current_map(ids["layer"], other["project"])
+    _as(ids["owner"])
+    assert await _every_route(client, ids["layer"]) == [404] * 7
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("cleared_by", ["removing it from the other map", "deleting the other project"])
+async def test_the_conflict_clears_once_one_project_shows_the_inspection(client, seeded, switched_on, cleared_by):
+    """Only each live project's current map counts: removing a layer forks a new map and keeps the old one, which
+    must not hold the conflict forever."""
+    ids = await seeded.make()
+    other = await seeded.make(owner=ids["owner"])
+    await _add_to_current_map(ids["layer"], other["project"])
+    _as(ids["owner"])
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 409
+    conn = await admin()
+    try:
+        if cleared_by == "deleting the other project":
+            await conn.execute("UPDATE user_mundiai_projects SET soft_deleted_at = now() WHERE id = $1",
+                               other["project"])
+        else:  # what remove_layer_from_map does: a new current map without the layer; the old one stays
+            forked = f"MF{uuid.uuid4().hex[:10]}"
+            await conn.execute(
+                "INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers, parent_map_id) "
+                "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[$4], $5)",
+                forked, other["project"], ids["owner"], other["layer"], other["map"])
+            await conn.execute("UPDATE user_mundiai_projects SET maps = array_append(maps, $1) WHERE id = $2",
+                               forked, other["project"])
+            seeded.made.append({**other, "map": forked, "new_project": False, "layer": f"none{forked}"})
+    finally:
+        await conn.close()
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 200
 
 
 # --- The contract ---------------------------------------------------------------------------------------------------

@@ -46,10 +46,13 @@ SELECT m.project_id FROM user_mundiai_maps m
  ORDER BY m.last_edited DESC NULLS LAST LIMIT 1
 """
 
+# A project's current map is the last of user_mundiai_projects.maps; its earlier versions (removing a layer forks a
+# new map and keeps the old one) and deleted projects do not count.
 _PROJECTS_SQL = """
-SELECT DISTINCT m.project_id FROM user_mundiai_maps m
- WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL AND m.project_id IS NOT NULL
- ORDER BY m.project_id
+SELECT p.id AS project_id FROM user_mundiai_projects p
+  JOIN user_mundiai_maps m ON m.id = p.maps[array_length(p.maps, 1)]
+ WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL AND p.soft_deleted_at IS NULL
+ ORDER BY p.id
 """
 
 
@@ -82,8 +85,8 @@ async def project_of(conn: Any, layer_id: str) -> Optional[str]:
 
 
 async def projects_of(conn: Any, layer_id: str) -> list[str]:
-    """Every project with a live map showing the layer (as `conn` may see them): more than one when the layer was
-    added to another project's map."""
+    """Every live project whose current map shows the layer (as `conn` may see them): more than one when the layer
+    was added to another project's map and is still on it."""
     return [row["project_id"] for row in await conn.fetch(_PROJECTS_SQL, layer_id)]
 
 

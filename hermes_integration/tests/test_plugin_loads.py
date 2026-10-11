@@ -643,6 +643,21 @@ def test_catalog_descriptions_win_over_runtime_docstrings() -> None:
     assert changed == []
 
 
+def test_tools_behind_a_switch_never_reach_hermes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hermes picks toolsets from the question's words, not the project's industry or the switches, so the Telecom
+    tower tools (TOWERS) must not be registered at all, whatever the switch says."""
+    pytest.importorskip("src.services.industry")
+    from src.services.industry import SWITCHES
+
+    tower_tools = {"get_tower_inspection_findings", "tower_photos_needing_review"}
+    assert tower_tools <= set(SWITCHES)
+    for value in ("0", "1"):
+        monkeypatch.setenv("TOWERS", value)
+        ctx = _FakeCtx()
+        _load_plugin_module().register(ctx)
+        assert not set(SWITCHES) & {t["name"] for t in ctx.tools}
+
+
 def test_standalone_gateway_falls_back_to_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     plugin = _load_plugin_module()
     real_find_spec = plugin.importlib.util.find_spec

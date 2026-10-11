@@ -12,6 +12,7 @@ independent evidence.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -38,6 +39,18 @@ FARM_WORDING = "<farm-wording>"  # pseudo first tool: a non-agriculture reply th
 KINDS = ("single", "multi_turn", "chain")
 LAYER_TYPES = ("raster", "vector", "postgis", "point_cloud")
 COG_STATES = ("ready", "generating", "failed")  # a raster's optimised copy (metadata cog_status)
+
+
+def case_industry_for(case: dict, run_industry: str | None = None) -> str:
+    """The industry a case runs as: its own, else the run's --industry, else agriculture (a live project always has
+    one, so a case without one is a farm project and is offered only what a farm project is)."""
+    return case.get("industry") or run_industry or INDUSTRIES[0]
+
+
+def case_sha(case: dict) -> str:
+    """A case's definition (its question, map, history and expected answer): a comparison pairs a case only when both
+    runs asked the same thing and expected the same answer, since an id can be kept for a changed case."""
+    return hashlib.sha256(json.dumps(case, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 _JSON_TYPES = {
     "string": str, "integer": int, "number": (int, float), "boolean": bool,
     "array": list, "object": dict,

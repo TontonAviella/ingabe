@@ -29,7 +29,9 @@ const JOB_POLL_MS = 2_000;
 const workKey = (layerId: string, sha256: string) => ['tower-work', layerId, sha256];
 
 /** A 404 means "no towers here" (switched off, or not a telecom project): asking again will not change it. */
-const noRetryOn404 = (count: number, error: ServerError) => error.status !== 404 && count < 2;
+// A 4xx is the server's answer (404: no towers here; 409: a conflict to show), so it is final; only a failed
+// request (no answer, or a 5xx) is tried again, twice.
+const retryFailedRequests = (count: number, error: ServerError) => !(error.status >= 400 && error.status < 500) && count < 2;
 
 export function useInspectionPhotos(layerId: string | null) {
   return useQuery<InspectionPhotos, ServerError>({
@@ -37,7 +39,7 @@ export function useInspectionPhotos(layerId: string | null) {
     queryFn: () => getJson<InspectionPhotos>(`${base(layerId as string)}/photos`),
     enabled: !!layerId,
     staleTime: 5 * 60 * 1000,
-    retry: noRetryOn404,
+    retry: retryFailedRequests,
   });
 }
 
@@ -50,7 +52,7 @@ export function usePhotoWork(layerId: string, sha256: string) {
   return useQuery<PhotoWork, ServerError>({
     queryKey: workKey(layerId, sha256),
     queryFn: () => fetchWork(layerId, sha256),
-    retry: noRetryOn404,
+    retry: retryFailedRequests,
     refetchInterval: (query) => (anyJobActive(query.state.data) ? JOB_POLL_MS : false),
   });
 }
@@ -107,7 +109,7 @@ export function useTowerCards(layerId: string | null, audience: TowerAudience) {
     enabled: !!layerId,
     placeholderData: (previous) => previous,
     staleTime: 60_000,
-    retry: noRetryOn404,
+    retry: retryFailedRequests,
   });
 }
 

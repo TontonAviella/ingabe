@@ -58,8 +58,9 @@ def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatc
     assert tower_tools <= {t["function"]["name"] for t in industry.tools_for(tools, "telecom")}
     assert not tower_tools & {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")}
     assert industry.tool_refusal("get_tower_inspection_findings", "telecom") is None
-    assert industry.tool_refusal("tower_photos_needing_review", "agriculture")["error"].startswith(
-        "tower_photos_needing_review is for Telecom Towers projects; this project is Agriculture.")
+    for elsewhere in ("agriculture", None, "power_grid"):  # never offered there, so as on main: it does not exist
+        assert industry.tool_refusal("tower_photos_needing_review", elsewhere)["error"].startswith(
+            "There is no tool named tower_photos_needing_review here.")
     assert "never count equipment from a photo yourself" in industry.prompt_note("telecom")
     assert industry.prompt_note("power_grid") and "tower photo" not in industry.prompt_note("power_grid")
 
@@ -518,6 +519,46 @@ def test_history_replay_drops_another_industrys_tool_calls_and_their_results():
     assert all(m.get("tool_call_id") != "c1" for m in telecom)
     assert "maize" not in json.dumps(telecom)
     assert _without_other_industries_calls(history, "agriculture") == history
+
+
+def test_the_routing_eval_skips_tower_cases_while_towers_is_off(monkeypatch):
+    """With TOWERS off their tools are offered to no one, so the eval skips (and records) the tower cases instead of
+    scoring them wrong; with it on, it runs them."""
+    import importlib.util
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("eval_sage_routing_switches", root / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness
+    spec.loader.exec_module(harness)
+    cases = harness.load_cases()
+    towers = {c["id"] for c in cases if set(c["expect"].get("any_of") or []) & {
+        "get_tower_inspection_findings", "tower_photos_needing_review"}}
+    assert len(towers) >= 8
+    monkeypatch.setenv("TOWERS", "0")
+    assert harness.check_industry_cases(cases) == towers
+    assert not any(harness.feature_switches().values())
+    monkeypatch.setenv("TOWERS", "1")
+    assert harness.check_industry_cases(cases) == set()
+    assert all(harness.feature_switches().values())
+
+
+def test_history_replay_drops_tower_calls_once_towers_is_off(monkeypatch):
+    """Tower counts stored in a Telecom conversation are not replayed after TOWERS is switched off."""
+    from src.routes.message_routes import _without_other_industries_calls
+
+    history = [
+        {"role": "user", "content": "how many antennas?"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "type": "function", "function": {"name": "get_tower_inspection_findings", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "12 antennas counted by you"},
+    ]
+    monkeypatch.setenv("TOWERS", "1")
+    assert _without_other_industries_calls(history, "telecom") == history
+    monkeypatch.setenv("TOWERS", "0")
+    replayed = _without_other_industries_calls(history, "telecom")
+    assert "tool_calls" not in replayed[1] and "antennas counted" not in json.dumps(replayed)
 
 
 @pytest.mark.anyio

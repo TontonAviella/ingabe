@@ -172,6 +172,20 @@ def test_write_baseline_then_gate_passes(repo):
     assert cs.main([]) == 0
 
 
+def test_a_gate_on_industry_serves_is_flagged_outside_the_industry_module(repo):
+    body = """
+        from src.services import industry
+
+        def offered(name, ind):
+            return industry.serves(name, ind) or industry.available(name, ind)
+    """
+    repo("src/routes/thing.py", body)
+    repo("src/services/industry.py", body)
+    repo("src/routes/test_thing.py", body)
+    found = cs.check_industry_serves_gate()
+    assert [(v.rule, v.path) for v in found] == [("industry-serves-gate", "src/routes/thing.py")]
+
+
 def test_caplog_fixture_is_flagged_in_tests(repo):
     repo("src/services/test_thing.py", """
         def test_bad(caplog):

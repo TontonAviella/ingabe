@@ -355,6 +355,33 @@ describe('tower cards panel', () => {
     await vi.waitFor(() => expect(host).toBeEmptyDOMElement());
   });
 
+  it('shows nothing while the server has not answered, nor when the request fails', async () => {
+    fetchMock.mockImplementation(
+      () =>
+        new Promise<Response>(() => {
+          // never answers
+        }),
+    );
+    const waiting = mount(panel(layers));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(waiting).toBeEmptyDOMElement();
+    unmountAll();
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => json(502, { detail: 'Bad Gateway' }));
+    const failed = mount(panel(layers));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(failed).toBeEmptyDOMElement();
+  });
+
+  it("shows the server's words when the inspection is on maps of two Telecom projects (409)", async () => {
+    const conflict = { status: 409, body: { detail: 'this inspection is on maps of 2 projects; remove it from the maps of the others' } };
+    routes[`GET ${CARDS}?audience=owner`] = () => conflict;
+    routes[`GET ${PHOTOS}`] = () => conflict;
+    const host = mount(panel(layers));
+    await vi.waitFor(() => expect(host.textContent).toContain('remove it from the maps of the others'));
+  });
+
   it('asks nothing for layers that are not photo inspections', async () => {
     const host = mount(panel([{ id: 'Lsites', name: 'Sites', type: 'vector', metadata: { original_format: 'geojson' } }]));
     await new Promise((resolve) => setTimeout(resolve, 50));

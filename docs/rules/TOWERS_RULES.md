@@ -104,10 +104,13 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
   projects, even for byte-identical photos; the finder keeps its finds per project too (`finds/v1/<project>/`).
 - Changes to one photo's work are made one at a time across app workers (a Redis lock per project, layer and photo,
   `towers:v1:...:lock`, 60 s; a change waits up to 10 s, then 409).
-- The project whose work the routes read and write is the one project with a live map showing the layer
-  (`photo_context.projects_of`, `tower_inspection.work_project`); a layer on maps of more than one project (added to
-  another project's map) is refused with 409 "remove it from the maps of the others", never followed to the last
-  edited map (which would move its work between projects). Sage's tower tools use the chat's own project
+- The project whose work the routes read and write is the one live project whose current map (the last of
+  `projects.maps`; earlier versions and deleted projects do not count) shows the layer (`photo_context.projects_of`,
+  `tower_inspection.work_project`); a layer on the current maps of more than one Telecom project (added to another
+  project's map) is refused with 409 "remove it from the maps of the others", never followed to the last edited map
+  (which would move its work between projects). Removing it from the other map, or deleting that project, clears it.
+  The industry is checked first: unless every project showing the layer is Telecom Towers (switch on), it is 404, so a
+  farm inspection on two farm maps is not a tower conflict. Sage's tower tools use the chat's own project
   (`meta.project_id`, whose map must show the layer). That project's industry gates every route and tool.
 - The inspection's photos come from the facts kept at upload (`photo_inspections.load_facts`), one per stored photo
   (a photo uploaded twice keeps its first name); an inspection uploaded before 2026-10-11 has none: 409 "upload the
@@ -115,9 +118,11 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
 
 ## Routes (`src/routes/tower_routes.py`, the shared API contract)
 
-All under `/api/towers/layer/{layer_id}`; 404 with a switch off, for a layer that is not a photo inspection, or in a
-project that is not Telecom Towers; 409 for a layer on maps of more than one project; reads need view rights
-(`get_layer`), writes edit rights (`edit_layer`).
+All under `/api/towers/layer/{layer_id}`; 404 with a switch off (checked before the body is read, so a malformed
+request is 404 too: `src/routes/switched_routes.py`), for a layer that is not a photo inspection, or in a project that
+is not Telecom Towers; 409 for a layer on the maps of more than one Telecom project; reads need view rights
+(`get_layer`), writes edit rights (`edit_layer`). The panel (`TowerCards.tsx`) shows only after the server answered
+for the layer (data, or a 409): never while asking, on a 404 or on a failed request.
 
 - `GET /photos` -> `{"photos": [{sha256, url, width, height, taken_at, lat, lon, relative_altitude_m,
   gimbal_pitch, gimbal_yaw}]}` (width and height as shown; url is the photo route of `PHOTO_INSPECTIONS_RULES.md`).
@@ -187,4 +192,8 @@ is the routing eval's to measure with `TOWERS=1` (not run yet).
 - **A layer shown in two projects** is refused by the tower routes (409) until it is removed from all but one
   project's maps; the finder and field checks still follow `project_of` (the last edited map).
 - **No "none on this photo" action**: a part not visible on a photo stays unmarked there (not counted, never 0).
-- **Rights gap** above; **Hermes** (`MUNDI_USE_HERMES`) does not have the tower tools (nor the drone tools).
+- **Rights gap** above; **Hermes** (`MUNDI_USE_HERMES`, off) is never given a tool behind a switch: the plugin skips
+  `industry.SWITCHES` (it picks tools by words, not by industry or switch). It is still given the farm-only drone
+  tools for every industry (a gap on main, not of this build).
+- **Switched off later**: earlier tower tool calls and their counts are dropped from the replayed chat history
+  (`industry.available`), and a tower tool called anywhere it is not offered gets "There is no tool named ...".

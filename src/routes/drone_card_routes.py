@@ -40,7 +40,7 @@ async def _agriculture_project(layer: MapLayer = Depends(get_layer)) -> None:
     Runs after the layer access check (get_layer), so it never tells a stranger anything about a layer (R1-21)."""
     async with async_read_conn("drone_cards.industry") as conn:
         project_industry = await industry.industry_of_layer(conn, layer.layer_id)
-    if not industry.serves("drone_cards", project_industry):
+    if not industry.available("drone_cards", project_industry):
         label = industry.INDUSTRIES[project_industry]["label"] if project_industry else "not a farm project"
         raise HTTPException(404, f"No question cards here: they are for farm photos, and this project is {label}.")
 

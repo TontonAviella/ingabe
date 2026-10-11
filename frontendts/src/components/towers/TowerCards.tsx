@@ -105,8 +105,12 @@ export function TowerCards({
   const photos = useInspectionPhotos(layerId);
   const answer = useTowerCardAnswer(layerId, openCard, audience);
 
-  // No towers here (switched off, or not a telecom project): no panel.
-  if (!layerId || cards.error?.status === 404 || photos.error?.status === 404) return null;
+  // The panel shows once the server has said this layer is tower work: an answer, or a conflict only a Telecom
+  // inspection can get (409). Not while asking (every photo inspection asks, in every project), not on a 404
+  // (switched off, or not a Telecom project) and not on a failed request.
+  const noTowers = cards.error?.status === 404 || photos.error?.status === 404;
+  const towerWork = !!(cards.data || photos.data) || cards.error?.status === 409 || photos.error?.status === 409;
+  if (!layerId || noTowers || !towerWork) return null;
 
   const layer = inspections.find((l) => l.id === layerId);
   const photoList = photos.data?.photos ?? [];

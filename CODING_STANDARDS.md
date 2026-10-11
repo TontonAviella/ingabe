@@ -178,6 +178,12 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-12** The TOWERS switch leaked where a gate used `industry.serves` (industry only): replayed chat history kept tower counts
+  with the switch off, Hermes registered the tower tools for every project, and the routing eval sent farm cases the unfiltered tool
+  list. Rule: offering, running, replaying and showing follow `industry.available` (industry and switch). Gate: `industry-serves-gate`.
+- **2026-10-12** A router-level switch dependency runs after FastAPI parses the body, so a switched-off route answered bad JSON with a
+  422 that showed it exists. Rule: a switched route checks its switch before the body is read (`src/routes/switched_routes.py`).
+  Gate: malformed-body tests in `test_tower_routes.py`, `test_example_finder_routes.py`.
 - **2026-10-11** The example finder's docs said "the size gate in answer_levels refuses objects too small", but no code called it, so 2048 px
   windows of 40 px plants ran far below the measured size; and its branch, rebuilt on an old base, deleted a function #177 had just started
   calling. Rule: a claim that another module enforces something has a test that it is called; re-grep callers on the current base. Gate: size-gate tests in `test_example_finder.py`; review only for callers.

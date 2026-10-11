@@ -74,14 +74,20 @@ class Inspections:
         metadata = {"photo_inspection": {**photo_inspections.summary(facts, prefix)}} if is_inspection else {}
         conn = await admin()
         try:
-            if project is None:
+            if project is None:  # a new project and its map, listed in projects.maps as the app does
                 await conn.execute(
-                    "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, viewer_uuids, title, industry) "
-                    "VALUES ($1, $2::uuid, $3::uuid[], $4::uuid[], 'tower test', $5)",
-                    ids["project"], owner, list(editors), list(viewers), industry)
-            await conn.execute(
-                "INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) "
-                "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[$4])", ids["map"], ids["project"], owner, ids["layer"])
+                    "INSERT INTO user_mundiai_projects (id, owner_uuid, editor_uuids, viewer_uuids, title, industry, "
+                    "maps) VALUES ($1, $2::uuid, $3::uuid[], $4::uuid[], 'tower test', $5, ARRAY[$6])",
+                    ids["project"], owner, list(editors), list(viewers), industry, ids["map"])
+                await conn.execute(
+                    "INSERT INTO user_mundiai_maps (id, project_id, owner_uuid, title, layers) "
+                    "VALUES ($1, $2, $3::uuid, 'tower test', ARRAY[$4])",
+                    ids["map"], ids["project"], owner, ids["layer"])
+            else:  # another layer on the project's current map
+                ids["map"] = await conn.fetchval(
+                    "UPDATE user_mundiai_maps SET layers = array_append(layers, $1) WHERE id = "
+                    "(SELECT maps[array_length(maps, 1)] FROM user_mundiai_projects WHERE id = $2) RETURNING id",
+                    ids["layer"], ids["project"])
             await conn.execute(
                 "INSERT INTO map_layers (layer_id, owner_uuid, name, type, metadata, source_map_id) "
                 "VALUES ($1, $2::uuid, $3, 'vector', $4::jsonb, $5)",

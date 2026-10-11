@@ -65,6 +65,43 @@ def test_non_agriculture_cases_exist_and_farm_wording_is_scored_wrong() -> None:
     assert scoring.classify_attempt({"no_tool": True}, scoring.FARM_WORDING) == scoring.FALSE_TOOL
 
 
+def test_a_case_without_an_industry_runs_as_agriculture() -> None:
+    """A live project always has an industry, so a case without one runs as a farm project: the harness filters its
+    tools for agriculture and never sends the unfiltered list (which holds the Telecom tower tools once TOWERS is on;
+    the Towers eval offered them to 61 farm cases before this)."""
+    assert scoring.case_industry_for({"id": "x"}) == "agriculture"
+    assert scoring.case_industry_for({"id": "x"}, "telecom") == "telecom"
+    assert scoring.case_industry_for({"id": "x", "industry": "power_grid"}, "telecom") == "power_grid"
+    source = (ROOT / "scripts" / "eval_sage_routing.py").read_text()
+    assert "industry.tools_for(tools_payload, case_industry)\n" in source
+    assert "else tools_payload" not in source
+
+
+def test_compare_pairs_a_case_only_when_both_runs_asked_it_the_same_way(tmp_path, capsys) -> None:
+    """An id kept for a changed case (an "unsupported" tower question that now expects a tower tool) is left out of
+    the pairing instead of being counted as fixed or broken."""
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", ROOT / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness
+    spec.loader.exec_module(harness)
+    same, before, after = {"id": "same", "text": "q"}, {"id": "moved", "text": "q", "expect": {"no_tool": True}}, {
+        "id": "moved", "text": "q", "expect": {"any_of": ["t"]}}
+    assert scoring.case_sha(before) != scoring.case_sha(after) and scoring.case_sha(same) == scoring.case_sha(dict(same))
+
+    def run(name: str, moved: dict, moved_right: bool) -> Path:
+        cases = [{"id": "same", "case_sha": scoring.case_sha(same), "majority": scoring.CORRECT},
+                 {"id": "moved", "case_sha": scoring.case_sha(moved),
+                  "majority": scoring.CORRECT if moved_right else scoring.FALSE_TOOL}]
+        path = tmp_path / name
+        path.write_text(json.dumps({"meta": {"corpus_sha": name, "variant": "baseline"}, "summary": {}, "cases": cases}))
+        return path
+
+    harness.compare_runs(run("a.json", before, False), run("b.json", after, True))
+    out = capsys.readouterr().out
+    assert "left out 1 cases whose question or expected answer changed: moved" in out
+    assert "paired cases      1" in out and "B fixed 0, B broke 0" in out
+
+
 def test_tower_questions_are_cases_in_every_language() -> None:
     """Telecom tower questions in English, French and Kinyarwanda, and photos the fast paths cannot read
     (no place on the map, COG not ready). Whether a fast path fires on them is checked with the app in

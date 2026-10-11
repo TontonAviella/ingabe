@@ -158,6 +158,10 @@ async def test_with_the_switch_off_neither_route_exists(client, photo, monkeypat
     finally:
         app.dependency_overrides.pop(verify_session_required, None)
     assert posted.status_code == 404 and read.status_code == 404
+    # Checked before the body is read: bad JSON, signed out, still 404 (not a 422 showing the route exists).
+    malformed = await client.post(f"/api/layer/{ids['layer']}/finder", content=b"{",
+                                  headers={"Content-Type": "application/json"})
+    assert malformed.status_code == 404
 
 
 @pytest.mark.anyio
