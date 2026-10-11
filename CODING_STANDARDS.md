@@ -175,6 +175,9 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-11** A regex reading the XMP packet of an uploaded photo backtracked quadratically (9.8 s on one crafted 60,000-letter
+  field); Python's `re` holds the GIL, so `asyncio.to_thread` did not keep the app answering. Rule: a regex run on uploaded text is
+  linear (anchored on a literal) and its input is length-capped. Gate: `test_a_crafted_xmp_packet_is_read_in_linear_time`.
 - **2026-10-08** "Remera sector in Gasabo district" drew all four Remera sectors: the admin parser dropped the parents after the level
   word, and a name shared by several units was drawn in full ("Matches"). Rule: a request for one thing delivers exactly one or nothing, and
   then says where each candidate is. Gate: `src/services/test_admin_boundary_resolve.py`, `tests/test_admin_boundary_one_unit.py`.
