@@ -40,7 +40,9 @@ Parts: `tower_dish`, `tower_antenna`, `tower_radio_unit` (answer_levels' targets
   pitch; a photo without one is refused with the reason, never guessed). Every refusal of the finder (a photo
   looking straight down, marks smaller than measured, a part never measured) comes back as 422 with its reason.
 - **Suggestions**: the finds of the part's finder job, best first, as `{id, box, score}`; the id names the job
-  (`<job id[:12]>-<n>`), so an id from older marks is refused, never taken for another suggestion.
+  (`<job id[:12]>-<n>`), so an id from older marks is refused, never taken for another suggestion. For antennas
+  and radio units they are the finder's filtered finds (its suggestion filter, on where it was measured not to
+  lower AP50; dishes not: `EXAMPLE_FINDER_RULES.md`).
 - **Review**: the person keeps, rejects or fixes (a new box) each suggestion and adds the ones the finder missed.
   A review replaces the last one; every id must be a suggestion of the current job, given once. A review before the
   finder has finished is 409.

@@ -46,11 +46,58 @@ and `run_lookalike_towers.py`. The app does the same:
 These values are the measurement, not tunables: changing one is a new
 measurement in `answer_levels_targets.json`.
 
+## The suggestion filter (on per target, only where measured)
+
+After the steps above, for a target whose measured settings turn it on
+(`answer_levels`: `suggestion_filter`), the finds a person is shown are
+filtered by `filter_suggestions`, one function:
+
+1. best score first;
+2. a find is kept only when its area (`boxes.area`) is 1/4 to 4 times the
+   **median** area of the user's marks (`FILTER_AREA_RATIO`; marks and finds
+   in the picture's own pixels; both bounds kept);
+3. and when it does not overlap an already kept find at IoU >= 0.5
+   (`FILTER_IOU`, `boxes.iou`): of two overlapping finds the better scored
+   one stays;
+4. at most 50 are kept (`FILTER_MAX`).
+
+With the flag off the finds are given exactly as before. The filter was fixed
+before it was measured (`scripts/finder_eval/run_postfilter.py`, 2026-10-11)
+on the same pictures, marks and finder sizes as the same-picture rows behind
+each target's value (3 marks a picture); rows `results/postfilter.jsonl` in
+`answer_levels_evidence.json`. AP50, then precision and recall at the
+best-F1 cut chosen on the test pictures, then the suggestions a person sees
+a picture, without the filter -> with it:
+
+| Target (set) | Read at | Pictures | AP50 | Precision | Recall | Suggestions a picture | People's boxes a picture (after the marks) | Filter |
+|---|---|---|---|---|---|---|---|---|
+| tower_dish (dishes) | 1280 | 20 | 0.745 -> 0.734 | 0.677 -> 0.721 | 0.772 -> 0.772 | 15.6 -> 10.7 | 2.9 | **off**: AP50 fell |
+| tower_antenna | 1280 | 15 | 0.695 -> 0.711 | 0.92 -> 0.92 | 0.575 -> 0.575 | 23.6 -> 13.9 | 2.7 | on |
+| tower_radio_unit | 2560 | 14 | 0.291 -> 0.309 | 0.309 -> 0.344 | 0.512 -> 0.537 | 58.7 -> 34.8 | 2.9 | on |
+| maize_seedling (Nerac) | 1280 | 20 | 0.787 -> 0.821 | 0.771 -> 0.854 | 0.737 -> 0.732 | 57.1 -> 27.5 | 11.2 | on |
+| weed | 896 | 20 | 0.447 -> 0.402 | 0.533 -> 0.491 | 0.509 -> 0.509 | 56.9 -> 20.6 | 5.5 | **off**: AP50 fell |
+
+The rule is AP50: the filter is on only where the filtered AP50 recorded is
+at least the raw one (`test_answer_levels.py` checks every flag against these
+rows, and that each raw row is the target's own measured value). For dishes
+it is off although precision rose and recall held, because AP50 fell; for
+weeds both fell. Every other target (buildings, row-crop plants, tree crowns,
+banana mats) was never measured with it, so it is off. Not measured:
+Selommes maize (the Nerac tiles only), and antennas and radio units together
+with look-alike marks (the filter was measured without them, as were their
+table values). The levels in `answer_levels` stay the measured ones; the
+filter only changes which finds are shown.
+
+The flag and the filter's values are part of a request's identity
+(`content_sha`: the settings and `protocol()`) and are kept with its finds,
+so finds made without the filter are never served for a request with it.
+
 ## Settings come from the measured table
 
 `settings(target)` reads `image_px` (the measured pictures' long side),
-`finder_input_px`, `look_alike_marks` and `view` (which way the measured
-pictures looked) from `answer_levels.target(...)`; none is copied here (H2).
+`finder_input_px`, `look_alike_marks`, `view` (which way the measured
+pictures looked) and `suggestion_filter` from `answer_levels.target(...)`;
+none is copied here (H2).
 A target the finder was never measured on (no `finder_input_px`, `image_px`
 or `view`, e.g. `banana_mat`) or one measured for another finder is refused.
 
@@ -159,7 +206,8 @@ are two pictures, because their finds are written in different coordinates.
 
 - A request is identified by `content_sha`: the picture's sha256, the marks
   and look-alikes in pixels, the target, the model's sha256, the settings
-  and the protocol values. It is the job id.
+  (with the suggestion filter's flag) and the protocol values (with the
+  filter's). It is the job id.
 - The finds are kept in object storage **per project**:
   `finds/v1/<project_id>/<content_sha>.json`, with every input that made
   them, the seconds the model took and the frame. The same request in the
@@ -265,13 +313,19 @@ and has not been measured. Script:
 - **The resize filter** for pictures larger than the measured size was not
   measured (the size gate keeps the objects at a measured size; how the
   picture is shrunk to get there was not compared).
+- **The suggestion filter** was not measured together with look-alike marks
+  (antennas, radio units), on Selommes maize, or for buildings, row-crop
+  plants and tree crowns (off for those).
 - **Project editors and viewers** get 404 (the rights gap above).
 - **Run time on the CPU server** is not measured.
 
 ## Gates
 
 `src/services/test_example_finder.py`: settings from the table (no copied
-numbers), input checks, pictures taken another way and marks smaller than
+numbers), the suggestion filter (the marks' median area bounds, both bounds
+kept; of two finds overlapping at IoU 0.5 the better scored kept; at most 50;
+off gives the finds unchanged; a job of a target with it on keeps the
+filtered finds and says so), input checks, pictures taken another way and marks smaller than
 measured refused (a 2048 px window refused, the same marks in a 600 px one
 run), a target with no measured size refused, the protocol around a recorded
 real Ultralytics result

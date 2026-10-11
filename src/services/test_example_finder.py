@@ -10,7 +10,9 @@ Redis (database 15, a key prefix per run) and object storage (MinIO) are the rea
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import random
 import io
 import json
 import os
@@ -127,8 +129,8 @@ def test_settings_are_read_from_the_measured_table():
     assert {t.name for t in with_settings} >= {"tower_dish", "tower_antenna", "maize_seedling", "weed"}
     for t in with_settings:
         s = example_finder.settings(t.name)
-        assert (s.image_px, s.finder_input_px, s.look_alike_marks, s.view) == (
-            t.measured["image_px"], t.finder_input_px, t.look_alike_marks, t.measured["view"])
+        assert (s.image_px, s.finder_input_px, s.look_alike_marks, s.view, s.suggestion_filter) == (
+            t.measured["image_px"], t.finder_input_px, t.look_alike_marks, t.measured["view"], t.suggestion_filter)
 
 
 @pytest.mark.parametrize("name", ["banana_mat", "no_such_thing"])
@@ -269,8 +271,68 @@ def test_lookalike_marks_are_a_second_class_and_its_finds_are_not_given():
     (call,) = model.calls
     assert call["classes"] == [0, 0, 0, 1] and call["prompts"][-1] == looks[0]
     rows = example_finder_model.result_rows(recorded_result())[2:]
-    kept = [r for r in rows if not any(boxes.iou(r[:4], m) >= 0.3 for m in call["prompts"][:3])]
-    assert len(finds) == len(kept)
+    kept = [example_finder.Find(box=tuple(r[:4]), score=r[4]) for r in rows
+            if not any(boxes.iou(r[:4], m) >= 0.3 for m in call["prompts"][:3])]
+    # antennas use the suggestion filter (measured not to lower their AP50)
+    shown = example_finder.filter_suggestions(kept, call["prompts"][:3], example_finder.settings("tower_antenna"))
+    assert len(finds) == len(shown) < len(kept)
+
+
+# --------------------------------------------------------------------------- #
+# The suggestion filter: on only for targets where it was measured not to lower AP50
+# --------------------------------------------------------------------------- #
+
+# The function on its own, whichever targets the table turns it on for (test_answer_levels.py checks that).
+FILTER_ON = dataclasses.replace(example_finder.settings("tower_dish"), suggestion_filter=True)
+FILTER_OFF = dataclasses.replace(FILTER_ON, suggestion_filter=False)
+
+
+def _square(x: float, side: float) -> tuple[float, float, float, float]:
+    """A square box of the given side whose left edge is at x (one row: boxes far apart do not overlap)."""
+    return (x, 0.0, x + side, side)
+
+
+def _finds(*boxes_scores):
+    return [example_finder.Find(box=box, score=score) for box, score in boxes_scores]
+
+
+def test_the_filter_keeps_finds_sized_like_the_median_mark():
+    """Marks of 100, 400 and 10,000 px2: the median is 400, so finds from 100 to 1,600 px2 are kept. With the mean
+    (3,500) the 100 px2 find would go and the 3,600 px2 one would stay."""
+    marks = [_square(0, 10), _square(100, 20), _square(200, 100)]
+    finds = _finds((_square(1000, 9.9), 0.9), (_square(2000, 10), 0.8), (_square(3000, 40), 0.7),
+                   (_square(4000, 40.1), 0.6), (_square(5000, 60), 0.5))
+    shown = example_finder.filter_suggestions(finds, marks, FILTER_ON)
+    assert [f.box for f in shown] == [_square(2000, 10), _square(3000, 40)]
+    assert [boxes.area(f.box) for f in shown] == [100, 1600]  # both bounds are kept
+
+
+def test_the_filter_keeps_the_better_of_two_overlapping_finds():
+    marks = [_square(500, 20)] * 3  # 400 px2
+    best = example_finder.Find(box=(0.0, 0.0, 20.0, 20.0), score=0.9)
+    half = example_finder.Find(box=(0.0, 0.0, 20.0, 10.0), score=0.5)  # IoU with the best: exactly 0.5
+    under = example_finder.Find(box=(0.0, 0.0, 20.0, 9.9), score=0.4)  # IoU 0.495
+    near = example_finder.Find(box=(2.0, 0.0, 22.0, 20.0), score=0.3)  # IoU 0.82
+    assert boxes.iou(best.box, half.box) == 0.5
+    shown = example_finder.filter_suggestions([near, under, half, best], marks, FILTER_ON)  # worst first
+    assert shown == [best, under]
+
+
+def test_the_filter_keeps_at_most_50_the_best_ones():
+    marks = [_square(0, 20)] * 3
+    finds = _finds(*((_square(100 * i, 20), round(0.01 * (i + 1), 2)) for i in range(60)))
+    random.Random(0).shuffle(finds)
+    shown = example_finder.filter_suggestions(finds, marks, FILTER_ON)
+    assert example_finder.FILTER_MAX == 50 and len(shown) == 50
+    assert [f.score for f in shown] == sorted((f.score for f in finds), reverse=True)[:50]
+
+
+def test_with_the_filter_off_the_finds_are_given_as_they_are():
+    finds = _finds((_square(0, 20), 0.2), (_square(1, 20), 0.9), (_square(1000, 1), 0.5))  # it would drop two
+    marks = [_square(500, 20)] * 3
+    assert example_finder.filter_suggestions(finds, marks, FILTER_OFF) == finds
+    assert len(example_finder.filter_suggestions(finds, marks, FILTER_ON)) == 1
+    # Through the finder, dishes (off) still get every find not on a mark: test_the_model_is_called_as_measured...
 
 
 def test_content_sha_changes_with_every_input():
@@ -283,8 +345,9 @@ def test_content_sha_changes_with_every_input():
         example_finder.content_sha("p", [tuple(MARKS[1])], [], s),
         example_finder.content_sha("p", [tuple(MARKS[0])], [tuple(MARKS[1])], s),
         example_finder.content_sha("p", [tuple(MARKS[0])], [], example_finder.settings("tower_antenna")),
+        example_finder.content_sha("p", [tuple(MARKS[0])], [], dataclasses.replace(s, suggestion_filter=True)),
     }
-    assert base not in others and len(others) == 4
+    assert base not in others and len(others) == 5
 
 
 def test_job_ids_and_keys_refuse_anything_else():
@@ -439,6 +502,27 @@ async def test_a_second_request_reuses_the_kept_finds(isolated):
             project, job.job_id)))["Body"].read())
         assert stored["model"]["sha256"] == example_finder_model.MODEL_SHA256 and stored["marks_px"] == MARKS
         assert stored["settings"] == example_finder.settings("tower_dish").as_dict()
+    finally:
+        await redis.aclose()
+
+
+@pytest.mark.anyio
+async def test_a_job_keeps_the_filtered_finds_where_the_filter_is_on(isolated):
+    """Antennas use the suggestion filter: a job keeps the finds `find` gives, fewer than the protocol alone, and
+    its record says the filter was on and with which values."""
+    redis, s3, bucket, project = _redis(), await get_async_s3_client(), get_bucket_name(), isolated()
+    try:
+        job = await example_finder.start(redis, s3, bucket, project, USER, TowerPhoto(), ANTENNA_MARKS, [],
+                                         "tower_antenna", runner=RecordedModel())
+        done = await _until_settled(redis, s3, bucket, project, job.job_id)
+        expected = example_finder.find(PIXELS, ANTENNA_MARKS, [], "tower_antenna", view=OBLIQUE,
+                                       runner=RecordedModel())
+        assert [f["box_px"] for f in done.finds] == [list(f.box) for f in expected]
+        assert 0 < len(expected) < len(_expected_finds(ANTENNA_MARKS))
+        stored = json.loads(await (await s3.get_object(Bucket=bucket, Key=example_finder.result_key(
+            project, job.job_id)))["Body"].read())
+        assert stored["settings"]["suggestion_filter"] is True
+        assert stored["protocol"]["suggestion_filter"] == {"area_ratio": 4.0, "iou": 0.5, "max": 50}
     finally:
         await redis.aclose()
 
