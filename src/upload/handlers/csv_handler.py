@@ -9,6 +9,7 @@ from io import StringIO
 from fastapi import HTTPException, status
 
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
+from src.upload.keys import upload_key
 from src.upload.handlers.vector_handler import VectorUploadHandler
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ class CSVUploadHandler(BaseUploadHandler):
             layer_type="vector",
             updated_temp_file_path=auxiliary_path,
             updated_file_ext=".fgb",
-            updated_s3_key=f"uploads/{ctx.user_id}/{ctx.project_id}/{ctx.layer_id}.fgb",
+            updated_s3_key=upload_key(ctx.user_id, ctx.project_id, ctx.layer_id, ".fgb"),
         )
 
     async def create_layers(
