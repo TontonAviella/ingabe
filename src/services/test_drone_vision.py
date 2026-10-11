@@ -202,3 +202,31 @@ async def test_a_look_through_anthropic_asks_for_a_thinking_budget(monkeypatch):
     assert answer == {"main_crop": "maize"}
     assert sent["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 8000}
     assert sent["max_tokens"] > 8000 and "reasoning_effort" not in sent
+
+
+def test_the_survey_is_on_unless_switched_off(monkeypatch):
+    monkeypatch.delenv("DRONE_VISION_SURVEY", raising=False)
+    assert drone_vision.survey_enabled() is True
+    for off in ("0", "false", "off", " NO "):
+        monkeypatch.setenv("DRONE_VISION_SURVEY", off)
+        assert drone_vision.survey_enabled() is False
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "1")
+    assert drone_vision.survey_enabled() is True
+
+
+def test_without_looks_every_measured_plot_is_unnamed_and_nothing_else_is_guessed(plots):
+    survey = drone_vision.no_looks(plots)
+    assert sorted(survey.looks) == [1, 2, 3] and survey.plots == 3
+    for look in survey.looks.values():
+        assert (look.main_crop, look.candidates, look.source) == ("unsure", (), "checks")
+        # unknown, not "no weeds", "no problems" or 0% cover
+        assert (look.stage, look.crop_cover_percent, look.weeds, look.problems) == (None, None, None, None)
+    assert (survey.model, survey.done_at, survey.cost_usd) == (None, None, 0.0)
+
+
+def test_a_survey_is_never_started_while_switched_off(monkeypatch, plots):
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "0")
+    monkeypatch.setattr(drone_vision, "AsyncOpenAI", lambda **kwargs: pytest.fail("vision client built"))
+    with pytest.raises(RuntimeError, match="switched off"):
+        drone_vision.start_survey(None, "b", "key-off", "https://store.test/x.tif", plots, None, "org-a")
+    assert drone_vision.job("key-off") is None
