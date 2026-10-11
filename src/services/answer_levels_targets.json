@@ -161,7 +161,7 @@
       "kind": "weed",
       "object_size_m": null,
       "object_size_note": "Changes with the weeds' age; the gate uses the user's marks.",
-      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "585 px tiles read at 640 and 896 px: 896 scored slightly better. Marking cotton as the look-alike did not help (0.448 with, 0.447 without; only 2 pictures had cotton to mark)."},
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "585 px tiles read at 640 and 896 px: 896 scored slightly better. Marking cotton as the look-alike did not help: on the 20 test tiles 0.448 with, 0.447 without (only 2 had cotton to mark); on 20 tiles holding both weeds and cotton it hurt, 0.152 with, 0.200 without (fewer wrong boxes, more weeds missed)."},
       "max_level": "ROUGH",
       "size_evidence": ["field_weed"],
       "measured": {
