@@ -16,10 +16,8 @@ from shapely.geometry import shape
 
 from src.routes.websocket import kue_ephemeral_action
 from src.services import (
-    crop_fingerprints,
     drone_cards,
     drone_vision,
-    field_checks,
     photo_context,
     photo_plots,
     plant_counts,
@@ -139,7 +137,7 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
             return {"status": "error", "error": str(why)}
         await plant_counts.save_count(s3, bucket, key, feature, count)
     org_id = meta.session.get_org_id() if meta.session is not None else None
-    look = await _crop_seen(s3, bucket, key, plots, args.plot_number, meta.project_id,
+    look = await _crop_seen(s3, bucket, metadata, plots, args.plot_number, meta.project_id,
                             drone_vision.reference_scope(org_id, meta.user_uuid))
     name = feature["properties"].get("name") or f"Plot {args.plot_number}"
     # The map opens close enough to see each plant under its dot; zooming out shows the whole plot.
@@ -171,18 +169,13 @@ async def count_plants_in_plot(args: CountPlantsArgs, meta: IngabeToolCallMetaAr
     }
 
 
-async def _crop_seen(s3: Any, bucket: str, photo_key: str, plots: Any, number: int, project_id: Optional[str],
-                     scope: str) -> Optional[str]:
-    """The crop in this plot: checked on the ground (this project's checks), else named from the plot's fingerprint
-    and the checked plots, else by this scope's vision survey; None if none names it."""
-    survey = await drone_vision.load_survey(s3, bucket, drone_vision.survey_key(photo_key, plots, scope))
-    checks = await field_checks.load_checks(s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots))
-    prints = await crop_fingerprints.load(s3, bucket, crop_fingerprints.store_key(photo_key, plots))
-    examples = await crop_fingerprints.load_examples(s3, bucket, project_id, field_checks.plot_set_id(photo_key, plots))
-    survey = field_checks.apply(crop_fingerprints.looked(survey, prints, {**examples,
-                                                                         **{n: c.crop for n, c in checks.items()}}),
-                                checks)
-    look = survey.look(number) if survey else None
+async def _crop_seen(s3: Any, bucket: str, metadata: dict[str, Any], plots: Any, number: int,
+                     project_id: Optional[str], scope: str) -> Optional[str]:
+    """The crop in this plot as the cards name it (photo_context.plot_looks): checked on the ground, else named from
+    the plot's fingerprint and the checked plots, else by this scope's vision survey; None if none names it."""
+    looks = await photo_context.plot_looks(s3, bucket, metadata, plots, project_id, place=None, scope=scope,
+                                           start=False, retry_failed=False)
+    look = looks.survey.look(number) if looks.survey else None
     if look is None or look.main_crop == "unsure":
         return None
     return drone_vision.CROP_LABELS[look.main_crop]
