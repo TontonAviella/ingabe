@@ -10,7 +10,7 @@ export interface DroneCard {
   service_name: string;
   question: string;
   preview: string;
-  status: 'ready' | 'partly' | 'working' | 'needs_flight' | 'needs_camera' | 'to_build' | 'learn';
+  status: 'ready' | 'partly' | 'working' | 'needs_flight' | 'needs_camera' | 'cant_tell' | 'to_build' | 'learn';
   status_label: string;
 }
 

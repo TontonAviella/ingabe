@@ -22,6 +22,7 @@ import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Awaitable, Callable, Optional
 
+from src.llm_defaults import model_base
 from src.utils import get_async_s3_client, get_bucket_name
 
 logger = logging.getLogger(__name__)
@@ -68,13 +69,10 @@ def _field(obj: Any, name: str) -> Any:
 def price(model: Optional[str], prompt_tokens: int, output_tokens: int) -> Optional[float]:
     """What a call cost in USD from its tokens and the model's published prices; None for a model with no known price.
     A model id with a date suffix ("claude-haiku-5-5-20261001") is priced as its base model."""
-    if not model:
+    base = model_base(model, _PRICES_PER_MILLION)
+    if base is None:
         return None
-    name = model.split("/")[-1]
-    prices = next((p for base, p in _PRICES_PER_MILLION.items() if name == base or name.startswith(base + "-")), None)
-    if prices is None:
-        return None
-    short, long = prices
+    short, long = _PRICES_PER_MILLION[base]
     per_input, per_output = long if long is not None and prompt_tokens > _LONG_PROMPT_TOKENS else short
     return (prompt_tokens * per_input + output_tokens * per_output) / 1_000_000
 
