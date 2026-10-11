@@ -134,6 +134,25 @@ def test_bm25_shortlist_recall_on_eval_cases_stays_high() -> None:
     assert hits / total >= 0.97, f"{hits}/{total}"
 
 
+def test_the_eval_takes_a_fast_path_only_where_the_live_gate_would() -> None:
+    """The routing eval's runner uses the live gate: tower questions and photos the fast paths cannot read (no
+    place on the map, COG not ready) go to the model; a named, ready orthophoto still takes the fast path."""
+    from evals.sage_routing import scoring
+    from src.dependencies.sage_routing import build_project_fast_tool_call
+    from src.services import industry
+
+    runner = _eval_runner()
+    catalog = json.loads(CATALOG.read_text())
+    applies = {}
+    for case in (scoring.effective_case(c, catalog) for c in runner.load_cases()):
+        fast = build_project_fast_tool_call(case["text"], case.get("industry") or industry.DEFAULT_INDUSTRY)
+        applies[case["intent"], case["id"]] = runner.fast_path_applies(fast, case["text"], case)
+    telecom = {key: value for key, value in applies.items() if key[0].startswith("tel-")}
+    assert len(telecom) >= 12 and not any(telecom.values())
+    assert applies["cov-objects-cog-pending", "cov-objects-cog-pending"] is False
+    assert applies["find-count-houses", "obs-objects-02"] is True  # "count the houses from Farm_A_Orthophoto ?"
+
+
 # --- abdication guard ------------------------------------------------------
 
 def _plan_for(text: str):
