@@ -1200,3 +1200,40 @@ def test_the_ready_check_keeps_the_choice_of_raster():
     assert select_ready_fast_raster_layer("describe this photo", rows) is None
     assert select_ready_fast_raster_layer("describe Huye_Orthophoto", rows) is None
     assert select_ready_fast_raster_layer("describe Kabarama_Orthophoto", rows)["name"] == "Kabarama_Orthophoto"
+
+
+def test_tower_questions_route_to_the_towers_category():
+    from src.dependencies.sage_routing import TOWERS
+
+    for text in ("how many antennas are on this tower photo?", "Combien d'antennes sur le pylône ?",
+                 "Ni antene zingahe ziri ku munara?"):
+        assert TOWERS in classify_intent(text), text
+    assert TOWERS not in classify_intent("show the sectors of Gasabo district")
+
+
+def _tool_names(tools: list[dict]) -> list[str]:
+    return [t["function"]["name"] for t in tools]
+
+
+def test_the_empty_towers_category_does_not_narrow_the_tools():
+    """No tower tools yet: a question that names only towers keeps the full list (as before), and towers next to
+    another category adds nothing to it."""
+    tower_only = route_chat("Is strong wind or a storm expected in Karongi in the next days? We have tower climbs "
+                            "planned.")
+    assert tower_only.selected_categories == frozenset()
+    assert tower_only.reason == "intent:towers;no_tools_yet"
+    tools = [{"function": {"name": n}} for n in ("search_brain", "describe_user_raster", "search_location")]
+    with_notes = route_chat("Search our notes for the Kigali tower audit")
+    assert _tool_names(filter_tools_by_categories(tools, with_notes.selected_categories)) == _tool_names(
+        filter_tools_by_categories(tools, {BRAIN})) == ["search_brain", "search_location"]
+
+
+def test_a_tool_filed_under_towers_is_offered_for_tower_questions(monkeypatch):
+    from src.dependencies import sage_routing
+
+    monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_antennas", sage_routing.TOWERS)
+    decision = route_chat("how many antennas are on the Rebero mast?")
+    assert decision.selected_categories == frozenset({sage_routing.TOWERS})
+    tools = [{"function": {"name": n}} for n in ("count_antennas", "get_ndvi_stats", "search_location")]
+    assert _tool_names(filter_tools_by_categories(tools, decision.selected_categories)) == [
+        "count_antennas", "search_location"]

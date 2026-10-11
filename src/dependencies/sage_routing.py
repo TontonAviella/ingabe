@@ -55,6 +55,7 @@ AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
 SPATIAL_INSIGHT = "spatial_insight"
+TOWERS = "towers"
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "add_observation": BRAIN,
     "brain_graph_query": BRAIN,
     "brain_trajectory": BRAIN,
+    # --- Telecom towers (TOWERS): no tools yet. Tower tools are filed here as they are built. ---
 }
 
 
@@ -427,6 +429,8 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({SPATIAL_INSIGHT, MAP_EDIT, USER_RASTER}),
     ),
+    # Masts, antennas, dishes and other telecom equipment.
+    (_TOWER_WORDS, frozenset({TOWERS})),
     # Knowledge graph / Brain
     (
         re.compile(
@@ -1590,7 +1594,8 @@ def route_chat(
         excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
-    if cats:
+    # A category narrows the list only once it has tools (TOWERS has none yet); until then the full list is sent.
+    if cats & set(_TOOL_CATEGORIES.values()):
         return RoutingDecision(
             is_small_talk=False,
             selected_categories=cats,
@@ -1603,7 +1608,8 @@ def route_chat(
         is_small_talk=False,
         selected_categories=frozenset(),
         primary_model_override=None,
-        reason="default",
+        # "intent:towers;no_tools_yet": the question names a category that has no tools yet.
+        reason=f"intent:{','.join(sorted(cats))};no_tools_yet" if cats else "default",
         excluded_tool_names=excluded_tool_names,
     )
 
