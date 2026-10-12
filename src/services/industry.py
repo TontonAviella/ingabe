@@ -7,7 +7,10 @@ The settings:
   picker never writes it.
 - The industry a user works in now (current_industry, the one place this is decided): their own choice, else their
   company's; None until anyone chooses, and in the legacy single-user mode. It is copied onto each project they
-  create (agriculture when None).
+  create (agriculture when None), and their home lists only its projects, a project shared with them under its own
+  industry; with None the home lists every industry. The home also says how many of their projects are in the other
+  industries (other_industries), so a switch never hides maps without a trace. A project still opens by its link
+  whatever the industry: this decides what the home lists, not who may open what.
 - user_mundiai_projects.industry: the industry a project belongs to (one per project). Everything Sage, the cards
   and the upload automation do for a project follows it.
 
@@ -301,6 +304,16 @@ async def current_industry(conn: Any, user_id: Optional[str], org_id: Optional[s
 async def industry_for_new_project(conn: Any, user_id: Optional[str], org_id: Optional[str]) -> str:
     """A new project's industry: the industry its creator works in now; agriculture until anyone chooses."""
     return await current_industry(conn, user_id, org_id) or DEFAULT_INDUSTRY
+
+
+def other_industries(counts: dict[str, int], shown: Optional[str]) -> list[dict[str, Any]]:
+    """The user's projects the home leaves out because they are in another industry than the one it shows:
+    [{industry, label, count}] in INDUSTRIES order, from their project count per industry. Empty when the home shows
+    every industry (shown is None)."""
+    if shown is None:
+        return []
+    return [{"industry": key, "label": value["label"], "count": counts[key]}
+            for key, value in INDUSTRIES.items() if key != shown and counts.get(key, 0) > 0]
 
 
 async def industry_of_project(conn: Any, project_id: Optional[str]) -> Optional[str]:

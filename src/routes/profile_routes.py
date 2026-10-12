@@ -75,7 +75,8 @@ async def _industry_payload(conn, session: UserContext) -> dict:
             # The company the user acts for, and its industry: the default for members who never chose their own.
             company = {"name": name, "industry": await industry.company_industry(conn, org_id)}
     return {
-        # The industry the user works in now: new projects take it (None: the app asks).
+        # The industry the user works in now: their home lists its projects and new projects take it (None: the
+        # app asks).
         "industry": current,
         "source": source,
         "company": company,
