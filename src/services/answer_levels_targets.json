@@ -2,6 +2,7 @@
   "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from. suggestion_filter says whether the example finder filters its suggestions for the target (src/services/example_finder.py, filter_suggestions): on only where the filter was measured on the target's own pictures, marks and finder size and did not lower AP50; its evidence selects the raw and filtered rows of that run, and a target never measured with it has it off.",
   "targets": {
     "tower_dish": {
+      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "mw", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_dish"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.864, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_dish"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'mw'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
       "noun": "dishes",
       "kind": "structure",
       "object_size_m": null,
@@ -31,6 +32,7 @@
       ]
     },
     "tower_antenna": {
+      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "antenna", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_antenna"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.933, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_antenna"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'antenna'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
       "noun": "antennas",
       "kind": "structure",
       "object_size_m": null,
@@ -59,6 +61,7 @@
       ]
     },
     "tower_radio_unit": {
+      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "rru", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_radio_unit"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.55, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_radio_unit"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'rru'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
       "noun": "radio units",
       "kind": "structure",
       "object_size_m": null,
@@ -114,6 +117,7 @@
       "also_measured": []
     },
     "maize_seedling": {
+      "detector": {"model": "roboflow:sam3/sam3_final", "class": "seedling", "max_level": "FULL_REVIEW", "size_evidence": ["rf_maize_seedling"], "measured": {"dataset": "INRAe UAVmulticrop, Nerac, Blois and Selommes (640 px tiles, 12 per field)", "view": "nadir", "protocol": "SAM 3 (sam3/sam3_final) with the typed prompt 'seedling', no marks, through Roboflow's hosted workflow (confidence 0.05)", "n_images": 36, "image_px": 640, "finder_input_px": 640, "date": "2026-10-12", "metric": "AP50 against people's boxes", "value": 0.741, "evidence": {"source": "roboflow/sam3_run.py", "task": "rf_maize_seedling"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "By field: Nerac 0.874, Blois 0.747, Selommes 0.638 (smallest plants). The prompt was chosen among 4 on 6 other squares of the same fields: 'maize seedling' scored 0.28 there, so the words matter."}, "note": "SAM 3 with a typed prompt (the class is the prompt); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
       "noun": "maize plants",
       "kind": "annual_crop",
       "object_size_m": null,
@@ -273,6 +277,183 @@
         "note": "untested: there is no answer key (no pictures with people's boxes around banana mats)"
       },
       "also_measured": []
+    },
+    "power_pylon": {
+      "noun": "pylons",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "class": "pylon",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_pylon"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-12",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.96,
+          "evidence": {
+            "source": "roboflow/eval_coco_hosted.py",
+            "task": "rf_power_pylon"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "A trained detector (class 'pylon'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+      }
+    },
+    "power_insulator": {
+      "noun": "insulators",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "class": "insulator",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_insulator"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-12",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.895,
+          "evidence": {
+            "source": "roboflow/eval_coco_hosted.py",
+            "task": "rf_power_insulator"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "A trained detector (class 'insulator'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+      }
+    },
+    "power_nest": {
+      "noun": "bird nests",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "class": "nest",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_nest"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-12",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.995,
+          "evidence": {
+            "source": "roboflow/eval_coco_hosted.py",
+            "task": "rf_power_nest"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "A trained detector (class 'nest'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+      }
     }
   }
 }

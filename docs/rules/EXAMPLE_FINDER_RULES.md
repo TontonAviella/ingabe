@@ -19,6 +19,19 @@ estimate, rough number, can't tell) is not decided here: that is
 `src/services/answer_levels.py` (`docs/rules/ANSWER_LEVELS_RULES.md`). This
 module finds; it shows no count and no level.
 
+## Trained detectors (switch HOSTED_FINDER, 2026-10-12)
+
+A target may also have a `detector` in `answer_levels_targets.json`: a model trained on that target (RF-DETR small,
+trained on Roboflow from public data) or SAM 3 with a typed prompt, run through Roboflow's hosted API by
+`src/services/hosted_detector.py`. While `HOSTED_FINDER` is on (default off) and `ROBOFLOW_API_KEY` is set, the finder
+uses the detector for those targets: **their photos are sent to Roboflow**. Off, a target with a measured example finder
+uses it as before; a target found only by a detector (the Power Grid parts) answers "switched off". The detector's view
+of the target (`answer_levels.detector`, `target_for`) has its own measurement, size floor (read at the picture's
+own size, from the test pictures' boxes) and highest level (FULL_REVIEW: a person checks every box). Measured on held-out
+pictures (AP50): dishes 0.864, antennas 0.933, radio units 0.55 (60 tower photos, same sites as training), pylons 0.96,
+insulators 0.895, bird nests 0.995 (40 power line photos), maize plants 0.741 with SAM 3 and the prompt "seedling"
+(36 INRAe squares). The marks are still asked for (the size gate); the detector does not use them otherwise.
+
 ## The protocol (reproduced exactly)
 
 The finder was measured on 2026-10-11 with `scripts/finder_eval/run_sameimage.py`

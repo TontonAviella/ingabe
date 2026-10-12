@@ -326,9 +326,14 @@ function PhotoWorkspace({
         {work.data && !reviewing && (
           <div className="flex flex-col gap-2.5">
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
-              Draw a box around at least {MARKS_TO_FIND} {label.plural}, then let the finder suggest the rest. You can mark the other parts
-              too: they are saved when you find the rest, and the finder is given them as look-alikes (things that are not a{' '}
-              {label.label.toLowerCase()}) where that was measured to help.
+              Draw a box around at least {MARKS_TO_FIND} {label.plural}, then let the finder suggest the rest.
+              {parts.length > 1 && (
+                <>
+                  {' '}
+                  You can mark the other parts too: they are saved when you find the rest, and the finder is given them as look-alikes
+                  (things that are not a {label.label.toLowerCase()}) where that was measured to help.
+                </>
+              )}
             </p>
             <span className="text-[13px] text-[#B8A99B] tabular-nums">
               {partDraft.marks.length} marked

@@ -39,6 +39,7 @@ DEFAULT_INDUSTRY = "agriculture"  # projects made before industries existed, and
 
 AGRICULTURE = frozenset({"agriculture"})
 TELECOM = frozenset({"telecom"})
+POWER_GRID = frozenset({"power_grid"})
 SHARED = frozenset(INDUSTRIES)
 
 # Sage's tools and the automatic jobs, each with the industries it serves.
@@ -108,8 +109,8 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "district_ndvi_map": AGRICULTURE,  # district vegetation colours and NDVI in the admin outlines tooltip
     # --- Telecom towers: the work on a photo inspection's photos (switch TOWERS) ---
     # marks, the finder's suggestions and their review (/api/towers/...): tower parts in Telecom, maize plants in
-    # Agriculture (tower_inspection.PARTS_BY_INDUSTRY)
-    "tower_inspection": TELECOM | AGRICULTURE,
+    # Agriculture, pylons, insulators and nests in Power Grid (tower_inspection.PARTS_BY_INDUSTRY)
+    "tower_inspection": TELECOM | AGRICULTURE | POWER_GRID,
     "tower_cards": TELECOM,  # the tower question cards
     "get_tower_inspection_findings": TELECOM,
     "tower_photos_needing_review": TELECOM,

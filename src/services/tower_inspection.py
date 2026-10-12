@@ -38,7 +38,6 @@ from typing import Any, Optional, Sequence
 from redis.exceptions import LockError
 
 from src.services import answer_levels, example_finder, photo_inspections, stored_files
-from src.services.example_finder_model import MODEL_NAME
 from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto
 from src.services.photo_inspections import PhotoFacts
 from src.services.shown_maps import SHOWN_MAPS_SQL
@@ -48,11 +47,14 @@ logger = logging.getLogger(__name__)
 _SWITCH = "TOWERS"
 PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")  # Telecom Towers: the tower cards count these
 FARM_PARTS = ("maize_seedling",)  # Agriculture: marked and found on the photos; no cards yet
-ALL_PARTS = PARTS + FARM_PARTS
-PARTS_BY_INDUSTRY = {"telecom": PARTS, "agriculture": FARM_PARTS}
+POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")  # Power Grid: found only by the trained detector
+ALL_PARTS = PARTS + FARM_PARTS + POWER_PARTS
+PARTS_BY_INDUSTRY = {"telecom": PARTS, "agriculture": FARM_PARTS, "power_grid": POWER_PARTS}
 # How the marking screen names each part (one, many), in the order it offers them.
 PART_LABELS = {"tower_dish": ("Microwave dish", "microwave dishes"), "tower_antenna": ("Panel antenna", "panel antennas"),
-               "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants")}
+               "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants"),
+               "power_pylon": ("Pylon", "pylons"), "power_insulator": ("Insulator", "insulators"),
+               "power_nest": ("Bird nest", "bird nests")}
 STORE_PREFIX = "towers/v1"
 REDIS_PREFIX = "towers:v1"
 _VERSION = 1
@@ -97,7 +99,7 @@ def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
 
 def _family(part: str) -> tuple[str, ...]:
     """The parts marked alongside this one (its industry's): only they can be its look-alike marks."""
-    return PARTS if part in PARTS else FARM_PARTS
+    return next(family for family in (PARTS, FARM_PARTS, POWER_PARTS) if part in family)
 
 
 # --------------------------------------------------------------------------- #
@@ -280,7 +282,11 @@ class PartWork:
 def _others_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
     """The other two parts' marks on the photo, when this part's measured settings use look-alikes (as measured);
     otherwise none."""
-    if not example_finder.settings(part).look_alike_marks:
+    try:
+        uses_lookalikes = example_finder.settings(part).look_alike_marks
+    except FinderInputError:  # a part only a switched-off detector finds: it has no finder settings here
+        return ()
+    if not uses_lookalikes:
         return ()
     return tuple(b for other in _family(part) if other != part for b in record.parts[other].marks)
 
@@ -313,8 +319,13 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts) -> Optional
     part's countability, the measured table); None when nothing is marked."""
     if not marks:
         return None
-    gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks])
-    return answer_levels.decide(part, MODEL_NAME, gate, answer_levels.countability(part, answer_levels.Facts()))
+    try:  # the finder this server runs for the part: its trained detector while HOSTED_FINDER is on, else YOLOE
+        model = example_finder.settings(part).model
+    except FinderInputError:  # a part only a switched-off detector finds: nothing can be answered about it here
+        return None
+    gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks],
+                                   finder_model=model)
+    return answer_levels.decide(part, model, gate, answer_levels.countability(part, answer_levels.Facts()))
 
 
 def suggestions_of(job: example_finder.Job) -> tuple[Suggestion, ...]:
@@ -404,8 +415,8 @@ async def start_find(redis: Any, s3: Any, bucket: str, project_id: str, user_id:
     check_part(part)
     view = photo_inspections.view_of(photo)
     if view is None:
-        raise TowerInputError("this photo does not say which way the camera looked (it has no DJI gimbal pitch), so "
-                              "it cannot be checked against the tower photos the finder was measured on")
+        raise TowerInputError(f"this photo does not say which way the camera looked (it has no DJI gimbal pitch), so "
+                              f"it cannot be checked against the photos the finder was measured on for {noun(part)}")
     async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
         record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
         own = record.parts[part]
