@@ -259,14 +259,14 @@ async def create_map(
 
     # Connect to database
     async with get_async_db_connection() as conn:
-        # With sign-in on, a project waits for an industry (the person's or their company's) instead of silently
-        # becoming agriculture; the legacy single-user mode keeps the agriculture default (audit R1-31).
+        # With sign-in on, a project waits until its creator works in an industry (industry.current_industry) instead
+        # of silently becoming agriculture; the legacy single-user mode keeps the agriculture default (audit R1-31).
         if external_auth_enabled() and not await industry.current_industry(conn, owner_id, session.get_org_id()):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="Choose your industry before creating a project.")
         async with conn.transaction():
             # First create a project
-            # A project belongs to one industry: its company's, else its creator's (agriculture until chosen).
+            # A project belongs to one industry: the one its creator works in now (industry.industry_for_new_project).
             await conn.execute(
                 """
                 INSERT INTO user_mundiai_projects
