@@ -15,6 +15,7 @@ from src.services import answer_levels, tower_cards, tower_inspection
 from src.services.card_status import CANT_TELL, LEARN, NEEDS_FLIGHT, PARTLY, READY, WORKING
 from src.services.test_tower_inspection import PHOTOS, _inspection, _work, facts
 from src.services.tower_inspection import Earlier
+from test_fixtures.wording import COLLECTION_INSTRUCTIONS
 
 DISH, ANTENNA, RADIO = tower_inspection.PARTS
 NO_EARLIER = Earlier(same_site=0, inspection=None)
@@ -311,7 +312,7 @@ def test_sage_never_gets_the_sum_over_photos():
 def test_no_card_tells_anyone_how_or_when_to_fly():
     """Roger (2026-10-11): the app works with whatever data arrives and says in data terms what it supports; it never
     gives flight or data-collection instructions (feedback memory: data, not collection)."""
-    banned = re.compile(r"\b(next visit|fly|flying|re-fly|pilot|take (more )?photos|use a drone|shoot again)\b", re.I)
+    banned = COLLECTION_INSTRUCTIONS
     no_gps = PHOTOS + [facts(sha="f" * 64, name="phone.jpg", lat=None, lon=None, pitch=None, gimbal_yaw=None,
                              relative_altitude_m=None)]
     for photos in (PHOTOS, no_gps):
