@@ -13,7 +13,7 @@ squares at full detail with sizes spelt out, 83%; two looks that must agree (siz
 squares of checked crops), 27 of 27, with 9 of 36 left "not sure". Field checks (field_checks.py)
 override the model and say how often it is right.
 
-Switch: DRONE_VISION_SURVEY (survey_enabled(); on by default). Off ("0"), no plot is looked at and no paid call is
+Switch: DRONE_VISION_SURVEY (survey_enabled(); off by default since 2026-10-12, "1" turns it on). Off ("0"), no plot is looked at and no paid call is
 made: each plot's crop then comes from its fingerprint call and the checks alone (no_looks()), and stage, cover,
 weeds and problems are unknown (None), which the cards say plainly.
 
@@ -180,9 +180,10 @@ class Survey:
 
 
 def survey_enabled() -> bool:
-    """DRONE_VISION_SURVEY: the vision model looks at each plot (default). "0", "false", "no" or "off" switch the
-    looks off: no survey is started and no paid call is made."""
-    return os.environ.get("DRONE_VISION_SURVEY", "1").strip().lower() not in {"0", "false", "no", "off"}
+    """DRONE_VISION_SURVEY: off by default (Roger, 2026-10-12: a model must not judge pixels; Haiku said yes to 289 of
+    290 weed candidates). "1", "true", "yes" or "on" switch the looks on; off, no survey is started and no paid call
+    is made."""
+    return os.environ.get("DRONE_VISION_SURVEY", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _model() -> str:

@@ -69,7 +69,7 @@ services:
       # Looks at each drone plot for the question cards (src/services/drone_vision.py).
       - DRONE_VISION_MODEL=${DRONE_VISION_MODEL:-openai/gpt-6-luna}
       # 0 switches the per-plot looks off (no paid calls); crops then come from fingerprints and field checks.
-      - DRONE_VISION_SURVEY=${DRONE_VISION_SURVEY:-1}
+      - DRONE_VISION_SURVEY=${DRONE_VISION_SURVEY:-0}
       - DRONE_VISION_REQUESTS_PER_MINUTE=${DRONE_VISION_REQUESTS_PER_MINUTE:-}
       - BRAIN_QUERY_EXPANSION_MODEL=${BRAIN_QUERY_EXPANSION_MODEL:-}
       # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
