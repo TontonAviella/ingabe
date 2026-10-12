@@ -123,6 +123,37 @@ def test_the_finder_settings_are_the_measured_ones():
     assert "other pictures" in al.target("tree_crown_savanna").measured["protocol"].lower()
 
 
+def _filter_entry(name: str) -> dict:
+    return json.loads(al.TARGETS_PATH.read_text())["targets"][name]["suggestion_filter"]
+
+
+@pytest.mark.parametrize("name", [t.name for t in al.targets()])
+def test_the_suggestion_filter_is_on_only_where_it_was_measured_not_to_lower_ap50(name):
+    """The flag follows its evidence: on only where the filtered AP50 recorded is at least the raw one, off where it
+    is lower, and off for a target never measured with the filter. The raw row is the target's own measurement
+    (the same pictures, marks and finder size), so the filter was measured on what the finder does for it."""
+    t, entry = al.target(name), _filter_entry(name)
+    if entry["evidence"] is None:
+        assert t.suggestion_filter is False, name
+        return
+    assert entry["evidence"]["source"] == "results/postfilter.jsonl"
+    (raw,) = _rows({**entry["evidence"], "method": "raw"})
+    (filtered,) = _rows({**entry["evidence"], "method": "filtered"})
+    assert entry["evidence"]["task"] == t.measured["evidence"]["task"] and raw["imgsz"] == t.finder_input_px
+    assert raw["ap50"] == t.measured["value"]
+    assert t.suggestion_filter is (filtered["ap50"] >= raw["ap50"]), name
+    assert f"AP50 {raw['ap50']} without the filter, {filtered['ap50']} with it" in entry["note"]
+
+
+def test_the_suggestion_filter_is_on_for_antennas_radio_units_and_maize():
+    # Measured 2026-10-11: AP50 rose for antennas, radio units and Nerac maize; it fell for dishes and weeds.
+    assert {t.name for t in al.targets() if t.suggestion_filter} == {"tower_antenna", "tower_radio_unit",
+                                                                       "maize_seedling"}
+    assert "Selommes was not measured with the filter" in _filter_entry("maize_seedling")["note"]
+    measured = {r["task"] for r in EVIDENCE["scores"] if r["source"] == "results/postfilter.jsonl"}
+    assert measured == {"tower_mw", "tower_antenna", "tower_rru", "maize_nerac", "field_weed"}
+
+
 def test_the_antenna_count_is_the_one_the_run_recorded():
     # Only 15 test photos have 4 or more antennas; the same-picture run recorded n_img 15 itself (not filled in).
     row = _rows({"source": "results/sameimage.jsonl", "task": "tower_antenna", "method": "YOLOE marks"})[0]
@@ -184,6 +215,11 @@ def test_a_broken_table_fails_on_load(tmp_path):
     broken(lambda d: d["building"].update(size_evidence=[]), "size_evidence")
     broken(lambda d: d["building"].update(size_evidence=["nowhere"]), "no marked pictures")
     broken(lambda d: d["building"].update(size_evidence=["tower_mw"]), "read at 1280 px")
+    broken(lambda d: d["weed"].pop("suggestion_filter"), "suggestion_filter must have exactly")
+    broken(lambda d: d["weed"]["suggestion_filter"].pop("note"), "suggestion_filter must have exactly")
+    broken(lambda d: d["weed"]["suggestion_filter"].update(on=1), "is not true or false")
+    broken(lambda d: d["weed"]["suggestion_filter"].update(note=""), "needs a note")
+    broken(lambda d: d["building"]["suggestion_filter"].update(on=True), "on without the measurement")
 
 
 def test_an_unknown_target_is_refused():

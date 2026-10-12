@@ -4,8 +4,10 @@ A picture source reads a Picture: its pixels (RGB, 8 bits a channel), a sha256 t
 looks (answer_levels.OBLIQUE or NADIR: the finder runs only on pictures taken the way its target was measured), and
 the frame the caller's boxes are given in. Two sources:
 
-* `Photo`: a photo given as bytes (an inspection photo, later), with the way it looks said by the caller (DJI's
-  gimbal pitch, read by photo_inspections, tells it). Boxes are in the photo's own pixels.
+* `Photo`: a photo given as bytes, with the way it looks said by the caller (DJI's gimbal pitch, read by
+  photo_inspections, tells it). Boxes are in the photo's own pixels.
+* `InspectionPhoto`: an original photo of a photo inspection, read from that inspection's own storage prefix only
+  (the prefix recorded on the layer and checked to be that layer's), then read as a `Photo`.
 * `OrthophotoWindow`: a window of a drone orthophoto layer (NADIR), given as a box in lon/lat or in the layer's CRS,
   read through src/services/raster_process.py (remote COG reads must not run in threads: Lessons log 2026-10-07) at
   the photo's own resolution, at most MAX_WINDOW_PX a side. Boxes are in the window's coordinates; the finds come
@@ -31,13 +33,14 @@ from PIL import Image, ImageOps
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window, from_bounds
 
-from src.services import answer_levels, raster_process
+from src.services import answer_levels, photo_inspections, raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
 
 Box = tuple[float, float, float, float]
 
 MAX_WINDOW_PX = 2048  # a side, at the photo's own resolution
 MAX_PHOTO_PIXELS = 40_000_000  # a 40 MP photo; a larger (or forged) header is refused before decoding
+MAX_PHOTO_BYTES = 100 * 1024 ** 2  # an inspection photo larger than this is not read into memory
 LONLAT = "lonlat"
 LAYER = "layer"
 FRAMES = (LONLAT, LAYER)
@@ -162,6 +165,45 @@ class Photo:
         view = check_view(self.view)
         pixels = await asyncio.to_thread(decode_photo, self.data)
         return Picture(pixels=pixels, sha256=hashlib.sha256(self.data).hexdigest(), view=view)
+
+
+@dataclass(frozen=True)
+class InspectionPhoto:
+    """An original photo of a photo inspection: only a photo stored under the prefix recorded on this layer
+    (photo_inspections.stored_prefix checks the prefix is the layer's own), named by its sha256. Boxes are in its own
+    pixels as shown (EXIF orientation applied); `view` is said by the caller (photo_inspections.view_of)."""
+
+    s3: Any
+    bucket: str
+    layer_id: str
+    layer_metadata: dict[str, Any]
+    sha256: str
+    view: str
+
+    async def read(self) -> Picture:
+        prefix = photo_inspections.stored_prefix(self.layer_metadata, self.layer_id)
+        if prefix is None:
+            raise FinderInputError("this layer is not a photo inspection")
+        if not photo_inspections.is_sha256(self.sha256):
+            raise FinderInputError("a photo is named by its SHA-256: 64 lower-case hexadecimal characters")
+        try:
+            key = await photo_inspections.stored_photo_key(self.s3, self.bucket, prefix, self.sha256)
+            if key is None:
+                raise FinderInputError("this inspection has no such photo")
+            response = await self.s3.get_object(Bucket=self.bucket, Key=key)
+            if response["ContentLength"] > MAX_PHOTO_BYTES:
+                raise FinderInputError(f"the photo is {response['ContentLength']:,} bytes; at most "
+                                       f"{MAX_PHOTO_BYTES:,} are read")
+            async with response["Body"] as body:
+                data = await body.read()
+        except FinderInputError:
+            raise
+        except Exception as e:  # storage or network: asking again may work
+            raise PictureReadError(f"the photo could not be read from storage ({type(e).__name__})") from e
+        picture = await Photo(data=data, view=self.view).read()
+        if picture.sha256 != self.sha256:
+            raise PictureReadError("the stored photo is not the one its name says")
+        return picture
 
 
 def _window_raw(url: str, bbox: Box, bbox_crs: Optional[str], max_px: int, env: dict[str, str]) -> tuple[str, Any]:

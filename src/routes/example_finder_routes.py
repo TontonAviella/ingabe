@@ -15,16 +15,13 @@ from src.dependencies.dag import edit_layer, get_layer
 from src.dependencies.rate_limiter import heavy_limit
 from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
+from src.routes.switched_routes import switched_route
 from src.services import example_finder, example_finder_pictures, photo_context
 from src.structures import async_read_conn
 from src.utils import get_async_s3_client, get_bucket_name
 
 logger = logging.getLogger(__name__)
 
-
-def _finder_switched_on() -> None:
-    if not example_finder.finder_enabled():
-        raise HTTPException(404, "Not Found")
 
 
 def _limit_per_user(request: Request, session: UserContext = Depends(verify_session_required)) -> UserContext:
@@ -33,7 +30,7 @@ def _limit_per_user(request: Request, session: UserContext = Depends(verify_sess
     return session
 
 
-router = APIRouter(dependencies=[Depends(_finder_switched_on)])
+router = APIRouter(route_class=switched_route(example_finder.finder_enabled))
 
 
 class FinderWindow(BaseModel):

@@ -181,7 +181,7 @@ async def get_district_ndvi_map(
     async with get_async_db_connection() as pg_conn:
         viewer_industry = (await industry.industry_of_project(pg_conn, project_id) if project_id else
                            await industry.industry_for_new_project(pg_conn, session.get_user_id(), session.get_org_id()))
-        vegetation = industry.serves("district_ndvi_map", viewer_industry)
+        vegetation = industry.available("district_ndvi_map", viewer_industry)
         rows = await pg_conn.fetch(
             """
             SELECT b.district,

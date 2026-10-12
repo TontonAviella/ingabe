@@ -1569,9 +1569,10 @@ def _shorten_old_tool_results(messages: list[Any]) -> list[Any]:
 
 
 def _without_other_industries_calls(messages: list[Any], project_industry: Optional[str]) -> list[Any]:
-    """The replayed history without tool calls this project's industry may not make, nor their results. One farm
-    result stored in a Power Grid or Telecom conversation would otherwise ride along on every later turn (audit
-    R2-14). Results are matched to calls by id, so a dropped call takes its result with it."""
+    """The replayed history without tool calls this project may not make now, nor their results: another industry's
+    (one farm result stored in a Power Grid or Telecom conversation would otherwise ride along on every later turn,
+    audit R2-14) and a switched-off capability's (tower counts once TOWERS is off). Results are matched to calls by
+    id, so a dropped call takes its result with it."""
     dropped: set[str] = set()
     out: list[Any] = []
     for m in messages:
@@ -1582,7 +1583,7 @@ def _without_other_industries_calls(messages: list[Any], project_industry: Optio
             kept = []
             for call in calls:
                 name = (call.get("function") or {}).get("name", "") if isinstance(call, dict) else ""
-                if name and not industry.serves(name, project_industry):
+                if name and not industry.available(name, project_industry):
                     logger.warning("Dropping wrong-industry tool_call %r from history replay", name)
                     dropped.add(call.get("id"))
                 else:

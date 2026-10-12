@@ -251,8 +251,9 @@ def test_the_abdication_exemption_covers_farm_questions_only(project_industry: s
 @pytest.mark.parametrize(
     ("project_industry", "text"),
     [
-        # No tool reads tower equipment yet (the towers category is empty), so "Ingabe cannot count antennas yet"
-        # stands instead of a forced raster tool (the fast paths' house masks drew screening cells for these).
+        # With TOWERS off no tool reads tower equipment (the towers category offers nothing), so "Ingabe cannot
+        # count antennas yet" stands instead of a forced raster tool (the fast paths' house masks drew screening
+        # cells for these).
         ("telecom", "How many antennas are on this tower photo?"),
         ("telecom", "Combien d'antennes y a-t-il sur cette photo du pylône ?"),
         ("telecom", "Ni antene zingahe ziri ku munara uri kuri iyi foto?"),
@@ -263,7 +264,8 @@ def test_the_abdication_exemption_covers_farm_questions_only(project_industry: s
         ("agriculture", "How many antennas are on this tower photo?"),  # no industry has a tower tool
     ],
 )
-def test_prose_stands_on_tower_questions_no_tool_here_answers(project_industry: str, text: str) -> None:
+def test_prose_stands_on_tower_questions_no_tool_here_answers(project_industry: str, text: str, monkeypatch) -> None:
+    monkeypatch.delenv("TOWERS", raising=False)
     abdicated, plan = _abdication_on(project_industry, text)
     assert plan.routing.named_categories == frozenset({"towers"})
     assert plan.routing.selected_categories == frozenset() and plan.tools  # the full list is still sent
@@ -284,6 +286,68 @@ def test_tower_questions_that_name_a_tool_here_stay_guarded(text: str, needed: s
     abdicated, plan = _abdication_on("telecom", text)
     assert "towers" in plan.routing.named_categories
     assert abdicated is True and needed in _names(plan.tools)
+
+
+@pytest.mark.parametrize("text", ["How many antennas are on this tower photo?",
+                                  "Ni antene zingahe ziri ku munara uri kuri iyi foto?",
+                                  "Which photos of the Rebero mast still need checking?"])
+def test_with_towers_on_a_telecom_tower_question_is_offered_the_tower_tools_and_guarded(text, monkeypatch) -> None:
+    monkeypatch.setenv("TOWERS", "1")
+    abdicated, plan = _abdication_on("telecom", text)
+    assert plan.routing.selected_categories == frozenset({"towers"})
+    assert {"get_tower_inspection_findings", "tower_photos_needing_review"} <= set(_names(plan.tools))
+    assert not {"describe_user_raster", "analyze_raster_object_candidates"} & set(_names(plan.tools))
+    assert abdicated is True  # a tool here answers it: prose is abdication
+    for other in ("power_grid", "agriculture"):  # no tower tool there: the honest no stands, the full list is sent
+        abdicated, plan = _abdication_on(other, text)
+        assert abdicated is False and plan.routing.selected_categories == frozenset()
+        assert "get_tower_inspection_findings" not in _names(plan.tools)
+
+
+@pytest.mark.parametrize(("text", "needed"), [
+    # Tower crews' weather, flood and photo questions name "tower" too: the tools that answer them stay offered.
+    ("Is strong wind or a storm expected in Karongi in the next days? We have tower climbs planned.", "get_forecast"),
+    ("Describe the Mast_site_Kicukiro photo", "describe_user_raster"),
+    ("Describe the tower photo", "describe_user_raster"),
+    ("Is there flooding near our tower in Rubavu?", "detect_flood_extent"),
+])
+def test_with_towers_on_tower_words_alone_keep_the_tools_that_answer(text: str, needed: str, monkeypatch) -> None:
+    monkeypatch.setenv("TOWERS", "1")
+    _, plan = _abdication_on("telecom", text)
+    assert plan.routing.named_categories == frozenset({"towers"}) and plan.routing.selected_categories == frozenset()
+    assert needed in _names(plan.tools) and "get_tower_inspection_findings" in _names(plan.tools)
+
+
+@pytest.mark.parametrize("text", ["Y a-t-il des dégâts sur le mât dans cette image ?",
+                                  "Umunara w'itumanaho uri kuri iyi foto ufite ibyangiritse?"])
+def test_with_towers_on_prose_still_stands_on_what_no_tower_tool_answers(text: str, monkeypatch) -> None:
+    """Damage on a mast: the tower tools count equipment, they do not see damage, so "Ingabe cannot tell" stands."""
+    monkeypatch.setenv("TOWERS", "1")
+    abdicated, plan = _abdication_on("telecom", text)
+    assert abdicated is False and plan.routing.selected_categories == frozenset()
+
+
+def test_with_towers_on_every_telecom_tower_case_is_offered_its_expected_tool(monkeypatch) -> None:
+    """The routing eval's Telecom cases that say "tower" (or mast, antenna, ...), run as the eval runs them with
+    TOWERS=1 up to the model call: a fast path to an expected tool, or an expected tool in the first request. The
+    model's choice itself needs the eval (scripts/eval_sage_routing.py with TOWERS=1)."""
+    from src.dependencies.sage_routing import build_project_fast_tool_call, mentions_tower_equipment
+
+    monkeypatch.setenv("TOWERS", "1")
+    cases = Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "cases" / "non_agriculture.jsonl"
+    checked = []
+    for line in cases.read_text().splitlines():
+        case = json.loads(line)
+        expected = set(case["expect"].get("any_of") or [])
+        if case.get("industry") != "telecom" or not expected or not mentions_tower_equipment(case["text"]):
+            continue
+        fast = build_project_fast_tool_call(case["text"], "telecom")
+        if fast is not None and fast.tool_name in expected:
+            continue
+        _, plan = _abdication_on("telecom", case["text"])
+        assert expected & set(_names(plan.tools)), (case["id"], plan.routing.reason)
+        checked.append(case["id"])
+    assert {"ind-tel-03", "ind-tel-04", "ind-tel-11", "ind-tel-21", "ind-tel-25"} <= set(checked)
 
 
 def test_tower_questions_are_guarded_again_once_a_tower_tool_exists(monkeypatch) -> None:

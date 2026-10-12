@@ -17,7 +17,10 @@ The runner builds the request with the live code, not a copy:
    same rule the handlers use); otherwise the turn falls through to the model,
    exactly as in the app. The admin-boundary path needs only the map's
    project, which every map has. Tower and telecom wording never takes a fast
-   path.
+   path. The Telecom cases that expect the tower tools
+   (`get_tower_inspection_findings`, `tower_photos_needing_review`, on a photo
+   inspection's camera-point layer) need `TOWERS=1` in the run's environment:
+   with it off those tools are not offered (`industry.available`).
 2. **Routing.** `sage_turn_request.plan_sage_turn` applies small-talk,
    category filtering and exclusions to the full tool list from
    `build_sage_tools_payload`, using the history plus the new message.

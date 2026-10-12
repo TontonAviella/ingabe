@@ -27,9 +27,17 @@ Set `FINDER_EVAL_DIR` to a work folder holding `raw/` (the downloads), `w/` (wei
 4. `run_scale.py` — the same at a larger finder input size (zoom) -> `results/scale.jsonl`.
 5. `run_lookalike_towers.py`, `run_contrast.py` — the target's marks plus marks of its look-alike -> `results/*.jsonl`.
 6. `run_yoloe26.py` — YOLOE-11s vs YOLOE-26s/26n on the same pictures and marks -> `results/yoloe26.jsonl`.
-7. `record_test_result.py` — not a measurement: records one real result on the committed tower photo for the app's
+7. `run_postfilter.py` — the same pictures, marks and sizes as `run_sameimage.py` / `run_scale.py`, the finds raw and
+   after the suggestion filter (fixed before measuring: area 1/4x..4x the median mark, overlaps at IoU 0.5 dropped,
+   at most 50) -> `results/postfilter.jsonl`; sets each target's `suggestion_filter` (the app's
+   `example_finder.filter_suggestions`).
+8. `record_test_result.py` — not a measurement: records one real result on the committed tower photo for the app's
    example finder tests (`test_fixtures/example_finder/recorded_yoloe_result.json`); runs inside the app image.
-8. `measure_finder_process.py` — not a measurement of finding: run time and memory of the app's finder process per
+9. `measure_finder_process.py` — not a measurement of finding: run time and memory of the app's finder process per
    picture and input size (the table in `docs/rules/EXAMPLE_FINDER_RULES.md`); runs inside the app image.
 
 Run them one at a time: each loads a model on the CPU; parallel runs on a 16 GB Mac swapped and skewed timings.
+
+`sam3c.py` drives the SAM 3 baseline in `run_sameimage.py` through the sam3.c CLI. Set `SAM3C_DIR` to a sam3.c
+checkout with `src/build/sam3_cli` and `weights/evit.sam3`. sam3.c's EfficientViT config was patched to B1
+(widths 16..256, depths 1,1,2,3,4, attention dim 16). Without it the SAM 3 rows record an error and the YOLOE rows still run.

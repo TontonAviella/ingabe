@@ -315,7 +315,7 @@ async def post_first_look(layer_id: str, map_id: str, user_id: str, partner_id: 
     try:
         async with get_async_db_connection() as conn:
             project_industry = await industry.industry_of_map(conn, map_id)
-        if not industry.serves("drone_first_look", project_industry):
+        if not industry.available("drone_first_look", project_industry):
             logger.info("first look skipped for %s: %s project", layer_id, project_industry)
             return None
         layer = None

@@ -1,5 +1,5 @@
 {
-  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from.",
+  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from. suggestion_filter says whether the example finder filters its suggestions for the target (src/services/example_finder.py, filter_suggestions): on only where the filter was measured on the target's own pictures, marks and finder size and did not lower AP50; its evidence selects the raw and filtered rows of that run, and a target never measured with it has it off.",
   "targets": {
     "tower_dish": {
       "noun": "dishes",
@@ -7,6 +7,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 1280 and 2304 px: the same score (0.745), so 1280. Look-alike marks did not help dishes (2 draws on 24 pictures: 0.653 with, 0.660 without)."},
+      "suggestion_filter": {"on": false, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_mw", "imgsz": 1280}, "note": "Measured on the same 20 photos and marks: AP50 0.745 without the filter, 0.734 with it. AP50 fell, so it is off: it is on only where AP50 did not fall (precision rose and recall held; see docs/rules/EXAMPLE_FINDER_RULES.md)."},
       "max_level": "FULL_REVIEW",
       "size_evidence": ["tower_mw"],
       "measured": {
@@ -35,6 +36,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280 px only. Look-alike marks helped in 2 of 2 draws (0.677 with, 0.657 without)."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_antenna", "imgsz": 1280}, "note": "Measured on the same 15 photos and marks, without look-alike marks: AP50 0.695 without the filter, 0.711 with it. Not measured together with look-alike marks."},
       "max_level": "FULL_REVIEW",
       "size_evidence": ["tower_antenna"],
       "measured": {
@@ -62,6 +64,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280, 2560 and 3200 px: 2560 scored best. Look-alike marks helped in 4 of 4 runs (3 draws of 3 marks: 0.325 with, 0.280 without)."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_rru", "imgsz": 2560}, "note": "Measured on the same 14 photos and marks read at 2560 px, without look-alike marks: AP50 0.291 without the filter, 0.309 with it. Not measured together with look-alike marks."},
       "max_level": "FULL_REVIEW",
       "size_evidence": ["tower_rru"],
       "measured": {
@@ -91,6 +94,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only; look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
       "max_level": "ROUGH",
       "size_evidence": ["kenol_building"],
       "measured": {
@@ -115,6 +119,7 @@
       "object_size_m": null,
       "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "640 px tiles read at 640 and 1280 px: 1280 scored better on both fields (Selommes at 1920 px: 0.469, but 52 s per picture). Look-alike marks not tried."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "maize_nerac", "imgsz": 1280}, "note": "Measured on Nerac only, the same 20 tiles and marks read at 1280 px: AP50 0.787 without the filter, 0.821 with it. Selommes was not measured with the filter."},
       "max_level": "ROUGH",
       "size_evidence": ["maize_nerac", "maize_selommes"],
       "measured": {
@@ -144,6 +149,7 @@
       "object_size_m": null,
       "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (585 px tiles); other sizes and look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
       "max_level": "ROUGH",
       "size_evidence": ["field_cotton"],
       "measured": {
@@ -168,6 +174,7 @@
       "object_size_m": null,
       "object_size_note": "Changes with the weeds' age; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "585 px tiles read at 640 and 896 px: 896 scored slightly better. Marking cotton as the look-alike did not help: on the 20 test tiles 0.448 with, 0.447 without (only 2 had cotton to mark); on 20 tiles holding both weeds and cotton it hurt, 0.152 with, 0.200 without (fewer wrong boxes, more weeds missed)."},
+      "suggestion_filter": {"on": false, "evidence": {"source": "results/postfilter.jsonl", "task": "field_weed", "imgsz": 896}, "note": "Measured on the same 20 tiles and marks read at 896 px: AP50 0.447 without the filter, 0.402 with it. Worse, so it is off."},
       "max_level": "ROUGH",
       "size_evidence": ["field_weed"],
       "measured": {
@@ -195,6 +202,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (400 px tiles); look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
       "max_level": "CANT_TELL",
       "size_evidence": [],
       "measured": {
@@ -219,6 +227,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (370-400 px tiles); look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
       "max_level": "CANT_TELL",
       "size_evidence": [],
       "measured": {
@@ -246,6 +255,7 @@
       "object_size_m": null,
       "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
       "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Never run on banana mats."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
       "max_level": "CANT_TELL",
       "size_evidence": [],
       "measured": {

@@ -99,6 +99,11 @@ REQUIREMENTS_FILE = "requirements.txt"
 
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv", "dist", "build"}
 
+# Where industry.serves (the industry alone, without its switch) may be called: the industry module itself, and the
+# routing eval's corpus check (a case expecting a tool its industry is never offered is a corpus error).
+SERVES_DIRS = ("src", "scripts", "hermes_integration")
+SERVES_ALLOWED = {"src/services/industry.py", "scripts/eval_sage_routing.py"}
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -633,6 +638,31 @@ def check_shadowed_packages() -> list[Violation]:
     return out
 
 
+def check_industry_serves_gate() -> list[Violation]:
+    """What is offered, run, served or shown follows industry.available: the industry AND its switch. A gate on
+    industry.serves alone lets a switched-off capability through (the history replay kept tower counts after TOWERS
+    was turned off, audit 2026-10-12)."""
+    out: list[Violation] = []
+    for p in _iter_files(SERVES_DIRS, (".py",)):
+        rel = _rel(p)
+        if p.name.startswith("test_") or rel in SERVES_ALLOWED:
+            continue
+        tree = _parse(p)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            called = (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "serves"
+                      and isinstance(node.func.value, ast.Name) and node.func.value.id == "industry")
+            imported = (isinstance(node, ast.ImportFrom) and node.module == "src.services.industry"
+                        and any(alias.name == "serves" for alias in node.names))
+            if called or imported:
+                out.append(Violation(
+                    "industry-serves-gate", rel, node.lineno, ast.unparse(node)[:80],
+                    "gate on industry.available(...) (the industry and its switch), not industry.serves",
+                ))
+    return out
+
+
 def collect() -> list[Violation]:
     violations = (
         check_domain_imports()
@@ -646,6 +676,7 @@ def collect() -> list[Violation]:
         + check_compose_restart_policies()
         + check_agents_md_sync()
         + check_shadowed_packages()
+        + check_industry_serves_gate()
     )
     return sorted(violations, key=lambda v: (v.rule, v.path, v.line, v.detail))
 

@@ -89,7 +89,9 @@ async def test_a_zip_of_three_photos_becomes_one_layer_of_three_camera_points(au
     assert (await _metadata(layer_id))["photo_inspection"] == {
         "photos": 3, "with_gps": 3, "without_gps": [], "storage_prefix": prefix}
     shas = sorted(hashlib.sha256(data).hexdigest() for _, data in photos)
-    assert await _stored_keys(prefix) == [f"{prefix}{sha}.jpg" for sha in shas]
+    assert await _stored_keys(prefix) == sorted([f"{prefix}{sha}.jpg" for sha in shas] + [f"{prefix}facts.json"])
+    kept = await photo_inspections.load_facts(await get_async_s3_client(), get_bucket_name(), prefix)
+    assert [f.filename for f in kept] == [name for name, _ in photos] and sorted(f.sha256 for f in kept) == shas
 
     features = await _features(auth_client, layer_id)
     assert len(features) == 3
@@ -114,6 +116,11 @@ async def test_photos_without_gps_are_listed_and_left_off_the_map(auth_client, s
     inspection = (await _metadata(response.json()["id"]))["photo_inspection"]
     assert (inspection["photos"], inspection["with_gps"], inspection["without_gps"]) == (3, 2, ["tower/no_fix.jpg"])
     assert len(await _features(auth_client, response.json()["id"])) == 2
+    # The kept facts hold every photo, also the one the map leaves out.
+    kept = await photo_inspections.load_facts(await get_async_s3_client(), get_bucket_name(),
+                                              inspection["storage_prefix"])
+    assert [(f.filename, f.has_position) for f in kept] == [
+        ("tower/DJI_0001.JPG", True), ("tower/DJI_0002.JPG", True), ("tower/no_fix.jpg", False)]
 
 
 @pytest.mark.anyio
@@ -196,7 +203,7 @@ async def test_switch_on_the_browser_path_keeps_each_photo_once_not_the_uploaded
     init, done = await _browser_upload(auth_client, created["id"], "tower.zip", photo_zip(photos))
     assert done.status_code == 200, done.text
     prefix = f"inspections/{created['project_id']}/{init['layer_id']}/"
-    assert len(await _stored_keys(prefix)) == 3
+    assert len(await _stored_keys(prefix)) == 4  # three photos and their facts
     assert await _stored_keys(init["s3_key"]) == [], "the uploaded ZIP is not kept next to the photos"
     async with get_async_db_connection() as conn:
         layer_key = await conn.fetchval("SELECT s3_key FROM map_layers WHERE layer_id = $1", init["layer_id"])
@@ -231,7 +238,7 @@ async def test_switch_on_a_failed_upload_removes_the_photos_it_stored(auth_clien
     created = await _new_map(auth_client, "Failed inspection")
     response = await _upload(auth_client, created["id"], "tower.zip", photo_zip(_three_tower_photos()))
     assert response.status_code == 500
-    assert len(stored) == 3, "the photos were stored before the failure"
+    assert len(stored) == 4, "the photos and their facts were stored before the failure"
     assert await _stored_keys(f"inspections/{created['project_id']}/") == []
 
 
@@ -241,7 +248,7 @@ async def test_switch_on_a_failed_browser_upload_removes_the_photos_it_stored(au
     created = await _new_map(auth_client, "Failed browser inspection")
     init, done = await _browser_upload(auth_client, created["id"], "tower.zip", photo_zip(_three_tower_photos()))
     assert done.status_code == 500
-    assert len(stored) == 3, "the photos were stored before the failure"
+    assert len(stored) == 4, "the photos and their facts were stored before the failure"
     assert await _stored_keys(f"inspections/{created['project_id']}/") == []
     assert await _metadata(init["layer_id"]) is None
 
@@ -255,7 +262,7 @@ async def test_the_photos_of_an_existing_layer_are_never_removed_by_a_failed_ret
         removed = await photo_inspections.forget_if_unused(conn, await get_async_s3_client(), get_bucket_name(),
                                                            prefix, layer_id)
     assert removed == []
-    assert len(await _stored_keys(prefix)) == 3
+    assert len(await _stored_keys(prefix)) == 4  # three photos and their facts
 
 
 @pytest.mark.anyio
@@ -279,7 +286,7 @@ async def test_the_photos_go_with_the_layers_row(auth_client, switch_on, monkeyp
     # Through the API the earlier map version still shows the layer: its row stays, and with it the photos.
     removed = await auth_client.delete(f"/api/maps/{child_id}/layer/{layer_id}")
     assert removed.status_code == 200, removed.text
-    assert len(await _stored_keys(prefix)) == 3
+    assert len(await _stored_keys(prefix)) == 4  # three photos and their facts
 
     # Once no map version holds the layer, its row is deleted and the photos go too (whatever the switch says:
     # the files follow the row). Through the API that branch is not reached today (the earlier version above holds

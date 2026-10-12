@@ -23,6 +23,7 @@ from src.services import (
 )
 from src.services.insurance_engine import resolve_audience
 from src.services.remote_cog_layer import validate_remote_cog_bounds
+from src.services.shown_maps import SHOWN_MAPS_SQL
 from src.structures import async_read_conn
 
 _LONG_URL_SECONDS = 4 * 3600  # the plot search and the survey read the photo for many minutes
@@ -44,6 +45,13 @@ _PROJECT_SQL = """
 SELECT m.project_id FROM user_mundiai_maps m
  WHERE $1 = ANY(m.layers) AND m.soft_deleted_at IS NULL
  ORDER BY m.last_edited DESC NULLS LAST LIMIT 1
+"""
+
+# The live projects whose shown maps (shown_maps: the latest of each line of versions) list the layer.
+_PROJECTS_SQL = f"""
+SELECT DISTINCT s.project_id FROM ({SHOWN_MAPS_SQL}) s
+ WHERE $1 = ANY(s.layers)
+ ORDER BY s.project_id
 """
 
 
@@ -73,6 +81,12 @@ def is_georeferenced(metadata: dict[str, Any], bounds: Any) -> bool:
 
 async def project_of(conn: Any, layer_id: str) -> Optional[str]:
     return await conn.fetchval(_PROJECT_SQL, layer_id)
+
+
+async def projects_of(conn: Any, layer_id: str) -> list[str]:
+    """Every live project whose shown maps (shown_maps) list the layer, as `conn` may see them: more than one when the
+    layer was added to another project's map and is still on it."""
+    return [row["project_id"] for row in await conn.fetch(_PROJECTS_SQL, layer_id)]
 
 
 async def cog_url(s3: Any, bucket: str, metadata: dict[str, Any], seconds: int = 900) -> str:

@@ -175,7 +175,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "add_observation": BRAIN,
     "brain_graph_query": BRAIN,
     "brain_trajectory": BRAIN,
-    # --- Telecom towers (TOWERS): no tools yet. Tower tools are filed here as they are built. ---
+    # --- Telecom towers (TOWERS): a photo inspection's equipment counted by a person (switch TOWERS) ---
+    "get_tower_inspection_findings": TOWERS,
+    "tower_photos_needing_review": TOWERS,
 }
 
 
@@ -307,6 +309,34 @@ _ROUTED_CHARS = 20_000
 def mentions_tower_equipment(text: str) -> bool:
     """True when a message talks about masts, antennas, dishes or other telecom equipment."""
     return bool(_TOWER_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
+
+
+# What the tower tools answer: how many parts, the equipment or inventory, or which photos still need checking.
+# Tower words alone (a storm before tower climbs, "describe the tower photo", a flood near a mast, damage on a mast)
+# name the towers category but are not answered by its tools, so they never narrow the list to them
+# (`categories_answering`). English, French and Kinyarwanda ("-ngahe" = how many, ibikoresho = equipment, "genzur-" =
+# check); the French and Kinyarwanda terms need native-speaker review. Literal alternatives and bounded repeats only,
+# so the searches stay linear (CODING_STANDARDS 2026-10-11).
+_TOWER_COUNT_WORDS = re.compile(
+    r"(?<![^\W_])(?:"
+    r"how\s+many|count(?:s|ed|ing)?|number\s+of|inventor(?:y|ies)|equipment|"
+    r"combien|nombre|compter|comptez|comptage|inventaires?|[ée]quipements?|"
+    r"[a-z]{0,3}ngahe|ibikoresho"
+    r")(?![^\W_])",
+    re.IGNORECASE,
+)
+_PHOTO_WORDS = re.compile(r"(?<![^\W_])(?:photos?|pictures?|images?|foto|amafoto)(?![^\W_])", re.IGNORECASE)
+_CHECK_WORDS = re.compile(
+    r"(?<![^\W_])(?:check(?:s|ed|ing)?|unchecked|review(?:s|ed|ing)?|v[ée]rifi(?:er|[ée]e?s?)|"
+    r"[a-z]{0,6}genzur[a-z]{0,4})(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+def asks_about_tower_work(text: str) -> bool:
+    """True when a message asks what the tower tools answer: a count, the equipment, or photos to check."""
+    head = str(text or "")[:_ROUTED_CHARS]
+    return bool(_TOWER_COUNT_WORDS.search(head) or (_PHOTO_WORDS.search(head) and _CHECK_WORDS.search(head)))
 
 
 # ---------------------------------------------------------------------------
@@ -1426,7 +1456,7 @@ def build_project_fast_tool_call(text: str, project_industry: str | None) -> Fas
     industry may use its tool (industry.serves; an industry that could not be found gets only the tools every
     industry may use)."""
     fast = build_fast_tool_call(text)
-    if fast is None or not industry.serves(fast.tool_name, project_industry):
+    if fast is None or not industry.available(fast.tool_name, project_industry):
         return None
     return fast
 
@@ -1475,10 +1505,25 @@ def filter_tools_by_categories(
 
 
 def categories_with_tools(project_industry: str | None) -> frozenset[str]:
-    """The categories holding a tool a project of this industry may use (industry.serves). TOWERS joins them once
-    tower tools are built and filed under it."""
+    """The categories holding a tool a project of this industry may use now (industry.available: TOWERS only for
+    Telecom projects, and only while the TOWERS switch is on)."""
     return frozenset(category for name, category in _TOOL_CATEGORIES.items()
-                     if industry.serves(name, project_industry))
+                     if industry.available(name, project_industry))
+
+
+def offered_categories(tools: Iterable[dict]) -> frozenset[str]:
+    """The categories of the tools a turn is offered (its industry's, with switched-off tools left out)."""
+    return frozenset(_TOOL_CATEGORIES[name] for tool in tools
+                     if (name := tool.get("function", {}).get("name", "")) in _TOOL_CATEGORIES)
+
+
+def categories_answering(text: str, named: frozenset[str]) -> frozenset[str]:
+    """The named categories whose tools can answer the question: all of them, except towers when the question does
+    not ask what the tower tools answer (asks_about_tower_work). A weather, flood or description question that also
+    says "tower" keeps the tools that answer it: towers then only adds its tools to what other words select."""
+    if TOWERS in named and not asks_about_tower_work(text):
+        return named - {TOWERS}
+    return named
 
 
 def tool_category_for_name(tool_name: str) -> str:
@@ -1545,8 +1590,10 @@ class RoutingDecision:
             selected. Used when a proxy/rendering tool would be misleading for
             the question's evidence requirement.
         named_categories: Every category the question's words named, also one
-            with no tools yet (TOWERS), which selected_categories leaves out.
-            The abdication guard reads it.
+            with no tool offered to this turn (TOWERS outside Telecom projects or
+            with the switch off) or whose tools do not answer it (towers words
+            in a weather question), which selected_categories leaves out. The
+            abdication guard reads it (with categories_answering).
     """
 
     is_small_talk: bool
@@ -1584,6 +1631,7 @@ def _tool_round_in_flight(history: list[dict] | None) -> bool:
 def route_chat(
     user_message: str,
     history: list[dict] | None = None,
+    offered: frozenset[str] | None = None,
 ) -> RoutingDecision:
     """Decide how to handle one Sage turn.
 
@@ -1593,6 +1641,9 @@ def route_chat(
         history: Prior messages in OpenAI chat format (list of dicts
             with "role" and "content"/"tool_calls"). Used to suppress
             small-talk routing when a tool round is in progress.
+        offered: The categories of the tools this turn is offered
+            (offered_categories). A named category narrows the list only
+            when it is offered a tool; None: every category with a tool.
 
     Returns:
         A RoutingDecision the caller can act on.
@@ -1618,8 +1669,11 @@ def route_chat(
         excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
-    # A category narrows the list only once it has tools (TOWERS has none yet); until then the full list is sent.
-    if cats & set(_TOOL_CATEGORIES.values()):
+    # A category narrows the list only when this turn is offered one of its tools (TOWERS: Telecom projects with the
+    # switch on) and its tools answer the question (categories_answering: towers only for a count, the equipment or
+    # photos to check); otherwise the full list is sent, which holds the tower tools wherever they are offered.
+    with_tools = set(_TOOL_CATEGORIES.values()) if offered is None else offered
+    if categories_answering(user_message, cats) & with_tools:
         return RoutingDecision(
             is_small_talk=False,
             selected_categories=cats,
@@ -1629,12 +1683,14 @@ def route_chat(
             named_categories=cats,
         )
 
+    # "intent:towers;no_tools_yet": the question names only categories this turn is offered no tool of;
+    # "intent:towers;named_only": it names towers, whose tools do not answer it (a storm before tower climbs).
+    named_only = "no_tools_yet" if not cats & with_tools else "named_only"
     return RoutingDecision(
         is_small_talk=False,
         selected_categories=frozenset(),
         primary_model_override=None,
-        # "intent:towers;no_tools_yet": the question names a category that has no tools yet.
-        reason=f"intent:{','.join(sorted(cats))};no_tools_yet" if cats else "default",
+        reason=f"intent:{','.join(sorted(cats))};{named_only}" if cats else "default",
         excluded_tool_names=excluded_tool_names,
         named_categories=cats,
     )

@@ -112,6 +112,7 @@ class Target:
     finder_model: str  # the finder the levels were measured for; another finder's output gets no level
     finder_input_px: Optional[int]  # the finder reads a picture with its long side scaled to this, as measured
     look_alike_marks: bool  # also mark things that look alike but are not (see finder.note in the table)
+    suggestion_filter: bool  # the example finder filters its suggestions: on only where measured not to lower AP50
     max_level: Level
     size_floor_px: Optional[int]  # smallest marked size, as the finder reads it, among the measured pictures
     measured: dict[str, Any]  # provenance: PROVENANCE_KEYS
@@ -174,6 +175,25 @@ def _size_floor(name: str, sets: Sequence[str], finder_input: Optional[int],
     return math.floor(min(sizes)) if sizes else None
 
 
+_SUGGESTION_FILTER_KEYS = {"on", "evidence", "note"}
+
+
+def _suggestion_filter(name: str, entry: dict[str, Any]) -> bool:
+    """Whether the example finder filters its suggestions for this target. On only with the run it was measured in
+    (`evidence`, checked against the evidence file by the tests); every target says why in `note`."""
+    given = entry.get("suggestion_filter")
+    if not isinstance(given, dict) or set(given) != _SUGGESTION_FILTER_KEYS:
+        raise ValueError(f"answer target {name}: suggestion_filter must have exactly {sorted(_SUGGESTION_FILTER_KEYS)}")
+    if not isinstance(given["on"], bool):
+        raise ValueError(f"answer target {name}: suggestion_filter on {given['on']!r} is not true or false")
+    if not given["note"]:
+        raise ValueError(f"answer target {name}: suggestion_filter needs a note saying what was measured, or that "
+                         f"nothing was")
+    if given["on"] and not given["evidence"]:
+        raise ValueError(f"answer target {name}: the suggestion filter is on without the measurement it rests on")
+    return given["on"]
+
+
 def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
     measured = entry["measured"]
     _check_provenance(name, measured)
@@ -205,8 +225,8 @@ def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
     return Target(name=name, noun=entry["noun"], kind=entry["kind"], object_size_m=size,
                   object_size_note=entry["object_size_note"], finder_model=finder["model"],
                   finder_input_px=measured["finder_input_px"], look_alike_marks=bool(finder["look_alike_marks"]),
-                  max_level=level, size_floor_px=floor, measured=dict(measured),
-                  also_measured=tuple(dict(e) for e in entry["also_measured"]))
+                  suggestion_filter=_suggestion_filter(name, entry), max_level=level, size_floor_px=floor,
+                  measured=dict(measured), also_measured=tuple(dict(e) for e in entry["also_measured"]))
 
 
 def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:

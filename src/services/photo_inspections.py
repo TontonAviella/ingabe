@@ -10,6 +10,7 @@ Every fact is read from the photo itself. A value the photo does not carry is No
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import os
 import re
@@ -18,7 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from src.services import stored_files
+from src.services import answer_levels, stored_files
 
 # The switch: photo inspections are off unless PHOTO_INSPECTIONS is set to a true value.
 _SWITCH = "PHOTO_INSPECTIONS"
@@ -33,6 +34,10 @@ MAX_PHOTOS = 1_000
 MAX_UNPACKED_BYTES = 15 * 1024 ** 3  # 15 GiB
 
 _STORAGE_ROOT = "inspections"
+# Every photo's facts, kept beside the originals when the inspection is uploaded (camera points hold only the photos
+# with a GPS position). Not a photo name, so photo_key_in never matches it.
+FACTS_NAME = "facts.json"
+_FACTS_VERSION = 1
 _SEGMENT = r"[A-Za-z0-9_-]+"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 # Stored photos deleted at the same time.
@@ -45,7 +50,9 @@ _XMP_MAX_CHARS = 256 * 1024
 _XMP_MAX_VALUE = 64
 
 # EXIF tags (TIFF/EXIF 2.32).
-_MAKE, _MODEL, _DATETIME = 271, 272, 306
+_MAKE, _MODEL, _ORIENTATION, _DATETIME = 271, 272, 274, 306
+# EXIF orientations that turn the picture a quarter: shown upright, its width and height swap.
+_QUARTER_TURNS = frozenset({5, 6, 7, 8})
 _EXIF_IFD, _GPS_IFD = 0x8769, 0x8825
 _DATETIME_ORIGINAL, _OFFSET_TIME_ORIGINAL = 36867, 36881
 _GPS_LAT_REF, _GPS_LAT, _GPS_LON_REF, _GPS_LON, _GPS_ALT_REF, _GPS_ALT, _GPS_STATUS = 1, 2, 3, 4, 5, 6, 9
@@ -57,6 +64,12 @@ _XMP_FIELDS = {
     "gimbal_yaw": "GimbalYawDegree",
     "flight_yaw": "FlightYawDegree",
 }
+
+
+# Which way a photo looked, from DJI's gimbal pitch (degrees; 0 is level, -90 straight down). A cut-off set with the
+# towers spec on 2026-10-11, not measured: a photo within this many degrees of straight down looked straight down
+# (answer_levels.NADIR), any other pitch at an angle (OBLIQUE). No pitch: not known (None), never guessed.
+NADIR_WITHIN_DEG = 10.0
 
 
 class UnreadablePhoto(ValueError):
@@ -86,10 +99,19 @@ class PhotoFacts:
     flight_yaw: Optional[float]
     make: Optional[str]
     model: Optional[str]
+    orientation: Optional[int] = None  # EXIF orientation (1-8); None when the photo has none
 
     @property
     def has_position(self) -> bool:
         return self.lat is not None and self.lon is not None
+
+    @property
+    def upright_size(self) -> tuple[int, int]:
+        """(width, height) as the photo is shown: its EXIF orientation applied, as a browser and the example
+        finder read it. Boxes on a photo are in these pixels."""
+        if self.orientation in _QUARTER_TURNS:
+            return self.height, self.width
+        return self.width, self.height
 
     @property
     def extension(self) -> str:
@@ -155,6 +177,7 @@ def read_photo(path: str, filename: str) -> PhotoFacts:
         flight_yaw=_xmp_number(xmp, _XMP_FIELDS["flight_yaw"]),
         make=_text(exif.get(_MAKE)),
         model=_text(exif.get(_MODEL)),
+        orientation=_orientation(exif.get(_ORIENTATION)),
     )
 
 
@@ -162,6 +185,14 @@ def read_photos(photos: Iterable[tuple[str, str]]) -> list[PhotoFacts]:
     """The facts of each (path, filename), in the same order. Raises UnreadablePhoto for a file that is not a
     photo."""
     return [read_photo(path, filename) for path, filename in photos]
+
+
+def view_of(facts: PhotoFacts) -> Optional[str]:
+    """Which way the photo looked (answer_levels.NADIR or OBLIQUE) from its gimbal pitch; None when the photo does
+    not say (no DJI gimbal pitch: a phone photo, another camera)."""
+    if facts.gimbal_pitch is None:
+        return None
+    return answer_levels.NADIR if facts.gimbal_pitch <= -90 + NADIR_WITHIN_DEG else answer_levels.OBLIQUE
 
 
 def check_placeable(facts: list[PhotoFacts]) -> None:
@@ -183,6 +214,29 @@ def storage_prefix(project_id: str, layer_id: str) -> str:
 def photo_key(prefix: str, facts: PhotoFacts) -> str:
     """The storage key of one original photo: named by its content, so the same photo is stored once."""
     return f"{prefix}{facts.sha256}{facts.extension}"
+
+
+def facts_key(prefix: str) -> str:
+    """Where every photo's facts are kept for the inspection stored under `prefix`."""
+    return f"{prefix}{FACTS_NAME}"
+
+
+async def save_facts(s3: Any, bucket: str, prefix: str, facts: list[PhotoFacts]) -> None:
+    """Keep every photo's facts (in upload order) beside the originals."""
+    body = json.dumps({"version": _FACTS_VERSION, "photos": [asdict(f) for f in facts]}).encode()
+    await s3.put_object(Bucket=bucket, Key=facts_key(prefix), Body=body, ContentType="application/json")
+
+
+async def load_facts(s3: Any, bucket: str, prefix: str) -> Optional[list[PhotoFacts]]:
+    """Every photo's facts, in upload order; None when the inspection has none kept (uploaded before they were
+    kept, 2026-10-11). A storage error raises."""
+    record = await stored_files.load_json(s3, bucket, facts_key(prefix))
+    if record is None:
+        return None
+    if record.get("version") != _FACTS_VERSION:
+        raise ValueError(f"the photo facts under {prefix!r} are version {record.get('version')!r}, "
+                         f"not {_FACTS_VERSION}")
+    return [PhotoFacts(**row) for row in record["photos"]]
 
 
 def is_sha256(value: str) -> bool:
@@ -226,6 +280,13 @@ def photo_key_in(prefix: str, sha256: str, keys: Iterable[str]) -> Optional[str]
     extensions = "|".join(re.escape(ext) for ext in sorted(PHOTO_EXTENSIONS))
     pattern = re.compile(rf"{re.escape(prefix)}{re.escape(sha256)}(?:{extensions})")
     return next((key for key in keys if pattern.fullmatch(key)), None)
+
+
+async def stored_photo_key(s3: Any, bucket: str, prefix: str, sha256: str) -> Optional[str]:
+    """The storage key of the photo `sha256` of the inspection stored under `prefix`, or None when it has no such
+    photo. A storage error raises."""
+    listing = await s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}{sha256}", MaxKeys=10)
+    return photo_key_in(prefix, sha256, [o["Key"] for o in listing.get("Contents", [])])
 
 
 def content_type(key: str) -> str:
@@ -282,6 +343,11 @@ def _text(value) -> Optional[str]:
         return None
     value = value.replace("\x00", "").strip()
     return value or None
+
+
+def _orientation(value) -> Optional[int]:
+    """EXIF orientation 1-8; None when missing or not one of them."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 8 else None
 
 
 def _finite(value) -> Optional[float]:

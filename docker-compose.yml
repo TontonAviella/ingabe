@@ -84,6 +84,10 @@ services:
       - EXAMPLE_FINDER=${EXAMPLE_FINDER:-0}
       # Torch threads in the example finder's own process (src/services/example_finder_model.py).
       - FINDER_THREADS=${FINDER_THREADS:-4}
+      # Tower work on photo inspections in Telecom projects: marks, the finder's suggestions, a person's review,
+      # the tower cards and Sage's tower tools (src/services/tower_inspection.py). Off: its routes answer 404 and
+      # Sage has no tower tools. Needs PHOTO_INSPECTIONS (and EXAMPLE_FINDER to find).
+      - TOWERS=${TOWERS:-0}
       - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-}
       - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}

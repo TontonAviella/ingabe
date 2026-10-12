@@ -25,7 +25,7 @@ in `src/routes/layer_router.py`. Switch: `PHOTO_INSPECTIONS` (off by default; re
 ## Facts read from each photo
 
 `sha256, filename, width, height, taken_at, lat, lon, altitude_m, relative_altitude_m, gimbal_pitch, gimbal_yaw,
-flight_yaw, make, model`.
+flight_yaw, make, model, orientation`.
 
 - Read from the photo itself: EXIF (Pillow, headers only, pixels are never decoded) and the XMP packet as text
   (DJI `drone-dji:RelativeAltitude`, `GimbalPitchDegree`, `GimbalYawDegree`, `FlightYawDegree`; any namespace prefix,
@@ -42,7 +42,14 @@ flight_yaw, make, model`.
   DJI's height above the take-off point.
 - `taken_at` is ISO 8601 from `DateTimeOriginal` (else `DateTime`), with `OffsetTimeOriginal` when the camera wrote one;
   an unparseable date is None.
-- `width`/`height` are the stored pixel size (EXIF orientation is not applied).
+- `width`/`height` are the stored pixel size (EXIF orientation is not applied). `orientation` is the EXIF
+  orientation (1-8, None when absent); `upright_size` is (width, height) as the photo is shown, with a quarter turn
+  (orientations 5-8) swapping them. Boxes drawn on a photo (the tower work, the example finder) are in these upright
+  pixels, as a browser shows the photo and as the finder decodes it.
+- **Which way a photo looked** (`view_of`): from DJI's gimbal pitch only. Within `NADIR_WITHIN_DEG` (10 degrees)
+  of straight down (-90) it looked straight down (`answer_levels.NADIR`); any other pitch, at an angle (`OBLIQUE`).
+  A photo without a gimbal pitch (a phone, another camera) is not known (None), never guessed. The 10 degrees are a
+  cut-off set with the towers spec on 2026-10-11, not measured.
 - A file with a photo extension that Pillow cannot read fails the upload with 400 naming the file.
 
 ## Placement and storage
@@ -50,7 +57,10 @@ flight_yaw, make, model`.
 - At least one photo must have a GPS position, else 400 ("None of the N photos has a GPS position..." or, for one
   photo, "This photo has no map position and no GPS position...").
 - Each original is stored once, streamed from disk, at `inspections/<project_id>/<layer_id>/<sha256><ext>` (`ext` the
-  original's, lower case). Identical photos share one object. On the browser path (`upload-complete`) the uploaded ZIP
+  original's, lower case). Every photo's facts, in upload order and also those without a GPS position (which the
+  camera points leave out), are kept beside them at `inspections/<project_id>/<layer_id>/facts.json`
+  (`save_facts` / `load_facts`; version 1). An inspection uploaded before 2026-10-11 has no facts file:
+  `load_facts` says None and the tower work asks for the photos to be uploaded again. Identical photos share one object. On the browser path (`upload-complete`) the uploaded ZIP
   or photo under `uploads/` is deleted once the layer exists (`HandlerResult.keep_uploaded_file = False`); the other
   path never stores it.
 - Photos go when their layer does not exist (`photo_inspections.forget_if_unused`, which deletes everything under the

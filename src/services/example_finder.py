@@ -7,15 +7,18 @@ picture is the same picture, the prompts are the user's marks (class 0) plus loo
 target uses them, predict(conf CONF, imgsz = the target's finder_input_px, max_det MAX_DET, cpu); class 0 is kept
 and finds overlapping one of the user's marks at IoU >= MARK_IOU are dropped. A picture larger than the target was
 measured on (its image_px, the long side) is first shrunk so its long side is image_px, the marks with it; the finds
-are mapped back to the picture's own pixels.
+are mapped back to the picture's own pixels. For a target whose measured settings turn it on (answer_levels:
+`suggestion_filter`, measured 2026-10-11 by scripts/finder_eval/run_postfilter.py) the finds are then filtered
+(filter_suggestions): best first, a find is kept only when its area is 1/4 to 4 times the median area of the user's
+marks and it does not overlap an already kept find at IoU >= FILTER_IOU, at most FILTER_MAX of them.
 
 It runs only on pictures like the measured ones: taken the same way (answer_levels: oblique tower photos, or
 pictures looking straight down), with the marked objects at least as big, as the finder reads them, as the smallest
 the target was measured on (answer_levels.size_gate). Anything else is refused with the reason, never run.
 
-Per-target settings (image_px, finder_input_px, look_alike_marks, view) are read from answer_levels, which owns the
-measured table; none are copied here. How far an answer about the finds may go is answer_levels' decision, not this
-module's.
+Per-target settings (image_px, finder_input_px, look_alike_marks, view, suggestion_filter) are read from
+answer_levels, which owns the measured table; none are copied here. How far an answer about the finds may go is
+answer_levels' decision, not this module's.
 
 Jobs: a request is identified by its content (`content_sha`: the picture, the marks, the look-alikes, the target,
 the model and the settings). Its result is kept in object storage per project (finds/v1/<project>/<sha>.json) and
@@ -34,6 +37,7 @@ import json
 import logging
 import math
 import os
+import statistics
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,7 +47,7 @@ import numpy as np
 from PIL import Image
 from redis.exceptions import LockError
 
-from src.services import answer_levels, boxes, example_finder_model
+from src.services import answer_levels, boxes, example_finder_model, stored_files
 from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Runner
 from src.services.example_finder_pictures import (
     LONLAT,
@@ -65,6 +69,11 @@ MAX_DET = 300
 MARK_IOU = 0.3  # a find overlapping one of the user's marks this much is that mark again, not another object
 TARGET_CLASS = 0
 LOOKALIKE_CLASS = 1
+# The suggestion filter (scripts/finder_eval/run_postfilter.py), fixed before it was measured; used only for targets
+# whose measured settings turn it on (Settings.suggestion_filter).
+FILTER_AREA_RATIO = 4.0  # a find's area is 1/4 to 4 times the median area of the user's marks, or it is dropped
+FILTER_IOU = 0.5  # a find overlapping an already kept (better scored) find this much is that find again
+FILTER_MAX = 50  # at most this many finds are kept
 
 MIN_MARKS = 1
 MAX_MARKS = 20
@@ -122,10 +131,12 @@ class Settings:
     finder_input_px: int  # the finder reads the picture with its long side scaled to this (imgsz)
     look_alike_marks: bool  # the target's measured settings use look-alike marks
     view: str  # answer_levels.OBLIQUE or NADIR: the way the measured pictures looked
+    suggestion_filter: bool  # the finds are filtered (filter_suggestions): measured not to lower AP50 for the target
 
     def as_dict(self) -> dict[str, Any]:
         return {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
-                "look_alike_marks": self.look_alike_marks, "view": self.view}
+                "look_alike_marks": self.look_alike_marks, "view": self.view,
+                "suggestion_filter": self.suggestion_filter}
 
 
 def settings(target_name: str) -> Settings:
@@ -140,7 +151,7 @@ def settings(target_name: str) -> Settings:
     if t.finder_input_px is None or image_px is None or view is None:
         raise FinderInputError(f"the finder has never been measured on {t.noun}, so it has no settings to run with")
     return Settings(target=target_name, image_px=int(image_px), finder_input_px=int(t.finder_input_px),
-                    look_alike_marks=t.look_alike_marks, view=view)
+                    look_alike_marks=t.look_alike_marks, view=view, suggestion_filter=t.suggestion_filter)
 
 
 def _is_number(v: Any) -> bool:
@@ -178,7 +189,9 @@ def check_inside(boxes_px: Sequence[Box], width: int, height: int, what: str) ->
     return out
 
 
-def _lookalike_shape(given: Any, s: Settings) -> list[Box]:
+def check_lookalikes(given: Any, s: Settings) -> list[Box]:
+    """Look-alike marks as given (any coordinates): at most MAX_LOOKALIKE_MARKS boxes, and only for a target whose
+    measured settings use them (FinderInputError otherwise: refused, never ignored)."""
     looks = check_shape(given or [], "look-alike mark", 0, MAX_LOOKALIKE_MARKS)
     if looks and not s.look_alike_marks:
         raise FinderInputError(f"look-alike marks are not used for {answer_levels.target(s.target).noun}: they "
@@ -267,6 +280,28 @@ def _find(picture: Shown, s: Settings, runner: Runner) -> list[Find]:
     return sorted(finds, key=lambda f: -f.score)
 
 
+def filter_suggestions(finds: Sequence[Find], marks_px: Sequence[Box], s: Settings) -> list[Find]:
+    """The finds a person is shown: the finds as they are when the target's measured settings leave the suggestion
+    filter off; otherwise, best score first, only finds whose area is 1/4 to 4 times (FILTER_AREA_RATIO) the median
+    area of the user's marks and that do not overlap an already kept find at IoU >= FILTER_IOU, at most FILTER_MAX.
+
+    `finds` and `marks_px` are in the picture's own pixels (the finds after the marks themselves were dropped).
+    Fixed before it was measured (scripts/finder_eval/run_postfilter.py); on only where it did not lower AP50."""
+    if not s.suggestion_filter:
+        return list(finds)
+    median = statistics.median(boxes.area(m) for m in marks_px)
+    kept: list[Find] = []
+    for f in sorted(finds, key=lambda g: -g.score):
+        if not median / FILTER_AREA_RATIO <= boxes.area(f.box) <= median * FILTER_AREA_RATIO:
+            continue
+        if any(boxes.iou(f.box, k.box) >= FILTER_IOU for k in kept):
+            continue
+        kept.append(f)
+        if len(kept) >= FILTER_MAX:
+            break
+    return kept
+
+
 def _stored_model() -> Runner:
     """The finder with the weights from object storage (fetched once, checked by sha256). Blocking."""
     return example_finder_model.runner(example_finder_model.ensure_weights(get_s3_client(), get_bucket_name()))
@@ -274,7 +309,8 @@ def _stored_model() -> Runner:
 
 def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, target: str, *, view: str,
          runner: Optional[Runner] = None) -> list[Find]:
-    """The objects like the marked ones on the same picture, best first, in the picture's own pixels.
+    """The objects like the marked ones on the same picture, best first, in the picture's own pixels; filtered
+    when the target's measured settings turn the suggestion filter on (filter_suggestions).
 
     `picture` is a photo file's bytes or RGB pixels (height x width x 3, uint8), taken the way `view` says
     (answer_levels.OBLIQUE or NADIR); `marks` 1 to 20 boxes (left, top, right, bottom) in its pixels;
@@ -287,9 +323,16 @@ def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, ta
     pixels = check_pixels(picture) if isinstance(picture, np.ndarray) else decode_photo(picture)
     height, width = pixels.shape[:2]
     marks_px = check_inside(check_shape(marks, "mark", MIN_MARKS, MAX_MARKS), width, height, "mark")
-    looks_px = check_inside(_lookalike_shape(lookalike_marks, s), width, height, "look-alike mark")
+    looks_px = check_inside(check_lookalikes(lookalike_marks, s), width, height, "look-alike mark")
     check_picture(s, view, width, height, marks_px)
-    return _find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model())
+    return filter_suggestions(_find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model()),
+                              marks_px, s)
+
+
+def protocol() -> dict[str, Any]:
+    """The measured protocol's values: part of a request's identity (content_sha) and kept with its finds."""
+    return {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU,
+            "suggestion_filter": {"area_ratio": FILTER_AREA_RATIO, "iou": FILTER_IOU, "max": FILTER_MAX}}
 
 
 def content_sha(picture_sha: str, marks_px: Sequence[Box], looks_px: Sequence[Box], s: Settings) -> str:
@@ -303,7 +346,7 @@ def content_sha(picture_sha: str, marks_px: Sequence[Box], looks_px: Sequence[Bo
         "target": s.target,
         "model": MODEL_SHA256,
         "settings": s.as_dict(),
-        "protocol": {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU},
+        "protocol": protocol(),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -449,15 +492,6 @@ async def _take_slot(redis: Any, request: _Request, held: list[Any]) -> None:
         await asyncio.sleep(QUEUE_POLL_S)
 
 
-async def _load(s3: Any, bucket: str, key: str) -> Optional[dict[str, Any]]:
-    try:
-        response = await s3.get_object(Bucket=bucket, Key=key)
-    except s3.exceptions.NoSuchKey:
-        return None
-    async with response["Body"] as body:
-        return json.loads(await body.read())
-
-
 def _done(job_id: str, stored: dict[str, Any]) -> Job:
     return Job(job_id=job_id, status=DONE, finds=stored["finds"])
 
@@ -473,7 +507,7 @@ async def status(redis: Any, s3: Any, bucket: str, project_id: str, job_id: str)
     there is no such job here (never started, or the worker running it stopped: starting it again is safe)."""
     if not is_job_id(job_id):
         return None
-    stored = await _load(s3, bucket, result_key(project_id, job_id))
+    stored = await stored_files.load_json(s3, bucket, result_key(project_id, job_id))
     if stored is not None:
         return _done(job_id, stored)
     raw = await redis.get(_status_key(project_id, job_id))
@@ -499,14 +533,14 @@ async def start(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str,
     """
     s = settings(target)
     given_marks = check_shape(marks, "mark", MIN_MARKS, MAX_MARKS)
-    given_looks = _lookalike_shape(lookalike_marks, s)
+    given_looks = check_lookalikes(lookalike_marks, s)
     picture = await source.read()
     marks_px = check_inside([picture.to_pixels(b) for b in given_marks], picture.width, picture.height, "mark")
     looks_px = check_inside([picture.to_pixels(b) for b in given_looks], picture.width, picture.height,
                             "look-alike mark")
     gate = check_picture(s, picture.view, picture.width, picture.height, marks_px)
     job_id = content_sha(picture.sha256, marks_px, looks_px, s)
-    stored = await _load(s3, bucket, result_key(project_id, job_id))
+    stored = await stored_files.load_json(s3, bucket, result_key(project_id, job_id))
     if stored is not None:
         return _done(job_id, stored)
     request = _Request(project_id=project_id, job_id=job_id, user_id=user_id, settings=s,
@@ -565,7 +599,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
         "target": s.target,
         "model": {"name": MODEL_NAME, "sha256": MODEL_SHA256},
         "settings": s.as_dict(),
-        "protocol": {"conf": CONF, "max_det": MAX_DET, "mark_iou": MARK_IOU},
+        "protocol": protocol(),
         "picture": {"sha256": request.picture_sha256, "width": request.shown.width, "height": request.shown.height,
                     "frame": frame.as_dict() if frame else None},
         "size_gate": {"object_px": round(gate.object_px, 1) if gate.object_px is not None else None,
@@ -581,7 +615,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
 async def _work(redis: Any, s3: Any, bucket: str, request: _Request, runner: Optional[Runner],
                 held: list[Any]) -> None:
     key = result_key(request.project_id, request.job_id)
-    if await _load(s3, bucket, key) is not None:  # another worker finished it between the check and the lock
+    if await stored_files.load_json(s3, bucket, key) is not None:  # another worker finished it between the check and the lock
         return
     await _take_slot(redis, request, held)
     await _set_status(redis, request.project_id, request.job_id, RUNNING, LOCK_TTL_S)
@@ -589,6 +623,7 @@ async def _work(redis: Any, s3: Any, bucket: str, request: _Request, runner: Opt
     began = time.monotonic()
     finds = await asyncio.to_thread(_find, request.shown, request.settings, run_model)
     seconds = time.monotonic() - began
+    finds = filter_suggestions(finds, request.marks_px, request.settings)  # at most MAX_DET finds: milliseconds
     await _hand_over(redis, request)
     await redis.zrem(queue_key(), request.place)  # out of the line before the finds show, so it no longer counts
     record = await asyncio.to_thread(_record, request, finds, seconds)

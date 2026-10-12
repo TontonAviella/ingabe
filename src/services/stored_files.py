@@ -1,16 +1,17 @@
-"""Files checked by their sha256: the hash of a file on disk, and model weights kept in object storage that are
-fetched once into a local cache and refused when they do not match.
+"""Stored files: the sha256 of a file on disk, model weights kept in object storage that are fetched once into a
+local cache and refused when they do not match, and a JSON record kept in object storage.
 
-One home for both, so every model the app runs is checked the same way (crop fingerprints, the example finder)
-and an uploaded file is identified by the same hash everywhere.
+One home for these, so every model the app runs is checked the same way (crop fingerprints, the example finder),
+an uploaded file is identified by the same hash everywhere, and a kept record is read the same way.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 _CHUNK = 8 * 1024 * 1024
 
@@ -40,3 +41,14 @@ def ensure_local_copy(s3: Any, bucket: str, key: str, sha256: str, path: str, wh
             raise RuntimeError(f"the {what} in storage ({key}) does not match its sha256")
         os.replace(partial, path)
     return path
+
+
+async def load_json(s3: Any, bucket: str, key: str) -> Optional[Any]:
+    """The JSON record kept at `key` in object storage (an aiobotocore client), or None when there is none. Any other
+    storage error raises."""
+    try:
+        response = await s3.get_object(Bucket=bucket, Key=key)
+    except s3.exceptions.NoSuchKey:
+        return None
+    async with response["Body"] as body:
+        return json.loads(await body.read())

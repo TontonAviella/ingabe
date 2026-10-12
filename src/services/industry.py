@@ -9,15 +9,17 @@ Every capability declares the industries it serves (CAPABILITIES below; SHARED =
 uses). A capability is used for a project only when the project's industry is in its set, and the check is made in
 code (tool list, tool execution, automation, cards) and, for Brain notes, by the database (row-level security on
 brain_pages keyed on the app.industry setting). An unlabelled tool is treated as agriculture-only, and a test fails
-until it is labelled.
+until it is labelled. A capability behind a switch (SWITCHES: the tower work, TOWERS) is used only while it is on
+(`available`); with the switch off nothing of it is offered, run or shown.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.database.pool import get_request_industry
+from src.services import tower_inspection
 
 INDUSTRIES: dict[str, dict[str, str]] = {
     "agriculture": {"label": "Agriculture", "note": "Farms, plots and crops"},
@@ -27,6 +29,7 @@ INDUSTRIES: dict[str, dict[str, str]] = {
 DEFAULT_INDUSTRY = "agriculture"  # projects made before industries existed, and users who have not chosen
 
 AGRICULTURE = frozenset({"agriculture"})
+TELECOM = frozenset({"telecom"})
 SHARED = frozenset(INDUSTRIES)
 
 # Sage's tools and the automatic jobs, each with the industries it serves.
@@ -94,7 +97,19 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "drone_first_look": AGRICULTURE,  # Sage's first message about green cover and plots
     "drone_cards": AGRICULTURE,  # the question cards: plots, crops, bare ground, the crop survey
     "district_ndvi_map": AGRICULTURE,  # district vegetation colours and NDVI in the admin outlines tooltip
-    # (Power Grid and Telecom capabilities are added here as they are built.)
+    # --- Telecom towers: the work on a photo inspection's photos (switch TOWERS) ---
+    "tower_inspection": TELECOM,  # marks, the finder's suggestions and their review (/api/towers/...)
+    "tower_cards": TELECOM,  # the tower question cards
+    "get_tower_inspection_findings": TELECOM,
+    "tower_photos_needing_review": TELECOM,
+    # (Power Grid capabilities are added here as they are built.)
+}
+
+# Capabilities that exist only while their switch is on: off, they are not offered, not run and not shown, for any
+# industry (each switch is read by its domain's one function).
+SWITCHES: dict[str, Callable[[], bool]] = {
+    name: tower_inspection.enabled
+    for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review")
 }
 
 
@@ -115,21 +130,35 @@ def serves(capability: str, industry: Optional[str]) -> bool:
     return industry in served
 
 
+def switched_on(capability: str) -> bool:
+    """Whether a capability's switch is on (a capability without a switch always is)."""
+    switch = SWITCHES.get(capability)
+    return switch is None or switch()
+
+
+def available(capability: str, industry: Optional[str]) -> bool:
+    """Whether a capability may be used for a project of this industry now: it serves the industry and its switch
+    is on. What is offered, run and shown follows this; `serves` alone says which industries a capability is for."""
+    return switched_on(capability) and serves(capability, industry)
+
+
 def request_is_agriculture() -> bool:
     """Whether the current request works for an agriculture project (also outside a request: the default)."""
     return (get_request_industry() or DEFAULT_INDUSTRY) == "agriculture"
 
 
 def tools_for(tools: list[dict], industry: Optional[str]) -> list[dict]:
-    """The tool schemas a project of this industry may be offered."""
-    return [t for t in tools if serves(t.get("function", {}).get("name", ""), industry)]
+    """The tool schemas a project of this industry may be offered (switched-off tools are not)."""
+    return [t for t in tools if available(t.get("function", {}).get("name", ""), industry)]
 
 
 def tool_refusal(tool_name: str, industry: Optional[str]) -> Optional[dict]:
     """None if the tool may run for this project; otherwise the error the model gets back instead of running it."""
-    if serves(tool_name, industry):
+    if available(tool_name, industry):
         return None
-    if tool_name not in CAPABILITIES:  # still refused (fail closed), but not blamed on the industry
+    # Refused (fail closed) without naming an industry: an unknown tool, and a tool behind a switch (the tower tools),
+    # which is offered nowhere but where it is available, so for any other project it simply does not exist.
+    if tool_name not in CAPABILITIES or tool_name in SWITCHES:
         reason = f"There is no tool named {tool_name} here. Use one of the tools you were given."
     elif industry not in INDUSTRIES:
         reason = f"{tool_name} cannot run here: this project's industry could not be found, so only the map and imagery tools are available."
@@ -151,13 +180,18 @@ def prompt_note(industry: Optional[str]) -> Optional[str]:
     if (industry or DEFAULT_INDUSTRY) == "agriculture":
         return None
     label = INDUSTRIES[industry]["label"]  # type: ignore[index]
-    return (
+    note = (
         f"This project belongs to the {label} industry ({INDUSTRIES[industry]['note'].lower()}). "  # type: ignore[index]
         "Never use crop, farming, soil or vegetation-health reasoning here, and do not mention farm findings. "
         f"Ingabe's dedicated {label} analysis is still being built: help with the map, places, imagery, the user's "
         "own uploads, weather and the project's notes, and say plainly when a question needs analysis Ingabe "
         "cannot do yet."
     )
+    if available("get_tower_inspection_findings", industry):
+        note += (" For a tower photo inspection (a layer of camera points), use get_tower_inspection_findings and "
+                 "tower_photos_needing_review: give only the counts they return, which a person checked, and never "
+                 "count equipment from a photo yourself.")
+    return note
 
 
 _FARM_INTRO = "specialising in Rwanda agriculture, satellite imagery analysis, and geospatial data processing."
