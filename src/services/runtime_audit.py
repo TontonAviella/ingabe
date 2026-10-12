@@ -4,47 +4,17 @@ import argparse
 import importlib.metadata
 import importlib.util
 import json
-import os
-from pathlib import Path
 from typing import Any
 
 from src.services.life_harness import life_harness_enabled
 from src.services.raster_object_candidates import _fastsam_weights_status
-from src.services.hermes_runtime import hermes_is_enabled
 
 
-def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
+def build_runtime_audit() -> dict[str, Any]:
     fastsam_package = _package_status("ultralytics", "ultralytics")
     fastsam_weights = _fastsam_weights_status()
     fastsam_ready = bool(
         fastsam_package["installed"] and fastsam_weights.get("available")
-    )
-
-    hermes_package = _package_status("hermes_cli", "hermes-agent")
-    hermes_enabled = hermes_is_enabled()
-    hermes_tool_route = _truthy_env("MUNDI_TOOL_CALL_ENABLED")
-    hermes_secret_file = Path(
-        os.environ.get(
-            "HERMES_LOCAL_SECRET_FILE",
-            "/tmp/ingabe_cache/hermes_gateway_secret",
-        )
-    )
-    hermes_secret = bool(
-        os.environ.get("HERMES_GATEWAY_SECRET", "").strip()
-        or (hermes_secret_file.is_file() and hermes_secret_file.stat().st_size > 0)
-    )
-    plugin_path = Path(
-        os.environ.get(
-            "MUNDI_HERMES_PLUGIN_PATH",
-            "/app/hermes_integration/plugins/ingabe-sage",
-        )
-    )
-    hermes_ready = bool(
-        hermes_package["installed"]
-        and plugin_path.is_dir()
-        and hermes_enabled
-        and hermes_tool_route
-        and hermes_secret
     )
 
     components: dict[str, Any] = {
@@ -53,20 +23,6 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
             "weights": fastsam_weights,
             "ready": fastsam_ready,
             "decision": "keep: primary orthophoto object-mask engine",
-        },
-        "hermes_sage": {
-            **hermes_package,
-            "enabled": hermes_enabled,
-            "tool_route_enabled": hermes_tool_route,
-            "gateway_secret_configured": hermes_secret,
-            "local_secret_file_present": hermes_secret_file.is_file(),
-            "plugin_present": plugin_path.is_dir(),
-            "ready": hermes_ready,
-            "decision": (
-                "keep as Sage's scoped complex planner; deterministic admin and "
-                "vision paths remain first, and only task-relevant tool profiles "
-                "are exposed to the model"
-            ),
         },
         "life_harness": {
             "installed": True,
@@ -78,8 +34,8 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
             **_package_status("harnessx", "harnessx"),
             "ready": False,
             "decision": (
-                "exclude: duplicates Hermes/Life-Harness and adds a second agent "
-                "runtime, provider stack, UI, sandbox, and tool registry"
+                "exclude: duplicates the Sage chat loop and Life-Harness and adds a "
+                "second agent runtime, provider stack, UI, sandbox, and tool registry"
             ),
         },
         "davidondrej_skills": {
@@ -100,9 +56,6 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
         },
     }
 
-    if deep:
-        components["hermes_sage"]["plugin_probe"] = _hermes_plugin_probe()
-
     required = ("fastsam", "life_harness")
     return {
         "status": (
@@ -112,7 +65,6 @@ def build_runtime_audit(*, deep: bool = False) -> dict[str, Any]:
         ),
         "runtime_policy": "local_only",
         "source_control": "https://github.com/TontonAviella/ingabe.git",
-        "deep": deep,
         "components": components,
     }
 
@@ -128,40 +80,12 @@ def _package_status(import_name: str, package_name: str) -> dict[str, Any]:
     return {"installed": installed, "version": version}
 
 
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes"}
-
-
-def _hermes_plugin_probe() -> dict[str, Any]:
-    try:
-        from hermes_cli.plugins import PluginManager
-
-        manager = PluginManager()
-        manager.discover_and_load()
-        plugins = manager.list_plugins()
-    except Exception as exc:
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-    ingabe = next(
-        (plugin for plugin in plugins if plugin.get("name") == "ingabe-sage"),
-        None,
-    )
-    return {
-        "status": "success" if ingabe and not ingabe.get("error") else "error",
-        "plugin": ingabe,
-    }
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Audit local Ingabe runtime components"
     )
-    parser.add_argument(
-        "--deep",
-        action="store_true",
-        help="also run Hermes plugin discovery",
-    )
-    args = parser.parse_args()
-    print(json.dumps(build_runtime_audit(deep=args.deep), indent=2, default=str))
+    parser.parse_args()
+    print(json.dumps(build_runtime_audit(), indent=2, default=str))
 
 
 if __name__ == "__main__":

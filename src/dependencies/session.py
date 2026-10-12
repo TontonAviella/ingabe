@@ -98,14 +98,13 @@ EditOrReadOnlyUserContext = LegacyUserContext
 
 
 class ServiceUserContext(UserContext):
-    """Used by service-to-service callbacks where the caller has already
-    been authenticated at the transport layer (HMAC on /internal/tool-call),
-    and the (user_id, partner_id) pair is trusted from a verified payload.
+    """A session built from an already-trusted (user_id, partner_id), with
+    no JWT, email or role; used where the caller is already authenticated,
+    e.g. tests that call tools directly.
 
     Carries only the IDs needed to (a) set the RLS GUCs and (b) populate
-    IngabeToolCallMetaArgs for tool dispatch. No JWT, no email, no role —
-    those aren't present in the Hermes payload and tools downstream are
-    expected to either tolerate None or fail with a clear error.
+    IngabeToolCallMetaArgs for tool dispatch. Tools downstream are expected
+    to either tolerate the missing fields or fail with a clear error.
     """
 
     def __init__(self, user_uuid: str, partner_id: str | None = None) -> None:

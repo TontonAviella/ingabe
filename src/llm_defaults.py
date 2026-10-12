@@ -1,4 +1,4 @@
-"""Default LLM profile for Sage/Hermes brain routing."""
+"""Default LLM profile for Sage brain routing."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def resolve_chat_endpoint(
 
     Non-prefixed model names keep the caller's configured OpenAI-compatible
     endpoint. This lets hosted deployments use Nemotron Super 3 through an
-    OpenAI-compatible gateway while local Hermes/Sage defaults to
+    OpenAI-compatible gateway while local Sage defaults to
     `ollama:gemma4:12b-it-qat`.
     """
 

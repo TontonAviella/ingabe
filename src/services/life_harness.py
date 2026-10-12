@@ -3,7 +3,7 @@
 The upstream benchmark source is pinned as a submodule at
 `external/life-harness`. We do not import benchmark runtime code in production;
 we adapt its H2/H3/H4/H5 harness shape into deterministic guards around the
-frozen Sage/Hermes brain model.
+frozen Sage brain model.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ _H5_SKILLS: list[dict[str, str]] = [
 
 
 def life_harness_enabled() -> bool:
-    """Return whether the runtime harness should adapt Hermes/Sage calls."""
+    """Return whether the runtime harness should adapt Sage calls."""
 
     return os.environ.get("MUNDI_AGENT_HARNESS", "1").strip().lower() not in _DISABLED_VALUES
 

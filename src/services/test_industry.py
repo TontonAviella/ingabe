@@ -324,7 +324,7 @@ def test_forecasts_lose_crop_advice_outside_agriculture():
 
 
 def test_other_industries_get_no_farm_instructions_and_no_forced_tool_after_an_honest_no():
-    """Prompt per industry (R1-19, Hermes R1-18 shares the provider) and the abdication guard (R1-20)."""
+    """Prompt per industry (R1-19) and the abdication guard (R1-20)."""
     from src.dependencies.sage_routing import RoutingDecision
     from src.dependencies.sage_turn_request import SageTurnPlan, _small_talk_prompt, is_abdication
     from src.dependencies.system_prompt import DefaultSystemPromptProvider
@@ -444,7 +444,7 @@ async def test_a_placeholder_partner_does_not_bind_a_project():
         await conn.execute("INSERT INTO user_mundiai_projects (id, owner_uuid, maps) VALUES ($1, $2::uuid, '{}')",
                            project_id, user)
         try:
-            placeholder = str(uuid.uuid4())  # Hermes' local stand-in when no sign-in provider is set
+            placeholder = str(uuid.uuid4())  # a partner id with no organizations row
             assert await partner_for_project(conn, project_id, user, placeholder) == placeholder
             assert await partner_for_project(conn, project_id, user, None) is None
             assert await conn.fetchval("SELECT partner_id FROM user_mundiai_projects WHERE id = $1", project_id) is None

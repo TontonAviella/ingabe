@@ -25,7 +25,7 @@ async def partner_for_project(conn: asyncpg.Connection, project_id: Optional[str
         "WHERE id = $1 RETURNING partner_id::text",
         project_id, session_partner,
     )
-    if bound is None:  # only a real organization binds; no organization, or Hermes' local placeholder, passes as is
+    if bound is None:  # only a real organization binds; no organization, or an id with no organizations row, passes as is
         return session_partner
     if bound == session_partner:
         return bound
