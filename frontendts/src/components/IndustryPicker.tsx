@@ -116,12 +116,6 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
   const canClose = data.industry !== null;
   const label = (key: IndustryKey) => data.options.find((o) => o.key === key)?.label ?? key;
   const company = data.company;
-  // A member of a company that has chosen sees its industry but cannot change it; its owners and admins choose for all.
-  const locked = !!company?.industry && !company.can_set;
-  const forCompany = !!company?.can_set;
-  const choose = (key: IndustryKey) => {
-    if (!locked) setChosen(key);
-  };
   const close = () => {
     setShown(false);
     window.setTimeout(onClose, 450);
@@ -156,7 +150,7 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
               onClick={close}
               className="rounded-full border border-[#4A3326] px-4 py-1.5 text-[13px] text-[#B8A99B] transition-colors hover:border-[#D9A066] hover:text-[#F6F1EB]"
             >
-              {locked ? 'Close' : `Keep ${label(data.industry as IndustryKey)}`}
+              {`Keep ${label(data.industry as IndustryKey)}`}
             </button>
           )}
         </header>
@@ -167,35 +161,21 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
           }`}
         >
           <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-[#D9A066]">
-            {locked || forCompany ? `${company?.name} · industry` : canClose ? 'Your industry' : 'Welcome to Ingabe'}
+            {canClose ? 'Your industry' : 'Welcome to Ingabe'}
           </p>
           <h1
             id="industry-title"
             className="mt-4 text-[clamp(2.4rem,5.2vw,4.4rem)] leading-[1.02] tracking-[-0.01em]"
             style={{ fontFamily: '"Instrument Serif", Georgia, serif' }}
           >
-            {locked ? (
-              <>
-                {company?.name} works in <em className="text-[#D9A066]">{label(company?.industry as IndustryKey)}</em>
-              </>
-            ) : forCompany ? (
-              <>
-                Which world does <em className="text-[#D9A066]">{company?.name}</em> work in?
-              </>
-            ) : (
-              <>
-                Which world do <em className="text-[#D9A066]">you</em> work in?
-              </>
-            )}
+            Which world do <em className="text-[#D9A066]">you</em> work in?
           </h1>
           <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-[#B8A99B]">
-            {locked
-              ? `Every project in ${company?.name} uses ${label(company?.industry as IndustryKey)}. The company's owners and admins choose its industry.`
-              : forCompany
-                ? `Everyone in ${company?.name} works in the industry you choose here, in every new project. Projects that already exist keep theirs.`
-                : canClose
-                  ? 'Each project belongs to one industry. Projects you already have keep theirs; new projects you create use the industry you choose here.'
-                  : 'Ingabe reads drone and satellite pictures for three industries. Choose yours and Ingabe opens with what matters to it. Each project belongs to one industry; you can choose another for new projects at any time.'}
+            {canClose
+              ? `Each map belongs to one industry. Switching changes what you see and where your new maps go, only for you${
+                  company ? `: ${company.name}'s industry stays as it is` : ''
+                }.`
+              : 'Ingabe reads drone and satellite pictures for three industries. Choose yours and Ingabe opens with what matters to it. Each map belongs to one industry; you can switch from the sidebar at any time.'}
           </p>
         </div>
 
@@ -210,9 +190,8 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
                 type="button"
                 role="radio"
                 aria-checked={selected}
-                aria-disabled={locked}
-                onClick={() => choose(key)}
-                onDoubleClick={() => !locked && save.mutate(key)}
+                onClick={() => setChosen(key)}
+                onDoubleClick={() => save.mutate(key)}
                 onMouseEnter={() => setHovered(key)}
                 onMouseLeave={() => setHovered(null)}
                 onFocus={() => setHovered(key)}
@@ -265,9 +244,7 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
 
         <footer className="sticky bottom-0 -mx-5 mt-8 flex flex-col items-center gap-3 bg-gradient-to-t from-[#0B0908] via-[#0B0908] to-transparent px-5 pb-2 pt-6 sm:-mx-8 sm:flex-row sm:justify-between sm:px-8 lg:-mx-12 lg:px-12">
           <p className="text-center text-[12px] text-[#6B5A4E] sm:text-left">
-            {locked ? (
-              `Ask an owner or admin of ${company?.name} to change it.`
-            ) : save.isError ? (
+            {save.isError ? (
               <span className="text-[#E9A27A]">{(save.error as Error).message}</span>
             ) : chosen ? (
               <>
@@ -279,11 +256,11 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
           </p>
           <button
             type="button"
-            disabled={!locked && (!chosen || save.isPending)}
-            onClick={() => (locked ? close() : chosen && save.mutate(chosen))}
+            disabled={!chosen || save.isPending}
+            onClick={() => chosen && save.mutate(chosen)}
             className="group inline-flex items-center gap-2 rounded-full bg-[#D9A066] px-6 py-3 text-[14px] font-medium text-[#0B0908] transition-all hover:bg-[#E6B27D] disabled:cursor-not-allowed disabled:bg-[#2A201A] disabled:text-[#6B5A4E]"
           >
-            {locked ? 'Close' : save.isPending ? 'Opening Ingabe…' : chosen ? `Continue with ${label(chosen)}` : 'Choose your industry'}
+            {save.isPending ? 'Opening Ingabe…' : chosen ? `Continue with ${label(chosen)}` : 'Choose your industry'}
             <span aria-hidden className="transition-transform group-enabled:group-hover:translate-x-0.5">
               →
             </span>

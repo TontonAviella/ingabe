@@ -1,10 +1,13 @@
 """Industries: Ingabe serves agriculture, power grids and telecom towers, and keeps them apart.
 
 The settings:
-- users.industry: the industry a user works in, asked once at sign-in; organizations.industry: a company's.
-- The industry a user works in now (current_industry, the one place this is decided): their company's once it has
-  chosen, else their own; None until anyone chooses, and in the legacy single-user mode. It is copied onto each
-  project they create (agriculture when None).
+- users.industry: the industry a user chose, asked once at sign-in and switched from the sidebar. A switch changes
+  only that user's own view, also for a company's owners and admins (Roger, 2026-10-12).
+- organizations.industry: a company's industry, the default for its members who never chose their own. The industry
+  picker never writes it.
+- The industry a user works in now (current_industry, the one place this is decided): their own choice, else their
+  company's; None until anyone chooses, and in the legacy single-user mode. It is copied onto each project they
+  create (agriculture when None).
 - user_mundiai_projects.industry: the industry a project belongs to (one per project). Everything Sage, the cards
   and the upload automation do for a project follows it.
 
@@ -259,9 +262,6 @@ async def save_industry(conn: Any, user_id: str, industry: str) -> bool:
     return status.endswith(" 1")
 
 
-COMPANY_ADMIN_ROLES = frozenset({"owner", "admin"})
-
-
 async def company_industry(conn: Any, org_id: Optional[str]) -> Optional[str]:
     """The industry a company works in; None when there is no company or it has not chosen yet."""
     if not org_id:
@@ -271,7 +271,8 @@ async def company_industry(conn: Any, org_id: Optional[str]) -> Optional[str]:
 
 
 async def save_company_industry(conn: Any, org_id: str, industry: str) -> bool:
-    """Set the company's industry (its owners and admins decide). ValueError for an unknown one."""
+    """Set the company's industry: the default for its members who never chose their own. The industry picker does
+    not call this (a switch changes only the user's own view). ValueError for an unknown one."""
     check_industry(industry)
     status = await conn.execute("UPDATE organizations SET industry = $2 WHERE id::text = $1", org_id, industry)
     return status.endswith(" 1")
@@ -279,15 +280,15 @@ async def save_company_industry(conn: Any, org_id: str, industry: str) -> bool:
 
 async def current_industry_and_source(conn: Any, user_id: Optional[str],
                                       org_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """(industry, source): the industry the user works in now and where it comes from. Their company's ("company")
-    once it has chosen, else their own choice ("you"); (None, None) when neither has chosen or there is no account
-    (legacy single-user mode)."""
-    company = await company_industry(conn, org_id)
-    if company:
-        return company, "company"
+    """(industry, source): the industry the user works in now and where it comes from. Their own choice ("you") once
+    they have made one, else their company's industry ("company"), the default for members who never chose; (None,
+    None) when neither has chosen or there is no account (legacy single-user mode)."""
     own = await industry_of(conn, user_id)
     if own:
         return own, "you"
+    company = await company_industry(conn, org_id)
+    if company:
+        return company, "company"
     return None, None
 
 

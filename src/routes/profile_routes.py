@@ -72,11 +72,8 @@ async def _industry_payload(conn, session: UserContext) -> dict:
     if org_id:
         name = await conn.fetchval("SELECT name FROM organizations WHERE id::text = $1", org_id)
         if name is not None:
-            company = {
-                "name": name,
-                "industry": await industry.company_industry(conn, org_id),
-                "can_set": session.get_org_role() in industry.COMPANY_ADMIN_ROLES,
-            }
+            # The company the user acts for, and its industry: the default for members who never chose their own.
+            company = {"name": name, "industry": await industry.company_industry(conn, org_id)}
     return {
         # The industry the user works in now: new projects take it (None: the app asks).
         "industry": current,
@@ -97,18 +94,11 @@ async def get_industry(session: UserContext = Depends(verify_session_required)):
 
 @router.put("/industry")
 async def put_industry(body: IndustryUpdate, session: UserContext = Depends(verify_session_required)):
-    """Save an industry: agriculture, power_grid or telecom. A company's owners and admins set it for the whole
-    company; other members of a company that has chosen cannot override it; anyone else saves their own."""
+    """Save the user's own industry: agriculture, power_grid or telecom. It changes only what this user sees and
+    where their new projects go, for every user, a company's owners and admins too; the company's industry (the
+    default for members who never chose) is not changed here (Roger, 2026-10-12)."""
     async with get_async_db_connection() as conn:
-        org_id = session.get_org_id()
-        company_admin = bool(org_id) and session.get_org_role() in industry.COMPANY_ADMIN_ROLES
         try:
-            industry.check_industry(body.industry)
-            if not company_admin and await industry.company_industry(conn, org_id):
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                    detail="Your company's industry is set by its owners and admins.")
-            if company_admin:
-                await industry.save_company_industry(conn, org_id, body.industry)  # type: ignore[arg-type]
             saved = await industry.save_industry(conn, session.get_user_id(), body.industry)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

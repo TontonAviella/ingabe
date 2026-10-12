@@ -123,6 +123,31 @@ async def _project(conn, owner: str, project_industry: str, layer_id: str) -> st
 
 
 @pytest.mark.anyio
+async def test_current_industry_is_the_users_own_choice_else_the_companys():
+    user, org = str(uuid.uuid4()), str(uuid.uuid4())
+    async with get_async_db_connection() as conn:
+        await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
+        await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, 'Mast Co', $2)", org,
+                           f"mast-{RUN_TAG}-{org[:8]}")
+        try:
+            assert await industry.current_industry(conn, user, org) is None  # nobody chose yet
+            assert await industry.industry_for_new_project(conn, user, org) == "agriculture"
+            assert await industry.current_industry(conn, None, None) is None  # legacy single-user mode: no account
+
+            await industry.save_company_industry(conn, org, "power_grid")
+            assert await industry.current_industry_and_source(conn, user, org) == ("power_grid", "company")
+            assert await industry.current_industry(conn, user, None) is None  # outside the company
+
+            await industry.save_industry(conn, user, "telecom")
+            assert await industry.current_industry_and_source(conn, user, org) == ("telecom", "you")
+            assert await industry.current_industry(conn, user, None) == "telecom"
+            assert await industry.industry_for_new_project(conn, user, org) == "telecom"
+        finally:
+            await conn.execute("DELETE FROM organizations WHERE id = $1::uuid", org)
+            await conn.execute("DELETE FROM users WHERE internal_uuid = $1", user)
+
+
+@pytest.mark.anyio
 async def test_new_projects_take_their_creators_industry(client):
     # A user of its own: the shared legacy user (00000000-...) set to telecom would change, for every test running at
     # the same time, which industry its new projects get.

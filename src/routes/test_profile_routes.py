@@ -60,10 +60,12 @@ async def test_an_industry_is_saved_on_the_account_and_can_be_changed():
             await conn.execute("DELETE FROM users WHERE internal_uuid = $1", user)
 
 
-# --- A company works in one industry (2026-10-09) -------------------------------------------------------------------
+# --- Switching changes only the user's own view (Roger, 2026-10-12) -------------------------------------------------
 
 @pytest.mark.anyio
-async def test_a_companys_industry_is_set_by_its_admins_and_followed_by_its_members(client):
+async def test_switching_changes_only_the_users_own_view(client):
+    """Everyone saves their own industry, a company's admins too; the company's industry is only the default for
+    members who never chose, and nobody is locked out of switching."""
     import uuid
 
     from src.database.pool import get_async_db_connection
@@ -71,38 +73,56 @@ async def test_a_companys_industry_is_set_by_its_admins_and_followed_by_its_memb
     from src.services import industry
     from src.wsgi import app
 
-    admin, member, loner = (str(uuid.uuid4()) for _ in range(3))
+    admin, member, newcomer = (str(uuid.uuid4()) for _ in range(3))
     org = str(uuid.uuid4())
     async with get_async_db_connection() as conn:
-        for user in (admin, member, loner):
+        for user in (admin, member, newcomer):
             await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
         await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, 'Grid Co', $2)", org, f"grid-{org[:8]}")
 
-    def as_(user, role, org_id=org):
-        app.dependency_overrides[verify_session_required] = lambda: WorkOSUserContext(user, f"w-{user[:6]}", org_id=org_id,
+    def as_(user, role):
+        app.dependency_overrides[verify_session_required] = lambda: WorkOSUserContext(user, f"w-{user[:6]}", org_id=org,
                                                                                       org_role=role)
+
+    async def company_column():
+        async with get_async_db_connection() as conn:
+            return await conn.fetchval("SELECT industry FROM organizations WHERE id = $1::uuid", org)
+
     try:
         as_(member, "member")
         body = (await client.get("/api/user/industry")).json()
-        assert body["industry"] is None and body["company"] == {"name": "Grid Co", "industry": None, "can_set": False}
-        assert (await client.put("/api/user/industry", json={"industry": "agriculture"})).status_code == 200
-        async with get_async_db_connection() as conn:  # a member's choice is their own until the company chooses
-            assert await industry.company_industry(conn, org) is None
+        assert body["industry"] is None and body["source"] is None
+        assert body["company"] == {"name": "Grid Co", "industry": None}
 
-        as_(admin, "admin")
+        as_(admin, "admin")  # an admin's switch is their own: the company's industry is not written
         body = (await client.put("/api/user/industry", json={"industry": "power_grid"})).json()
-        assert body["industry"] == "power_grid" and body["source"] == "company" and body["company"]["can_set"]
+        assert body["industry"] == "power_grid" and body["source"] == "you"
+        assert body["company"] == {"name": "Grid Co", "industry": None}
+        assert await company_column() is None
 
-        as_(member, "member")  # the company's choice now wins over the member's own, and they cannot override it
+        async with get_async_db_connection() as conn:  # the company's default, set elsewhere (not by the picker)
+            assert await industry.save_company_industry(conn, org, "telecom")
+
+        as_(newcomer, "member")  # never chose: the company's industry is their default
         body = (await client.get("/api/user/industry")).json()
-        assert body["industry"] == "power_grid" and body["source"] == "company"
-        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 403
+        assert body["industry"] == "telecom" and body["source"] == "company"
+
+        as_(admin, "admin")  # their own choice beats the company's default
+        body = (await client.get("/api/user/industry")).json()
+        assert body["industry"] == "power_grid" and body["source"] == "you"
+
+        as_(member, "member")  # a member of a company that has chosen can switch too
+        response = await client.put("/api/user/industry", json={"industry": "agriculture"})
+        assert response.status_code == 200, response.text
+        assert response.json()["industry"] == "agriculture" and response.json()["source"] == "you"
+        assert await company_column() == "telecom"
+
         async with get_async_db_connection() as conn:
-            assert await industry.industry_for_new_project(conn, member, org) == "power_grid"
-            assert await industry.industry_for_new_project(conn, member, None) == "agriculture"  # outside the company
-            assert await industry.industry_for_new_project(conn, loner, None) == "agriculture"  # nobody chose: default
+            assert await industry.industry_for_new_project(conn, member, org) == "agriculture"
+            assert await industry.industry_for_new_project(conn, newcomer, org) == "telecom"
+            assert await industry.industry_for_new_project(conn, newcomer, None) == "agriculture"  # nobody chose
     finally:
         app.dependency_overrides.pop(verify_session_required, None)
         async with get_async_db_connection() as conn:
             await conn.execute("DELETE FROM organizations WHERE id = $1::uuid", org)
-            await conn.execute("DELETE FROM users WHERE internal_uuid = ANY($1)", [admin, member, loner])
+            await conn.execute("DELETE FROM users WHERE internal_uuid = ANY($1)", [admin, member, newcomer])
