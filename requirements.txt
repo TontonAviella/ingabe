@@ -13,8 +13,6 @@ aiohappyeyeballs==2.6.2
 aiohttp==3.14.1
     # via
     #   aiobotocore
-    #   edge-tts
-    #   firecrawl-py
     #   mundi-ai
 aioitertools==0.13.0
     # via aiobotocore
@@ -28,17 +26,13 @@ annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
     # via pydantic
-anthropic==0.111.0
-    # via hermes-agent
 antlr4-python3-runtime==4.13.2
     # via dagster
 anyio==4.14.0
     # via
-    #   anthropic
     #   httpx
     #   httpx-ws
     #   openai
-    #   parallel-web
     #   starlette
     #   watchfiles
 apscheduler==3.11.0
@@ -74,7 +68,6 @@ cdsapi==0.7.7
     # via mundi-ai
 certifi==2026.6.17
     # via
-    #   edge-tts
     #   httpcore
     #   httpx
     #   pyogrio
@@ -112,12 +105,8 @@ coloredlogs==14.0
     # via dagster
 contourpy==1.3.3
     # via matplotlib
-croniter==6.2.2
-    # via hermes-agent
 cryptography==49.0.0
-    # via
-    #   pyjwt
-    #   workos
+    # via workos
 cuda-bindings==13.3.1 ; sys_platform == 'linux'
     # via torch
 cuda-pathfinder==1.5.5 ; sys_platform == 'linux'
@@ -141,40 +130,25 @@ dask==2024.12.1
 deprecated==1.3.1
     # via limits
 distro==1.9.0
-    # via
-    #   anthropic
-    #   openai
-    #   parallel-web
+    # via openai
 docstring-parser==0.18.0
-    # via
-    #   anthropic
-    #   dagster
+    # via dagster
 duckdb==1.5.4
     # via mundi-ai
 ecmwf-datastores-client==0.5.1
     # via cdsapi
-edge-tts==7.2.8
-    # via hermes-agent
 et-xmlfile==2.0.0
     # via openpyxl
-exa-py==2.14.0
-    # via hermes-agent
 exactextract==0.2.2
     # via mundi-ai
 execnet==2.1.2
     # via pytest-xdist
-fal-client==0.14.1
-    # via hermes-agent
 fastapi==0.139.0
     # via mundi-ai
 filelock==3.29.4
     # via
     #   dagster
     #   torch
-fire==0.7.1
-    # via hermes-agent
-firecrawl-py==4.30.1
-    # via hermes-agent
 fonttools==4.63.0
     # via matplotlib
 frozenlist==1.8.0
@@ -205,30 +179,19 @@ h11==0.16.0
     #   wsproto
 h3==4.1.0
     # via mundi-ai
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent@498bfc7bc12a937621b4215312049b1000726df3
-    # via mundi-ai
 httpcore==1.0.9
     # via
-    #   exa-py
     #   httpx
     #   httpx-ws
 httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
-    #   anthropic
-    #   exa-py
-    #   fal-client
-    #   firecrawl-py
-    #   hermes-agent
     #   httpx-ws
     #   mundi-ai
     #   openai
-    #   parallel-web
     #   rio-tiler
     #   workos
-httpx-sse==0.4.3
-    # via fal-client
 httpx-ws==0.7.2
     # via mundi-ai
 humanfriendly==10.0
@@ -248,12 +211,9 @@ iniconfig==2.3.0
 jinja2==3.1.6
     # via
     #   dagster
-    #   hermes-agent
     #   torch
 jiter==0.15.0
-    # via
-    #   anthropic
-    #   openai
+    # via openai
 jmespath==1.1.0
     # via
     #   aiobotocore
@@ -297,8 +257,6 @@ morecantile==6.2.0
     # via rio-tiler
 mpmath==1.3.0
     # via sympy
-msgpack==1.2.1
-    # via fal-client
 multidict==6.7.1
     # via
     #   aiobotocore
@@ -306,8 +264,6 @@ multidict==6.7.1
     #   yarl
 multiurl==0.3.9
     # via ecmwf-datastores-client
-nest-asyncio==1.6.0
-    # via firecrawl-py
 networkx==3.6.1
     # via torch
 nodejs-wheel-binaries==24.16.0
@@ -381,10 +337,7 @@ nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
     # via cuda-toolkit
 openai==2.36.0
-    # via
-    #   exa-py
-    #   hermes-agent
-    #   mundi-ai
+    # via mundi-ai
 opencv-python==5.0.0.93
     # via ultralytics
 openpyxl==3.1.5
@@ -425,8 +378,6 @@ pandas==3.0.3
     # via
     #   geopandas
     #   xarray
-parallel-web==0.6.0
-    # via hermes-agent
 partd==1.4.2
     # via dask
 pathlib-abc==0.5.2
@@ -446,8 +397,6 @@ polars==1.42.1
     # via ultralytics
 polars-runtime-32==1.42.1
     # via polars
-prompt-toolkit==3.0.52
-    # via hermes-agent
 propcache==0.5.2
     # via
     #   aiohttp
@@ -472,16 +421,11 @@ pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementatio
     # via cffi
 pydantic==2.13.4
     # via
-    #   anthropic
     #   dagster-shared
-    #   exa-py
     #   fastapi
-    #   firecrawl-py
-    #   hermes-agent
     #   morecantile
     #   mundi-ai
     #   openai
-    #   parallel-web
     #   planetary-computer
     #   pydantic-settings
     #   rio-tiler
@@ -494,9 +438,7 @@ pygments==2.20.0
     #   pytest
     #   rich
 pyjwt==2.13.0
-    # via
-    #   hermes-agent
-    #   workos
+    # via workos
 pyogrio==0.12.1
     # via
     #   geopandas
@@ -606,7 +548,6 @@ python-dateutil==2.9.0.post0
     # via
     #   aiobotocore
     #   botocore
-    #   croniter
     #   matplotlib
     #   multiurl
     #   pandas
@@ -616,9 +557,6 @@ python-docx==1.1.2
 python-dotenv==1.2.2
     # via
     #   dagster
-    #   exa-py
-    #   firecrawl-py
-    #   hermes-agent
     #   planetary-computer
     #   pydantic-settings
     #   uvicorn
@@ -636,7 +574,6 @@ pyyaml==6.0.3
     # via
     #   dagster-shared
     #   dask
-    #   hermes-agent
     #   ultralytics
     #   uvicorn
 rasterio==1.4.4
@@ -655,18 +592,13 @@ requests==2.34.2
     #   cdsapi
     #   dagster
     #   ecmwf-datastores-client
-    #   exa-py
-    #   firecrawl-py
-    #   hermes-agent
     #   multiurl
     #   opentelemetry-exporter-otlp-proto-http
     #   planetary-computer
     #   pystac-client
     #   ultralytics
 rich==14.3.4
-    # via
-    #   dagster
-    #   hermes-agent
+    # via dagster
 rio-tiler==7.8.1
     # via mundi-ai
 rioxarray==0.17.0
@@ -694,12 +626,7 @@ six==1.17.0
 slowapi==0.1.9
     # via mundi-ai
 sniffio==1.3.1
-    # via
-    #   anthropic
-    #   openai
-    #   parallel-web
-socksio==1.0.0
-    # via httpx
+    # via openai
 soupsieve==2.8.4
     # via beautifulsoup4
 sqlalchemy==2.0.41
@@ -716,13 +643,7 @@ structlog==26.1.0
 sympy==1.14.0
     # via torch
 tabulate==0.10.0
-    # via
-    #   dagster
-    #   edge-tts
-tenacity==9.1.4
-    # via hermes-agent
-termcolor==3.3.0
-    # via fire
+    # via dagster
 threadpoolctl==3.6.0
     # via scikit-learn
 tomli==2.4.1
@@ -758,13 +679,10 @@ typing-extensions==4.15.0
     #   aiohttp
     #   aiosignal
     #   alembic
-    #   anthropic
     #   anyio
     #   beautifulsoup4
     #   dagster-shared
     #   ecmwf-datastores-client
-    #   edge-tts
-    #   exa-py
     #   fastapi
     #   grpcio
     #   limits
@@ -773,7 +691,6 @@ typing-extensions==4.15.0
     #   opentelemetry-exporter-otlp-proto-http
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
-    #   parallel-web
     #   pydantic
     #   pydantic-core
     #   pytest-asyncio
@@ -815,13 +732,8 @@ watchdog==5.0.3
     # via dagster
 watchfiles==1.2.0
     # via uvicorn
-wcwidth==0.8.1
-    # via prompt-toolkit
 websockets==16.0
-    # via
-    #   fal-client
-    #   firecrawl-py
-    #   uvicorn
+    # via uvicorn
 workos==10.1.0
     # via mundi-ai
 wrapt==1.17.3
