@@ -27,7 +27,7 @@ export function AppSidebar() {
   const { state, toggleSidebar } = useSidebar();
   const { allProjects, allProjectsLoading } = useProjects();
 
-  const recentProjects: MapProject[] = allProjects
+  const recentProjects: MapProject[] = [...allProjects] // sort a copy: the array belongs to the query cache
     .sort(
       (a, b) => new Date(b.most_recent_version?.last_edited || '').getTime() - new Date(a.most_recent_version?.last_edited || '').getTime(),
     )

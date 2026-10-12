@@ -1,8 +1,9 @@
 import { apiFetch, useIsReady } from '@mundi/ee';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, ReactNode, useContext, useState } from 'react';
+import { useIndustry } from '@/components/IndustryGate';
 import { track, trackDuration, trackError } from '../lib/analytics';
-import { MapProject } from '../lib/types';
+import { MapProject, ProjectList } from '../lib/types';
 
 interface ProjectsContextValue {
   // Pagination state
@@ -15,6 +16,9 @@ interface ProjectsContextValue {
   projects: MapProject[];
   totalPages: number;
   totalItems: number;
+  // The industry the list shows (the server's choice: the one the user works in now); null: every industry.
+  industryLabel: string | null;
+  otherIndustries: ProjectList['other_industries'];
   isLoading: boolean;
   error: string | null;
 
@@ -35,10 +39,20 @@ interface ProjectsProviderProps {
 }
 
 export function ProjectsProvider({ children }: ProjectsProviderProps) {
-  const [currentPage, setCurrentPage] = useState(1);
   const [showDeleted, setShowDeleted] = useState(false);
   const queryClient = useQueryClient();
   const isReady = useIsReady();
+  // The server lists the projects of the industry the user works in now. The lists wait until that industry is
+  // known and reload when the picker saves another one (it replaces the industry query's data).
+  const industryQuery = useIndustry();
+  const industry = industryQuery.data?.industry ?? null;
+  const waitingForIndustry = isReady && industryQuery.isPending;
+  const listsEnabled = isReady && !industryQuery.isPending;
+  // The page belongs to the industry it was chosen in: after a switch the list starts at page 1 in the same render,
+  // so page N of the new industry is never requested.
+  const [paging, setPaging] = useState<{ industry: string | null; page: number }>({ industry, page: 1 });
+  const currentPage = paging.industry === industry ? paging.page : 1;
+  const setCurrentPage = (page: number) => setPaging({ industry, page });
 
   // Query for paginated projects (main list)
   const {
@@ -46,9 +60,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     isLoading,
     error: queryError,
     refetch: refetchProjects,
-  } = useQuery({
-    queryKey: ['projects', currentPage, showDeleted],
-    enabled: isReady,
+  } = useQuery<ProjectList>({
+    queryKey: ['projects', industry, currentPage, showDeleted],
+    enabled: listsEnabled,
     queryFn: async () => {
       const response = await apiFetch(`/api/projects/?page=${currentPage}&limit=12&include_deleted=${showDeleted}`);
       if (!response.ok) {
@@ -73,9 +87,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   });
 
   // Query for all projects (for sidebar recent projects)
-  const { data: allProjectsData, isLoading: allProjectsLoading } = useQuery({
-    queryKey: ['projects', 'all'],
-    enabled: isReady,
+  const { data: allProjectsData, isLoading: allProjectsLoading } = useQuery<ProjectList>({
+    queryKey: ['projects', 'all', industry],
+    enabled: listsEnabled,
     queryFn: async () => {
       const response = await apiFetch('/api/projects/');
       if (!response.ok) {
@@ -158,9 +172,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
   const value: ProjectsContextValue = {
     currentPage,
     showDeleted,
-    setCurrentPage: (page: number) => {
-      setCurrentPage(page);
-    },
+    setCurrentPage,
     setShowDeleted: (show: boolean) => {
       setShowDeleted(show);
       setCurrentPage(1); // Reset to first page when changing filter
@@ -169,7 +181,9 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     projects: paginatedData?.projects || [],
     totalPages: paginatedData?.total_pages || 1,
     totalItems: paginatedData?.total_items || 0,
-    isLoading,
+    industryLabel: paginatedData?.industry_label ?? null,
+    otherIndustries: paginatedData?.other_industries ?? [],
+    isLoading: isLoading || waitingForIndustry,
     error: queryError instanceof Error ? queryError.message : null,
 
     createProject: async () => {
@@ -183,7 +197,7 @@ export function ProjectsProvider({ children }: ProjectsProviderProps) {
     },
 
     allProjects: allProjectsData?.projects || [],
-    allProjectsLoading,
+    allProjectsLoading: allProjectsLoading || waitingForIndustry,
   };
 
   return <ProjectsContext.Provider value={value}>{children}</ProjectsContext.Provider>;
