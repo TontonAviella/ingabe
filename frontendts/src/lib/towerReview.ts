@@ -1,5 +1,6 @@
 import type { Box } from '@/lib/photoView';
 import {
+  ALL_PARTS,
   type FinderJob,
   type InspectionPhoto,
   type MarksPayload,
@@ -7,7 +8,6 @@ import {
   type PhotoWork,
   type ReviewPayload,
   type Suggestion,
-  TOWER_PARTS,
   type TowerCardAnswer,
   type TowerPart,
 } from '@/lib/towerContract';
@@ -73,7 +73,7 @@ function partFromServer(work: PartWork): PartDraft {
 /** An empty draft for a photo whose work has not arrived yet. */
 export function emptyPhotoDraft(): PhotoDraft {
   const empty: PartDraft = { marks: [], marksDirty: false, review: { about: '', decisions: {}, added: [], dirty: false } };
-  return Object.fromEntries(TOWER_PARTS.map(({ id }) => [id, empty])) as PhotoDraft;
+  return Object.fromEntries(ALL_PARTS.map(({ id }) => [id, empty])) as PhotoDraft;
 }
 
 /** Takes the server's work where the person has nothing unsaved; a new set of suggestions always replaces the old
@@ -108,7 +108,12 @@ function editAdded(draft: PartDraft, added: Box[]): PartDraft {
 export function photoReducer(state: PhotoDraft, action: PhotoAction): PhotoDraft {
   switch (action.type) {
     case 'sync':
-      return Object.fromEntries(TOWER_PARTS.map(({ id }) => [id, syncPart(state[id], action.work.parts[id])])) as PhotoDraft;
+      return Object.fromEntries(
+        ALL_PARTS.map(({ id }) => {
+          const work = action.work.parts[id];
+          return [id, work ? syncPart(state[id], work) : state[id]];
+        }),
+      ) as PhotoDraft;
     case 'saved':
       return withPart(state, action.part, () => partFromServer(action.work));
     case 'mark/add':
@@ -167,7 +172,7 @@ export function marksPayload(part: TowerPart, draft: PhotoDraft): MarksPayload {
 /** The other parts whose marks changed since they were saved: they are saved before a find of `part`, so the server
  * has them when it picks that find's look-alikes. */
 export function unsavedOtherParts(part: TowerPart, draft: PhotoDraft): TowerPart[] {
-  return TOWER_PARTS.map(({ id }) => id).filter((id) => id !== part && draft[id].marksDirty);
+  return ALL_PARTS.map(({ id }) => id).filter((id) => id !== part && draft[id].marksDirty);
 }
 
 /** PUT .../review for one part: each decision about the suggestions on screen, in their order, and the boxes added. */
@@ -244,7 +249,7 @@ export function jobState(job: FinderJob | null): { active: boolean; done: boolea
 
 /** True while any part of the photo has a find job in line or running. */
 export function anyJobActive(work: PhotoWork | undefined): boolean {
-  return !!work && TOWER_PARTS.some(({ id }) => jobState(work.parts[id]?.job ?? null).active);
+  return !!work && ALL_PARTS.some(({ id }) => jobState(work.parts[id]?.job ?? null).active);
 }
 
 /** Which photo to open from the server's list of photos still to check (the PHOTOS_TO_CHECK_CARD answer: its items

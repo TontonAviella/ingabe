@@ -46,7 +46,13 @@ from src.services.shown_maps import SHOWN_MAPS_SQL
 logger = logging.getLogger(__name__)
 
 _SWITCH = "TOWERS"
-PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")
+PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")  # Telecom Towers: the tower cards count these
+FARM_PARTS = ("maize_seedling",)  # Agriculture: marked and found on the photos; no cards yet
+ALL_PARTS = PARTS + FARM_PARTS
+PARTS_BY_INDUSTRY = {"telecom": PARTS, "agriculture": FARM_PARTS}
+# How the marking screen names each part (one, many), in the order it offers them.
+PART_LABELS = {"tower_dish": ("Microwave dish", "microwave dishes"), "tower_antenna": ("Panel antenna", "panel antennas"),
+               "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants")}
 STORE_PREFIX = "towers/v1"
 REDIS_PREFIX = "towers:v1"
 _VERSION = 1
@@ -78,10 +84,20 @@ def noun(part: str) -> str:
     return answer_levels.target(part).noun
 
 
-def check_part(part: Any) -> str:
-    if part not in PARTS:
-        raise TowerInputError(f"the part must be one of {list(PARTS)}, not {part!r}")
+def parts_for(industry: Optional[str]) -> tuple[str, ...]:
+    """The parts a person marks on a photo inspection of this industry (none for an industry without photo work)."""
+    return PARTS_BY_INDUSTRY.get(industry or "", ())
+
+
+def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
+    if part not in parts:
+        raise TowerInputError(f"the part must be one of {list(parts)}, not {part!r}")
     return part
+
+
+def _family(part: str) -> tuple[str, ...]:
+    """The parts marked alongside this one (its industry's): only they can be its look-alike marks."""
+    return PARTS if part in PARTS else FARM_PARTS
 
 
 # --------------------------------------------------------------------------- #
@@ -128,7 +144,7 @@ class PhotoRecord:
 
     @classmethod
     def empty(cls, sha256: str) -> "PhotoRecord":
-        return cls(sha256=sha256, parts={part: PartRecord() for part in PARTS})
+        return cls(sha256=sha256, parts={part: PartRecord() for part in ALL_PARTS})
 
     def with_part(self, part: str, record: PartRecord) -> "PhotoRecord":
         return replace(self, parts={**self.parts, part: record})
@@ -165,7 +181,7 @@ def _layer_prefix(project_id: str, layer_id: str) -> str:
 def _record_json(project_id: str, layer_id: str, record: PhotoRecord) -> bytes:
     parts = {part: {"marks": [list(b) for b in r.marks], "lookalike_marks": [list(b) for b in r.own_lookalikes],
                     "job_id": r.job_id, "reviewed": r.review.as_dict(), "review_saved": r.review_saved}
-             for part, r in record.parts.items()}
+             for part, r in record.parts.items() if part in PARTS or r != PartRecord()}  # tower records as before
     return json.dumps({"version": _VERSION, "project_id": project_id, "layer_id": layer_id,
                        "sha256": record.sha256, "parts": parts,
                        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}).encode()
@@ -179,7 +195,7 @@ def _record_from(data: dict[str, Any]) -> PhotoRecord:
                               job_id=p["job_id"], review=Review.from_dict(p["reviewed"]),
                               review_saved=p["review_saved"])
              for part, p in data["parts"].items()}
-    return PhotoRecord(sha256=data["sha256"], parts={part: parts.get(part, PartRecord()) for part in PARTS})
+    return PhotoRecord(sha256=data["sha256"], parts={part: parts.get(part, PartRecord()) for part in ALL_PARTS})
 
 
 async def load_record(s3: Any, bucket: str, project_id: str, layer_id: str, sha256: str) -> PhotoRecord:
@@ -266,7 +282,7 @@ def _others_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
     otherwise none."""
     if not example_finder.settings(part).look_alike_marks:
         return ()
-    return tuple(b for other in PARTS if other != part for b in record.parts[other].marks)
+    return tuple(b for other in _family(part) if other != part for b in record.parts[other].marks)
 
 
 def lookalike_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
@@ -342,16 +358,16 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
 
 
 async def photo_work(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str,
-                     photo: PhotoFacts) -> dict[str, PartWork]:
-    """Every part's work on one photo."""
+                     photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
+    """Every part's work on one photo (the tower parts unless the inspection's industry marks others)."""
     record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
-    return await _record_work(redis, s3, bucket, project_id, record, photo)
+    return await _record_work(redis, s3, bucket, project_id, record, photo, parts)
 
 
 async def _record_work(redis: Any, s3: Any, bucket: str, project_id: str, record: PhotoRecord,
-                       photo: PhotoFacts) -> dict[str, PartWork]:
-    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo) for p in PARTS))
-    return dict(zip(PARTS, works))
+                       photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
+    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo) for p in parts))
+    return dict(zip(parts, works))
 
 
 def _in_photo(given: Any, what: str, most: int, photo: PhotoFacts) -> tuple[Box, ...]:

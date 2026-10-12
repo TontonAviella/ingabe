@@ -60,9 +60,10 @@ export function usePhotoWork(layerId: string, sha256: string) {
 function useSetPart(layerId: string, sha256: string) {
   const queryClient = useQueryClient();
   return (part: TowerPart, change: (old: PartWork) => PartWork) =>
-    queryClient.setQueryData<PhotoWork>(workKey(layerId, sha256), (old) =>
-      old ? { ...old, parts: { ...old.parts, [part]: change(old.parts[part]) } } : old,
-    );
+    queryClient.setQueryData<PhotoWork>(workKey(layerId, sha256), (old) => {
+      const current = old?.parts[part];
+      return old && current ? { ...old, parts: { ...old.parts, [part]: change(current) } } : old;
+    });
 }
 
 /** Save one part's marks (and the look-alikes); the server answers with that part's work. */
