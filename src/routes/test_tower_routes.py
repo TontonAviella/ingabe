@@ -114,11 +114,15 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("other", ["power_grid"])
-async def test_outside_telecom_no_route_exists(client, seeded, switched_on, other):
-    ids = await seeded.make(industry=other)
+async def test_power_grid_marks_pylons_insulators_and_nests_and_has_no_tower_cards(client, seeded, switched_on):
+    """Power Grid: the photos are marked for its own three parts (found only by the trained detector); a tower part
+    is refused (422) and the tower cards do not exist there (404)."""
+    ids = await seeded.make(industry="power_grid")
     _as(ids["owner"])
-    assert await _every_route(client, ids["layer"]) == [404] * 7
+    photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert [p["id"] for p in photos["parts"]] == ["power_pylon", "power_insulator", "power_nest"]
+    assert [p["label"] for p in photos["parts"]] == ["Pylon", "Insulator", "Bird nest"]
+    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
     assert switched_on.calls == []
 
 

@@ -767,3 +767,92 @@ def test_the_switch_is_off_by_default(monkeypatch):
         assert example_finder.finder_enabled() is True
     monkeypatch.setenv("EXAMPLE_FINDER", "0")
     assert example_finder.finder_enabled() is False
+
+
+# --------------------------------------------------------------------------- #
+# Trained detectors (hosted_detector): used only while HOSTED_FINDER is on
+# --------------------------------------------------------------------------- #
+
+def test_without_the_switch_towers_use_the_example_finder_and_power_parts_are_refused(monkeypatch):
+    monkeypatch.delenv("HOSTED_FINDER", raising=False)
+    assert example_finder.settings("tower_dish").model == example_finder.MODEL_NAME
+    assert "model" not in example_finder.settings("tower_dish").as_dict()  # the example finder's requests keep their identity
+    with pytest.raises(example_finder.FinderInputError, match="trained model, which is switched off"):
+        example_finder.settings("power_insulator")
+
+
+def test_with_the_switch_the_detector_runs_as_measured(monkeypatch):
+    monkeypatch.setenv("HOSTED_FINDER", "1")
+    s = example_finder.settings("power_insulator")
+    d = answer_levels.detector("power_insulator")
+    assert (s.model, s.detector_class, s.image_px, s.finder_input_px) == (d.finder_model, "insulator", 640, 640)
+    assert not s.look_alike_marks and not s.suggestion_filter and s.uses_detector
+    assert example_finder.settings("weed").model == example_finder.MODEL_NAME  # no detector: the example finder
+
+
+def test_the_hosted_runner_keeps_its_class_and_never_puts_the_key_in_an_error(monkeypatch):
+    from src.services import hosted_detector
+    monkeypatch.setenv("HOSTED_FINDER", "1")
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "secret-key")
+    sent = {}
+
+    class Answer:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"predictions": [
+                {"class": "insulator", "confidence": 0.9, "x": 50, "y": 40, "width": 20, "height": 10},
+                {"class": "pylon", "confidence": 0.95, "x": 300, "y": 300, "width": 200, "height": 400},
+                {"class": "insulator", "confidence": 0.3, "x": 100, "y": 90, "width": 10, "height": 30}]}
+
+    def post(url, params, data, headers, timeout):
+        sent.update(url=url, params=params)
+        return Answer()
+
+    monkeypatch.setattr(hosted_detector.requests, "post", post)
+    s = example_finder.settings("power_insulator")
+    rows = example_finder._runner_for(s)(np.zeros((64, 64, 3), np.uint8), [], [], 640, example_finder.CONF, example_finder.MAX_DET)
+    assert rows == [(40.0, 35.0, 60.0, 45.0, 0.9, 0), (95.0, 75.0, 105.0, 105.0, 0.3, 0)]
+    assert sent["url"].endswith("nests-towers-insulators-7d9vg-2-rfdetr-small-t1") and sent["params"]["confidence"] == 5
+
+    Answer.status_code = 401
+    with pytest.raises(hosted_detector.DetectorUnavailable) as refused:
+        example_finder._runner_for(s)(np.zeros((64, 64, 3), np.uint8), [], [], 640, example_finder.CONF, example_finder.MAX_DET)
+    assert "secret-key" not in str(refused.value) and "401" in str(refused.value)
+
+
+def test_a_detector_without_a_key_is_a_plain_refusal(monkeypatch):
+    monkeypatch.setenv("HOSTED_FINDER", "1")
+    monkeypatch.delenv("ROBOFLOW_API_KEY", raising=False)
+    with pytest.raises(example_finder.FinderInputError, match="no key"):
+        example_finder._runner_for(example_finder.settings("tower_dish"))
+
+
+def test_sam3_is_asked_for_the_prompt_and_every_box_is_the_target(monkeypatch):
+    from src.services import hosted_detector
+    monkeypatch.setenv("HOSTED_FINDER", "1")
+    monkeypatch.setenv("ROBOFLOW_API_KEY", "secret-key")
+    sent = {}
+
+    class Answer:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"outputs": [{"out": {"predictions": [
+                {"class_id": 0, "confidence": 0.8, "x": 30, "y": 30, "width": 10, "height": 20},
+                {"class_id": 0, "confidence": 0.004, "x": 60, "y": 60, "width": 10, "height": 10}]}}]}
+
+    def post(url, json, timeout):
+        sent.update(url=url, body=json)
+        return Answer()
+
+    monkeypatch.setattr(hosted_detector.requests, "post", post)
+    s = example_finder.settings("maize_seedling")
+    assert s.model == "roboflow:sam3/sam3_final" and s.detector_class == "seedling" and s.view == answer_levels.NADIR
+    rows = example_finder._runner_for(s)(np.zeros((64, 64, 3), np.uint8), [], [], 640, example_finder.CONF,
+                                         example_finder.MAX_DET)
+    assert rows == [(25.0, 20.0, 35.0, 40.0, 0.8, 0)]  # a box under the finder's CONF is dropped
+    step = sent["body"]["specification"]["steps"][0]
+    assert sent["url"].endswith("workflows/run") and step["class_names"] == ["seedling"] and step["confidence"] == 0.05

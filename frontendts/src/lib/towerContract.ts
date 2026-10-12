@@ -6,7 +6,14 @@ import type { Box } from '@/lib/photoView';
 // comes from the server; the screens only show them. All routes answer 404 when towers are switched off (TOWERS) or
 // the project is not a telecom project, and the panels then show nothing.
 
-export type TowerPart = 'tower_dish' | 'tower_antenna' | 'tower_radio_unit' | 'maize_seedling';
+export type TowerPart =
+  | 'tower_dish'
+  | 'tower_antenna'
+  | 'tower_radio_unit'
+  | 'maize_seedling'
+  | 'power_pylon'
+  | 'power_insulator'
+  | 'power_nest';
 
 export interface PartLabel {
   id: TowerPart;
@@ -23,7 +30,13 @@ export const TOWER_PARTS: PartLabel[] = [
 
 /** Every part any industry marks (Agriculture: maize plants). Which ones a photo inspection marks comes from the
  * server (InspectionPhotos.parts). */
-export const ALL_PARTS: PartLabel[] = [...TOWER_PARTS, { id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' }];
+export const ALL_PARTS: PartLabel[] = [
+  ...TOWER_PARTS,
+  { id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' },
+  { id: 'power_pylon', label: 'Pylon', plural: 'pylons' },
+  { id: 'power_insulator', label: 'Insulator', plural: 'insulators' },
+  { id: 'power_nest', label: 'Bird nest', plural: 'bird nests' },
+];
 
 export type TowerAudience = 'owner' | 'technician';
 

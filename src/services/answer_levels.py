@@ -25,7 +25,7 @@ import json
 import math
 import os
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from enum import Enum, IntEnum
 from pathlib import Path
@@ -117,6 +117,7 @@ class Target:
     size_floor_px: Optional[int]  # smallest marked size, as the finder reads it, among the measured pictures
     measured: dict[str, Any]  # provenance: PROVENANCE_KEYS
     also_measured: tuple[dict[str, Any], ...]
+    detector_class: Optional[str] = None  # set on a trained detector's view of the target: the class it boxes
 
 
 def _check_unit_interval(where: str, value: Any) -> None:
@@ -229,13 +230,68 @@ def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
                   measured=dict(measured), also_measured=tuple(dict(e) for e in entry["also_measured"]))
 
 
+_DETECTOR_KEYS = {"model", "class", "max_level", "size_evidence", "measured", "note"}
+
+
+def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, Any]) -> Optional[Target]:
+    """A trained detector's view of the target (its `detector` entry): the same target, found by a model trained on
+    it instead of the example finder, with its own measurement, size floor and highest level. None without one."""
+    given = entry.get("detector")
+    if given is None:
+        return None
+    if not isinstance(given, dict) or set(given) != _DETECTOR_KEYS:
+        raise ValueError(f"answer target {name}: detector must have exactly {sorted(_DETECTOR_KEYS)}")
+    measured = given["measured"]
+    _check_provenance(f"{name} (detector)", measured)
+    if measured["value"] is None or not given["model"] or not given["class"] or not given["note"]:
+        raise ValueError(f"answer target {name}: a detector needs a model, a class, a note and a measured value")
+    if given["max_level"] not in Level.__members__ or Level[given["max_level"]] in (Level.AREA, Level.COUNT):
+        raise ValueError(f"answer target {name}: detector max level {given['max_level']!r} is not one a person's "
+                         f"check of every box allows")
+    if measured["finder_input_px"] != measured["image_px"]:
+        raise ValueError(f"answer target {name}: a detector reads the picture as it is: finder_input_px must be "
+                         f"image_px")
+    floor = _size_floor(f"{name} (detector)", given["size_evidence"], measured["finder_input_px"], marks)
+    if floor is None:
+        raise ValueError(f"answer target {name}: a detector needs size_evidence (pictures with their objects boxed)")
+    return replace(base, finder_model=given["model"], finder_input_px=measured["finder_input_px"],
+                   look_alike_marks=False, suggestion_filter=False, max_level=Level[given["max_level"]],
+                   size_floor_px=floor, measured=dict(measured), also_measured=(), detector_class=given["class"])
+
+
 def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:
     """Targets by name from the committed table and the marks behind it; raises if either is broken."""
+    return _load(path, evidence_path)[0]
+
+
+def _load(path: Path, evidence_path: Path) -> tuple[dict[str, Target], dict[str, Target]]:
     marks = json.loads(evidence_path.read_text())["marks"]
-    return {name: _target(name, e, marks) for name, e in json.loads(path.read_text())["targets"].items()}
+    entries = json.loads(path.read_text())["targets"]
+    targets = {name: _target(name, e, marks) for name, e in entries.items()}
+    detectors = {name: d for name, e in entries.items() if (d := _detector(name, targets[name], e, marks))}
+    return targets, detectors
 
 
-_TARGETS = load_targets()
+_TARGETS, _DETECTORS = _load(TARGETS_PATH, EVIDENCE_PATH)
+
+
+def detector(name: str) -> Optional[Target]:
+    """The trained detector's view of a target, or None when it has none."""
+    target(name)
+    return _DETECTORS.get(name)
+
+
+def target_for(name: str, finder_model: str) -> Target:
+    """The target as measured for this finder: its own entry, or its trained detector's view. Another finder's
+    output has no measurement here (ValueError)."""
+    t = target(name)
+    if finder_model == t.finder_model:
+        return t
+    d = _DETECTORS.get(name)
+    if d is not None and finder_model == d.finder_model:
+        return d
+    raise ValueError(f"levels for {t.noun} were measured for the {t.finder_model} finder"
+                     f"{f' and the {d.finder_model} detector' if d else ''}, not {finder_model!r}")
 
 
 def target(name: str) -> Target:
@@ -282,16 +338,18 @@ def _size_text(t: Target, floor: int, finder_input: int, object_px: float, pictu
 
 
 def size_gate(target_name: str, picture_long_px: float, marked_box_px: Optional[Sequence[Sequence[float]]] = None,
-              cm_per_px: Optional[float] = None, object_size_m: Optional[float] = None) -> SizeGate:
+              cm_per_px: Optional[float] = None, object_size_m: Optional[float] = None,
+              finder_model: Optional[str] = None) -> SizeGate:
     """Whether objects of this kind are, as the finder reads this picture, at least as big as on the pictures the
     kind was measured on (the target's size floor).
 
     `picture_long_px` is the long side, in pixels, of the picture (or tile) given to the finder; the finder reads
     it at the target's measured `finder_input_px`. `marked_box_px` is the (width, height) in the picture's pixels
     of each box the user drew; their median size is used when given, before `object_size_m` (a size on the ground,
-    needing `cm_per_px`).
+    needing `cm_per_px`). `finder_model`: the finder that will read the picture (default the target's own); a
+    trained detector reads it at its own size, against its own floor.
     """
-    t = target(target_name)
+    t = target(target_name) if finder_model is None else target_for(target_name, finder_model)
     if not picture_long_px > 0:
         raise ValueError(f"the picture's long side must be positive, got {picture_long_px!r} px")
     if cm_per_px is not None and not cm_per_px > 0:
@@ -425,9 +483,7 @@ def decide(target_name: str, finder_model: str, gate: SizeGate, verdict: Countab
     CAN'T TELL whenever the table says so, the size gate does not pass, or countability is not YES (the reason
     then says what is missing). `finder_model` names the finder that found the objects: the levels were measured
     for one finder, and another finder's output is refused (ValueError), not given its level."""
-    t = target(target_name)
-    if finder_model != t.finder_model:
-        raise ValueError(f"levels for {t.noun} were measured for the {t.finder_model} finder, not {finder_model!r}")
+    t = target_for(target_name, finder_model)
     if gate.target != target_name:
         raise ValueError(f"the size gate was worked out for {gate.target!r}, not {target_name!r}")
     if t.max_level is Level.CANT_TELL:
