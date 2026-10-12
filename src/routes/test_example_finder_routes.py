@@ -184,45 +184,27 @@ async def test_the_owner_finds_the_rest_in_the_photos_coordinates_once(client, p
     assert again.json() == done and len(finder.calls) == 1  # kept, not found twice
 
 
+# Project editors start jobs (EDIT rights), project viewers read them (VIEW rights): a layer follows the roles of
+# the projects it is in (alembic e7a1c4d9b2f3, Roger 2026-10-12).
 @pytest.mark.anyio
-async def test_a_project_viewer_never_starts_the_finder(client, photo, finder):
-    """Today both routes answer 404 to anyone but the layer's owner: map_layers' row-level security shows a layer
-    only to its owner, so get_layer finds nothing before any rights check runs (the xfail tests below say what the
-    spec wants)."""
-    ids = await photo()
-    _as(VIEWER)
-    refused = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
-    assert refused.status_code == 404 and finder.calls == []
-
-
-# The spec: project editors start jobs (EDIT rights), project viewers read them (VIEW rights). Not so today:
-RLS_GAP = pytest.mark.xfail(
-    strict=True, raises=AssertionError,
-    reason="map_layers row-level security (alembic c1d2e3f4a5b9) shows a layer only to its owner, so get_layer and "
-           "edit_layer answer 404 to project editors and viewers; a decision for Roger (EXAMPLE_FINDER_RULES.md)")
-
-
-@RLS_GAP
-@pytest.mark.anyio
-async def test_spec_a_project_viewer_is_told_403_when_starting(client, photo, finder):
+async def test_a_project_viewer_is_told_403_when_starting(client, photo, finder):
     ids = await photo()
     _as(VIEWER)
     refused = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
     assert refused.status_code == 403, refused.text
+    assert finder.calls == []
 
 
-@RLS_GAP
 @pytest.mark.anyio
-async def test_spec_a_project_editor_starts_the_finder(client, photo, finder):
+async def test_a_project_editor_starts_the_finder(client, photo, finder):
     ids = await photo()
     _as(EDITOR)
     started = await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())
     assert started.status_code == 200, started.text
 
 
-@RLS_GAP
 @pytest.mark.anyio
-async def test_spec_a_project_viewer_reads_the_finds(client, photo, finder):
+async def test_a_project_viewer_reads_the_finds(client, photo, finder):
     ids = await photo()
     _as(ids["owner"])
     job = (await client.post(f"/api/layer/{ids['layer']}/finder", json=_body())).json()

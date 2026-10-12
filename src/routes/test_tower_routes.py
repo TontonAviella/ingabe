@@ -373,15 +373,18 @@ async def test_reads_need_view_rights_and_writes_edit_rights(client, seeded, swi
 
 
 @pytest.mark.anyio
-async def test_a_project_member_who_does_not_own_the_layer_gets_404_today(client, seeded, switched_on):
-    """As every route on get_layer: map_layers' row-level security shows a layer only to its owner
-    (EXAMPLE_FINDER_RULES.md, "Project editors and viewers"); a decision for Roger, pinned here."""
+async def test_project_members_work_on_an_inspection_they_did_not_upload_by_their_role(client, seeded, switched_on):
+    """A layer follows the roles of the projects it is in (alembic e7a1c4d9b2f3, Roger 2026-10-12): a viewer reads the
+    tower work, an editor also marks; someone outside the project still gets 404."""
     ids = await seeded.make(editors=(EDITOR,), viewers=(VIEWER,))
-    for user in (VIEWER, EDITOR):
-        _as(user)
-        assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 404
-        assert (await client.put(f"{_base(ids['layer'])}/photos/{SHA}/marks",
-                                 json={"part": DISH, "marks": MARKS})).status_code == 404
+    marks = f"{_base(ids['layer'])}/photos/{SHA}/marks"
+    _as(VIEWER)
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 200
+    assert (await client.put(marks, json={"part": DISH, "marks": MARKS})).status_code == 403
+    _as(EDITOR)
+    assert (await client.put(marks, json={"part": DISH, "marks": MARKS})).status_code == 200
+    _as(str(uuid.uuid4()))
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 404
 
 
 @pytest.mark.anyio

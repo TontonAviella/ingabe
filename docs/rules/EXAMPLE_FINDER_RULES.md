@@ -267,16 +267,11 @@ are two pictures, because their finds are written in different coordinates.
 - 400 for a layer that is not a raster, 409 while its photo is being
   processed or when it is in no project, 422 for a request that cannot be
   answered (the reason in data terms), 502 when the photo could not be read.
-- **Gap, for Roger to decide:** the spec gives project editors EDIT and
-  project viewers VIEW rights, but today a project editor or viewer who does
-  not own the layer gets 404 from both routes: `map_layers` row-level
-  security (alembic `c1d2e3f4a5b9`) shows a layer only to its owner, so
-  `get_layer` finds nothing before any rights check runs. This is app-wide
-  (every route on `get_layer`), so it is not changed here. The route tests
-  pin today's 404 for a viewer who starts (`finder.calls == []`) and state the
-  spec as strict xfail tests (`test_spec_*`: viewer POST 403, editor POST 200,
-  viewer GET 200) that turn red when the gap is closed. Reading without
-  starting is tested in `view_only` mode.
+- **Project roles** (Roger, 2026-10-12; alembic `e7a1c4d9b2f3`): a layer
+  follows the roles of the projects whose live maps list it. Project viewers
+  read the finds (GET 200) and are refused a start (POST 403); project
+  editors start the finder (POST 200); anyone else gets 404. Tested in the
+  route tests and, at the database, in `src/test_rls_layers_by_project_role.py`.
 
 ## Measured run time and memory (2026-10-11)
 

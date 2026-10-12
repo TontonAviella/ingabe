@@ -140,9 +140,8 @@ for the layer (data, or a 409): never while asking, on a 404 or on a failed requ
 - `GET /cards?audience=owner|technician` -> `{"cards": [{id, title, status, preview}]}`; `GET /cards/{card_id}` ->
   the drone cards' answer shape (`what, why, todo, how_sure, facts, terms, items, downloads, progress, overlay,
   choices, upload, field_check, ask_sage`, plus `question` and `status_label`). Unknown audience: 422.
-- **Rights gap (as every route on `get_layer`)**: a project editor or viewer who does not own the layer gets 404
-  (map_layers row security shows a layer to its owner only; EXAMPLE_FINDER_RULES.md). Pinned by a test; Roger's
-  decision.
+- **Project roles** (Roger, 2026-10-12; alembic `e7a1c4d9b2f3`): a project viewer who did not upload the inspection
+  reads its tower work, a project editor also marks and reviews; anyone outside the project gets 404.
 
 ## Cards (`tower_cards.py`)
 
@@ -193,7 +192,7 @@ is the routing eval's to measure with `TOWERS=1` (not run yet).
 - **A layer shown in two projects** is refused by the tower routes (409) until it is removed from all but one
   project's maps; the finder and field checks still follow `project_of` (the last edited map).
 - **No "none on this photo" action**: a part not visible on a photo stays unmarked there (not counted, never 0).
-- **Rights gap** above; **Hermes** (`MUNDI_USE_HERMES`, off) is never given a tool behind a switch: the plugin skips
+- **Hermes** (`MUNDI_USE_HERMES`, off) is never given a tool behind a switch: the plugin skips
   `industry.SWITCHES` (it picks tools by words, not by industry or switch). It is still given the farm-only drone
   tools for every industry (a gap on main, not of this build).
 - **Switched off later**: earlier tower tool calls and their counts are dropped from the replayed chat history
