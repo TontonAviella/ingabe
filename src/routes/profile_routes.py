@@ -67,7 +67,7 @@ class IndustryUpdate(BaseModel):
 
 async def _industry_payload(conn, session: UserContext) -> dict:
     user_id, org_id = session.get_user_id(), session.get_org_id()
-    own = await industry.industry_of(conn, user_id)
+    current, source = await industry.current_industry_and_source(conn, user_id, org_id)
     company = None
     if org_id:
         name = await conn.fetchval("SELECT name FROM organizations WHERE id::text = $1", org_id)
@@ -78,9 +78,9 @@ async def _industry_payload(conn, session: UserContext) -> dict:
                 "can_set": session.get_org_role() in industry.COMPANY_ADMIN_ROLES,
             }
     return {
-        # What new projects get: the company's industry once it has one, else the user's own (None: the app asks).
-        "industry": (company and company["industry"]) or own,
-        "source": "company" if company and company["industry"] else ("you" if own else None),
+        # The industry the user works in now: new projects take it (None: the app asks).
+        "industry": current,
+        "source": source,
         "company": company,
         # Only an account row can keep a choice (the legacy single-user mode has none): the app asks only then.
         "can_choose": bool(user_id) and await conn.fetchval("SELECT 1 FROM users WHERE internal_uuid = $1", user_id) is not None,

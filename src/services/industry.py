@@ -1,7 +1,10 @@
 """Industries: Ingabe serves agriculture, power grids and telecom towers, and keeps them apart.
 
-Two settings:
-- users.industry: the industry a user works in, asked once at sign-in; it is copied onto each project they create.
+The settings:
+- users.industry: the industry a user works in, asked once at sign-in; organizations.industry: a company's.
+- The industry a user works in now (current_industry, the one place this is decided): their company's once it has
+  chosen, else their own; None until anyone chooses, and in the legacy single-user mode. It is copied onto each
+  project they create (agriculture when None).
 - user_mundiai_projects.industry: the industry a project belongs to (one per project). Everything Sage, the cards
   and the upload automation do for a project follows it.
 
@@ -274,10 +277,29 @@ async def save_company_industry(conn: Any, org_id: str, industry: str) -> bool:
     return status.endswith(" 1")
 
 
+async def current_industry_and_source(conn: Any, user_id: Optional[str],
+                                      org_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(industry, source): the industry the user works in now and where it comes from. Their company's ("company")
+    once it has chosen, else their own choice ("you"); (None, None) when neither has chosen or there is no account
+    (legacy single-user mode)."""
+    company = await company_industry(conn, org_id)
+    if company:
+        return company, "company"
+    own = await industry_of(conn, user_id)
+    if own:
+        return own, "you"
+    return None, None
+
+
+async def current_industry(conn: Any, user_id: Optional[str], org_id: Optional[str]) -> Optional[str]:
+    """The industry the user works in now (current_industry_and_source); None when nobody has chosen."""
+    current, _source = await current_industry_and_source(conn, user_id, org_id)
+    return current
+
+
 async def industry_for_new_project(conn: Any, user_id: Optional[str], org_id: Optional[str]) -> str:
-    """A new project's industry: its company's; the creator's own choice when the company has none yet (or there is
-    no company); agriculture until anyone chooses."""
-    return (await company_industry(conn, org_id) or await industry_of(conn, user_id) or DEFAULT_INDUSTRY)
+    """A new project's industry: the industry its creator works in now; agriculture until anyone chooses."""
+    return await current_industry(conn, user_id, org_id) or DEFAULT_INDUSTRY
 
 
 async def industry_of_project(conn: Any, project_id: Optional[str]) -> Optional[str]:

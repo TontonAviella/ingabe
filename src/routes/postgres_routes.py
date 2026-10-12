@@ -261,8 +261,7 @@ async def create_map(
     async with get_async_db_connection() as conn:
         # With sign-in on, a project waits for an industry (the person's or their company's) instead of silently
         # becoming agriculture; the legacy single-user mode keeps the agriculture default (audit R1-31).
-        if external_auth_enabled() and not (await industry.company_industry(conn, session.get_org_id())
-                                            or await industry.industry_of(conn, owner_id)):
+        if external_auth_enabled() and not await industry.current_industry(conn, owner_id, session.get_org_id()):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                                 detail="Choose your industry before creating a project.")
         async with conn.transaction():
