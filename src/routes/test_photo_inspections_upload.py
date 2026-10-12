@@ -160,6 +160,21 @@ async def test_a_3d_model_zip_is_refused_as_a_3d_model(auth_client, switch_on):
 
 
 @pytest.mark.anyio
+async def test_a_photo_zip_with_a_model_file_names_the_photo_that_could_not_be_read(auth_client, switch_on):
+    """A ZIP with a GPS photo, a broken photo and a model file holds photos: the refusal names the broken photo, as
+    on main, not "a 3D model"."""
+    created = await _new_map(auth_client, "Photos and a mesh")
+    data = photo_zip([("DJI_0001.JPG", drone_jpg(*TOWER[0], xmp=DJI_XMP)), ("DJI_0002.JPG", b"\xff\xd8 cut short"),
+                      ("mesh/site.obj", b"v 0 0 0")])
+    response = await _upload(auth_client, created["id"], "photos-and-mesh.zip", data)
+    _init, done = await _browser_upload(auth_client, created["id"], "photos-and-mesh.zip", data)
+    for answer in (response, done):
+        assert answer.status_code == 400, answer.text
+        assert answer.json()["detail"] == "DJI_0002.JPG could not be read as a photo"
+    assert await _stored_keys(f"inspections/{created['project_id']}/") == []
+
+
+@pytest.mark.anyio
 async def test_switch_off_a_3d_model_zip_is_refused_as_today(auth_client, switch_off):
     created = await _new_map(auth_client, "3D model off")
     for filename, data, _holds in _model_zips():

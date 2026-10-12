@@ -149,6 +149,21 @@ def test_a_3d_model_without_gps_is_named_as_a_3d_model(tmp_path):
     assert not pi.is_model_archive(["DJI_0001.JPG", "notes.txt"])
 
 
+def test_an_unreadable_picture_names_a_3d_model_only_when_its_pictures_are_textures():
+    """When a picture cannot be read, the 3D-model message replaces "... could not be read as a photo" only for a
+    model whose pictures are all in a textures folder (or that has none); a ZIP with a photo elsewhere holds photos,
+    and its refusal keeps naming the file that failed."""
+    with pytest.raises(pi.ModelNotPhotos, match="it holds tower.glb and 1 image in a textures folder"):
+        pi.check_unreadable_not_a_model(["tower.glb", "textures/broken.png"])
+    with pytest.raises(pi.ModelNotPhotos, match="it holds source/telecom tower.glb"):
+        pi.check_unreadable_not_a_model(["source/telecom tower.glb"])  # no picture at all
+    # Photos outside a textures folder, a model file beside them: not a 3D model's refusal.
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "DJI_0002.JPG", "mesh/site.obj"])
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "textures/huge.png", "tower.glb"])
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "DJI_0002.JPG"])  # no model: nothing to say
+    pi.check_unreadable_not_a_model([])  # a single photo uploaded on its own
+
+
 def test_camera_points_and_summary(tmp_path):
     placed = pi.read_photo(_write(tmp_path, "a.jpg", drone_jpg(-1.9, 30.1, xmp=DJI_XMP)), "a.jpg")
     unplaced = pi.read_photo(_write(tmp_path, "b.png", drone_jpg(fmt="PNG")), "b.png")

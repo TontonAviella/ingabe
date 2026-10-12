@@ -80,8 +80,9 @@ class PhotoSetUploadHandler(BaseUploadHandler):
             photos = await _unpacked_photos(ctx.temp_file_path, photos_dir) if is_archive else [_single_photo(ctx)]
             facts = await asyncio.to_thread(photo_inspections.read_photos, photos)
         except photo_inspections.UnreadablePhoto:
-            # No photo, or a texture that is not a readable photo: a 3D model is refused as a 3D model.
-            photo_inspections.check_not_a_model(names)
+            # A 3D model whose only pictures are its textures is refused as a 3D model; a ZIP with photos keeps the
+            # message naming the file that could not be read.
+            photo_inspections.check_unreadable_not_a_model(names)
             raise
         photo_inspections.check_placeable(facts, names)
 

@@ -20,10 +20,13 @@ in `src/routes/layer_router.py`. Switch: `PHOTO_INSPECTIONS` (off by default; re
   refused with 400 "This ZIP is a 3D model, not photos: it holds ... Ingabe takes 3D only as a LAS or LAZ point cloud;
   for a photo inspection, upload the photos with their GPS.", naming the file or folder. Only names are read: a ZIP
   inside the ZIP is not opened. With the switch on, a ZIP holding a model and no photo and no shapefile goes to the
-  photo path for this message (`is_model_archive`; the vector path refused it too, as "no shapefile"), and a texture
-  that is not a readable picture gets the same message. A ZIP with at least one GPS photo is accepted as before;
-  model files in it are ignored. Nothing about what is accepted changed, and the message gives no flight or
-  data-collection instructions. With the switch off, a model ZIP gets the shapefile message as before.
+  photo path for this message (`is_model_archive`; the vector path refused it too, as "no shapefile"). When a picture
+  cannot be read (or none can be unpacked), the same message replaces "<file> could not be read as a photo" only when
+  the ZIP has no photo outside a textures folder (`check_unreadable_not_a_model`): a ZIP with a photo anywhere else
+  keeps the message naming the file that failed, model files or not. A ZIP whose photos all read, at least one with a
+  GPS position, is accepted as before; model files in it are ignored. Nothing about what is accepted changed, and the
+  message gives no flight or data-collection instructions. With the switch off, a model ZIP gets the shapefile
+  message as before.
 - Out of scope for now: a dropped folder of photos (each photo becomes its own 1-photo inspection).
 
 ## Limits (constants in the owner module)

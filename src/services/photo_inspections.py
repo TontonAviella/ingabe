@@ -155,6 +155,18 @@ def is_photo_set(names: Iterable[str]) -> bool:
     return any(is_photo_name(name) for name in names)
 
 
+def _folders_and_base(name: str) -> tuple[list[str], str]:
+    """The folders and the file name of a name inside an archive, in lower case, / or \\ separated."""
+    *folders, base = (part.lower() for part in re.split(r"[\\/]", name))
+    return folders, base
+
+
+def _is_texture(name: str) -> bool:
+    """True for a picture in a textures folder (a 3D model's textures, not photos of anything)."""
+    folders, _base = _folders_and_base(name)
+    return is_photo_name(name) and bool(TEXTURE_FOLDERS.intersection(folders))
+
+
 def model_in(names: Iterable[str]) -> Optional[str]:
     """What in an archive with these file names shows it is a 3D model, in words ("source/model.zip and 8 images in
     a textures folder"); None when nothing does. A model file (MODEL_EXTENSIONS), a ZIP in a source folder and the
@@ -163,13 +175,13 @@ def model_in(names: Iterable[str]) -> Optional[str]:
     models: list[str] = []
     textures = 0
     for name in names:
-        *folders, base = (part.lower() for part in re.split(r"[\\/]", name))
+        folders, base = _folders_and_base(name)
         if base.startswith("._"):
             continue
         extension = os.path.splitext(base)[1]
         if extension in MODEL_EXTENSIONS or (extension == ".zip" and MODEL_SOURCE_FOLDERS.intersection(folders)):
             models.append(name)
-        elif is_photo_name(name) and TEXTURE_FOLDERS.intersection(folders):
+        elif _is_texture(name):
             textures += 1
     found = []
     if models:
@@ -191,12 +203,22 @@ def is_model_archive(names: Iterable[str]) -> bool:
 
 def check_not_a_model(archive_names: Iterable[str]) -> None:
     """Raise ModelNotPhotos when an archive with these file names holds a 3D model. Called only where the upload is
-    already refused (no photo has a GPS position, or no photo could be read), so it changes the message, never what
-    is accepted."""
+    already refused (no photo has a GPS position: check_placeable; a picture could not be read:
+    check_unreadable_not_a_model), so it changes the message, never what is accepted."""
     what = model_in(archive_names)
     if what:
         raise ModelNotPhotos(f"This ZIP is a 3D model, not photos: it holds {what}. Ingabe takes 3D only as a LAS or "
                              "LAZ point cloud; for a photo inspection, upload the photos with their GPS.")
+
+
+def check_unreadable_not_a_model(archive_names: Iterable[str]) -> None:
+    """Raise ModelNotPhotos when a picture in an archive with these file names could not be read (or none could be
+    unpacked) and the archive is a 3D model whose only pictures are its textures. An archive with a photo outside a
+    textures folder holds photos, so it is not "a 3D model, not photos": nothing is raised here and the refusal keeps
+    naming the file that could not be read."""
+    names = list(archive_names)
+    if not any(is_photo_name(name) and not _is_texture(name) for name in names):
+        check_not_a_model(names)
 
 
 def read_photo(path: str, filename: str) -> PhotoFacts:
