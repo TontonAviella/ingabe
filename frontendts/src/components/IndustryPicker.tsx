@@ -108,6 +108,9 @@ export default function IndustryPicker({ data, onClose }: { data: IndustryState;
       // Let the fade finish before the gate leaves the page.
       window.setTimeout(() => {
         queryClient.setQueryData(INDUSTRY_KEY, saved);
+        // The server, not the lists' key, decides what they list: reload them even when the key's industry is
+        // unchanged (this tab's lists may hold another industry's maps after a switch in another tab).
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
         onClose();
       }, 450);
     },

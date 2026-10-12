@@ -138,8 +138,13 @@ export default function MapsList() {
         {/* Phones: the title takes its own line above the controls; wider screens: centred between them. */}
         <div className="order-first w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2">
           <h1 className="text-xl sm:text-2xl font-bold">
-            {showDeleted ? 'Recently deleted' : 'Your'} {industryLabel ? `${industryLabel} maps` : 'maps'}{' '}
-            <span className="text-gray-400">({plural(totalItems, 'project', 'projects')})</span>
+            {showDeleted ? 'Recently deleted' : 'Your'} {industryLabel ? `${industryLabel} maps` : 'maps'}
+            {totalItems !== null && (
+              <>
+                {' '}
+                <span className="text-gray-400">({plural(totalItems, 'project', 'projects')})</span>
+              </>
+            )}
           </h1>
         </div>
 

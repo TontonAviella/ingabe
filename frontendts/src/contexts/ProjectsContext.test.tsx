@@ -3,6 +3,7 @@ import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INDUSTRY_KEY, type IndustryKey, type IndustryState, OPEN_INDUSTRY_PICKER } from '@/components/IndustryGate';
+import IndustryPicker from '@/components/IndustryPicker';
 import MapsList from '@/components/MapsList';
 import { ProjectsProvider, useProjects } from '@/contexts/ProjectsContext';
 import type { ProjectList } from '@/lib/types';
@@ -12,6 +13,7 @@ import { byText, click, findButton, findText, mount, unmountAll } from '@/test/d
 // fake server below answers GET /api/projects/ with the rules of list_user_projects (src/routes/project_routes.py)
 // and GET /api/user/industry with the shape of _industry_payload (src/routes/profile_routes.py).
 vi.mock('@mundi/ee', () => ({ apiFetch: vi.fn(), useIsReady: () => true }));
+vi.mock('@/lib/miniworld', () => ({ buildScene: () => ({}), renderWorld: vi.fn() })); // the picker's drawing needs a real canvas
 const fetchMock = vi.mocked(apiFetch);
 
 const INDUSTRIES: { key: IndustryKey; label: string; note: string }[] = [
@@ -30,6 +32,7 @@ interface FakeProject {
 let world: { industry: IndustryKey | null; projects: FakeProject[] };
 let calls: string[];
 let industryGate: Promise<void> | null; // holds /api/user/industry until released
+let listGate: Promise<void> | null; // holds the main-list requests until released
 let listFailures: number; // the next N main-list requests answer 500
 
 function industryState(): IndustryState {
@@ -86,12 +89,13 @@ function Probe() {
   return <div data-testid="recent">{allProjects.map((p) => p.id).join(',')}</div>;
 }
 
-function renderHome() {
+function renderHome(picker = false) {
   mount(
     <MemoryRouter>
       <ProjectsProvider>
         <MapsList />
         <Probe />
+        {picker && <IndustryPicker data={industryState()} onClose={vi.fn()} />}
       </ProjectsProvider>
     </MemoryRouter>,
   );
@@ -101,7 +105,27 @@ const heading = () =>
   byText(/maps \(/, 'h1')
     ?.textContent?.replace(/\s+/g, ' ')
     .trim();
+const title = () => document.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim();
 const listCalls = () => calls.filter((u) => u.startsWith('/api/projects/'));
+const pageCalls = () => calls.filter((u) => u.startsWith('/api/projects/?'));
+
+function pageLink(n: number): Element {
+  const link = [...document.querySelectorAll('a[data-slot="pagination-link"]')].find((a) => a.textContent === String(n));
+  if (!link) throw new Error(`no link to page ${n}`);
+  return link;
+}
+
+/** Holds the main-list requests until the returned function is called. */
+function holdLists(): () => void {
+  let release!: () => void;
+  listGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return () => {
+    listGate = null;
+    release();
+  };
+}
 
 /** Switches industry the way the picker does once the server saved it: it replaces the industry query's data. */
 function switchTo(key: IndustryKey) {
@@ -113,6 +137,7 @@ beforeEach(() => {
   world = { industry: 'telecom', projects: [] };
   calls = [];
   industryGate = null;
+  listGate = null;
   listFailures = 0;
   vi.stubGlobal(
     'ResizeObserver',
@@ -122,15 +147,20 @@ beforeEach(() => {
       disconnect = vi.fn();
     },
   );
-  fetchMock.mockImplementation(async (input) => {
+  fetchMock.mockImplementation(async (input, init) => {
     const path = String(input);
     calls.push(path);
     const url = new URL(path, 'http://ingabe.test');
     if (url.pathname === '/api/user/industry') {
+      if (init?.method === 'PUT') {
+        world.industry = JSON.parse(String(init.body)).industry;
+        return json(200, industryState());
+      }
       if (industryGate) await industryGate;
       return json(200, industryState());
     }
     if (url.pathname === '/api/projects/') {
+      if (url.searchParams.has('page') && listGate) await listGate;
       if (url.searchParams.has('page') && listFailures > 0) {
         listFailures -= 1;
         return json(500, { detail: 'boom' });
@@ -192,9 +222,7 @@ describe('the home lists the maps of the industry the user works in now', () => 
     world.projects = [...projects('telecom', 13, 'T'), ...projects('agriculture', 2, 'A')];
     renderHome();
     await findText('Your Telecom Towers maps (13 projects)', 'h1');
-    const pageTwo = [...document.querySelectorAll('a[data-slot="pagination-link"]')].find((a) => a.textContent === '2');
-    expect(pageTwo).toBeDefined();
-    click(pageTwo as Element);
+    click(pageLink(2));
     await findText('T13');
     expect(listCalls().some((u) => u.includes('page=2&'))).toBe(true);
 
@@ -206,6 +234,75 @@ describe('the home lists the maps of the industry the user works in now', () => 
     expect(after.every((u) => u.includes('page=1&'))).toBe(true);
     // The sidebar's recent maps follow the switch too.
     await vi.waitFor(() => expect(document.querySelector('[data-testid="recent"]')?.textContent).toBe('A1,A2'));
+  });
+
+  it('opens page 1 again when switching back to an industry left on page 2', async () => {
+    world.projects = [...projects('telecom', 13, 'T'), ...projects('agriculture', 2, 'A')];
+    renderHome();
+    await findText('Your Telecom Towers maps (13 projects)', 'h1');
+    click(pageLink(2));
+    await findText('T13');
+    switchTo('agriculture');
+    await findText('Your Agriculture maps (2 projects)', 'h1');
+
+    const before = calls.length;
+    switchTo('telecom');
+    await findText('Your Telecom Towers maps (13 projects)', 'h1');
+    await findText('T1');
+    const after = calls.slice(before).filter((u) => u.startsWith('/api/projects/?'));
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((u) => u.includes('page=1&'))).toBe(true);
+    expect(byText('T13')).toBeNull();
+  });
+
+  it('keeps naming the industry while a page or another industry loads', async () => {
+    world.projects = [...projects('telecom', 13, 'T'), ...projects('agriculture', 2, 'A')];
+    renderHome();
+    await findText('Your Telecom Towers maps (13 projects)', 'h1');
+    const others = '2 Agriculture maps are in another industry. Switch industry to see them.';
+    await findText(others, 'p');
+
+    // Another page of the same industry: the current one stays, with its header and the other-industries line.
+    let release = holdLists();
+    click(pageLink(2));
+    await vi.waitFor(() => expect(pageCalls().some((u) => u.includes('page=2&'))).toBe(true));
+    expect(title()).toBe('Your Telecom Towers maps (13 projects)');
+    expect(byText(others, 'p')).not.toBeNull();
+    release();
+    await findText('T13');
+
+    // Another industry: its name while it loads, without a count (unknown, not 0), never the every-industry header.
+    release = holdLists();
+    const before = pageCalls().length;
+    switchTo('agriculture');
+    await vi.waitFor(() => expect(pageCalls().length).toBeGreaterThan(before));
+    expect(title()).toBe('Your Agriculture maps');
+    release();
+    await findText('Your Agriculture maps (2 projects)', 'h1');
+  });
+
+  it('follows the server when the industry was switched in another tab', async () => {
+    world.projects = [...projects('telecom', 1, 'T'), ...projects('agriculture', 2, 'A')];
+    renderHome();
+    await findText('Your Telecom Towers maps (1 project)', 'h1');
+    const industryCalls = () => calls.filter((u) => u === '/api/user/industry').length;
+    const asked = industryCalls();
+
+    world.industry = 'agriculture'; // saved in another tab: this tab still holds Telecom Towers
+    client.invalidateQueries({ queryKey: ['projects'] }); // any later reload of the lists (New Map, going home)
+    await findText('Your Agriculture maps (2 projects)', 'h1');
+    await vi.waitFor(() => expect(client.getQueryData<IndustryState>(INDUSTRY_KEY)?.industry).toBe('agriculture'));
+    expect(industryCalls()).toBe(asked + 1);
+  });
+
+  it('reloads the lists when the picker saves, even the industry they already show', async () => {
+    world.projects = projects('telecom', 1, 'T');
+    renderHome(true);
+    await findText('Your Telecom Towers maps (1 project)', 'h1');
+    const before = pageCalls().length;
+    click(await findButton(/Continue with Telecom Towers/));
+    await vi.waitFor(() => expect(calls).toContain('/api/user/industry'));
+    await vi.waitFor(() => expect(pageCalls().length).toBeGreaterThan(before), { timeout: 3000 });
   });
 
   it('keeps the industry when showing recently deleted maps', async () => {
