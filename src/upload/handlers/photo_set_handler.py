@@ -17,7 +17,7 @@ import zipfile
 from fastapi import HTTPException, status
 
 from src.services import photo_inspections
-from src.upload.archive import ArchiveTooLarge, extract_zip
+from src.upload.archive import ArchiveTooLarge, extract_zip, member_names
 from src.upload.base import BaseUploadHandler, HandlerResult, UploadContext
 from src.upload.handlers.vector_handler import VectorUploadHandler
 from src.upload.keys import upload_key
@@ -75,9 +75,16 @@ class PhotoSetUploadHandler(BaseUploadHandler):
         photos_dir = os.path.join(temp_dir, "photos")
         os.makedirs(photos_dir)
         is_archive = ctx.file_ext == ".zip"
-        photos = await _unpacked_photos(ctx.temp_file_path, photos_dir) if is_archive else [_single_photo(ctx)]
-        facts = await asyncio.to_thread(photo_inspections.read_photos, photos)
-        photo_inspections.check_placeable(facts)
+        names = await asyncio.to_thread(member_names, ctx.temp_file_path) if is_archive else []
+        try:
+            photos = await _unpacked_photos(ctx.temp_file_path, photos_dir) if is_archive else [_single_photo(ctx)]
+            facts = await asyncio.to_thread(photo_inspections.read_photos, photos)
+        except photo_inspections.UnreadablePhoto:
+            # A 3D model whose only pictures are its textures is refused as a 3D model; a ZIP with photos keeps the
+            # message naming the file that could not be read.
+            photo_inspections.check_unreadable_not_a_model(names)
+            raise
+        photo_inspections.check_placeable(facts, names)
 
         prefix = photo_inspections.storage_prefix(ctx.project_id, ctx.layer_id)
         await _store_originals([path for path, _ in photos], facts, prefix, ctx.bucket_name)

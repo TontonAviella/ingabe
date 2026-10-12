@@ -63,14 +63,23 @@ Ingabe is a map you use in your web browser, with an assistant called **Sage** t
 
 ## 3. Your Maps
 
-After signing in you see **Your Maps**, a grid of your map projects (12 per page).
+After signing in you see your maps for the industry you work in (Agriculture, Power Grid or Telecom Towers), for
+example **Your Telecom Towers maps (3 projects)**: a grid of the map projects you own or that were shared with you
+in that industry (12 per page). The sidebar's recent maps follow the same industry.
+
+- **Switch industry:** click **Your industry** in the left sidebar and pick another. Switching changes only what
+  you see and where your new maps go; it does not change your company's industry or anyone else's view. A company's
+  industry is only where its members start until they choose their own.
+- **Maps in other industries** are not deleted or hidden for good: a line under the title says how many there are
+  (for example "1 Agriculture map is in another industry"), and a map's link still opens it.
+- Before anyone has chosen an industry, the list shows every industry.
 
 | Action | How |
 |--------|-----|
-| Create a map | Click **New Map** |
+| Create a map | Click **New Map**. It belongs to the industry you are looking at. |
 | Open a map | Click its card or **Open** |
 | Delete a map | Hover over the card and click the red trash icon. There is no confirmation step. |
-| See deleted maps | Tick **Show recently deleted**. Deleted maps can be seen but not restored from the app. |
+| See deleted maps | Tick **Show recently deleted** (same industry). Deleted maps can be seen but not restored from the app. |
 
 Each card shows a preview of the map, its name and when it was last edited.
 

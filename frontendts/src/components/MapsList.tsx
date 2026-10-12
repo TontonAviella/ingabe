@@ -1,12 +1,24 @@
 import { Clock, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { useIndustryKnown } from '@/components/IndustryGate';
+import { OPEN_INDUSTRY_PICKER, useIndustryKnown } from '@/components/IndustryGate';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useProjects } from '../contexts/ProjectsContext';
+import type { ProjectList } from '../lib/types';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from './ui/pagination';
 import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Words the server's count of the user's maps in other industries: "1 Agriculture map is in another industry." */
+function otherIndustriesText(others: ProjectList['other_industries']): { text: string; total: number } {
+  const parts = others.map((o) => plural(o.count, `${o.label} map`, `${o.label} maps`));
+  const total = others.reduce((sum, o) => sum + o.count, 0);
+  const listed = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  const where = others.length === 1 ? 'another industry' : 'other industries';
+  return { text: `${listed} ${total === 1 ? 'is' : 'are'} in ${where}.`, total };
+}
 
 export default function MapsList() {
   // A new project takes its industry at creation: wait until it is known (audit R1-31).
@@ -15,6 +27,8 @@ export default function MapsList() {
     projects,
     totalPages,
     totalItems,
+    industryLabel,
+    otherIndustries,
     currentPage,
     showDeleted,
     isLoading,
@@ -23,7 +37,9 @@ export default function MapsList() {
     setShowDeleted,
     createProject,
     deleteProject,
+    refetchProjects,
   } = useProjects();
+  const elsewhere = otherIndustries.length > 0 ? otherIndustriesText(otherIndustries) : null;
 
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
@@ -122,7 +138,13 @@ export default function MapsList() {
         {/* Phones: the title takes its own line above the controls; wider screens: centred between them. */}
         <div className="order-first w-full sm:order-none sm:w-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2">
           <h1 className="text-xl sm:text-2xl font-bold">
-            {showDeleted ? 'Recently Deleted Maps' : 'Your Maps'} <span className="text-gray-400">({totalItems} projects)</span>
+            {showDeleted ? 'Recently deleted' : 'Your'} {industryLabel ? `${industryLabel} maps` : 'maps'}
+            {totalItems !== null && (
+              <>
+                {' '}
+                <span className="text-gray-400">({plural(totalItems, 'project', 'projects')})</span>
+              </>
+            )}
           </h1>
         </div>
 
@@ -144,6 +166,20 @@ export default function MapsList() {
         </TooltipProvider>
       </div>
 
+      {elsewhere && (
+        <p className="-mt-3 text-center text-sm text-gray-400">
+          {elsewhere.text}{' '}
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))}
+            className="text-[#D9A066] underline-offset-2 hover:underline cursor-pointer"
+          >
+            Switch industry
+          </button>{' '}
+          to see {elsewhere.total === 1 ? 'it' : 'them'}.
+        </p>
+      )}
+
       {/* Top pagination */}
       {renderPagination()}
 
@@ -156,12 +192,7 @@ export default function MapsList() {
           </div>
           <h3 className="text-lg font-medium text-red-400">Error Loading Maps</h3>
           <p className="text-sm text-gray-400 text-center mt-1">{error}</p>
-          <Button
-            onClick={() => {
-              // Refetch projects handled by context
-            }}
-            className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer"
-          >
+          <Button onClick={refetchProjects} className="mt-4 bg-[#D9A066] hover:bg-[#E9B987] text-[#140E0B] hover:cursor-pointer">
             Try Again
           </Button>
         </Card>
@@ -183,7 +214,7 @@ export default function MapsList() {
       ) : projects.length === 0 ? (
         <Card className="border-dashed border-2 border-slate-500 text-white flex flex-col items-center justify-center p-6">
           <Plus className="h-8 w-8 mb-2 text-[#e2420d]" />
-          <h3 className="text-lg font-medium">No Maps Found</h3>
+          <h3 className="text-lg font-medium">{industryLabel ? `No ${industryLabel} maps yet` : 'No maps yet'}</h3>
           <p className="text-sm text-gray-400 text-center mt-1">Create your first map to get started</p>
           <Button
             onClick={handleCreateMap}
