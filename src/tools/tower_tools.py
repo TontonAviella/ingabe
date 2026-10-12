@@ -42,7 +42,8 @@ async def _here(layer_id: str, meta: IngabeToolCallMetaArgs) -> tuple[Optional[t
         # The chat's own project (its map shows the layer), never the last edited map's: a layer added to another
         # project's map keeps each project's work apart, as every Sage tool keys on meta.project_id.
         project_id = meta.project_id
-        if not industry.available("tower_inspection", await industry.industry_of_project(conn, project_id)):
+        # The tools' own capability (Telecom only): photo marking also serves Agriculture, these counts do not.
+        if not industry.available("get_tower_inspection_findings", await industry.industry_of_project(conn, project_id)):
             return None, "Tower work is for Telecom Towers projects only."
         s3, bucket = await get_async_s3_client(), get_bucket_name()
         photos = await tower_inspection.inspection_photos(s3, bucket, prefix)

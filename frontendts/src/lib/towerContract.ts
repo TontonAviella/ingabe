@@ -6,14 +6,24 @@ import type { Box } from '@/lib/photoView';
 // comes from the server; the screens only show them. All routes answer 404 when towers are switched off (TOWERS) or
 // the project is not a telecom project, and the panels then show nothing.
 
-export type TowerPart = 'tower_dish' | 'tower_antenna' | 'tower_radio_unit';
+export type TowerPart = 'tower_dish' | 'tower_antenna' | 'tower_radio_unit' | 'maize_seedling';
+
+export interface PartLabel {
+  id: TowerPart;
+  label: string;
+  plural: string;
+}
 
 /** The parts in the order the screen offers them, with the words a reader knows them by. */
-export const TOWER_PARTS: { id: TowerPart; label: string; plural: string }[] = [
+export const TOWER_PARTS: PartLabel[] = [
   { id: 'tower_dish', label: 'Microwave dish', plural: 'microwave dishes' },
   { id: 'tower_antenna', label: 'Panel antenna', plural: 'panel antennas' },
   { id: 'tower_radio_unit', label: 'Radio unit', plural: 'radio units' },
 ];
+
+/** Every part any industry marks (Agriculture: maize plants). Which ones a photo inspection marks comes from the
+ * server (InspectionPhotos.parts). */
+export const ALL_PARTS: PartLabel[] = [...TOWER_PARTS, { id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' }];
 
 export type TowerAudience = 'owner' | 'technician';
 
@@ -38,6 +48,8 @@ export interface InspectionPhoto {
 
 export interface InspectionPhotos {
   photos: InspectionPhoto[];
+  /** The parts marked on this inspection's photos, from its project's industry, in the order to offer them. */
+  parts?: PartLabel[];
 }
 
 /** A find job of the example finder. The finder's states are queued, running, done and failed. */
@@ -75,7 +87,7 @@ export interface PartWork {
 
 /** GET /api/towers/layer/{layer_id}/photos/{sha256}/work */
 export interface PhotoWork {
-  parts: Record<TowerPart, PartWork>;
+  parts: Partial<Record<TowerPart, PartWork>>;
 }
 
 /** PUT .../marks. `lookalike_marks` are look-alikes the person drew for this part only; this screen draws none. The

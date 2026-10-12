@@ -6,7 +6,7 @@ import { PANEL_FONT } from '@/components/CardAnswer';
 import { BOX_STYLE, type BoxKind, type CanvasBox, PhotoCanvas } from '@/components/towers/PhotoCanvas';
 import { photosToCheckNow, useFindTheRest, usePhotoWork, useSaveMarks, useSaveReview } from '@/hooks/useTowers';
 import type { Box } from '@/lib/photoView';
-import { type InspectionPhoto, TOWER_PARTS, type TowerPart } from '@/lib/towerContract';
+import { type InspectionPhoto, type PartLabel, TOWER_PARTS, type TowerPart } from '@/lib/towerContract';
 import {
   countLine,
   emptyPhotoDraft,
@@ -61,10 +61,12 @@ function Swatch({ kind, label }: { kind: BoxKind; label: string }) {
 function PhotoWorkspace({
   layerId,
   photo,
+  parts,
   onDirtyChange,
 }: {
   layerId: string;
   photo: InspectionPhoto;
+  parts: PartLabel[];
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const work = usePhotoWork(layerId, photo.sha256);
@@ -72,7 +74,7 @@ function PhotoWorkspace({
   const find = useFindTheRest(layerId, photo.sha256);
   const saveReview = useSaveReview(layerId, photo.sha256);
   const [draft, dispatch] = useReducer(photoReducer, undefined, emptyPhotoDraft);
-  const [part, setPart] = useState<TowerPart>('tower_dish');
+  const [part, setPart] = useState<TowerPart>(parts[0]?.id ?? 'tower_dish');
   const [tool, setTool] = useState<'draw' | 'move'>('draw');
   const [selected, setSelected] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ box: Box; nonce: number } | null>(null);
@@ -84,12 +86,12 @@ function PhotoWorkspace({
     if (work.data) dispatch({ type: 'sync', work: work.data });
   }, [work.data]);
 
-  const dirty = TOWER_PARTS.some(({ id }) => draft[id].marksDirty || draft[id].review.dirty);
+  const dirty = parts.some(({ id }) => draft[id].marksDirty || draft[id].review.dirty);
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
 
   const partWork = work.data?.parts[part] ?? null;
   const partDraft = draft[part];
-  const label = TOWER_PARTS.find((p) => p.id === part) as (typeof TOWER_PARTS)[number];
+  const label = (parts.find((p) => p.id === part) ?? parts[0]) as PartLabel;
   const job = jobState(partWork?.job ?? null);
   // Once a find has ended well the person reviews it, also when it found no more (that review is where they add any
   // it missed, and nothing is counted without it); while one runs or after it failed, the marks show.
@@ -176,7 +178,7 @@ function PhotoWorkspace({
 
   const boxes: CanvasBox[] = [];
   if (!reviewing) {
-    for (const { id } of TOWER_PARTS) {
+    for (const { id } of parts) {
       if (id === part) continue;
       draft[id].marks.forEach((box, i) => boxes.push({ key: `l:${id}:${i}`, box, kind: 'lookalike', selectable: false, editable: false }));
     }
@@ -273,8 +275,9 @@ function PhotoWorkspace({
         )}
 
         <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Part to mark">
-          {TOWER_PARTS.map(({ id, label: name }) => {
-            const line = work.data ? countLine(work.data.parts[id], draft[id].review) : null;
+          {parts.map(({ id, label: name }) => {
+            const partWorkLine = work.data?.parts[id];
+            const line = partWorkLine ? countLine(partWorkLine, draft[id].review) : null;
             const partJob = jobState(work.data?.parts[id]?.job ?? null);
             return (
               <button
@@ -433,6 +436,7 @@ export function PhotoMarking({
   layerId,
   layerName,
   photos,
+  parts = TOWER_PARTS,
   startIndex,
   note,
   onClose,
@@ -440,6 +444,8 @@ export function PhotoMarking({
   layerId: string;
   layerName: string;
   photos: InspectionPhoto[];
+  /** The parts this inspection marks (the server's list); the tower parts when it gives none. */
+  parts?: PartLabel[];
   startIndex: number;
   /** A line shown when the screen opens (the server's words when no photo is left to check). */
   note?: string | null;
@@ -451,6 +457,7 @@ export function PhotoMarking({
   const [searching, setSearching] = useState(false);
   const [message, setMessage] = useState<string | null>(note ?? null);
   const photo = photos[index];
+  const towerWork = parts.some((p) => TOWER_PARTS.some((t) => t.id === p.id));
 
   const mayLeave = () => !dirty || window.confirm('Leave this photo? Your unsaved marks or checks on it will be lost.');
   const go = (next: number) => {
@@ -463,6 +470,11 @@ export function PhotoMarking({
     if (mayLeave()) onClose();
   };
   const nextToCheck = async () => {
+    if (!towerWork) {
+      // No tower cards outside Telecom, so no server list of photos to check: go on to the next photo.
+      go((index + 1) % photos.length);
+      return;
+    }
     setSearching(true);
     setMessage(null);
     try {
@@ -496,7 +508,9 @@ export function PhotoMarking({
               <X className="size-5" />
             </button>
             <div className="flex min-w-0 flex-1 basis-[calc(100%-3.5rem)] flex-col sm:basis-0">
-              <DialogPrimitive.Title className="m-0 truncate text-[17px] font-bold">Check tower photos · {layerName}</DialogPrimitive.Title>
+              <DialogPrimitive.Title className="m-0 truncate text-[17px] font-bold">
+                {towerWork ? 'Check tower photos' : 'Check photos'} · {layerName}
+              </DialogPrimitive.Title>
               <span className="truncate text-[13px] text-[#B8A99B] tabular-nums">
                 Photo {index + 1} of {photos.length}
                 {taken && ` · ${taken}`}
@@ -533,7 +547,7 @@ export function PhotoMarking({
             )}
           </header>
           {photo ? (
-            <PhotoWorkspace key={photo.sha256} layerId={layerId} photo={photo} onDirtyChange={setDirty} />
+            <PhotoWorkspace key={photo.sha256} layerId={layerId} photo={photo} parts={parts} onDirtyChange={setDirty} />
           ) : (
             <p className="m-0 p-6 text-[15px] text-[#D8CCBF]">This inspection has no photos.</p>
           )}

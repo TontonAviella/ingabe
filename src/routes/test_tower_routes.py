@@ -114,11 +114,27 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("other", ["agriculture", "power_grid"])
+@pytest.mark.parametrize("other", ["power_grid"])
 async def test_outside_telecom_no_route_exists(client, seeded, switched_on, other):
     ids = await seeded.make(industry=other)
     _as(ids["owner"])
     assert await _every_route(client, ids["layer"]) == [404] * 7
+    assert switched_on.calls == []
+
+
+@pytest.mark.anyio
+async def test_agriculture_marks_maize_plants_and_has_no_tower_cards(client, seeded, switched_on):
+    """In Agriculture the photos are marked for maize plants only: a tower part is refused (422) before anything is
+    saved or found, and the tower cards do not exist there (404)."""
+    ids = await seeded.make(industry="agriculture")
+    _as(ids["owner"])
+    photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert photos["parts"] == [{"id": "maize_seedling", "label": "Maize plant", "plural": "maize plants"}]
+    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
+    work = (await client.get(f"{_base(ids['layer'])}/photos/{SHA}/work")).json()
+    assert list(work["parts"]) == ["maize_seedling"]
+    saved = await client.put(f"{_base(ids['layer'])}/photos/{SHA}/marks", json={"part": "maize_seedling", "marks": MARKS})
+    assert saved.status_code == 200 and saved.json()["marks"] == MARKS
     assert switched_on.calls == []
 
 
@@ -163,13 +179,14 @@ async def _add_to_current_map(layer: str, project: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_not_tower_work(client, seeded, switched_on):
-    """Not a tower conflict (409) that would put the Tower checks panel on a farm map: not found, as for one project."""
+async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_a_conflict(client, seeded, switched_on):
+    """Two farm projects showing one inspection: its photo work cannot be kept in one of them (409, as for tower
+    work), reported before anything else."""
     ids = await seeded.make(industry="agriculture")
     other = await seeded.make(owner=ids["owner"], industry="agriculture")
     await _add_to_current_map(ids["layer"], other["project"])
     _as(ids["owner"])
-    assert await _every_route(client, ids["layer"]) == [404] * 7
+    assert await _every_route(client, ids["layer"]) == [409] * 7
 
 
 @pytest.mark.anyio
