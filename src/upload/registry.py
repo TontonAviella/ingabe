@@ -56,10 +56,10 @@ def get_handler(file_ext: str) -> BaseUploadHandler:
 async def handler_for(file_ext: str, file_path: str) -> BaseUploadHandler:
     """The handler for the uploaded file at `file_path`: get_handler(file_ext), except that with photo inspections
     switched on a ZIP of photos (no shapefile in it) and a JPG/PNG that GDAL cannot place on the map become a photo
-    inspection."""
+    inspection, and a ZIP holding a 3D model goes the same way, to be refused there as a 3D model."""
     ext = file_ext.lower()
     if photo_inspections.enabled():
-        if ext == ".zip" and await asyncio.to_thread(_holds_photo_set, file_path):
+        if ext == ".zip" and await asyncio.to_thread(_for_photo_inspection, file_path):
             return _PHOTO_SET_HANDLER
         if ext in photo_inspections.PHOTO_EXTENSIONS:
             info = await gdalinfo_json(file_path)
@@ -68,11 +68,13 @@ async def handler_for(file_ext: str, file_path: str) -> BaseUploadHandler:
     return get_handler(ext)
 
 
-def _holds_photo_set(zip_path: str) -> bool:
+def _for_photo_inspection(zip_path: str) -> bool:
     try:
-        return photo_inspections.is_photo_set(member_names(zip_path))
+        names = member_names(zip_path)
     except zipfile.BadZipFile:
         return False  # not a ZIP: the vector path reports it as today
+    # A 3D model with no photo in it is refused either way; the photo path says it is a 3D model.
+    return photo_inspections.is_photo_set(names) or photo_inspections.is_model_archive(names)
 
 
 def get_layer_type(file_ext: str) -> str:
