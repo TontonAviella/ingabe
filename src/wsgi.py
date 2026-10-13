@@ -130,33 +130,47 @@ def _configure_app_logging():
             "format": "%(asctime)s %(levelname)s %(name)s: %(message)s",
         }
 
+    handlers: dict = {
+        "stderr": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "formatter": "standard",
+        },
+    }
+    # LOG_DIR: also keep the app's own log in a file there (rotated, 10 x 20 MB), so a deploy that replaces the
+    # container does not take the last turns' logs with it (Docker's logs go with the container).
+    log_dir = os.environ.get("LOG_DIR", "").strip()
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        handlers["file"] = {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": os.path.join(log_dir, "app.log"),
+            "maxBytes": 20 * 1024 * 1024,
+            "backupCount": 10,
+            "formatter": "standard",
+        }
+    names = list(handlers)
     logging.config.dictConfig({
         "version": 1,
         "disable_existing_loggers": False,
         "formatters": {
             "standard": formatter_config,
         },
-        "handlers": {
-            "stderr": {
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stderr",
-                "formatter": "standard",
-            },
-        },
+        "handlers": handlers,
         "loggers": {
             "src": {
-                "handlers": ["stderr"],
+                "handlers": names,
                 "level": log_level_name,
                 "propagate": False,
             },
             "uvicorn.access": {
-                "handlers": ["stderr"],
+                "handlers": names,
                 "level": "INFO",
                 "propagate": False,
             },
         },
         "root": {
-            "handlers": ["stderr"],
+            "handlers": names,
             "level": log_level_name,
         },
     })

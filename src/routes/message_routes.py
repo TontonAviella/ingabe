@@ -2016,6 +2016,7 @@ async def process_chat_interaction_task(
     # offered and may run, and (through app.industry on every connection) which
     # Brain notes it can read or write. See src/services/industry.py.
     project_industry = await _scope_request_to_map_industry(map_id)
+    logger.info("sage turn: conversation=%s map=%s industry=%s", conversation.id, map_id, project_industry)
 
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)

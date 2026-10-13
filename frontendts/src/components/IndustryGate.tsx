@@ -1,6 +1,7 @@
 import { apiFetch } from '@mundi/ee';
-import { useQuery } from '@tanstack/react-query';
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 
 // Ingabe serves three industries. The first time someone signs in, before anything else, they pick theirs from
 // three miniature worlds (the same dioramas as nozalabs.rw), so "grid" or "towers" is never a guess. The choice is
@@ -37,6 +38,36 @@ export function useIndustry() {
     staleTime: 10 * 60 * 1000,
     retry: 1,
   });
+}
+
+/** One industry at a time: opening a project of another industry switches the user into the project's (saved on
+ * the account like a sidebar switch), so the sidebar, the lists, the cards and Sage all say the same industry. Once
+ * per project and industry; nothing when signed out or in the legacy single-user mode. */
+export function useFollowProjectIndustry(projectIndustry: IndustryKey | null | undefined) {
+  const { data } = useIndustry();
+  const queryClient = useQueryClient();
+  const switched = useRef<string | null>(null);
+  useEffect(() => {
+    const wanted = projectIndustry ?? 'agriculture';
+    if (!data || !data.can_choose || data.industry === wanted || switched.current === wanted) return;
+    switched.current = wanted;
+    const label = data.options.find((o) => o.key === wanted)?.label ?? wanted;
+    apiFetch('/api/user/industry', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ industry: wanted }),
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error('switch refused');
+        queryClient.setQueryData(INDUSTRY_KEY, (await res.json()) as IndustryState);
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
+        toast(`This project is ${label}: you are working in ${label} now.`);
+      })
+      .catch(() => {
+        switched.current = null;
+        toast.error(`This project is ${label}, but your industry could not be switched to it.`);
+      });
+  }, [data, projectIndustry, queryClient]);
 }
 
 /** True once new projects' industry is settled: known, or nothing to ask (signed out, legacy single-user mode). */
