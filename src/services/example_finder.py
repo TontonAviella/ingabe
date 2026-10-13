@@ -48,7 +48,7 @@ from PIL import Image
 from redis.exceptions import LockError
 
 from src.services import answer_levels, boxes, example_finder_model, hosted_detector, own_detector, stored_files
-from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Runner
+from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Row, Runner
 from src.services.example_finder_pictures import (
     LONLAT,
     Box,
@@ -66,6 +66,9 @@ logger = logging.getLogger(__name__)
 # The measured protocol (scripts/finder_eval/run_sameimage.py), not tunables: changing one is a new measurement.
 CONF = 0.01
 MAX_DET = 300
+TILE_OVERLAP = 0.25  # neighbouring squares of a tiled reading share a quarter of their side: an object on an edge
+TILE_MERGE_IOU = 0.5  # is whole in one of them; boxes of the same object from two squares are merged above this IoU
+TILED_IMAGE_PX = 8192  # a tiled target's pictures are read at their own size up to this long side (DJI: 5280 px)
 MARK_IOU = 0.3  # a find overlapping one of the user's marks this much is that mark again, not another object
 TARGET_CLASS = 0
 LOOKALIKE_CLASS = 1
@@ -134,6 +137,7 @@ class Settings:
     suggestion_filter: bool  # the finds are filtered (filter_suggestions): measured not to lower AP50 for the target
     model: str = MODEL_NAME  # the example finder, or a trained detector (own_detector, hosted_detector)
     detector_class: Optional[str] = None  # the class the trained detector boxes for this target
+    tile_px: Optional[int] = None  # the detector reads a larger picture in squares of this size (answer_levels)
 
     def as_dict(self) -> dict[str, Any]:
         out = {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
@@ -141,6 +145,8 @@ class Settings:
                "suggestion_filter": self.suggestion_filter}
         if self.model != MODEL_NAME:  # the example finder's requests keep their identity (content_sha) as before
             out.update(model=self.model, detector_class=self.detector_class)
+        if self.tile_px is not None:
+            out.update(tile_px=self.tile_px)
         return out
 
     @property
@@ -164,9 +170,11 @@ def settings(target_name: str) -> Settings:
     d = answer_levels.detector(target_name)
     if d is not None and _detector_on(d.finder_model):
         m = d.measured
-        return Settings(target=target_name, image_px=int(m["image_px"]), finder_input_px=int(m["finder_input_px"]),
-                        look_alike_marks=False, view=m["view"], suggestion_filter=False, model=d.finder_model,
-                        detector_class=d.detector_class)
+        return Settings(target=target_name,
+                        image_px=TILED_IMAGE_PX if d.tile_px is not None else int(m["image_px"]),
+                        finder_input_px=int(m["finder_input_px"]), look_alike_marks=False, view=m["view"],
+                        suggestion_filter=False, model=d.finder_model, detector_class=d.detector_class,
+                        tile_px=d.tile_px)
     if d is not None and t.finder_input_px is None:
         raise FinderInputError(f"{t.noun} are found only by a trained model, which is switched off on this server")
     if t.finder_model != MODEL_NAME:
@@ -288,10 +296,41 @@ def for_finder(pixels: np.ndarray, marks_px: Sequence[Box], looks_px: Sequence[B
                  marks=[_scaled(b, sx, sy) for b in marks_px], looks=[_scaled(b, sx, sy) for b in looks_px])
 
 
+def tile_origins(length: int, tile: int, overlap: float = TILE_OVERLAP) -> list[int]:
+    """Where squares of `tile` pixels start along a side of `length` pixels, neighbours sharing `overlap` of a side;
+    the last one ends at the edge. One square when the side fits."""
+    if length <= tile:
+        return [0]
+    step = max(1, int(tile * (1 - overlap)))
+    starts = list(range(0, length - tile, step))
+    return starts + [length - tile]
+
+
+def _run_tiled(runner: Runner, pixels: np.ndarray, s: Settings) -> list[Row]:
+    """The detector on overlapping squares of tile_px at the picture's own size; boxes back in the picture's pixels,
+    the same object seen in two squares kept once (its best box). A detector uses no marks, so none are passed."""
+    tile = s.tile_px or 0
+    height, width = pixels.shape[:2]
+    rows: list[Row] = []
+    for y in tile_origins(height, tile):
+        for x in tile_origins(width, tile):
+            for x0, y0, x1, y1, score, cls in runner(pixels[y:y + tile, x:x + tile], [], [], s.finder_input_px, CONF,
+                                                     MAX_DET):
+                rows.append((x0 + x, y0 + y, x1 + x, y1 + y, score, cls))
+    kept: list[Row] = []
+    for row in sorted(rows, key=lambda r: -r[4]):
+        if not any(k[5] == row[5] and boxes.iou(row[:4], k[:4]) >= TILE_MERGE_IOU for k in kept):
+            kept.append(row)
+    return kept[:MAX_DET]
+
+
 def _find(picture: Shown, s: Settings, runner: Runner) -> list[Find]:
-    rows = runner(picture.pixels, picture.marks + picture.looks,
-                  [TARGET_CLASS] * len(picture.marks) + [LOOKALIKE_CLASS] * len(picture.looks),
-                  s.finder_input_px, CONF, MAX_DET)
+    if s.tile_px is not None and max(picture.pixels.shape[:2]) > s.tile_px:
+        rows = _run_tiled(runner, picture.pixels, s)
+    else:
+        rows = runner(picture.pixels, picture.marks + picture.looks,
+                      [TARGET_CLASS] * len(picture.marks) + [LOOKALIKE_CLASS] * len(picture.looks),
+                      s.finder_input_px, CONF, MAX_DET)
     finds = []
     for x0, y0, x1, y1, score, cls in rows:
         if cls != TARGET_CLASS:

@@ -927,3 +927,41 @@ def test_sam3_is_asked_for_the_prompt_and_every_box_is_the_target(monkeypatch):
     assert rows == [(25.0, 20.0, 35.0, 40.0, 0.8, 0)]  # a box under the finder's CONF is dropped
     step = sent["body"]["specification"]["steps"][0]
     assert sent["url"].endswith("workflows/run") and step["class_names"] == ["seedling"] and step["confidence"] == 0.05
+
+
+# --------------------------------------------------------------------------- #
+# Tiled reading (missing bolts: small objects on wide photos)
+# --------------------------------------------------------------------------- #
+
+def test_squares_cover_the_picture_with_overlap_and_end_at_the_edge():
+    assert example_finder.tile_origins(500, 640) == [0]
+    assert example_finder.tile_origins(1333, 640) == [0, 480, 693]
+    assert example_finder.tile_origins(1280, 640) == [0, 480, 640]
+
+
+def test_a_tiled_detector_reads_squares_at_the_photos_own_size_and_keeps_each_object_once(monkeypatch):
+    monkeypatch.setenv("OWN_DETECTORS", "1")
+    s = example_finder.settings("tower_bolt_missing")
+    assert s.tile_px == 640 and s.image_px == example_finder.TILED_IMAGE_PX and s.as_dict()["tile_px"] == 640
+    assert example_finder.settings("tower_bolt_loose").tile_px is None  # measured too noisy on wide photos
+    seen = []
+
+    def runner(rgb, prompts, classes, imgsz, conf, max_det):
+        seen.append(rgb.shape[:2])
+        return [(470.0, 10.0, 500.0, 40.0, 0.9, 0)]  # the same spot in every square, near its right edge
+
+    rows = example_finder._run_tiled(runner, np.zeros((640, 1280, 3), np.uint8), s)
+    assert seen == [(640, 640)] * 3  # squares at x = 0, 480, 640: read at full size, never shrunk
+    assert len({(round(r[0]), round(r[1])) for r in rows}) == len(rows) == 3  # three places, each kept once
+    merged = example_finder._run_tiled(lambda *a: [(0.0, 0.0, 30.0, 30.0, 0.8, 0)], np.zeros((640, 1120, 3), np.uint8), s)
+    assert [r[:2] for r in merged] == [(0.0, 0.0), (480.0, 0.0)]
+
+
+def test_the_size_gate_reads_a_wide_photo_at_the_squares_size():
+    small_bolt = [(20, 20)] * 3  # 20 px bolts on a 5280 px DJI photo
+    gate = answer_levels.size_gate("tower_bolt_missing", 5280, small_bolt,
+                                   finder_model="own:rfdetr-small-bolts-2026-10-13")
+    assert gate.object_px == 20  # read in 640 px squares at the photo's own size: not shrunk to 2 px
+    shrunk = answer_levels.size_gate("tower_bolt_loose", 5280, small_bolt,
+                                     finder_model="own:rfdetr-small-bolts-2026-10-13")
+    assert shrunk.object_px < 3 and shrunk.passes is False  # not tiled: the whole photo is shrunk to 640 px

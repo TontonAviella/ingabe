@@ -118,6 +118,9 @@ class Target:
     measured: dict[str, Any]  # provenance: PROVENANCE_KEYS
     also_measured: tuple[dict[str, Any], ...]
     detector_class: Optional[str] = None  # set on a trained detector's view of the target: the class it boxes
+    # Set on a detector that reads a larger picture in squares of this many pixels at the picture's own size (its
+    # measured input), instead of shrinking it: small objects (bolts) keep the size they were measured at.
+    tile_px: Optional[int] = None
 
 
 def _check_unit_interval(where: str, value: Any) -> None:
@@ -231,6 +234,7 @@ def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
 
 
 _DETECTOR_KEYS = {"model", "class", "max_level", "size_evidence", "measured", "note"}
+_DETECTOR_OPTIONAL_KEYS = {"tile_px"}
 
 
 def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, Any]) -> Optional[Target]:
@@ -239,8 +243,9 @@ def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, A
     given = entry.get("detector")
     if given is None:
         return None
-    if not isinstance(given, dict) or set(given) != _DETECTOR_KEYS:
-        raise ValueError(f"answer target {name}: detector must have exactly {sorted(_DETECTOR_KEYS)}")
+    if not isinstance(given, dict) or not _DETECTOR_KEYS <= set(given) <= _DETECTOR_KEYS | _DETECTOR_OPTIONAL_KEYS:
+        raise ValueError(f"answer target {name}: detector must have {sorted(_DETECTOR_KEYS)}, and may have "
+                         f"{sorted(_DETECTOR_OPTIONAL_KEYS)}")
     measured = given["measured"]
     _check_provenance(f"{name} (detector)", measured)
     if measured["value"] is None or not given["model"] or not given["class"] or not given["note"]:
@@ -251,12 +256,17 @@ def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, A
     if measured["finder_input_px"] != measured["image_px"]:
         raise ValueError(f"answer target {name}: a detector reads the picture as it is: finder_input_px must be "
                          f"image_px")
+    tile = given.get("tile_px")
+    if tile is not None and tile != measured["finder_input_px"]:
+        raise ValueError(f"answer target {name}: a detector's tiles are its measured input: tile_px must be "
+                         f"finder_input_px")
     floor = _size_floor(f"{name} (detector)", given["size_evidence"], measured["finder_input_px"], marks)
     if floor is None:
         raise ValueError(f"answer target {name}: a detector needs size_evidence (pictures with their objects boxed)")
     return replace(base, finder_model=given["model"], finder_input_px=measured["finder_input_px"],
                    look_alike_marks=False, suggestion_filter=False, max_level=Level[given["max_level"]],
-                   size_floor_px=floor, measured=dict(measured), also_measured=(), detector_class=given["class"])
+                   size_floor_px=floor, measured=dict(measured), also_measured=(), detector_class=given["class"],
+                   tile_px=tile)
 
 
 def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:
@@ -357,6 +367,8 @@ def size_gate(target_name: str, picture_long_px: float, marked_box_px: Optional[
     if object_size_m is not None and not object_size_m > 0:
         raise ValueError(f"object size must be positive, got {object_size_m!r} m")
     floor, finder_input = t.size_floor_px, t.finder_input_px
+    if t.tile_px is not None:  # a larger picture is read in squares of tile_px at its own size, not shrunk
+        picture_long_px = min(picture_long_px, t.tile_px)
     if floor is None or finder_input is None:
         return SizeGate(target_name, None, None, None,
                         f"no object size was measured for {t.noun}, so this picture cannot be checked against one")

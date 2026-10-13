@@ -489,6 +489,7 @@
       "also_measured": [],
       "detector": {
         "model": "own:rfdetr-small-bolts-2026-10-13",
+        "tile_px": 640,
         "class": "missing bolt",
         "max_level": "FULL_REVIEW",
         "size_evidence": [
@@ -509,9 +510,9 @@
             "task": "own_bolt_missing"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
-          "note": "On the DJI flight never used in training: AP50 0.700 (found 64%, right 91%); on climbers' phone photos only 0.14 (26 boxes). On 100 tower and power line photos with no bolt marked it flagged no missing bolt."
+          "note": "On the DJI flight never used in training: AP50 0.700 (found 64%, right 91%); on climbers' phone photos only 0.14 (26 boxes). On 100 tower and power line photos with no bolt marked it flagged no missing bolt. Read in 640 px squares at the photo's own size (tile_px), wide photos keep their bolts' size: the same test photos stitched 2x2 and read in squares scored as read one by one (0.278 against 0.287 on the 112 photos of 640 px); on 60 wide tower photos (1333 x 750, no bolt marked) it flagged 1 missing bolt."
         },
-        "note": "Our own trained detector (class 'missing bolt'); a person still checks every box it suggests. It reads close-ups: on a wide photo the bolts are too small and the size gate says so. It runs on this server: the photos stay here."
+        "note": "Our own trained detector (class 'missing bolt'); a person still checks every box it suggests. A wide photo is read in 640 px squares at its own size, so its bolts keep the size they were measured at. It runs on this server: the photos stay here."
       }
     },
     "tower_bolt_loose": {
