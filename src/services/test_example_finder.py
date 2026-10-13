@@ -943,7 +943,7 @@ def test_a_tiled_detector_reads_squares_at_the_photos_own_size_and_keeps_each_ob
     monkeypatch.setenv("OWN_DETECTORS", "1")
     s = example_finder.settings("tower_bolt_missing")
     assert s.tile_px == 640 and s.image_px == example_finder.TILED_IMAGE_PX and s.as_dict()["tile_px"] == 640
-    assert example_finder.settings("tower_bolt_loose").tile_px is None  # measured too noisy on wide photos
+    assert example_finder.settings("tower_bolt_loose").tile_px == 640  # v3: no false alarm on 60 wide tower photos
     seen = []
 
     def runner(rgb, prompts, classes, imgsz, conf, max_det):
@@ -959,9 +959,9 @@ def test_a_tiled_detector_reads_squares_at_the_photos_own_size_and_keeps_each_ob
 
 def test_the_size_gate_reads_a_wide_photo_at_the_squares_size():
     small_bolt = [(20, 20)] * 3  # 20 px bolts on a 5280 px DJI photo
-    gate = answer_levels.size_gate("tower_bolt_missing", 5280, small_bolt,
-                                   finder_model="own:rfdetr-small-bolts-2026-10-13")
-    assert gate.object_px == 20  # read in 640 px squares at the photo's own size: not shrunk to 2 px
-    shrunk = answer_levels.size_gate("tower_bolt_loose", 5280, small_bolt,
-                                     finder_model="own:rfdetr-small-bolts-2026-10-13")
-    assert shrunk.object_px < 3 and shrunk.passes is False  # not tiled: the whole photo is shrunk to 640 px
+    for part in ("tower_bolt_missing", "tower_bolt_loose"):
+        gate = answer_levels.size_gate(part, 5280, small_bolt, finder_model="own:rfdetr-small-bolts-v3-2026-10-13")
+        assert gate.object_px == 20  # read in 640 px squares at the photo's own size: not shrunk to 2 px
+    shrunk = answer_levels.size_gate("tower_dish", 5280, small_bolt, finder_model=answer_levels.detector(
+        "tower_dish").finder_model)
+    assert shrunk.object_px < 20  # not tiled: the whole photo is shrunk to the model's size

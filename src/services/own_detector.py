@@ -49,6 +49,12 @@ MODELS = {
         key="models/rfdetr-small-bolts-35c0d99481d13d0a.onnx",
         sha256="35c0d99481d13d0a17ca40aacc77dada819d40e012c0da56188d3e6a550728fd",
         classes=("loose bolt", "missing bolt")),
+    # The same, trained again with 300 photos with nothing to mark (roads, cars, wide tower shots): far fewer false
+    # alarms on photos without bolt defects, the same AP50 within the measurement's range.
+    "own:rfdetr-small-bolts-v3-2026-10-13": Model(
+        key="models/rfdetr-small-bolts-v3-87ba3faf4d52d842.onnx",
+        sha256="87ba3faf4d52d84253f5c4b6419fef817f12182c10bf82b61f5068a5ce430db2",
+        classes=("loose bolt", "missing bolt")),
 }
 
 _sessions: dict[str, Any] = {}

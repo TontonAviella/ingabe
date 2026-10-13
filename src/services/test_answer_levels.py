@@ -575,14 +575,16 @@ def test_only_tower_power_and_maize_parts_have_a_detector():
     assert {t.name for t in al.targets() if al.detector(t.name)} == set(DETECTED) | set(DEFECT_PARTS) | {"maize_seedling"}
 
 
-@pytest.mark.parametrize("name,cls,value", [("tower_bolt_missing", "missing bolt", 0.61),
-                                            ("tower_bolt_loose", "loose bolt", 0.542)])
+@pytest.mark.parametrize("name,cls,value", [("tower_bolt_missing", "missing bolt", 0.599),
+                                            ("tower_bolt_loose", "loose bolt", 0.509)])
 def test_bolt_defects_are_found_by_our_bolt_model_as_measured(name, cls, value):
     """Our bolt model, measured with its ONNX file on the bolts_v2 test split (156 close-ups, a whole DJI flight never
     used in training among them); a person checks every box."""
     d = al.detector(name)
     (row,) = _rows(d.measured["evidence"])
-    assert (d.finder_model, d.detector_class) == ("own:rfdetr-small-bolts-2026-10-13", cls) == (row["model"], row["class"])
+    assert (d.finder_model, d.detector_class) == ("own:rfdetr-small-bolts-v3-2026-10-13", cls) == (row["model"],
+                                                                                    row["class"])
+    assert d.tile_px == 640  # wide photos read in squares: measured with no false alarm on 60 wide tower photos
     assert (row["ap50"], row["n_img"], row["imgsz"]) == (value, 156, 640) == (d.measured["value"], d.measured["n_images"],
                                                                                d.finder_input_px)
     assert d.max_level is Level.FULL_REVIEW and d.size_floor_px is not None and d.size_floor_px > 0
