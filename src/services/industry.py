@@ -190,23 +190,78 @@ def _labels(industries: frozenset[str]) -> str:
     return " and ".join(INDUSTRIES[name]["label"] for name in INDUSTRIES if name in industries)
 
 
+# What Sage is told about each industry other than agriculture: whom it works for, the industry's words, what Ingabe
+# answers there (and with which tools), and what is not measured yet. Measured values are read from answer_levels'
+# table when the note is made, never copied here.
+_BRIEFINGS: dict[str, dict[str, Any]] = {
+    "telecom": {
+        "readers": "tower owners and asset managers (what is on the tower, is it safe, what changed) and field "
+                   "technicians (which photos to check, where to climb)",
+        "words": "Panel (sector) antenna: points along an azimuth (compass direction) with a downward tilt; microwave "
+                 "(MW) dish: a point-to-point backhaul link; radio unit (RRU/RRH): the radio box behind an antenna; "
+                 "tenancy: the equipment each operator has on the tower, checked against its contract; lattice "
+                 "tower, monopole, guyed mast; joint bolts hold the lattice together and carry the wind load.",
+        "tools": "For a photo inspection (a layer of camera points): get_tower_inspection_findings (equipment counts, "
+                 "missing and loose bolts, where the photos were taken from) and tower_photos_needing_review (what "
+                 "a technician checks next).",
+        "parts": ("tower_antenna", "tower_dish", "tower_radio_unit", "tower_bolt_missing", "tower_bolt_loose"),
+        "not_yet": "antenna azimuth and tilt values (the photos' own camera direction and tilt are known, the "
+                   "antennas' are not), rust, cracked welds or bent steel, cable and connector damage, hot spots "
+                   "(needs a thermal camera), the aviation obstruction light, theft or tampering at the fence and "
+                   "shelter",
+    },
+    "power_grid": {
+        "readers": "line owners and asset managers (what is on the line, what puts it at risk) and line crews (which "
+                   "pylons to visit)",
+        "words": "Pylon (transmission tower) carries the conductors on insulator strings; a span is the conductor "
+                 "between two pylons; sag is how low it hangs; the right-of-way is the corridor kept clear of trees "
+                 "and buildings; a bird nest near an insulator can short a live conductor to the steel (a flashover: "
+                 "an outage, and a fire risk in dry season).",
+        "tools": "For a photo inspection (a layer of camera points): get_power_line_inspection_findings (pylons, "
+                 "insulators and bird nests counted, where the photos were taken from) and "
+                 "power_line_photos_needing_review (what a crew checks next).",
+        "parts": ("power_pylon", "power_insulator", "power_nest"),
+        "not_yet": "conductor sag and clearance, vegetation in the right-of-way, broken or flashed-over insulator "
+                   "discs, corrosion, hot spots (needs a thermal camera)",
+    },
+}
+
+
+def _measured_words(parts: tuple[str, ...]) -> str:
+    """What the finder that runs for each part was measured to do, read from answer_levels (never copied)."""
+    return "; ".join(f"{noun} {value:.2f} on {n} test photos"
+                     for noun, value, n in tower_inspection.finder_measurements(parts))
+
+
 def prompt_note(industry: Optional[str]) -> Optional[str]:
-    """A line for Sage's system prompt on non-agriculture projects (agriculture keeps the prompt unchanged)."""
+    """Sage's briefing for a non-agriculture project (agriculture keeps the prompt unchanged): the industry's readers
+    and words, the tools that answer its questions, what was measured (AP50, read from answer_levels) and what is not."""
     if (industry or DEFAULT_INDUSTRY) == "agriculture":
         return None
     label = INDUSTRIES[industry]["label"]  # type: ignore[index]
     note = (
         f"This project belongs to the {label} industry ({INDUSTRIES[industry]['note'].lower()}). "  # type: ignore[index]
-        "Never use crop, farming, soil or vegetation-health reasoning here, and do not mention farm findings. "
-        f"Ingabe's dedicated {label} analysis is still being built: help with the map, places, imagery, the user's "
-        "own uploads, weather and the project's notes, and say plainly when a question needs analysis Ingabe "
-        "cannot do yet."
+        "Never use crop, farming, soil or vegetation-health reasoning here, and do not mention farm findings."
     )
-    if available("get_tower_inspection_findings", industry):
-        note += (" For a tower photo inspection (a layer of camera points), use get_tower_inspection_findings and "
-                 "tower_photos_needing_review: give only the counts they return, which a person checked, and never "
-                 "count equipment from a photo yourself.")
-    return note
+    brief = _BRIEFINGS.get(industry or "")
+    inspection_tool = {"telecom": "get_tower_inspection_findings",
+                       "power_grid": "get_power_line_inspection_findings"}.get(industry or "")
+    if brief is None or inspection_tool is None or not available(inspection_tool, industry):
+        return note + (f" Ingabe's dedicated {label} analysis is still being built: help with the map, places, "
+                       "imagery, the user's own uploads, weather and the project's notes, and say plainly when a "
+                       "question needs analysis Ingabe cannot do yet.")
+    measured = _measured_words(brief["parts"])
+    return note + (
+        f"\n<{label.replace(' ', '')}Briefing>\nYou work for {brief['readers']}. Speak their language: "
+        f"{brief['words']}\n{brief['tools']} Give only the counts these tools return: a person checked each one. "
+        "Never count equipment or defects from a picture yourself, never present suggestions as a count, and never "
+        "say there are no defects where nobody marked them.\n"
+        + (f"What the finders were measured to do (AP50 from 0 to 1, against people's boxes on public test photos, "
+           f"not the user's): {measured}. A person still checks every box.\n" if measured else "")
+        + f"Not measured yet, so say plainly Ingabe cannot answer it today: {brief['not_yet']}. Weather, floods, "
+        "places, imagery and the user's own uploads work here as for any project.\n"
+        f"</{label.replace(' ', '')}Briefing>"
+    )
 
 
 _FARM_INTRO = "specialising in Rwanda agriculture, satellite imagery analysis, and geospatial data processing."

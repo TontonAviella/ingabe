@@ -95,6 +95,20 @@ def parts_for(industry: Optional[str]) -> tuple[str, ...]:
     return PARTS_BY_INDUSTRY.get(industry or "", ())
 
 
+def finder_measurements(parts: Sequence[str]) -> list[tuple[str, float, int]]:
+    """(noun, AP50, test photos) of the finder this server runs for each part, as answer_levels' table measured it;
+    a part nothing can find here (its detector switched off) is left out."""
+    out = []
+    for part in parts:
+        try:
+            model = example_finder.settings(part).model
+        except FinderInputError:
+            continue
+        m = answer_levels.target_for(part, model).measured
+        out.append((noun(part), float(m["value"]), int(m["n_images"])))
+    return out
+
+
 def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
     if part not in parts:
         raise TowerInputError(f"the part must be one of {list(parts)}, not {part!r}")
