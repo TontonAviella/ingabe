@@ -48,7 +48,7 @@ afterEach(() => {
 
 describe('one industry at a time', () => {
   it('opening a Telecom project while in Power Grid switches the user into Telecom and says so', async () => {
-    fetchMock.mockImplementation(async (url, init) => {
+    fetchMock.mockImplementation(async (_url, init) => {
       if (init?.method === 'PUT') return new Response(JSON.stringify(state('telecom')), { status: 200 });
       return new Response(JSON.stringify(state('power_grid')), { status: 200 });
     });
