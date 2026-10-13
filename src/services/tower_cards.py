@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from src.services import answer_levels, example_finder, tower_inspection
+from src.services import answer_levels, example_finder, site_surroundings, tower_inspection
 from src.services.example_finder_pictures import FinderInputError
 from src.services.card_status import (
     CANT_TELL,
@@ -152,12 +152,6 @@ ASSETS = {
                 what="Whether the aviation obstruction light at the top of the tower is on.",
                 why="It is a legal requirement and keeps aircraft clear of the tower.",
                 needs="Photos of the top of the tower taken at dusk or at night."),
-            "surroundings": Upcoming(
-                TO_BUILD, "Coming soon", "Vegetation, erosion and new buildings: not measured yet.",
-                what=("Vegetation growing towards the site, erosion near the foundations, new buildings close to the "
-                      "tower and the state of the access road."),
-                why="They block access, raise the fire risk and can undermine the foundations.",
-                needs="Photos looking straight down over the site and its surroundings."),
         }),
     "power_grid": Asset(
         industry="power_grid", thing="line", heading="Line checks", equipment=("power_pylon", "power_insulator"), defects=("power_nest",),
@@ -261,6 +255,7 @@ class Here:
     inspection: Inspection
     earlier: Earlier
     asset: Asset = DEFAULT_ASSET
+    surroundings: Optional[dict[str, dict[str, Any]]] = None  # site_surroundings results by photo (None: not loaded)
 
     @property
     def inventory(self) -> dict[str, PartInventory]:
@@ -414,6 +409,16 @@ def _status(card_id: str, here: Here) -> str:
             # An earlier inspection of the site with nothing counted on it: counting there answers it, no new one.
             return CANT_TELL if here.earlier.same_site else NEEDS_FLIGHT
         return READY if _anything_counted(inventory) else CANT_TELL
+    if card_id == "surroundings":
+        down = site_surroundings.straight_down(here.inspection.photos)
+        done = here.surroundings or {}
+        if not down:
+            return CANT_TELL
+        if len(done) >= len(down):
+            return READY
+        if done:
+            return PARTLY
+        return WORKING if site_surroundings.enabled() else CANT_TELL
     if card_id == "defects":
         defects = here.defects
         if _anything_counted(defects):
@@ -469,6 +474,16 @@ def _preview(card_id: str, here: Here) -> str:
         if not _anything_counted(inventory):
             return f"{here.earlier.inspection.name} has counts; nothing is counted on this inspection yet."
         return f"Compared with {here.earlier.inspection.name}."
+    if card_id == "surroundings":
+        down = site_surroundings.straight_down(here.inspection.photos)
+        mean = site_surroundings.summary(here.surroundings or {})
+        if not down:
+            return "No photo looks straight down: the ground around the site is not in view."
+        if mean is None:
+            return (f"Looking at {_n(len(down), 'photo')} looking straight down…" if site_surroundings.enabled()
+                    else "Trees are found by SAM 3, which is switched off on this server.")
+        return (f"Trees cover {mean['trees']:.0%} of the ground in view, other vegetation {mean['other_vegetation']:.0%}"
+                f" ({_n(len(here.surroundings or {}), 'photo')}).")
     if card_id == "defects":
         counted = [i for i in here.defects.values() if i.at_least]
         if counted:
@@ -802,6 +817,53 @@ def _on_your_photos(here: Here, part: str) -> Optional[str]:
     return f"on your photos, {kept} of {reviewed} suggestions checked were right (kept or fixed); {added} it missed"
 
 
+def _surroundings(here: Here, audience: str) -> dict[str, Any]:
+    inspection = here.inspection
+    down = site_surroundings.straight_down(inspection.photos)
+    done = here.surroundings or {}
+    m = site_surroundings.MEASURED
+    measured = (f"Measured on {m['dataset']}: trees, pixel overlap {m['trees_iou']:.2f} (found {m['trees_found']:.0%}, "
+                f"right {m['trees_right']:.0%}); other vegetation {m['vegetation_iou']:.2f} (found "
+                f"{m['vegetation_found']:.0%}, right {m['vegetation_right']:.0%}), {m['date']}")
+    why = ("Trees and bush growing towards the site block access for crews, raise the fire risk around the shelter and "
+           "generator, and roots and erosion can undermine foundations.")
+    gaps = "Buildings, erosion and the access road are not measured yet."
+    if not down:
+        what = ("No photo of this inspection looks straight down, so the ground around the site is not in view: trees "
+                "and vegetation are read only from photos taken looking straight down. " + gaps)
+        return _answer("surroundings", here, what=what, why=why, todo="Photos looking straight down over the site "
+                       "would answer it.", sure=how_sure("low", [measured], None), audience=audience, terms=[])
+    rows = sorted(((p, done[p.sha256]) for p in down if p.sha256 in done), key=lambda pr: -pr[1]["trees"])
+    mean = site_surroundings.summary(done)
+    facts = [{"label": "Photos looking straight down", "value": f"{len(rows)} analysed of {len(down)}"}]
+    if mean is not None:
+        facts += [{"label": "Trees (mean share of the ground in view)", "value": f"{mean['trees']:.0%}"},
+                  {"label": "Other vegetation (mean share)", "value": f"{mean['other_vegetation']:.0%}"}]
+    items = [_item(inspection, p, f"trees {r['trees']:.0%}, other vegetation {r['other_vegetation']:.0%} "
+                                  f"({_n(r['trees_found'], 'tree outline')})") for p, r in rows[:LISTED_PHOTOS]]
+    if mean is None:
+        what = ((f"Looking at the {_n(len(down), 'photo')} taken straight down; the answer appears as each one is done."
+                 if site_surroundings.enabled() else
+                 "Trees are found by SAM 3 on Roboflow, which is switched off on this server, so nothing is measured.")
+                + " " + gaps)
+        todo = "Come back in a few minutes." if site_surroundings.enabled() else "Ask for SAM 3 to be switched on."
+    else:
+        top, top_r = rows[0]
+        what = (f"On {_n(len(rows), 'photo')} looking straight down, trees cover {mean['trees']:.0%} of the ground in "
+                f"view and other vegetation (grass, bush, crops) {mean['other_vegetation']:.0%}. Most trees: "
+                f"{top.filename}, {top_r['trees']:.0%}. These are shares of each photo, not of a fixed distance around "
+                f"the tower: a photo from higher up sees more around it. " + gaps)
+        todo = ("Look at the photos listed first: they show the most trees near the site." if audience == OWNER else
+                "Open the photos listed first and check whether trees reach the fence, shelter or cable runs.")
+    sure = how_sure("low" if len(rows) < len(down) else "medium", [
+        measured,
+        "Some trees in the measurement's photos were not marked by people, so the scores are a little low",
+        "SAM 3 runs on Roboflow: the photos looking straight down are sent there",
+    ], "A comparison with a later inspection of the same site shows what grew.")
+    return _answer("surroundings", here, what=what, why=why, todo=todo, sure=sure, audience=audience, terms=[],
+                   facts=facts, items=items)
+
+
 def _finder_of(part: str) -> tuple[Optional[str], Optional[answer_levels.Target]]:
     """How this server finds a part (its words) and the measurement behind it; (None, None) when nothing can."""
     try:
@@ -927,6 +989,7 @@ _ANSWERS = {
     "changes": _changes,
     "learn_review": _learn_review,
     "defects": _defects,
+    "surroundings": _surroundings,
 }
 
 
@@ -1015,9 +1078,11 @@ async def load_here(conn: Any, redis: Any, s3: Any, bucket: str, project_id: str
     """What the cards and Sage answer from: the inspection with the work kept on it in this project, and the same
     site inspected before in this project. `conn` sees what the reader may see."""
     asset = ASSETS[industry]
+    surroundings = (await site_surroundings.load(s3, bucket, project_id, layer_id, photos)
+                    if "surroundings" in asset.cards else None)
     inspection = await tower_inspection.load_inspection(redis, s3, bucket, project_id, layer_id, name, photos,
                                                         tower_inspection.parts_for(industry))
     return Here(inspection=inspection,
                 earlier=await tower_inspection.earlier_inspection(conn, redis, s3, bucket, inspection,
                                                                   asset.equipment),
-                asset=asset)
+                asset=asset, surroundings=surroundings)

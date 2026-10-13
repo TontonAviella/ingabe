@@ -390,7 +390,7 @@ def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number
     light = tower_cards.answer_card("obstruction_light", here(), "owner")
     assert light["status_label"] == "Needs night photos" and light["what"].startswith("Not answered yet.")
     assert light["todo"].startswith("What it needs: ") and light["how_sure"]["level"] == "low"
-    for card_id in ("alignment", "damage", "hot_spots", "obstruction_light", "surroundings"):
+    for card_id in ("alignment", "damage", "hot_spots", "obstruction_light"):
         answer = tower_cards.answer_card(card_id, here(COUNTED), "owner")
         assert not re.search(r"\d", answer["what"]), (card_id, answer["what"])  # no number for what is not measured
     ranked = [c["id"] for c in tower_cards.deck(here(BOLTS), "owner")["cards"]]
@@ -398,3 +398,28 @@ def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number
     power = {c["id"] for c in tower_cards.deck(tower_cards.Here(inspection=_inspection(PHOTOS, {}),
                                                                  earlier=NO_EARLIER, asset=POWER), "owner")["cards"]}
     assert {"right_of_way", "insulators", "sag", "steel", "hot_spots"} <= power and "alignment" not in power
+
+
+def test_the_surroundings_card_reads_what_sam3_and_the_green_rule_found_on_photos_looking_straight_down(monkeypatch):
+    """Trees (SAM 3) and other vegetation (green pixels outside them), as shares of each photo looking straight down,
+    with the measurement behind them; nothing without such photos, and nothing invented while they are analysed."""
+    from src.services import site_surroundings
+
+    down = [replace(p, gimbal_pitch=-90.0) for p in PHOTOS[:2]] + list(PHOTOS[2:])
+    none = tower_cards.answer_card("surroundings", here(), "owner")
+    assert none["status"] == CANT_TELL and "No photo of this inspection looks straight down" in none["what"]
+    monkeypatch.setattr(site_surroundings, "enabled", lambda: True)
+    waiting = tower_cards.Here(inspection=_inspection(down, {}), earlier=NO_EARLIER, surroundings={})
+    assert tower_cards.answer_card("surroundings", waiting, "owner")["status"] == WORKING
+    results = {down[0].sha256: {"method": site_surroundings.METHOD, "trees": 0.3, "other_vegetation": 0.2,
+                                "trees_found": 4},
+               down[1].sha256: {"method": site_surroundings.METHOD, "trees": 0.1, "other_vegetation": 0.4,
+                                "trees_found": 1}}
+    done = tower_cards.Here(inspection=_inspection(down, {}), earlier=NO_EARLIER, surroundings=results)
+    answer = tower_cards.answer_card("surroundings", done, "owner")
+    assert answer["status"] == READY and answer["status_label"] == "Answer ready"
+    assert answer["what"].startswith("On 2 photos looking straight down, trees cover 20% of the ground in view and "
+                                     "other vegetation (grass, bush, crops) 30%.")
+    assert [i["title"] for i in answer["items"]] == [down[0].filename, down[1].filename]  # most trees first
+    assert "Buildings, erosion and the access road are not measured yet." in answer["what"]
+    assert any("0.62" in b for b in answer["how_sure"]["because"])  # the measurement, read from site_surroundings

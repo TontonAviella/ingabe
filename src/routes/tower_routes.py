@@ -29,6 +29,7 @@ from src.services import (
     industry,
     photo_context,
     photo_inspections,
+    site_surroundings,
     tower_cards,
     tower_inspection,
 )
@@ -163,6 +164,10 @@ async def scan_tower_photos(inspection: _Inspection = Depends(_edited),
                                                  inspection.project_id, session.get_user_id(),
                                                  inspection.layer.layer_id, inspection.layer.metadata_dict or {},
                                                  inspection.photos, inspection.parts)
+    if "telecom" in inspection.industries:  # the Telecom deck asks what grows around the site
+        await site_surroundings.ensure(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
+                                       inspection.project_id, inspection.layer.layer_id,
+                                       inspection.layer.metadata_dict or {}, inspection.photos)
     return await _scan_state(inspection, running)
 
 
