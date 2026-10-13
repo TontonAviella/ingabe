@@ -2,7 +2,7 @@
   "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from. suggestion_filter says whether the example finder filters its suggestions for the target (src/services/example_finder.py, filter_suggestions): on only where the filter was measured on the target's own pictures, marks and finder size and did not lower AP50; its evidence selects the raw and filtered rows of that run, and a target never measured with it has it off.",
   "targets": {
     "tower_dish": {
-      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "mw", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_dish"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.864, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_dish"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'mw'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "mw", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_dish"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.889, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_dish"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'mw'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
       "noun": "dishes",
       "kind": "structure",
       "object_size_m": null,
@@ -32,7 +32,7 @@
       ]
     },
     "tower_antenna": {
-      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "antenna", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_antenna"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.933, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_antenna"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'antenna'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "antenna", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_antenna"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.952, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_antenna"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'antenna'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
       "noun": "antennas",
       "kind": "structure",
       "object_size_m": null,
@@ -61,7 +61,7 @@
       ]
     },
     "tower_radio_unit": {
-      "detector": {"model": "roboflow:roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32-1-rfdetr-small-t1", "class": "rru", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_radio_unit"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-12", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.55, "evidence": {"source": "roboflow/eval_coco_hosted.py", "task": "rf_tower_radio_unit"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."}, "note": "A trained detector (class 'rru'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "rru", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_radio_unit"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.562, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_radio_unit"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'rru'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
       "noun": "radio units",
       "kind": "structure",
       "object_size_m": null,
@@ -311,7 +311,7 @@
       },
       "also_measured": [],
       "detector": {
-        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
         "class": "pylon",
         "max_level": "FULL_REVIEW",
         "size_evidence": [
@@ -320,21 +320,21 @@
         "measured": {
           "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
           "view": "oblique",
-          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
           "n_images": 40,
           "image_px": 640,
           "finder_input_px": 640,
-          "date": "2026-10-12",
+          "date": "2026-10-13",
           "metric": "AP50 against people's boxes on the held-out test split",
-          "value": 0.96,
+          "value": 0.989,
           "evidence": {
-            "source": "roboflow/eval_coco_hosted.py",
-            "task": "rf_power_pylon"
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_pylon"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
           "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
         },
-        "note": "A trained detector (class 'pylon'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+        "note": "Our own trained detector (class 'pylon'); a person still checks every box it suggests. It runs on this server: the photos stay here."
       }
     },
     "power_insulator": {
@@ -370,7 +370,7 @@
       },
       "also_measured": [],
       "detector": {
-        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
         "class": "insulator",
         "max_level": "FULL_REVIEW",
         "size_evidence": [
@@ -379,21 +379,21 @@
         "measured": {
           "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
           "view": "oblique",
-          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
           "n_images": 40,
           "image_px": 640,
           "finder_input_px": 640,
-          "date": "2026-10-12",
+          "date": "2026-10-13",
           "metric": "AP50 against people's boxes on the held-out test split",
-          "value": 0.895,
+          "value": 0.869,
           "evidence": {
-            "source": "roboflow/eval_coco_hosted.py",
-            "task": "rf_power_insulator"
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_insulator"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
           "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
         },
-        "note": "A trained detector (class 'insulator'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+        "note": "Our own trained detector (class 'insulator'); a person still checks every box it suggests. It runs on this server: the photos stay here."
       }
     },
     "power_nest": {
@@ -429,7 +429,7 @@
       },
       "also_measured": [],
       "detector": {
-        "model": "roboflow:roger-ntabukiraniro-s-workspace/nests-towers-insulators-7d9vg-2-rfdetr-small-t1",
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
         "class": "nest",
         "max_level": "FULL_REVIEW",
         "size_evidence": [
@@ -438,21 +438,21 @@
         "measured": {
           "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
           "view": "oblique",
-          "protocol": "RF-DETR small trained on Roboflow from the dataset's own train split, run through Roboflow's hosted API (confidence 0.05)",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
           "n_images": 40,
           "image_px": 640,
           "finder_input_px": 640,
-          "date": "2026-10-12",
+          "date": "2026-10-13",
           "metric": "AP50 against people's boxes on the held-out test split",
-          "value": 0.995,
+          "value": 0.958,
           "evidence": {
-            "source": "roboflow/eval_coco_hosted.py",
-            "task": "rf_power_nest"
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_nest"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
           "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
         },
-        "note": "A trained detector (class 'nest'); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."
+        "note": "Our own trained detector (class 'nest'); a person still checks every box it suggests. It runs on this server: the photos stay here."
       }
     }
   }

@@ -38,6 +38,13 @@ def facts(sha: str = SHA, name: str = "DJI_0395.JPG", pitch=-30.0, lat=-1.9441, 
     return replace(base, **changes)
 
 
+@pytest.fixture(autouse=True)
+def _example_finder_for_towers(monkeypatch):
+    """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
+    back does (OWN_DETECTORS=0). The tests of our detectors switch them on themselves."""
+    monkeypatch.setenv("OWN_DETECTORS", "0")
+
+
 @pytest.fixture
 def towers(monkeypatch):
     """Each call gives (project, layer, layer metadata) with the tower photo stored as the inspection's original;

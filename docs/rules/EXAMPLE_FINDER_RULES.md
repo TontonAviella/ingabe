@@ -19,18 +19,25 @@ estimate, rough number, can't tell) is not decided here: that is
 `src/services/answer_levels.py` (`docs/rules/ANSWER_LEVELS_RULES.md`). This
 module finds; it shows no count and no level.
 
-## Trained detectors (switch HOSTED_FINDER, 2026-10-12)
+## Trained detectors (2026-10-12, our own models since 2026-10-13)
 
-A target may also have a `detector` in `answer_levels_targets.json`: a model trained on that target (RF-DETR small,
-trained on Roboflow from public data) or SAM 3 with a typed prompt, run through Roboflow's hosted API by
-`src/services/hosted_detector.py`. While `HOSTED_FINDER` is on (default off) and `ROBOFLOW_API_KEY` is set, the finder
-uses the detector for those targets: **their photos are sent to Roboflow**. Off, a target with a measured example finder
-uses it as before; a target found only by a detector (the Power Grid parts) answers "switched off". The detector's view
-of the target (`answer_levels.detector`, `target_for`) has its own measurement, size floor (read at the picture's
-own size, from the test pictures' boxes) and highest level (FULL_REVIEW: a person checks every box). Measured on held-out
-pictures (AP50): dishes 0.864, antennas 0.933, radio units 0.55 (60 tower photos, same sites as training), pylons 0.96,
-insulators 0.895, bird nests 0.995 (40 power line photos), maize plants 0.741 with SAM 3 and the prompt "seedling"
-(36 INRAe squares). The marks are still asked for (the size gate); the detector does not use them otherwise.
+A target may also have a `detector` in `answer_levels_targets.json`: a model trained on that target. The finder uses it
+instead of the example finder, and the detector's view of the target (`answer_levels.detector`, `target_for`) has its
+own measurement, size floor (read at the picture's own size, from the test pictures' boxes) and highest level
+(FULL_REVIEW: a person checks every box). The marks are still asked for (the size gate); the detector does not use them
+otherwise. Two kinds:
+
+- **Our own models** (`own:...`, `src/services/own_detector.py`): RF-DETR small (Apache 2.0) trained by us on public data
+  on Kaggle's free GPU, exported to ONNX and run on this server's CPU (4 threads). **The photos stay on the server**; no
+  key. On by default; `OWN_DETECTORS=0` switches them off (the way back: towers use the example finder, power
+  parts answer "switched off"). Weights only from object storage (`own_detector.MODELS`: key and sha256), fetched once. They find the
+  Telecom and Power Grid parts. Measured with the ONNX files on held-out pictures (AP50): dishes 0.889, antennas 0.952,
+  radio units 0.562 (60 tower photos, same sites as training; the same recipe on a new site: antennas 0.858, dishes
+  0.807, radio units 0.545), pylons 0.989, insulators 0.869, bird nests 0.958 (40 power line photos). ONNX on CPU
+  matched the trained PyTorch model within 0.02 AP50 on every class.
+- **Roboflow-hosted** (`roboflow:...`, `src/services/hosted_detector.py`): only maize plants, SAM 3 with the typed prompt
+  "seedling" (0.741 on 36 INRAe squares). Used only while `HOSTED_FINDER` is on (default off) and `ROBOFLOW_API_KEY` is
+  set: **those photos are sent to Roboflow**. Off, maize uses the example finder as measured.
 
 ## The protocol (reproduced exactly)
 

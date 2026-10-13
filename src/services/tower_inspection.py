@@ -319,9 +319,9 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts) -> Optional
     part's countability, the measured table); None when nothing is marked."""
     if not marks:
         return None
-    try:  # the finder this server runs for the part: its trained detector while HOSTED_FINDER is on, else YOLOE
+    try:  # the finder this server runs for the part: its trained detector, else YOLOE
         model = example_finder.settings(part).model
-    except FinderInputError:  # a part only a switched-off detector finds: nothing can be answered about it here
+    except FinderInputError:  # a part whose detector cannot run here: nothing can be answered about it
         return None
     gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks],
                                    finder_model=model)

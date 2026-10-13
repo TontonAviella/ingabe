@@ -67,6 +67,13 @@ async def _admin():
     return conn
 
 
+@pytest.fixture(autouse=True)
+def _example_finder_for_towers(monkeypatch):
+    """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
+    back does (OWN_DETECTORS=0)."""
+    monkeypatch.setenv("OWN_DETECTORS", "0")
+
+
 @pytest.fixture
 async def photo():
     """A project (its owner, one editor, one viewer) with a map showing a drone orthophoto layer owned by the

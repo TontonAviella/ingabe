@@ -67,6 +67,7 @@ dependencies = [
     # Required by the FastSAM raster object path. Without this package the live
     # house/road/tree mask route falls back to the lightweight raster screener.
     "ultralytics==8.4.78",
+    "onnxruntime==1.31.0",
     # [standard] keeps uvloop/httptools for the app server; they used to come in
     # only through dagster-webserver, which is no longer a dependency.
     "uvicorn[standard]==0.49.0",

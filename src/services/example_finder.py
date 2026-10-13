@@ -47,7 +47,7 @@ import numpy as np
 from PIL import Image
 from redis.exceptions import LockError
 
-from src.services import answer_levels, boxes, example_finder_model, hosted_detector, stored_files
+from src.services import answer_levels, boxes, example_finder_model, hosted_detector, own_detector, stored_files
 from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Runner
 from src.services.example_finder_pictures import (
     LONLAT,
@@ -132,7 +132,7 @@ class Settings:
     look_alike_marks: bool  # the target's measured settings use look-alike marks
     view: str  # answer_levels.OBLIQUE or NADIR: the way the measured pictures looked
     suggestion_filter: bool  # the finds are filtered (filter_suggestions): measured not to lower AP50 for the target
-    model: str = MODEL_NAME  # the example finder, or a trained detector (hosted_detector) for targets with one
+    model: str = MODEL_NAME  # the example finder, or a trained detector (own_detector, hosted_detector)
     detector_class: Optional[str] = None  # the class the trained detector boxes for this target
 
     def as_dict(self) -> dict[str, Any]:
@@ -145,19 +145,24 @@ class Settings:
 
     @property
     def uses_detector(self) -> bool:
-        return hosted_detector.is_detector(self.model)
+        return own_detector.is_detector(self.model) or hosted_detector.is_detector(self.model)
+
+
+def _detector_on(model: str) -> bool:
+    return own_detector.enabled() if own_detector.is_detector(model) else hosted_detector.enabled()
 
 
 def settings(target_name: str) -> Settings:
     """The finder's settings for a target, from the measured table; FinderInputError when there are none. A target
-    with a trained detector uses it while HOSTED_FINDER is on (its photos then go to Roboflow), else the example
-    finder as measured."""
+    with a trained detector uses it while it is switched on: our own models unless OWN_DETECTORS=0 (they run here), a
+    Roboflow-hosted one only while HOSTED_FINDER is on (its photos then go to Roboflow); otherwise the example finder
+    as measured."""
     try:
         t = answer_levels.target(target_name)
     except ValueError as e:
         raise FinderInputError(str(e)) from None
     d = answer_levels.detector(target_name)
-    if d is not None and hosted_detector.enabled():
+    if d is not None and _detector_on(d.finder_model):
         m = d.measured
         return Settings(target=target_name, image_px=int(m["image_px"]), finder_input_px=int(m["finder_input_px"]),
                         look_alike_marks=False, view=m["view"], suggestion_filter=False, model=d.finder_model,
@@ -324,12 +329,24 @@ def filter_suggestions(finds: Sequence[Find], marks_px: Sequence[Box], s: Settin
 
 def _runner_for(s: Settings) -> Runner:
     """The trained detector for a target that uses one, else the example finder. Blocking."""
+    if own_detector.is_detector(s.model):
+        try:
+            return own_detector.runner(s.model, s.detector_class or "", get_s3_client(), get_bucket_name())
+        except RuntimeError as e:  # the weights in storage are missing or do not match
+            raise FinderInputError(f"the trained model could not be loaded on this server: {e}") from None
     if s.uses_detector:
         try:
             return hosted_detector.runner(s.model, s.detector_class or "")
         except hosted_detector.DetectorUnavailable as e:
             raise FinderInputError(str(e)) from None
     return _stored_model()
+
+
+def _model_sha256(s: Settings) -> Optional[str]:
+    """The sha256 of the weights that ran: ours are known; a hosted model's are Roboflow's (None)."""
+    if own_detector.is_detector(s.model):
+        return own_detector.MODELS[s.model].sha256
+    return None if s.uses_detector else MODEL_SHA256
 
 
 def _stored_model() -> Runner:
@@ -627,7 +644,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
         "version": 1,
         "job_id": request.job_id,
         "target": s.target,
-        "model": {"name": s.model, "sha256": None if s.uses_detector else MODEL_SHA256},
+        "model": {"name": s.model, "sha256": _model_sha256(s)},
         "settings": s.as_dict(),
         "protocol": protocol(),
         "picture": {"sha256": request.picture_sha256, "width": request.shown.width, "height": request.shown.height,

@@ -11,6 +11,7 @@ from datetime import date
 import pytest
 
 from src.services import answer_levels as al
+from src.services import own_detector
 from src.services.answer_levels import Facts, Level, Verdict
 
 FINDER = "yoloe-11s-seg"
@@ -555,13 +556,15 @@ def test_a_detector_matches_its_evidence(name):
     assert (row["ap50"], row["n_img"], row["imgsz"]) == (d.measured["value"], d.measured["n_images"], d.finder_input_px)
     assert row["model"] == d.finder_model and row["class"] == d.detector_class
     assert d.finder_input_px == d.measured["image_px"] and d.max_level is Level.FULL_REVIEW
-    assert d.measured["date"] == "2026-10-12" and "same sites" in d.measured["note"]
+    assert d.measured["date"] == "2026-10-13" and "same sites" in d.measured["note"]
+    model = own_detector.MODELS[d.finder_model]  # our own model, its weights named by key and sha256
+    assert d.detector_class in model.classes and model.sha256[:16] in model.key
     assert d.size_floor_px is not None and d.size_floor_px > 0
 
 
-@pytest.mark.parametrize("name,value", [("tower_dish", 0.864), ("tower_antenna", 0.933), ("tower_radio_unit", 0.55),
-                                        ("power_pylon", 0.96), ("power_insulator", 0.895), ("power_nest", 0.995)])
-def test_the_detectors_hold_the_measurements_of_2026_10_12(name, value):
+@pytest.mark.parametrize("name,value", [("tower_dish", 0.889), ("tower_antenna", 0.952), ("tower_radio_unit", 0.562),
+                                        ("power_pylon", 0.989), ("power_insulator", 0.869), ("power_nest", 0.958)])
+def test_the_detectors_hold_the_measurements_of_2026_10_13(name, value):
     assert al.detector(name).measured["value"] == value
 
 
