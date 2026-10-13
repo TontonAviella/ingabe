@@ -121,6 +121,8 @@ class Target:
     # Set on a detector that reads a larger picture in squares of this many pixels at the picture's own size (its
     # measured input), instead of shrinking it: small objects (bolts) keep the size they were measured at.
     tile_px: Optional[int] = None
+    # Set on a detector whose boxes are shown only from this score up: the score its measurement was taken at.
+    min_score: Optional[float] = None
 
 
 def _check_unit_interval(where: str, value: Any) -> None:
@@ -234,7 +236,7 @@ def _target(name: str, entry: dict[str, Any], marks: dict[str, Any]) -> Target:
 
 
 _DETECTOR_KEYS = {"model", "class", "max_level", "size_evidence", "measured", "note"}
-_DETECTOR_OPTIONAL_KEYS = {"tile_px"}
+_DETECTOR_OPTIONAL_KEYS = {"tile_px", "min_score"}
 
 
 def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, Any]) -> Optional[Target]:
@@ -260,13 +262,16 @@ def _detector(name: str, base: Target, entry: dict[str, Any], marks: dict[str, A
     if tile is not None and tile != measured["finder_input_px"]:
         raise ValueError(f"answer target {name}: a detector's tiles are its measured input: tile_px must be "
                          f"finder_input_px")
+    min_score = given.get("min_score")
+    if min_score is not None:
+        _check_unit_interval(f"answer target {name}: detector min_score", min_score)
     floor = _size_floor(f"{name} (detector)", given["size_evidence"], measured["finder_input_px"], marks)
     if floor is None:
         raise ValueError(f"answer target {name}: a detector needs size_evidence (pictures with their objects boxed)")
     return replace(base, finder_model=given["model"], finder_input_px=measured["finder_input_px"],
                    look_alike_marks=False, suggestion_filter=False, max_level=Level[given["max_level"]],
                    size_floor_px=floor, measured=dict(measured), also_measured=(), detector_class=given["class"],
-                   tile_px=tile)
+                   tile_px=tile, min_score=min_score)
 
 
 def load_targets(path: Path = TARGETS_PATH, evidence_path: Path = EVIDENCE_PATH) -> dict[str, Target]:

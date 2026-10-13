@@ -957,6 +957,18 @@ def test_a_tiled_detector_reads_squares_at_the_photos_own_size_and_keeps_each_ob
     assert [r[:2] for r in merged] == [(0.0, 0.0), (480.0, 0.0)]
 
 
+def test_a_detector_with_a_minimum_score_shows_only_boxes_from_it_up(monkeypatch):
+    monkeypatch.setenv("OWN_DETECTORS", "1")
+    s = example_finder.settings("power_pylon")
+    assert s.min_score == 0.6 and s.as_dict()["min_score"] == 0.6
+    assert "min_score" not in example_finder.settings("power_insulator").as_dict()
+    picture = example_finder.Shown(pixels=np.zeros((64, 64, 3), np.uint8), sx=1.0, sy=1.0, width=64, height=64,
+                                   marks=[], looks=[])
+    rows = [(0.0, 0.0, 10.0, 10.0, 0.59, 0), (20.0, 20.0, 30.0, 30.0, 0.6, 0), (40.0, 40.0, 50.0, 50.0, 0.9, 0)]
+    finds = example_finder._find(picture, s, lambda *a: rows)
+    assert [f.score for f in finds] == [0.9, 0.6]
+
+
 def test_the_size_gate_reads_a_wide_photo_at_the_squares_size():
     small_bolt = [(20, 20)] * 3  # 20 px bolts on a 5280 px DJI photo
     for part in ("tower_bolt_missing", "tower_bolt_loose"):

@@ -559,16 +559,28 @@ def test_a_detector_matches_its_evidence(name):
     assert (row["ap50"], row["n_img"], row["imgsz"]) == (d.measured["value"], d.measured["n_images"], d.finder_input_px)
     assert row["model"] == d.finder_model and row["class"] == d.detector_class
     assert d.finder_input_px == d.measured["image_px"] and d.max_level is Level.FULL_REVIEW
-    assert d.measured["date"] == "2026-10-13" and "same sites" in d.measured["note"]
+    assert d.measured["date"] == "2026-10-13"
+    assert ("sites the model never saw" in d.measured["dataset"] if name == "power_pylon" else
+            "same sites" in d.measured["note"])
     model = own_detector.MODELS[d.finder_model]  # our own model, its weights named by key and sha256
     assert d.detector_class in model.classes and model.sha256[:16] in model.key
     assert d.size_floor_px is not None and d.size_floor_px > 0
 
 
 @pytest.mark.parametrize("name,value", [("tower_dish", 0.889), ("tower_antenna", 0.952), ("tower_radio_unit", 0.562),
-                                        ("power_pylon", 0.989), ("power_insulator", 0.869), ("power_nest", 0.958)])
+                                        ("power_pylon", 0.146), ("power_insulator", 0.869), ("power_nest", 0.958)])
 def test_the_detectors_hold_the_measurements_of_2026_10_13(name, value):
     assert al.detector(name).measured["value"] == value
+
+
+def test_pylons_are_shown_only_from_the_score_measured_at_new_sites():
+    """TTPLA (1,242 photos at sites the model never saw): from score 0.6 up, 83% of boxes on a tower, 15% of towers
+    found; the other detectors show every box, as they were measured."""
+    d = al.detector("power_pylon")
+    (row,) = _rows(d.measured["evidence"])
+    assert d.min_score == row["cut"] == 0.6 and (row["p"], row["r"], row["n_gt"]) == (0.831, 0.153, 968)
+    assert "0.989" in d.measured["note"]  # the same-site score is kept, said to be optimistic
+    assert all(al.detector(n).min_score is None for n in DETECTED if n != "power_pylon")
 
 
 def test_only_tower_power_and_maize_parts_have_a_detector():

@@ -138,6 +138,7 @@ class Settings:
     model: str = MODEL_NAME  # the example finder, or a trained detector (own_detector, hosted_detector)
     detector_class: Optional[str] = None  # the class the trained detector boxes for this target
     tile_px: Optional[int] = None  # the detector reads a larger picture in squares of this size (answer_levels)
+    min_score: Optional[float] = None  # the detector's boxes are shown only from this score up (answer_levels)
 
     def as_dict(self) -> dict[str, Any]:
         out = {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
@@ -147,6 +148,8 @@ class Settings:
             out.update(model=self.model, detector_class=self.detector_class)
         if self.tile_px is not None:
             out.update(tile_px=self.tile_px)
+        if self.min_score is not None:
+            out.update(min_score=self.min_score)
         return out
 
     @property
@@ -174,7 +177,7 @@ def settings(target_name: str) -> Settings:
                         image_px=TILED_IMAGE_PX if d.tile_px is not None else int(m["image_px"]),
                         finder_input_px=int(m["finder_input_px"]), look_alike_marks=False, view=m["view"],
                         suggestion_filter=False, model=d.finder_model, detector_class=d.detector_class,
-                        tile_px=d.tile_px)
+                        tile_px=d.tile_px, min_score=d.min_score)
     if d is not None and t.finder_input_px is None:
         raise FinderInputError(f"{t.noun} are found only by a trained model, which is switched off on this server")
     if t.finder_model != MODEL_NAME:
@@ -338,7 +341,7 @@ def _find(picture: Shown, s: Settings, runner: Runner) -> list[Find]:
                       s.finder_input_px, CONF, MAX_DET)
     finds = []
     for x0, y0, x1, y1, score, cls in rows:
-        if cls != TARGET_CLASS:
+        if cls != TARGET_CLASS or (s.min_score is not None and score < s.min_score):
             continue
         box = (x0, y0, x1, y1)
         if any(boxes.iou(box, mark) >= MARK_IOU for mark in picture.marks):
