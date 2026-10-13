@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from src.database.pool import get_async_db_connection, set_request_industry
-from src.services import industry
+from src.services import industry, tower_inspection
 
 RUN_TAG = uuid.uuid4().hex[:8]
 CATALOG = json.loads((Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "tool_catalog.json").read_text())
@@ -62,8 +62,9 @@ def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatc
     for elsewhere in ("agriculture", None, "power_grid"):  # never offered there, so as on main: it does not exist
         assert industry.tool_refusal("tower_photos_needing_review", elsewhere)["error"].startswith(
             "There is no tool named tower_photos_needing_review here.")
-    assert "never count equipment from a photo yourself" in industry.prompt_note("telecom")
-    assert industry.prompt_note("power_grid") and "tower photo" not in industry.prompt_note("power_grid")
+    assert "Never count equipment or defects from a picture yourself" in industry.prompt_note("telecom")
+    assert industry.prompt_note("power_grid") and "get_tower_inspection_findings" not in industry.prompt_note(
+        "power_grid")
 
 
 def test_a_wrong_industry_tool_is_refused_when_called_anyway():
@@ -93,6 +94,25 @@ def test_only_other_industries_get_a_prompt_note():
     assert industry.prompt_note("agriculture") is None and industry.prompt_note(None) is None
     note = industry.prompt_note("telecom")
     assert note and "Telecom Towers" in note and "crop" in note
+
+
+def test_each_industry_is_briefed_in_its_own_words_with_what_was_measured(monkeypatch):
+    """With the inspection tools on, Sage learns the industry's readers, words and tools, the measured AP50 of the
+    finder that runs for each part (read from answer_levels, never copied), and what is not measured yet."""
+    from src.services import answer_levels, example_finder
+
+    monkeypatch.setenv("TOWERS", "1")
+    telecom, power = industry.prompt_note("telecom"), industry.prompt_note("power_grid")
+    assert "still being built" not in telecom and "still being built" not in power
+    assert "azimuth" in telecom and "tenancy" in telecom and "get_tower_inspection_findings" in telecom
+    assert "insulator" in power and "right-of-way" in power and "get_power_line_inspection_findings" in power
+    assert "get_tower_inspection_findings" not in power and "get_power_line_inspection_findings" not in telecom
+    for note, parts in ((telecom, tower_inspection.parts_for("telecom")), (power, tower_inspection.POWER_PARTS)):
+        for part in parts:
+            m = answer_levels.target_for(part, example_finder.settings(part).model).measured
+            assert f"{m['value']:.2f} on {m['n_images']} test photos" in note
+    assert "Not measured yet" in telecom and "thermal camera" in telecom and "sag" in power
+    assert "never say there are no defects where nobody marked them" in telecom
 
 
 def test_farm_procedures_stay_out_of_other_industries_prompts(monkeypatch):
@@ -568,7 +588,8 @@ def test_the_routing_eval_skips_tower_cases_while_towers_is_off(monkeypatch):
     spec.loader.exec_module(harness)
     cases = harness.load_cases()
     towers = {c["id"] for c in cases if set(c["expect"].get("any_of") or []) & {
-        "get_tower_inspection_findings", "tower_photos_needing_review"}}
+        "get_tower_inspection_findings", "tower_photos_needing_review", "get_power_line_inspection_findings",
+        "power_line_photos_needing_review"}}
     assert len(towers) >= 8
     monkeypatch.setenv("TOWERS", "0")
     assert harness.check_industry_cases(cases) == towers
