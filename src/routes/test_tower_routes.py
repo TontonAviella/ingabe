@@ -26,6 +26,13 @@ PHOTO_KEYS = {"sha256", "url", "width", "height", "taken_at", "lat", "lon", "rel
 WORK_KEYS = {"marks", "lookalike_marks", "job", "suggestions", "reviewed", "counted_by_you", "waiting"}
 
 
+@pytest.fixture(autouse=True)
+def _example_finder_for_towers(monkeypatch):
+    """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
+    back does (OWN_DETECTORS=0)."""
+    monkeypatch.setenv("OWN_DETECTORS", "0")
+
+
 @pytest.fixture
 async def seeded():
     inspections = Inspections()

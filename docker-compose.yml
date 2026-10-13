@@ -87,6 +87,7 @@ services:
       # Trained detectors and SAM 3 through Roboflow's hosted API for the targets that have one
       # (src/services/hosted_detector.py). On, those photos are SENT TO ROBOFLOW. Off (default): YOLOE where measured.
       - HOSTED_FINDER=${HOSTED_FINDER:-0}
+      - OWN_DETECTORS=${OWN_DETECTORS:-1}
       - ROBOFLOW_API_KEY=${ROBOFLOW_API_KEY:-}
       # Tower work on photo inspections in Telecom projects: marks, the finder's suggestions, a person's review,
       # the tower cards and Sage's tower tools (src/services/tower_inspection.py). Off: its routes answer 404 and
