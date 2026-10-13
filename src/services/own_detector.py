@@ -45,6 +45,10 @@ MODELS = {
         key="models/rfdetr-small-powerlines-37900df095d1ec81.onnx",
         sha256="37900df095d1ec814b825592fce11148017ee8459584579574021eaf77461d1f",
         classes=("insulator", "nest", "pylon")),
+    "own:rfdetr-small-bolts-2026-10-13": Model(
+        key="models/rfdetr-small-bolts-35c0d99481d13d0a.onnx",
+        sha256="35c0d99481d13d0a17ca40aacc77dada819d40e012c0da56188d3e6a550728fd",
+        classes=("loose bolt", "missing bolt")),
 }
 
 _sessions: dict[str, Any] = {}

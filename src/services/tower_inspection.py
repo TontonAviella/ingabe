@@ -48,13 +48,17 @@ _SWITCH = "TOWERS"
 PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")  # Telecom Towers: the tower cards count these
 FARM_PARTS = ("maize_seedling",)  # Agriculture: marked and found on the photos; no cards yet
 POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")  # Power Grid: found only by the trained detector
-ALL_PARTS = PARTS + FARM_PARTS + POWER_PARTS
-PARTS_BY_INDUSTRY = {"telecom": PARTS, "agriculture": FARM_PARTS, "power_grid": POWER_PARTS}
+# Telecom Towers' defects: marked and found on close-up photos of the steel (trained detector only); not equipment, so
+# the tower cards do not count them.
+DEFECT_PARTS = ("tower_bolt_missing", "tower_bolt_loose")
+ALL_PARTS = PARTS + FARM_PARTS + POWER_PARTS + DEFECT_PARTS
+PARTS_BY_INDUSTRY = {"telecom": PARTS + DEFECT_PARTS, "agriculture": FARM_PARTS, "power_grid": POWER_PARTS}
 # How the marking screen names each part (one, many), in the order it offers them.
 PART_LABELS = {"tower_dish": ("Microwave dish", "microwave dishes"), "tower_antenna": ("Panel antenna", "panel antennas"),
                "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants"),
                "power_pylon": ("Pylon", "pylons"), "power_insulator": ("Insulator", "insulators"),
-               "power_nest": ("Bird nest", "bird nests")}
+               "power_nest": ("Bird nest", "bird nests"), "tower_bolt_missing": ("Missing bolt", "missing bolts"),
+               "tower_bolt_loose": ("Loose bolt", "loose bolts")}
 STORE_PREFIX = "towers/v1"
 REDIS_PREFIX = "towers:v1"
 _VERSION = 1
@@ -99,7 +103,7 @@ def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
 
 def _family(part: str) -> tuple[str, ...]:
     """The parts marked alongside this one (its industry's): only they can be its look-alike marks."""
-    return next(family for family in (PARTS, FARM_PARTS, POWER_PARTS) if part in family)
+    return next(family for family in (PARTS, FARM_PARTS, POWER_PARTS, DEFECT_PARTS) if part in family)
 
 
 # --------------------------------------------------------------------------- #

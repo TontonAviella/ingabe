@@ -22,6 +22,8 @@ const MEASURED: Record<TowerPart, { noun: string; lookalikes: boolean }> = {
   power_pylon: { noun: 'pylons', lookalikes: false },
   power_insulator: { noun: 'insulators', lookalikes: false },
   power_nest: { noun: 'bird nests', lookalikes: false },
+  tower_bolt_missing: { noun: 'missing bolts', lookalikes: false },
+  tower_bolt_loose: { noun: 'loose bolts', lookalikes: false },
 };
 const MAX_LOOKALIKE_MARKS = 20;
 
