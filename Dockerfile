@@ -14,12 +14,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 # Install development headers for building Python packages + gfortran for DSSAT.
-# `git` added 2026-05-14 because requirements.txt now references
-# `hermes-agent @ git+https://github.com/NousResearch/hermes-agent@v2026.5.7`
-# (Hermes is not on PyPI). `uv pip install` shells out to git for git+ URLs;
-# without it, the build fails with "could not execute process `git init`".
+# No git: no requirement is a git+ URL (add git back if one ever is).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3-dev build-essential gfortran git \
+        python3-dev build-essential gfortran \
         libdbus-1-dev libdbus-glib-1-dev pkg-config \
         libgirepository1.0-dev libcairo2-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -96,12 +93,10 @@ RUN useradd -r -m -s /bin/false appuser \
     && chown -R appuser:appuser /cache/matplotlib /cache/torch /cache/ultralytics /cache/ingabe /tmp/ingabe_cache \
     && chown appuser:appuser /home/appuser \
     && chmod 755 /home/appuser
-# /home/appuser must be appuser-owned BEFORE first volume mount, because docker
-# initializes named-volume contents from the image layer's existing dir state.
-# Without this chown, the hermes-gateway service (running as appuser) cannot
-# create /home/appuser/.hermes/logs on a fresh mundiai_hermes-state volume.
-# The `-m` flag to useradd ensures /home/appuser is created in the first place;
-# `-r` alone (system user) skips home directory creation.
+# /home/appuser must be appuser-owned: compose sets HOME there, and the app
+# reads ~/.cache (src/services/pipeline_evidence.py) and ~/.cdsapirc
+# (src/services/weather_service.py) from it. The `-m` flag to useradd creates
+# /home/appuser in the first place; `-r` alone (system user) skips it.
 USER appuser
 
 ENTRYPOINT []

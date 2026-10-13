@@ -1642,7 +1642,7 @@ class TestInsuranceToolSchema:
         assert tool["function"]["parameters"]["required"] == []
 
     def test_dispatch_is_registered(self):
-        """Both runtimes dispatch non-Pydantic tools through LEGACY_HANDLERS."""
+        """The chat loop dispatches non-Pydantic tools through LEGACY_HANDLERS."""
         from src.services.legacy_tool_shim import LEGACY_HANDLERS
         assert "get_insurance_intelligence" in LEGACY_HANDLERS
 

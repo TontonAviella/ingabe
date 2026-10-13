@@ -1970,35 +1970,6 @@ async def _run_first_fast_path(
     return None
 
 
-async def _maybe_run_deterministic_turn_before_hermes(
-    *,
-    map_id: str,
-    session: UserContext,
-    user_id: str,
-    conversation: Conversation,
-) -> bool:
-    """Run proven single-purpose paths before constructing a general agent.
-
-    These routes are faster and more reliable than asking Hermes to rediscover
-    the same plan. Complex or genuinely multi-step requests still fall through
-    to Hermes when it is enabled.
-    """
-
-    rows = await get_all_conversation_messages(conversation.id, session)
-    messages = [
-        row.message_json
-        for row in rows
-        if isinstance(getattr(row, "message_json", None), dict)
-    ]
-    return await _run_first_fast_path(
-        map_id=map_id,
-        session=session,
-        user_id=user_id,
-        conversation=conversation,
-        openai_messages=messages,
-    ) is not None
-
-
 async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
     """Look up the industry of the map's project and scope every connection this request opens from now on to it
     (app.industry, which Brain's row-level security reads). Returns the industry; None if the map's project cannot
@@ -2045,35 +2016,6 @@ async def process_chat_interaction_task(
     # offered and may run, and (through app.industry on every connection) which
     # Brain notes it can read or write. See src/services/industry.py.
     project_industry = await _scope_request_to_map_industry(map_id)
-
-    # Hermes handles complex requests only after deterministic fast paths have
-    # had the first chance to answer. This keeps admin lookups and raster/FastSAM
-    # work fast, bounded, and independent of agent planning quality.
-    from src.services.hermes_runtime import hermes_is_enabled, run_sage_turn_via_hermes
-    if hermes_is_enabled():
-        if await _maybe_run_deterministic_turn_before_hermes(
-            map_id=map_id,
-            session=session,
-            user_id=user_id,
-            conversation=conversation,
-        ):
-            return
-        logger.info(
-            "Routing complex Sage turn through scoped Hermes runtime "
-            "(map=%s user=%s conversation=%s)",
-            map_id, user_id, conversation.id,
-        )
-        # No fallback to the legacy planner: by the time Hermes fails it may
-        # have streamed text or run tools with side effects, and a second
-        # planner would answer (and act) twice. The runtime already shows the
-        # error toast and ends the turn.
-        return await run_sage_turn_via_hermes(
-            request=request, map_id=map_id, session=session, user_id=user_id,
-            chat_args=chat_args, map_state=map_state, conversation=conversation,
-            system_prompt_provider=system_prompt_provider,
-            connection_manager=connection_manager,
-            pydantic_tool_calls=pydantic_tool_calls,
-        )
 
     # kick it off with a quick sleep, to detach from the event loop blocking /send
     await asyncio.sleep(0.1)
@@ -2911,8 +2853,8 @@ async def process_chat_interaction_task(
                     )
                     with tracer.start_as_current_span(f"kue.{function_name}") as span:
                         if function_name in LEGACY_HANDLERS:
-                            # Tools with no branch above run through the same
-                            # handlers /internal/tool-call (Hermes) uses, on this
+                            # Tools with no branch above run through the shared
+                            # handlers in src/services/legacy_tool_shim.py, on this
                             # loop's tool connection (handlers that read the Brain
                             # open their own user- and partner-scoped connection).
                             tool_result = await _within_tool_limit(function_name, execute_legacy_tool(

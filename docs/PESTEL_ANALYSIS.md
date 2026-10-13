@@ -52,7 +52,7 @@ Priority score = likelihood x impact.
 | Economic | Agriculture is large but productivity constrained | Strong business case if we reduce losses or technician time | 5 | 4 | 20 | Hectares analyzed per technician-day, loss avoided, action completion rate | Price around operational value, not only software seats |
 | Social | Users should not need to understand H3, GeoParquet, PMTiles, or model internals | Confusing technical language reduces trust and adoption | 5 | 4 | 20 | Sage answer clarity score, retry rate, support questions | Hide implementation terms; show "risk areas", "affected homes", "fields to inspect" |
 | Social | Trust requires visible evidence on the map | If Sage says "agriculture" over houses, users lose confidence | 5 | 5 | 25 | False-context rate, evidence-layer coverage, field validation agreement | Require Sage to state evidence basis and confidence; join buildings/roads/farms before firm claims |
-| Technological | Fast drone ingest is a product-defining requirement | Large TIFFs cannot make Hermes/Sage wait for batch GIS work | 5 | 5 | 25 | Time to first map, raw tile latency, COG background duration | Raw-first rasterd, background COG, cache outputs, PostHog telemetry |
+| Technological | Fast drone ingest is a product-defining requirement | Large TIFFs cannot make Sage wait for batch GIS work | 5 | 5 | 25 | Time to first map, raw tile latency, COG background duration | Raw-first rasterd, background COG, cache outputs, PostHog telemetry |
 | Technological | H3 must be zoom-adaptive | Fixed cells become misleading at close zooms | 5 | 4 | 20 | H3 resolution pyramid presence, cell count by zoom, render failures | Use zoom bands: coarse cells out, finer cells in as zoom increases |
 | Technological | GeoAI is still incomplete for buildings, roads, crop damage, and infrastructure damage | Visual screening is not the same as detection | 5 | 5 | 25 | Model precision/recall, human validation rate, evidence coverage | Separate "screening" from "confirmed detection"; integrate Open Buildings, Tessera-like embeddings, landcover, road/drainage layers |
 | Environmental | Rain, floods, drought, erosion, and drainage are core demand drivers | Environmental events create urgent technician workflows | 5 | 5 | 25 | Forecast-to-impact latency, admin/H3 affected area, alert accuracy | Keep rain-impact, flood, drainage, terrain, and field-action tools in Sage's fast path |
@@ -92,7 +92,7 @@ That means:
 | Is the system compliant? | Consent/source metadata coverage, data retention policy coverage, audit log coverage |
 | Is the model honest? | Evidence-basis present, confidence stated, no unsupported asset/crop claims |
 
-## Operating Rules For Sage/Hermes
+## Operating Rules For Sage
 
 Sage should not expose PESTEL, H3, PMTiles, GeoParquet, or raster internals to
 normal users unless they ask technically. Sage should translate tool output into

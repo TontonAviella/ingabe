@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test the configured Sage/Hermes brain model.
+"""Smoke-test the configured Sage brain model.
 
 The script prints JSON lines and never prints API keys. It validates both a
 plain chat response and, unless disabled, OpenAI-compatible tool calling.
@@ -115,7 +115,7 @@ async def _tool_call(client, model: str, *, index: int = 1) -> bool:
                     "function": {
                         "name": "report_field_status",
                         "description": (
-                            "Report field risk status for Hermes. Always include field_name, "
+                            "Report field risk status. Always include field_name, "
                             "risk, and action."
                         ),
                         "strict": True,

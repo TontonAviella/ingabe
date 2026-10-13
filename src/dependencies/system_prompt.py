@@ -457,8 +457,8 @@ Ingabe is built by Ingabe Ltd. Open source Ingabe is AGPLv3 and available at htt
 """
         p += f"Today's date is {datetime.now().strftime('%Y-%m-%d')}.\n"
 
-        # Per the request's project industry: non-agriculture projects get no farm instructions (both the chat
-        # loop and Hermes build their prompt here).
+        # Per the request's project industry: non-agriculture projects get no farm instructions (the chat
+        # loop builds its prompt here).
         from src.database.pool import get_request_industry
         from src.services.industry import prompt_for
 

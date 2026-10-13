@@ -1,6 +1,6 @@
-# Sage/Hermes Harness Architecture
+# Sage Harness Architecture
 
-The operating model for Sage/Hermes is a thin harness with explicit reusable skills and deterministic tools underneath it.
+The operating model for Sage is a thin harness with explicit reusable skills and deterministic tools underneath it.
 
 This means Sage should not carry every rule in one giant prompt. The prompt should identify the goal, choose the right procedure, call tools, and explain results. The repeatable procedures live in skills and docs. The heavy work lives in code, Rust sidecars, PostGIS, GDAL/rasterd, H3/geokernel, Dagster jobs, tests, benchmarks, and telemetry.
 
@@ -20,7 +20,7 @@ This is the difference between a clever chat response and an operating system fo
 
 | Layer | Responsibility |
 | --- | --- |
-| Sage/Hermes prompt | Identify intent, ask missing questions, call tools, explain evidence and action. |
+| Sage prompt | Identify intent, ask missing questions, call tools, explain evidence and action. |
 | Skills | Reusable procedures: rain impact, drone raster context, H3 risk maps, PESTEL, pipeline proof, review workflows. |
 | Tools/services | Deterministic work: raster reads, H3 aggregation, PostGIS queries, uploads, tile generation, telemetry writes. |
 | Dagster/cron | Freshness pipelines for satellite, weather, embeddings, cache refresh, and scheduled reports. |
@@ -29,7 +29,7 @@ This is the difference between a clever chat response and an operating system fo
 
 ## Resolver Rules
 
-- Repeated Sage/Hermes behavior, "make this permanent", "thin harness/fat skills", or "we asked twice" -> `.claude/skills/sage-harness-upgrade/SKILL.md`.
+- Repeated Sage behavior, "make this permanent", "thin harness/fat skills", or "we asked twice" -> `.claude/skills/sage-harness-upgrade/SKILL.md`.
 - Architecture trace, blast radius, or code ownership -> GitNexus skills.
 - Broken map/tool behavior -> investigation or review skill, plus focused tests.
 - Performance claim -> benchmark skill and recorded numbers.
@@ -47,7 +47,7 @@ This is the difference between a clever chat response and an operating system fo
 
 ## Runtime Harness Link
 
-`src/services/life_harness.py` is the active Sage/Hermes runtime guard. It keeps the model on track by:
+`src/services/life_harness.py` is the active Sage runtime guard. It keeps the model on track by:
 
 - Validating required tool arguments before execution.
 - Making each tool contract explicit.

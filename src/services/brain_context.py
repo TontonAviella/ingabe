@@ -1,4 +1,4 @@
-"""Compact Brain context packets for Hermes/Sage turns.
+"""Compact Brain context packets for Sage turns.
 
 The goal is to keep gbrain-style memory as the control-plane spine without
 dumping recent pages or full GeoJSON into every turn. A page enters the packet

@@ -26,10 +26,6 @@ if os.environ.get("MUNDI_RUN_LIVE_LLM_TESTS") != "1":
     os.environ["BRAIN_QUERY_EXPANSION_MODEL"] = "test-expansion-model"
 elif not os.environ.get("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = "test-api-key"
-# The test key above would switch MUNDI_USE_HERMES=auto on and route every chat
-# test through Hermes before the legacy loop those tests patch. Hermes tests
-# monkeypatch hermes_is_enabled() explicitly.
-os.environ["MUNDI_USE_HERMES"] = "0"
 os.environ["POSTHOG_BACKEND_DISABLED"] = "1"
 # Autonomous ingestion is tested directly. Running it in every TestClient
 # lifespan consumes hooks created by unrelated tests and makes suite results

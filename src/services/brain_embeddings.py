@@ -432,7 +432,7 @@ async def expand_query(query: str, n_variants: int = 3) -> list[str]:
         return [query]
 
     # expand_query is a CHAT call, not an embedding call. It follows the same
-    # Gemma brain profile as Sage/Hermes, while embeddings remain independent.
+    # Gemma brain profile as Sage, while embeddings remain independent.
     endpoint = _resolve_query_expansion_endpoint()
     if not endpoint.api_key:
         return [query]

@@ -101,7 +101,7 @@ async def create_raster_h3_context_layer(
     from src.structures import get_async_read_connection
     from src.utils import get_async_s3_client, get_bucket_name
 
-    # Done here so the fast path, the chat loop and Hermes all get it (audit 2026-10-09, R1-10/R1-11).
+    # Done here so the fast path and the chat loop both get it (audit 2026-10-09, R1-10/R1-11).
     args = args_for_industry(args, industry.request_is_agriculture())
 
     async with get_async_read_connection() as conn:

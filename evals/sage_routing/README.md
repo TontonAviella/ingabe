@@ -172,4 +172,3 @@ drifts; update the labels, then `python scripts/eval_sage_routing.py catalog --w
 - **Precision.** ~280 cases in ~160 intents gives a 95% interval of about
   ±6 points on overall accuracy; per-category numbers are much wider. Treat
   small categories as signals, not results.
-- The Hermes runtime path is not measured; it is off by default.
