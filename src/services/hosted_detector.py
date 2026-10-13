@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import os
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 import requests
@@ -76,26 +76,44 @@ def runner(model: str, detector_class: str) -> Runner:
     return ask
 
 
-def _sam3(key: str, prompt: str) -> Runner:
-    """SAM 3 asked for `prompt` (e.g. "seedling") through a one-step Roboflow workflow; every box it returns is the
-    target (one prompt), kept from CONFIDENCE up, as measured (scripts: sam3_run.py, confidence 0.05)."""
+def _sam3_predictions(key: str, prompt: str, confidence: float, rgb: np.ndarray) -> list[dict[str, Any]]:
+    """SAM 3 asked for `prompt` through a one-step Roboflow workflow: its predictions, each with a box (x, y, width,
+    height, centre-based), a confidence and the outline's points."""
     spec = {"version": "1.0", "inputs": [{"type": "WorkflowImage", "name": "image"}],
             "steps": [{"type": "roboflow_core/sam3@v3", "name": "sam", "images": "$inputs.image",
-                       "class_names": [prompt], "confidence": CONFIDENCE, "output_format": "polygons"}],
+                       "class_names": [prompt], "confidence": confidence, "output_format": "polygons"}],
             "outputs": [{"type": "JsonField", "name": "out", "selector": "$steps.sam.predictions"}]}
+    buf = io.BytesIO()
+    Image.fromarray(rgb).save(buf, "JPEG", quality=92)
+    response = requests.post(URL + "workflows/run", timeout=TIMEOUT_S,
+                             json={"api_key": key, "specification": spec,
+                                   "inputs": {"image": {"type": "base64",
+                                                        "value": base64.b64encode(buf.getvalue()).decode()}}})
+    if response.status_code != 200:  # the key is in the body: never put the response in the message
+        raise DetectorUnavailable(f"SAM 3 answered HTTP {response.status_code}")
+    return list(response.json()["outputs"][0]["out"].get("predictions", []))
+
+
+def sam3_polygons(rgb: np.ndarray, prompt: str, confidence: float) -> list[list[tuple[float, float]]]:
+    """The outlines SAM 3 draws around `prompt` in the picture, in its pixels. Blocking. DetectorUnavailable when it
+    is switched off, has no key or does not answer."""
+    if not enabled():
+        raise DetectorUnavailable("SAM 3 is switched off on this server (HOSTED_FINDER)")
+    key = os.environ.get("ROBOFLOW_API_KEY", "").strip()
+    if not key:
+        raise DetectorUnavailable("SAM 3 has no key on this server (ROBOFLOW_API_KEY)")
+    return [[(float(q["x"]), float(q["y"])) for q in p.get("points", [])]
+            for p in _sam3_predictions(key, prompt, confidence, rgb)]
+
+
+def _sam3(key: str, prompt: str) -> Runner:
+    """SAM 3 asked for `prompt` (e.g. "seedling"); every box it returns is the target (one prompt), kept from
+    CONFIDENCE up, as measured (scripts: sam3_run.py, confidence 0.05)."""
 
     def ask(rgb: np.ndarray, prompts: Sequence[Sequence[float]], classes: Sequence[int], imgsz: int, conf: float,
             max_det: int) -> list[Row]:
-        buf = io.BytesIO()
-        Image.fromarray(rgb).save(buf, "JPEG", quality=92)
-        response = requests.post(URL + "workflows/run", timeout=TIMEOUT_S,
-                                 json={"api_key": key, "specification": spec,
-                                       "inputs": {"image": {"type": "base64",
-                                                            "value": base64.b64encode(buf.getvalue()).decode()}}})
-        if response.status_code != 200:  # the key is in the body: never put the response in the message
-            raise DetectorUnavailable(f"SAM 3 answered HTTP {response.status_code}")
         rows: list[Row] = []
-        for p in response.json()["outputs"][0]["out"].get("predictions", []):
+        for p in _sam3_predictions(key, prompt, CONFIDENCE, rgb):
             if p["confidence"] < conf:
                 continue
             x, y, w, h = p["x"], p["y"], p["width"], p["height"]
