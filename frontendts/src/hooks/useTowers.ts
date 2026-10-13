@@ -10,6 +10,7 @@ import {
   PHOTOS_TO_CHECK_CARD,
   type PhotoWork,
   type ReviewPayload,
+  type ScanState,
   type TowerAudience,
   type TowerCardAnswer,
   type TowerCards,
@@ -47,13 +48,14 @@ function fetchWork(layerId: string, sha256: string) {
   return getJson<PhotoWork>(`${photoBase(layerId, sha256)}/work`);
 }
 
-/** The marks, finds and checks of one photo; asked again every 2 s while a find job is in line or running. */
-export function usePhotoWork(layerId: string, sha256: string) {
+/** The marks, finds and checks of one photo; asked again every 2 s while a find job is in line or running, and while
+ * the inspection's scan runs (it reaches this photo's parts in its own time). */
+export function usePhotoWork(layerId: string, sha256: string, scanning = false) {
   return useQuery<PhotoWork, ServerError>({
     queryKey: workKey(layerId, sha256),
     queryFn: () => fetchWork(layerId, sha256),
     retry: retryFailedRequests,
-    refetchInterval: (query) => (anyJobActive(query.state.data) ? JOB_POLL_MS : false),
+    refetchInterval: (query) => (scanning || anyJobActive(query.state.data) ? JOB_POLL_MS : false),
   });
 }
 
@@ -100,6 +102,38 @@ export function useSaveReview(layerId: string, sha256: string) {
       queryClient.invalidateQueries({ queryKey: ['tower-cards', layerId] });
       queryClient.invalidateQueries({ queryKey: ['tower-card-answer', layerId] });
     },
+  });
+}
+
+// While a scan runs, ask how far it is at this pace.
+const SCAN_POLL_MS = 4_000;
+
+/** Start (or join) the scan of an inspection's photos by the trained models, and follow it: started on every visit,
+ * since the server skips finished photos and never runs two scans of one inspection. A person without edit rights
+ * reads how far it is instead. As photos finish, their work and the cards are asked again. */
+export function useScan(layerId: string | null) {
+  const queryClient = useQueryClient();
+  return useQuery<ScanState, ServerError>({
+    queryKey: ['tower-scan', layerId],
+    queryFn: async ({ queryKey }) => {
+      const url = `${base(layerId as string)}/scan`;
+      let state: ScanState;
+      try {
+        state = await sendJson<ScanState>(url, 'POST', {});
+      } catch (error) {
+        if ((error as ServerError).status !== 403) throw error;
+        state = await getJson<ScanState>(url); // a viewer cannot start one
+      }
+      const before = queryClient.getQueryData<ScanState>(queryKey);
+      if (!before || before.scanned !== state.scanned) {
+        queryClient.invalidateQueries({ queryKey: ['tower-work'] });
+        queryClient.invalidateQueries({ queryKey: ['tower-cards', layerId] });
+      }
+      return state;
+    },
+    enabled: !!layerId,
+    retry: retryFailedRequests,
+    refetchInterval: (query) => (query.state.data?.running ? SCAN_POLL_MS : false),
   });
 }
 

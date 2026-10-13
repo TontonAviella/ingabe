@@ -21,6 +21,16 @@ export interface PartLabel {
   id: TowerPart;
   label: string;
   plural: string;
+  /** Found by a trained model on every photo by itself (the scan): nobody draws examples first. */
+  scanned?: boolean;
+}
+
+/** How far the scan of an inspection's photos is (/towers/layer/{id}/scan). */
+export interface ScanState {
+  running: boolean;
+  parts: TowerPart[];
+  photos: number;
+  scanned: number;
 }
 
 /** The parts in the order the screen offers them, with the words a reader knows them by. */
