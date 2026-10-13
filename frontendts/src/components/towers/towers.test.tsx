@@ -309,6 +309,56 @@ describe('marking screen: checking suggestions', () => {
   });
 });
 
+describe('marking screen: parts the trained models scan', () => {
+  const SCANNED = [
+    { id: 'tower_dish' as const, label: 'Microwave dish', plural: 'microwave dishes', scanned: true },
+    { id: 'tower_antenna' as const, label: 'Panel antenna', plural: 'panel antennas', scanned: true },
+    { id: 'tower_radio_unit' as const, label: 'Radio unit', plural: 'radio units', scanned: true },
+  ];
+  const none: PartWork = {
+    marks: [],
+    lookalike_marks: [],
+    job: null,
+    suggestions: [],
+    reviewed: { kept: [], rejected: [], fixed: [], added: [] },
+    counted_by_you: null,
+    waiting: 0,
+  };
+  const found = (n: number): PartWork => ({
+    ...none,
+    job: { job_id: 'e'.repeat(64), status: 'done' },
+    suggestions: FINDS.slice(0, n).map((f, i) => ({ id: `s${i + 1}`, ...f })),
+    waiting: n,
+  });
+
+  it('opens on the part with suggestions waiting and asks only for a check, never for marks', async () => {
+    viewport();
+    const work: PhotoWork = { parts: { tower_dish: found(0), tower_antenna: found(2), tower_radio_unit: none } };
+    routes[`GET ${WORK}`] = () => ({ status: 200, body: work });
+    mount(<PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} parts={SCANNED} scanning startIndex={0} onClose={vi.fn()} />);
+
+    await findText(/The model found 2 panel antennas on this photo/, 'p');
+    expect(byButton(/Find the rest/)).toBeNull();
+    expect(byButton('Change marks')).toBeNull();
+    expect(byText(/Draw a box around at least/)).toBeNull();
+
+    click(await findButton(/Radio unit/));
+    await findText(/Looking for radio units on this photo/, 'p');
+    click(await findButton(/Microwave dish/));
+    await findText(/The model found no microwave dishes on this photo/, 'p');
+  });
+
+  it('a photo the scan could not look at falls back to one mark and a find', async () => {
+    viewport();
+    const work: PhotoWork = { parts: { tower_dish: none, tower_antenna: none, tower_radio_unit: none } };
+    routes[`GET ${WORK}`] = () => ({ status: 200, body: work });
+    mount(<PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} parts={SCANNED} startIndex={0} onClose={vi.fn()} />);
+
+    await findText(/This photo was not scanned for microwave dishes/, 'p');
+    await findText('0 marked · 1 more to find the rest', 'span');
+  });
+});
+
 describe('next photo to check', () => {
   const second: FakePhoto = {
     ...PHOTO,

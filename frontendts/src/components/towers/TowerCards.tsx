@@ -15,7 +15,7 @@ import {
   writeCollapsed,
 } from '@/components/CardAnswer';
 import { PhotoMarking } from '@/components/towers/PhotoMarking';
-import { photosToCheckNow, useInspectionPhotos, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
+import { photosToCheckNow, useInspectionPhotos, useScan, useTowerCardAnswer, useTowerCards } from '@/hooks/useTowers';
 import type { AnswerItem } from '@/lib/cardAnswer';
 import { isPhotoInspectionLayer } from '@/lib/inspectionPhoto';
 import { TOWER_AUDIENCES, type TowerAudience, type TowerCardAnswer } from '@/lib/towerContract';
@@ -104,6 +104,9 @@ export function TowerCards({
   const cards = useTowerCards(layerId, audience);
   const photos = useInspectionPhotos(layerId);
   const answer = useTowerCardAnswer(layerId, openCard, audience);
+  // The trained models scan every photo by themselves: started (or joined) as soon as the inspection shows.
+  const scan = useScan(photos.data?.parts?.some((p) => p.scanned) ? layerId : null);
+  const scanning = !!scan.data?.running;
 
   // The panel shows once the server has said this layer is tower work: an answer, or a conflict only a Telecom
   // inspection can get (409). Not while asking (every photo inspection asks, in every project), not on a 404
@@ -224,6 +227,14 @@ export function TowerCards({
               )}
             </div>
 
+            {scan.data && scan.data.parts.length > 0 && scan.data.scanned < scan.data.photos && (
+              <p role="status" className="m-0 flex items-center gap-2 text-[14px] text-[#D8CCBF] tabular-nums">
+                {scanning && <LoaderCircle className="size-4 shrink-0 animate-spin text-[#D9A066]" />}
+                {scanning
+                  ? `Scanning the photos: ${scan.data.scanned} of ${scan.data.photos} done. Their suggestions appear as each one finishes.`
+                  : `${scan.data.scanned} of ${scan.data.photos} photos scanned.`}
+              </p>
+            )}
             {cards.isPending && !noCards && <p className="m-0 py-2 text-[15px] text-[#D8CCBF]">Loading the checks…</p>}
             {cards.error && !noCards && <p className="m-0 py-2 text-[15px] text-[#E9B987]">{cards.error.message}</p>}
             {cards.data && (
@@ -270,6 +281,7 @@ export function TowerCards({
           layerName={layer?.name ?? 'Photo inspection'}
           photos={photoList}
           parts={photos.data?.parts}
+          scanning={scanning}
           startIndex={marking.index}
           note={marking.note}
           onClose={() => setMarking(null)}

@@ -1,7 +1,7 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronLeft, ChevronRight, Hand, LoaderCircle, PenLine, ScanSearch, Trash2, Undo2, X } from 'lucide-react';
-import { useCallback, useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { PANEL_FONT } from '@/components/CardAnswer';
 import { BOX_STYLE, type BoxKind, type CanvasBox, PhotoCanvas } from '@/components/towers/PhotoCanvas';
 import { photosToCheckNow, useFindTheRest, usePhotoWork, useSaveMarks, useSaveReview } from '@/hooks/useTowers';
@@ -62,14 +62,16 @@ function PhotoWorkspace({
   layerId,
   photo,
   parts,
+  scanning,
   onDirtyChange,
 }: {
   layerId: string;
   photo: InspectionPhoto;
   parts: PartLabel[];
+  scanning: boolean;
   onDirtyChange: (dirty: boolean) => void;
 }) {
-  const work = usePhotoWork(layerId, photo.sha256);
+  const work = usePhotoWork(layerId, photo.sha256, scanning);
   const saveMarks = useSaveMarks(layerId, photo.sha256);
   const find = useFindTheRest(layerId, photo.sha256);
   const saveReview = useSaveReview(layerId, photo.sha256);
@@ -96,6 +98,23 @@ function PhotoWorkspace({
   // Once a find has ended well the person reviews it, also when it found no more (that review is where they add any
   // it missed, and nothing is counted without it); while one runs or after it failed, the marks show.
   const reviewing = !!partWork && job.done && !remarking[part];
+  // A part the trained models find by themselves: nobody draws examples first, the photo opens on what they found.
+  const scanned = !!label.scanned;
+  const waitingForScan = scanned && !!partWork && !partWork.job && partWork.marks.length === 0;
+  // The scan is on its way to this photo, or already looking at it.
+  const scanBusy = scanned && ((waitingForScan && scanning) || job.active);
+  // A scanned part falls back to marks only where the scan could not look (no camera angle, unreadable photo).
+  const marksNeeded = scanned ? 1 : MARKS_TO_FIND;
+
+  // The photo opens on the first part with suggestions waiting, when the one shown has none.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (opened.current || !work.data) return;
+    opened.current = true;
+    if ((work.data.parts[part]?.waiting ?? 0) > 0) return;
+    const first = parts.find(({ id }) => (work.data?.parts[id]?.waiting ?? 0) > 0);
+    if (first) setPart(first.id);
+  }, [work.data, part, parts]);
   const left = partWork ? undecided(partDraft.review, partWork.suggestions) : [];
   const busy = saveMarks.isPending || find.isPending;
 
@@ -323,11 +342,20 @@ function PhotoWorkspace({
           ))}
         </div>
 
-        {work.data && !reviewing && (
+        {work.data && scanBusy && (
+          <p role="status" className="m-0 flex items-center gap-2 text-[14px] leading-snug text-[#D8CCBF]">
+            <LoaderCircle className="size-4 shrink-0 animate-spin text-[#D9A066]" />
+            {`Looking for ${label.plural} on this photo… They show here as soon as the scan reaches it; you only check them.`}
+          </p>
+        )}
+
+        {work.data && !reviewing && !scanBusy && (
           <div className="flex flex-col gap-2.5">
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
-              Draw a box around at least {MARKS_TO_FIND} {label.plural}, then let the finder suggest the rest.
-              {parts.length > 1 && (
+              {scanned
+                ? `This photo was not scanned for ${label.plural} (it has no camera angle, or could not be read). Draw a box around one you see, then let the model find the rest.`
+                : `Draw a box around at least ${MARKS_TO_FIND} ${label.plural}, then let the finder suggest the rest.`}
+              {parts.length > 1 && !scanned && (
                 <>
                   {' '}
                   You can mark the other parts too: they are saved when you find the rest, and the finder is given them as look-alikes
@@ -337,13 +365,13 @@ function PhotoWorkspace({
             </p>
             <span className="text-[13px] text-[#B8A99B] tabular-nums">
               {partDraft.marks.length} marked
-              {partDraft.marks.length < MARKS_TO_FIND && ` · ${MARKS_TO_FIND - partDraft.marks.length} more to find the rest`}
+              {partDraft.marks.length < marksNeeded && ` · ${marksNeeded - partDraft.marks.length} more to find the rest`}
             </span>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className={PRIMARY}
-                disabled={partDraft.marks.length < MARKS_TO_FIND || job.active || busy}
+                disabled={partDraft.marks.length < marksNeeded || job.active || busy}
                 onClick={findTheRest}
               >
                 {busy ? <LoaderCircle className="size-4 animate-spin" /> : <ScanSearch className="size-4" />}
@@ -377,9 +405,13 @@ function PhotoWorkspace({
               {countLine(partWork, partDraft.review)}
             </p>
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
-              {partWork.suggestions.length > 0
-                ? `Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any ${label.label.toLowerCase()} the finder missed. Nothing is counted until you save.`
-                : `The finder found no more ${label.plural}. Draw a box around any it missed, then save your review: nothing is counted until you save.`}
+              {scanned
+                ? partWork.suggestions.length > 0
+                  ? `The model found ${partWork.suggestions.length} ${partWork.suggestions.length === 1 ? label.label.toLowerCase() : label.plural} on this photo. Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any it missed. Nothing is counted until you save.`
+                  : `The model found no ${label.plural} on this photo. Draw a box around any it missed, then save your review: nothing is counted until you save.`
+                : partWork.suggestions.length > 0
+                  ? `Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any ${label.label.toLowerCase()} the finder missed. Nothing is counted until you save.`
+                  : `The finder found no more ${label.plural}. Draw a box around any it missed, then save your review: nothing is counted until you save.`}
             </p>
             <div className="flex flex-wrap gap-2">
               <button
@@ -396,16 +428,18 @@ function PhotoWorkspace({
                   Next to check
                 </button>
               )}
-              <button
-                type="button"
-                className={SECONDARY}
-                onClick={() => {
-                  setRemarking((r) => ({ ...r, [part]: true }));
-                  setSelected(null);
-                }}
-              >
-                Change marks
-              </button>
+              {!scanned && (
+                <button
+                  type="button"
+                  className={SECONDARY}
+                  onClick={() => {
+                    setRemarking((r) => ({ ...r, [part]: true }));
+                    setSelected(null);
+                  }}
+                >
+                  Change marks
+                </button>
+              )}
             </div>
             {saveReview.error && (
               <p
@@ -442,6 +476,7 @@ export function PhotoMarking({
   layerName,
   photos,
   parts = TOWER_PARTS,
+  scanning = false,
   startIndex,
   note,
   onClose,
@@ -451,6 +486,8 @@ export function PhotoMarking({
   photos: InspectionPhoto[];
   /** The parts this inspection marks (the server's list); the tower parts when it gives none. */
   parts?: PartLabel[];
+  /** The trained models are scanning the inspection's photos now. */
+  scanning?: boolean;
   startIndex: number;
   /** A line shown when the screen opens (the server's words when no photo is left to check). */
   note?: string | null;
@@ -552,7 +589,7 @@ export function PhotoMarking({
             )}
           </header>
           {photo ? (
-            <PhotoWorkspace key={photo.sha256} layerId={layerId} photo={photo} parts={parts} onDirtyChange={setDirty} />
+            <PhotoWorkspace key={photo.sha256} layerId={layerId} photo={photo} parts={parts} scanning={scanning} onDirtyChange={setDirty} />
           ) : (
             <p className="m-0 p-6 text-[15px] text-[#D8CCBF]">This inspection has no photos.</p>
           )}
