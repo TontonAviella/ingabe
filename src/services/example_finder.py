@@ -231,16 +231,21 @@ def check_lookalikes(given: Any, s: Settings) -> list[Box]:
     return looks
 
 
+def check_view_matches(s: Settings, view: str) -> None:
+    """FinderInputError unless the picture was taken the way the target was measured (`view`)."""
+    view = check_view(view)
+    if view != s.view:
+        raise FinderInputError(f"{answer_levels.target(s.target).noun} were measured only on {_VIEW_WORDS[s.view]}, "
+                               f"not on {_VIEW_WORDS[view]}")
+
+
 def check_picture(s: Settings, view: str, width: int, height: int,
                   marks_px: Sequence[Box]) -> answer_levels.SizeGate:
     """The picture is like the ones the target was measured on, or FinderInputError says how it is not: taken the
     same way (`view`), and the marked objects, as the finder reads this picture, at least as big as the smallest
     measured (answer_levels.size_gate, from the marks' sizes in the picture's pixels). A target with no measured
     size cannot be checked, so it is refused too. Returns the passing gate."""
-    view = check_view(view)
-    if view != s.view:
-        raise FinderInputError(f"{answer_levels.target(s.target).noun} were measured only on {_VIEW_WORDS[s.view]}, "
-                               f"not on {_VIEW_WORDS[view]}")
+    check_view_matches(s, view)
     gate = answer_levels.size_gate(s.target, max(width, height), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks_px],
                                    finder_model=s.model)
     if gate.passes is not True:
@@ -618,13 +623,19 @@ async def start(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str,
     when the picture could not be read, FinderBusy when the line is full (nothing is queued then).
     """
     s = settings(target)
-    given_marks = check_shape(marks, "mark", MIN_MARKS, MAX_MARKS)
+    # A trained detector needs no examples: with no marks it scans the whole picture (a scan); the size gate is then
+    # read from what it found (tower_inspection.level_answer). The example finder always needs marks.
+    given_marks = check_shape(marks, "mark", 0 if s.uses_detector else MIN_MARKS, MAX_MARKS)
     given_looks = check_lookalikes(lookalike_marks, s)
     picture = await source.read()
     marks_px = check_inside([picture.to_pixels(b) for b in given_marks], picture.width, picture.height, "mark")
     looks_px = check_inside([picture.to_pixels(b) for b in given_looks], picture.width, picture.height,
                             "look-alike mark")
-    gate = check_picture(s, picture.view, picture.width, picture.height, marks_px)
+    if marks_px:
+        gate = check_picture(s, picture.view, picture.width, picture.height, marks_px)
+    else:
+        check_view_matches(s, picture.view)
+        gate = answer_levels.size_gate(s.target, max(picture.width, picture.height), None, finder_model=s.model)
     job_id = content_sha(picture.sha256, marks_px, looks_px, s)
     stored = await stored_files.load_json(s3, bucket, result_key(project_id, job_id))
     if stored is not None:

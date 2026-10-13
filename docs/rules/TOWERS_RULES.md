@@ -153,6 +153,18 @@ for the layer (data, or a 409): never while asking, on a 404 or on a failed requ
 - **Project roles** (Roger, 2026-10-12; alembic `e7a1c4d9b2f3`): a project viewer who did not upload the inspection
   reads its tower work, a project editor also marks and reviews; anyone outside the project gets 404.
 
+## The scan (2026-10-13)
+
+A part found by a trained detector (`tower_inspection.scan_parts`: our own models, or SAM 3 while HOSTED_FINDER is on)
+needs no marks: `POST /towers/layer/{id}/scan` (edit rights) starts, in the background, the detector on every photo
+for every such part (`ensure_scan`, one run per inspection across workers, a Redis lock renewed while it runs; one
+finder job at a time, waiting while the line is full; photos without a camera angle or unreadable are left for a
+person, with the reason in the log). A finished photo is never scanned again, so calling it on every visit resumes a
+stopped scan; `GET /scan` says how far it is. A scanned part's job is its job, exactly as a find from marks: the
+suggestions wait for a person, the size gate and the answer level read the boxes found, kept, fixed and added (no
+marks), and a count exists only once every suggestion on the photo is checked. The photos route lists each part with
+`scanned` (found by a detector, no marks needed). The example finder (YOLOE) still needs marks first.
+
 ## Cards (`tower_cards.py`)
 
 Each industry asks its own questions (`ASSETS`): Telecom "What equipment is on this tower?" (dishes, antennas, radio
