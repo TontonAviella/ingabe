@@ -61,7 +61,7 @@ STATUS_LABELS = {
     NEEDS_FLIGHT: "Needs a second inspection",
     CANT_TELL: "Can't tell yet",
     LEARN: "Learn · 1 minute",
-    NEEDS_CAMERA: "Needs a thermal camera",
+    NEEDS_CAMERA: "Needs thermal images",
     TO_BUILD: "Coming soon",
 }
 
@@ -75,7 +75,7 @@ class Upcoming:
     preview: str
     what: str  # what Ingabe will be able to tell
     why: str  # why it matters to the reader
-    needs: str  # what it takes: a model to measure, a camera, a flight
+    needs: str  # what it takes, in data terms: the photos or images that would answer it, examples to measure against
 
 
 @dataclass(frozen=True)
@@ -132,26 +132,26 @@ ASSETS = {
                       "turning that into each antenna's own angles is not built or measured yet."),
                 why=("An antenna that drifted after wind or work lowers coverage and signal quality; customers "
                      "complain and the operator holds the tower company responsible."),
-                needs=("DJI photos of each antenna face from the front, with their flight data, so the angles can "
-                       "be measured and then checked against a compass reading on the tower.")),
+                needs=("Photos that show each antenna clearly, with the drone's flight data in them, and a set of "
+                       "antennas whose real directions are known, to measure the angles against.")),
             "damage": Upcoming(
                 TO_BUILD, "Coming soon", "Damaged covers, cables and connectors: not measured yet.",
                 what=("Broken antenna covers, damaged or loose cables, connectors missing their weatherproofing, "
                       "and bird nests on the tower, each with the photo it is on."),
                 why="Damage lets water in and takes sectors off air.",
-                needs=("Close-up photos of the antennas, radio units and cable runs. Bird nests are found on power "
-                       "lines today, not yet on telecom towers.")),
+                needs=("Close-up photos of the antennas, radio units and cable runs, and examples of each kind of "
+                       "damage to measure against. Bird nests are found on power lines today, not yet on telecom "
+                       "towers.")),
             "hot_spots": Upcoming(
-                NEEDS_CAMERA, "Needs a thermal camera", "Overheating needs a thermal-camera flight.",
+                NEEDS_CAMERA, "Needs thermal images", "Overheating shows only on thermal images.",
                 what="Radio units, connectors, batteries or a shelter running hotter than the others.",
                 why="Overheating equipment fails, and can start a fire.",
-                needs=("A flight with a thermal camera (for example a DJI Mavic 3 Thermal). Ordinary photos cannot "
-                       "show heat.")),
+                needs="Thermal images of the equipment. Ordinary photos cannot show heat."),
             "obstruction_light": Upcoming(
-                NEEDS_FLIGHT, "Needs a dusk or night flight", "The light can only be checked after dark.",
+                NEEDS_FLIGHT, "Needs night photos", "The light shows only on photos taken after dark.",
                 what="Whether the aviation obstruction light at the top of the tower is on.",
                 why="It is a legal requirement and keeps aircraft clear of the tower.",
-                needs="A short flight at dusk or at night with the camera on the top of the tower."),
+                needs="Photos of the top of the tower taken at dusk or at night."),
             "surroundings": Upcoming(
                 TO_BUILD, "Coming soon", "Vegetation, erosion and new buildings: not measured yet.",
                 what=("Vegetation growing towards the site, erosion near the foundations, new buildings close to the "
@@ -197,7 +197,7 @@ ASSETS = {
                 TO_BUILD, "Coming soon", "Conductor sag and clearance: not measured yet.",
                 what="How low each span hangs and how much clearance it leaves above the ground, roads and buildings.",
                 why="Too low a conductor is a danger to people and vehicles, and can flash over.",
-                needs="Photos from the side of each span, or a drone survey that measures heights."),
+                needs="Photos from the side of each span, or survey data with heights."),
             "steel": Upcoming(
                 TO_BUILD, "Coming soon", "Pylon steel: not measured yet.",
                 what="Missing or loose bolts, rust and bent members on the pylons.",
@@ -205,10 +205,10 @@ ASSETS = {
                 needs=("Close-up photos of the pylon joints. The bolt model was measured on telecom towers, not yet on "
                        "pylons.")),
             "hot_spots": Upcoming(
-                NEEDS_CAMERA, "Needs a thermal camera", "Overheating needs a thermal-camera flight.",
+                NEEDS_CAMERA, "Needs thermal images", "Overheating shows only on thermal images.",
                 what="Joints, clamps and insulators running hotter than the rest of the line.",
                 why="A hot joint is about to fail.",
-                needs="A flight with a thermal camera along the line. Ordinary photos cannot show heat."),
+                needs="Thermal images along the line. Ordinary photos cannot show heat."),
         }),
 }
 DEFAULT_ASSET = ASSETS["telecom"]

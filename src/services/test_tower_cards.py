@@ -388,7 +388,7 @@ def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number
             "surroundings"} <= set(deck)
     assert deck["hot_spots"]["status"] == "needs_camera" and deck["alignment"]["status"] == "to_build"
     light = tower_cards.answer_card("obstruction_light", here(), "owner")
-    assert light["status_label"] == "Needs a dusk or night flight" and light["what"].startswith("Not answered yet.")
+    assert light["status_label"] == "Needs night photos" and light["what"].startswith("Not answered yet.")
     assert light["todo"].startswith("What it needs: ") and light["how_sure"]["level"] == "low"
     for card_id in ("alignment", "damage", "hot_spots", "obstruction_light", "surroundings"):
         answer = tower_cards.answer_card(card_id, here(COUNTED), "owner")
