@@ -13,7 +13,9 @@ export type TowerPart =
   | 'maize_seedling'
   | 'power_pylon'
   | 'power_insulator'
-  | 'power_nest';
+  | 'power_nest'
+  | 'tower_bolt_missing'
+  | 'tower_bolt_loose';
 
 export interface PartLabel {
   id: TowerPart;
@@ -36,6 +38,8 @@ export const ALL_PARTS: PartLabel[] = [
   { id: 'power_pylon', label: 'Pylon', plural: 'pylons' },
   { id: 'power_insulator', label: 'Insulator', plural: 'insulators' },
   { id: 'power_nest', label: 'Bird nest', plural: 'bird nests' },
+  { id: 'tower_bolt_missing', label: 'Missing bolt', plural: 'missing bolts' },
+  { id: 'tower_bolt_loose', label: 'Loose bolt', plural: 'loose bolts' },
 ];
 
 export type TowerAudience = 'owner' | 'technician';

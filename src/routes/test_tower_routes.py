@@ -301,7 +301,7 @@ async def test_mark_find_review_count_through_the_contract(client, seeded, switc
     _as(ids["owner"])
     photo = f"{_base(ids['layer'])}/photos/{SHA}"
     empty = (await client.get(f"{photo}/work")).json()
-    assert set(empty) == {"parts"} and set(empty["parts"]) == set(tower_inspection.PARTS)
+    assert set(empty) == {"parts"} and set(empty["parts"]) == set(tower_inspection.PARTS + tower_inspection.DEFECT_PARTS)
     assert empty["parts"][DISH] == {"marks": [], "lookalike_marks": [], "job": None, "suggestions": [],
                                     "reviewed": {"kept": [], "rejected": [], "fixed": [], "added": []},
                                     "counted_by_you": None, "waiting": 0}

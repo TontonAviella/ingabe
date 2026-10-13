@@ -24,6 +24,8 @@ CANT_TELL_KINDS = ("tree_crown_forest", "tree_crown_savanna", "banana_mat")
 # Found only by a trained detector: the example finder was never measured on them (CAN'T TELL without it).
 POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")
 DETECTED = (*TOWER_PARTS, *POWER_PARTS)
+DEFECT_PARTS = ("tower_bolt_missing", "tower_bolt_loose")
+ONLY_DETECTED = (*POWER_PARTS, *DEFECT_PARTS)  # never measured with the example finder
 EVIDENCE = json.loads(al.EVIDENCE_PATH.read_text())
 
 
@@ -71,7 +73,7 @@ def test_every_level_has_a_plain_label_and_meaning(level):
 # --------------------------------------------------------------------------- #
 
 def test_every_target_has_provenance_and_a_max_level():
-    assert {t.name for t in al.targets()} == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(POWER_PARTS)
+    assert {t.name for t in al.targets()} == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(ONLY_DETECTED)
     for t in al.targets():
         assert set(al.PROVENANCE_KEYS) <= set(t.measured), t.name
         assert isinstance(t.max_level, Level) and t.kind in al.KINDS and t.noun, t.name
@@ -176,8 +178,9 @@ def test_every_measurement_says_which_way_its_pictures_looked():
     assert views == {"tower_dish": al.OBLIQUE, "tower_antenna": al.OBLIQUE, "tower_radio_unit": al.OBLIQUE,
                      "building": al.NADIR, "maize_seedling": al.NADIR, "row_crop_plant": al.NADIR, "weed": al.NADIR,
                      "tree_crown_forest": al.NADIR, "tree_crown_savanna": al.NADIR, "banana_mat": None,
-                     **{name: None for name in POWER_PARTS}}  # never measured with the example finder
-    assert {name: al.detector(name).measured["view"] for name in DETECTED} == {name: al.OBLIQUE for name in DETECTED}
+                     **{name: None for name in ONLY_DETECTED}}  # never measured with the example finder
+    assert {name: al.detector(name).measured["view"] for name in (*DETECTED, *DEFECT_PARTS)} == {
+        name: al.OBLIQUE for name in (*DETECTED, *DEFECT_PARTS)}
     assert all("tower photos" in al.target(n).measured["dataset"] for n, v in views.items() if v == al.OBLIQUE)
 
 
@@ -190,7 +193,7 @@ def test_a_broken_table_fails_on_load(tmp_path):
     data = json.loads(al.TARGETS_PATH.read_text())
     good = tmp_path / "good.json"
     good.write_text(json.dumps(data))
-    assert set(al.load_targets(good)) == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(POWER_PARTS)
+    assert set(al.load_targets(good)) == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(ONLY_DETECTED)
 
     def broken(change, match: str) -> None:
         copy = json.loads(json.dumps(data))
@@ -569,7 +572,21 @@ def test_the_detectors_hold_the_measurements_of_2026_10_13(name, value):
 
 
 def test_only_tower_power_and_maize_parts_have_a_detector():
-    assert {t.name for t in al.targets() if al.detector(t.name)} == set(DETECTED) | {"maize_seedling"}
+    assert {t.name for t in al.targets() if al.detector(t.name)} == set(DETECTED) | set(DEFECT_PARTS) | {"maize_seedling"}
+
+
+@pytest.mark.parametrize("name,cls,value", [("tower_bolt_missing", "missing bolt", 0.61),
+                                            ("tower_bolt_loose", "loose bolt", 0.542)])
+def test_bolt_defects_are_found_by_our_bolt_model_as_measured(name, cls, value):
+    """Our bolt model, measured with its ONNX file on the bolts_v2 test split (156 close-ups, a whole DJI flight never
+    used in training among them); a person checks every box."""
+    d = al.detector(name)
+    (row,) = _rows(d.measured["evidence"])
+    assert (d.finder_model, d.detector_class) == ("own:rfdetr-small-bolts-2026-10-13", cls) == (row["model"], row["class"])
+    assert (row["ap50"], row["n_img"], row["imgsz"]) == (value, 156, 640) == (d.measured["value"], d.measured["n_images"],
+                                                                               d.finder_input_px)
+    assert d.max_level is Level.FULL_REVIEW and d.size_floor_px is not None and d.size_floor_px > 0
+    assert cls in own_detector.MODELS[d.finder_model].classes
 
 
 def test_maize_is_found_by_sam3_with_its_measured_prompt():
@@ -582,7 +599,7 @@ def test_maize_is_found_by_sam3_with_its_measured_prompt():
 
 
 def test_power_parts_cannot_be_answered_by_the_example_finder():
-    for name in POWER_PARTS:
+    for name in ONLY_DETECTED:
         assert al.target(name).max_level is Level.CANT_TELL and al.target(name).finder_model == FINDER
         gate = al.size_gate(name, 640, marked_box_px=[(300, 300)] * 3, finder_model=al.detector(name).finder_model)
         assert al.decide(name, FINDER, _big_gate(name), al.countability(name, Facts())).level is Level.CANT_TELL
