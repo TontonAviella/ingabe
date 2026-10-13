@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import jwt
 import pytest
 
 from src.services import workos_auth
+from src.services._test_workos_fake import USER, fake_workos_fixture  # noqa: F401 - the fake_workos fixture
 
 
 @pytest.fixture
@@ -18,13 +21,6 @@ def workos_env(monkeypatch):
     client = MagicMock()
     monkeypatch.setattr(workos_auth, "_client", lambda: client)
     return client
-
-
-def _ok(**kw):
-    base = dict(authenticated=True, session_id="sess_1", organization_id="org_1", role="admin",
-                permissions=["read"], user={"id": "user_1", "email": "a@b.rw", "first_name": "A",
-                                             "last_name": "B", "profile_picture_url": None})
-    return SimpleNamespace(**{**base, **kw})
 
 
 def test_enabled_needs_the_provider_and_all_keys(monkeypatch):
@@ -41,34 +37,78 @@ def test_safe_return_to(given, expected):
     assert workos_auth.safe_return_to(given) == expected
 
 
-def test_valid_cookie(workos_env):
-    workos_env.user_management.load_sealed_session.return_value.authenticate.return_value = _ok()
-    s = workos_auth.load("sealed")
-    assert (s.user_id, s.email, s.organization_id, s.role, s.refreshed_cookie) == ("user_1", "a@b.rw", "org_1", "admin", None)
+# ── Cookie checks and refresh, with the real SDK and real tokens (src.services._test_workos_fake) ──
 
 
-def test_expired_access_token_is_refreshed(workos_env):
-    sess = workos_env.user_management.load_sealed_session.return_value
-    sess.authenticate.return_value = SimpleNamespace(authenticated=False, reason=SimpleNamespace(value="invalid_jwt"))
-    sess.refresh.return_value = _ok(sealed_session="new-sealed")
-    assert workos_auth.load("old").refreshed_cookie == "new-sealed"
+def test_a_valid_cookie_is_read_without_calling_workos(fake_workos):
+    s = workos_auth.load(fake_workos.cookie(expired=False))
+    assert (s.user_id, s.email, s.organization_id, s.role, s.refreshed_cookie) == (
+        USER["id"], USER["email"], "org_01TEST", "admin", None)
+    assert fake_workos.refresh_calls == 0
 
 
-def test_refresh_denied_signs_out_but_network_error_does_not(workos_env):
-    sess = workos_env.user_management.load_sealed_session.return_value
-    sess.authenticate.return_value = SimpleNamespace(authenticated=False, reason="invalid_jwt")
-    sess.refresh.return_value = SimpleNamespace(authenticated=False, reason="refresh_denied")
-    assert workos_auth.load("old") is None
-    sess.refresh.return_value = SimpleNamespace(authenticated=False, reason="refresh_network_error")
-    with pytest.raises(ConnectionError):
-        workos_auth.load("old")
+def test_an_expired_access_token_is_refreshed(fake_workos):
+    s = workos_auth.load(fake_workos.cookie())
+    assert s.user_id == USER["id"] and fake_workos.refresh_calls == 1
+    assert workos_auth.load(s.refreshed_cookie).refreshed_cookie is None  # the new cookie is valid as it is
 
 
-def test_unreadable_or_missing_cookie_is_signed_out(workos_env):
+@pytest.mark.parametrize("ahead", [1.0, 30.0])
+def test_a_workos_clock_ahead_of_ours_does_not_sign_the_user_out(fake_workos, ahead):
+    """2026-10-06: WorkOS ran 0.5-0.9 s ahead of this server; with no leeway PyJWT took each fresh
+    token as "not yet valid" and 13 refreshes ended in "refresh denied: invalid_jwt"."""
+    fake_workos.clock_ahead = ahead
+    assert workos_auth.load(fake_workos.cookie()) is not None
+
+
+def test_a_refreshed_token_this_server_cannot_check_still_keeps_the_new_cookie(fake_workos):
+    """The SDK's own refresh dropped the new tokens when its check failed, with the old refresh token spent."""
+    fake_workos.clock_ahead = 600  # far beyond the leeway: this server's clock is badly off
+    with pytest.raises(workos_auth.SessionCheckUnavailable) as unavailable:
+        workos_auth.load(fake_workos.cookie())
+    kept = fake_workos.tokens_in(unavailable.value.refreshed_cookie)
+    assert fake_workos.unspent(kept["refresh_token"])
+    issued = re.search(r"issued \+(\d+)\.\d s", str(unavailable.value))
+    assert issued and int(issued.group(1)) >= 599  # the log names the clock
+
+
+def test_without_refresh_an_expired_token_is_reported_not_refreshed(fake_workos):
+    with pytest.raises(workos_auth.RefreshNeeded):
+        workos_auth.load(fake_workos.cookie(), refresh=False)
+    assert fake_workos.refresh_calls == 0
+    assert workos_auth.load(fake_workos.cookie(expired=False), refresh=False) is not None
+
+
+def test_every_way_of_being_signed_out_is_logged_with_its_reason(fake_workos, monkeypatch):
+    log = MagicMock()
+    monkeypatch.setattr(workos_auth, "logger", log)
+    cookie = fake_workos.cookie()
+    assert workos_auth.load(cookie) is not None
+    assert workos_auth.load(cookie) is None  # its refresh token is spent now
+    assert workos_auth.load("not-a-cookie") is None
     assert workos_auth.load(None) is None
-    workos_env.user_management.load_sealed_session.return_value.authenticate.return_value = SimpleNamespace(
-        authenticated=False, reason="invalid_session_cookie")
-    assert workos_auth.load("garbage") is None
+    lines = [c.args[0] % c.args[1:] for c in log.info.call_args_list]
+    assert any("refresh denied" in line and "invalid_grant" in line for line in lines)
+    assert "WorkOS session cookie rejected: invalid_session_cookie (12 characters)" in lines
+    assert "WorkOS session: no cookie" in lines
+
+
+def test_workos_unreachable_during_a_refresh_is_not_a_sign_out(fake_workos):
+    cookie = fake_workos.cookie()
+    fake_workos.down = True
+    with pytest.raises(workos_auth.SessionCheckUnavailable) as unavailable:
+        workos_auth.load(cookie)
+    assert unavailable.value.refreshed_cookie is None
+
+
+def test_workos_signing_keys_unreachable_is_not_a_sign_out(fake_workos, monkeypatch):
+    """2026-10-06 14:05: "Network is unreachable" while fetching the keys (this fake's are not cached yet)."""
+    def keys_unreachable(_self):
+        raise jwt.PyJWKClientConnectionError("Network is unreachable")
+
+    monkeypatch.setattr(jwt.PyJWKClient, "fetch_data", keys_unreachable)
+    with pytest.raises(workos_auth.SessionCheckUnavailable):
+        workos_auth.load(fake_workos.cookie(expired=False))
 
 
 def test_user_organizations_lists_active_memberships(workos_env):

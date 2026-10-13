@@ -52,6 +52,71 @@ def test_cases_cover_every_kind_stratum_and_text_answers() -> None:
     assert len({c["intent"] for c in cases}) >= 150
 
 
+def test_non_agriculture_cases_exist_and_farm_wording_is_scored_wrong() -> None:
+    """Power Grid and Telecom cases exist, and a farm-talking reply outside agriculture scores as wrong (audit R1-33).
+    Their tools are checked against the real capabilities in src/services/test_industry.py, which has the app."""
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", ROOT / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness  # dataclasses look their module up while the file loads
+    spec.loader.exec_module(harness)
+    assert {c.get("industry") for c in _cases()} >= {"power_grid", "telecom"}
+    assert harness.FARM_WORDS.search("The maize fields look stressed") and not harness.FARM_WORDS.search(
+        "The mast is 40 m tall and the access road floods after heavy rain.")
+    assert scoring.classify_attempt({"no_tool": True}, scoring.FARM_WORDING) == scoring.FALSE_TOOL
+
+
+def test_a_case_without_an_industry_runs_as_agriculture() -> None:
+    """A live project always has an industry, so a case without one runs as a farm project: the harness filters its
+    tools for agriculture and never sends the unfiltered list (which holds the Telecom tower tools once TOWERS is on;
+    the Towers eval offered them to 61 farm cases before this)."""
+    assert scoring.case_industry_for({"id": "x"}) == "agriculture"
+    assert scoring.case_industry_for({"id": "x"}, "telecom") == "telecom"
+    assert scoring.case_industry_for({"id": "x", "industry": "power_grid"}, "telecom") == "power_grid"
+    source = (ROOT / "scripts" / "eval_sage_routing.py").read_text()
+    assert "industry.tools_for(tools_payload, case_industry)\n" in source
+    assert "else tools_payload" not in source
+
+
+def test_compare_pairs_a_case_only_when_both_runs_asked_it_the_same_way(tmp_path, capsys) -> None:
+    """An id kept for a changed case (an "unsupported" tower question that now expects a tower tool) is left out of
+    the pairing instead of being counted as fixed or broken."""
+    spec = importlib.util.spec_from_file_location("eval_sage_routing", ROOT / "scripts" / "eval_sage_routing.py")
+    harness = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = harness
+    spec.loader.exec_module(harness)
+    same, before, after = {"id": "same", "text": "q"}, {"id": "moved", "text": "q", "expect": {"no_tool": True}}, {
+        "id": "moved", "text": "q", "expect": {"any_of": ["t"]}}
+    assert scoring.case_sha(before) != scoring.case_sha(after) and scoring.case_sha(same) == scoring.case_sha(dict(same))
+    # A note, category or intent is not what the case asks; the industry it runs as is.
+    assert scoring.case_sha({**same, "note": "reviewed", "category": "x"}) == scoring.case_sha(same)
+    assert scoring.case_sha({**same, "industry": "agriculture"}) == scoring.case_sha(same)
+    assert scoring.case_sha({**same, "industry": "telecom"}) != scoring.case_sha(same)
+
+    def run(name: str, moved: dict, moved_right: bool) -> Path:
+        cases = [{"id": "same", "case_sha": scoring.case_sha(same), "majority": scoring.CORRECT},
+                 {"id": "moved", "case_sha": scoring.case_sha(moved),
+                  "majority": scoring.CORRECT if moved_right else scoring.FALSE_TOOL}]
+        path = tmp_path / name
+        path.write_text(json.dumps({"meta": {"corpus_sha": name, "variant": "baseline"}, "summary": {}, "cases": cases}))
+        return path
+
+    harness.compare_runs(run("a.json", before, False), run("b.json", after, True))
+    out = capsys.readouterr().out
+    assert "left out 1 cases whose question or expected answer changed: moved" in out
+    assert "paired cases      1" in out and "B fixed 0, B broke 0" in out
+
+
+def test_tower_questions_are_cases_in_every_language() -> None:
+    """Telecom tower questions in English, French and Kinyarwanda, and photos the fast paths cannot read
+    (no place on the map, COG not ready). Whether a fast path fires on them is checked with the app in
+    src/dependencies/test_sage_turn_request.py."""
+    towers = [c for c in _cases() if c.get("industry") == "telecom" and c["intent"].startswith("tel-")]
+    assert {c["lang"] for c in towers if c["expect"].get("no_tool")} == set(scoring.LANGS)
+    unreadable = [layer for c in _cases() for layer in (c.get("map_state") or {}).get("layers", [])
+                  if layer.get("georeferenced") is False or layer.get("cog", "ready") != "ready"]
+    assert {layer.get("georeferenced", True) for layer in unreadable} == {True, False}
+
+
 @pytest.mark.parametrize(("builder", "files"), [
     ("build_paraphrases", ["paraphrases.jsonl"]),
     ("build_conversations", ["multi_turn.jsonl", "chains.jsonl"]),
@@ -80,6 +145,12 @@ BASE = {"id": "x", "intent": "i", "text": "t", "category": "c", "stratum": "obse
         ({"expect": {"any_of": ["get_forecast"], "args": {"search_location": {"query": "x"}}}}, "not in any_of"),
         ({"expect": {"no_tool": True}, "history": [{"role": "user", "content": "hi"}]}, "end before"),
         ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "tiff"}]}}, "map_state"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "vector", "cog": "ready"}]}},
+         "only a raster"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "raster", "georeferenced": "no"}]}},
+         "georeferenced"),
+        ({"expect": {"no_tool": True}, "map_state": {"layers": [{"name": "A", "type": "raster", "cog": "done"}]}},
+         "cog must"),
         ({"expect": {"any_of": ["get_forecast"]}, "chain": {"must_call": ["get_forecast"], "max_steps": 0}}, "max_steps"),
     ],
 )

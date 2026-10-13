@@ -2,8 +2,12 @@ from src.llm_defaults import (
     DEFAULT_CLOUD_BRAIN_MODEL,
     DEFAULT_CHAT_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
+    model_base,
+    model_name,
     resolve_chat_endpoint,
     supports_strict_tool_schema,
+    thinking_kwargs,
+    usage_extra_body,
 )
 from src.utils import _uses_only_local_ollama_models
 
@@ -52,3 +56,40 @@ def test_supported_brain_models_preserve_strict_tool_schemas():
     assert supports_strict_tool_schema("openai/gpt-6-luna") is True  # OpenAI models through OpenRouter
     assert supports_strict_tool_schema("nvidia/nemotron-3-super-120b-a12b:free") is True
     assert supports_strict_tool_schema("deepseek-chat") is False
+
+
+def test_usage_field_goes_only_to_openrouter():
+    # Google's OpenAI-compatible endpoint answers 400 'Unknown name "usage"' (recorded 2026-10-10).
+    assert usage_extra_body("https://openrouter.ai/api/v1/") == {"usage": {"include": True}}
+    assert usage_extra_body("https://generativelanguage.googleapis.com/v1beta/openai/") == {}
+    assert usage_extra_body("http://ollama:11434/v1") == {}
+    assert usage_extra_body(None) == {}
+
+
+def test_thinking_is_a_budget_on_anthropic_and_an_effort_elsewhere():
+    # Anthropic's OpenAI-compatible endpoint ignores reasoning_effort and refuses adaptive thinking (2026-10-10).
+    anthropic = thinking_kwargs("https://api.anthropic.com/v1/", "high")
+    assert anthropic["extra_body"] == {"thinking": {"type": "enabled", "budget_tokens": 8000}}
+    assert anthropic["max_tokens"] > 8000
+    assert "reasoning_effort" not in anthropic
+    assert thinking_kwargs("https://openrouter.ai/api/v1", "low") == {
+        "reasoning_effort": "low", "extra_body": {"usage": {"include": True}}}
+    assert thinking_kwargs("https://generativelanguage.googleapis.com/v1beta/openai/", "high") == {
+        "reasoning_effort": "high", "extra_body": {}}
+
+
+def test_a_routed_or_dated_model_id_is_a_version_of_its_base_model():
+    bases = ("claude-haiku-5-5", "gemini-3.8-flash", "gemini-3.8-flash-lite")
+    assert model_base("anthropic/claude-haiku-5-5", bases) == "claude-haiku-5-5"
+    assert model_base("claude-haiku-5-5-20261001", bases) == "claude-haiku-5-5"
+    assert model_base("gemini-3.8-flash-lite", bases) == "gemini-3.8-flash-lite"  # the longest base, not a prefix
+    assert model_base("claude-haiku-5", bases) is None
+    assert model_base(None, bases) is None
+
+
+def test_a_model_is_named_by_its_name_or_else_by_its_own_id():
+    assert model_name("claude-haiku-5-5") == "Claude Haiku 5.5"
+    assert model_name("anthropic/claude-haiku-5-5-20261001") == "Claude Haiku 5.5"
+    assert model_name("openai/gpt-6-luna") == "GPT-6 Luna"
+    assert model_name("gemma4:12b-it-qat") == "Gemma 4 12B"
+    assert model_name("some-lab/new-vision-1") == "new-vision-1"  # not listed: its id, never a guessed name

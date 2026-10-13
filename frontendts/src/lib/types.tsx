@@ -11,6 +11,20 @@ export interface MapProject {
     last_edited?: string;
   };
   soft_deleted_at?: string;
+  // The one industry the project belongs to; farm-only controls show only in agriculture projects.
+  industry?: 'agriculture' | 'power_grid' | 'telecom';
+}
+
+// GET /api/projects/ (list_user_projects, src/routes/project_routes.py). The server decides which industry the list
+// shows: the one the user works in now.
+export interface ProjectList {
+  projects: MapProject[];
+  total_pages: number;
+  total_items: number; // the projects of the listed industry
+  industry: NonNullable<MapProject['industry']> | null; // null: every industry (nobody has chosen)
+  industry_label: string | null;
+  // The user's projects in the other industries, which this list leaves out.
+  other_industries: { industry: NonNullable<MapProject['industry']>; label: string; count: number }[];
 }
 
 export type ProjectState = { type: 'not_logged_in' } | { type: 'loading' } | { type: 'loaded'; projects: MapProject[] };
@@ -79,6 +93,8 @@ export interface TileLayerUpdate {
 }
 
 export interface GeoJsonLayerStyle {
+  /** 'point' draws dots that grow with the zoom (e.g. counted plants); polygons otherwise. */
+  geometry?: 'point' | 'polygon';
   color_property?: string | null;
   stops?: Array<{ max: number; color: string }>;
   fill_opacity?: number;

@@ -23,6 +23,9 @@ from src.routes import (
 )
 from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
+from src.routes import drone_card_routes
+from src.routes import example_finder_routes
+from src.routes import tower_routes
 from src.routes.attribute_table import attribute_table_router
 from src.routes.rwanda_routes import rwanda_router
 from src.routes.worldcover_router import worldcover_router
@@ -436,7 +439,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
     """Set Cache-Control headers for static assets, tiles, and API responses."""
 
     # Immutable hashed assets (Vite adds content hash to filenames)
-    _IMMUTABLE_PREFIXES = ("/assets/",)
+    _IMMUTABLE_PREFIXES = ("/assets/", "/api/basemaps/terrain/")  # elevation tiles never change
     # Tile responses — cache at CDN, short browser cache
     _TILE_SUFFIXES = (".mvt", ".pmtiles", ".pbf", ".png", ".webp")
     # Favicons / static images — moderate cache
@@ -612,6 +615,21 @@ app.include_router(
     layer_router,
     prefix="/api",
     tags=["Layers"],
+)
+app.include_router(
+    drone_card_routes.router,
+    prefix="/api",
+    tags=["Drone cards"],
+)
+app.include_router(
+    example_finder_routes.router,
+    prefix="/api",
+    tags=["Example finder"],
+)
+app.include_router(
+    tower_routes.router,
+    prefix="/api",
+    tags=["Towers"],
 )
 app.include_router(
     attribute_table_router,

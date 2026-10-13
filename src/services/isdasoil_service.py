@@ -36,8 +36,29 @@ logger = logging.getLogger(__name__)
 
 S3_BASE = "https://isdasoil.s3.amazonaws.com/soil_data"
 
+
+def _log_scaled(divisor: float) -> Dict[str, Any]:
+    """A property iSDAsoil log-scaled before modelling, stored as divisor * log1p(value).
+
+    Its stdev band is a spread in that log space, so it only means something
+    added to the mean before back-transforming (see `_spread`).
+    """
+    return {"transform": lambda x: np.expm1(x / divisor), "log_scale": True}
+
+
+# What the spread fields in a query result mean, for whoever reads them (Sage included).
+SPREAD_NOTE = (
+    "likely_range is the model's one-standard-deviation interval around the value "
+    "(about 68% likely), in the property's units. uncertainty, given only for properties "
+    "on a linear scale, is that standard deviation as a +/- value."
+)
+
 # All 21 available soil properties with their back-transformation and units.
 # Back-transform functions convert raw uint8/uint16 COG values to real-world units.
+# They follow the "back-transformation" of each iSDAsoil STAC item
+# (soil_data/<prop>/<prop>.json), except nitrogen_total: STAC says expm1(x/10),
+# which turns the raw 89 read at Cyampirita into 7,331 g/kg (more than the
+# whole soil); expm1(x/100) gives 1.44 g/kg.
 # fmt: off
 SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "ph": {
@@ -49,43 +70,43 @@ SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "nitrogen_total": {
         "label": "Total Nitrogen",
         "unit": "g/kg",
-        "transform": lambda x: np.expm1(x / 100.0),
+        **_log_scaled(100.0),
         "description": "Total nitrogen content — key nutrient for crop growth",
     },
     "phosphorous_extractable": {
         "label": "Extractable Phosphorus",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available phosphorus — essential for root development",
     },
     "potassium_extractable": {
         "label": "Extractable Potassium",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available potassium — important for disease resistance",
     },
     "carbon_organic": {
         "label": "Organic Carbon",
         "unit": "g/kg",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Soil organic carbon — indicator of soil health and fertility",
     },
     "clay_content": {
         "label": "Clay Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Clay fraction — affects water retention and nutrient holding",
     },
     "sand_content": {
         "label": "Sand Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Sand fraction — affects drainage and aeration",
     },
     "silt_content": {
         "label": "Silt Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        "transform": lambda x: x * 1.0,  # stored in %
         "description": "Silt fraction — affects soil structure",
     },
     "bulk_density": {
@@ -97,55 +118,55 @@ SOIL_PROPERTIES: Dict[str, Dict[str, Any]] = {
     "cation_exchange_capacity": {
         "label": "Cation Exchange Capacity",
         "unit": "cmol(+)/kg",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Nutrient retention capacity — higher is better for fertility",
     },
     "calcium_extractable": {
         "label": "Extractable Calcium",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available calcium",
     },
     "magnesium_extractable": {
         "label": "Extractable Magnesium",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available magnesium",
     },
     "iron_extractable": {
         "label": "Extractable Iron",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available iron",
     },
     "sulphur_extractable": {
         "label": "Extractable Sulphur",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available sulphur",
     },
     "zinc_extractable": {
         "label": "Extractable Zinc",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Plant-available zinc",
     },
     "aluminium_extractable": {
         "label": "Extractable Aluminium",
         "unit": "ppm",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Extractable aluminium — high values indicate toxicity risk",
     },
     "carbon_total": {
         "label": "Total Carbon",
         "unit": "g/kg",
-        "transform": lambda x: np.expm1(x / 10.0),
+        **_log_scaled(10.0),
         "description": "Total carbon content",
     },
     "stone_content": {
         "label": "Stone Content",
         "unit": "%",
-        "transform": lambda x: x / 10.0,
+        **_log_scaled(10.0),
         "description": "Coarse fragment content",
     },
     "bedrock_depth": {
@@ -234,6 +255,66 @@ def _read_point(
     return result
 
 
+def _spread(prop_info: Dict[str, Any], raw_mean: float, raw_stdev: float) -> Dict[str, Any]:
+    """The model's one-standard-deviation spread around a value, in the property's units.
+
+    The stdev band is in the same stored units as the mean band, so the interval is
+    taken there and back-transformed: [transform(mean - sd), transform(mean + sd)],
+    the 68% interval iSDAsoil reports. For a log-scaled property, transform(sd) alone
+    is not a spread in ppm or g/kg (it read "10.59 +/- 0.13 ppm" for phosphorus whose
+    interval is 9.27-12.08), so those get the range only.
+    """
+    transform_fn = prop_info["transform"]
+    low = max(0.0, float(transform_fn(raw_mean - raw_stdev)))
+    high = float(transform_fn(raw_mean + raw_stdev))
+    spread: Dict[str, Any] = {"likely_range": [round(low, 2), round(high, 2)]}
+    if not prop_info.get("log_scale"):
+        spread["uncertainty"] = round(float(transform_fn(raw_stdev)), 2)
+    return spread
+
+
+def _property_entry(prop_name: str, raw: np.ndarray, depth: str) -> Dict[str, Any]:
+    """Back-transform one property's raw band means (from _read_point) into its result entry."""
+    prop_info = SOIL_PROPERTIES[prop_name]
+    n_bands = len(raw)
+
+    if n_bands == 4:
+        depth_band = 0 if depth == "0-20" else 1
+        stdev_band = 2 if depth == "0-20" else 3
+    elif n_bands == 2:
+        depth_band = 0 if depth == "0-20" else 1
+        stdev_band = None
+    else:
+        depth_band = 0
+        stdev_band = None
+
+    if raw[depth_band] == 0:
+        return {
+            "value": None,
+            "unit": prop_info["unit"],
+            "label": prop_info["label"],
+            "description": prop_info["description"],
+            "note": "No data at this location",
+        }
+
+    value = float(prop_info["transform"](raw[depth_band]))
+    entry: Dict[str, Any] = {
+        "value": round(value, 2),
+        "unit": prop_info["unit"],
+        "label": prop_info["label"],
+        "description": prop_info["description"],
+        "depth": f"{depth} cm",
+    }
+    if stdev_band is not None and raw[stdev_band] > 0:
+        entry.update(_spread(prop_info, raw[depth_band], raw[stdev_band]))
+
+    if prop_name == "texture_class":
+        class_id = int(round(value))
+        entry["texture_name"] = TEXTURE_CLASSES.get(class_id, f"Unknown ({class_id})")
+
+    return entry
+
+
 def query_soil_point(
     lon: float,
     lat: float,
@@ -264,57 +345,14 @@ def query_soil_point(
 
     def _fetch_one(prop_name: str) -> Tuple[str, Dict[str, Any]]:
         """Fetch a single soil property — designed for ThreadPoolExecutor."""
-        prop_info = SOIL_PROPERTIES[prop_name]
-        url = _cog_url(prop_name)
         try:
-            raw = _read_point(url, lon, lat)
-            n_bands = len(raw)
-
-            if n_bands == 4:
-                depth_band = 0 if depth == "0-20" else 1
-                stdev_band = 2 if depth == "0-20" else 3
-            elif n_bands == 2:
-                depth_band = 0 if depth == "0-20" else 1
-                stdev_band = None
-            else:
-                depth_band = 0
-                stdev_band = None
-
-            if raw[depth_band] == 0:
-                return prop_name, {
-                    "value": None,
-                    "unit": prop_info["unit"],
-                    "label": prop_info["label"],
-                    "description": prop_info["description"],
-                    "note": "No data at this location",
-                }
-
-            transform_fn = prop_info["transform"]
-            value = float(transform_fn(raw[depth_band]))
-            uncertainty = None
-            if stdev_band is not None and raw[stdev_band] > 0:
-                uncertainty = float(transform_fn(raw[stdev_band]))
-
-            entry: Dict[str, Any] = {
-                "value": round(value, 2),
-                "unit": prop_info["unit"],
-                "label": prop_info["label"],
-                "description": prop_info["description"],
-                "depth": f"{depth} cm",
-            }
-            if uncertainty is not None:
-                entry["uncertainty"] = round(uncertainty, 2)
-
-            if prop_name == "texture_class":
-                class_id = int(round(value))
-                entry["texture_name"] = TEXTURE_CLASSES.get(class_id, f"Unknown ({class_id})")
-
-            return prop_name, entry
+            raw = _read_point(_cog_url(prop_name), lon, lat)
+            return prop_name, _property_entry(prop_name, raw, depth)
         except Exception as e:
             logger.warning("Failed to read %s: %s", prop_name, e)
             return prop_name, {
                 "value": None,
-                "label": prop_info["label"],
+                "label": SOIL_PROPERTIES[prop_name]["label"],
                 "error": str(e),
             }
 
@@ -331,5 +369,6 @@ def query_soil_point(
         "coordinates": {"lon": lon, "lat": lat},
         "depth": f"{depth} cm",
         "source": "iSDAsoil (30m resolution, machine learning predictions)",
+        "spread_note": SPREAD_NOTE,
         "properties": results,
     }

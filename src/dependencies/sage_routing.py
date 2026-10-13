@@ -29,14 +29,19 @@ more latency than the problem we're trying to solve.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from typing import Iterable
 
 from src.llm_defaults import DEFAULT_SMALL_TALK_MODEL
+from src.services import industry, photo_context
 from src.services.admin_boundaries import RWANDA_DISTRICTS
 from src.services.raster_object_candidates import DEFAULT_MAX_SAMPLE_PIXELS
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tool category map
@@ -50,6 +55,7 @@ AGRICULTURE = "agriculture"
 USER_RASTER = "user_raster"
 BRAIN = "brain"
 SPATIAL_INSIGHT = "spatial_insight"
+TOWERS = "towers"
 
 
 @dataclass(frozen=True)
@@ -158,6 +164,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "find_stress_zones": USER_RASTER,
     "compare_rasters": USER_RASTER,
     "evaluate_insurance_trigger": USER_RASTER,
+    "get_drone_photo_findings": USER_RASTER,
+    "count_plants_in_plot": USER_RASTER,
     # --- H3/city/environment insight layers ---
     "create_raster_h3_context_layer": SPATIAL_INSIGHT,
     "analyze_raster_object_candidates": SPATIAL_INSIGHT,
@@ -167,6 +175,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "add_observation": BRAIN,
     "brain_graph_query": BRAIN,
     "brain_trajectory": BRAIN,
+    # --- Telecom towers (TOWERS): a photo inspection's equipment counted by a person (switch TOWERS) ---
+    "get_tower_inspection_findings": TOWERS,
+    "tower_photos_needing_review": TOWERS,
 }
 
 
@@ -270,8 +281,99 @@ def detect_small_talk(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tower and telecom equipment
+# ---------------------------------------------------------------------------
+# English, French (antenne, pylône, mât, parabole = dish, faisceau hertzien = microwave link, abri = shelter,
+# station de base, unité radio, télécom) and Kinyarwanda (umunara / iminara = tower, "ku munara" = on the tower,
+# antene = antenna, itumanaho = telecommunication); the French and Kinyarwanda terms need native-speaker review.
+# "sector" alone is not here: it is also Rwanda's umurenge. Antenna sectors are found by their antenna or panel
+# word. Bounded by letters and digits only, so a word inside a layer name joined by "_" ("Mast_site_Kicukiro") is
+# found. Literal alternatives only, so the search stays linear (CODING_STANDARDS 2026-10-11): ~0.1-0.4 s on a
+# crafted 1 MB message, measured; the helpers below read at most _ROUTED_CHARS.
+_TOWER_WORDS = re.compile(
+    r"(?<![^\W_])(?:"
+    r"towers?|masts?|monopoles?|pyl[oô]ne?s?|antenn?(?:a|ae|as|e|es)|"
+    r"rrus?|rrhs?|radio\s+(?:units?|heads?)|microwaves?|dish(?:es)?|panels?|shelters?|"
+    r"base\s+stations?|bts|cell\s+sites?|telcos?|t[eé]l[eé]com(?:munications?|s)?|"
+    r"mâts?|paraboles?|faisceaux?\s+hertziens?|abris?|stations?\s+de\s+base|unit[eé]s?\s+radio|micro-?ondes?|"
+    r"[ui]?m[ui]nara|itumanaho"
+    r")(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+# A question to Sage is far shorter; a pasted document is read only this far by the word checks below.
+_ROUTED_CHARS = 20_000
+
+
+def mentions_tower_equipment(text: str) -> bool:
+    """True when a message talks about masts, antennas, dishes or other telecom equipment."""
+    return bool(_TOWER_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
+
+
+# What the tower tools answer: how many parts, the equipment or inventory, or which photos still need checking.
+# Tower words alone (a storm before tower climbs, "describe the tower photo", a flood near a mast, damage on a mast)
+# name the towers category but are not answered by its tools, so they never narrow the list to them
+# (`categories_answering`). English, French and Kinyarwanda ("-ngahe" = how many, ibikoresho = equipment, "genzur-" =
+# check); the French and Kinyarwanda terms need native-speaker review. Literal alternatives and bounded repeats only,
+# so the searches stay linear (CODING_STANDARDS 2026-10-11).
+_TOWER_COUNT_WORDS = re.compile(
+    r"(?<![^\W_])(?:"
+    r"how\s+many|count(?:s|ed|ing)?|number\s+of|inventor(?:y|ies)|equipment|"
+    r"combien|nombre|compter|comptez|comptage|inventaires?|[ée]quipements?|"
+    r"[a-z]{0,3}ngahe|ibikoresho"
+    r")(?![^\W_])",
+    re.IGNORECASE,
+)
+_PHOTO_WORDS = re.compile(r"(?<![^\W_])(?:photos?|pictures?|images?|foto|amafoto)(?![^\W_])", re.IGNORECASE)
+_CHECK_WORDS = re.compile(
+    r"(?<![^\W_])(?:check(?:s|ed|ing)?|unchecked|review(?:s|ed|ing)?|v[ée]rifi(?:er|[ée]e?s?)|"
+    r"[a-z]{0,6}genzur[a-z]{0,4})(?![^\W_])",
+    re.IGNORECASE,
+)
+
+
+def asks_about_tower_work(text: str) -> bool:
+    """True when a message asks what the tower tools answer: a count, the equipment, or photos to check."""
+    head = str(text or "")[:_ROUTED_CHARS]
+    return bool(_TOWER_COUNT_WORDS.search(head) or (_PHOTO_WORDS.search(head) and _CHECK_WORDS.search(head)))
+
+
+# ---------------------------------------------------------------------------
 # Intent classification
 # ---------------------------------------------------------------------------
+# Weather and hazard words select the agriculture category, where the weather and flood tools are filed, but those
+# tools serve every industry (industry.CAPABILITIES): on a Power Grid or Telecom project such a question is not a
+# farm question.
+_WEATHER_HAZARD_WORDS = re.compile(
+    r"\b(flood|water|rain(?:fall|s|ed|y|ing)?|precip|weather|forecast|temperature)\b",
+    re.IGNORECASE,
+)
+
+
+def asks_about_weather_or_hazards(text: str) -> bool:
+    """True when a message asks about rain, weather, forecasts, temperature, water or floods."""
+    return bool(_WEATHER_HAZARD_WORDS.search(str(text or "")[:_ROUTED_CHARS]))
+
+
+# Farm and vegetation words, whose tools are agriculture-only (industry.CAPABILITIES): crops, farms, harvests, soil,
+# drought and dry spells, crop insurance, farm data products, and vegetation indices. The agriculture category is also
+# selected by words said in every industry ("field team", "yield", "alarm trigger", "Season A") and by data sources
+# ("SAR", "CHIRPS"); those are kept apart below and are not farm questions.
+_FARM_WORDS = re.compile(
+    r"\b(farm|crop|harvest|drought|soil|evapo|ndre|insurance|payout|wapor|food\s+security|fewsnet|"
+    r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|growing\s+season|dry\s+spell)\b",
+    re.IGNORECASE,
+)
+_VEGETATION_WORDS = re.compile(r"\b(ndvi|ndwi|evi|savi|vegetation)\b", re.IGNORECASE)
+
+
+def asks_about_farming(text: str) -> bool:
+    """True when a message names crops, farms, harvests, soil, vegetation, drought or crop insurance."""
+    head = str(text or "")[:_ROUTED_CHARS]
+    return bool(_FARM_WORDS.search(head) or _VEGETATION_WORDS.search(head))
+
+
 # Map keyword regex -> categories to enable. Multi-match is fine; we union.
 _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
     # Rwanda administrative boundaries / plain place display.
@@ -306,37 +408,54 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         re.compile(
             r"\b(sentinel|sentinel-?2|landsat|tci|true\s*color|"
             r"satellite\s+(image|imagery|scene)|cog\s+tile|"
-            r"ndvi|ndwi|nbr|spectral\s+index|natural\s+color|s2)\b",
+            r"ndvi|ndwi|nbr|spectral\s+index|natural\s+color|s2|"
+            r"satellite|imagery|optical\s+(?:image|scene)s?)\b",
             re.IGNORECASE,
         ),
         frozenset({SATELLITE}),
     ),
-    # Agriculture / weather / insurance
+    # Vegetation questions. The NDVI-by-place and anomaly tools are filed under
+    # agriculture, so "NDVI for Nyagatare" offered only the imagery tools and
+    # Sage could not answer it (2026-10-08 picker test: 27 of 216 right tools dropped).
+    (_VEGETATION_WORDS, frozenset({SATELLITE, AGRICULTURE})),
+    (re.compile(r"\b(indices|anomal(?:y|ies|ous))\b", re.IGNORECASE), frozenset({SATELLITE, AGRICULTURE})),
+    # Greenness indices made from red, green and blue only fit a drone photo.
     (
-        re.compile(
-            r"\b(field|farm|crop|harvest|yield|drought|flood|water|"
-            r"rainfall|precip|weather|forecast|temperature|"
-            r"soil|moisture|evapo|ndre|emission|"
-            r"insurance|trigger|payout|"
-            r"sar|alos|cygnss|wapor|chirps|food\s+security|fewsnet|"
-            r"maize|beans|rice|cassava|coffee|tea|sorghum|wheat|"
-            r"season\s*[abc]|growing\s+season|dry\s+spell)\b",
-            re.IGNORECASE,
-        ),
+        re.compile(r"\b(greenness|grvi|vari|exg|rgb\s+ind(?:ex|ices))\b", re.IGNORECASE),
+        frozenset({USER_RASTER, SATELLITE}),
+    ),
+    # Agriculture / insurance
+    (_FARM_WORDS, frozenset({AGRICULTURE})),
+    # Words said in every industry, and data sources, whose tools are filed under agriculture.
+    (
+        re.compile(r"\b(field|yield|moisture|emission|trigger|sar|alos|cygnss|chirps|season\s*[abc])\b",
+                   re.IGNORECASE),
         frozenset({AGRICULTURE}),
     ),
-    # User-uploaded raster (drone ortho, custom COG)
+    # Weather and hazards: their tools are filed under agriculture.
+    (_WEATHER_HAZARD_WORDS, frozenset({AGRICULTURE})),
+    # User-uploaded raster (drone ortho, custom COG). Layer names join words with "_" ("Cyampirita_Orthophoto"),
+    # so "ortho" and "drone" match inside a name; plots, plants and weeds are only seen on drone photos.
     (
         re.compile(
+            r"(?<![A-Za-z0-9])(?:ortho(?:photo|mosaic)?|drone)|"
             r"\b(my\s+(field|raster|cog|drone|ortho|image)|"
-            r"this\s+(raster|drone|ortho|image|cog)|"
-            r"uploaded|drone|ortho(photo|mosaic)?|tiff|geotiff|"
+            r"this\s+(raster|drone|ortho|image|cog|photo)|"
+            r"uploaded|tiff|geotiff|plots?|umurima|imirima|plants?|weed(?:s|ing|y)?|stand\s+count|"
+            r"what\s+is\s+growing|"
             r"stress\s+zone|pixel|histogram|distribution|"
             r"what\s+(is|are)\s+(happening|we\s+seeing)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
             r"what'?s\s+(happening|visible|going\s+on)\s+(in|on|with)\s+(this|my)\s+(raster|drone|ortho|image|map)|"
-            r"compare\s+(raster|image)|similar\s+tile|find\s+similar)\b",
+            r"compare\s+(raster|image)|similar\s+tile|find\s+similar|"
+            r"rasters?|flights?|plot\s*\d+)\b",
             re.IGNORECASE,
         ),
+        frozenset({USER_RASTER, SPATIAL_INSIGHT}),
+    ),
+    # A layer named like an upload ("Plot9_NDVI", "Farm_A_Orthophoto"): the
+    # underscore hides the word from the \b patterns above.
+    (
+        re.compile(r"[a-z0-9]_(?:ndvi|ortho\w*|rgb|dsm|dtm)\b", re.IGNORECASE),
         frozenset({USER_RASTER, SPATIAL_INSIGHT}),
     ),
     # H3-first spatial intelligence for housing, infrastructure, environment,
@@ -353,12 +472,15 @@ _INTENT_KEYWORDS: list[tuple[re.Pattern[str], frozenset[str]]] = [
         ),
         frozenset({SPATIAL_INSIGHT, MAP_EDIT, USER_RASTER}),
     ),
+    # Masts, antennas, dishes and other telecom equipment.
+    (_TOWER_WORDS, frozenset({TOWERS})),
     # Knowledge graph / Brain
     (
         re.compile(
             r"\b(brain|entity|observation|knowledge|"
             r"who\s+is|what\s+is\s+the\s+(rab|minagri|bk|bnr|naeb)|"
-            r"institution|cooperative|government|ministry|partner)\b",
+            r"institution|cooperative|government|ministry|partner|"
+            r"notes?|remember|field\s+visit|log\s+(?:a|an|this|that)|what\s+do\s+we\s+know)\b",
             re.IGNORECASE,
         ),
         frozenset({BRAIN}),
@@ -526,6 +648,31 @@ def _is_admin_boundary_placeholder_name(value: str) -> bool:
     return not words or all(word in _ADMIN_PLACEHOLDER_NAMES for word in words)
 
 
+# Units a smaller unit can be asked "in", smallest first.
+_ADMIN_PARENT_LEVELS = ("cell", "sector", "district")
+_ADMIN_SIZE_ORDER = ("village", *_ADMIN_PARENT_LEVELS, "province")
+
+
+def _admin_parents(rest: str, level: str) -> dict[str, str]:
+    """Parents named after the requested unit, so one unit is asked for, not every unit of that name:
+    "in Gasabo district", ", Ruganda cell, Gatare sector", "of Gasabo" (a known district)."""
+    larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(level) + 1:]
+    parents: dict[str, str] = {}
+    for match in re.finditer(
+        r"(?i)(?:\b(?:in|of|within|inside|under)\b|,)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9' -]*?)\s+(cell|sector|district)\b",
+        rest,
+    ):
+        parent_level = match.group(2).lower()
+        if parent_level in larger and parent_level not in parents:
+            parents[parent_level] = match.group(1).strip()
+    if "district" in larger and "district" not in parents:
+        for match in re.finditer(r"(?i)(?:\b(?:in|of)\b|,)\s+([A-Za-z'-]+)\b", rest):
+            if match.group(1).lower() in _DISTRICTS_LOWER:
+                parents["district"] = match.group(1)
+                break
+    return parents
+
+
 def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     """Build deterministic args for a pure admin-boundary display prompt."""
     if not detect_admin_boundary_display(text):
@@ -547,7 +694,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         if parent_name:
             args: dict[str, object] = {"admin_level": child_level, "name": "*"}
             args[parent_level] = parent_name
-            return args
+            return {**args, **_admin_parents(prompt[child_match.end():], parent_level)}
 
     implicit_child_match = re.search(
         rf"(?i)\b(?:{_ADMIN_DISPLAY_REQUEST_RE})?"
@@ -560,6 +707,15 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
     if implicit_child_match:
         child_level = implicit_child_match.group(1).lower().rstrip("s")
         parent_name = _clean_admin_boundary_candidate(implicit_child_match.group(2))
+        # "the cells of Busasamana in Nyanza": the district says which Busasamana.
+        in_district = re.match(r"(?i)^(.+?)\s+(?:in|,)\s+([A-Za-z'-]+)$", parent_name)
+        if in_district and in_district.group(2).lower() in _DISTRICTS_LOWER and child_level != "sector":
+            return {
+                "admin_level": child_level,
+                "name": "*",
+                {"cell": "sector", "village": "cell"}[child_level]: in_district.group(1).strip(),
+                "district": in_district.group(2),
+            }
         parent_level = (
             "district" if parent_name.lower() in _DISTRICTS_LOWER
             else {"sector": "district", "cell": "sector", "village": "cell"}.get(child_level)
@@ -573,6 +729,22 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
         explicit = re.search(rf"(?i)(.+?)\b{level}s?\b", prompt)
         if explicit:
             name = _clean_admin_boundary_candidate(explicit.group(1))
+            # "Murambi in Rangiro sector": the level word names the parent, not the unit.
+            inside = re.match(r"(?i)^(.+?)\s+(?:in|of|within|inside|under)\s+(.+)$", name)
+            if inside and level in _ADMIN_PARENT_LEVELS and not _is_admin_boundary_placeholder_name(inside.group(1)):
+                unit, unit_level = inside.group(1).strip(), "auto"
+                # "Remera sector in Kimironko cell": the unit says its own level.
+                own_level = re.match(r"(?i)^(.+?)\s+(village|cell|sector|district)$", unit)
+                if own_level:
+                    unit, unit_level = own_level.group(1).strip(), own_level.group(2).lower()
+                size = "village" if unit_level == "auto" else unit_level
+                larger = _ADMIN_SIZE_ORDER[_ADMIN_SIZE_ORDER.index(size) + 1:]
+                return {
+                    "admin_level": unit_level,
+                    "name": unit,
+                    **({level: inside.group(2).strip()} if level in larger else {}),
+                    **_admin_parents(prompt[explicit.end():], size),
+                }
             if name and not _is_admin_boundary_placeholder_name(name):
                 if level == "province" and name.lower() not in {
                     "kigali",
@@ -580,7 +752,7 @@ def build_admin_boundary_tool_args(text: str) -> dict[str, object] | None:
                 }:
                     if not name.lower().endswith("province"):
                         name = f"{name} Province"
-                return {"admin_level": level, "name": name}
+                return {"admin_level": level, "name": name, **_admin_parents(prompt[explicit.end():], level)}
 
     simple = re.match(
         r"(?i)^(?:please\s+)?(?:again\s+)?"
@@ -1175,10 +1347,11 @@ def raster_layer_match_score(question: str, layer_name: str) -> float:
 
 
 def select_fast_raster_layer(question: str, rows: list) -> dict | None:
-    """The raster a deterministic fast path should use, or None to fall back.
+    """The raster the question points at, or None to fall back.
 
     ``rows`` are the raster layers on the map (mappings with a ``name``).
-    Used by message_routes' fast-path handlers and the routing eval.
+    The fast paths go through select_ready_fast_raster_layer, which also
+    checks the raster can be read.
     """
     if not rows:
         return None
@@ -1198,12 +1371,54 @@ def select_fast_raster_layer(question: str, rows: list) -> dict | None:
         return dict(rows[0])
     return None
 
+
+def select_ready_fast_raster_layer(question: str, rows: list) -> dict | None:
+    """The raster a raster fast path may read, or None to let the model plan the turn: the one the question
+    points at (select_fast_raster_layer), and only when it has a place on the map and its optimised copy (COG)
+    is ready. A phone picture of a mast has no place on the map, and a photo still being optimised cannot be
+    read yet. ``rows`` also carry each raster's ``metadata`` and ``bounds``. Used by message_routes' fast-path
+    handlers and the routing eval."""
+    layer = select_fast_raster_layer(question, rows)
+    if layer is None:
+        return None
+    metadata = layer.get("metadata") or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    if not photo_context.is_photo_ready(metadata):
+        logger.info("sage_routing: no raster fast path, %s has no ready COG (cog_status=%s)",
+                    layer.get("layer_id"), metadata.get("cog_status"))
+        return None
+    if not photo_context.is_georeferenced(metadata, layer.get("bounds")):
+        logger.info("sage_routing: no raster fast path, %s has no place on the map", layer.get("layer_id"))
+        return None
+    return layer
+
+# Questions about the plots, plants and crops on a drone photo go to the model, which reads what the
+# question cards found (get_drone_photo_findings) and counts plants (count_plants_in_plot). The fast paths'
+# masks and cells cannot answer them: "count the plants in plot 42" used to draw house masks.
+_DRONE_PLOT_QUESTION = re.compile(
+    r"\b(plots?|umurima|imirima|stand\s+count|weed(?:s|ing|y)?|gaps?|per\s+hectare|"
+    r"(?:how\s+many|count(?:\s+the)?)\s+(?:\w+\s+)?plants|plants?\s+(?:per|in|on)\b|"
+    r"what\s+(?:is|'s)\s+growing|which\s+crops?|"
+    r"how\s+(?:is|are)\s+(?:my|the)\s+(?:crops?|maize|cassava|beans|bananas?|farm|field))\b",
+    re.IGNORECASE,
+)
+
+
+def is_drone_plot_question(text: str) -> bool:
+    return bool(_DRONE_PLOT_QUESTION.search(str(text or "")))
+
+
 def build_fast_tool_call(text: str) -> FastToolCall | None:
     decision = choose_geospatial_evidence_path(text)
     if decision.should_fast_route and decision.primary_tool == "show_admin_boundary":
         args = build_admin_boundary_tool_args(text)
         if args:
             return FastToolCall(ADMIN_BOUNDARY_TOOL, args, "fast:admin_boundary")
+    # The fast paths' house masks, screening cells and area facts cannot answer questions about masts, antennas
+    # or dishes: "how many antennas are on this tower photo?" drew screening cells.
+    if is_drone_plot_question(text) or mentions_tower_equipment(text):
+        return None
     if decision.should_fast_route and decision.primary_tool == "describe_user_raster":
         return FastToolCall(RASTER_FACT_TOOL, {}, "fast:raster_area")
     if (
@@ -1234,6 +1449,16 @@ def build_fast_tool_call(text: str) -> FastToolCall | None:
             "fast:raster_context",
         )
     return None
+
+
+def build_project_fast_tool_call(text: str, project_industry: str | None) -> FastToolCall | None:
+    """The fast path for a turn in a project of this industry: build_fast_tool_call, kept only when the project's
+    industry may use its tool (industry.serves; an industry that could not be found gets only the tools every
+    industry may use)."""
+    fast = build_fast_tool_call(text)
+    if fast is None or not industry.available(fast.tool_name, project_industry):
+        return None
+    return fast
 
 
 def _raster_object_max_area_m2(targets: list[str]) -> float:
@@ -1277,6 +1502,28 @@ def filter_tools_by_categories(
         if cat is None or cat in cat_set:
             out.append(tool)
     return out
+
+
+def categories_with_tools(project_industry: str | None) -> frozenset[str]:
+    """The categories holding a tool a project of this industry may use now (industry.available: TOWERS only for
+    Telecom projects, and only while the TOWERS switch is on)."""
+    return frozenset(category for name, category in _TOOL_CATEGORIES.items()
+                     if industry.available(name, project_industry))
+
+
+def offered_categories(tools: Iterable[dict]) -> frozenset[str]:
+    """The categories of the tools a turn is offered (its industry's, with switched-off tools left out)."""
+    return frozenset(_TOOL_CATEGORIES[name] for tool in tools
+                     if (name := tool.get("function", {}).get("name", "")) in _TOOL_CATEGORIES)
+
+
+def categories_answering(text: str, named: frozenset[str]) -> frozenset[str]:
+    """The named categories whose tools can answer the question: all of them, except towers when the question does
+    not ask what the tower tools answer (asks_about_tower_work). A weather, flood or description question that also
+    says "tower" keeps the tools that answer it: towers then only adds its tools to what other words select."""
+    if TOWERS in named and not asks_about_tower_work(text):
+        return named - {TOWERS}
+    return named
 
 
 def tool_category_for_name(tool_name: str) -> str:
@@ -1342,6 +1589,11 @@ class RoutingDecision:
         excluded_tool_names: Tool names to remove even when their category is
             selected. Used when a proxy/rendering tool would be misleading for
             the question's evidence requirement.
+        named_categories: Every category the question's words named, also one
+            with no tool offered to this turn (TOWERS outside Telecom projects or
+            with the switch off) or whose tools do not answer it (towers words
+            in a weather question), which selected_categories leaves out. The
+            abdication guard reads it (with categories_answering).
     """
 
     is_small_talk: bool
@@ -1349,6 +1601,7 @@ class RoutingDecision:
     primary_model_override: str | None
     reason: str
     excluded_tool_names: frozenset[str] = frozenset()
+    named_categories: frozenset[str] = frozenset()
 
 
 def _tool_round_in_flight(history: list[dict] | None) -> bool:
@@ -1378,6 +1631,7 @@ def _tool_round_in_flight(history: list[dict] | None) -> bool:
 def route_chat(
     user_message: str,
     history: list[dict] | None = None,
+    offered: frozenset[str] | None = None,
 ) -> RoutingDecision:
     """Decide how to handle one Sage turn.
 
@@ -1387,6 +1641,9 @@ def route_chat(
         history: Prior messages in OpenAI chat format (list of dicts
             with "role" and "content"/"tool_calls"). Used to suppress
             small-talk routing when a tool round is in progress.
+        offered: The categories of the tools this turn is offered
+            (offered_categories). A named category narrows the list only
+            when it is offered a tool; None: every category with a tool.
 
     Returns:
         A RoutingDecision the caller can act on.
@@ -1412,21 +1669,30 @@ def route_chat(
         excluded_tool_names = frozenset({RASTER_H3_CONTEXT_TOOL})
 
     cats = classify_intent(user_message)
-    if cats:
+    # A category narrows the list only when this turn is offered one of its tools (TOWERS: Telecom projects with the
+    # switch on) and its tools answer the question (categories_answering: towers only for a count, the equipment or
+    # photos to check); otherwise the full list is sent, which holds the tower tools wherever they are offered.
+    with_tools = set(_TOOL_CATEGORIES.values()) if offered is None else offered
+    if categories_answering(user_message, cats) & with_tools:
         return RoutingDecision(
             is_small_talk=False,
             selected_categories=cats,
             primary_model_override=None,
             reason=f"intent:{','.join(sorted(cats))}",
             excluded_tool_names=excluded_tool_names,
+            named_categories=cats,
         )
 
+    # "intent:towers;no_tools_yet": the question names only categories this turn is offered no tool of;
+    # "intent:towers;named_only": it names towers, whose tools do not answer it (a storm before tower climbs).
+    named_only = "no_tools_yet" if not cats & with_tools else "named_only"
     return RoutingDecision(
         is_small_talk=False,
         selected_categories=frozenset(),
         primary_model_override=None,
-        reason="default",
+        reason=f"intent:{','.join(sorted(cats))};{named_only}" if cats else "default",
         excluded_tool_names=excluded_tool_names,
+        named_categories=cats,
     )
 
 

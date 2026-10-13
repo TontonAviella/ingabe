@@ -113,9 +113,14 @@ def _runtime_pydantic_schemas() -> dict:
     # In-process: an ImportError here is a real bug in the app's tool modules,
     # so let it propagate instead of silently dropping every newer tool.
     from src.dependencies.pydantic_tools import get_pydantic_tool_calls  # lazy: app package exists only in-process
+    from src.services.industry import SWITCHES
 
     schemas: dict = {}
     for name, (handler, argument_model, _meta_model) in get_pydantic_tool_calls().items():
+        # Hermes picks tools by the question's words, not the project's industry or the switches, so a tool behind a
+        # switch (the Telecom tower tools, TOWERS) would reach every project with the switch off too. Kept out.
+        if name in SWITCHES:
+            continue
         parameters = argument_model.model_json_schema()
         parameters.pop("title", None)
         schemas[name] = {

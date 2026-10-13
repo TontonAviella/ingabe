@@ -97,8 +97,12 @@ async def create_raster_h3_context_layer(
     simple metadata or hectares questions, use describe_user_raster instead.
     """
 
+    from src.services import industry
     from src.structures import get_async_read_connection
     from src.utils import get_async_s3_client, get_bucket_name
+
+    # Done here so the fast path, the chat loop and Hermes all get it (audit 2026-10-09, R1-10/R1-11).
+    args = args_for_industry(args, industry.request_is_agriculture())
 
     async with get_async_read_connection() as conn:
         row = await conn.fetchrow(
@@ -556,6 +560,16 @@ def _cell_features(
             }
         )
     return features, scores
+
+
+def args_for_industry(args: CreateRasterH3ContextLayerArgs, agriculture: bool) -> CreateRasterH3ContextLayerArgs:
+    """Outside agriculture, vegetation is screened as environment (encroachment, exposed surface), never as crops."""
+    if agriculture or _normalize_domain(args.domain) != "agriculture":
+        return args
+    return args.model_copy(update={
+        "domain": "environment",
+        "analysis_goal": "screen vegetation and exposed-surface attention zones from uploaded raster pixels",
+    })
 
 
 def _normalize_domain(domain: str) -> str:

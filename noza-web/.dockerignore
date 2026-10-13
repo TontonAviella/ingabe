@@ -7,6 +7,5 @@ node_modules
 .gitignore
 .dockerignore
 .npm-cache
-.clerk
 Dockerfile
 README.md

@@ -39,7 +39,6 @@ import subprocess
 # cause frequent OOM kills.
 _rio_tiler_loaded = False
 _Reader = None
-_cmap = None
 _TileOutsideBounds = None
 _Image = None
 _DASK_AVAILABLE = None
@@ -48,16 +47,14 @@ _RasterPipeline = None
 
 def _ensure_rio_tiler():
     """Lazy-load rio-tiler (+ GDAL/rasterio) on first raster tile request."""
-    global _rio_tiler_loaded, _Reader, _cmap, _TileOutsideBounds, _Image
+    global _rio_tiler_loaded, _Reader, _TileOutsideBounds, _Image
     if _rio_tiler_loaded:
         return
     from PIL import Image as _PILImage
     from rio_tiler.io import Reader as _RioReader
-    from rio_tiler.colormap import cmap as _rio_cmap
     from rio_tiler.errors import TileOutsideBounds as _RioTileOOB
     _Image = _PILImage
     _Reader = _RioReader
-    _cmap = _rio_cmap
     _TileOutsideBounds = _RioTileOOB
     _rio_tiler_loaded = True
 
@@ -240,6 +237,7 @@ from src.structures import get_async_db_connection, async_conn
 from src.postgis_tiles import fetch_mvt_tile, MVT_LAYER_NAME
 from src.dependencies.layer_describer import LayerDescriber, get_layer_describer
 from src.services.raster_zoom import raster_source_minzoom
+from src.services import photo_inspections, raster_display
 from opentelemetry import trace
 from src.dependencies.base_map import get_base_map_provider
 from src.utils import generate_id
@@ -385,12 +383,13 @@ async def get_layer_render_status(
             "updated_at": metadata.get("cog_status_updated_at") if isinstance(metadata, dict) else None,
         }
 
+    # No cog_key here: this route is public (shared project links poll it), and since identical uploads share an
+    # optimised photo the key would name another uploader's object (audit R1-22).
     return {
         "ready": True,
         "status": "ready",
         "type": layer_type,
         "optimized_ready": True,
-        "cog_key": cog_key,
         "tile_url": f"/api/layer/{layer_id}/{{z}}/{{x}}/{{y}}.png",
         "minzoom": raster_source_minzoom(metadata, row["bounds"]),
     }
@@ -765,27 +764,9 @@ async def get_layer_pmtiles(
 
                 if layer.type == LAYER_TYPE_POSTGIS:
                     # PostGIS layer: generate PMTiles from the query
-                    from src.upload.pmtiles import generate_pmtiles_for_postgis_layer
+                    from src.upload.pmtiles import postgis_layer_pmtiles_key
 
-                    # Look up project_id via source_map_id
-                    _project_id = "unknown"
-                    if layer.source_map_id:
-                        async with get_async_db_connection() as _conn:
-                            project_row = await _conn.fetchrow(
-                                "SELECT project_id FROM user_mundiai_maps WHERE id = $1",
-                                layer.source_map_id,
-                            )
-                            if project_row:
-                                _project_id = project_row["project_id"]
-
-                    pmtiles_key = await generate_pmtiles_for_postgis_layer(
-                        layer.layer_id,
-                        layer.postgis_connection_id,
-                        layer.postgis_query,
-                        feature_count,
-                        str(layer.owner_uuid),
-                        _project_id,
-                    )
+                    pmtiles_key = await postgis_layer_pmtiles_key(layer.layer_id)
                 else:
                     # Vector layer: download S3 source file and generate
                     from src.upload.pmtiles import generate_pmtiles_from_ogr_source
@@ -996,6 +977,50 @@ async def get_layer_laz(
 
 
 @layer_router.get(
+    "/layer/{layer_id}/photos/{sha256}",
+    operation_id="view_inspection_photo",
+)
+async def get_inspection_photo(
+    sha256: str,
+    layer: MapLayer = Depends(get_layer),
+):
+    """One original photo of a photo-inspection layer, named by its SHA-256. Needs view rights on the layer's
+    project (the same check as the layer's tiles) and serves only keys under this layer's own inspection prefix."""
+    if not photo_inspections.enabled():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Photo inspections are switched off")
+    if not photo_inspections.is_sha256(sha256):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="A photo is named by its SHA-256: 64 lower-case hexadecimal characters")
+    prefix = photo_inspections.stored_prefix(layer.metadata_dict, layer.layer_id)
+    if prefix is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This layer is not a photo inspection")
+
+    bucket_name = get_bucket_name()
+    s3 = await get_async_s3_client()
+    key = await s3_op(photo_inspections.stored_photo_key(s3, bucket_name, prefix, sha256),
+                      "list_objects_v2", f"inspection photo {layer.layer_id}")
+    if key is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such photo in this inspection")
+
+    s3_response = await s3_op(s3.get_object(Bucket=bucket_name, Key=key), "get_object", f"inspection photo {key}")
+
+    body = s3_response["Body"]
+
+    async def stream_photo():
+        async with body:  # releases the storage connection if the viewer goes away
+            while chunk := await body.read(256 * 1024):
+                yield chunk
+
+    headers = {
+        "Content-Length": str(s3_response["ContentLength"]),
+        # Named by its content, so a photo never changes; private because it needs the viewer's rights.
+        "Cache-Control": "private, max-age=86400, immutable",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(stream_photo(), media_type=photo_inspections.content_type(key), headers=headers)
+
+
+@layer_router.get(
     "/layer/{layer_id}/{z}/{x}/{y}.png",
     operation_id="get_raster_xyz_tile",
 )
@@ -1116,26 +1141,8 @@ async def get_raster_xyz_tile(
 
             def _render_tile() -> bytes:
                 with _Reader(asset_url) as src:
-                    # PNG driver caps at 4 bands (RGBA). rio-tiler appends an implicit
-                    # mask, so a 4-band drone ortho becomes 5 bands at encode and
-                    # CPLE_NotSupportedError fires. Restrict to first 3 bands for any
-                    # raster with >3 bands; the mask becomes the alpha channel.
-                    band_count = (metadata or {}).get("band_count")
-                    if isinstance(band_count, int) and band_count > 3:
-                        img = src.tile(x, y, z, indexes=(1, 2, 3))
-                    else:
-                        img = src.tile(x, y, z)
-
-                    if "raster_value_stats_b1" in metadata:
-                        min_val = metadata["raster_value_stats_b1"]["min"]
-                        max_val = metadata["raster_value_stats_b1"]["max"]
-
-                        img.rescale(in_range=((min_val, max_val),), out_range=((0, 255),))
-
-                        cm = _cmap.get("spectral_r")
-                        return img.render(img_format="PNG", colormap=cm)
-                    else:
-                        return img.render(img_format="PNG")
+                    img = src.tile(x, y, z, indexes=raster_display.display_indexes(metadata))
+                    return raster_display.render_png(img, metadata)
 
             try:
                 async with RASTER_TILE_SEMAPHORE:

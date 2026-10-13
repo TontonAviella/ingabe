@@ -1,6 +1,7 @@
 import { Building, Building2, Check, ChevronsUpDown, Loader2, LogOut, User, Users } from 'lucide-react';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { IngabeIcon } from '@/components/Brand';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -130,6 +131,7 @@ export function WorkOSRequireAuth({ children }: React.PropsWithChildren) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
         <div className="max-w-sm rounded-lg border border-gray-700 bg-gray-900 p-6 text-center text-gray-100">
+          <IngabeIcon className="mx-auto mb-4 h-10 w-10" />
           <p className="font-medium">{text.title}</p>
           <p className="mt-2 text-sm text-gray-400">{text.body}</p>
           <a

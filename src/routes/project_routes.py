@@ -52,6 +52,7 @@ from src.dependencies.postgres_connection import (
     PostgresConfigurationError,
 )
 from src.dependencies.dag import get_project, edit_project
+from src.services import industry
 from src.services.map_service import (
     generate_id,
     get_map_style_internal,
@@ -98,12 +99,33 @@ class ProjectResponse(BaseModel):
     created_on: str
     most_recent_version: Optional[MostRecentVersion] = None
     soft_deleted_at: Optional[datetime] = None
+    # The one industry the project belongs to: the app hides farm-only controls elsewhere (audit R1-28).
+    industry: str = "agriculture"
+
+
+class OtherIndustry(BaseModel):
+    industry: str
+    label: str
+    count: int
 
 
 class UserProjectsResponse(BaseModel):
     projects: List[ProjectResponse]
     total_pages: int
     total_items: int
+    # The industry this list shows (the one the user works in now, industry.current_industry) and its label;
+    # None: every industry (nobody has chosen, or the legacy single-user mode).
+    industry: Optional[str] = None
+    industry_label: Optional[str] = None
+    # The user's projects in the other industries, which this list leaves out (industry.other_industries).
+    other_industries: List[OtherIndustry] = []
+
+
+# The projects a user may list: owned, edited or viewed by $1/$2/$3, and live unless $4 (include deleted).
+_LISTABLE = """(p.owner_uuid = $1 OR $2 = ANY(p.editor_uuids) OR $3 = ANY(p.viewer_uuids))
+    AND ($4 OR p.soft_deleted_at IS NULL)"""
+# ... and in the industry the home shows ($5; NULL: every industry).
+_SHOWN = f"{_LISTABLE}\n    AND ($5::text IS NULL OR p.industry = $5::text)"
 
 
 @project_router.get(
@@ -116,8 +138,10 @@ async def list_user_projects(
     include_deleted: bool = False,
 ):
     """
-    List all projects associated with the authenticated user.
-    A project is associated if the user is the owner, an editor, or a viewer.
+    List the projects of the industry the user works in now (their own choice, else their company's) that they own,
+    edit or view; a project shared with them is listed under its own industry. Every industry when nobody has chosen
+    (and in the legacy single-user mode). Counts and pages are those of the listed industry; `other_industries` counts
+    the user's projects in the others. `include_deleted` keeps the same industry filter.
     """
     started_at = time.monotonic()
     user_id = session.get_user_id()
@@ -126,42 +150,34 @@ async def list_user_projects(
     offset = (page - 1) * limit
 
     async with get_async_db_connection(user_id=user_id) as conn:
+        shown = await industry.current_industry(conn, user_id, session.get_org_id())
+        listable = (user_id, user_id, user_id, include_deleted)
+
         # Get total count for pagination
         total_items = await conn.fetchval(
-            """
-            SELECT COUNT(*)
-            FROM user_mundiai_projects p
-            WHERE (
-                p.owner_uuid = $1 OR
-                $2 = ANY(p.editor_uuids) OR
-                $3 = ANY(p.viewer_uuids)
-            ) AND ($4 OR p.soft_deleted_at IS NULL)
-            """,
-            user_id,
-            user_id,
-            user_id,
-            include_deleted,
+            f"SELECT COUNT(*) FROM user_mundiai_projects p WHERE {_SHOWN}", *listable, shown
         )
+        others: list = []
+        if shown is not None:
+            per_industry = await conn.fetch(
+                f"SELECT p.industry, COUNT(*) AS n FROM user_mundiai_projects p WHERE {_LISTABLE} GROUP BY p.industry",
+                *listable,
+            )
+            others = industry.other_industries({r["industry"]: r["n"] for r in per_industry}, shown)
 
         # Calculate total pages
         total_pages = (total_items + limit - 1) // limit
 
         projects_data = await conn.fetch(
-            """
-            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at
+            f"""
+            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at, p.industry
             FROM user_mundiai_projects p
-            WHERE (
-                p.owner_uuid = $1 OR
-                $2 = ANY(p.editor_uuids) OR
-                $3 = ANY(p.viewer_uuids)
-            ) AND ($4 OR p.soft_deleted_at IS NULL)
+            WHERE {_SHOWN}
             ORDER BY p.created_on DESC
-            LIMIT $5 OFFSET $6
+            LIMIT $6 OFFSET $7
             """,
-            user_id,
-            user_id,
-            user_id,
-            include_deleted,
+            *listable,
+            shown,
             limit,
             offset,
         )
@@ -216,6 +232,7 @@ async def list_user_projects(
                     created_on=created_on_str,
                     most_recent_version=most_recent_map_details,
                     soft_deleted_at=project_data["soft_deleted_at"],
+                    industry=project_data["industry"],
                 )
             )
 
@@ -223,6 +240,9 @@ async def list_user_projects(
         projects=projects_response,
         total_pages=total_pages,
         total_items=total_items,
+        industry=shown,
+        industry_label=industry.INDUSTRIES[shown]["label"] if shown else None,
+        other_industries=[OtherIndustry(**o) for o in others],
     )
     capture_for_session(
         "backend_projects_listed",
@@ -231,6 +251,7 @@ async def list_user_projects(
             "page": page,
             "limit": limit,
             "include_deleted": include_deleted,
+            "industry": shown,
             "project_count": len(projects_response),
             "total_items": total_items,
             "total_pages": total_pages,
@@ -357,6 +378,7 @@ async def get_project_route(
             maps=project.maps,
             created_on=created_on_str,
             most_recent_version=most_recent_map_details,
+            industry=project.industry,
         )
 
 
@@ -809,6 +831,7 @@ async def get_project_social_preview(
                     renderer="mbgl",
                     bgcolor="#ffffff",
                     style_json=style_json,
+                    frame_on_drone=True,
                 )
 
                 from PIL import Image, UnidentifiedImageError
@@ -1297,6 +1320,11 @@ async def upload_document_to_brain(
         s3_key = ""
 
     brain = get_brain_service()
+    # The document belongs to this project's industry (MundiProject.industry): Brain's row-level security
+    # labels it from app.industry and only shows it to that industry.
+    from src.database.pool import set_request_industry
+
+    set_request_industry(project.industry)
     async with get_async_db_connection(user_id=user_id) as conn:
         async with conn.transaction():
             await brain.put_page(

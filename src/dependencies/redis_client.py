@@ -1,6 +1,8 @@
+import asyncio
 import os
+import weakref
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 
 from redis import Redis
 
@@ -30,33 +32,39 @@ def get_redis_binary_client() -> Redis:
 
 
 # ---------------------------------------------------------------------------
-# Async Redis client (lazy singleton)
+# Async Redis client (one per event loop)
 # ---------------------------------------------------------------------------
 
-_async_redis = None
+# An asyncio client's connections belong to the event loop that opened them; used or closed from another loop
+# they fail ("Event loop is closed", "attached to a different loop"). The app has one loop per worker, but test
+# clients, background threads with their own loop and pytest's loops do not share one, so each loop gets its own.
+_async_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
 
 
 def get_async_redis():
-    """Return a lazily-initialised ``redis.asyncio.Redis`` client.
+    """Return the ``redis.asyncio.Redis`` client of the running event loop, created on first use.
 
-    Binary mode (no ``decode_responses``) so raw bytes (MVT tiles, PNG tiles)
-    are stored without encoding overhead.  The client is created once and reused.
-
-    Returns None if Redis is unavailable or not configured.
+    Binary mode (no ``decode_responses``) so raw bytes (MVT tiles, PNG tiles) are stored without encoding overhead.
+    Returns None if Redis is unavailable or not configured, or when called with no event loop running.
     """
-    global _async_redis
-    if _async_redis is None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    client = _async_clients.get(loop)
+    if client is None:
         try:
             from redis.asyncio import Redis as AsyncRedis
 
-            _async_redis = AsyncRedis(
+            client = AsyncRedis(
                 host=os.environ.get("REDIS_HOST", "localhost"),
                 port=int(os.environ.get("REDIS_PORT", 6379)),
                 decode_responses=False,
             )
         except Exception:
             return None
-    return _async_redis
+        _async_clients[loop] = client
+    return client
 
 
 async def get_async_redis_for_ping():
@@ -74,8 +82,11 @@ async def get_async_redis_for_ping():
 
 
 async def close_async_redis() -> None:
-    """Close the shared async Redis client. Call during shutdown."""
-    global _async_redis
-    if _async_redis is not None:
-        await _async_redis.aclose()
-        _async_redis = None
+    """Close the running loop's async Redis client (call during shutdown) and forget clients whose loop is closed:
+    their connections cannot be closed from here, and the loop that owned them is gone."""
+    loop = asyncio.get_running_loop()
+    for other in [other for other in list(_async_clients) if other is not loop and other.is_closed()]:
+        _async_clients.pop(other, None)
+    client = _async_clients.pop(loop, None)
+    if client is not None:
+        await client.aclose()

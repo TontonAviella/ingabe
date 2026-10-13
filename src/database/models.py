@@ -124,6 +124,10 @@ class MundiProject(Base):
         server_default=func.current_timestamp(),
     )
     soft_deleted_at = Column(TIMESTAMP(timezone=True))
+    # The one industry this project belongs to (see src/services/industry.py).
+    industry = Column(Text, nullable=False, server_default="agriculture")
+    # The organization its Sage turns act for (see src/services/project_partner.py).
+    partner_id = Column(UUID(as_uuid=False), nullable=True)
 
     # Relationships
     postgres_connections = relationship(

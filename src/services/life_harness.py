@@ -13,6 +13,8 @@ import os
 import re
 from typing import Any
 
+from src.database.pool import get_request_industry
+
 
 NEMOTRON_SUPER3_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
@@ -117,7 +119,9 @@ def apply_life_harness_system_prompt(system_prompt: str, user_text: str = "") ->
 
     if not life_harness_enabled() or "<RuntimeHarness>" in system_prompt:
         return system_prompt
-    skills = retrieve_life_harness_skills(user_text)
+    # The H5 procedures are farm procedures: only agriculture projects get them.
+    farm = (get_request_industry() or "agriculture") == "agriculture"
+    skills = retrieve_life_harness_skills(user_text) if farm else []
     skill_block = ""
     if skills:
         tips = "\n".join(f"- {skill['title']}: {skill['tip']}" for skill in skills)
@@ -129,7 +133,7 @@ def apply_life_harness_system_prompt(system_prompt: str, user_text: str = "") ->
         + "H2: Before calling a tool, verify every required argument is present.\n"
         + "H3: Treat each tool description as the exact environment contract.\n"
         + "H4: Do not repeat the same failing or non-progressing tool call; use the result, choose the next tool, or ask one concise question.\n"
-        + "H5: For agriculture work, plan in this order: locate the field, inspect available map/data layers, run the smallest relevant tool, then give risk and next action.\n"
+        + ("H5: For agriculture work, plan in this order: locate the field, inspect available map/data layers, run the smallest relevant tool, then give risk and next action.\n" if farm else "")
         + skill_block
         + "</RuntimeHarness>"
     )

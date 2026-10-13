@@ -89,6 +89,17 @@ from src.tools.raster_object_candidates import (
     analyze_raster_object_candidates,
     AnalyzeRasterObjectCandidatesArgs,
 )
+from src.tools.drone_photo_tools import (
+    count_plants_in_plot,
+    CountPlantsArgs,
+    get_drone_photo_findings,
+    DronePhotoArgs,
+)
+from src.tools.tower_tools import (
+    get_tower_inspection_findings,
+    tower_photos_needing_review,
+    TowerInspectionArgs,
+)
 
 
 ToolFn = Callable[[Any, Any], Awaitable[dict]]
@@ -216,6 +227,27 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         "analyze_raster_object_candidates": (
             analyze_raster_object_candidates,
             AnalyzeRasterObjectCandidatesArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "get_drone_photo_findings": (
+            get_drone_photo_findings,
+            DronePhotoArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "count_plants_in_plot": (
+            count_plants_in_plot,
+            CountPlantsArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        # Telecom only, and only while TOWERS is on (industry.available decides what is offered and run).
+        "get_tower_inspection_findings": (
+            get_tower_inspection_findings,
+            TowerInspectionArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "tower_photos_needing_review": (
+            tower_photos_needing_review,
+            TowerInspectionArgs,
             IngabeToolCallMetaArgs,
         ),
     }

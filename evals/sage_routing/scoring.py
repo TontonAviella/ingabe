@@ -12,6 +12,7 @@ independent evidence.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -33,8 +34,28 @@ ERROR = "error"
 
 STRATA = ("observed", "coverage")
 LANGS = ("en", "rw", "fr")
+INDUSTRIES = ("agriculture", "power_grid", "telecom")  # a case without one runs as agriculture
+FARM_WORDING = "<farm-wording>"  # pseudo first tool: a non-agriculture reply that talked about farming
 KINDS = ("single", "multi_turn", "chain")
 LAYER_TYPES = ("raster", "vector", "postgis", "point_cloud")
+COG_STATES = ("ready", "generating", "failed")  # a raster's optimised copy (metadata cog_status)
+
+
+def case_industry_for(case: dict, run_industry: str | None = None) -> str:
+    """The industry a case runs as: its own, else the run's --industry, else agriculture (a live project always has
+    one, so a case without one is a farm project and is offered only what a farm project is)."""
+    return case.get("industry") or run_industry or INDUSTRIES[0]
+
+
+CASE_DEFINITION = ("text", "history", "map_state", "expect", "chain")
+
+
+def case_sha(case: dict) -> str:
+    """What a case asks and expects (its question, history, map, expected answer and the industry it runs as): a
+    comparison pairs a case only when both runs asked the same thing and expected the same answer, since an id can be
+    kept for a changed case. A note, category or intent is not part of it."""
+    asked = {key: case.get(key) for key in CASE_DEFINITION} | {"industry": case_industry_for(case)}
+    return hashlib.sha256(json.dumps(asked, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 _JSON_TYPES = {
     "string": str, "integer": int, "number": (int, float), "boolean": bool,
     "array": list, "object": dict,
@@ -67,6 +88,8 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
         raise CorpusError(f"{cid}: stratum must be one of {STRATA}")
     if case["lang"] not in LANGS:
         raise CorpusError(f"{cid}: lang must be one of {LANGS}")
+    if case.get("industry", "agriculture") not in INDUSTRIES:
+        raise CorpusError(f"{cid}: industry must be one of {INDUSTRIES}")
     expect = case["expect"]
     any_of = expect.get("any_of")
     no_tool = expect.get("no_tool") is True
@@ -98,6 +121,13 @@ def validate_case(case: dict[str, Any], known_tools: set[str] | None = None) -> 
     for layer in (case.get("map_state") or {}).get("layers", []):
         if not layer.get("name") or layer.get("type") not in LAYER_TYPES:
             raise CorpusError(f"{cid}: map_state layers need a name and a type in {LAYER_TYPES}")
+        photo_state = {k: layer[k] for k in ("georeferenced", "cog") if k in layer}
+        if photo_state and layer["type"] != "raster":
+            raise CorpusError(f"{cid}: only a raster layer says whether it is georeferenced or its COG is ready")
+        if not isinstance(photo_state.get("georeferenced", True), bool):
+            raise CorpusError(f"{cid}: a layer's georeferenced must be true or false")
+        if photo_state.get("cog", "ready") not in COG_STATES:
+            raise CorpusError(f"{cid}: a layer's cog must be one of {COG_STATES}")
 
     chain = case.get("chain")
     if chain is not None:

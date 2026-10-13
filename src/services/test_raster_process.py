@@ -16,7 +16,7 @@ import pytest
 
 from src.services import raster_process
 
-GIL_HOLD = range(60_000_000)  # ~1-2 s of C code holding the GIL
+GIL_HOLD_START = 60_000_000  # ~0.3-2 s of C code holding the GIL, depending on the machine
 
 
 def _worst_loop_delay(blocking_call) -> float:
@@ -38,6 +38,19 @@ def _worst_loop_delay(blocking_call) -> float:
         loop.close()
 
 
+def _work_that_holds_the_gil(at_least: float = 0.5) -> tuple[range, float]:
+    """A sum long enough to block the loop for `at_least` seconds on this machine: a fixed size took
+    0.34 s on a fast CI runner and the test failed before it measured anything."""
+    n = GIL_HOLD_START
+    for _ in range(5):
+        work = range(n)
+        delay = _worst_loop_delay(lambda: sum(work))
+        if delay > at_least:
+            break
+        n *= 2
+    return work, delay
+
+
 def test_work_runs_in_another_process_and_returns():
     assert raster_process.run(os.getpid) != os.getpid()
     assert raster_process.run(sum, [1, 2, 3]) == 6
@@ -56,7 +69,7 @@ def test_a_worker_that_dies_is_replaced():
 
 def test_the_loop_keeps_running_while_a_worker_holds_its_own_gil():
     raster_process.run(sum, [])  # start the workers first: spawning is not what is measured
-    in_thread = _worst_loop_delay(lambda: sum(GIL_HOLD))
-    in_worker = _worst_loop_delay(lambda: raster_process.run(sum, GIL_HOLD))
+    work, in_thread = _work_that_holds_the_gil()
+    in_worker = _worst_loop_delay(lambda: raster_process.run(sum, work))
     assert in_thread > 0.5  # the stand-in really holds the GIL
     assert in_worker < 0.2

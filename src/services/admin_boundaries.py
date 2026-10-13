@@ -8,6 +8,8 @@ other module that needs admin boundary geometries.
 import difflib
 import json
 import logging
+
+import asyncpg
 from collections import OrderedDict
 from typing import Optional
 
@@ -194,11 +196,7 @@ async def list_admin_units(
     within: dict[str, str] = {}
     if given:
         # The most specific named parent must be one place, not a name shared by several.
-        nearest = next(col for col in parent_cols if col in given)
-        place_cols = parent_cols[parent_cols.index(nearest):]
-        places = await conn.fetch(
-            f"SELECT DISTINCT {', '.join(place_cols)} FROM {table} WHERE {where}", *params
-        )
+        nearest, place_cols, places = await _nearest_parent_places(conn, table, parent_cols, given)
         if not places:
             raise ValueError(await _unknown_parent_message(conn, level, given))
         if len(places) > 1:
@@ -229,6 +227,26 @@ async def list_admin_units(
             "truncated": count > len(units)}
 
 
+async def _nearest_parent_places(
+    conn, table: str, parent_cols: tuple[str, ...], given: dict[str, str]
+) -> tuple[str, tuple[str, ...], list]:
+    """The places in `table` that the named parents pick out: the most specific named parent column,
+    it and the columns above it, and their distinct values. More than one place means the name is shared."""
+    where = " AND ".join(f"lower({col}) = lower(${i})" for i, col in enumerate(given, 1))
+    nearest = next(col for col in parent_cols if col in given)
+    place_cols = parent_cols[parent_cols.index(nearest):]
+    places = await conn.fetch(
+        f"SELECT DISTINCT {', '.join(place_cols)} FROM {table} WHERE {where}", *given.values()
+    )
+    return nearest, place_cols, places
+
+
+async def _close_names(conn, table: str, name_col: str, value: str) -> list[str]:
+    """Up to three real names in `table` closest to `value` (a misspelling)."""
+    by_lower = {r[0].lower(): r[0] for r in await conn.fetch(f"SELECT DISTINCT {name_col} FROM {table}") if r[0]}
+    return [by_lower[m] for m in difflib.get_close_matches(value.lower(), list(by_lower), n=3, cutoff=0.6)]
+
+
 async def _unknown_parent_message(conn, level: str, given: dict[str, str]) -> str:
     """Say which named parent does not exist (with the closest real names), or
     where the most specific one really is when the names do not fit together."""
@@ -239,8 +257,7 @@ async def _unknown_parent_message(conn, level: str, given: dict[str, str]) -> st
             f"SELECT 1 FROM {table} WHERE lower({name_col}) = lower($1) LIMIT 1", value
         )
         if not exists:
-            by_lower = {r[0].lower(): r[0] for r in await conn.fetch(f"SELECT DISTINCT {name_col} FROM {table}") if r[0]}
-            close = [by_lower[m] for m in difflib.get_close_matches(value.lower(), list(by_lower), n=3, cutoff=0.6)]
+            close = await _close_names(conn, table, name_col, value)
             hint = f"; did you mean {', '.join(close)}?" if close else ""
             return f"no {label} named {value!r}{hint}"
     nearest = next((c for c in ("cell_name", "sector_name") if c in given), None)
@@ -264,3 +281,209 @@ async def units_per_district(conn) -> dict[str, dict[str, int]]:
         for r in await conn.fetch(f"SELECT lower(district_name) AS d, count(*) AS n FROM {table} GROUP BY 1"):
             counts.setdefault(r["d"], {})[level] = r["n"]
     return counts
+
+
+def _admin_sql_literal(value: object) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+# Levels a single unit can be shown at: (table, name column, parent columns nearest first).
+_SHOW_SPEC = {"province": ("rwanda_province_boundaries", "province", ()), **_LIST_SPEC}
+ALL_UNITS = frozenset({"*", "all"})
+_SIZE_ORDER = ("village", "cell", "sector", "district", "province")
+
+
+def _place(row, cols: tuple[str, ...]) -> dict[str, str]:
+    """{"name": ..., "district": ..., ...} for a row of `cols` (name column first)."""
+    return {"name": row[cols[0]], **{c.removesuffix("_name"): row[c] for c in cols[1:]}}
+
+
+async def resolve_admin_boundary(
+    conn,
+    args: dict[str, object],
+) -> dict[str, object]:
+    """Resolve a request to show one Rwanda admin unit, or every unit of a level inside one parent.
+
+    `args`: admin_level (province|district|sector|cell|village|auto), name ("*" or "all" for every
+    unit), and optional district / sector / cell parents. Only what was asked is delivered:
+
+    - "success": exactly one unit (or the units inside exactly one parent place), with the PostGIS
+      `query` that draws it, its `bounds` and `within` (its parents);
+    - "ambiguous": the name, or the parent of "all units in", is several places; no query, the
+      `candidates` say where each one is;
+    - "not_found": no such unit (where the parents say); `error` says why, with close spellings
+      or where units of that name really are;
+    - "error": a missing name or an unknown level.
+    """
+    requested_level = str(args.get("admin_level") or "auto").strip().lower()
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"status": "error", "error": "Missing boundary name."}
+    given = {
+        f"{key}_name": str(args[key]).strip()
+        for key in ("district", "sector", "cell")
+        if args.get(key) and str(args[key]).strip()
+    }
+    if requested_level == "auto":
+        # A unit named "in" a parent is smaller than that parent: "Murambi in Rangiro sector" is a cell or village.
+        smallest_parent = min((_SIZE_ORDER.index(col.removesuffix("_name")) for col in given), default=len(_SIZE_ORDER))
+        levels = [level for level in _SHOW_SPEC if _SIZE_ORDER.index(level) < smallest_parent]
+    else:
+        levels = [requested_level]
+    if not levels or not all(level in _SHOW_SPEC for level in levels):
+        return {"status": "error", "error": f"Unknown admin level {requested_level!r}."}
+
+    for level in levels:
+        result = await _resolve_at_level(conn, level, name, given)
+        if result["status"] != "not_found":
+            return result
+    return {
+        "status": "not_found",
+        "admin_level": requested_level,
+        "admin_name": name,
+        "error": await _not_found_message(conn, levels, name, given),
+    }
+
+
+async def _resolve_at_level(conn, level: str, name: str, given: dict[str, str]) -> dict[str, object]:
+    table, name_col, parent_cols = _SHOW_SPEC[level]
+    cols = (name_col, *parent_cols)
+    parents = {col: value for col, value in given.items() if col in parent_cols}
+    all_units = name.lower() in ALL_UNITS
+
+    if all_units and parents:
+        # "the cells of Busasamana": the parent must be one place, not every place of that name.
+        nearest, place_cols, places = await _nearest_parent_places(conn, table, parent_cols, parents)
+        if not places:
+            return {"status": "not_found", "admin_level": level}
+        if len(places) > 1:
+            parent_level = nearest.removesuffix("_name")
+            return {
+                "status": "ambiguous",
+                "admin_level": parent_level,
+                "admin_name": places[0][nearest],
+                "units_of": level,
+                "match_count": len(places),
+                "candidates": [_place(row, place_cols) for row in places],
+            }
+
+    filters: list[str] = []
+    params: list[object] = []
+    if not all_units:
+        params.append(name)
+        filters.append(f"lower({name_col}) = lower(${len(params)})")
+    for col, value in parents.items():
+        params.append(value)
+        filters.append(f"lower({col}) = lower(${len(params)})")
+    where = " AND ".join(filters) or "TRUE"
+    try:
+        rows = await conn.fetch(
+            f"""
+            SELECT {', '.join(cols)},
+                   ST_XMin(ST_Extent(geom)) AS xmin, ST_YMin(ST_Extent(geom)) AS ymin,
+                   ST_XMax(ST_Extent(geom)) AS xmax, ST_YMax(ST_Extent(geom)) AS ymax,
+                   COUNT(*) OVER() AS match_count
+            FROM {table}
+            WHERE {where}
+            GROUP BY {', '.join(cols)}
+            ORDER BY {', '.join(cols)}
+            LIMIT 12
+            """,
+            *params,
+        )
+    except asyncpg.exceptions.UndefinedTableError:
+        logger.warning("Admin boundary table missing: %s", table)
+        return {"status": "not_found", "admin_level": level}
+    if not rows:
+        return {"status": "not_found", "admin_level": level}
+    total = int(rows[0]["match_count"])
+
+    if not all_units and total > 1:
+        # Several units share the name: deliver none of them and say where each one is.
+        return {
+            "status": "ambiguous",
+            "admin_level": level,
+            "admin_name": rows[0][name_col],
+            "given": {col.removesuffix("_name"): value for col, value in parents.items()},
+            "match_count": total,
+            "candidates": [_place(row, cols) for row in rows],
+        }
+
+    # The layer stores its query as SQL text, so values are inlined as escaped literals.
+    sql_filters = [
+        f"LOWER({col}) = LOWER({_admin_sql_literal(value)})"
+        for col, value in ([(name_col, name)] if not all_units else []) + list(parents.items())
+    ]
+    query = (
+        f"SELECT ROW_NUMBER() OVER()::bigint AS id, {', '.join(cols)}, geom "
+        f"FROM {table} WHERE {' AND '.join(sql_filters) or 'TRUE'}"
+    )
+    if all_units:
+        extent = await conn.fetchrow(
+            f"""
+            SELECT ST_XMin(ST_Extent(geom)) AS xmin, ST_YMin(ST_Extent(geom)) AS ymin,
+                   ST_XMax(ST_Extent(geom)) AS xmax, ST_YMax(ST_Extent(geom)) AS ymax
+            FROM {table} WHERE {where}
+            """,
+            *params,
+        )
+    else:
+        extent = rows[0]
+    bounds = [float(extent["xmin"]), float(extent["ymin"]), float(extent["xmax"]), float(extent["ymax"])]
+    display_name = f"{level.title()} Boundaries" if all_units else str(rows[0][name_col])
+    within = (
+        {col.removesuffix("_name"): value for col, value in parents.items()}
+        if all_units
+        else {k: v for k, v in _place(rows[0], cols).items() if k != "name"}
+    )
+    return {
+        "status": "success",
+        "admin_level": level,
+        "admin_name": display_name,
+        "within": within,
+        "query": query,
+        "bounds": bounds,
+        "feature_count": total if all_units else 1,
+        "attribute_columns": list(cols),
+        "layer_name": display_name if all_units else f"{display_name} {level.title()} Boundary",
+    }
+
+
+def _parents_text(row, parent_cols: tuple[str, ...]) -> str:
+    """"Gatare sector, Nyamagabe district" for a row's parent columns."""
+    return ", ".join(f"{row[col]} {col.removesuffix('_name')}" for col in parent_cols)
+
+
+async def _not_found_message(conn, levels: list[str], name: str, given: dict[str, str]) -> str:
+    """Why nothing matched: a named parent that does not exist, the places a unit of that name
+    really is in, or the closest real names."""
+    level_text = " or ".join(levels) if len(levels) < 3 else ", ".join(levels[:-1]) + " or " + levels[-1]
+    parents = {col: value for col, value in given.items() if col.removesuffix("_name") in _LIST_SPEC}
+    if parents:
+        for col, value in parents.items():
+            table, name_col, _ = _LIST_SPEC[col.removesuffix("_name")]
+            if not await conn.fetchval(f"SELECT 1 FROM {table} WHERE lower({name_col}) = lower($1) LIMIT 1", value):
+                close = await _close_names(conn, table, name_col, value)
+                hint = f" Did you mean {', '.join(close)}?" if close else ""
+                return f"There is no {col.removesuffix('_name')} named {value!r} in Rwanda.{hint}"
+        if name.lower() not in ALL_UNITS:
+            where_text = ", ".join(f"{value} {col.removesuffix('_name')}" for col, value in parents.items())
+            elsewhere: list[str] = []
+            for level in levels:
+                table, name_col, parent_cols = _SHOW_SPEC[level]
+                if not parent_cols:
+                    continue
+                rows = await conn.fetch(
+                    f"SELECT DISTINCT {name_col}, {', '.join(parent_cols)} FROM {table} "
+                    f"WHERE lower({name_col}) = lower($1) ORDER BY {', '.join(parent_cols)} LIMIT 6",
+                    name,
+                )
+                elsewhere += [f"{row[name_col]} {level} ({_parents_text(row, parent_cols)})" for row in rows]
+            found = f" Elsewhere: {'; '.join(elsewhere[:6])}{'; ...' if len(elsewhere) > 6 else ''}." if elsewhere else ""
+            return f"There is no {level_text} named {name!r} in {where_text}.{found}"
+    close: list[str] = []
+    for level in levels:
+        table, name_col, _ = _SHOW_SPEC[level]
+        close += [n for n in await _close_names(conn, table, name_col, name) if n not in close]
+    hint = f" Did you mean {', '.join(close[:3])}?" if close else ""
+    return f"There is no Rwanda {level_text} named {name!r}.{hint}"

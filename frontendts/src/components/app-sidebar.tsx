@@ -1,11 +1,9 @@
 import { AccountMenu, OrgSwitcher } from '@mundi/ee';
-import { House, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { House, Mountain, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import MDarkSvg from '@/assets/M-dark.svg';
-import MLightSvg from '@/assets/M-light.svg';
-import MundiDarkSvg from '@/assets/Mundi-dark.svg';
-import MundiLightSvg from '@/assets/Mundi-light.svg';
+import { IngabeIcon, IngabeWordmark } from '@/components/Brand';
+import { OPEN_INDUSTRY_PICKER } from '@/components/IndustryGate';
 import { Button } from '@/components/ui/button';
 import {
   Sidebar,
@@ -29,7 +27,7 @@ export function AppSidebar() {
   const { state, toggleSidebar } = useSidebar();
   const { allProjects, allProjectsLoading } = useProjects();
 
-  const recentProjects: MapProject[] = allProjects
+  const recentProjects: MapProject[] = [...allProjects] // sort a copy: the array belongs to the query cache
     .sort(
       (a, b) => new Date(b.most_recent_version?.last_edited || '').getTime() - new Date(a.most_recent_version?.last_edited || '').getTime(),
     )
@@ -41,8 +39,7 @@ export function AppSidebar() {
         {state === 'collapsed' ? (
           <>
             <a href="/" className="w-8 h-8">
-              <img src={MLightSvg} alt="M" className="w-full h-full dark:hidden" />
-              <img src={MDarkSvg} alt="M" className="w-full h-full hidden dark:block" />
+              <IngabeIcon className="w-full h-full" />
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -57,9 +54,9 @@ export function AppSidebar() {
           </>
         ) : (
           <div className="flex items-center justify-between w-full">
-            <a href="/" className="h-8 flex items-center">
-              <img src={MundiLightSvg} alt="Ingabe" className="h-full dark:hidden" />
-              <img src={MundiDarkSvg} alt="Ingabe" className="h-full hidden dark:block" />
+            <a href="/" className="h-8 flex items-center gap-2.5">
+              <IngabeIcon className="h-7 w-7" />
+              <IngabeWordmark className="text-[19px]" />
             </a>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -107,6 +104,19 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton tooltip="Your industry" onClick={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))}>
+                  <Mountain className="w-4 h-4 mr-2" />
+                  <span className="text-sm">Your industry</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <Suspense fallback={null}>
           <OrgSwitcher />
           <AccountMenu />
@@ -116,12 +126,11 @@ export function AppSidebar() {
         <div className="text-center">
           <span className="text-muted-foreground text-xs">
             {state === 'collapsed' ? (
-              <>
-                <img src={MLightSvg} alt="Ingabe" className="w-6 h-6 mx-auto my-2 dark:hidden" />
-                <img src={MDarkSvg} alt="Ingabe" className="w-6 h-6 mx-auto my-2 hidden dark:block" />
-              </>
+              <IngabeIcon className="w-6 h-6 mx-auto my-2" />
             ) : (
-              '© Ingabe 2025'
+              <a href={import.meta.env.VITE_NOZA_SITE_URL || 'https://nozalabs.rw'} className="hover:text-foreground">
+                © {new Date().getFullYear()} Noza Labs
+              </a>
             )}
           </span>
         </div>

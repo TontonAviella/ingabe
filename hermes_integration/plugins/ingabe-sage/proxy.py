@@ -151,17 +151,18 @@ def proxy_tool_call(
         )
 
     ctx = get_ingabe_context(required=False)
-    if ctx is None or ctx.partner_id is None or ctx.conversation_id is None:
-        # We can't dispatch without (partner_id, user_id, conversation_id) —
-        # mundi-app needs those to set RLS GUCs and link results to the chat.
+    if ctx is None or not ctx.user_uuid or ctx.conversation_id is None:
+        # We can't dispatch without (user_id, conversation_id): mundi-app needs
+        # them to set RLS GUCs and link results to the chat. A partner is
+        # optional: a user in their personal workspace has none, and mundi-app
+        # then scopes by user only, as the in-process loop does (audit R2-10).
         # Surface this clearly so the LLM can apologize rather than retry.
         return _error(
             "context_missing",
             tool_name,
             (
-                "No IngabeContext available — partner_id, user_id, and "
-                "conversation_id are required to dispatch tools but were not "
-                "set by the caller."
+                "No IngabeContext available — user_id and conversation_id are "
+                "required to dispatch tools but were not set by the caller."
             ),
             have_user_uuid=(ctx.user_uuid if ctx else None),
             have_partner_id=(ctx.partner_id if ctx else None),
@@ -169,7 +170,7 @@ def proxy_tool_call(
         )
 
     payload = {
-        "partner_id": ctx.partner_id,
+        "partner_id": ctx.partner_id or "",
         "user_id": ctx.user_uuid,
         "conversation_id": str(ctx.conversation_id),
         "tool_name": tool_name,

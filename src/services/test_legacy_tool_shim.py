@@ -10,8 +10,10 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
+from src.services import isdasoil_service
 from src.services.legacy_tool_shim import (
     LEGACY_HANDLERS,
     LegacyToolContext,
@@ -208,6 +210,22 @@ async def test_internal_rwanda_connection_only_reads_rwanda_tables():
     result = await execute_legacy_tool("new_layer_from_postgis", ctx)
     assert result["status"] == "error"
     assert "user_mundiai_maps" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_soil_properties_gives_sage_the_likely_range(monkeypatch):
+    """Sage reads the soil result as the service returns it: phosphorus comes with
+    its likely range, not the old "10.59 ± 0.13 ppm", and the result says what the
+    range means. Raw band means read at Cyampirita on 2026-10-06."""
+    monkeypatch.setattr(isdasoil_service, "_read_point",
+                        lambda url, lon, lat, buffer_m=150.0: np.array([24.5, 23.53, 1.21, 1.19]))
+    result = await execute_legacy_tool("get_soil_properties", _make_ctx({
+        "longitude": 30.4245, "latitude": -1.6969, "properties": ["phosphorous_extractable"],
+    }))
+    phosphorus = result["properties"]["phosphorous_extractable"]
+    assert (phosphorus["value"], phosphorus["likely_range"]) == (10.59, [9.27, 12.08])
+    assert "uncertainty" not in phosphorus
+    assert "68%" in result["spread_note"]
 
 
 def _areas(n: int) -> list[dict[str, Any]]:

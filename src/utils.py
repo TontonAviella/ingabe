@@ -2,7 +2,6 @@ import os
 import logging
 import boto3
 import tempfile
-import zipfile
 import shutil
 import aioboto3
 import asyncio
@@ -13,6 +12,7 @@ from functools import lru_cache
 from openai import AsyncOpenAI
 from fastapi import HTTPException, Request, status
 from src.llm_defaults import DEFAULT_CHAT_MODEL, resolve_chat_endpoint
+from src.upload.archive import extract_zip
 
 
 def generate_id(length=12, prefix=""):
@@ -135,8 +135,7 @@ async def process_zip_with_shapefile(zip_file_path):
     temp_dir = tempfile.mkdtemp()
 
     try:
-        with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
+        extract_zip(zip_file_path, temp_dir)
 
         # Find all .shp files in the extracted directory, excluding __MACOSX folders
         shp_files = []
@@ -192,8 +191,7 @@ def process_kmz_to_kml(kmz_file_path):
     temp_dir = tempfile.mkdtemp()
 
     try:
-        with zipfile.ZipFile(kmz_file_path, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
+        extract_zip(kmz_file_path, temp_dir)
 
         # Find the first .kml file in the extracted directory
         kml_file = None

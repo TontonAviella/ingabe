@@ -1,0 +1,459 @@
+{
+  "about": "What the picture finder was measured to do for each kind of object, and the highest answer level that evidence supports today. Read by src/services/answer_levels.py; rules in docs/rules/ANSWER_LEVELS_RULES.md. Every number was measured on 2026-10-11 with YOLOE-11s (yoloe-11s-seg) visual prompts and scored as AP50 against people's boxes. Each 'evidence' selects the rows of answer_levels_evidence.json (copied from the measuring session's results) that a value is the mean of; src/services/test_answer_levels.py checks every value, picture count and finder size against them. The scripts and pictures are NOT in this repository, so the numbers cannot be re-run from the repo yet. view is which way the measured pictures looked (oblique: photos taken at an angle, the tower photos; nadir: straight down, orthophoto and UAV tiles), read from each dataset's description; image_px is the long side of the measured pictures as given; finder_input_px is the size the finder read them at (it scales the long side to that size). size_evidence names the sets of marked pictures in answer_levels_evidence.json that the size gate's floor is taken from. suggestion_filter says whether the example finder filters its suggestions for the target (src/services/example_finder.py, filter_suggestions): on only where the filter was measured on the target's own pictures, marks and finder size and did not lower AP50; its evidence selects the raw and filtered rows of that run, and a target never measured with it has it off.",
+  "targets": {
+    "tower_dish": {
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "mw", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_dish"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.889, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_dish"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'mw'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
+      "noun": "dishes",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 1280 and 2304 px: the same score (0.745), so 1280. Look-alike marks did not help dishes (2 draws on 24 pictures: 0.653 with, 0.660 without)."},
+      "suggestion_filter": {"on": false, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_mw", "imgsz": 1280}, "note": "Measured on the same 20 photos and marks: AP50 0.745 without the filter, 0.734 with it. AP50 fell, so it is off: it is on only where AP50 did not fall (precision rose and recall held; see docs/rules/EXAMPLE_FINDER_RULES.md)."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_mw"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 1333,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.745,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_mw", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": [
+        {"setting": "read at 2304 px", "value": 0.745, "evidence": {"source": "results/scale.jsonl", "task": "tower_mw", "imgsz": 2304}},
+        {"setting": "with look-alike marks, 2 draws, 24 pictures", "value": 0.653, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_mw", "method": "with look-alike"}},
+        {"setting": "without look-alike marks, the same 2 draws", "value": 0.66, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_mw", "method": "alone"}}
+      ]
+    },
+    "tower_antenna": {
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "antenna", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_antenna"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.952, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_antenna"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'antenna'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
+      "noun": "antennas",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280 px only. Look-alike marks helped in 2 of 2 draws (0.677 with, 0.657 without)."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_antenna", "imgsz": 1280}, "note": "Measured on the same 15 photos and marks, without look-alike marks: AP50 0.695 without the filter, 0.711 with it. Not measured together with look-alike marks."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_antenna"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 15,
+        "image_px": 1333,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.695,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_antenna", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Only 15 test photos have 4 or more antennas (3 to mark, at least 1 to find)."
+      },
+      "also_measured": [
+        {"setting": "with look-alike marks, 2 draws", "value": 0.677, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_antenna", "method": "with look-alike"}},
+        {"setting": "without look-alike marks, the same 2 draws", "value": 0.657, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_antenna", "method": "alone"}}
+      ]
+    },
+    "tower_radio_unit": {
+      "detector": {"model": "own:rfdetr-small-towers-2026-10-12", "class": "rru", "max_level": "FULL_REVIEW", "size_evidence": ["rf_tower_radio_unit"], "measured": {"dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos; Roboflow cell-tower-detection-ntv32 v1, MIT)", "view": "oblique", "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)", "n_images": 60, "image_px": 1333, "finder_input_px": 1333, "date": "2026-10-13", "metric": "AP50 against people's boxes on the held-out test split", "value": 0.562, "evidence": {"source": "kaggle_rfdetr/onnx_predict.py", "task": "own_tower_radio_unit"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site. The same recipe trained on one site and tested on another (152 photos, 2026-10-12) scored antennas 0.858, dishes 0.807, radio units 0.545."}, "note": "Our own trained detector (class 'rru'); a person still checks every box it suggests. It runs on this server: the photos stay here."},
+      "noun": "radio units",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": true, "note": "Read at 1280, 2560 and 3200 px: 2560 scored best. Look-alike marks helped in 4 of 4 runs (3 draws of 3 marks: 0.325 with, 0.280 without)."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "tower_rru", "imgsz": 2560}, "note": "Measured on the same 14 photos and marks read at 2560 px, without look-alike marks: AP50 0.291 without the filter, 0.309 with it. Not measured together with look-alike marks."},
+      "max_level": "FULL_REVIEW",
+      "size_evidence": ["tower_rru"],
+      "measured": {
+        "dataset": "celltower test set (celltower_1333, 1333 x 750 px tower photos)",
+        "view": "oblique",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 14,
+        "image_px": 1333,
+        "finder_input_px": 2560,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.291,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "tower_rru", "model": "yoloe-11s-seg.pt", "imgsz": 2560},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Only 14 test photos have 4 or more radio units."
+      },
+      "also_measured": [
+        {"setting": "read at 1280 px", "value": 0.246, "evidence": {"source": "results/scale.jsonl", "task": "tower_rru", "imgsz": 1280}},
+        {"setting": "read at 3200 px", "value": 0.194, "evidence": {"source": "results/scale.jsonl", "task": "tower_rru", "imgsz": 3200}},
+        {"setting": "with look-alike marks, 3 draws", "value": 0.325, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_rru", "method": "with look-alike", "k": 3}},
+        {"setting": "without look-alike marks, the same 3 draws", "value": 0.28, "evidence": {"source": "results/lookalike_towers.jsonl", "task": "tower_rru", "method": "alone", "k": 3}}
+      ]
+    },
+    "building": {
+      "noun": "buildings",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only; look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
+      "max_level": "ROUGH",
+      "size_evidence": ["kenol_building"],
+      "measured": {
+        "dataset": "Kenol tiles (512 px), 8.8 cm per pixel",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 512,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.525,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "kenol_building", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "maize_seedling": {
+      "detector": {"model": "roboflow:sam3/sam3_final", "class": "seedling", "max_level": "FULL_REVIEW", "size_evidence": ["rf_maize_seedling"], "measured": {"dataset": "INRAe UAVmulticrop, Nerac, Blois and Selommes (640 px tiles, 12 per field)", "view": "nadir", "protocol": "SAM 3 (sam3/sam3_final) with the typed prompt 'seedling', no marks, through Roboflow's hosted workflow (confidence 0.05)", "n_images": 36, "image_px": 640, "finder_input_px": 640, "date": "2026-10-12", "metric": "AP50 against people's boxes", "value": 0.741, "evidence": {"source": "roboflow/sam3_run.py", "task": "rf_maize_seedling"}, "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)", "note": "By field: Nerac 0.874, Blois 0.747, Selommes 0.638 (smallest plants). The prompt was chosen among 4 on 6 other squares of the same fields: 'maize seedling' scored 0.28 there, so the words matter."}, "note": "SAM 3 with a typed prompt (the class is the prompt); a person still checks every box it suggests. Used only while HOSTED_FINDER is on: the photos then go to Roboflow."},
+      "noun": "maize plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "640 px tiles read at 640 and 1280 px: 1280 scored better on both fields (Selommes at 1920 px: 0.469, but 52 s per picture). Look-alike marks not tried."},
+      "suggestion_filter": {"on": true, "evidence": {"source": "results/postfilter.jsonl", "task": "maize_nerac", "imgsz": 1280}, "note": "Measured on Nerac only, the same 20 tiles and marks read at 1280 px: AP50 0.787 without the filter, 0.821 with it. Selommes was not measured with the filter."},
+      "max_level": "ROUGH",
+      "size_evidence": ["maize_nerac", "maize_selommes"],
+      "measured": {
+        "dataset": "INRAe UAVmulticrop, Nerac (640 px tiles)",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 640,
+        "finder_input_px": 1280,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.787,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "maize_nerac", "model": "yoloe-11s-seg.pt", "imgsz": 1280},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "Plants about 116 px across as the finder read them. Smaller plants (Selommes, about 53 px) scored 0.437 at the same settings, which still supports a rough number; the size floor covers both fields."
+      },
+      "also_measured": [
+        {"setting": "Nerac read at 640 px", "value": 0.573, "evidence": {"source": "results/scale.jsonl", "task": "maize_nerac", "imgsz": 640}},
+        {"setting": "INRAe UAVmulticrop, Selommes, 20 tiles of 640 px read at 1280 px", "value": 0.437, "evidence": {"source": "results/yoloe26.jsonl", "task": "maize_selommes", "model": "yoloe-11s-seg.pt", "imgsz": 1280}},
+        {"setting": "Selommes read at 640 px", "value": 0.277, "evidence": {"source": "results/scale.jsonl", "task": "maize_selommes", "imgsz": 640}},
+        {"setting": "Selommes read at 1920 px", "value": 0.469, "evidence": {"source": "results/scale.jsonl", "task": "maize_selommes", "imgsz": 1920}}
+      ]
+    },
+    "row_crop_plant": {
+      "noun": "plants",
+      "kind": "annual_crop",
+      "object_size_m": null,
+      "object_size_note": "Changes with the plants' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (585 px tiles); other sizes and look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
+      "max_level": "ROUGH",
+      "size_evidence": ["field_cotton"],
+      "measured": {
+        "dataset": "cotton and weed UAV tiles (585 px), cotton boxes",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 585,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.533,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "field_cotton", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": null
+      },
+      "also_measured": []
+    },
+    "weed": {
+      "noun": "weeds",
+      "kind": "weed",
+      "object_size_m": null,
+      "object_size_note": "Changes with the weeds' age; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "585 px tiles read at 640 and 896 px: 896 scored slightly better. Marking cotton as the look-alike did not help: on the 20 test tiles 0.448 with, 0.447 without (only 2 had cotton to mark); on 20 tiles holding both weeds and cotton it hurt, 0.152 with, 0.200 without (fewer wrong boxes, more weeds missed)."},
+      "suggestion_filter": {"on": false, "evidence": {"source": "results/postfilter.jsonl", "task": "field_weed", "imgsz": 896}, "note": "Measured on the same 20 tiles and marks read at 896 px: AP50 0.447 without the filter, 0.402 with it. Worse, so it is off."},
+      "max_level": "ROUGH",
+      "size_evidence": ["field_weed"],
+      "measured": {
+        "dataset": "cotton and weed UAV tiles (585 px), weed boxes; the same tiles as row_crop_plant",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 585,
+        "finder_input_px": 896,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.447,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "field_weed", "model": "yoloe-11s-seg.pt", "imgsz": 896},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "The labels are incomplete: weeds nobody boxed count as false finds, so the true score is likely higher."
+      },
+      "also_measured": [
+        {"setting": "read at 640 px", "value": 0.428, "evidence": {"source": "results/scale.jsonl", "task": "field_weed", "imgsz": 640}},
+        {"setting": "with cotton marked as the look-alike", "value": 0.448, "evidence": {"source": "results/contrast.jsonl", "task": "field_weed", "method": "with look-alike"}}
+      ]
+    },
+    "tree_crown_forest": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (400 px tiles); look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": "NEON TEAK (400 px tiles)",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 3 marks on the same picture",
+        "n_images": 20,
+        "image_px": 400,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.216,
+        "evidence": {"source": "results/yoloe26.jsonl", "task": "trees_forest", "model": "yoloe-11s-seg.pt", "imgsz": 640},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "too few crowns were found one by one for even a rough number, and no answer about the area they cover has been measured"
+      },
+      "also_measured": []
+    },
+    "tree_crown_savanna": {
+      "noun": "tree crowns",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Read at 640 px only (370-400 px tiles); look-alike marks not tried."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": "NEON SJER (370-400 px tiles)",
+        "view": "nadir",
+        "protocol": "YOLOE-11s visual prompts, 10 marks taken from OTHER pictures (not the same picture), mean of 3 draws",
+        "n_images": 41,
+        "image_px": 400,
+        "finder_input_px": 640,
+        "date": "2026-10-11",
+        "metric": "AP50 against people's boxes",
+        "value": 0.059,
+        "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 10},
+        "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+        "note": "almost no crowns were found one by one (marks came from other pictures, unlike every other target), and no answer about the area they cover has been measured"
+      },
+      "also_measured": [
+        {"setting": "5 marks from other pictures, mean of 3 draws", "value": 0.031, "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 5}},
+        {"setting": "1 mark from another picture, mean of 3 draws", "value": 0.003, "evidence": {"source": "results/scores.jsonl", "task": "trees_savanna", "k": 1}}
+      ]
+    },
+    "banana_mat": {
+      "noun": "banana mats",
+      "kind": "perennial_crown",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {"model": "yoloe-11s-seg", "look_alike_marks": false, "note": "Never run on banana mats."},
+      "suggestion_filter": {"on": false, "evidence": null, "note": "Not measured with the suggestion filter, so it is off."},
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested: there is no answer key (no pictures with people's boxes around banana mats)"
+      },
+      "also_measured": []
+    },
+    "power_pylon": {
+      "noun": "pylons",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
+        "class": "pylon",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_pylon"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-13",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.989,
+          "evidence": {
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_pylon"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "Our own trained detector (class 'pylon'); a person still checks every box it suggests. It runs on this server: the photos stay here."
+      }
+    },
+    "power_insulator": {
+      "noun": "insulators",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
+        "class": "insulator",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_insulator"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-13",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.869,
+          "evidence": {
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_insulator"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "Our own trained detector (class 'insulator'); a person still checks every box it suggests. It runs on this server: the photos stay here."
+      }
+    },
+    "power_nest": {
+      "noun": "bird nests",
+      "kind": "structure",
+      "object_size_m": null,
+      "object_size_note": "No size on the ground measured; the gate uses the user's marks.",
+      "finder": {
+        "model": "yoloe-11s-seg",
+        "look_alike_marks": false,
+        "note": "The example finder was never measured on power line parts; only the trained detector finds them."
+      },
+      "suggestion_filter": {
+        "on": false,
+        "evidence": null,
+        "note": "Never measured for this target, so off."
+      },
+      "max_level": "CANT_TELL",
+      "size_evidence": [],
+      "measured": {
+        "dataset": null,
+        "view": null,
+        "protocol": null,
+        "n_images": null,
+        "image_px": null,
+        "finder_input_px": null,
+        "date": null,
+        "metric": null,
+        "value": null,
+        "evidence": null,
+        "where": null,
+        "note": "untested with the example finder: only the trained detector (detector) was measured"
+      },
+      "also_measured": [],
+      "detector": {
+        "model": "own:rfdetr-small-powerlines-2026-10-12",
+        "class": "nest",
+        "max_level": "FULL_REVIEW",
+        "size_evidence": [
+          "rf_power_nest"
+        ],
+        "measured": {
+          "dataset": "power line test set (Roboflow nests-towers-insulators-7d9vg v2, 640 x 640 px drone photos, CC BY 4.0)",
+          "view": "oblique",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
+          "n_images": 40,
+          "image_px": 640,
+          "finder_input_px": 640,
+          "date": "2026-10-13",
+          "metric": "AP50 against people's boxes on the held-out test split",
+          "value": 0.958,
+          "evidence": {
+            "source": "kaggle_rfdetr/onnx_predict.py",
+            "task": "own_power_nest"
+          },
+          "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
+          "note": "Test photos come from the same sites as the training photos (no site-wise split), so this is optimistic for a new site."
+        },
+        "note": "Our own trained detector (class 'nest'); a person still checks every box it suggests. It runs on this server: the photos stay here."
+      }
+    }
+  }
+}

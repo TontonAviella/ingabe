@@ -1,0 +1,94 @@
+# Photo inspections: rules
+
+Owner: `src/services/photo_inspections.py` (CODING_STANDARDS.md, H1). Upload wiring: `src/upload/registry.py`
+(`handler_for`) and `src/upload/handlers/photo_set_handler.py`. Viewing a photo: `GET /api/layer/{layer_id}/photos/{sha256}`
+in `src/routes/layer_router.py`. Switch: `PHOTO_INSPECTIONS` (off by default; read only by `photo_inspections.enabled()`).
+
+## What becomes a photo inspection
+
+- A ZIP with at least one photo (`.jpg`, `.jpeg`, `.png`, any case) and no `.shp` file. A zipped shapefile keeps the
+  vector path exactly. Other files in the ZIP (flight logs, videos) are not unpacked and not part of the inspection.
+  macOS metadata (`__MACOSX/`, `._name`) is never a photo.
+- A single JPG/PNG that GDAL cannot place on the map (`gdalinfo` gives no `wgs84Extent` and no coordinate system)
+  becomes a 1-photo inspection.
+- With the switch off: a ZIP without a shapefile is refused as before (400), and a JPG/PNG with no map position is
+  refused with 400 "This photo has no map position..." (it used to become a raster whose bounds were its pixel
+  corners, e.g. `[0, 3648, 5472, 0]`, which broke the map style). Georeferenced rasters are unchanged either way.
+- 3D models: Ingabe takes 3D only as a point cloud, a LAS or LAZ file (Roger, 2026-10-11). A ZIP that holds a 3D
+  model (`model_in`: a file with a `MODEL_EXTENSIONS` extension such as `.fbx`, `.glb`, `.obj`; a ZIP in a `source/`
+  folder, as model downloads package one; pictures in a `textures/` folder) and has no photo with a GPS position is
+  refused with 400 "This ZIP is a 3D model, not photos: it holds ... Ingabe takes 3D only as a LAS or LAZ point cloud;
+  for a photo inspection, upload the photos with their GPS.", naming the file or folder. Only names are read: a ZIP
+  inside the ZIP is not opened. With the switch on, a ZIP holding a model and no photo and no shapefile goes to the
+  photo path for this message (`is_model_archive`; the vector path refused it too, as "no shapefile"). When a picture
+  cannot be read (or none can be unpacked), the same message replaces "<file> could not be read as a photo" only when
+  the ZIP has no photo outside a textures folder (`check_unreadable_not_a_model`): a ZIP with a photo anywhere else
+  keeps the message naming the file that failed, model files or not. A ZIP whose photos all read, at least one with a
+  GPS position, is accepted as before; model files in it are ignored. Nothing about what is accepted changed, and the
+  message gives no flight or data-collection instructions. With the switch off, a model ZIP gets the shapefile
+  message as before.
+- Out of scope for now: a dropped folder of photos (each photo becomes its own 1-photo inspection).
+
+## Limits (constants in the owner module)
+
+- At most `MAX_PHOTOS` = 1,000 photos and `MAX_UNPACKED_BYTES` = 15 GiB unpacked per inspection, counted by
+  `src/upload/archive.extract_zip` on the photos actually written (non-photo entries are not unpacked and do not count).
+  Past either limit: 413 with the reason.
+
+## Facts read from each photo
+
+`sha256, filename, width, height, taken_at, lat, lon, altitude_m, relative_altitude_m, gimbal_pitch, gimbal_yaw,
+flight_yaw, make, model, orientation`.
+
+- Read from the photo itself: EXIF (Pillow, headers only, pixels are never decoded) and the XMP packet as text
+  (DJI `drone-dji:RelativeAltitude`, `GimbalPitchDegree`, `GimbalYawDegree`, `FlightYawDegree`; any namespace prefix,
+  attribute or element form). No XML parser: no entity expansion, no new dependency. Only the first 256 KiB of the
+  packet is searched and a value is at most 64 characters, and both patterns start at a fixed character, so a crafted
+  packet (a 1 KB PNG can carry 1,000,000 characters) cannot hold the worker: the regex runs with the GIL held, so a
+  thread does not protect the event loop. A value past the first 256 KiB is not read (None).
+- The SHA-256 is `stored_files.file_sha256` (one owner for hashing a file).
+- Missing is None, never 0. A real 0 (altitude 0 m, pitch 0 degrees) is kept.
+- Position: EXIF GPS latitude/longitude with their N/S and E/W references. No position (None) when the coordinates
+  or a reference are missing, the receiver marked the fix void (`GPSStatus` = `V`), a value is not finite, or it is
+  off the globe. A fix of exactly 0, 0 is kept as a value (it is not treated as missing).
+- `altitude_m` is the GPS altitude (negative when `GPSAltitudeRef` says below sea level); `relative_altitude_m` is
+  DJI's height above the take-off point.
+- `taken_at` is ISO 8601 from `DateTimeOriginal` (else `DateTime`), with `OffsetTimeOriginal` when the camera wrote one;
+  an unparseable date is None.
+- `width`/`height` are the stored pixel size (EXIF orientation is not applied). `orientation` is the EXIF
+  orientation (1-8, None when absent); `upright_size` is (width, height) as the photo is shown, with a quarter turn
+  (orientations 5-8) swapping them. Boxes drawn on a photo (the tower work, the example finder) are in these upright
+  pixels, as a browser shows the photo and as the finder decodes it.
+- **Which way a photo looked** (`view_of`): from DJI's gimbal pitch only. Within `NADIR_WITHIN_DEG` (10 degrees)
+  of straight down (-90) it looked straight down (`answer_levels.NADIR`); any other pitch, at an angle (`OBLIQUE`).
+  A photo without a gimbal pitch (a phone, another camera) is not known (None), never guessed. The 10 degrees are a
+  cut-off set with the towers spec on 2026-10-11, not measured.
+- A file with a photo extension that Pillow cannot read fails the upload with 400 naming the file.
+
+## Placement and storage
+
+- At least one photo must have a GPS position, else 400 ("None of the N photos has a GPS position..." or, for one
+  photo, "This photo has no map position and no GPS position...").
+- Each original is stored once, streamed from disk, at `inspections/<project_id>/<layer_id>/<sha256><ext>` (`ext` the
+  original's, lower case). Every photo's facts, in upload order and also those without a GPS position (which the
+  camera points leave out), are kept beside them at `inspections/<project_id>/<layer_id>/facts.json`
+  (`save_facts` / `load_facts`; version 1). An inspection uploaded before 2026-10-11 has no facts file:
+  `load_facts` says None and the tower work asks for the photos to be uploaded again. Identical photos share one object. On the browser path (`upload-complete`) the uploaded ZIP
+  or photo under `uploads/` is deleted once the layer exists (`HandlerResult.keep_uploaded_file = False`); the other
+  path never stores it.
+- Photos go when their layer does not exist (`photo_inspections.forget_if_unused`, which deletes everything under the
+  layer's own prefix only while no `map_layers` row holds that layer id):
+  - the layer's row is deleted (layer removal, when no map version shows the layer any more; earlier map versions keep
+    the row, and with it the photos, like every other file of the layer);
+  - an upload creates no layer after photos were stored (a failure anywhere from storing the originals to committing
+    the row): both upload paths call `handler.discard`. A retried upload that fails because the layer already exists
+    leaves that layer's photos alone. A storage error while removing is logged; what is left is only storage.
+- The layer is a normal vector layer: one Point per photo with a position, properties = the facts + `photo_key`.
+  Its metadata holds `{"photo_inspection": {"photos", "with_gps", "without_gps": [filenames], "storage_prefix"}}`.
+- Camera points are not turned into Brain pages (they are not fields or places).
+
+## Viewing a photo
+
+- `GET /api/layer/{layer_id}/photos/{sha256}`: view rights on the layer's project (the layer-read dependency
+  `get_layer`), `sha256` = 64 lower-case hex characters (else 400), and only a key under the prefix recorded on that
+  layer and shaped `<prefix><sha256><photo ext>` is served (another layer's photo is 404). Switch off: 404.

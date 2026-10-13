@@ -1,33 +1,35 @@
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Instrument_Serif, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-export const dynamic = "force-dynamic";
+const display = Instrument_Serif({
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
+  variable: "--font-display",
+});
 
-const inter = Inter({ subsets: ["latin"] });
+const mono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-mono",
+});
 
 export const metadata: Metadata = {
-  title: "Noza Agricultural Intelligence",
-  description: "AI-powered agricultural intelligence platform for crop health analysis, drone imagery processing, and farm management",
-  keywords: ["agriculture", "AI", "crop health", "drone imagery", "farm management", "NDVI", "satellite imagery"],
+  title: "Noza Labs · Reading the land and the lines that cross it",
+  description:
+    "Drone and satellite intelligence for Rwanda's farms, towers and power lines. Every answer says how sure it is.",
+  keywords: ["drone", "agriculture", "Rwanda", "power line inspection", "tower inspection", "crop map", "Ingabe"],
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export const viewport: Viewport = {
+  themeColor: "#F6F1EB",
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-      <html lang="en">
-        <head>
-          <link
-            rel="stylesheet"
-            href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-            crossOrigin=""
-          />
-        </head>
-        <body className={inter.className}>{children}</body>
-      </html>
+    <html lang="en" className={`${display.variable} ${mono.variable}`}>
+      <body className="font-sans">{children}</body>
+    </html>
   );
 }

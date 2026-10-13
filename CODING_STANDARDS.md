@@ -83,7 +83,12 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
 | Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
+| Industries (the three industries; which capability serves which, and its switch; a user's, a company's and a project's industry; the industry the user works in now, which new projects take and the home lists) | `src/services/industry.py` | Rules in the module docstring (no rules doc yet) |
 | H3 aggregation / risk levels | `src/services/h3_spatial_insight.py` | `_risk_level` duplicated in `src/tools/raster_h3_context.py` |
+| Answer levels for objects the YOLOE visual-prompt finder (yoloe-11s-seg) finds in a picture (count / check / estimate / rough / area / can't tell; the per-target size gate in the finder's pixels; countability; measured limits per object kind) | `src/services/answer_levels.py` (+ `answer_levels_targets.json`, `answer_levels_evidence.json`), rules `docs/rules/ANSWER_LEVELS_RULES.md` | New 2026-10-11, behind `ANSWER_LADDER` (off). Scattered for other finders: `src/services/raster_object_candidates.py` and `src/routes/message_routes.py` (FastSAM candidates: `count_semantics`, `evidence_level`), `src/dependencies/sage_routing.py` (`candidate_count_until_validated`) and `src/services/plant_counts.py` (green crowns, 5 cm per pixel floor) word their own counts; they stay separate until their finder is measured, and `decide` refuses another finder's output |
+| Photo inspections (which uploads are photo sets, limits, photo facts from EXIF/XMP, storage keys, camera points) | `src/services/photo_inspections.py` | Rules: `docs/rules/PHOTO_INSPECTIONS_RULES.md` |
+| Tower inspections (a person's work on a photo inspection's photos per part: marks, look-alike marks from the measured settings, the finder's suggestions and their review; counted by you only after a full review, as `answer_levels.decide` allows; "at least N" across overlapping photos; photos to check; camera facts; the same site before; the tower cards and the facts Sage's tower tools read) | `src/services/tower_inspection.py` (+ `tower_cards.py`: the cards and Sage's facts), rules `docs/rules/TOWERS_RULES.md` | New 2026-10-11, behind `TOWERS` (off). Levels and the finder's settings are read from `answer_levels` / `example_finder`, never copied; the card status values are shared with the drone cards (`src/services/card_status.py`) |
+| Example finder ("mark 3, find the rest": YOLOE-11s visual prompts on the same picture as measured, only on pictures like the measured ones (view and size gate from `answer_levels`), the picture it reads, the one process the model runs in, jobs in one capped first-come line shared through Redis and finds kept per project) | `src/services/example_finder.py` (+ `example_finder_model.py`: the weights and the finder process; `example_finder_pictures.py`: picture sources and their coordinates), rules `docs/rules/EXAMPLE_FINDER_RULES.md` | New 2026-10-11, behind `EXAMPLE_FINDER` (off). Its settings per target are read from `answer_levels`, never copied. FastSAM candidates (`raster_object_candidates.py`) are another finder and stay separate |
 
 Add a row when a new domain appears. Each owner gets a rules doc under
 `docs/rules/<DOMAIN>_RULES.md` when it is consolidated.
@@ -174,6 +179,36 @@ One entry per real mistake: date, what went wrong, the rule that prevents
 it, and the gate if there is one. Newest first. Keep each entry to three
 lines; promote a lesson that recurs into the sections above.
 
+- **2026-10-12** The TOWERS switch leaked where a gate used `industry.serves` (industry only): replayed chat history kept tower counts
+  with the switch off, Hermes registered the tower tools for every project, and the routing eval sent farm cases the unfiltered tool
+  list. Rule: offering, running, replaying and showing follow `industry.available` (industry and switch). Gate: `industry-serves-gate`.
+- **2026-10-12** A router-level switch dependency runs after FastAPI parses the body, so a switched-off route answered bad JSON with a
+  422 that showed it exists. Rule: a switched route checks its switch before the body is read (`src/routes/switched_routes.py`).
+  Gate: malformed-body tests in `test_tower_routes.py`, `test_example_finder_routes.py`.
+- **2026-10-11** The example finder's docs said "the size gate in answer_levels refuses objects too small", but no code called it, so 2048 px
+  windows of 40 px plants ran far below the measured size; and its branch, rebuilt on an old base, deleted a function #177 had just started
+  calling. Rule: a claim that another module enforces something has a test that it is called; re-grep callers on the current base. Gate: size-gate tests in `test_example_finder.py`; review only for callers.
+- **2026-10-11** The example finder's FINDER_THREADS=1 still kept ~5.8 cores busy: Ultralytics' select_device resets torch to CPU-1 threads
+  on every model setup; and the spec's YOLO_OFFLINE=1 is not offline (Ultralytics 8.4 reads only "true"). Rule: a cap or switch handed to a
+  library is checked against the library (CPU time over wall time; the library's own flag), not assumed. Gate: `test_example_finder_model.py`, `test_example_finder.py`.
+- **2026-10-11** A regex reading the XMP packet of an uploaded photo backtracked quadratically (9.8 s on one crafted 60,000-letter
+  field); Python's `re` holds the GIL, so `asyncio.to_thread` did not keep the app answering. Rule: a regex run on uploaded text is
+  linear (anchored on a literal) and its input is length-capped. Gate: `test_a_crafted_xmp_packet_is_read_in_linear_time`.
+- **2026-10-08** "Remera sector in Gasabo district" drew all four Remera sectors: the admin parser dropped the parents after the level
+  word, and a name shared by several units was drawn in full ("Matches"). Rule: a request for one thing delivers exactly one or nothing, and
+  then says where each candidate is. Gate: `src/services/test_admin_boundary_resolve.py`, `tests/test_admin_boundary_one_unit.py`.
+- **2026-10-08** Changing `render_map_internal` to take a style dict, the caller search covered two callers; `basemap_routes` still passed a
+  string, and CI caught it (its local test was hidden by a cached thumbnail). Rule: a contract change lists every caller from a plain grep,
+  not the code index (GitNexus showed none), and runs each caller's test with caches empty. Gate: review only; `src/test_basemap.py` in CI.
+- **2026-10-08** Every project card showed the default basemap: the static renderer (no page origin, no session) cannot fetch the app's relative
+  `/api/layer/...` tile URLs, so any map with a drone raster or PostGIS layer failed with a RenderError, and the preview test mocked both the style
+  and the renderer. "Mocks match the real thing" is review only, so it did not fire. Gate: `tests/test_project_social_preview.py` (real upload + render).
+- **2026-10-07** drought_cache was empty: detect_drought returned numpy floats, psycopg2 wrote them as `np.float64(...)` and the weekly scan failed;
+  fixed as-is it would have published "Bugesera severe drought" from 13 weeks, VCI over one year reading the dry season as drought. Rules: values
+  leaving numpy for SQL or JSON are plain Python; an anomaly index compares the same season across years. Gate: `test_drought_seasonal_vci.py`.
+- **2026-10-07** Failed Sentinel-2 searches return `{"error": ...}`; SAR→NDVI training logged "0 observations" and four Sage tools said "no (cloud-free)
+  scenes", so an outage read as no data; drought also used `"error"` for "too few scenes". Rule: check a returned `"error"` first, and keep `"error"`
+  for failures (Fail fast; Missing is not zero). Gate: review only (needs to know which functions return error dicts); `test_sar_ndvi_search_errors.py`.
 - **2026-10-07** With the NDVI cache empty, every insurance report's NDVI z-score was a Sentinel-1 prediction (model fitted on the first place asked)
   scored against invented constants 0.45 +/- 0.15; it did not follow the real anomaly (r -0.01, docs/SAR_NDVI_SKILL.md) and fired a 0.8 trigger
   in rainy weeks. Second invented baseline after 2026-10-04: promoted to "Numbers shown to users come from a real source". Gate: engine test; review only elsewhere.
@@ -201,9 +236,15 @@ lines; promote a lesson that recurs into the sections above.
 - **2026-10-07** The live-database guard trusted an override flag (MUNDI_TEST_DB_IS_DISPOSABLE=1) that the CI command passes, so that
   command copied to a laptop would run the suite on mundidb. Rule: a guard that protects live data has no override a copied command
   can carry; CI gets its own database name. Gate: conftest `_refuse_the_live_database`, `tests/test_refuse_live_database.py`.
+- **2026-10-07** The drone crop map shipped a vision model's labels unmeasured: on unmistakable plots it was wrong 4 times in 9
+  (maize read as cassava). Rule: a model's labels are measured against checked examples before they show, abstain ("not sure")
+  when two independent looks disagree, and say the measured rate. Gate: review only (needs labelled examples per domain).
 - **2026-10-07** `get_cell_ndvi_stats` ran a blocking 40 s satellite read per sector inside `async def`: one Sage question froze
   every request (one uvicorn worker) for ~10 min, and no `wait_for` limit could fire. Rule: blocking I/O in async code goes
   through `asyncio.to_thread` with a cap and a deadline. Gate: review only (blocking calls hide behind library functions).
+- **2026-10-06** WorkOS signed users out 13 times in a day: zero JWT leeway against a clock 0.5-0.9 s off, and the SDK's refresh dropped new tokens
+  after spending the old refresh token; the mocked tests replaced `session.refresh` and saw none of it. Rule: token checks allow clock leeway, and code that
+  spends a single-use credential keeps what it got back before checking it. Gate: `test_workos_auth.py` / `test_workos_session.py` (real SDK, fake clock).
 - **2026-10-05** `src/duckdb.py` shadowed the `duckdb` package: src/ has no `__init__.py`, so pytest put it on sys.path and
   `import duckdb` in layer_describer loaded our module; once it stopped re-exporting duckdb names, attribute sampling failed silently.
   Rule: no module directly under src/ is named like a dependency. Gate: `shadow-package`.

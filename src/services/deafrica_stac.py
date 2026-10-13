@@ -48,7 +48,7 @@ import numpy as np
 
 from src.services import raster_process
 from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
-from src.services.stac_service import stac_datetime_interval
+from src.services.stac_service import SCL_UNUSABLE, stac_datetime_interval
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +68,6 @@ MAX_WINDOW_PIXELS = 4_000_000
 
 _STAC_ROOT = "https://explorer.digitalearth.africa/stac"
 _STAC_SEARCH = f"{_STAC_ROOT}/search"
-
-# SCL values that should be masked as invalid (matches EVALSCRIPT_AGRI_INDICES).
-# 0=nodata, 1=saturated, 3=cloudShadow, 8=cloudMed, 9=cloudHigh, 10=cirrus, 11=snow
-_SCL_INVALID = {0, 1, 3, 8, 9, 10, 11}
 
 # Index → required bands. B08 NIR, B04 Red, B03 Green, B02 Blue, B05 RedEdge, B11 SWIR1.
 _INDEX_BANDS: Dict[str, Tuple[str, ...]] = {
@@ -128,6 +124,10 @@ def _compute_index(bands: Dict[str, np.ndarray], index: str) -> np.ndarray:
     raise ValueError(f"Unsupported index '{index}' for DE Africa service")
 
 
+class DEAfricaSearchError(Exception):
+    """The DE Africa scene search failed, which is not the same as finding no scenes."""
+
+
 def _search_s2_items(
     bbox: Tuple[float, float, float, float],
     date_from: str,
@@ -140,6 +140,8 @@ def _search_s2_items(
     Uses GET against the collection /items endpoint — DE Africa's STAC
     server rejects POST /search with 403, but GET with query params works.
     Cloud-cover filter is applied client-side after the response lands.
+    Raises DEAfricaSearchError when the search fails (2026-10-07: it returned
+    [], which callers reported as "no scenes matched").
     """
     url = f"{_STAC_ROOT}/collections/s2_l2a/items"
     try:
@@ -159,8 +161,7 @@ def _search_s2_items(
         r.raise_for_status()
         features = r.json().get("features", [])
     except Exception as e:
-        logger.warning("DE Africa STAC search failed: %s", e)
-        return []
+        raise DEAfricaSearchError(f"DE Africa scene search failed: {e}") from e
     # Client-side cloud filter (collection /items endpoint does not
     # support CQL query params reliably across STAC servers).
     features = [
@@ -531,7 +532,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
@@ -580,7 +585,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays[next(iter(needed_bands))] > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays[next(iter(needed_bands))] > 0)
             idx_arr = _compute_index(band_arrays, index)
             stats = _stats_from_array(idx_arr, valid)
 
@@ -630,7 +635,11 @@ class DEAfricaSTACService:
         except Exception as e:
             return {"error": f"Invalid geometry: {e}"}
 
-        items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        try:
+            items = _search_s2_items(bbox, date_from, date_to, max_cloud=max_cloud)
+        except DEAfricaSearchError as e:
+            logger.warning("%s", e)
+            return {"error": str(e), "source": "deafrica_stac"}
         if not items:
             return {
                 "source": "deafrica_stac",
@@ -694,7 +703,7 @@ class DEAfricaSTACService:
                 xx = (np.arange(max_shape[1]) / xf).astype(int).clip(0, scl.shape[1] - 1)
                 scl = scl[yy[:, None], xx[None, :]]
 
-            valid = ~np.isin(scl, list(_SCL_INVALID)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
+            valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays.get("B04", np.zeros(max_shape)) > 0)
 
             dt = item["properties"].get("datetime", "")
             parsed: Dict[str, Any] = {

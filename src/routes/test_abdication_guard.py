@@ -22,7 +22,8 @@ class _FakeCompletions:
 
 
 def _client(completions):
-    return SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    # Like the real AsyncOpenAI client: the guard reads base_url to pick provider-only request fields.
+    return SimpleNamespace(base_url="https://openrouter.ai/api/v1/", chat=SimpleNamespace(completions=completions))
 
 
 def _response(*names):

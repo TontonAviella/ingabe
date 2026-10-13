@@ -16,17 +16,28 @@ import logging
 import math
 import os
 import tempfile
+from contextvars import ContextVar
 from datetime import date, datetime
 from typing import Optional
 
 import asyncpg
 
+from src.services import industry
 from src.services.brain_embeddings import embed_stale_if_pages_changed
 from src.services.brain_service import BrainService, PageInput, TimelineInput, _validate_slug
 
 logger = logging.getLogger(__name__)
 
 MAX_FEATURES_PER_LAYER = 500  # Cap to avoid creating thousands of pages
+
+# Whether the hook being processed came from an agriculture project. Farm page types ('field', 'farmer') pull in
+# the farm link vocabulary and field-in-district geometry edges, so other (or unknown) industries' uploads get
+# neutral types instead (audit 2026-10-09, round 2).
+_farm_hook: ContextVar[bool] = ContextVar("farm_hook", default=False)
+
+
+def _page_type(farm_type: str, neutral_type: str) -> str:
+    return farm_type if _farm_hook.get() else neutral_type
 
 
 async def process_pending_hooks(
@@ -46,6 +57,10 @@ async def process_pending_hooks(
         payload = hook["payload"] if isinstance(hook["payload"], dict) else json.loads(hook["payload"])
 
         try:
+            # Notes made from a project's upload belong to that project's industry; partner URLs stay general.
+            hook_industry = await _hook_industry(conn, hook_type, payload)
+            await conn.execute("SELECT set_config('app.industry', $1, false)", hook_industry or "")
+            _farm_hook.set(hook_industry == "agriculture")
             if hook_type == "vector_upload":
                 n = await _process_vector_hook(conn, brain, payload)
             elif hook_type == "raster_upload":
@@ -64,10 +79,29 @@ async def process_pending_hooks(
 
         except Exception as e:
             logger.exception("Hook %d (%s) failed", hook_id, hook_type)
+            await conn.execute("RESET app.industry")  # the hook row itself is worker bookkeeping
             await brain.fail_hook(conn, hook_id, str(e)[:500])
             failed += 1
+        finally:
+            await conn.execute("RESET app.industry")
+            _farm_hook.set(False)
 
     return {"processed": processed, "failed": failed, "skipped": skipped}
+
+
+async def _hook_industry(conn: asyncpg.Connection, hook_type: str, payload: dict) -> Optional[str]:
+    """The industry of the project an upload hook came from; None (general) for partner-wide hooks."""
+    if hook_type == "raster_upload" and payload.get("layer_id"):
+        return await industry.industry_of_layer(conn, payload["layer_id"])
+    if hook_type == "vector_upload":
+        if payload.get("connection_type") == "postgis" and payload.get("layer_id"):
+            project_id = await conn.fetchval(
+                "SELECT project_id FROM project_postgres_connections WHERE id = $1", payload["layer_id"])
+            return await industry.industry_of_project(conn, project_id)
+        layer_ids = payload.get("layer_ids") or []
+        if layer_ids:
+            return await industry.industry_of_layer(conn, layer_ids[0])
+    return None
 
 
 async def _process_vector_hook(
@@ -196,7 +230,7 @@ async def _create_pages_from_s3_vector(
                 # Build page content
                 name = _extract_feature_name(props, i, layer_name)
                 slug = _validate_slug(f"layer-{layer_id}-f{i}")
-                page_type = _infer_page_type(props, geometry_type)
+                page_type = _page_type(_infer_page_type(props, geometry_type), "asset")
                 truth = _build_feature_truth(props, layer_name, page_type)
                 geom_json = json.dumps(geom) if geom is not None else None
 
@@ -295,7 +329,7 @@ async def _create_layer_summary_page(
         conn,
         slug,
         PageInput(
-            type="field",
+            type=_page_type("field", "layer"),
             title=layer_name,
             compiled_truth=". ".join(truth_parts),
             frontmatter={"layer_id": layer_id, "source": "vector_upload"},
@@ -381,7 +415,7 @@ async def _process_raster_hook(
         conn,
         slug,
         PageInput(
-            type="field",
+            type=_page_type("field", "layer"),
             title=layer_name,
             compiled_truth=". ".join(truth_parts),
             frontmatter={

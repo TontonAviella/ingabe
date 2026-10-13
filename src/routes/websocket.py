@@ -85,9 +85,10 @@ DISCONNECT_TTL = 30.0  # Keep disconnected user data for 30 seconds
 MAX_MISSED_MESSAGES = 100  # Limit buffer size per user per conversation
 
 CHAT_CH = "chat_completion_messages_notify"
-REDIS_WS_CHANNEL = (
-    "ws:ephemeral"  # Redis Pub/Sub channel for cross-worker ephemeral messages
-)
+# Redis Pub/Sub channel for cross-worker ephemeral messages. Conversation ids are small serial numbers, so every
+# database that shares this Redis (the app and its test copies, or two deployments) gets its own channel: a shared
+# one delivered one database's live Sage text to another's conversation with the same number (audit 2026-10-09).
+REDIS_WS_CHANNEL = f"ws:ephemeral:{os.environ.get('POSTGRES_DB', 'mundidb')}"
 _REDIS_ORIGIN_ID = str(uuid.uuid4())
 chat_q: asyncio.Queue[str] = asyncio.Queue()
 

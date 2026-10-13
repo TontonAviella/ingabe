@@ -95,7 +95,7 @@ const LayerList: React.FC<LayerListProps> = ({
       return (
         <div
           className="w-4 h-4 rounded-sm border border-gray-500 flex-shrink-0"
-          style={{ background: 'linear-gradient(135deg, #4ade80 0%, #22d3ee 50%, #818cf8 100%)' }}
+          style={{ background: 'linear-gradient(135deg, #4a3326 0%, #a86c35 50%, #e9b987 100%)' }}
           title="Raster layer"
         />
       );

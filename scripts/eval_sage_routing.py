@@ -1,8 +1,8 @@
 """Sage routing eval: right first tool, right arguments, whole chains.
 
 Builds each turn's model request with the live code
-(src/dependencies/sage_turn_request.py, sage_routing.build_fast_tool_call /
-select_fast_raster_layer, DefaultMapStateProvider), sends it to the
+(src/dependencies/sage_turn_request.py, sage_routing.build_project_fast_tool_call /
+select_ready_fast_raster_layer, DefaultMapStateProvider), sends it to the
 configured model, and scores it against evals/sage_routing/cases/*.jsonl.
 See evals/sage_routing/README.md.
 
@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ RUNS_DIR = EVAL_DIR / "runs"
 # Same output budget the live loop asks for (message_routes
 # _DESIRED_OUTPUT_TOKENS). Reasoning models spend part of it thinking.
 MAX_TOKENS = 4096
+
+# Farm talk in a Power Grid or Telecom reply (scored as scoring.FARM_WORDING).
+FARM_WORDS = re.compile(r"\b(crops?|farm(s|ers?|ing|land)?|harvest|maize|beans|cassava|yield|NDVI|vegetation health|"
+                        r"irrigation|livestock|insurance payout)\b", re.IGNORECASE)
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
 # Stop (and allow --resume) after this many consecutive fully-errored cases:
 # usually the provider's daily request cap.
@@ -169,13 +174,38 @@ def map_layers(case: dict[str, Any]) -> list[dict[str, str]]:
             for layer in (case.get("map_state") or {}).get("layers", [])]
 
 
+# A raster on a case's map is a drone photo as the upload and the background COG job leave it
+# (src/upload/handlers/raster_handler.py, postgres_routes._background_generate_cog): it has a coordinate system
+# and a WGS84 outline, and its COG is ready. A case can say otherwise with "georeferenced": false (no coordinate
+# system: the upload marks crs_missing and the outline is the photo's pixel corners) or "cog": "generating" /
+# "failed".
+RASTER_BOUNDS = [30.0589, -1.9536, 30.0646, -1.9489]  # a small drone flight over Kigali, WGS84
+PHOTO_PIXEL_CORNERS = [0.0, 3000.0, 4000.0, 0.0]  # gdalinfo's corners of a 4000 x 3000 photo with no coordinates
+
+
+def map_rasters(case: dict[str, Any]) -> list[dict[str, Any]]:
+    """The map's rasters as message_routes._map_rasters returns them (layer_id, name, metadata, bounds)."""
+    rows = []
+    for layer in (case.get("map_state") or {}).get("layers", []):
+        if layer["type"] != "raster":
+            continue
+        layer_id = _layer_id(layer["name"])
+        georeferenced = layer.get("georeferenced", True)
+        cog = layer.get("cog", "ready")
+        metadata: dict[str, Any] = {"band_count": 4, "width": 4000, "height": 3000, "cog_status": cog}
+        metadata.update({"original_srid": 32735} if georeferenced else {"crs_missing": True})
+        if cog == "ready":
+            metadata.update(cog_key=f"cog/layer/{layer_id}.cog.tif", cog_srs="EPSG:3857")
+        rows.append({"layer_id": layer_id, "name": layer["name"], "metadata": metadata,
+                     "bounds": RASTER_BOUNDS if georeferenced else PHOTO_PIXEL_CORNERS})
+    return rows
+
+
 def map_description(case: dict[str, Any]) -> str:
     """Same structure as postgres_routes.get_map_description, with the
     project's internal Rwanda PostGIS connection every map gets."""
-    from src.routes.message_routes import (
-        INTERNAL_RWANDA_ALLOWED_TABLES,
-        RWANDA_INTERNAL_CONNECTION_NAME,
-    )
+    from src.database.rwanda_reader import INTERNAL_RWANDA_ALLOWED_TABLES
+    from src.routes.message_routes import RWANDA_INTERNAL_CONNECTION_NAME
 
     content = [
         f"<PostGISConnection id={EVAL_POSTGIS_ID}>",
@@ -292,6 +322,10 @@ async def run_attempt(
         if not calls:
             if step == 0:
                 first_tool = scoring.TEXT_ONLY
+                # Outside agriculture a reply about crops or farming is wrong even when no tool was expected.
+                if (case.get("industry") or "agriculture") != "agriculture" and \
+                        FARM_WORDS.search(getattr(message, "content", None) or ""):
+                    first_tool = scoring.FARM_WORDING
             break
         call = calls[0]
         called.append(call.function.name)
@@ -326,28 +360,54 @@ def fast_path_attempt(case: dict[str, Any], fast: Any) -> dict[str, Any]:
 
 def fast_path_applies(fast: Any, text: str, case: dict[str, Any]) -> bool:
     """Mirror message_routes' fall-through: raster fast paths need a matching
-    raster on the map; the admin-boundary path needs the map's project, which
-    every map has."""
+    raster on the map that has a place on the map and a ready COG; the
+    admin-boundary path needs the map's project, which every map has."""
     from src.dependencies.sage_routing import (
         ADMIN_BOUNDARY_TOOL,
         FAST_PATH_TOOLS,
-        select_fast_raster_layer,
+        select_ready_fast_raster_layer,
     )
 
     if fast is None or fast.tool_name not in FAST_PATH_TOOLS:
         return False
     if fast.tool_name == ADMIN_BOUNDARY_TOOL:
         return True
-    rasters = [layer for layer in map_layers(case) if layer["type"] == "raster"]
-    return select_fast_raster_layer(text, rasters) is not None
+    return select_ready_fast_raster_layer(text, map_rasters(case)) is not None
+
+
+def check_industry_cases(cases: list[dict[str, Any]]) -> set[str]:
+    """A non-agriculture case may expect only tools its industry is offered (a farm tool could never be right): the
+    corpus is wrong otherwise. A case whose expected tools are all behind a switch that is off (the tower tools
+    without TOWERS) cannot be answered by this run: its id is returned, to be skipped and recorded, not scored wrong."""
+    from src.services import industry
+
+    switched_off: set[str] = set()
+    for case in cases:
+        ind = scoring.case_industry_for(case)  # a case without one runs as agriculture: a tower case needs its label
+        expected = case["expect"].get("any_of") or []
+        refused = [t for t in expected if not industry.serves(t, ind)]
+        if refused:
+            raise scoring.CorpusError(f"{case['id']}: runs as {ind}, which is never offered {refused}")
+        if expected and not any(industry.switched_on(t) for t in expected):
+            switched_off.add(case["id"])
+    return switched_off
+
+
+def feature_switches() -> dict[str, bool]:
+    """Which switch-gated capabilities are on (TOWERS): a run records it, and a resume must match it."""
+    from src.services import industry
+
+    return {name: industry.switched_on(name) for name in sorted(industry.SWITCHES)}
 
 
 async def run(args: argparse.Namespace) -> Path:
     from src.dependencies.map_state import DefaultMapStateProvider
     from src.dependencies.pydantic_tools import get_pydantic_tool_calls
-    from src.dependencies.sage_routing import build_fast_tool_call
+    from src.dependencies.sage_routing import build_project_fast_tool_call
     from src.dependencies.sage_turn_request import build_sage_tools_payload, plan_sage_turn
+    from src.database.pool import set_request_industry
     from src.dependencies.system_prompt import get_system_prompt_provider
+    from src.services import industry
     from src.services.sage_flight_recorder import flush, sage_turn_trace
     from src.utils import get_chat_client_for_model
 
@@ -356,8 +416,15 @@ async def run(args: argparse.Namespace) -> Path:
         raise SystemExit("tool catalog drifted from tool_catalog.json; run `catalog` for details")
     raw = load_cases()
     scoring.validate_corpus(raw, known_tools(catalog))
-    cases = [scoring.effective_case(c, catalog) for c in raw]
+    switched_off = check_industry_cases(raw)
+    if switched_off:
+        logger.warning("skipping %d cases whose tools are switched off: %s", len(switched_off),
+                       ", ".join(sorted(switched_off)))
+    case_shas = {c["id"]: scoring.case_sha(c) for c in raw}
+    cases = [scoring.effective_case(c, catalog) for c in raw if c["id"] not in switched_off]
     if args.case:
+        if asked_off := sorted(set(args.case) & switched_off):
+            raise SystemExit(f"{', '.join(asked_off)}: its tools are switched off (set TOWERS=1 to run tower cases)")
         cases = [c for c in cases if c["id"] in set(args.case)]
     if args.kind:
         cases = [c for c in cases if scoring.case_kind(c) in set(args.kind)]
@@ -366,9 +433,10 @@ async def run(args: argparse.Namespace) -> Path:
 
     meta = {
         "variant": args.variant, "repeats": args.repeats, "model_only": args.model_only,
-        "concurrency": args.concurrency,
+        "concurrency": args.concurrency, "industry": args.industry,
         "model": os.environ.get("OPENAI_MODEL", ""), "corpus_sha": corpus_sha(),
         "git_sha": _git_sha(), "started_at": datetime.now(timezone.utc).isoformat(),
+        "switches": feature_switches(), "skipped_switched_off": sorted(switched_off),
     }
     records: list[dict[str, Any]] = []
     if args.resume:
@@ -377,7 +445,13 @@ async def run(args: argparse.Namespace) -> Path:
         meta = previous["meta"]
         if meta["corpus_sha"] != corpus_sha():
             raise SystemExit("cannot resume: the corpus changed since this run started")
+        if "switches" not in meta:
+            raise SystemExit("cannot resume: this run was started by an older harness (no switches recorded, farm "
+                             "cases were offered every tool); start a new run")
+        if meta["switches"] != feature_switches():
+            raise SystemExit(f"cannot resume: the run started with switches {meta['switches']}; set them the same")
         args.variant, args.repeats, args.model_only = meta["variant"], meta["repeats"], meta["model_only"]
+        args.industry = meta.get("industry")  # the cases without their own run as the run started
         records = previous["cases"]
     else:
         RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -419,7 +493,16 @@ async def run(args: argparse.Namespace) -> Path:
         history = case.get("history") or []
         user_msg = {"role": "user", "content": text}
         turn.set_input(text)
-        fast = None if args.model_only else build_fast_tool_call(text)
+        # The case's industry, as the live turn sets it: the prompt, the tools offered, the fast paths and the
+        # abdication guard all follow it (audit R1-33). Each case runs in its own task, so the scope is per case.
+        # A live project always has an industry, so a case without one runs as agriculture: offered the unfiltered
+        # list it would be given tools no farm project gets (the Telecom tower tools once TOWERS is on).
+        case_industry = scoring.case_industry_for(case, args.industry)
+        case = {**case, "industry": case_industry}
+        set_request_industry(case_industry)
+        case_tools = industry.tools_for(tools_payload, case_industry)
+        # The live gate: a fast path runs only when the project's industry may use its tool.
+        fast = None if args.model_only else build_project_fast_tool_call(text, case_industry)
         async with slots:
             if progress["errored_streak"] >= MAX_CONSECUTIVE_ERRORED_CASES:
                 return  # stopping; leave the case for --resume
@@ -428,24 +511,24 @@ async def run(args: argparse.Namespace) -> Path:
                 attempts = [fast_path_attempt(case, fast)] * args.repeats
                 turn.fast_path(fast.tool_name)
             else:
-                plan = plan_sage_turn(text, history + [user_msg], tools_payload,
+                plan = plan_sage_turn(text, history + [user_msg], case_tools,
                                       prompt_provider.get_system_prompt)
-                plan = await variant.prepare(plan, text, history, tools_payload)
+                plan = await variant.prepare(plan, text, history, case_tools)
                 shortlist_method = plan.shortlist
                 client, model = get_chat_client_for_model(None, plan.model_override or default_model)
                 turn.routing(user_text=text, reason=plan.routing.reason,
                              categories=list(plan.routing.selected_categories),
                              small_talk=plan.routing.is_small_talk, tools=plan.tools,
                              shortlist=shortlist_method, model=model)
-                map_msgs = await map_provider.get_system_messages(
-                    history + [user_msg], map_description(case), None, None)
+                map_msgs = await map_provider.get_system_messages(  # a case may give the map's view (w, s, e, n)
+                    history + [user_msg], map_description(case), None, (case.get("map_state") or {}).get("viewport"))
                 messages = [{"role": "system", "content": plan.system_prompt}, *history,
                             *map_msgs, user_msg]
                 source, tools_sent, attempts = "model", len(plan.tools), []
                 for attempt in range(args.repeats):
                     attempts.append(await run_attempt(
                         case, plan, messages, client, model, variant.tool_choice(plan), args.retries,
-                        guard={"text": text, "history": history, "full_tools": tools_payload}
+                        guard={"text": text, "history": history, "full_tools": case_tools}
                         if variant.guard else None, turn=turn, attempt=attempt))
                     if args.pace:
                         await asyncio.sleep(args.pace)
@@ -463,7 +546,7 @@ async def run(args: argparse.Namespace) -> Path:
                              progress["errored_streak"], out_path)
             return  # errored cases are not kept; --resume retries them
         progress["errored_streak"] = 0
-        records.append({"id": case["id"], "source": source, "model": model,
+        records.append({"id": case["id"], "case_sha": case_shas[case["id"]], "source": source, "model": model,
                         "tools_sent": tools_sent, "shortlist": shortlist_method, "attempts": attempts,
                         "outcomes": list(result.outcomes), "majority": result.majority})
         logger.info("[%3d/%d] %-10s args=%-5s chain=%-5s %-9s %-26s %s", progress["finished"],
@@ -518,6 +601,10 @@ def report(path: Path) -> None:
           f"corpus={meta['corpus_sha']}  git={meta['git_sha']}  fast_path={meta.get('fast_path_cases')}")
     print(f"cases     {s['cases']}  intents={s.get('intents')}  errored={s['errored_cases']}  "
           f"unstable={s['unstable_cases']}")
+    if "switches" in meta:
+        on = [name for name, value in meta["switches"].items() if value]
+        print(f"switches  on: {', '.join(on) or 'none'}  skipped (switched off): "
+              f"{len(meta.get('skipped_switched_off') or [])}")
     guard = meta.get("guard") or {}
     if guard.get("fired"):
         print(f"guard     fired on {guard['fired']} attempts, produced a tool call on {guard['recovered']}")
@@ -534,12 +621,22 @@ def report(path: Path) -> None:
 def compare_runs(a_path: Path, b_path: Path) -> None:
     a, b = (json.loads(p.read_text()) for p in (a_path, b_path))
     if a["meta"]["corpus_sha"] != b["meta"]["corpus_sha"]:
-        print("WARNING: runs used different corpus versions; only shared case ids are paired")
+        print("WARNING: runs used different corpus versions; only shared, unchanged cases are paired")
+    if a["meta"].get("industry") != b["meta"].get("industry"):
+        raise SystemExit(f"not comparable: the runs used --industry {a['meta'].get('industry')} and "
+                         f"{b['meta'].get('industry')}, so every case without its own industry was asked differently")
+    if a["meta"].get("switches") != b["meta"].get("switches"):  # what an A/B of a switch measures
+        print(f"NOTE: switches differ: A {a['meta'].get('switches')}  B {b['meta'].get('switches')}")
     clusters = {c["id"]: c.get("intent", c["id"]) for c in load_cases()}
+    shas = [{r["id"]: r.get("case_sha") for r in run["cases"]} for run in (a, b)]
+    changed = sorted(i for i in shas[0].keys() & shas[1].keys()
+                     if shas[0][i] and shas[1][i] and shas[0][i] != shas[1][i])
+    if changed:
+        print(f"left out {len(changed)} cases whose question or expected answer changed: {', '.join(changed)}")
 
     def correct(run: dict) -> dict[str, bool]:
         return {r["id"]: r["majority"] == scoring.CORRECT
-                for r in run["cases"] if r["majority"] != scoring.ERROR}
+                for r in run["cases"] if r["majority"] != scoring.ERROR and r["id"] not in changed}
 
     c = scoring.compare(correct(a), correct(b), clusters=clusters)
     print(f"A {a['meta']['variant']} ({a_path.name})  vs  B {b['meta']['variant']} ({b_path.name})")
@@ -584,6 +681,8 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--concurrency", type=int, default=4,
                        help="cases run in parallel (keep under the provider's rate limit)")
     p_run.add_argument("--retries", type=int, default=6)
+    p_run.add_argument("--industry", choices=scoring.INDUSTRIES, default=None,
+                       help="run cases without their own industry as this one (default: agriculture)")
     p_run.add_argument("--model-only", action="store_true",
                        help="skip deterministic fast paths; measure the model on every case")
     p_run.add_argument("--case", action="append", help="run only this case id (repeatable)")

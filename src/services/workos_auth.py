@@ -36,15 +36,38 @@ import binascii
 import hashlib
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+import jwt
+from cryptography.fernet import InvalidToken
+
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "wos_session"
 COOKIE_MAX_AGE = 30 * 24 * 3600  # the refresh token, not the cookie, bounds the session
+# Clocks drift: on 2026-10-06 WorkOS ran 0.5-0.9 s ahead of this server, and with no
+# leeway PyJWT rejects a token whose issue time (iat) is a fraction of a second ahead.
+JWT_LEEWAY_SECONDS = 60
+
+
+class SessionCheckUnavailable(Exception):
+    """The session could not be checked just now: deny the request, but do not sign the user out.
+
+    ``refreshed_cookie`` is set when WorkOS had already refreshed the session. It must still
+    reach the browser, because the old cookie's refresh token is spent.
+    """
+
+    def __init__(self, message: str, refreshed_cookie: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.refreshed_cookie = refreshed_cookie
+
+
+class RefreshNeeded(Exception):
+    """The access token has expired and this caller may not refresh it (see load())."""
 
 
 def selected() -> bool:
@@ -63,7 +86,8 @@ def enabled() -> bool:
 def _client():
     from workos import WorkOSClient  # lazy: only loaded when WorkOS is the provider
 
-    return WorkOSClient(api_key=os.environ["WORKOS_API_KEY"], client_id=os.environ["WORKOS_CLIENT_ID"])
+    return WorkOSClient(api_key=os.environ["WORKOS_API_KEY"], client_id=os.environ["WORKOS_CLIENT_ID"],
+                        jwt_leeway=JWT_LEEWAY_SECONDS)
 
 
 def warm_up() -> None:
@@ -176,33 +200,88 @@ def _user_dict(user: Any) -> dict[str, Any]:
     return {k: getattr(user, k, None) for k in ("id", "email", "first_name", "last_name", "profile_picture_url")}
 
 
-def load(sealed: Optional[str]) -> Optional[WorkOSSession]:
-    """The session in a cookie, refreshing an expired access token; None if not signed in."""
+def load(sealed: Optional[str], refresh: bool = True) -> Optional[WorkOSSession]:
+    """The session in a cookie, refreshing an expired access token; None if not signed in.
+
+    Every None is logged with its reason, so a 401 with no "WorkOS session" line before it
+    means the browser sent no session cookie. Raises SessionCheckUnavailable when it cannot
+    decide now. With ``refresh=False`` an expired token raises RefreshNeeded instead: a
+    caller that cannot send the new cookie back (a WebSocket handshake) must not spend the
+    single-use refresh token.
+    """
     if not sealed:
+        logger.info("WorkOS session: no cookie")
         return None
     session = _client().user_management.load_sealed_session(session_data=sealed, cookie_password=_cookie_password())
-    auth = session.authenticate()
+    try:
+        auth = session.authenticate()
+    except jwt.PyJWKClientError as e:  # WorkOS' signing keys could not be fetched
+        raise SessionCheckUnavailable(f"WorkOS signing keys unavailable: {e}") from e
     if auth.authenticated:
         return _from_response(auth)
-    if _value(getattr(auth, "reason", None)) != "invalid_jwt":  # no cookie, or one we cannot read
+    reason = _value(getattr(auth, "reason", None))
+    if reason != "invalid_jwt":  # a cookie we cannot read
+        logger.info("WorkOS session cookie rejected: %s (%d characters)", reason, len(sealed))
         return None
-    refreshed = session.refresh(cookie_password=_cookie_password())
-    if not refreshed.authenticated:
-        reason = _value(getattr(refreshed, "reason", None))
-        if reason == "refresh_network_error":  # WorkOS unreachable: not a reason to sign the user out
-            raise ConnectionError("WorkOS session refresh failed: network error")
-        logger.info("WorkOS session refresh denied: %s", reason)
+    if not refresh:
+        raise RefreshNeeded()
+    return _refresh(sealed)
+
+
+def _refresh(sealed: str, organization_id: Optional[str] = None) -> Optional[WorkOSSession]:
+    """Trade the cookie's refresh token for new tokens; None if WorkOS refuses.
+
+    Not the SDK's Session.refresh(): it checks the new access token before returning it
+    and, when that check fails, drops the new tokens although the old refresh token is
+    spent. On 2026-10-06 that signed users out 13 times ("refresh denied: invalid_jwt",
+    each ~3 ms after WorkOS answered 200): WorkOS' clock ran ahead of ours, so a fresh
+    token's iat was "in the future" here. The new cookie is sealed before the check.
+    """
+    from workos.session import seal_session_from_auth_response, unseal_data  # lazy: WorkOS SDK
+
+    try:
+        refresh_token = unseal_data(sealed, _cookie_password()).get("refresh_token")
+    except (InvalidToken, ValueError):  # not a cookie we sealed: logged as rejected below
+        refresh_token = None
+    if not refresh_token:
+        logger.info("WorkOS session cookie rejected: no refresh token in it")
         return None
-    return _from_response(refreshed, refreshed_cookie=refreshed.sealed_session)
+    try:
+        resp = _client().user_management.authenticate_with_refresh_token(
+            refresh_token=refresh_token, organization_id=organization_id)
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors, sorted below
+        refusal = _refusal(e)
+        if refusal is not None and getattr(e, "status_code", None) != 429:
+            logger.info("WorkOS session refresh denied: %s", refusal)
+            return None
+        raise SessionCheckUnavailable(f"WorkOS session refresh failed: {e}") from e
+    new_sealed = seal_session_from_auth_response(
+        access_token=resp.access_token, refresh_token=resp.refresh_token,
+        user=_user_dict(resp.user), cookie_password=_cookie_password())
+    try:
+        auth = _client().user_management.load_sealed_session(
+            session_data=new_sealed, cookie_password=_cookie_password()).authenticate()
+    except Exception as e:  # noqa: BLE001 - e.g. WorkOS' keys unreachable: the new cookie must still be sent
+        raise SessionCheckUnavailable(f"refreshed WorkOS token could not be checked: {e}",
+                                      refreshed_cookie=new_sealed) from e
+    if not auth.authenticated:
+        raise SessionCheckUnavailable(
+            f"refreshed WorkOS token rejected here ({_value(auth.reason)}): {_clock_note(resp.access_token)}",
+            refreshed_cookie=new_sealed)
+    return _from_response(auth, refreshed_cookie=new_sealed)
+
+
+def _clock_note(access_token: str) -> str:
+    """Where a token's issue and expiry times fall against this server's clock, for the log."""
+    claims = jwt.decode(access_token, options={"verify_signature": False})  # read for the message only
+    now = time.time()
+    return (f"issued {claims.get('iat', now) - now:+.1f} s, expiring {claims.get('exp', now) - now:+.1f} s "
+            f"from this server's clock (leeway {JWT_LEEWAY_SECONDS} s)")
 
 
 def switch_organization(sealed: str, organization_id: Optional[str]) -> Optional[WorkOSSession]:
-    """Re-issue the session for another organization the user belongs to."""
-    session = _client().user_management.load_sealed_session(session_data=sealed, cookie_password=_cookie_password())
-    refreshed = session.refresh(organization_id=organization_id, cookie_password=_cookie_password())
-    if not refreshed.authenticated:
-        return None
-    return _from_response(refreshed, refreshed_cookie=refreshed.sealed_session)
+    """Re-issue the session for another organization the user belongs to; None if WorkOS refuses."""
+    return _refresh(sealed, organization_id)
 
 
 def revoke_session(session_id: str) -> None:

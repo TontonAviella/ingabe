@@ -199,7 +199,7 @@ async def build_brain_context_packet(
             if not query_results:
                 gaps.append("No query-matching Brain pages found.")
         except Exception:
-            logger.debug("Brain query retrieval failed", exc_info=True)
+            logger.warning("Brain query retrieval failed", exc_info=True)
             gaps.append("Query Brain retrieval failed; using spatial memory only.")
 
     spatial_pages: list[Page] = []
@@ -222,7 +222,7 @@ async def build_brain_context_packet(
             if not spatial_pages:
                 gaps.append("No Brain pages intersect the current map viewport.")
         except Exception:
-            logger.debug("Brain spatial retrieval failed", exc_info=True)
+            logger.warning("Brain spatial retrieval failed", exc_info=True)
             gaps.append("Spatial Brain retrieval failed for the current viewport.")
 
     deduped: list[_MemoryEntry] = []

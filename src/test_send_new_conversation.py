@@ -59,7 +59,12 @@ async def test_chat_completions(
     sync_test_map_with_vector_layers,
     sync_auth_client,
     websocket_url_for_map,
+    monkeypatch,
 ):
+    # The mock answers exactly two model calls. With the abdication guard on (as in the local app's
+    # env), a prose answer triggers a third, forced-tool call and the turn crashes on an empty queue.
+    # The guard has its own tests; this one checks the send and reply flow.
+    monkeypatch.setenv("SAGE_ABDICATION_GUARD", "0")
     map_id = sync_test_map_with_vector_layers["map_id"]
 
     response_queue = [

@@ -1,0 +1,85 @@
+{
+ "about": "A cell-tower photo with its microwave dishes boxed by people, for the example finder's tests. Photo DJI_0395 from the Roboflow 'Cell Tower Detection v1' export (MIT licence, universe.roboflow.com/roger-ntabukiraniro-s-workspace/cell-tower-detection-ntv32), test split, resized to 1333 x 750 px as measured (celltower_1333) and saved again as JPEG quality 82. 'dish_boxes' are the people's boxes (COCO, category 'mw') converted to left, top, right, bottom and rounded to 0.1 px; 'marks' are three of them, given to the finder as the user's marks.",
+ "picture": "tower_dishes.jpg",
+ "target": "tower_dish",
+ "size": [
+  1333,
+  750
+ ],
+ "dish_boxes": [
+  [
+   506.0,
+   326.6,
+   537.2,
+   358.3
+  ],
+  [
+   507.9,
+   290.5,
+   529.9,
+   312.0
+  ],
+  [
+   787.2,
+   637.3,
+   807.8,
+   670.3
+  ],
+  [
+   774.0,
+   594.1,
+   802.6,
+   622.4
+  ],
+  [
+   531.0,
+   558.7,
+   546.6,
+   577.9
+  ],
+  [
+   522.6,
+   565.4,
+   540.1,
+   591.5
+  ],
+  [
+   780.5,
+   541.4,
+   801.2,
+   575.4
+  ],
+  [
+   750.0,
+   70.8,
+   785.7,
+   108.9
+  ],
+  [
+   652.3,
+   395.8,
+   708.6,
+   452.5
+  ]
+ ],
+ "marks": [
+  [
+   506.0,
+   326.6,
+   537.2,
+   358.3
+  ],
+  [
+   787.2,
+   637.3,
+   807.8,
+   670.3
+  ],
+  [
+   750.0,
+   70.8,
+   785.7,
+   108.9
+  ]
+ ]
+}

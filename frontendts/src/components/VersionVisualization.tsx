@@ -179,6 +179,7 @@ interface VersionVisualizationProps {
   setConversationId: (conversationId: number | null) => void;
   activeActions: EphemeralAction[];
   conversationsEnabled?: boolean;
+  farmControls?: boolean; // the report-view selector; agriculture projects only
 }
 
 export default function VersionVisualization({
@@ -189,6 +190,7 @@ export default function VersionVisualization({
   setConversationId,
   activeActions,
   conversationsEnabled = true,
+  farmControls = true,
 }: VersionVisualizationProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [expandedToolCalls, setExpandedToolCalls] = useState<string[]>([]);
@@ -414,7 +416,8 @@ export default function VersionVisualization({
               </Tooltip>
             </div>
           </div>
-          <ReportAudienceSelect />
+          {/* Farmer, insurer, agronomist, scientist: report views for agriculture projects only (audit R1-28). */}
+          {farmControls && <ReportAudienceSelect />}
           {isExpanded && (
             <div className="space-y-1 max-h-32 overflow-y-auto pb-2">
               {conversations.map((conversation) => (

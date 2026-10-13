@@ -10,6 +10,7 @@ from affine import Affine
 from rasterio.transform import from_origin
 
 import src.services.raster_object_candidates as raster_object_candidates
+from src.services import boxes
 from src.services.raster_object_candidates import (
     RasterObjectCandidateInput,
     analyze_raster_object_candidates,
@@ -740,7 +741,7 @@ def test_dedupe_candidate_features_uses_bounded_spatial_queries(monkeypatch) -> 
         for index in range(dense_count)
     )
     original_shape = raster_object_candidates.shape
-    original_bbox_iou = raster_object_candidates._bbox_iou
+    original_bbox_iou = boxes.iou
     shape_calls = 0
     bbox_iou_calls = 0
 
@@ -755,7 +756,7 @@ def test_dedupe_candidate_features_uses_bounded_spatial_queries(monkeypatch) -> 
         return original_bbox_iou(a, b)
 
     monkeypatch.setattr(raster_object_candidates, "shape", _counting_shape)
-    monkeypatch.setattr(raster_object_candidates, "_bbox_iou", _counting_bbox_iou)
+    monkeypatch.setattr(boxes, "iou", _counting_bbox_iou)
 
     deduped = raster_object_candidates._dedupe_candidate_features(features)
 

@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AppSidebar } from '@/components/app-sidebar';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { IndustryGate } from '@/components/IndustryGate';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { Toaster } from '@/components/ui/sonner';
 import { ProjectsProvider } from './contexts/ProjectsContext';
@@ -46,6 +47,7 @@ function AppContent() {
         <ProjectsProvider>
           <AppSidebar />
 
+          <IndustryGate />
           <ErrorBoundary>
             <Suspense fallback={<RouteLoader />}>
               <Routes>

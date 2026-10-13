@@ -248,6 +248,35 @@ async def edit_project(
         return MundiProject(**dict(project_row))
 
 
+async def edit_layer(
+    layer_id: str = Path(...),
+    session: UserContext = Depends(verify_session_required),
+) -> MapLayer:
+    """Get a layer the user can *edit*: its owner, or an owner or editor of a project it is in."""
+    if not _editing_allowed():
+        raise HTTPException(status_code=403, detail="Editing disabled in view_only mode")
+
+    layer = await get_layer(layer_id, session)
+    user_id = session.get_user_id()
+    if str(layer.owner_uuid) == user_id:
+        return layer
+    async with async_read_conn("edit_layer", user_id=user_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT p.owner_uuid, p.editor_uuids
+            FROM user_mundiai_projects p
+            JOIN user_mundiai_maps m ON m.project_id = p.id
+            WHERE $1 = ANY(m.layers)
+              AND p.soft_deleted_at IS NULL
+              AND m.soft_deleted_at IS NULL
+            """,
+            layer_id,
+        )
+    if not any(_can_edit_project(row, user_id) for row in rows):
+        raise HTTPException(403, "You do not have edit access to this layer")
+    return layer
+
+
 async def edit_map(
     map_id: str = Path(...),
     session: UserContext = Depends(verify_session_required),

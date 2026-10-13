@@ -10,11 +10,17 @@ paired comparison against a baseline run of this eval, not by intuition.
 
 The runner builds the request with the live code, not a copy:
 
-1. **Fast paths.** `sage_routing.build_fast_tool_call` proposes a deterministic
-   tool. The raster paths only fire when `select_fast_raster_layer` finds a
-   matching raster in the case's `map_state` (the same rule the handlers use);
-   otherwise the turn falls through to the model, exactly as in the app. The
-   admin-boundary path needs only the map's project, which every map has.
+1. **Fast paths.** `sage_routing.build_project_fast_tool_call` proposes a
+   deterministic tool when the case's industry may use it. The raster paths
+   only fire when `select_ready_fast_raster_layer` finds a matching raster in
+   the case's `map_state` that has a place on the map and a ready COG (the
+   same rule the handlers use); otherwise the turn falls through to the model,
+   exactly as in the app. The admin-boundary path needs only the map's
+   project, which every map has. Tower and telecom wording never takes a fast
+   path. The Telecom cases that expect the tower tools
+   (`get_tower_inspection_findings`, `tower_photos_needing_review`, on a photo
+   inspection's camera-point layer) need `TOWERS=1` in the run's environment:
+   with it off those tools are not offered (`industry.available`).
 2. **Routing.** `sage_turn_request.plan_sage_turn` applies small-talk,
    category filtering and exclusions to the full tool list from
    `build_sage_tools_payload`, using the history plus the new message.
@@ -112,7 +118,12 @@ every non-small-talk turn) is the first one.
 - `expect.args` only for parameters with one right reading (a place name, a
   district), never where several argument shapes are valid.
 - `map_state.layers` lists the layers on the map (`raster`, `vector`,
-  `postgis`, `point_cloud`); fast paths and `<MapState>` use them.
+  `postgis`, `point_cloud`); fast paths and `<MapState>` use them. A raster
+  is a georeferenced drone photo with a ready COG unless it says
+  `"georeferenced": false` (no coordinate system, like a phone photo) or
+  `"cog": "generating"` / `"failed"`.
+- A request no tool can answer (antenna counts, tower damage) is labelled
+  `"category": "unsupported"`, `"expect": {"no_tool": true}`.
 - Generated files are rebuilt from their builder; a CI test fails if they
   were edited by hand.
 - `rw` / `fr` cases carry a note until a native speaker reviews them.

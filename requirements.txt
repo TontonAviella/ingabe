@@ -175,6 +175,8 @@ fire==0.7.1
     # via hermes-agent
 firecrawl-py==4.30.1
     # via hermes-agent
+flatbuffers==25.12.19
+    # via onnxruntime
 fonttools==4.63.0
     # via matplotlib
 frozenlist==1.8.0
@@ -324,6 +326,7 @@ numpy==2.2.6
     #   matplotlib
     #   mundi-ai
     #   numexpr
+    #   onnxruntime
     #   opencv-python
     #   pandas
     #   pyogrio
@@ -380,6 +383,8 @@ nvidia-nvshmem-cu13==3.4.5 ; sys_platform == 'linux'
     # via torch
 nvidia-nvtx==13.0.85 ; sys_platform == 'linux'
     # via cuda-toolkit
+onnxruntime==1.31.0
+    # via mundi-ai
 openai==2.36.0
     # via
     #   exa-py
@@ -416,6 +421,7 @@ packaging==26.2
     #   geopandas
     #   limits
     #   matplotlib
+    #   onnxruntime
     #   planetary-computer
     #   pyogrio
     #   pytest
@@ -457,6 +463,7 @@ protobuf==5.29.6
     #   dagster
     #   googleapis-common-protos
     #   grpcio-health-checking
+    #   onnxruntime
     #   opentelemetry-proto
 psutil==7.2.2
     # via

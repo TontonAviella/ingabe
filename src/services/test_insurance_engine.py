@@ -1788,6 +1788,17 @@ class TestMessageRoutesInsuranceDispatch:
 # brain_service.py: put_page SQL branch coverage (mocked conn)
 # ---------------------------------------------------------------------------
 
+def _conn_with_savepoints():
+    """An AsyncMock connection whose transaction() is an async context manager, as asyncpg's is (put_page writes
+    in a savepoint)."""
+    conn = AsyncMock()
+    savepoint = MagicMock()
+    savepoint.__aenter__ = AsyncMock(return_value=None)
+    savepoint.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=savepoint)
+    return conn
+
+
 class TestBrainServicePutPageParams:
     """Verify put_page correctly forwards access_scope and partner_id
     to the SQL query for both with-geom and without-geom branches."""
@@ -1805,7 +1816,7 @@ class TestBrainServicePutPageParams:
         """put_page without geom_geojson should pass access_scope and partner_id as params $11 and $12."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
-        conn = AsyncMock()
+        conn = _conn_with_savepoints()
         conn.fetchrow.return_value = self._mock_row()
         conn.execute = AsyncMock()
         page = PageInput(type="insurance_intelligence", title="Test", compiled_truth="c")
@@ -1825,7 +1836,7 @@ class TestBrainServicePutPageParams:
         """put_page with geom_geojson should pass access_scope and partner_id AND the geometry."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
-        conn = AsyncMock()
+        conn = _conn_with_savepoints()
         conn.fetchrow.return_value = self._mock_row()
         conn.execute = AsyncMock()
         geom = '{"type":"Point","coordinates":[29.5,-1.5]}'
@@ -1847,7 +1858,7 @@ class TestBrainServicePutPageParams:
         """No scope given: a new page is private, an existing page keeps its scope."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
-        conn = AsyncMock()
+        conn = _conn_with_savepoints()
         conn.fetchrow.return_value = self._mock_row()
         conn.execute = AsyncMock()
         page = PageInput(type="t", title="t", compiled_truth="c")
@@ -1862,7 +1873,7 @@ class TestBrainServicePutPageParams:
         makes a new page private and keeps an existing page's scope)."""
         from src.services.brain_service import BrainService, PageInput
         brain = BrainService()
-        conn = AsyncMock()
+        conn = _conn_with_savepoints()
         conn.fetchrow.return_value = self._mock_row()
         conn.execute = AsyncMock()
         page = PageInput(type="t", title="t", compiled_truth="c")
