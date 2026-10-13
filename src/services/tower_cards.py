@@ -23,7 +23,17 @@ from typing import Any, Optional
 
 from src.services import answer_levels, example_finder, tower_inspection
 from src.services.example_finder_pictures import FinderInputError
-from src.services.card_status import CANT_TELL, LEARN, NEEDS_FLIGHT, PARTLY, READY, WORKING, how_sure
+from src.services.card_status import (
+    CANT_TELL,
+    LEARN,
+    NEEDS_CAMERA,
+    NEEDS_FLIGHT,
+    PARTLY,
+    READY,
+    TO_BUILD,
+    WORKING,
+    how_sure,
+)
 from src.services.photo_inspections import PhotoFacts
 from src.services.tower_inspection import (
     CHECK_ORDER,
@@ -51,7 +61,22 @@ STATUS_LABELS = {
     NEEDS_FLIGHT: "Needs a second inspection",
     CANT_TELL: "Can't tell yet",
     LEARN: "Learn · 1 minute",
+    NEEDS_CAMERA: "Needs a thermal camera",
+    TO_BUILD: "Coming soon",
 }
+
+@dataclass(frozen=True)
+class Upcoming:
+    """A question the owner asks that Ingabe cannot answer yet: said plainly, with what it will tell and what it
+    needs, so the deck shows the whole job, never a promise. Nothing here claims a measurement."""
+
+    status: str  # TO_BUILD (not built or not measured yet), NEEDS_CAMERA (thermal), NEEDS_FLIGHT (another flight)
+    label: str  # the status as the card says it
+    preview: str
+    what: str  # what Ingabe will be able to tell
+    why: str  # why it matters to the reader
+    needs: str  # what it takes: a model to measure, a camera, a flight
+
 
 @dataclass(frozen=True)
 class Asset:
@@ -67,16 +92,24 @@ class Asset:
     register_why: str  # why the owner needs the equipment answer
     defect_why: dict[str, str]  # reader -> why the defects matter
     defect_todo: str  # what the owner does with a defect counted
+    defect_gaps: str = ""  # the defects of this kind nothing measures yet, said in the defects answer
+    changes_gaps: str = ""  # what the changes answer does not compare yet
+    upcoming: Optional[dict[str, Upcoming]] = None  # the questions not answerable yet, by card id
 
 
 ASSETS = {
     "telecom": Asset(
         industry="telecom", thing="tower", heading="Tower checks", equipment=PARTS, defects=DEFECT_PARTS,
-        cards={"equipment": "What equipment is on this tower?",
-               "defects": "Are bolts missing or loose on the steel?",
+        cards={"defects": "Is the tower structurally safe?",
+               "changes": "Is anything missing since the last visit?",
+               "alignment": "Are the antennas pointing where they should?",
+               "equipment": "What is on the tower, against the tenancy contracts?",
+               "damage": "Is any equipment damaged?",
+               "hot_spots": "Is anything overheating?",
+               "obstruction_light": "Is the aviation obstruction light working?",
+               "surroundings": "What is happening around the site?",
                "photos_to_check": "Which photos still need checking?",
                "camera_positions": "Where were the photos taken from?",
-               "changes": "What changed since the last inspection?",
                "learn_review": "Why does a person check every suggestion?"},
         start_noun="dishes (or antennas, or radio units)",
         register_why=("An asset register needs what is really on the tower. Each number was checked by a person, "
@@ -86,14 +119,58 @@ ASSETS = {
                             "wind load, so a tower with missing bolts can fail in a storm."),
                     TECHNICIAN: ("Each missing or loose bolt counted here is a joint to fix on the next climb; the "
                                  "photo shows where.")},
-        defect_todo="Send a climber to replace or tighten the bolts on the photos listed, starting with missing ones."),
+        defect_todo="Send a climber to replace or tighten the bolts on the photos listed, starting with missing ones.",
+        defect_gaps=("Only missing and loose bolts are found today. Rust, cracked welds, bent or broken steel, "
+                     "foundation cracks and guy wires are not measured yet: look for them on the photos yourself."),
+        changes_gaps=("Only the equipment counted is compared. Fences, gates, the shelter, batteries, cables and "
+                      "generators are not compared yet: look at them on both inspections' photos."),
+        upcoming={
+            "alignment": Upcoming(
+                TO_BUILD, "Coming soon", "Antenna direction and tilt: not measured yet.",
+                what=("Each panel antenna's direction (azimuth) and downward tilt, and how far each moved since the "
+                      "last inspection. The photos already record where the camera pointed and how it was tilted; "
+                      "turning that into each antenna's own angles is not built or measured yet."),
+                why=("An antenna that drifted after wind or work lowers coverage and signal quality; customers "
+                     "complain and the operator holds the tower company responsible."),
+                needs=("DJI photos of each antenna face from the front, with their flight data, so the angles can "
+                       "be measured and then checked against a compass reading on the tower.")),
+            "damage": Upcoming(
+                TO_BUILD, "Coming soon", "Damaged covers, cables and connectors: not measured yet.",
+                what=("Broken antenna covers, damaged or loose cables, connectors missing their weatherproofing, "
+                      "and bird nests on the tower, each with the photo it is on."),
+                why="Damage lets water in and takes sectors off air.",
+                needs=("Close-up photos of the antennas, radio units and cable runs. Bird nests are found on power "
+                       "lines today, not yet on telecom towers.")),
+            "hot_spots": Upcoming(
+                NEEDS_CAMERA, "Needs a thermal camera", "Overheating needs a thermal-camera flight.",
+                what="Radio units, connectors, batteries or a shelter running hotter than the others.",
+                why="Overheating equipment fails, and can start a fire.",
+                needs=("A flight with a thermal camera (for example a DJI Mavic 3 Thermal). Ordinary photos cannot "
+                       "show heat.")),
+            "obstruction_light": Upcoming(
+                NEEDS_FLIGHT, "Needs a dusk or night flight", "The light can only be checked after dark.",
+                what="Whether the aviation obstruction light at the top of the tower is on.",
+                why="It is a legal requirement and keeps aircraft clear of the tower.",
+                needs="A short flight at dusk or at night with the camera on the top of the tower."),
+            "surroundings": Upcoming(
+                TO_BUILD, "Coming soon", "Vegetation, erosion and new buildings: not measured yet.",
+                what=("Vegetation growing towards the site, erosion near the foundations, new buildings close to the "
+                      "tower and the state of the access road."),
+                why="They block access, raise the fire risk and can undermine the foundations.",
+                needs="Photos looking straight down over the site and its surroundings."),
+        }),
     "power_grid": Asset(
         industry="power_grid", thing="line", heading="Line checks", equipment=("power_pylon", "power_insulator"), defects=("power_nest",),
-        cards={"equipment": "What is on this line?",
-               "defects": "Are there bird nests on the line?",
+        cards={"defects": "Are there bird nests on the line?",
+               "equipment": "What is on this line?",
+               "right_of_way": "Are trees or buildings too close to the line?",
+               "insulators": "Are any insulators broken or flashed over?",
+               "sag": "Is a conductor sagging too low?",
+               "steel": "Is the pylon steel safe?",
+               "hot_spots": "Is any joint or insulator overheating?",
+               "changes": "What changed since the last inspection?",
                "photos_to_check": "Which photos still need checking?",
                "camera_positions": "Where were the photos taken from?",
-               "changes": "What changed since the last inspection?",
                "learn_review": "Why does a person check every suggestion?"},
         start_noun="pylons (or insulators)",
         register_why=("An asset register needs what is really on the line. Each number was checked by a person, "
@@ -104,13 +181,42 @@ ASSETS = {
                     TECHNICIAN: ("Each nest counted here is a pylon to visit; the photo shows where it sits relative "
                                  "to the insulators.")},
         defect_todo=("Send a crew to remove or relocate the nests on the photos listed, those close to insulators "
-                     "first, under the line's live-work or outage rules.")),
+                     "first, under the line's live-work or outage rules."),
+        upcoming={
+            "right_of_way": Upcoming(
+                TO_BUILD, "Coming soon", "Vegetation and buildings in the right-of-way: not measured yet.",
+                what="Trees, crops and buildings inside the corridor kept clear under the line, with where they are.",
+                why="A tree touching a conductor trips the line and starts fires; a building under it is a danger.",
+                needs="Photos looking down along the line, covering the whole corridor."),
+            "insulators": Upcoming(
+                TO_BUILD, "Coming soon", "Broken or flashed-over insulators: not measured yet.",
+                what="Insulator strings with broken, cracked or burnt discs, with the photo of each.",
+                why="A damaged insulator can fail under load and cause an outage.",
+                needs="Close-up photos of each insulator string. Insulators are found today; their condition is not."),
+            "sag": Upcoming(
+                TO_BUILD, "Coming soon", "Conductor sag and clearance: not measured yet.",
+                what="How low each span hangs and how much clearance it leaves above the ground, roads and buildings.",
+                why="Too low a conductor is a danger to people and vehicles, and can flash over.",
+                needs="Photos from the side of each span, or a drone survey that measures heights."),
+            "steel": Upcoming(
+                TO_BUILD, "Coming soon", "Pylon steel: not measured yet.",
+                what="Missing or loose bolts, rust and bent members on the pylons.",
+                why="A weakened pylon can fail in a storm and bring the line down.",
+                needs=("Close-up photos of the pylon joints. The bolt model was measured on telecom towers, not yet on "
+                       "pylons.")),
+            "hot_spots": Upcoming(
+                NEEDS_CAMERA, "Needs a thermal camera", "Overheating needs a thermal-camera flight.",
+                what="Joints, clamps and insulators running hotter than the rest of the line.",
+                why="A hot joint is about to fail.",
+                needs="A flight with a thermal camera along the line. Ordinary photos cannot show heat."),
+        }),
 }
 DEFAULT_ASSET = ASSETS["telecom"]
 CARDS = DEFAULT_ASSET.cards  # Telecom's questions (each industry's are ASSETS[...].cards)
 
 # Readiness first, then the reader (as the drone cards rank theirs); the learning card always comes last.
-_BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, CANT_TELL: 20, LEARN: 0}
+_BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, NEEDS_CAMERA: 40, CANT_TELL: 20, TO_BUILD: 10,
+               LEARN: 0}
 # The owner's question comes first even before anything is counted (its answer says how to start); the technician's
 # list of photos to check comes first for them.
 _READER_BOOST = {
@@ -286,7 +392,14 @@ def _complete(here: Here) -> bool:
             and not tower_inspection.photos_unmarked(here.inspection))
 
 
+def _upcoming(card_id: str, here: Here) -> Optional[Upcoming]:
+    return (here.asset.upcoming or {}).get(card_id)
+
+
 def _status(card_id: str, here: Here) -> str:
+    upcoming = _upcoming(card_id, here)
+    if upcoming is not None:
+        return upcoming.status
     inventory = here.inventory
     if card_id == "equipment":
         if not _anything_counted(inventory):
@@ -314,6 +427,9 @@ def _part_phrase(i: PartInventory) -> str:
 
 
 def _preview(card_id: str, here: Here) -> str:
+    upcoming = _upcoming(card_id, here)
+    if upcoming is not None:
+        return upcoming.preview
     inventory = here.inventory
     if card_id == "equipment":
         counted = [i for i in inventory.values() if i.at_least is not None]
@@ -385,7 +501,9 @@ def _answer(card_id: str, here: Here, *, what: str, why: str, todo: str, sure: d
             progress: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """One answer, in the drone cards' answer shape (drone_cards._answer)."""
     card = _card(card_id, here)
-    return {**card, "question": card["title"], "status_label": STATUS_LABELS[card["status"]], "what": what,
+    upcoming = _upcoming(card_id, here)
+    label = upcoming.label if upcoming is not None else STATUS_LABELS[card["status"]]
+    return {**card, "question": card["title"], "status_label": label, "what": what,
             "why": why, "todo": todo, "how_sure": sure, "facts": facts or [], "terms": _terms(terms, audience),
             "items": items or [], "downloads": [], "progress": progress, "overlay": None, "choices": None,
             "upload": None, "field_check": None, "ask_sage": []}
@@ -654,6 +772,8 @@ def _changes(here: Here, audience: str) -> dict[str, Any]:
     span_then = tower_inspection.camera_facts(earlier.inspection.photos)
     what = f"Compared with {earlier.inspection.name}" + (
         f" (taken {span_then.first_taken[:10]})" if span_then.first_taken else "") + ": " + " ".join(lines)
+    if here.asset.changes_gaps:
+        what += " " + here.asset.changes_gaps
     why = (f"More counted can be new equipment, or photos that show more of the {here.asset.thing}; fewer can be "
            "removed equipment, or parts hidden on these photos. Look at both photos before deciding.")
     todo = ("Open the two photos of each part side by side before recording a change." if audience == OWNER else
@@ -787,11 +907,14 @@ def _defects(here: Here, audience: str) -> dict[str, Any]:
                 "mean there are none.")
         todo = (f"On a close-up photo, mark one of the {nouns} where you see it and press Find: the model looks for "
                 "more on that photo. Then check each suggestion.")
+    if asset.defect_gaps:
+        what += " " + asset.defect_gaps
     sure = how_sure("medium" if found and not _open(defects) else "low", [
         "Counted by you: every suggestion on a counted photo was kept, fixed or rejected by a person",
         "Only photos where someone marked them were checked for them",
         "Small defects show only on close-up or zoomed photos",
-    ], "A close-up photo of each joint or crossarm the photos do not show well.")
+    ] + ([asset.defect_gaps] if asset.defect_gaps else []),
+        "A close-up photo of each joint or crossarm the photos do not show well.")
     return _answer("defects", here, what=what, why=asset.defect_why[audience], todo=todo, sure=sure,
                    audience=audience, terms=["counted_by_you", "suggestion"], facts=facts, items=items,
                    progress=_finder_progress(inspection))
@@ -807,10 +930,23 @@ _ANSWERS = {
 }
 
 
+def _not_yet(card_id: str, here: Here, audience: str) -> dict[str, Any]:
+    """A question Ingabe cannot answer yet: what it will tell, why it matters and what it needs; no number."""
+    u = _upcoming(card_id, here)
+    assert u is not None
+    sure = how_sure("low", ["Not measured yet: Ingabe gives no answer to this question today"], u.needs)
+    return _answer(card_id, here, what=f"Not answered yet. When it is, this card will show: {u.what}", why=u.why,
+                   todo=f"What it needs: {u.needs}", sure=sure, audience=audience, terms=[])
+
+
 def answer_card(card_id: str, here: Here, audience: Optional[str]) -> dict[str, Any]:
     """One card's answer; KeyError for an unknown card, UnknownAudience for an unknown reader."""
     reader = check_audience(audience)
-    if card_id not in _ANSWERS or card_id not in here.asset.cards:
+    if card_id not in here.asset.cards:
+        raise KeyError(card_id)
+    if _upcoming(card_id, here) is not None:
+        return _not_yet(card_id, here, reader)
+    if card_id not in _ANSWERS:
         raise KeyError(card_id)
     return _ANSWERS[card_id](here, reader)
 
