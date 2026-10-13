@@ -488,7 +488,7 @@
       },
       "also_measured": [],
       "detector": {
-        "model": "own:rfdetr-small-bolts-2026-10-13",
+        "model": "own:rfdetr-small-bolts-v3-2026-10-13",
         "tile_px": 640,
         "class": "missing bolt",
         "max_level": "FULL_REVIEW",
@@ -498,19 +498,19 @@
         "measured": {
           "dataset": "bolt defect test set (bolts_v2: telecom-tower-defect by zani222 and missing-bolt-bts by huys, CC BY 4.0; 640 and 512 px close-ups of tower steel, test photos grouped by near-duplicates and including a whole DJI flight never used in training)",
           "view": "oblique",
-          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split and 300 photos with nothing to mark, exported to ONNX and run on this server's CPU (confidence 0.05)",
           "n_images": 156,
           "image_px": 640,
           "finder_input_px": 640,
           "date": "2026-10-13",
           "metric": "AP50 against people's boxes on the held-out test split",
-          "value": 0.61,
+          "value": 0.599,
           "evidence": {
             "source": "kaggle_rfdetr/onnx_predict.py",
-            "task": "own_bolt_missing"
+            "task": "own_bolt_missing_v3"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
-          "note": "On the DJI flight never used in training: AP50 0.700 (found 64%, right 91%); on climbers' phone photos only 0.14 (26 boxes). On 100 tower and power line photos with no bolt marked it flagged no missing bolt. Read in 640 px squares at the photo's own size (tile_px), wide photos keep their bolts' size: the same test photos stitched 2x2 and read in squares scored as read one by one (0.278 against 0.287 on the 112 photos of 640 px); on 60 wide tower photos (1333 x 750, no bolt marked) it flagged 1 missing bolt."
+          "note": "On the DJI flight never used in training: AP50 0.679 (v2: 0.700); on climbers' phone photos 0.165 (26 boxes). On 100 tower and power line photos with no bolt marked: none flagged (v2: none). Read in 640 px squares at the photo's own size (tile_px): the test photos stitched 2x2 and read in squares scored 0.286 against 0.293 one by one; on 60 wide tower photos with no bolt marked, none flagged (v2: 1). The photos with nothing to mark it learned from come from the same two datasets as these check photos (other photos), so new sites may raise a few."
         },
         "note": "Our own trained detector (class 'missing bolt'); a person still checks every box it suggests. A wide photo is read in 640 px squares at its own size, so its bolts keep the size they were measured at. It runs on this server: the photos stay here."
       }
@@ -548,7 +548,8 @@
       },
       "also_measured": [],
       "detector": {
-        "model": "own:rfdetr-small-bolts-2026-10-13",
+        "model": "own:rfdetr-small-bolts-v3-2026-10-13",
+        "tile_px": 640,
         "class": "loose bolt",
         "max_level": "FULL_REVIEW",
         "size_evidence": [
@@ -557,21 +558,21 @@
         "measured": {
           "dataset": "bolt defect test set (bolts_v2: telecom-tower-defect by zani222 and missing-bolt-bts by huys, CC BY 4.0; 640 and 512 px close-ups of tower steel, test photos grouped by near-duplicates and including a whole DJI flight never used in training)",
           "view": "oblique",
-          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split, exported to ONNX and run on this server's CPU (confidence 0.05)",
+          "protocol": "RF-DETR small trained by us on Kaggle (free T4 GPU) from the dataset's own train split and 300 photos with nothing to mark, exported to ONNX and run on this server's CPU (confidence 0.05)",
           "n_images": 156,
           "image_px": 640,
           "finder_input_px": 640,
           "date": "2026-10-13",
           "metric": "AP50 against people's boxes on the held-out test split",
-          "value": 0.542,
+          "value": 0.509,
           "evidence": {
             "source": "kaggle_rfdetr/onnx_predict.py",
-            "task": "own_bolt_loose"
+            "task": "own_bolt_loose_v3"
           },
           "where": "answer_levels_evidence.json (the scripts and pictures are not in this repository)",
-          "note": "On the DJI flight never used in training: AP50 0.547 (found 57%, right 78%). On 100 tower and power line photos with no bolt marked it flagged 4 loose bolts, 2 of them cars: a check for a person, never a verdict."
+          "note": "On the DJI flight never used in training: AP50 0.507 (v2: 0.547). On 100 tower and power line photos with no bolt marked: none flagged (v2: 4, 2 of them cars). Read in 640 px squares at the photo's own size (tile_px): the test photos stitched 2x2 and read in squares scored 0.525 against 0.509 one by one; on 60 wide tower photos with no bolt marked, none flagged (v2: 27 on 19 photos). The photos with nothing to mark it learned from come from the same two datasets as these check photos (other photos), so new sites may raise a few: still a check for a person, never a verdict."
         },
-        "note": "Our own trained detector (class 'loose bolt'); a person still checks every box it suggests. It reads close-ups: on a wide photo the bolts are too small and the size gate says so. It runs on this server: the photos stay here."
+        "note": "Our own trained detector (class 'loose bolt'); a person still checks every box it suggests. A wide photo is read in 640 px squares at its own size, so its bolts keep the size they were measured at. It runs on this server: the photos stay here."
       }
     }
   }
