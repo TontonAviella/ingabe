@@ -101,7 +101,7 @@ SKIP_DIR_PARTS = {"node_modules", "__pycache__", "opensrc", "external", ".venv",
 
 # Where industry.serves (the industry alone, without its switch) may be called: the industry module itself, and the
 # routing eval's corpus check (a case expecting a tool its industry is never offered is a corpus error).
-SERVES_DIRS = ("src", "scripts", "hermes_integration")
+SERVES_DIRS = ("src", "scripts")
 SERVES_ALLOWED = {"src/services/industry.py", "scripts/eval_sage_routing.py"}
 
 

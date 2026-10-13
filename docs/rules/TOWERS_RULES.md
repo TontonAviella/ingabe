@@ -202,8 +202,6 @@ is the routing eval's to measure with `TOWERS=1` (not run yet).
 - **A layer shown in two projects** is refused by the tower routes (409) until it is removed from all but one
   project's maps; the finder and field checks still follow `project_of` (the last edited map).
 - **No "none on this photo" action**: a part not visible on a photo stays unmarked there (not counted, never 0).
-- **Hermes** (`MUNDI_USE_HERMES`, off) is never given a tool behind a switch: the plugin skips
-  `industry.SWITCHES` (it picks tools by words, not by industry or switch). It is still given the farm-only drone
-  tools for every industry (a gap on main, not of this build).
+- **Rights gap** above.
 - **Switched off later**: earlier tower tool calls and their counts are dropped from the replayed chat history
   (`industry.available`), and a tower tool called anywhere it is not offered gets "There is no tool named ...".

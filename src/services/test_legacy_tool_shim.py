@@ -1,5 +1,5 @@
-"""Tests for the legacy tool shim — the bridge between /internal/tool-call
-and the inline elif handlers in message_routes.py.
+"""Tests for the legacy tool shim — the handlers the chat loop in
+message_routes.py runs for every tool without a Pydantic handler.
 
 Each test names the contract it pins down. The shim's invariant is "never
 raises, always returns a JSON-serializable dict the LLM can read."
@@ -48,9 +48,8 @@ def _make_ctx(arguments: dict[str, Any] | None = None) -> LegacyToolContext:
 
 @pytest.mark.asyncio
 async def test_registry_includes_core_legacy_names():
-    """Whitelist sanity: every non-Pydantic tool Sage can call must be in
-    LEGACY_HANDLERS so /internal/tool-call's whitelist check accepts it;
-    a missing name returns 404 and the Hermes turn silently breaks."""
+    """Registry sanity: every non-Pydantic tool Sage can call must be in
+    LEGACY_HANDLERS, or the chat loop has no handler to run for it."""
     must_have_names = {
         # Hardcoded in message_routes.py (no tools.json or pydantic schema)
         "new_layer_from_postgis", "set_layer_style", "add_layer_to_map",
@@ -62,14 +61,14 @@ async def test_registry_includes_core_legacy_names():
     missing = must_have_names - set(LEGACY_HANDLERS.keys())
     assert not missing, (
         f"LEGACY_HANDLERS is missing {len(missing)} tool name(s): {sorted(missing)}. "
-        f"/internal/tool-call would return 404 when the Hermes plugin invokes them."
+        f"The chat loop would have no handler to run when Sage calls them."
     )
 
 
 @pytest.mark.asyncio
 async def test_retired_tools_are_not_registered():
     """Tools retired from the MVP (2026-10-05) must not be callable through
-    Hermes either: SQL/QGIS tools for GIS teams, and tools whose answers were
+    the chat loop's handlers: SQL/QGIS tools for GIS teams, and tools whose answers were
     misleading (crop guesses, a crop confirmation that saved nothing)."""
     retired = {
         "query_duckdb_sql", "query_postgis_database", "zonal_statistics",
@@ -94,9 +93,9 @@ async def test_all_legacy_handlers_are_real_functions():
 @pytest.mark.asyncio
 async def test_unknown_tool_returns_structured_not_404():
     """Tool name not in LEGACY_HANDLERS still returns a parseable result
-    instead of raising. The 404-on-unknown protection lives in the
-    /internal/tool-call route's whitelist check (not here) — this function
-    is the LAST line of defense, so it MUST always return something usable.
+    instead of raising. The chat loop only dispatches names in
+    LEGACY_HANDLERS — this function is the LAST line of defense, so it
+    MUST always return something usable.
     """
     result = await execute_legacy_tool("a_tool_that_does_not_exist_anywhere", _make_ctx())
     assert isinstance(result, dict)
@@ -106,10 +105,10 @@ async def test_unknown_tool_returns_structured_not_404():
 
 @pytest.mark.asyncio
 async def test_result_is_json_serializable():
-    """Every shim result gets JSON-encoded on the wire before reaching the
-    LLM. A non-serializable result (numpy arrays, raw asyncpg Records,
-    custom dataclasses) would 500 the dispatch and break the turn.
-    This test guards the contract for all registered handlers."""
+    """The chat loop stores every shim result with json.dumps(default=str)
+    before the LLM reads it. A non-serializable result (numpy arrays, raw
+    asyncpg Records, custom dataclasses) would reach the model as str()
+    text instead of data. This test guards the contract for all registered handlers."""
     for tool_name in list(LEGACY_HANDLERS.keys())[:10]:  # sample to keep fast
         result = await execute_legacy_tool(tool_name, _make_ctx())
         try:
@@ -117,7 +116,7 @@ async def test_result_is_json_serializable():
         except (TypeError, ValueError) as e:
             pytest.fail(
                 f"{tool_name} returned non-JSON-serializable result: {e}. "
-                f"The dispatch route would emit a 500; LLM turn would die."
+                f"The model would read str() text instead of data."
             )
 
 

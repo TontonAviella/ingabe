@@ -1,8 +1,7 @@
 """Handlers for Sage tools that are not Pydantic tools.
 
-Both runtimes call these: the chat loop in `src/routes/message_routes.py`
-(for every tool without a Pydantic handler) and `/internal/tool-call` (the
-Hermes runtime, `MUNDI_USE_HERMES=1`). Each handler takes a
+The chat loop in `src/routes/message_routes.py` calls these for every tool
+without a Pydantic handler. Each handler takes a
 `LegacyToolContext` (`conn`, `user_id`, `partner_id`, `conversation_id`,
 `map_id`, `project_id`, `arguments`) and returns a JSON-serializable result
 dict; it never raises. There is one implementation per tool: change a tool's
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 class LegacyToolContext:
     """What a handler needs from the turn: who is asking, which map and
     conversation, a database connection, and the tool arguments. Built per
-    call by the chat loop and by /internal/tool-call.
+    call by the chat loop.
     """
     # Identity (already RLS-scoping the connection)
     user_id: str               # internal users.internal_uuid
@@ -52,7 +51,7 @@ class LegacyToolContext:
     # transaction scope cohesive).
     conn: asyncpg.Connection
 
-    # Tool arguments parsed from the /internal/tool-call payload. Each
+    # Tool arguments from the model's tool call. Each
     # handler reads what it needs from this dict (e.g. `arguments.get("query")`).
     arguments: Dict[str, Any] = field(default_factory=dict)
 
@@ -122,7 +121,7 @@ async def _handle_new_layer_from_postgis(
 
     # Validate SQL safety BEFORE any f-string interpolation. Raises HTTPException
     # on dangerous patterns; we catch and return as a tool_result so the LLM
-    # can apologize cleanly (HTTPException would 500 the dispatch route).
+    # can apologize cleanly (an HTTPException would end the chat turn).
     try:
         query = validate_sql_query(raw_query)
     except HTTPException as e:
@@ -412,7 +411,7 @@ async def _handle_new_layer_from_postgis(
 
             # 10. Background PMTiles generation. The chat loop kicks this off
             #     as a fire-and-forget asyncio task — we do the same. If the
-            #     PMTiles build is still running when the Hermes turn ends,
+            #     PMTiles build is still running when the turn ends,
             #     that's fine, it persists across requests.
             if feature_count and feature_count > 0:
                 asyncio.create_task(
@@ -471,8 +470,8 @@ async def _handle_add_layer_to_map(ctx: LegacyToolContext) -> Dict[str, Any]:
     Sage calls this
     when the user wants to surface a layer that was created earlier (e.g.
     output of a previous geoprocessing tool) but isn't currently on the
-    map. Verifies owner_uuid matches the caller so a holder of the
-    HMAC gateway secret can't surface another partner's layers.
+    map. Verifies owner_uuid matches the caller so a tool call can't
+    surface another user's layers.
 
     Args (from ctx.arguments):
       - layer_id: str (must already exist in map_layers, owner_uuid = ctx.user_id)
@@ -3706,8 +3705,8 @@ async def _handle_add_land_cover_layer(ctx: LegacyToolContext) -> Dict[str, Any]
         return {"status": "error", "error": str(e)}
 
 
-# Registry: tool name → handler function. Every tool Hermes can call through
-# /internal/tool-call that is not a Pydantic tool needs an entry here.
+# Registry: tool name → handler function. Every non-Pydantic tool Sage can
+# call needs an entry here.
 LEGACY_HANDLERS: Dict[str, LegacyHandlerFn] = {
     "new_layer_from_postgis": _handle_new_layer_from_postgis,
     "add_layer_to_map": _handle_add_layer_to_map,
@@ -3746,30 +3745,20 @@ async def execute_legacy_tool(
 ) -> Dict[str, Any]:
     """Dispatch a legacy tool by name. Returns the tool_result dict.
 
-    The /internal/tool-call route calls this when `tool_name` is not in
-    `get_pydantic_tool_calls()`. Caller is responsible for setting RLS GUCs
-    on ctx.conn before invoking — this function trusts them.
+    The chat loop calls this for tools in LEGACY_HANDLERS. Caller is
+    responsible for setting RLS GUCs on ctx.conn before invoking — this
+    function trusts them.
 
-    If tool_name isn't registered (handler hasn't been extracted yet),
-    returns an explicit not_yet_extracted result so the LLM gets a parseable
-    response instead of a 404. The Hermes plugin's proxy will pass this
-    through verbatim, and the LLM can apologize to the user.
+    If tool_name isn't registered, returns an explicit not_yet_extracted
+    result so the LLM gets a parseable response instead of an exception,
+    and can apologize to the user.
     """
     handler = LEGACY_HANDLERS.get(tool_name)
     if handler is None:
-        logger.info(
-            "execute_legacy_tool: %s not yet migrated to shim (Hermes path); "
-            "hand-rolled loop still dispatches it via message_routes.py",
-            tool_name,
-        )
+        logger.info("execute_legacy_tool: no handler for %s", tool_name)
         return {
             "status": "not_yet_extracted",
             "tool_name": tool_name,
-            "message": (
-                f"Tool {tool_name!r} is supported by Sage but its handler has "
-                f"not yet been extracted into the Hermes-callable shim. The "
-                f"hand-rolled chat loop (MUNDI_USE_HERMES=0) supports it; the "
-                f"Hermes runtime does not."
-            ),
+            "message": f"Tool {tool_name!r} has no handler in LEGACY_HANDLERS.",
         }
     return await handler(ctx)

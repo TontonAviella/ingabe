@@ -9,7 +9,7 @@ it is not the application runtime.
 git clone https://github.com/TontonAviella/ingabe.git
 cd ingabe
 scripts/deploy.sh
-scripts/runtime-audit.sh --deep
+scripts/runtime-audit.sh
 ```
 
 Open `http://localhost:8000`. For frontend development, run the Vite server

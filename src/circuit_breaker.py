@@ -1,7 +1,7 @@
 """Circuit breaker and retry utilities for external service calls.
 
-Uses tenacity (already in requirements.txt) for retry with exponential backoff
-and a simple circuit breaker state machine to prevent cascading failures.
+Retry with exponential backoff and a simple circuit breaker state machine
+to prevent cascading failures.
 """
 
 from __future__ import annotations

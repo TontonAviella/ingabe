@@ -72,8 +72,6 @@ services:
       - DRONE_VISION_SURVEY=${DRONE_VISION_SURVEY:-0}
       - DRONE_VISION_REQUESTS_PER_MINUTE=${DRONE_VISION_REQUESTS_PER_MINUTE:-}
       - BRAIN_QUERY_EXPANSION_MODEL=${BRAIN_QUERY_EXPANSION_MODEL:-}
-      # Hermes planner: off by default. `auto` turns it on only when OPENROUTER_API_KEY is set.
-      - MUNDI_USE_HERMES=${MUNDI_USE_HERMES:-0}
       # Retry once with a tool when Sage answers in prose but a tool fits (src/dependencies/sage_turn_request.py).
       - SAGE_ABDICATION_GUARD=${SAGE_ABDICATION_GUARD:-0}
       # Answer levels for objects in a picture: count / check / estimate / rough / area / can't tell
@@ -93,17 +91,13 @@ services:
       # the tower cards and Sage's tower tools (src/services/tower_inspection.py). Off: its routes answer 404 and
       # Sage has no tower tools. Needs PHOTO_INSPECTIONS (and EXAMPLE_FINDER to find).
       - TOWERS=${TOWERS:-0}
-      - MUNDI_TOOL_CALL_ENABLED=${MUNDI_TOOL_CALL_ENABLED:-0}
       - MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS=${MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS:-}
-      - HERMES_GATEWAY_SECRET=${HERMES_GATEWAY_SECRET:-}
-      - MUNDI_APP_URL=${MUNDI_APP_URL:-http://app:8000}
-      - HOME=/home/appuser  # so ~/.hermes/ resolves inside the container
+      - HOME=/home/appuser
       - XDG_CACHE_HOME=${XDG_CACHE_HOME:-/cache}
       - MPLCONFIGDIR=${MPLCONFIGDIR:-/cache/matplotlib}
       - TORCH_HOME=${TORCH_HOME:-/cache/torch}
       - YOLO_CONFIG_DIR=${YOLO_CONFIG_DIR:-/cache/ultralytics}
       - PIPELINE_EVIDENCE_PATH=${PIPELINE_EVIDENCE_PATH:-/tmp/ingabe_cache/pipeline_evidence.json}
-      - HERMES_ACCEPT_HOOKS=1
       # Default stays 4 (main's value) so a deploy whose env does not set it
       # keeps its capacity. The local Mac runtime sets UVICORN_WORKERS=1 in
       # .env (see .env.example) to avoid multiplying schedulers and ML memory.
@@ -163,7 +157,6 @@ services:
       - ./docs:/app/docs
       - ./scripts:/app/scripts
       - ./evals:/app/evals
-      - ./hermes_integration:/app/hermes_integration
       - ingabe-cache:/tmp/ingabe_cache
 
   cache-init:

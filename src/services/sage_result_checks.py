@@ -9,9 +9,8 @@ missed Rwandan cell names. For each known failure kind this adds
 project's real connection ids, the referenced tables' real columns).
 Unrecognized errors and successful results pass through unchanged.
 
-Both Sage paths call ``check_tool_result`` where a tool result is handed back
-to the model: the chat loop when it stores a tool message, and the Hermes
-tool-call route. Facts come from a ``ResultFacts`` object, so the checks are
+The chat loop calls ``check_tool_result`` (through ``apply_result_checks``)
+when it stores a tool message, before the model reads it. Facts come from a ``ResultFacts`` object, so the checks are
 testable without a database; ``PostgresResultFacts`` is the real one.
 """
 from __future__ import annotations

@@ -14,7 +14,7 @@ from shapely.geometry import shape
 
 from src.services import boxes
 
-# Sample cap measured in docs/FASTSAM_HERMES_EVALUATION.md (building F1 0.646
+# Sample cap measured in docs/FASTSAM_EVALUATION.md (building F1 0.646
 # at 2 MP -> 0.729 at 4 MP on Cyampirita). MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS
 # may only LOWER it: a larger sample is unmeasured memory and latency.
 DEFAULT_MAX_SAMPLE_PIXELS = 4_000_000

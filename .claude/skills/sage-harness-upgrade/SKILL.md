@@ -1,9 +1,9 @@
 ---
 name: sage-harness-upgrade
-description: "Use when the user asks to make Sage/Hermes smarter, convert repeated agent work into a reusable skill, add resolver/context routing, decide what belongs in the LLM versus deterministic tools, or prevent one-off workflows. Examples: \"make this permanent\", \"we had to ask twice\", \"thin harness fat skills\", \"how should Sage use this new tool\", \"add a skill or cron for this\"."
+description: "Use when the user asks to make Sage smarter, convert repeated agent work into a reusable skill, add resolver/context routing, decide what belongs in the LLM versus deterministic tools, or prevent one-off workflows. Examples: \"make this permanent\", \"we had to ask twice\", \"thin harness fat skills\", \"how should Sage use this new tool\", \"add a skill or cron for this\"."
 ---
 
-# Sage/Hermes Harness Upgrade
+# Sage Harness Upgrade
 
 ## Principle
 
@@ -13,7 +13,7 @@ Keep the harness thin, make skills explicit, and push heavy execution into deter
 
 - User goal or repeated failure.
 - Existing tools, services, docs, telemetry, and tests.
-- Target runtime: Sage, Hermes, Codex/Claude, Dagster, PostHog, or browser map.
+- Target runtime: Sage, Codex/Claude, Dagster, PostHog, or browser map.
 - Evidence needed to prove the workflow works.
 
 ## Workflow
@@ -29,7 +29,7 @@ Keep the harness thin, make skills explicit, and push heavy execution into deter
    - Pydantic/FastAPI/Rust tool for deterministic execution.
    - Resolver pointer in `AGENTS.md` (CLAUDE.md imports it) or the runtime prompt only when it helps selection.
    - Dagster job or cron only when the workflow must run automatically.
-6. Add evidence gates so Sage/Hermes cannot claim success without data.
+6. Add evidence gates so Sage cannot claim success without data.
 7. Add telemetry for success, latency, inputs, and failure reason where the workflow affects the user experience.
 8. Test with focused unit tests first, then browser/PostHog smoke checks when applicable.
 

@@ -12,7 +12,7 @@ Guidance for every coding agent working in this repository (Claude Code, Codex, 
 ## Harness Discipline
 
 - Keep agent instructions as pointers, not long prompt dumps.
-- When a repeated Sage/Hermes/Codex workflow appears, read `.claude/skills/sage-harness-upgrade/SKILL.md`.
+- When a repeated Sage/Codex workflow appears, read `.claude/skills/sage-harness-upgrade/SKILL.md`.
 - Push judgment into skills, execution into deterministic tools/tests/telemetry, and user-facing Sage language into outcomes plus evidence.
 
 ## Local-only operations
@@ -32,17 +32,10 @@ AI-native web GIS by Ingabe, credited to Roger. Supports vector, raster, and poi
 
 - **Runtime**: local only. Build and verify with `scripts/deploy.sh`; the application is served at `http://localhost:8000`. Never deploy this repository with SSH, rsync, or a remote Compose override.
 - **Sage LLM**: openai SDK 2.36 → an OpenAI-compatible endpoint. **Since 2026-10-10 the Mac and the server `.env` use `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint (`https://api.anthropic.com/v1/`)**, for Sage and for the vision model behind the drone cards (`DRONE_VISION_MODEL`, `src/services/drone_vision.py`); Claude calls are priced from their tokens (`src/services/llm_cache.py`). Before that (2026-10-06 to 2026-10-10, still the code's default): OpenRouter (`https://openrouter.ai/api/v1`) → `openai/gpt-6-luna` (Roger's decision: paid OpenRouter credits, $0.10 per million input tokens and $0.50 per million output; it reads images, calls tools and returns strict JSON). No fallback model is configured. FastSAM stays the mask engine. The model before Luna, `nvidia/nemotron-3-super-120b-a12b:free`, needs no credits (20 requests/minute, 1,000/day) and is the way back if paid credits run out. The abdication guard (`SAGE_ABDICATION_GUARD=1`) was measured with Luna: routing eval 78.1% → 81.7% (+3.6 pp, CI −0.4..+7.7), prose-instead-of-tool 14.4% → 2.8%, NDVI 40% → 81%, but unsupported requests 71% → 49%; not re-measured with Haiku.
-- **Turn loop**: deterministic administrative, raster-context, and FastSAM routes run first in `process_chat_interaction_task`. Hermes Agent is installed locally but remains flag-gated for complex fallthrough turns while callback readiness and cold-start latency are verified (see "Hermes Phase 2" below).
+- **Turn loop**: every Sage turn runs on the app's own loop, `process_chat_interaction_task` in `src/routes/message_routes.py`, with the request built in `src/dependencies/sage_turn_request.py`. The deterministic administrative, raster-object (FastSAM), raster-context and raster-fact routes (`_run_first_fast_path`) answer first.
+- **Removed runtimes**: Hermes Agent (`MUNDI_USE_HERMES`, `hermes_integration/`, the `/internal/tool-call` callback) was removed on 2026-10-12; it was off in production and on the Mac at removal (switched on only for local validation runs). Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert cron, `render_map_snapshot`) were removed on 2026-10-02; Sage runs in the web app only.
 - **DB roles**: `mundiuser` (app, `rolsuper=False`, `rolbypassrls=False`); RLS is FULLY ENFORCED on brain/maps/layers tables since ~Apr 22, 2026. `mundi_admin` is a superuser for maintenance, reachable only over the container's local socket (`docker exec -u postgres mundiai-postgresdb-1 psql -U mundi_admin -d mundidb`). Check query plans and timings as `mundiuser`: RLS changes them (CODING_STANDARDS.md Lessons log).
 - **PostHog observability**: traces exist for `$ai_generation` events. Current p50 latency ~26s, p95 ~60s. Input tokens 124k-136k/turn (system prompt + tools dominates). 0 errors over the last 7 days. `traceName` / `partner_id` not yet attached to traces — observability work pending.
-
-## Hermes Phase 2 — runtime swap plan
-
-Goal: replace the hand-rolled chat loop in `process_chat_interaction_task` with Hermes Agent (`v2026.5.7` tag, GitHub-only, MIT) running the `ingabe-sage` plugin from `hermes_integration/plugins/ingabe-sage/`. User-visible name stays "Sage". 75 tool schemas already declared in `generated_tools.py` as stubs; Phase 2 wires real handlers via a universal-shim pattern that delegates to existing dispatch in `src/dependencies/pydantic_tools.py`.
-
-Cutover is **flag-gated**: `MUNDI_USE_HERMES=0` keeps the existing path; `=1` routes through `src/services/hermes_runtime.py` (the runtime module). Default OFF until verified. Rollback = set flag to 0 and restart.
-
-Messaging channels (WhatsApp/Telegram senders, inbound `/internal/inbox`, alert cron, `render_map_snapshot`) were removed on 2026-10-02; Sage runs in the web app only.
 
 ## Build & Run Commands
 
@@ -111,7 +104,7 @@ npm run watch                                  # Watch mode (tsc + vite)
 - **MinIO/S3**: File storage for layers (FlatGeoBuf, GeoJSON, LAZ, GeoTIFF)
 - **Cloudflare R2** (optional, when 4 R2_* env vars set): transit upload layer for fast uploads from Africa edges; background worker pulls R2 → MinIO. 1-day lifecycle delete on R2 bucket.
 - **Redis**: Caching layer
-- **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint since 2026-10-10 (GPT-6 Luna, `openai/gpt-6-luna`, through OpenRouter before); local Sage/Hermes defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for OpenAI/Gemma/Ollama/Nemotron so Hermes-required fields are not silently dropped.
+- **Ollama**: Local LLM runtime for Gemma 4 12B QAT and nomic-embed-text Brain embeddings. Hosted Sage primary uses `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint since 2026-10-10 (GPT-6 Luna, `openai/gpt-6-luna`, through OpenRouter before); local Sage defaults to `ollama:gemma4:12b-it-qat`. Keep strict tool schemas enabled for OpenAI/Gemma/Ollama/Nemotron so required tool fields are not silently dropped.
 - **Life-Harness runtime guard** (`src/services/life_harness.py` + `external/life-harness` submodule): production adaptation of the pinned upstream Life-Harness benchmark. Adds H2 required-argument validation, H3 tool-contract hints, H4 repeated-call blocking, and H5 task-relevant agriculture procedure retrieval around the frozen brain model.
 - **Monitoring**: Prometheus (`:9090`) and Grafana (`:3000`, "Mundi.ai Overview") scrape the app, `postgres-exporter` (`pg_up`, and `pipeline_cache_age_seconds` for the Dagster-filled caches Sage reads) and `node-exporter` (Docker-VM memory and swap); alert rules live in `monitoring/alerts.yml` and are tested by `promtool test rules monitoring/alerts_test.yml`.
 
@@ -148,12 +141,11 @@ npm run watch                                  # Watch mode (tsc + vite)
 | `DRONE_VISION_SURVEY` | Off by default since 2026-10-12 (Roger: a model must not judge pixels; Haiku said yes to 289 of 290 weed candidates). `1`: the vision model looks at each plot twice for the cards (two paid calls a plot; 445 plots on Cyampirita). `0` (default): no plot is looked at and no paid call is made (`drone_vision.survey_enabled`); each plot's crop then comes from its DINOv2 fingerprint call and the field checks alone, and the stage, weeds and problems cards say "Can't tell yet from this photo". Until fingerprints are kept, the crop card names the checked plots only and shows the fingerprint job's progress, or says it failed (`Here.fingerprint_job`). A survey already kept is not read while off. |
 | `DRONE_VISION_REQUESTS_PER_MINUTE` | Spaces the vision model's calls under a free tier's per-minute limit (e.g. 12 for Gemini 3.5 Flash-Lite's 15); unset or 0 for paid models. |
 | `OPENROUTER_FALLBACK_MODELS` | Comma-separated fallback chain, tried on upstream 5xx, payload 400s and a daily-cap 429. `ollama:<tag>` entries route to the local Ollama container. Empty by decision (no paid fallback). |
-| `MUNDI_USE_HERMES` | `0` (default) → existing hand-rolled chat loop in `process_chat_interaction_task`. `1` → route through `src/services/hermes_runtime.py` (Hermes Agent runtime). Toggle this flag for the Phase 2 cutover. Rollback = back to `0` + restart. |
 | `ANSWER_LADDER` | `0` (default): consumers behave as before. `1`: they show answer levels for objects the YOLOE visual-prompt finder found in a picture (count / count after checking / estimate / rough / area / can't tell) from `src/services/answer_levels.py`; rules in `docs/rules/ANSWER_LEVELS_RULES.md`. |
 | `EXAMPLE_FINDER` | `0` (default): the example finder's routes (`POST /api/layer/{layer_id}/finder`, `GET /api/layer/{layer_id}/finder/{job_id}`) answer 404, as before. `1`: mark 1-20 objects in a window of a drone orthophoto and YOLOE-11s (visual prompts) finds the rest, as it was measured (`src/services/example_finder.py`; rules in `docs/rules/EXAMPLE_FINDER_RULES.md`): only targets measured on pictures looking straight down, and only marks at least as big as measured (`answer_levels.size_gate`); anything else is a 422 with the reason. Jobs wait in one line for the whole app (10 places, 3 a user: 429 / 503 when full) and one finder process runs at a time (up to 3.3 GB at its peak). The weights come only from object storage (`models/yoloe-11s-seg-8e439445c87338b7.pt`, checked by sha256). |
 | `TOWERS` | `0` (default): nothing of the tower work exists: its routes (`/api/towers/layer/{layer_id}/...`) answer 404 and Sage is offered no tower tool (`industry.SWITCHES`). `1`: in Telecom Towers projects, a person marks dishes, antennas or radio units on a photo inspection's photos, the example finder suggests the rest, the person checks every suggestion, and only then is anything counted ("counted by you"; "at least N" across overlapping photos); the tower cards (owner, technician) and Sage's `get_tower_inspection_findings` / `tower_photos_needing_review` read the same facts (`src/services/tower_inspection.py`, `tower_cards.py`; rules `docs/rules/TOWERS_RULES.md`). Needs `PHOTO_INSPECTIONS`, and `EXAMPLE_FINDER` to find. |
 | `FINDER_THREADS` | Torch threads in the example finder's own process (default 4; a whole number of 1 or more, anything else raises). Measured 2026-10-11 in the amd64 image on an M1 Mac with 4 threads, a new process / a warm one: read at 640 px 18 / 5 s, at 1280 px 28-39 / 14-18 s (26 s warm with 1 thread), at 2560 px (radio units) 78-137 / 60-89 s. |
-| `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage/Hermes tool calls. Enabled by default; set `0`/`false` to disable. |
+| `MUNDI_AGENT_HARNESS` | Runtime Life-Harness-style guard for Sage tool calls. Enabled by default; set `0`/`false` to disable. |
 | `SAGE_TOOL_TIMEOUT_SECONDS` | Longest one tool call may run in the hand-rolled loop (default 120, at least 15). Past it the tool is stopped and the model told to answer with what it has. Blocking work inside a tool must still run off the event loop (`asyncio.to_thread`), or it freezes every request and this limit cannot fire. |
 | `PHOTO_INSPECTIONS` | `0` (default) keeps today's uploads. `1`: a ZIP of photos (no shapefile in it), or one JPG/PNG with no map position, uploads as one photo inspection: a vector layer of camera points whose photos open from the feature panel. Rules: `docs/rules/PHOTO_INSPECTIONS_RULES.md`. |
 | `CHIRPS_CACHE_DIR` | Where the Rwanda part of each downloaded CHIRPS day is kept (default `/tmp/ingabe_cache/chirps`, the `ingabe-cache` volume; ~12 KB a day). Delete a file to force a fresh download of that day. |
@@ -206,7 +198,7 @@ This project is indexed by GitNexus as **ingabe** (13879 symbols, 19534 relation
 | Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Repeated Sage/Hermes workflow, harness, resolver, skill, or cron design | `.claude/skills/sage-harness-upgrade/SKILL.md` |
+| Repeated Sage workflow, harness, resolver, skill, or cron design | `.claude/skills/sage-harness-upgrade/SKILL.md` |
 
 <!-- gitnexus:end -->
 
@@ -248,6 +240,6 @@ Key routing rules:
 - Import cookies for authenticated testing → invoke /setup-browser-cookies
 - Performance regression, page speed, benchmarks → invoke /benchmark
 - Review what gstack has learned → invoke /learn
-- Repeated Sage/Hermes workflow, "make this permanent", "we asked twice", "thin harness/fat skills", resolver, skill, or cron design → read `.claude/skills/sage-harness-upgrade/SKILL.md`
+- Repeated Sage workflow, "make this permanent", "we asked twice", "thin harness/fat skills", resolver, skill, or cron design → read `.claude/skills/sage-harness-upgrade/SKILL.md`
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health

@@ -35,7 +35,6 @@ from src.routes.profile_routes import router as profile_router
 from src.routes import auth_routes, companies_routes
 from src.services import workos_auth
 from src.dependencies.workos_session import WorkOSSessionMiddleware
-from src.routes.tool_call_routes import router as tool_call_router
 from src.dependencies.db_pool import close_all_pools
 from src.dependencies.rate_limiter import limiter, rate_limit_exceeded_handler
 from src.services.posthog_analytics import (
@@ -651,14 +650,6 @@ app.include_router(
     prefix="/api",
     tags=["Conversations"],
 )
-# Internal tool-call: Hermes-side ingabe-sage plugin → mundi-app callback for
-# dispatching Sage tools against partner-scoped data. HMAC-gated
-# (src/dependencies/hermes_auth.py). Default off via MUNDI_TOOL_CALL_ENABLED=0. See
-# src/routes/tool_call_routes.py for the security boundary docs.
-app.include_router(
-    tool_call_router,
-    tags=["Internal/ToolCall"],
-)
 app.include_router(
     rwanda_router,
     prefix="/api",
@@ -738,12 +729,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def spa_server(request: Request, exc: StarletteHTTPException):
     # Don't handle API 404s - let them bubble up as real 404s.
     #
-    # /internal/* is the Hermes plugin callback surface (tool-call). The first
-    # /internal/ route was only tested at the auth-helper level, so the omission of `/internal/` here went unnoticed until PR #55 wrote the first
-    # HTTP-level tests for /internal/tool-call. Symptom: any raise HTTPException
-    # from /internal/* routes was rewritten as 200 + SPA index.html because this
-    # fallback served HTML instead of bubbling the status. Add `/internal/` to the
-    # bypass list so the dispatch tests can see 503 / 401 / 422 / 404 as documented.
+    # /internal/ has no routes since the Hermes callback was removed (2026-10-12);
+    # it stays here so a stray call gets a JSON 404, not the SPA index.html.
     if (
         request.url.path.startswith("/api/")
         or request.url.path.startswith("/internal/")
