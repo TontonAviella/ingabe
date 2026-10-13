@@ -139,6 +139,7 @@ import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
 import { DroneCards } from '@/components/DroneCards';
+import { useFollowProjectIndustry } from '@/components/IndustryGate';
 import LayerList from '@/components/LayerList';
 import { MapLegends } from '@/components/MapLegends';
 import { TerrainOverlay } from '@/components/TerrainOverlay';
@@ -290,6 +291,7 @@ export default function MapLibreMap({
 }: MapLibreMapProps) {
   // Projects default to agriculture; farm-only wording and controls show only there (audit R1-28).
   const farmProject = (project.industry ?? 'agriculture') === 'agriculture';
+  useFollowProjectIndustry(project.industry);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const localMapRef = useRef<MLMap | null>(null);
   const basemapControlRef = useRef<BasemapControl | null>(null);
