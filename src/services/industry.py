@@ -111,17 +111,20 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     # marks, the finder's suggestions and their review (/api/towers/...): tower parts in Telecom, maize plants in
     # Agriculture, pylons, insulators and nests in Power Grid (tower_inspection.PARTS_BY_INDUSTRY)
     "tower_inspection": TELECOM | AGRICULTURE | POWER_GRID,
-    "tower_cards": TELECOM,  # the tower question cards
+    "tower_cards": TELECOM | POWER_GRID,  # the inspection question cards (each industry its own: tower_cards.ASSETS)
     "get_tower_inspection_findings": TELECOM,
     "tower_photos_needing_review": TELECOM,
-    # (Power Grid capabilities are added here as they are built.)
+    # --- Power Grid: the same photo inspection work on power lines (switch TOWERS) ---
+    "get_power_line_inspection_findings": POWER_GRID,
+    "power_line_photos_needing_review": POWER_GRID,
 }
 
 # Capabilities that exist only while their switch is on: off, they are not offered, not run and not shown, for any
 # industry (each switch is read by its domain's one function).
 SWITCHES: dict[str, Callable[[], bool]] = {
     name: tower_inspection.enabled
-    for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review")
+    for name in ("tower_inspection", "tower_cards", "get_tower_inspection_findings", "tower_photos_needing_review",
+                 "get_power_line_inspection_findings", "power_line_photos_needing_review")
 }
 
 

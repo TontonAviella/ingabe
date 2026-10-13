@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from src.services import answer_levels, tower_cards, tower_inspection
+from src.services import answer_levels, example_finder, tower_cards, tower_inspection
 from src.services.card_status import CANT_TELL, LEARN, NEEDS_FLIGHT, PARTLY, READY, WORKING
 from src.services.test_tower_inspection import PHOTOS, _inspection, _work, facts
 from src.services.tower_inspection import Earlier
@@ -106,10 +106,10 @@ def _marked_never_found(part):
     ({"b" * 64: _marked_never_found(ANTENNA)}, "Next, DJI_0002.JPG: antennas marked; press Find."),
 ])
 def test_equipment_with_marked_photos_open_says_what_is_open_not_how_to_start(state, technician_todo):
-    """Started work is never answered with "mark 3 to start": the answer says what is open and what comes next."""
+    """Started work is never answered with "mark a few to start": the answer says what is open and what comes next."""
     for audience in ("owner", "technician"):
         answer = tower_cards.answer_card("equipment", here(state), audience)
-        assert answer["what"] != tower_cards.NOTHING_COUNTED and "mark 3" not in answer["todo"].lower()
+        assert answer["what"] != tower_cards.NOTHING_COUNTED and "mark a few" not in answer["todo"].lower()
         assert answer["what"].startswith("Nothing is counted yet: the marked photos are still being checked.")
         assert "Still open:" in answer["what"] and "at least" not in answer["what"]
         assert "Some marked photos are still being checked: they add nothing yet" in answer["how_sure"]["because"]
@@ -118,9 +118,9 @@ def test_equipment_with_marked_photos_open_says_what_is_open_not_how_to_start(st
         "Ask a technician to finish the 1 marked photo still open: their counts appear once every suggestion on "
         "them is checked.")
     preview = tower_cards.deck(here(state), "owner")["cards"][0]
-    assert preview["id"] == "equipment" and "mark 3" not in preview["preview"]
+    assert preview["id"] == "equipment" and "mark a few" not in preview["preview"]
     sage = tower_cards.findings(here(state))
-    assert sage["answer"] != tower_cards.NOTHING_COUNTED and "mark 3" not in sage["what_to_do"].lower()
+    assert sage["answer"] != tower_cards.NOTHING_COUNTED and "mark a few" not in sage["what_to_do"].lower()
 
 
 def _cap(text: str) -> str:
@@ -158,8 +158,8 @@ def test_equipment_is_ready_only_when_every_part_and_every_photo_is_covered():
     assert some["what"].endswith("Nothing is marked yet on 3 photos of 5: parts seen only there are not counted.")
     assert some["todo"] == "Ask a technician to count the radio units too: until then this answer leaves them out."
     technician = tower_cards.answer_card("equipment", here(COUNTED), "technician")
-    assert technician["todo"] == ("Mark 3 radio units on a photo where they are clear, press Find, then keep, fix or "
-                                  "reject each suggestion and add any it missed.")
+    assert technician["todo"] == ("Mark a few radio units on a photo where they are clear, press Find, then keep, fix "
+                                  "or reject each suggestion and add any it missed.")
     deck = {c["id"]: c for c in tower_cards.deck(here(COUNTED), "owner")["cards"]}
     assert deck["equipment"]["status"] == PARTLY
     assert deck["equipment"]["preview"].endswith("Radio units not counted yet. Nothing marked yet on 3 photos.")
@@ -263,10 +263,11 @@ def test_changes_need_an_earlier_inspection_with_counts():
 def test_the_learn_card_reads_what_the_finder_was_measured_to_do():
     answer = tower_cards.answer_card("learn_review", here(), "owner")
     assert answer["status"] == LEARN
-    for part in tower_inspection.PARTS:
-        m = answer_levels.target(part).measured
+    for part in tower_inspection.PARTS + tower_inspection.DEFECT_PARTS:  # as the finder that runs was measured
+        m = answer_levels.target_for(part, example_finder.settings(part).model).measured
         assert f"{m['value']:.3f} on {m['n_images']} public test photos" in answer["what"]  # read, never copied
-    assert "0.745 on 20 public test photos" in answer["what"]  # dishes, as answer_levels' table says today
+    assert "0.889 on 60 public test photos" in answer["what"]  # dishes, by our own model, as the table says today
+    assert "a model trained on this part (RF-DETR" in answer["what"] and "YOLOE" not in answer["what"]
     assert not any("your checks" in f["label"] for f in answer["facts"])
     mine = tower_cards.answer_card("learn_review", here(OPEN), "technician")
     yours = {f["label"]: f["value"] for f in mine["facts"]}
@@ -280,7 +281,7 @@ def test_sage_gets_no_count_before_a_person_checked_one():
     nothing = tower_cards.findings(here())
     assert nothing["counted"] is False and nothing["answer"] == tower_cards.NOTHING_COUNTED
     assert all(p["at_least"] is None for p in nothing["equipment"].values())
-    assert nothing["rule"] == tower_cards.NEVER_COUNT_YOURSELF and "mark 3" in nothing["what_to_do"]
+    assert nothing["rule"] == tower_cards.NEVER_COUNT_YOURSELF and "mark a few" in nothing["what_to_do"]
     waiting = tower_cards.findings(here({"c" * 64: parts(tower_dish=dict(marks=3, suggestions=5))}))
     assert waiting["counted"] is False and waiting["equipment"][DISH]["suggestions_waiting"] == 5
     assert waiting["equipment"][DISH]["at_least"] is None  # 3 marks and 5 suggestions are not a count
@@ -320,3 +321,57 @@ def test_no_card_tells_anyone_how_or_when_to_fly():
             for card in tower_cards.deck(here(photos=photos), audience)["cards"]:
                 text = json.dumps(tower_cards.answer_card(card["id"], here(photos=photos), audience))
                 assert not banned.search(text), (card["id"], banned.search(text).group(0))
+
+
+# --- Defects, and each industry's own questions -------------------------------------------------------------------
+
+def _with(part_sets, **kw):
+    """A photo's work for these parts (an industry's), with the work given per part."""
+    return {p: _work(p, **kw.get(p, {})) for p in part_sets}
+
+
+TELECOM_PARTS = tower_inspection.parts_for("telecom")
+POWER = tower_cards.ASSETS["power_grid"]
+BOLTS = {"a" * 64: _with(TELECOM_PARTS, tower_bolt_missing=dict(marks=1, suggestions=2, reviewed=2))}  # 3 missing
+
+
+def test_counted_bolts_are_listed_with_their_photo_and_the_owner_is_told_what_to_do():
+    answer = tower_cards.answer_card("defects", here(BOLTS), "owner")
+    assert answer["status"] == READY and answer["question"] == "Are bolts missing or loose on the steel?"
+    assert answer["what"].startswith("Missing bolts: at least 3 on one photo (DJI_0001.JPG), counted on 1 photo.")
+    assert [i["title"] for i in answer["items"]] == ["DJI_0001.JPG"]
+    assert answer["items"][0]["detail"] == "3 missing bolts counted by you"
+    assert answer["todo"] == tower_cards.ASSETS["telecom"].defect_todo
+    assert "Loose bolts" in {f["label"] for f in answer["facts"]}  # none counted, never "none there"
+
+
+def test_no_defect_marked_never_reads_as_no_defects():
+    answer = tower_cards.answer_card("defects", here(), "owner")
+    assert answer["status"] == CANT_TELL
+    assert "does not mean there are none" in answer["what"]
+    sage = tower_cards.findings(here())
+    assert "does not mean there are none" in sage["defects"]["answer"] and sage["defects"]["photos"] == []
+    assert "never say there are none" in sage["rule"]
+
+
+def test_power_lines_ask_about_the_line_and_its_nests_never_tower_equipment():
+    work = _with(tower_inspection.POWER_PARTS, power_nest=dict(marks=1, suggestions=1, reviewed=1),
+                 power_pylon=dict(marks=1, suggestions=0))
+    # The helper's 60 px marks are smaller than the nests were measured on (the size gate, tested in answer_levels),
+    # so the counts a person reached are set here.
+    work["power_nest"] = replace(work["power_nest"], counted_by_you=2)
+    work["power_pylon"] = replace(work["power_pylon"], counted_by_you=1, review_saved=True)
+    nests = {"a" * 64: work}
+    power = tower_cards.Here(inspection=_inspection(PHOTOS, nests), earlier=NO_EARLIER, asset=POWER)
+    deck = {c["id"]: c for c in tower_cards.deck(power, "owner")["cards"]}
+    assert deck["equipment"]["title"] == "What is on this line?"
+    assert deck["defects"]["title"] == "Are there bird nests on the line?" and deck["defects"]["status"] == READY
+    equipment = tower_cards.answer_card("equipment", power, "owner")
+    assert "Pylons" in equipment["what"] and "ishes" not in equipment["what"]  # no dishes, antennas or radio units
+    nest = tower_cards.answer_card("defects", power, "owner")
+    assert nest["what"].startswith("Bird nests: at least 2 on one photo (DJI_0001.JPG)")
+    assert nest["todo"] == POWER.defect_todo and "insulator" in nest["why"]
+    learn = tower_cards.answer_card("learn_review", power, "owner")
+    assert "public line photos" in learn["what"] and "0.989" in learn["what"]  # pylons, by our own model
+    with pytest.raises(KeyError):
+        tower_cards.answer_card("camera", power, "owner")

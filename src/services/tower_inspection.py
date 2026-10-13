@@ -536,8 +536,8 @@ async def _keys_under(s3: Any, bucket: str, prefix: str) -> list[str]:
 
 
 async def load_inspection(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, name: str,
-                          photos: Sequence[PhotoFacts]) -> Inspection:
-    """The inspection's photos and the work kept on them in this project."""
+                          photos: Sequence[PhotoFacts], parts: Sequence[str] = PARTS) -> Inspection:
+    """The inspection's photos and the work kept on them in this project, for these parts (its industry's)."""
     by_sha = {p.sha256: p for p in photos}
     prefix = _layer_prefix(project_id, layer_id)
     shas = [k[len(prefix):-len(".json")] for k in await _keys_under(s3, bucket, prefix) if k.endswith(".json")]
@@ -545,7 +545,7 @@ async def load_inspection(redis: Any, s3: Any, bucket: str, project_id: str, lay
 
     async def one(sha: str) -> tuple[str, dict[str, PartWork]]:
         async with limit:
-            return sha, await photo_work(redis, s3, bucket, project_id, layer_id, by_sha[sha])
+            return sha, await photo_work(redis, s3, bucket, project_id, layer_id, by_sha[sha], parts)
 
     work = dict(await asyncio.gather(*(one(sha) for sha in shas if sha in by_sha)))
     return Inspection(project_id=project_id, layer_id=layer_id, name=name, photos=tuple(photos), work=work)
@@ -570,12 +570,13 @@ class PartInventory:
     answer: Optional[answer_levels.Answer]  # the answer level on that photo
 
 
-def inventory(inspection: Inspection) -> dict[str, PartInventory]:
-    """What is counted of each part across the inspection, and what is still open."""
+def inventory(inspection: Inspection, parts: Sequence[str] = PARTS) -> dict[str, PartInventory]:
+    """What is counted of each part across the inspection, and what is still open (the tower equipment unless the
+    caller names other parts: a Power Grid inspection's, or the defects)."""
     out = {}
     photos = {p.sha256: p for p in inspection.photos}
-    for part in PARTS:
-        works = [(sha, parts[part]) for sha, parts in inspection.work.items()]
+    for part in parts:
+        works = [(sha, parts[part]) for sha, parts in inspection.work.items() if part in parts]
         counted_photos = [(sha, w) for sha, w in works if w.counted_by_you is not None]
         best = max(counted_photos, key=lambda item: item[1].counted_by_you, default=None)  # type: ignore[arg-type]
         out[part] = PartInventory(
@@ -768,7 +769,8 @@ class Earlier:
     inspection: Optional[Inspection]  # the latest of them with something counted by you; None when none has
 
 
-async def earlier_inspection(conn: Any, redis: Any, s3: Any, bucket: str, current: Inspection) -> Earlier:
+async def earlier_inspection(conn: Any, redis: Any, s3: Any, bucket: str, current: Inspection,
+                             parts: Sequence[str] = PARTS) -> Earlier:
     """The latest earlier inspection of the same site in the current inspection's project that has something counted
     by you. `conn` sees what the reader may see (row security)."""
     candidates = []
@@ -779,7 +781,7 @@ async def earlier_inspection(conn: Any, redis: Any, s3: Any, bucket: str, curren
         if photos is not None and is_earlier_same_site(current.photos, photos):
             candidates.append((_taken_span(photos), row["layer_id"], row["name"], photos))
     for _, layer_id, name, photos in sorted(candidates, key=lambda c: c[0], reverse=True):
-        earlier = await load_inspection(redis, s3, bucket, current.project_id, layer_id, name, photos)
-        if any(i.at_least is not None for i in inventory(earlier).values()):
+        earlier = await load_inspection(redis, s3, bucket, current.project_id, layer_id, name, photos, parts)
+        if any(i.at_least is not None for i in inventory(earlier, parts).values()):
             return Earlier(same_site=len(candidates), inspection=earlier)
     return Earlier(same_site=len(candidates), inspection=None)

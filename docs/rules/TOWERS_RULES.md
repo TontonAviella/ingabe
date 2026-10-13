@@ -10,9 +10,9 @@ Agriculture uses the same photo work for maize plants (2026-10-12): on a photo i
 one part is `maize_seedling` (`tower_inspection.PARTS_BY_INDUSTRY`, `parts_for`); its finder settings are the measured
 `maize_seedling` target (640 px squares read at 1280 px; a larger photo is shrunk to 640 px first, so upload squares of
 that size). The photos route lists the parts (`parts`: id, label, plural) and the marking screen offers only those; a
-part of another industry is refused (422). The tower cards and Sage's tower tools stay Telecom Towers only (their own
-capabilities, `tower_cards` and `get_tower_inspection_findings`): in Agriculture the cards answer 404 and the panel is
-"Photo checks" without them. A stored record keeps the tower parts as before and a farm part only once worked on.
+part of another industry is refused (422). The cards serve Telecom Towers and Power Grid, each with its own questions
+and words (`tower_cards.ASSETS`, 2026-10-13); Sage's tower tools serve Telecom and its power line tools Power Grid: in
+Agriculture the cards answer 404 and the panel is "Photo checks" without them. A stored record keeps the tower parts as before and a farm part only once worked on.
 Adapters only: `src/routes/tower_routes.py`,
 `src/tools/tower_tools.py`. Tests: `src/services/test_tower_inspection.py`, `test_tower_cards.py`,
 `src/routes/test_tower_routes.py`, `src/tools/test_tower_tools.py`, and the routing, industry and eval-corpus tests.
@@ -155,6 +155,17 @@ for the layer (data, or a 409): never while asking, on a 404 or on a failed requ
 
 ## Cards (`tower_cards.py`)
 
+Each industry asks its own questions (`ASSETS`): Telecom "What equipment is on this tower?" (dishes, antennas, radio
+units) and "Are bolts missing or loose on the steel?" (`DEFECT_PARTS`); Power Grid "What is on this line?" (pylons,
+insulators) and "Are there bird nests on the line?". Both also have the photos to check, the camera positions, the
+changes (over the equipment parts) and the learning card, which names the finder that runs for each part (our trained
+model, SAM 3 or YOLOE) and reads its measurement from `answer_levels` (`target_for`). The deck carries the panel's
+`heading` ("Tower checks", "Line checks").
+
+The `defects` card lists every photo with a defect a person counted, with the counts there, and the owner's next step.
+With nothing counted it says a photo where nobody marked the defect was not checked for it, so it never reads as "no
+defects"; Sage gets the same rule.
+
 Statuses reuse the drone cards' vocabulary (`card_status`); labels are the towers' own ("Needs a second
 inspection"). Ranking: readiness, then the reader (the owner's equipment question first, also before anything is
 counted, since its answer says how to start; the technician's photos to check first); the learning card last.
@@ -177,7 +188,8 @@ counted, since its answer says how to start; the technician's photos to check fi
 ## Sage (`src/tools/tower_tools.py`)
 
 `get_tower_inspection_findings` and `tower_photos_needing_review` (telecom only, `TOWERS` on; routing category
-`towers`) return the equipment and camera cards' facts and the photos-to-check list (`tower_cards.findings` /
+`towers`), and `get_power_line_inspection_findings` and `power_line_photos_needing_review` (Power Grid only, the same
+facts on a line inspection), return the equipment and camera cards' facts and the photos-to-check list (`tower_cards.findings` /
 `photos_needing_review`), with the rule "give only the counts listed here; never count equipment from a photo
 yourself, never present suggestions as a count". Sage gets "at least N" per part and never the sum over photos
 (it would count a part seen on two photos twice). With nothing marked they say there is no count and how to start;

@@ -131,6 +131,8 @@ export interface TowerCard {
 
 export interface TowerCards {
   cards: TowerCard[];
+  /** What the panel is called for this industry: "Tower checks", "Line checks". */
+  heading?: string;
 }
 
 /** The server's card listing the photos still to check, in the order to work on them (tower_cards `_photos_to_check`,

@@ -106,9 +106,10 @@ def _part(inspection: _Inspection, part: str) -> str:
 
 
 async def _with_cards(inspection: _Inspection = Depends(_viewed)) -> _Inspection:
-    """The tower cards exist only for Telecom Towers inspections."""
+    """The inspection cards exist for Telecom Towers and Power Grid inspections."""
     if not all(industry.available("tower_cards", i) for i in inspection.industries):
-        raise HTTPException(404, "The tower cards are for photo inspections in Telecom Towers projects")
+        raise HTTPException(404, "The inspection cards are for photo inspections in Telecom Towers and Power Grid "
+                                 "projects")
     return inspection
 
 
@@ -243,7 +244,8 @@ async def _here(inspection: _Inspection, session: UserContext) -> tower_cards.He
     async with async_read_conn("towers.cards", user_id=session.get_user_id()) as conn:
         return await tower_cards.load_here(conn, get_async_redis(), await get_async_s3_client(), get_bucket_name(),
                                            inspection.project_id, inspection.layer.layer_id,
-                                           inspection.layer.name or inspection.layer.layer_id, inspection.photos)
+                                           inspection.layer.name or inspection.layer.layer_id, inspection.photos,
+                                           inspection.industries[0])
 
 
 def _check_audience(audience: Optional[str]) -> str:
@@ -267,6 +269,7 @@ async def get_tower_card_answer(card_id: str, audience: Optional[str] = None,
                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """One card's answer, in the drone cards' answer shape: what, why, what to do, how sure, facts, photos."""
     reader = _check_audience(audience)
-    if card_id not in tower_cards.CARDS:
+    here = await _here(inspection, session)
+    if card_id not in here.asset.cards:
         raise HTTPException(404, f"No card {card_id}")
-    return tower_cards.answer_card(card_id, await _here(inspection, session), reader)
+    return tower_cards.answer_card(card_id, here, reader)

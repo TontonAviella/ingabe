@@ -298,10 +298,13 @@ def test_with_towers_on_a_telecom_tower_question_is_offered_the_tower_tools_and_
     assert {"get_tower_inspection_findings", "tower_photos_needing_review"} <= set(_names(plan.tools))
     assert not {"describe_user_raster", "analyze_raster_object_candidates"} & set(_names(plan.tools))
     assert abdicated is True  # a tool here answers it: prose is abdication
-    for other in ("power_grid", "agriculture"):  # no tower tool there: the honest no stands, the full list is sent
-        abdicated, plan = _abdication_on(other, text)
-        assert abdicated is False and plan.routing.selected_categories == frozenset()
-        assert "get_tower_inspection_findings" not in _names(plan.tools)
+    # Power Grid has its own inspection tools in the category (pylons, insulators, nests), never the tower ones.
+    abdicated, plan = _abdication_on("power_grid", text)
+    assert "get_tower_inspection_findings" not in _names(plan.tools)
+    assert {"get_power_line_inspection_findings", "power_line_photos_needing_review"} <= set(_names(plan.tools))
+    abdicated, plan = _abdication_on("agriculture", text)  # no inspection tool there: the honest no stands
+    assert abdicated is False and plan.routing.selected_categories == frozenset()
+    assert "get_tower_inspection_findings" not in _names(plan.tools)
 
 
 @pytest.mark.parametrize(("text", "needed"), [

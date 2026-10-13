@@ -1,6 +1,7 @@
-"""Sage's tools for a tower photo inspection on the map: what a person counted on it, and which photos still need
-checking. An adapter only: both read the same facts as the tower cards (src/services/tower_cards.py), so Sage and the
-cards agree, and neither ever counts from a picture. Telecom projects only, while TOWERS is on (industry.available).
+"""Sage's tools for a photo inspection on the map, of telecom towers or of power lines: what a person counted on it
+(equipment and defects), and which photos still need checking. An adapter only: they read the same facts as the
+inspection cards (src/services/tower_cards.py), so Sage and the cards agree, and none ever counts from a picture. The
+tower tools serve Telecom projects, the power line tools Power Grid projects, while TOWERS is on (industry.available).
 """
 
 from __future__ import annotations
@@ -25,12 +26,14 @@ SELECT l.layer_id, l.name, l.metadata
 
 
 class TowerInspectionArgs(BaseModel):
-    layer_id: str = Field(..., description="The layer_id of the tower photo inspection: the layer of camera points "
-                                           "the photos were uploaded as.")
+    layer_id: str = Field(..., description="The layer_id of the photo inspection: the layer of camera points the "
+                                           "photos were uploaded as.")
 
 
-async def _here(layer_id: str, meta: IngabeToolCallMetaArgs) -> tuple[Optional[tower_cards.Here], Optional[str]]:
-    """(the cards' facts, None) for a photo inspection on this chat's map, else (None, why not)."""
+async def _here(layer_id: str, meta: IngabeToolCallMetaArgs,
+                capability: str = "get_tower_inspection_findings") -> tuple[Optional[tower_cards.Here], Optional[str]]:
+    """(the cards' facts, None) for a photo inspection on this chat's map, else (None, why not). `capability` is the
+    calling tool's: it decides the industry the inspection must belong to."""
     async with async_read_conn("sage_tower_inspection", user_id=meta.user_uuid) as conn:
         row = await conn.fetchrow(_INSPECTION_ON_MAP_SQL, layer_id, meta.map_id)
         if row is None:
@@ -38,20 +41,22 @@ async def _here(layer_id: str, meta: IngabeToolCallMetaArgs) -> tuple[Optional[t
         metadata = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else dict(row["metadata"] or {})
         prefix = photo_inspections.stored_prefix(metadata, layer_id)
         if prefix is None:
-            return None, f"{row['name']} is not a photo inspection (a ZIP of tower photos uploaded as camera points)."
+            return None, f"{row['name']} is not a photo inspection (a ZIP of photos uploaded as camera points)."
         # The chat's own project (its map shows the layer), never the last edited map's: a layer added to another
         # project's map keeps each project's work apart, as every Sage tool keys on meta.project_id.
         project_id = meta.project_id
-        # The tools' own capability (Telecom only): photo marking also serves Agriculture, these counts do not.
-        if not industry.available("get_tower_inspection_findings", await industry.industry_of_project(conn, project_id)):
-            return None, "Tower work is for Telecom Towers projects only."
+        # The tool's own capability (its industry): photo marking also serves Agriculture, these counts do not.
+        project_industry = await industry.industry_of_project(conn, project_id)
+        if not industry.available(capability, project_industry):
+            return None, ("Tower work is for Telecom Towers projects only." if capability.startswith(("get_tower",
+                          "tower_")) else "Power line work is for Power Grid projects only.")
         s3, bucket = await get_async_s3_client(), get_bucket_name()
         photos = await tower_inspection.inspection_photos(s3, bucket, prefix)
         if photos is None:
             return None, ("This inspection was uploaded before its photo facts were kept; upload the photos again to "
                           "work on them.")
         here = await tower_cards.load_here(conn, get_async_redis(), s3, bucket, project_id, layer_id, row["name"],
-                                           photos)
+                                           photos, project_industry or "telecom")
     return here, None
 
 
@@ -61,10 +66,13 @@ async def get_tower_inspection_findings(args: TowerInspectionArgs, meta: IngabeT
     how many photos are counted, suggestions still waiting for a person, and where the photos were taken from
     (heights, camera tilt, directions, photos without GPS). When nothing is checked yet it says so and what to do.
 
+    Also the defects a person counted: missing and loose bolts, with the photos they are on.
+
     WHEN TO USE: "what equipment is on this tower", "how many antennas / dishes / radio units (RRUs)", "is the
-    inventory done", "where were the photos taken from".
-    WHEN NOT TO USE: damage, rust or anything else about the tower's condition (not measured); a raster photo that is
-    not a photo inspection. Never count equipment from a picture yourself: give only the counts this tool returns."""
+    inventory done", "where were the photos taken from", "are bolts missing or loose", "is the steel safe".
+    WHEN NOT TO USE: rust, cracks or other damage (not measured); a raster photo that is not a photo inspection.
+    Never count equipment or defects from a picture yourself: give only the counts this tool returns, and never say
+    there are no defects where nobody marked them."""
     here, why_not = await _here(args.layer_id, meta)
     if here is None:
         return {"status": "error", "error": why_not}
@@ -84,3 +92,35 @@ async def tower_photos_needing_review(args: TowerInspectionArgs, meta: IngabeToo
         return {"status": "error", "error": why_not}
     return {"status": "success", **tower_cards.photos_needing_review(here),
             "source": "Ingabe tower inspection: the work saved on each photo"}
+
+
+async def get_power_line_inspection_findings(args: TowerInspectionArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
+    """What is on a power line according to a photo inspection: for pylons and insulators, the number a person
+    counted (at least N: the most counted on one photo, after checking every suggestion on it), and the bird nests a
+    person counted with the photos they are on; how many photos are counted, suggestions still waiting, and where the
+    photos were taken from. When nothing is checked yet it says so and what to do.
+
+    WHEN TO USE: "how many pylons / insulators", "what is on this line", "are there bird nests on the line", "which
+    pylons have nests", "where were the photos taken from".
+    WHEN NOT TO USE: conductor sag, vegetation clearance, broken insulators or hot spots (not measured); a raster photo
+    that is not a photo inspection. Never count from a picture yourself: give only the counts this tool returns, and
+    never say there are no nests where nobody marked them."""
+    here, why_not = await _here(args.layer_id, meta, "get_power_line_inspection_findings")
+    if here is None:
+        return {"status": "error", "error": why_not}
+    return {"status": "success", **tower_cards.findings(here),
+            "source": "Ingabe power line inspection: counts checked by a person, photo facts from EXIF and DJI data"}
+
+
+async def power_line_photos_needing_review(args: TowerInspectionArgs, meta: IngabeToolCallMetaArgs) -> dict[str, Any]:
+    """The photos of a power line inspection a person still has to check, in the order to work on them: suggestions
+    waiting for review (most first), photos marked but not searched yet, photos being searched, then photos with
+    nothing marked. A photo's count exists only once it is checked.
+
+    WHEN TO USE: "which line photos still need checking", "what is left to review", "where do I start".
+    WHEN NOT TO USE: the counts themselves (use get_power_line_inspection_findings)."""
+    here, why_not = await _here(args.layer_id, meta, "power_line_photos_needing_review")
+    if here is None:
+        return {"status": "error", "error": why_not}
+    return {"status": "success", **tower_cards.photos_needing_review(here),
+            "source": "Ingabe power line inspection: the work saved on each photo"}

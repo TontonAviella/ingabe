@@ -1,4 +1,7 @@
-"""Tower question cards: the questions Ingabe asks about a tower inspection, answered from what a person counted.
+"""Inspection question cards: the questions Ingabe asks about a photo inspection of telecom towers or power lines,
+answered from what a person counted. Each industry has its own questions and words (ASSETS): what is on the tower or
+line, its defects (missing and loose bolts on a telecom tower; bird nests on a power line), the photos to check, where
+they were taken from, what changed, and how the suggestions were measured.
 
 Two readers: the tower owner or asset manager (what is on the tower, what changed) and the field technician (which
 photos to check next, where the photos were taken from). Each answer comes in the drone cards' order (what, why,
@@ -19,12 +22,14 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from src.services import answer_levels, example_finder, tower_inspection
+from src.services.example_finder_pictures import FinderInputError
 from src.services.card_status import CANT_TELL, LEARN, NEEDS_FLIGHT, PARTLY, READY, WORKING, how_sure
 from src.services.photo_inspections import PhotoFacts
 from src.services.tower_inspection import (
     CHECK_ORDER,
     CONFIRM,
     FINDING,
+    DEFECT_PARTS,
     NOT_FOUND,
     PARTS,
     UNMARKED,
@@ -48,31 +53,87 @@ STATUS_LABELS = {
     LEARN: "Learn · 1 minute",
 }
 
-CARDS = {
-    "equipment": "What equipment is on this tower?",
-    "photos_to_check": "Which photos still need checking?",
-    "camera_positions": "Where were the photos taken from?",
-    "changes": "What changed since the last inspection?",
-    "learn_review": "Why does a person check every suggestion?",
+@dataclass(frozen=True)
+class Asset:
+    """What one industry's inspection cards ask and the words they use."""
+
+    industry: str
+    thing: str  # what was photographed: "tower", "line"
+    heading: str  # what the cards panel is called
+    equipment: tuple[str, ...]  # the parts the equipment card counts and the changes card compares
+    defects: tuple[str, ...]  # the parts the defects card answers
+    cards: dict[str, str]  # card id -> question, in the deck's order before ranking
+    start_noun: str  # the parts a person starts marking with, as the first step says them
+    register_why: str  # why the owner needs the equipment answer
+    defect_why: dict[str, str]  # reader -> why the defects matter
+    defect_todo: str  # what the owner does with a defect counted
+
+
+ASSETS = {
+    "telecom": Asset(
+        industry="telecom", thing="tower", heading="Tower checks", equipment=PARTS, defects=DEFECT_PARTS,
+        cards={"equipment": "What equipment is on this tower?",
+               "defects": "Are bolts missing or loose on the steel?",
+               "photos_to_check": "Which photos still need checking?",
+               "camera_positions": "Where were the photos taken from?",
+               "changes": "What changed since the last inspection?",
+               "learn_review": "Why does a person check every suggestion?"},
+        start_noun="dishes (or antennas, or radio units)",
+        register_why=("An asset register needs what is really on the tower. Each number was checked by a person, "
+                      "suggestion by suggestion; photos overlap, so it is the most seen on one photo, not a sum of "
+                      "photos."),
+        defect_why={OWNER: ("A missing or loose bolt weakens the joint it holds; on a lattice tower, joints carry the "
+                            "wind load, so a tower with missing bolts can fail in a storm."),
+                    TECHNICIAN: ("Each missing or loose bolt counted here is a joint to fix on the next climb; the "
+                                 "photo shows where.")},
+        defect_todo="Send a climber to replace or tighten the bolts on the photos listed, starting with missing ones."),
+    "power_grid": Asset(
+        industry="power_grid", thing="line", heading="Line checks", equipment=("power_pylon", "power_insulator"), defects=("power_nest",),
+        cards={"equipment": "What is on this line?",
+               "defects": "Are there bird nests on the line?",
+               "photos_to_check": "Which photos still need checking?",
+               "camera_positions": "Where were the photos taken from?",
+               "changes": "What changed since the last inspection?",
+               "learn_review": "Why does a person check every suggestion?"},
+        start_noun="pylons (or insulators)",
+        register_why=("An asset register needs what is really on the line. Each number was checked by a person, "
+                      "suggestion by suggestion; photos overlap, so it is the most seen on one photo, not a sum of "
+                      "photos."),
+        defect_why={OWNER: ("A nest on a pylon can short a live conductor to the steel when it is wet or when "
+                            "nesting material falls across an insulator: an outage, and a fire risk in dry season."),
+                    TECHNICIAN: ("Each nest counted here is a pylon to visit; the photo shows where it sits relative "
+                                 "to the insulators.")},
+        defect_todo=("Send a crew to remove or relocate the nests on the photos listed, those close to insulators "
+                     "first, under the line's live-work or outage rules.")),
 }
+DEFAULT_ASSET = ASSETS["telecom"]
+CARDS = DEFAULT_ASSET.cards  # Telecom's questions (each industry's are ASSETS[...].cards)
 
 # Readiness first, then the reader (as the drone cards rank theirs); the learning card always comes last.
 _BASE_SCORE = {READY: 100, PARTLY: 60, WORKING: 55, NEEDS_FLIGHT: 40, CANT_TELL: 20, LEARN: 0}
 # The owner's question comes first even before anything is counted (its answer says how to start); the technician's
 # list of photos to check comes first for them.
 _READER_BOOST = {
-    OWNER: {"equipment": 90, "changes": 20},
-    TECHNICIAN: {"photos_to_check": 45, "camera_positions": 15},
+    OWNER: {"equipment": 90, "defects": 85, "changes": 20},
+    TECHNICIAN: {"photos_to_check": 45, "defects": 30, "camera_positions": 15},
 }
 LISTED_PHOTOS = 20  # photos listed in one answer; the facts give the totals
 
-_START = ("mark 3 {noun} on a photo where they are clear, press Find, then keep, fix or reject each suggestion and "
-          "add any it missed")
-NOTHING_COUNTED = ("Nothing on this inspection has been checked by a person yet, so there is no count. To start: "
-                   + _START.format(noun="dishes (or antennas, or radio units)") + ". The count of a photo appears "
-                   "once every suggestion on it is checked.")
-NEVER_COUNT_YOURSELF = ("Give only the counts listed here. Never count equipment from a photo yourself, and never "
-                        "present the finder's suggestions as a count: a person checks each one first.")
+_START = ("mark a few {noun} on a photo where they are clear, press Find, then keep, fix or reject each suggestion "
+          "and add any it missed")
+
+
+def _nothing_counted(asset: "Asset") -> str:
+    return ("Nothing on this inspection has been checked by a person yet, so there is no count. To start: "
+            + _START.format(noun=asset.start_noun) + ". The count of a photo appears once every suggestion on it is "
+            "checked.")
+
+
+NOTHING_COUNTED = _nothing_counted(DEFAULT_ASSET)
+
+NEVER_COUNT_YOURSELF = ("Give only the counts listed here. Never count equipment or defects from a photo yourself, "
+                        "and never present the finder's suggestions as a count: a person checks each one first. A "
+                        "photo where nobody marked a defect was not checked for it: never say there are none.")
 
 
 class UnknownAudience(ValueError):
@@ -93,10 +154,17 @@ class Here:
 
     inspection: Inspection
     earlier: Earlier
+    asset: Asset = DEFAULT_ASSET
 
     @property
     def inventory(self) -> dict[str, PartInventory]:
-        return tower_inspection.inventory(self.inspection)
+        """The equipment counted across the inspection."""
+        return tower_inspection.inventory(self.inspection, self.asset.equipment)
+
+    @property
+    def defects(self) -> dict[str, PartInventory]:
+        """The defects counted across the inspection."""
+        return tower_inspection.inventory(self.inspection, self.asset.defects)
 
 
 # --- Words -------------------------------------------------------------------------------------------------------
@@ -233,6 +301,11 @@ def _status(card_id: str, here: Here) -> str:
             # An earlier inspection of the site with nothing counted on it: counting there answers it, no new one.
             return CANT_TELL if here.earlier.same_site else NEEDS_FLIGHT
         return READY if _anything_counted(inventory) else CANT_TELL
+    if card_id == "defects":
+        defects = here.defects
+        if _anything_counted(defects):
+            return READY if not _open(defects) else PARTLY
+        return WORKING if any(i.photos_finding for i in defects.values()) else CANT_TELL
     return LEARN
 
 
@@ -280,22 +353,29 @@ def _preview(card_id: str, here: Here) -> str:
         if not _anything_counted(inventory):
             return f"{here.earlier.inspection.name} has counts; nothing is counted on this inspection yet."
         return f"Compared with {here.earlier.inspection.name}."
+    if card_id == "defects":
+        counted = [i for i in here.defects.values() if i.at_least]
+        if counted:
+            return _cap(", ".join(_part_phrase(i) for i in counted)) + " on one photo, counted by you."
+        if _anything_marked(here.defects):
+            return "Marked, being checked: nothing counted yet."
+        return f"Nothing counted: mark one where you see it ({_names([i.noun for i in here.defects.values()])})."
     return "The finder suggests, you decide: what it was measured to do."
 
 
 def _card(card_id: str, here: Here) -> dict[str, Any]:
     status = _status(card_id, here)
-    return {"id": card_id, "title": CARDS[card_id], "status": status, "preview": _preview(card_id, here)}
+    return {"id": card_id, "title": here.asset.cards[card_id], "status": status, "preview": _preview(card_id, here)}
 
 
 def deck(here: Here, audience: Optional[str]) -> dict[str, Any]:
     """The cards for this inspection and reader, the most useful first; the learning card last."""
     reader = check_audience(audience)
-    cards = [_card(card_id, here) for card_id in CARDS]
+    cards = [_card(card_id, here) for card_id in here.asset.cards]
     learn = [c for c in cards if c["status"] == LEARN]
     ranked = sorted((c for c in cards if c["status"] != LEARN),
                     key=lambda c: _BASE_SCORE[c["status"]] + _READER_BOOST[reader].get(c["id"], 0), reverse=True)
-    return {"cards": ranked + learn}
+    return {"cards": ranked + learn, "heading": here.asset.heading}
 
 
 # --- Answers -------------------------------------------------------------------------------------------------------
@@ -362,7 +442,7 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
     facts.append({"label": "Suggestions waiting", "value": str(waiting)})
     marked = _anything_marked(inventory)
     if not marked:
-        what = NOTHING_COUNTED
+        what = _nothing_counted(here.asset)
     elif not _anything_counted(inventory):
         what = "Nothing is counted yet: " + (f"{_n(waiting, 'suggestion')} wait for a person to check them. "
                                              if waiting else "the marked photos are still being checked. ")
@@ -383,7 +463,7 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
         elif first is not None:
             todo = f"Next, {first.photo.filename}: {_check_detail(first)}."
         elif not marked:
-            todo = _cap(_START.format(noun="dishes (or antennas, or radio units)")) + "."
+            todo = _cap(_START.format(noun=here.asset.start_noun)) + "."
         elif uncounted:
             todo = _cap(_START.format(noun=" or ".join(uncounted))) + "."
         elif unmarked:
@@ -392,22 +472,21 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
         else:
             todo = "Count the parts again on a photo from another side: it may show parts hidden on these."
     else:
-        why = ("An asset register needs what is really on the tower. Each number was checked by a person, "
-               "suggestion by suggestion; photos overlap, so it is the most seen on one photo, not a sum of photos.")
+        why = here.asset.register_why
         if waiting:
             todo = f"Ask a technician to check the {_n(waiting, 'suggestion')} waiting before using these numbers."
         elif still_open:
             todo = (f"Ask a technician to finish the {_n(still_open, 'marked photo')} still open: their counts "
                     "appear once every suggestion on them is checked.")
         elif not marked:
-            todo = "Ask a technician to " + _START.format(noun="dishes, antennas and radio units") + "."
+            todo = "Ask a technician to " + _START.format(noun=_names([i.noun for i in inventory.values()])) + "."
         elif uncounted:
             todo = f"Ask a technician to count the {_names(uncounted)} too: until then this answer leaves them out."
         elif unmarked:
             todo = (f"Ask a technician to look at the {_n(unmarked, 'photo')} with nothing marked: "
                     f"{'it' if unmarked == 1 else 'they'} may show more.")
         else:
-            todo = "Use these as the least on the tower; a photo from another side may show more."
+            todo = f"Use these as the least on the {here.asset.thing}; a photo from another side may show more."
     complete = _complete(here)
     best = next((i.answer for i in inventory.values() if i.answer is not None), None)
     gaps = ((["Some marked photos are still being checked: they add nothing yet"] if _open(inventory) else [])
@@ -418,7 +497,7 @@ def _equipment(here: Here, audience: str) -> dict[str, Any]:
         "Counted by you: every suggestion on a counted photo was kept, fixed or rejected by a person",
         "Photos overlap: the same part on two photos counts on both, so only the most on one photo is given",
         "Parts hidden behind others on every photo cannot be counted",
-    ] + gaps, "Check a photo taken from another side of the tower.")
+    ] + gaps, f"Check a photo taken from another side of the {here.asset.thing}.")
     return _answer("equipment", here, what=what, why=why, todo=todo, sure=sure, audience=audience,
                    terms=["counted_by_you", "at_least", "suggestion"], facts=facts, items=items,
                    progress=_finder_progress(inspection))
@@ -514,8 +593,8 @@ def _camera_positions(here: Here, audience: str) -> dict[str, Any]:
         facts.append({"label": "Camera", "value": ", ".join(c.cameras)})
     unseen = [word for word in tower_inspection.COMPASS if word not in c.facing] if c.facing else []
     if audience == TECHNICIAN:
-        why = ("A side or height no photo looks at is a part of the tower these photos cannot count; tower parts can be "
-               "found only on photos taken at an angle.")
+        why = (f"A side or height no photo looks at is a part of the {here.asset.thing} these photos cannot count; "
+               "parts can be found only on photos taken at an angle.")
     else:
         why = ("Photos from every side and from above and below the equipment are what let parts be counted; a side "
                "no photo looks at is a side nobody can count.")
@@ -560,9 +639,9 @@ def _changes(here: Here, audience: str) -> dict[str, Any]:
                                 "Needs a second inspection of the same site with parts counted by you"], None)
         return _answer("changes", here, what=what, why="A change can only be seen between two inspections.",
                        todo=todo, sure=sure, audience=audience, terms=["at_least"])
-    before = tower_inspection.inventory(earlier.inspection)
+    before = tower_inspection.inventory(earlier.inspection, here.asset.equipment)
     lines, facts, items = [], [], []
-    for part in PARTS:
+    for part in here.asset.equipment:
         now, then = inventory[part], before[part]
         if now.at_least is None and then.at_least is None:
             continue
@@ -575,12 +654,12 @@ def _changes(here: Here, audience: str) -> dict[str, Any]:
     span_then = tower_inspection.camera_facts(earlier.inspection.photos)
     what = f"Compared with {earlier.inspection.name}" + (
         f" (taken {span_then.first_taken[:10]})" if span_then.first_taken else "") + ": " + " ".join(lines)
-    why = ("More counted can be new equipment, or photos that show more of the tower; fewer can be removed equipment, "
-           "or parts hidden on these photos. Look at both photos before deciding.")
+    why = (f"More counted can be new equipment, or photos that show more of the {here.asset.thing}; fewer can be "
+           "removed equipment, or parts hidden on these photos. Look at both photos before deciding.")
     todo = ("Open the two photos of each part side by side before recording a change." if audience == OWNER else
             "Where the counts differ, photograph that part from the same side as last time.")
     sure = how_sure("low", ["Each number is the most counted on one photo of each inspection",
-                            "Different photos see different sides of the tower"],
+                            f"Different photos see different sides of the {here.asset.thing}"],
                     "Photos of each side from the same places as last time make the counts comparable.")
     return _answer("changes", here, what=what, why=why, todo=todo, sure=sure, audience=audience,
                    terms=["at_least"], facts=facts, items=items)
@@ -591,8 +670,8 @@ def _on_your_photos(here: Here, part: str) -> Optional[str]:
     and parts it missed (added). None before any review."""
     kept = reviewed = added = 0
     for parts in here.inspection.work.values():
-        work = parts[part]
-        if work.job is None or work.job.status != example_finder.DONE:
+        work = parts.get(part)
+        if work is None or work.job is None or work.job.status != example_finder.DONE:
             continue
         ids = {s.id for s in work.suggestions}
         kept += len([i for i in work.review.kept if i in ids]) + len([i for i, _ in work.review.fixed if i in ids])
@@ -603,33 +682,119 @@ def _on_your_photos(here: Here, part: str) -> Optional[str]:
     return f"on your photos, {kept} of {reviewed} suggestions checked were right (kept or fixed); {added} it missed"
 
 
+def _finder_of(part: str) -> tuple[Optional[str], Optional[answer_levels.Target]]:
+    """How this server finds a part (its words) and the measurement behind it; (None, None) when nothing can."""
+    try:
+        settings = example_finder.settings(part)
+    except FinderInputError:
+        return None, None
+    words = ("a model trained on this part (RF-DETR, trained by Ingabe on public photos, run on Ingabe's server)"
+             if settings.model.startswith("own:") else
+             "SAM 3, asked in words" if "sam3" in settings.model else
+             "the example finder (YOLOE), shown your marks")
+    return words, answer_levels.target_for(part, settings.model)
+
+
 def _learn_review(here: Here, audience: str) -> dict[str, Any]:
-    lines, facts = [], []
-    for part in PARTS:
-        target = answer_levels.target(part)
+    lines, facts, dates, how = [], [], set(), set()
+    for part in here.asset.equipment + here.asset.defects:
+        words, target = _finder_of(part)
+        if target is None:
+            lines.append(f"{_cap(tower_inspection.noun(part))}: not found on this server (switched off).")
+            continue
         m = target.measured
+        how.add(words)
+        dates.add(m["date"])
         lines.append(f"{_cap(target.noun)}: {m['value']:.3f} on {m['n_images']} public test photos.")
         facts.append({"label": _cap(target.noun),
                       "value": f"{m['value']:.3f} AP50, {m['n_images']} photos ({m['dataset']}, {m['date']})"})
         own = _on_your_photos(here, part)
         if own:
             facts.append({"label": f"{_cap(target.noun)}, your checks", "value": own})
-    what = ("You mark 3 of a part on a photo; the finder (YOLOE, shown your marks) draws boxes around the rest. It was "
-            "measured on public tower photos, scored with AP50 from 0 to 1 (1: every part found and every box "
-            "right): " + " ".join(lines) + " No score is high enough to use the boxes as a count, so a person keeps, "
-            "fixes or rejects each one and adds what it missed; only then does the photo have a count.")
+    what = (f"You mark a few of a part on a photo; {_names(sorted(how)) or 'the finder'} then draws boxes around the "
+            f"rest. It was measured on public {here.asset.thing} photos, scored with AP50 from 0 to 1 (1: every part "
+            "found and every box right): " + " ".join(lines) + " No score is high enough to use the boxes as a count, "
+            "so a person keeps, fixes or rejects each one and adds what it missed; only then does the photo have a "
+            "count.")
     why = ("A count used for an asset register or a maintenance order must be right; a finder that misses parts or "
            "boxes the wrong thing would make it wrong without anyone noticing." if audience == OWNER else
-           "Checking every box is what makes the count yours: a missed radio unit or a wrong box changes it.")
+           "Checking every box is what makes the count yours: a missed part or a wrong box changes it.")
+    lookalikes = any(_uses_lookalikes(part) for part in here.asset.equipment)
     todo = ("Mark dishes and antennas before radio units: the finder is told the other parts' marks are not what it "
-            "looks for, which helped on antennas and radio units when it was measured.")
-    levels = sorted({answer_levels.target(part).max_level for part in PARTS}) if answer_levels.ladder_enabled() else []
+            "looks for, which helped on antennas and radio units when it was measured." if lookalikes else
+            "Mark clear examples on a sharp photo; the suggestions are only as good as the photo.")
+    parts = here.asset.equipment + here.asset.defects
+    levels = (sorted({target.max_level for _, target in map(_finder_of, parts) if target is not None})
+              if answer_levels.ladder_enabled() else [])
     sure = how_sure("medium", [f"{level.label}: {level.meaning}" for level in levels] + [
-        f"Measured on {answer_levels.target(PARTS[0]).measured['date']} on public tower photos, not on yours",
+        f"Measured on {_names(sorted(dates))} on public {here.asset.thing} photos, not on yours",
         "The measurement's photos and scripts are not in this repository",
-    ], "Your own checks (kept, fixed, rejected, added) show how the finder does on your towers.")
+    ], f"Your own checks (kept, fixed, rejected, added) show how the finder does on your {here.asset.thing}s.")
     return _answer("learn_review", here, what=what, why=why, todo=todo, sure=sure, audience=audience,
-                   terms=["ap50", "suggestion", "look_alike"], facts=facts)
+                   terms=["ap50", "suggestion"] + (["look_alike"] if lookalikes else []), facts=facts)
+
+
+def _uses_lookalikes(part: str) -> bool:
+    try:
+        return example_finder.settings(part).look_alike_marks
+    except FinderInputError:
+        return False
+
+
+def _defect_photos(here: Here) -> list[tuple[PhotoFacts, dict[str, int]]]:
+    """The photos with a defect counted by a person, in flight order, with each defect's count there."""
+    out = []
+    for photo in here.inspection.photos:
+        work = here.inspection.work.get(photo.sha256) or {}
+        counts = {tower_inspection.noun(p): w.counted_by_you for p in here.asset.defects
+                  if (w := work.get(p)) is not None and w.counted_by_you}
+        if counts:
+            out.append((photo, counts))
+    return out
+
+
+def _defects(here: Here, audience: str) -> dict[str, Any]:
+    inspection, defects, asset = here.inspection, here.defects, here.asset
+    nouns = _names([i.noun for i in defects.values()])
+    found = _defect_photos(here)
+    facts = []
+    for i in defects.values():
+        facts.append({"label": _cap(i.noun),
+                      "value": (f"at least {i.at_least} on one photo; counted on {_n(i.photos_counted, 'photo')}"
+                                if i.at_least else "none counted")})
+        if i.waiting:
+            facts.append({"label": f"{_cap(i.noun)}, suggestions waiting", "value": str(i.waiting)})
+    facts.append({"label": "Photos with a defect counted", "value": f"{len(found)} of {len(inspection.photos)}"})
+    items = [_item(inspection, photo, ", ".join(f"{n} {noun} counted by you" for noun, n in counts.items()))
+             for photo, counts in found[:LISTED_PHOTOS]]
+    if found:
+        lines = [f"{_cap(i.noun)}: at least {i.at_least} on one photo ({i.at_least_photo.filename}), counted on "
+                 f"{_n(i.photos_counted, 'photo')}." for i in defects.values()
+                 if i.at_least and i.at_least_photo is not None]
+        what = " ".join(lines) + (f" {_n(len(found), 'photo')} of {len(inspection.photos)} show a defect a person "
+                                  "counted; they are listed below.")
+        if _open(defects):
+            what += " Some marked photos are still being checked: they add nothing yet."
+        todo = (asset.defect_todo if audience == OWNER else
+                f"Open {found[0][0].filename} first and confirm each defect before the repair is planned.")
+    elif _anything_marked(defects):
+        waiting = sum(i.waiting for i in defects.values())
+        what = (f"{_cap(nouns)} are marked on some photos but nothing is counted yet"
+                + (f": {_n(waiting, 'suggestion')} wait for a person." if waiting else "."))
+        todo = "Check the suggestions on the marked photos: each photo's count appears once every one is checked."
+    else:
+        what = (f"Nothing counted. A photo where nobody marked {nouns} was not checked for them, so this does not "
+                "mean there are none.")
+        todo = (f"On a close-up photo, mark one of the {nouns} where you see it and press Find: the model looks for "
+                "more on that photo. Then check each suggestion.")
+    sure = how_sure("medium" if found and not _open(defects) else "low", [
+        "Counted by you: every suggestion on a counted photo was kept, fixed or rejected by a person",
+        "Only photos where someone marked them were checked for them",
+        "Small defects show only on close-up or zoomed photos",
+    ], "A close-up photo of each joint or crossarm the photos do not show well.")
+    return _answer("defects", here, what=what, why=asset.defect_why[audience], todo=todo, sure=sure,
+                   audience=audience, terms=["counted_by_you", "suggestion"], facts=facts, items=items,
+                   progress=_finder_progress(inspection))
 
 
 _ANSWERS = {
@@ -638,13 +803,14 @@ _ANSWERS = {
     "camera_positions": _camera_positions,
     "changes": _changes,
     "learn_review": _learn_review,
+    "defects": _defects,
 }
 
 
 def answer_card(card_id: str, here: Here, audience: Optional[str]) -> dict[str, Any]:
     """One card's answer; KeyError for an unknown card, UnknownAudience for an unknown reader."""
     reader = check_audience(audience)
-    if card_id not in _ANSWERS:
+    if card_id not in _ANSWERS or card_id not in here.asset.cards:
         raise KeyError(card_id)
     return _ANSWERS[card_id](here, reader)
 
@@ -681,8 +847,15 @@ def findings(here: Here) -> dict[str, Any]:
         "how_sure": equipment["how_sure"]["label"],
         "because": equipment["how_sure"]["because"],
         "camera": {"answer": camera["what"], "facts": camera["facts"]},
+        "defects": {"question": here.asset.cards["defects"], **_defect_findings(here)},
         "rule": NEVER_COUNT_YOURSELF,
     }
+
+
+def _defect_findings(here: Here) -> dict[str, Any]:
+    answer = _defects(here, OWNER)
+    return {"answer": answer["what"], "what_to_do": answer["todo"], "facts": answer["facts"],
+            "photos": [{"photo": photo.filename, "counted": counts} for photo, counts in _defect_photos(here)]}
 
 
 def photos_needing_review(here: Here) -> dict[str, Any]:
@@ -702,9 +875,13 @@ def photos_needing_review(here: Here) -> dict[str, Any]:
 
 
 async def load_here(conn: Any, redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, name: str,
-                    photos: tuple[PhotoFacts, ...]) -> Here:
+                    photos: tuple[PhotoFacts, ...], industry: str = "telecom") -> Here:
     """What the cards and Sage answer from: the inspection with the work kept on it in this project, and the same
     site inspected before in this project. `conn` sees what the reader may see."""
-    inspection = await tower_inspection.load_inspection(redis, s3, bucket, project_id, layer_id, name, photos)
+    asset = ASSETS[industry]
+    inspection = await tower_inspection.load_inspection(redis, s3, bucket, project_id, layer_id, name, photos,
+                                                        tower_inspection.parts_for(industry))
     return Here(inspection=inspection,
-                earlier=await tower_inspection.earlier_inspection(conn, redis, s3, bucket, inspection))
+                earlier=await tower_inspection.earlier_inspection(conn, redis, s3, bucket, inspection,
+                                                                  asset.equipment),
+                asset=asset)

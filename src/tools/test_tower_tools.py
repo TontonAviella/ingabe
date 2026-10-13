@@ -57,7 +57,7 @@ async def test_nothing_checked_gives_no_count_and_says_what_to_do(seeded):
     ids = await inspections.make()
     found = await tower_tools.get_tower_inspection_findings(_args(ids), _meta(ids))
     assert found["status"] == "success" and found["counted"] is False
-    assert found["answer"] == tower_cards.NOTHING_COUNTED and "mark 3" in found["what_to_do"]
+    assert found["answer"] == tower_cards.NOTHING_COUNTED and "mark a few" in found["what_to_do"]
     assert all(part["at_least"] is None for part in found["equipment"].values())
     assert found["rule"] == tower_cards.NEVER_COUNT_YOURSELF
     assert set(found) >= {"inspection", "photos", "photos_with_every_marked_part_counted",
