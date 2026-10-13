@@ -1365,8 +1365,8 @@ def test_categories_with_tools_follow_the_projects_industry(monkeypatch):
         assert every <= categories_with_tools(project_industry)  # agriculture also files the weather tools
         assert TOWERS not in categories_with_tools(project_industry)  # TOWERS off: no tower tool anywhere
     monkeypatch.setenv("TOWERS", "1")
-    assert TOWERS in categories_with_tools("telecom")
-    for project_industry in ("agriculture", "power_grid", None):
+    assert TOWERS in categories_with_tools("telecom") and TOWERS in categories_with_tools("power_grid")
+    for project_industry in ("agriculture", None):
         assert TOWERS not in categories_with_tools(project_industry)
     monkeypatch.delenv("TOWERS")
     monkeypatch.setitem(sage_routing._TOOL_CATEGORIES, "count_tower_equipment", TOWERS)

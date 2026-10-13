@@ -111,6 +111,7 @@ export function TowerCards({
   // Outside Telecom the photos load but the cards answer 404 (no tower cards there): the panel shows the photos to
   // mark without the cards.
   const noCards = cards.error?.status === 404;
+  const heading = noCards ? 'Photo checks' : (cards.data?.heading ?? 'Tower checks');
   const noTowers = photos.error?.status === 404 || (noCards && !photos.data);
   const towerWork = !!(cards.data || photos.data) || cards.error?.status === 409 || photos.error?.status === 409;
   if (!layerId || noTowers || !towerWork) return null;
@@ -151,10 +152,10 @@ export function TowerCards({
     <>
       <CardsPanel
         ariaLabel="Checks for this tower inspection"
-        heading={noCards ? 'Photo checks' : 'Tower checks'}
-        hideLabel={noCards ? 'Hide the photo checks' : 'Hide the tower checks'}
+        heading={heading}
+        hideLabel={`Hide the ${heading.toLowerCase()}`}
         collapsed={collapsed}
-        collapsedLabel={noCards ? 'Photo checks' : 'Tower checks'}
+        collapsedLabel={heading}
         onCollapsedChange={setCollapsedAndSave}
         historyOpen={historyOpen}
       >

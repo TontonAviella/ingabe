@@ -96,7 +96,9 @@ from src.tools.drone_photo_tools import (
     DronePhotoArgs,
 )
 from src.tools.tower_tools import (
+    get_power_line_inspection_findings,
     get_tower_inspection_findings,
+    power_line_photos_needing_review,
     tower_photos_needing_review,
     TowerInspectionArgs,
 )
@@ -247,6 +249,17 @@ def get_pydantic_tool_calls() -> PydanticToolRegistry:
         ),
         "tower_photos_needing_review": (
             tower_photos_needing_review,
+            TowerInspectionArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        # Power Grid only, and only while TOWERS is on.
+        "get_power_line_inspection_findings": (
+            get_power_line_inspection_findings,
+            TowerInspectionArgs,
+            IngabeToolCallMetaArgs,
+        ),
+        "power_line_photos_needing_review": (
+            power_line_photos_needing_review,
             TowerInspectionArgs,
             IngabeToolCallMetaArgs,
         ),

@@ -121,15 +121,18 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
 
 
 @pytest.mark.anyio
-async def test_power_grid_marks_pylons_insulators_and_nests_and_has_no_tower_cards(client, seeded, switched_on):
+async def test_power_grid_marks_pylons_insulators_and_nests_and_has_its_own_cards(client, seeded, switched_on):
     """Power Grid: the photos are marked for its own three parts (found only by the trained detector); a tower part
-    is refused (422) and the tower cards do not exist there (404)."""
+    is refused (422); its cards ask about the line and its bird nests, never about tower equipment or bolts."""
     ids = await seeded.make(industry="power_grid")
     _as(ids["owner"])
     photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
     assert [p["id"] for p in photos["parts"]] == ["power_pylon", "power_insulator", "power_nest"]
     assert [p["label"] for p in photos["parts"]] == ["Pylon", "Insulator", "Bird nest"]
-    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
+    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 200, 200]
+    titles = {c["id"]: c["title"] for c in (await client.get(f"{_base(ids['layer'])}/cards")).json()["cards"]}
+    assert titles["equipment"] == "What is on this line?" and titles["defects"] == "Are there bird nests on the line?"
+    assert (await client.get(f"{_base(ids['layer'])}/cards/defects")).json()["question"] == titles["defects"]
     assert switched_on.calls == []
 
 
@@ -435,7 +438,7 @@ async def test_the_cards_follow_the_contract_and_the_reader(client, seeded, swit
         deck = await client.get(f"{_base(ids['layer'])}/cards{query}")
         assert deck.status_code == 200, deck.text
         cards = deck.json()["cards"]
-        assert set(deck.json()) == {"cards"} and all(set(c) == {"id", "title", "status", "preview"} for c in cards)
+        assert deck.json()["heading"] == "Tower checks" and all(set(c) == {"id", "title", "status", "preview"} for c in cards)
         assert {c["id"] for c in cards} == set(tower_cards.CARDS) and cards[-1]["id"] == "learn_review"
         assert cards[0]["id"] == first, (audience, [c["id"] for c in cards])
     answer = (await client.get(f"{_base(ids['layer'])}/cards/equipment?audience=technician")).json()

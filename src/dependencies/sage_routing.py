@@ -178,6 +178,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # --- Telecom towers (TOWERS): a photo inspection's equipment counted by a person (switch TOWERS) ---
     "get_tower_inspection_findings": TOWERS,
     "tower_photos_needing_review": TOWERS,
+    # --- Power lines (TOWERS): the same photo inspection work on a Power Grid project ---
+    "get_power_line_inspection_findings": TOWERS,
+    "power_line_photos_needing_review": TOWERS,
 }
 
 
@@ -296,7 +299,9 @@ _TOWER_WORDS = re.compile(
     r"rrus?|rrhs?|radio\s+(?:units?|heads?)|microwaves?|dish(?:es)?|panels?|shelters?|"
     r"base\s+stations?|bts|cell\s+sites?|telcos?|t[eé]l[eé]com(?:munications?|s)?|"
     r"mâts?|paraboles?|faisceaux?\s+hertziens?|abris?|stations?\s+de\s+base|unit[eé]s?\s+radio|micro-?ondes?|"
-    r"[ui]?m[ui]nara|itumanaho"
+    r"[ui]?m[ui]nara|itumanaho|"
+    r"insulators?|isolateurs?|power\s+lines?|transmission\s+lines?|lignes?\s+[ée]lectriques?|"
+    r"nests?|nids?|bolts?|boulons?"
     r")(?![^\W_])",
     re.IGNORECASE,
 )
@@ -333,10 +338,16 @@ _CHECK_WORDS = re.compile(
 )
 
 
+# The defects the inspection tools answer: missing or loose bolts (towers) and bird nests (power lines).
+_DEFECT_WORDS = re.compile(r"(?<![^\W_])(?:bolts?|boulons?|nests?|nids?)(?![^\W_])", re.IGNORECASE)
+
+
 def asks_about_tower_work(text: str) -> bool:
-    """True when a message asks what the tower tools answer: a count, the equipment, or photos to check."""
+    """True when a message asks what the inspection tools answer: a count, the equipment, the bolt or nest defects,
+    or photos to check."""
     head = str(text or "")[:_ROUTED_CHARS]
-    return bool(_TOWER_COUNT_WORDS.search(head) or (_PHOTO_WORDS.search(head) and _CHECK_WORDS.search(head)))
+    return bool(_TOWER_COUNT_WORDS.search(head) or _DEFECT_WORDS.search(head)
+                or (_PHOTO_WORDS.search(head) and _CHECK_WORDS.search(head)))
 
 
 # ---------------------------------------------------------------------------

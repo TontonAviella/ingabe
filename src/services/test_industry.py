@@ -14,6 +14,7 @@ RUN_TAG = uuid.uuid4().hex[:8]
 CATALOG = json.loads((Path(__file__).resolve().parents[2] / "evals" / "sage_routing" / "tool_catalog.json").read_text())
 AGRI_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.AGRICULTURE}
 TELECOM_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.TELECOM}
+POWER_ONLY = {name for name, served in industry.CAPABILITIES.items() if served == industry.POWER_GRID}
 
 
 # --- The capability list --------------------------------------------------------------------------------------------
@@ -39,7 +40,7 @@ def test_other_industries_get_no_agriculture_tool(other):
     assert offered and not offered & AGRI_ONLY
     assert {"search_location", "display_layer", "describe_user_raster", "search_brain"} <= offered
     assert {t["function"]["name"] for t in industry.tools_for(tools, "agriculture")} == (
-        set(CATALOG["model_tools"]) - TELECOM_ONLY)
+        set(CATALOG["model_tools"]) - TELECOM_ONLY - POWER_ONLY)
 
 
 def test_the_tower_tools_are_telecom_only_and_only_while_towers_is_on(monkeypatch):
