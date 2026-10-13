@@ -68,7 +68,8 @@ def test_every_answer_has_the_drone_answer_shape():
         for state in (here(), here(OPEN)):
             answer = tower_cards.answer_card(card_id, state, "owner")
             assert DRONE_ANSWER_KEYS <= set(answer) and answer["title"] == tower_cards.CARDS[card_id]
-            assert answer["status_label"] == tower_cards.STATUS_LABELS[answer["status"]]
+            upcoming = (tower_cards.DEFAULT_ASSET.upcoming or {}).get(card_id)
+            assert answer["status_label"] == (upcoming.label if upcoming else tower_cards.STATUS_LABELS[answer["status"]])
             assert set(answer["how_sure"]) == {"level", "label", "bars", "because", "surer"}
     with pytest.raises(KeyError):
         tower_cards.answer_card("no_such_card", here(), "owner")
@@ -254,7 +255,8 @@ def test_changes_need_an_earlier_inspection_with_counts():
     assert compared["status"] == READY
     assert compared["what"] == ("Compared with Rebero April (taken 2026-04-01): Dishes: at least 4 then, at least 7 "
                                 "now (3 more counted now). Antennas: not counted then, at least 5 now (cannot be "
-                                "compared: counted on only one of the two).")
+                                "compared: counted on only one of the two). "
+                                + tower_cards.ASSETS["telecom"].changes_gaps)
     assert [i["title"] for i in compared["items"]] == ["OLD_0001.JPG", "DJI_0001.JPG", "DJI_0001.JPG"]
 
 
@@ -337,7 +339,8 @@ BOLTS = {"a" * 64: _with(TELECOM_PARTS, tower_bolt_missing=dict(marks=1, suggest
 
 def test_counted_bolts_are_listed_with_their_photo_and_the_owner_is_told_what_to_do():
     answer = tower_cards.answer_card("defects", here(BOLTS), "owner")
-    assert answer["status"] == READY and answer["question"] == "Are bolts missing or loose on the steel?"
+    assert answer["status"] == READY and answer["question"] == "Is the tower structurally safe?"
+    assert "Rust, cracked welds, bent or broken steel" in answer["what"]  # what is not measured, said plainly
     assert answer["what"].startswith("Missing bolts: at least 3 on one photo (DJI_0001.JPG), counted on 1 photo.")
     assert [i["title"] for i in answer["items"]] == ["DJI_0001.JPG"]
     assert answer["items"][0]["detail"] == "3 missing bolts counted by you"
@@ -375,3 +378,23 @@ def test_power_lines_ask_about_the_line_and_its_nests_never_tower_equipment():
     assert "public line photos" in learn["what"] and "0.989" in learn["what"]  # pylons, by our own model
     with pytest.raises(KeyError):
         tower_cards.answer_card("camera", power, "owner")
+
+
+def test_every_worry_is_a_card_and_the_ones_not_measured_say_so_without_a_number():
+    """The deck asks what a tower owner worries about. A question nothing measures yet still shows, with its own
+    status (coming soon, a thermal camera, a night flight), what it will tell and what it needs, and no number."""
+    deck = {c["id"]: c for c in tower_cards.deck(here(), "owner")["cards"]}
+    assert {"defects", "changes", "alignment", "equipment", "damage", "hot_spots", "obstruction_light",
+            "surroundings"} <= set(deck)
+    assert deck["hot_spots"]["status"] == "needs_camera" and deck["alignment"]["status"] == "to_build"
+    light = tower_cards.answer_card("obstruction_light", here(), "owner")
+    assert light["status_label"] == "Needs night photos" and light["what"].startswith("Not answered yet.")
+    assert light["todo"].startswith("What it needs: ") and light["how_sure"]["level"] == "low"
+    for card_id in ("alignment", "damage", "hot_spots", "obstruction_light", "surroundings"):
+        answer = tower_cards.answer_card(card_id, here(COUNTED), "owner")
+        assert not re.search(r"\d", answer["what"]), (card_id, answer["what"])  # no number for what is not measured
+    ranked = [c["id"] for c in tower_cards.deck(here(BOLTS), "owner")["cards"]]
+    assert ranked.index("defects") < ranked.index("alignment")  # answers before what is coming
+    power = {c["id"] for c in tower_cards.deck(tower_cards.Here(inspection=_inspection(PHOTOS, {}),
+                                                                 earlier=NO_EARLIER, asset=POWER), "owner")["cards"]}
+    assert {"right_of_way", "insulators", "sag", "steel", "hot_spots"} <= power and "alignment" not in power
