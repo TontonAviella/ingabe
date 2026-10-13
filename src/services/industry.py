@@ -203,7 +203,9 @@ _BRIEFINGS: dict[str, dict[str, Any]] = {
                  "tower, monopole, guyed mast; joint bolts hold the lattice together and carry the wind load.",
         "tools": "For a photo inspection (a layer of camera points): get_tower_inspection_findings (equipment counts, "
                  "missing and loose bolts, where the photos were taken from) and tower_photos_needing_review (what "
-                 "a technician checks next).",
+                 "a technician checks next). A single uploaded image (a raster, not a photo inspection) cannot be "
+                 "searched for equipment or damage: say so, and suggest uploading the tower photos as an inspection "
+                 "(a ZIP of photos); describe_user_raster reads only the file, never where things are on it.",
         "parts": ("tower_antenna", "tower_dish", "tower_radio_unit", "tower_bolt_missing", "tower_bolt_loose"),
         "not_yet": "antenna azimuth and tilt values (the photos' own camera direction and tilt are known, the "
                    "antennas' are not), rust, cracked welds or bent steel, cable and connector damage, hot spots "
