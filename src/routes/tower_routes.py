@@ -3,7 +3,8 @@ and the tower question cards. An adapter only: the rules live in src/services/to
 src/services/tower_cards.py (TOWERS_RULES.md).
 
 Every route answers 404 while TOWERS is off (or PHOTO_INSPECTIONS, which serves the photos), for a layer that is not
-a photo inspection, and in a project that is not Telecom Towers. Reads need view rights on the layer (get_layer),
+a photo inspection, and in a project whose industry has no photo work. Telecom Towers marks the tower parts and has
+the tower cards; Agriculture marks maize plants and has no cards yet (their routes answer 404 there). Reads need view rights on the layer (get_layer),
 writes edit rights (edit_layer), as the other layer routes. Boxes are [x0, y0, x1, y1] in the photo's own pixels,
 as it is shown (EXIF orientation applied)."""
 
@@ -50,6 +51,8 @@ class _Inspection:
     layer: MapLayer
     project_id: str
     photos: tuple[PhotoFacts, ...]
+    parts: tuple[str, ...]  # what is marked on its photos, from the project's industry
+    industries: tuple[Optional[str], ...]  # of every project showing the layer
 
 
 async def _inspection(layer: MapLayer, session: UserContext) -> _Inspection:
@@ -63,9 +66,14 @@ async def _inspection(layer: MapLayer, session: UserContext) -> _Inspection:
         industries = [await industry.industry_of_project(conn, p) for p in projects]
     # Tower work only when every project showing the layer may have it, checked before any conflict between them is
     # reported: a farm inspection on the maps of two farm projects is "not found", not a tower conflict.
-    not_tower_work = HTTPException(404, "Tower work is for photo inspections in Telecom Towers projects")
+    not_tower_work = HTTPException(404, "Photo marking is for photo inspections in Telecom Towers and Agriculture "
+                                        "projects")
     if not all(industry.available("tower_inspection", i) for i in industries):
         raise not_tower_work
+    kinds = {tower_inspection.parts_for(i) for i in industries}
+    if len(kinds) != 1:  # one layer on the maps of projects of different industries: no single list of parts
+        raise not_tower_work
+    parts = kinds.pop()
     try:
         project_id = tower_inspection.work_project(projects)
     except tower_inspection.TowerConflict as e:
@@ -76,7 +84,7 @@ async def _inspection(layer: MapLayer, session: UserContext) -> _Inspection:
     if photos is None:
         raise HTTPException(409, "This inspection was uploaded before its photo facts were kept; upload the photos "
                                  "again to work on them")
-    return _Inspection(layer=layer, project_id=project_id, photos=photos)
+    return _Inspection(layer=layer, project_id=project_id, photos=photos, parts=parts, industries=tuple(industries))
 
 
 async def _viewed(layer: MapLayer = Depends(get_layer),
@@ -87,6 +95,21 @@ async def _viewed(layer: MapLayer = Depends(get_layer),
 async def _edited(layer: MapLayer = Depends(edit_layer),
                   session: UserContext = Depends(verify_session_required)) -> _Inspection:
     return await _inspection(layer, session)
+
+
+def _part(inspection: _Inspection, part: str) -> str:
+    """A part this inspection's industry marks, else 422 naming the ones it does."""
+    try:
+        return tower_inspection.check_part(part, inspection.parts)
+    except tower_inspection.TowerInputError as e:
+        raise HTTPException(422, str(e)) from None
+
+
+async def _with_cards(inspection: _Inspection = Depends(_viewed)) -> _Inspection:
+    """The tower cards exist only for Telecom Towers inspections."""
+    if not all(industry.available("tower_cards", i) for i in inspection.industries):
+        raise HTTPException(404, "The tower cards are for photo inspections in Telecom Towers projects")
+    return inspection
 
 
 def _photo(inspection: _Inspection, sha256: str) -> PhotoFacts:
@@ -113,7 +136,9 @@ async def get_tower_photos(inspection: _Inspection = Depends(_viewed)) -> dict[s
                        "height": height, "taken_at": p.taken_at, "lat": p.lat, "lon": p.lon,
                        "relative_altitude_m": p.relative_altitude_m, "gimbal_pitch": p.gimbal_pitch,
                        "gimbal_yaw": p.gimbal_yaw})
-    return {"photos": photos}
+    parts = [{"id": p, "label": tower_inspection.PART_LABELS[p][0], "plural": tower_inspection.PART_LABELS[p][1]}
+             for p in inspection.parts]
+    return {"photos": photos, "parts": parts}
 
 
 @router.get("/towers/layer/{layer_id}/photos/{sha256}/work", operation_id="get_tower_photo_work")
@@ -122,7 +147,7 @@ async def get_tower_photo_work(sha256: str, inspection: _Inspection = Depends(_v
     is counted by you and how many suggestions wait."""
     works = await tower_inspection.photo_work(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
                                               inspection.project_id, inspection.layer.layer_id,
-                                              _photo(inspection, sha256))
+                                              _photo(inspection, sha256), inspection.parts)
     return {"parts": {part: work.as_dict() for part, work in works.items()}}
 
 
@@ -162,7 +187,7 @@ async def put_tower_marks(sha256: str, body: MarksBody, inspection: _Inspection 
     try:
         work = await tower_inspection.set_marks(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
                                                 inspection.project_id, inspection.layer.layer_id,
-                                                _photo(inspection, sha256), body.part, body.marks,
+                                                _photo(inspection, sha256), _part(inspection, body.part), body.marks,
                                                 body.lookalike_marks)
     except (example_finder_pictures.FinderInputError, tower_inspection.TowerConflict) as e:
         raise _refused(e) from None
@@ -188,7 +213,7 @@ async def find_tower_parts(
         job = await tower_inspection.start_find(get_async_redis(), s3, get_bucket_name(), inspection.project_id,
                                                 session.get_user_id(), inspection.layer.layer_id,
                                                 inspection.layer.metadata_dict or {}, _photo(inspection, sha256),
-                                                body.part)
+                                                _part(inspection, body.part))
     except (example_finder_pictures.FinderInputError, tower_inspection.TowerConflict) as e:
         raise _refused(e) from None
     except example_finder.FinderBusy as e:
@@ -207,7 +232,7 @@ async def put_tower_review(sha256: str, body: ReviewBody,
     try:
         work = await tower_inspection.set_review(
             get_async_redis(), await get_async_s3_client(), get_bucket_name(), inspection.project_id,
-            inspection.layer.layer_id, _photo(inspection, sha256), body.part, body.kept, body.rejected,
+            inspection.layer.layer_id, _photo(inspection, sha256), _part(inspection, body.part), body.kept, body.rejected,
             [f.model_dump() for f in body.fixed], body.added)
     except (example_finder_pictures.FinderInputError, tower_inspection.TowerConflict) as e:
         raise _refused(e) from None
@@ -229,7 +254,7 @@ def _check_audience(audience: Optional[str]) -> str:
 
 
 @router.get("/towers/layer/{layer_id}/cards", operation_id="get_tower_cards")
-async def get_tower_cards(audience: Optional[str] = None, inspection: _Inspection = Depends(_viewed),
+async def get_tower_cards(audience: Optional[str] = None, inspection: _Inspection = Depends(_with_cards),
                           session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """The tower question cards for this inspection and reader (owner or technician), the most useful first."""
     reader = _check_audience(audience)
@@ -238,7 +263,7 @@ async def get_tower_cards(audience: Optional[str] = None, inspection: _Inspectio
 
 @router.get("/towers/layer/{layer_id}/cards/{card_id}", operation_id="get_tower_card_answer")
 async def get_tower_card_answer(card_id: str, audience: Optional[str] = None,
-                                inspection: _Inspection = Depends(_viewed),
+                                inspection: _Inspection = Depends(_with_cards),
                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
     """One card's answer, in the drone cards' answer shape: what, why, what to do, how sure, facts, photos."""
     reader = _check_audience(audience)

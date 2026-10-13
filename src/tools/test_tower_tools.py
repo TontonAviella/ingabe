@@ -20,6 +20,13 @@ from test_fixtures.towers import MARKS, Inspections, admin, tower_facts
 DISH = tower_inspection.PARTS[0]
 
 
+@pytest.fixture(autouse=True)
+def _example_finder_for_towers(monkeypatch):
+    """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
+    back does (OWN_DETECTORS=0)."""
+    monkeypatch.setenv("OWN_DETECTORS", "0")
+
+
 @pytest.fixture
 async def seeded(monkeypatch):
     monkeypatch.setenv("TOWERS", "1")

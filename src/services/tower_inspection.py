@@ -38,7 +38,6 @@ from typing import Any, Optional, Sequence
 from redis.exceptions import LockError
 
 from src.services import answer_levels, example_finder, photo_inspections, stored_files
-from src.services.example_finder_model import MODEL_NAME
 from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto
 from src.services.photo_inspections import PhotoFacts
 from src.services.shown_maps import SHOWN_MAPS_SQL
@@ -46,7 +45,16 @@ from src.services.shown_maps import SHOWN_MAPS_SQL
 logger = logging.getLogger(__name__)
 
 _SWITCH = "TOWERS"
-PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")
+PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")  # Telecom Towers: the tower cards count these
+FARM_PARTS = ("maize_seedling",)  # Agriculture: marked and found on the photos; no cards yet
+POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")  # Power Grid: found only by the trained detector
+ALL_PARTS = PARTS + FARM_PARTS + POWER_PARTS
+PARTS_BY_INDUSTRY = {"telecom": PARTS, "agriculture": FARM_PARTS, "power_grid": POWER_PARTS}
+# How the marking screen names each part (one, many), in the order it offers them.
+PART_LABELS = {"tower_dish": ("Microwave dish", "microwave dishes"), "tower_antenna": ("Panel antenna", "panel antennas"),
+               "tower_radio_unit": ("Radio unit", "radio units"), "maize_seedling": ("Maize plant", "maize plants"),
+               "power_pylon": ("Pylon", "pylons"), "power_insulator": ("Insulator", "insulators"),
+               "power_nest": ("Bird nest", "bird nests")}
 STORE_PREFIX = "towers/v1"
 REDIS_PREFIX = "towers:v1"
 _VERSION = 1
@@ -78,10 +86,20 @@ def noun(part: str) -> str:
     return answer_levels.target(part).noun
 
 
-def check_part(part: Any) -> str:
-    if part not in PARTS:
-        raise TowerInputError(f"the part must be one of {list(PARTS)}, not {part!r}")
+def parts_for(industry: Optional[str]) -> tuple[str, ...]:
+    """The parts a person marks on a photo inspection of this industry (none for an industry without photo work)."""
+    return PARTS_BY_INDUSTRY.get(industry or "", ())
+
+
+def check_part(part: Any, parts: Sequence[str] = ALL_PARTS) -> str:
+    if part not in parts:
+        raise TowerInputError(f"the part must be one of {list(parts)}, not {part!r}")
     return part
+
+
+def _family(part: str) -> tuple[str, ...]:
+    """The parts marked alongside this one (its industry's): only they can be its look-alike marks."""
+    return next(family for family in (PARTS, FARM_PARTS, POWER_PARTS) if part in family)
 
 
 # --------------------------------------------------------------------------- #
@@ -128,7 +146,7 @@ class PhotoRecord:
 
     @classmethod
     def empty(cls, sha256: str) -> "PhotoRecord":
-        return cls(sha256=sha256, parts={part: PartRecord() for part in PARTS})
+        return cls(sha256=sha256, parts={part: PartRecord() for part in ALL_PARTS})
 
     def with_part(self, part: str, record: PartRecord) -> "PhotoRecord":
         return replace(self, parts={**self.parts, part: record})
@@ -165,7 +183,7 @@ def _layer_prefix(project_id: str, layer_id: str) -> str:
 def _record_json(project_id: str, layer_id: str, record: PhotoRecord) -> bytes:
     parts = {part: {"marks": [list(b) for b in r.marks], "lookalike_marks": [list(b) for b in r.own_lookalikes],
                     "job_id": r.job_id, "reviewed": r.review.as_dict(), "review_saved": r.review_saved}
-             for part, r in record.parts.items()}
+             for part, r in record.parts.items() if part in PARTS or r != PartRecord()}  # tower records as before
     return json.dumps({"version": _VERSION, "project_id": project_id, "layer_id": layer_id,
                        "sha256": record.sha256, "parts": parts,
                        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}).encode()
@@ -179,7 +197,7 @@ def _record_from(data: dict[str, Any]) -> PhotoRecord:
                               job_id=p["job_id"], review=Review.from_dict(p["reviewed"]),
                               review_saved=p["review_saved"])
              for part, p in data["parts"].items()}
-    return PhotoRecord(sha256=data["sha256"], parts={part: parts.get(part, PartRecord()) for part in PARTS})
+    return PhotoRecord(sha256=data["sha256"], parts={part: parts.get(part, PartRecord()) for part in ALL_PARTS})
 
 
 async def load_record(s3: Any, bucket: str, project_id: str, layer_id: str, sha256: str) -> PhotoRecord:
@@ -264,9 +282,13 @@ class PartWork:
 def _others_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
     """The other two parts' marks on the photo, when this part's measured settings use look-alikes (as measured);
     otherwise none."""
-    if not example_finder.settings(part).look_alike_marks:
+    try:
+        uses_lookalikes = example_finder.settings(part).look_alike_marks
+    except FinderInputError:  # a part only a switched-off detector finds: it has no finder settings here
         return ()
-    return tuple(b for other in PARTS if other != part for b in record.parts[other].marks)
+    if not uses_lookalikes:
+        return ()
+    return tuple(b for other in _family(part) if other != part for b in record.parts[other].marks)
 
 
 def lookalike_marks(part: str, record: PhotoRecord) -> tuple[Box, ...]:
@@ -297,8 +319,13 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts) -> Optional
     part's countability, the measured table); None when nothing is marked."""
     if not marks:
         return None
-    gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks])
-    return answer_levels.decide(part, MODEL_NAME, gate, answer_levels.countability(part, answer_levels.Facts()))
+    try:  # the finder this server runs for the part: its trained detector, else YOLOE
+        model = example_finder.settings(part).model
+    except FinderInputError:  # a part whose detector cannot run here: nothing can be answered about it
+        return None
+    gate = answer_levels.size_gate(part, max(photo.upright_size), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks],
+                                   finder_model=model)
+    return answer_levels.decide(part, model, gate, answer_levels.countability(part, answer_levels.Facts()))
 
 
 def suggestions_of(job: example_finder.Job) -> tuple[Suggestion, ...]:
@@ -342,16 +369,16 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
 
 
 async def photo_work(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str,
-                     photo: PhotoFacts) -> dict[str, PartWork]:
-    """Every part's work on one photo."""
+                     photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
+    """Every part's work on one photo (the tower parts unless the inspection's industry marks others)."""
     record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
-    return await _record_work(redis, s3, bucket, project_id, record, photo)
+    return await _record_work(redis, s3, bucket, project_id, record, photo, parts)
 
 
 async def _record_work(redis: Any, s3: Any, bucket: str, project_id: str, record: PhotoRecord,
-                       photo: PhotoFacts) -> dict[str, PartWork]:
-    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo) for p in PARTS))
-    return dict(zip(PARTS, works))
+                       photo: PhotoFacts, parts: Sequence[str] = PARTS) -> dict[str, PartWork]:
+    works = await asyncio.gather(*(part_work(redis, s3, bucket, project_id, record, p, photo) for p in parts))
+    return dict(zip(parts, works))
 
 
 def _in_photo(given: Any, what: str, most: int, photo: PhotoFacts) -> tuple[Box, ...]:
@@ -388,8 +415,8 @@ async def start_find(redis: Any, s3: Any, bucket: str, project_id: str, user_id:
     check_part(part)
     view = photo_inspections.view_of(photo)
     if view is None:
-        raise TowerInputError("this photo does not say which way the camera looked (it has no DJI gimbal pitch), so "
-                              "it cannot be checked against the tower photos the finder was measured on")
+        raise TowerInputError(f"this photo does not say which way the camera looked (it has no DJI gimbal pitch), so "
+                              f"it cannot be checked against the photos the finder was measured on for {noun(part)}")
     async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
         record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
         own = record.parts[part]

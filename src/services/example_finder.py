@@ -47,7 +47,7 @@ import numpy as np
 from PIL import Image
 from redis.exceptions import LockError
 
-from src.services import answer_levels, boxes, example_finder_model, stored_files
+from src.services import answer_levels, boxes, example_finder_model, hosted_detector, own_detector, stored_files
 from src.services.example_finder_model import MODEL_NAME, MODEL_SHA256, Runner
 from src.services.example_finder_pictures import (
     LONLAT,
@@ -132,19 +132,43 @@ class Settings:
     look_alike_marks: bool  # the target's measured settings use look-alike marks
     view: str  # answer_levels.OBLIQUE or NADIR: the way the measured pictures looked
     suggestion_filter: bool  # the finds are filtered (filter_suggestions): measured not to lower AP50 for the target
+    model: str = MODEL_NAME  # the example finder, or a trained detector (own_detector, hosted_detector)
+    detector_class: Optional[str] = None  # the class the trained detector boxes for this target
 
     def as_dict(self) -> dict[str, Any]:
-        return {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
-                "look_alike_marks": self.look_alike_marks, "view": self.view,
-                "suggestion_filter": self.suggestion_filter}
+        out = {"target": self.target, "image_px": self.image_px, "finder_input_px": self.finder_input_px,
+               "look_alike_marks": self.look_alike_marks, "view": self.view,
+               "suggestion_filter": self.suggestion_filter}
+        if self.model != MODEL_NAME:  # the example finder's requests keep their identity (content_sha) as before
+            out.update(model=self.model, detector_class=self.detector_class)
+        return out
+
+    @property
+    def uses_detector(self) -> bool:
+        return own_detector.is_detector(self.model) or hosted_detector.is_detector(self.model)
+
+
+def _detector_on(model: str) -> bool:
+    return own_detector.enabled() if own_detector.is_detector(model) else hosted_detector.enabled()
 
 
 def settings(target_name: str) -> Settings:
-    """The finder's settings for a target, from the measured table; FinderInputError when there are none."""
+    """The finder's settings for a target, from the measured table; FinderInputError when there are none. A target
+    with a trained detector uses it while it is switched on: our own models unless OWN_DETECTORS=0 (they run here), a
+    Roboflow-hosted one only while HOSTED_FINDER is on (its photos then go to Roboflow); otherwise the example finder
+    as measured."""
     try:
         t = answer_levels.target(target_name)
     except ValueError as e:
         raise FinderInputError(str(e)) from None
+    d = answer_levels.detector(target_name)
+    if d is not None and _detector_on(d.finder_model):
+        m = d.measured
+        return Settings(target=target_name, image_px=int(m["image_px"]), finder_input_px=int(m["finder_input_px"]),
+                        look_alike_marks=False, view=m["view"], suggestion_filter=False, model=d.finder_model,
+                        detector_class=d.detector_class)
+    if d is not None and t.finder_input_px is None:
+        raise FinderInputError(f"{t.noun} are found only by a trained model, which is switched off on this server")
     if t.finder_model != MODEL_NAME:
         raise FinderInputError(f"{t.noun} were measured with the {t.finder_model} finder, not {MODEL_NAME}")
     image_px, view = t.measured["image_px"], t.measured["view"]
@@ -209,7 +233,8 @@ def check_picture(s: Settings, view: str, width: int, height: int,
     if view != s.view:
         raise FinderInputError(f"{answer_levels.target(s.target).noun} were measured only on {_VIEW_WORDS[s.view]}, "
                                f"not on {_VIEW_WORDS[view]}")
-    gate = answer_levels.size_gate(s.target, max(width, height), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks_px])
+    gate = answer_levels.size_gate(s.target, max(width, height), [(x1 - x0, y1 - y0) for x0, y0, x1, y1 in marks_px],
+                                   finder_model=s.model)
     if gate.passes is not True:
         raise FinderInputError(gate.reason)
     return gate
@@ -302,6 +327,28 @@ def filter_suggestions(finds: Sequence[Find], marks_px: Sequence[Box], s: Settin
     return kept
 
 
+def _runner_for(s: Settings) -> Runner:
+    """The trained detector for a target that uses one, else the example finder. Blocking."""
+    if own_detector.is_detector(s.model):
+        try:
+            return own_detector.runner(s.model, s.detector_class or "", get_s3_client(), get_bucket_name())
+        except RuntimeError as e:  # the weights in storage are missing or do not match
+            raise FinderInputError(f"the trained model could not be loaded on this server: {e}") from None
+    if s.uses_detector:
+        try:
+            return hosted_detector.runner(s.model, s.detector_class or "")
+        except hosted_detector.DetectorUnavailable as e:
+            raise FinderInputError(str(e)) from None
+    return _stored_model()
+
+
+def _model_sha256(s: Settings) -> Optional[str]:
+    """The sha256 of the weights that ran: ours are known; a hosted model's are Roboflow's (None)."""
+    if own_detector.is_detector(s.model):
+        return own_detector.MODELS[s.model].sha256
+    return None if s.uses_detector else MODEL_SHA256
+
+
 def _stored_model() -> Runner:
     """The finder with the weights from object storage (fetched once, checked by sha256). Blocking."""
     return example_finder_model.runner(example_finder_model.ensure_weights(get_s3_client(), get_bucket_name()))
@@ -325,7 +372,7 @@ def find(picture: Union[bytes, np.ndarray], marks: Any, lookalike_marks: Any, ta
     marks_px = check_inside(check_shape(marks, "mark", MIN_MARKS, MAX_MARKS), width, height, "mark")
     looks_px = check_inside(check_lookalikes(lookalike_marks, s), width, height, "look-alike mark")
     check_picture(s, view, width, height, marks_px)
-    return filter_suggestions(_find(for_finder(pixels, marks_px, looks_px, s), s, runner or _stored_model()),
+    return filter_suggestions(_find(for_finder(pixels, marks_px, looks_px, s), s, runner or _runner_for(s)),
                               marks_px, s)
 
 
@@ -597,7 +644,7 @@ def _record(request: _Request, finds: Sequence[Find], seconds: float) -> dict[st
         "version": 1,
         "job_id": request.job_id,
         "target": s.target,
-        "model": {"name": MODEL_NAME, "sha256": MODEL_SHA256},
+        "model": {"name": s.model, "sha256": _model_sha256(s)},
         "settings": s.as_dict(),
         "protocol": protocol(),
         "picture": {"sha256": request.picture_sha256, "width": request.shown.width, "height": request.shown.height,
@@ -619,7 +666,7 @@ async def _work(redis: Any, s3: Any, bucket: str, request: _Request, runner: Opt
         return
     await _take_slot(redis, request, held)
     await _set_status(redis, request.project_id, request.job_id, RUNNING, LOCK_TTL_S)
-    run_model = runner or await asyncio.to_thread(_stored_model)
+    run_model = runner or await asyncio.to_thread(_runner_for, request.settings)
     began = time.monotonic()
     finds = await asyncio.to_thread(_find, request.shown, request.settings, run_model)
     seconds = time.monotonic() - began

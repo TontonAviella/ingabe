@@ -4,16 +4,17 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 
 // Ingabe serves three industries. The first time someone signs in, before anything else, they pick theirs from
 // three miniature worlds (the same dioramas as nozalabs.rw), so "grid" or "towers" is never a guess. The choice is
-// saved on the account (/api/user/industry) and can be changed from the sidebar ("Your industry"). Inside a company,
-// its owners and admins choose for everyone; members of a company that has chosen are never asked.
+// saved on the account (/api/user/industry) and can be switched from the sidebar ("Your industry"). A switch changes
+// only the user's own view, also for a company's owners and admins. Members of a company that has an industry start
+// in it (its default) and are never asked, but can switch too.
 
 export type IndustryKey = 'agriculture' | 'power_grid' | 'telecom';
 
 export interface IndustryState {
-  industry: IndustryKey | null; // what new projects get: the company's industry once it has one, else the user's
+  industry: IndustryKey | null; // the industry the user works in now: their own choice, else their company's
   source: 'company' | 'you' | null;
-  // The company the user acts for. Its owners and admins choose its industry; other members follow it.
-  company: { name: string; industry: IndustryKey | null; can_set: boolean } | null;
+  // The company the user acts for, and its industry: the default for members who never chose their own.
+  company: { name: string; industry: IndustryKey | null } | null;
   can_choose: boolean; // false without an account row (legacy single-user mode): nothing to ask
   options: { key: IndustryKey; label: string; note: string }[];
 }

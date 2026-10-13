@@ -109,9 +109,9 @@ describe('marking: add, delete and fix marks', () => {
       expect(server.setMarks(PHOTO.sha256, marksPayload(part, s)).status).toBe(200);
     }
     const parts = server.work(PHOTO.sha256).parts;
-    expect(parts.tower_dish.lookalike_marks).toEqual([]);
-    expect(parts.tower_antenna.lookalike_marks).toEqual([D1, D2, D3]);
-    expect(parts.tower_radio_unit.lookalike_marks).toEqual([D1, D2, D3, A1]);
+    expect(parts.tower_dish?.lookalike_marks).toEqual([]);
+    expect(parts.tower_antenna?.lookalike_marks).toEqual([D1, D2, D3]);
+    expect(parts.tower_radio_unit?.lookalike_marks).toEqual([D1, D2, D3, A1]);
   });
 
   it('names the other parts whose marks are not saved yet, to save them before a find', () => {
@@ -266,7 +266,7 @@ describe('saving the review', () => {
     server.setMarks(PHOTO.sha256, { part: 'tower_dish', marks: [D1, D2, D3], lookalike_marks: [] });
     server.startFind(PHOTO.sha256, { part: 'tower_dish' });
     server.finish(PHOTO.sha256, 'tower_dish', []);
-    const found = server.work(PHOTO.sha256).parts.tower_dish;
+    const found = server.work(PHOTO.sha256).parts.tower_dish as PartWork;
     expect(found).toMatchObject({ suggestions: [], waiting: 0, counted_by_you: null });
 
     const review = draftFromServer(found);

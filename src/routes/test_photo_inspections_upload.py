@@ -132,6 +132,57 @@ async def test_a_zip_of_photos_without_any_gps_is_refused(auth_client, switch_on
     assert "None of the 2 photos has a GPS position" in response.json()["detail"]
 
 
+def _model_zips() -> list[tuple[str, bytes, str]]:
+    """(filename, ZIP, what the refusal names) for 3D models as they arrive: a model download (Roger's cell-tower.zip:
+    source/model.zip, whose inner ZIP holds an FBX, and 8 textures), a GLB alone (no photo at all) and a model whose
+    texture is not a readable picture."""
+    cell_tower = photo_zip([("source/model.zip", photo_zip([("model.fbx", b"Kaydara FBX Binary")])),
+                            *[(f"textures/model{i}.jpeg", drone_jpg(model=f"texture {i}")) for i in range(8)]])
+    glb_only = photo_zip([("source/telecom tower.glb", b"glTF\x02\x00\x00\x00")])
+    broken_texture = photo_zip([("tower.glb", b"glTF\x02\x00\x00\x00"), ("textures/broken.png", b"not a png")])
+    return [("cell-tower.zip", cell_tower, "source/model.zip and 8 images in a textures folder"),
+            ("telecom-tower.zip", glb_only, "source/telecom tower.glb"),
+            ("broken-texture.zip", broken_texture, "tower.glb and 1 image in a textures folder")]
+
+
+@pytest.mark.anyio
+async def test_a_3d_model_zip_is_refused_as_a_3d_model(auth_client, switch_on):
+    created = await _new_map(auth_client, "3D model")
+    for filename, data, holds in _model_zips():
+        response = await _upload(auth_client, created["id"], filename, data)
+        _init, done = await _browser_upload(auth_client, created["id"], filename, data)
+        for answer in (response, done):
+            assert answer.status_code == 400, (filename, answer.text)
+            assert answer.json()["detail"] == (
+                f"This ZIP is a 3D model, not photos: it holds {holds}. Ingabe takes 3D only as a LAS or LAZ point "
+                "cloud; for a photo inspection, upload the photos with their GPS."), filename
+    assert await _stored_keys(f"inspections/{created['project_id']}/") == []
+
+
+@pytest.mark.anyio
+async def test_a_photo_zip_with_a_model_file_names_the_photo_that_could_not_be_read(auth_client, switch_on):
+    """A ZIP with a GPS photo, a broken photo and a model file holds photos: the refusal names the broken photo, as
+    on main, not "a 3D model"."""
+    created = await _new_map(auth_client, "Photos and a mesh")
+    data = photo_zip([("DJI_0001.JPG", drone_jpg(*TOWER[0], xmp=DJI_XMP)), ("DJI_0002.JPG", b"\xff\xd8 cut short"),
+                      ("mesh/site.obj", b"v 0 0 0")])
+    response = await _upload(auth_client, created["id"], "photos-and-mesh.zip", data)
+    _init, done = await _browser_upload(auth_client, created["id"], "photos-and-mesh.zip", data)
+    for answer in (response, done):
+        assert answer.status_code == 400, answer.text
+        assert answer.json()["detail"] == "DJI_0002.JPG could not be read as a photo"
+    assert await _stored_keys(f"inspections/{created['project_id']}/") == []
+
+
+@pytest.mark.anyio
+async def test_switch_off_a_3d_model_zip_is_refused_as_today(auth_client, switch_off):
+    created = await _new_map(auth_client, "3D model off")
+    for filename, data, _holds in _model_zips():
+        response = await _upload(auth_client, created["id"], filename, data)
+        assert response.status_code == 400, (filename, response.text)
+        assert "does not contain any shapefiles" in response.json()["detail"], filename
+
+
 @pytest.mark.anyio
 async def test_a_zipped_shapefile_keeps_todays_path_with_the_switch_on(auth_client, switch_on):
     created = await _new_map(auth_client, "Shapefile")
@@ -384,9 +435,13 @@ async def test_dispatch_looks_inside_the_file_only_with_the_switch_on(tmp_path, 
     geotiff_named_png = tmp_path / "georeferenced.png"  # GDAL reads the content: a georeferenced raster
     geotiff_named_png.write_bytes(GEOTIFF.read_bytes())
 
+    model = tmp_path / "model.zip"
+    model.write_bytes(photo_zip([("source/telecom tower.glb", b"glTF")]))
+
     monkeypatch.setenv("PHOTO_INSPECTIONS", "1")
     assert isinstance(await handler_for(".jpg", str(jpg)), PhotoSetUploadHandler)
     assert isinstance(await handler_for(".ZIP", str(zipped)), PhotoSetUploadHandler)
+    assert isinstance(await handler_for(".zip", str(model)), PhotoSetUploadHandler)  # refused there as a 3D model
     assert isinstance(await handler_for(".zip", str(SHAPEFILE_ZIP)), VectorUploadHandler)
     assert isinstance(await handler_for(".zip", str(not_a_zip)), VectorUploadHandler)
     assert isinstance(await handler_for(".png", str(geotiff_named_png)), RasterUploadHandler)
@@ -395,3 +450,4 @@ async def test_dispatch_looks_inside_the_file_only_with_the_switch_on(tmp_path, 
     monkeypatch.setenv("PHOTO_INSPECTIONS", "0")
     assert isinstance(await handler_for(".jpg", str(jpg)), RasterUploadHandler)
     assert not isinstance(await handler_for(".zip", str(zipped)), PhotoSetUploadHandler)
+    assert isinstance(await handler_for(".zip", str(model)), VectorUploadHandler)

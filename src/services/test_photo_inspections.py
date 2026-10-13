@@ -11,6 +11,7 @@ from PIL import Image, PngImagePlugin
 from src.services import stored_files
 from src.services import photo_inspections as pi
 from test_fixtures.drone_photos import DJI_XMP, drone_jpg
+from test_fixtures.wording import COLLECTION_INSTRUCTIONS
 
 
 def _write(tmp_path, name, data):
@@ -109,6 +110,58 @@ def test_at_least_one_photo_must_be_placed(tmp_path):
         pi.check_placeable([unplaced, unplaced])
     with pytest.raises(pi.NoPhotoPosition, match="This photo has no map position"):
         pi.check_placeable([unplaced])
+
+
+def test_a_3d_model_without_gps_is_named_as_a_3d_model(tmp_path):
+    """Roger's cell-tower.zip (a model download: source/model.zip and textures/*.jpeg) used to be refused as "None of
+    the 8 photos has a GPS position". Ingabe takes 3D only as a LAS or LAZ point cloud (2026-10-11)."""
+    placed = pi.read_photo(_write(tmp_path, "a.jpg", drone_jpg(-1.9, 30.1)), "a.jpg")
+    unplaced = pi.read_photo(_write(tmp_path, "b.jpg", drone_jpg()), "b.jpg")
+    cell_tower = ["source/model.zip", "textures/model.jpeg", *[f"textures/model{i}.jpeg" for i in range(1, 8)]]
+
+    with pytest.raises(pi.ModelNotPhotos) as refused:
+        pi.check_placeable([unplaced] * 8, cell_tower)
+    message = str(refused.value)
+    assert message == ("This ZIP is a 3D model, not photos: it holds source/model.zip and 8 images in a textures "
+                       "folder. Ingabe takes 3D only as a LAS or LAZ point cloud; for a photo inspection, upload the "
+                       "photos with their GPS.")
+    assert not COLLECTION_INSTRUCTIONS.search(message)  # no flight, pilot or data-collection instructions
+    assert isinstance(refused.value, pi.NoPhotoPosition)  # the upload path answers it as a 400, as before
+
+    assert pi.model_in(["source/telecom tower.glb", "textures/Image_5_0.png"]) == (
+        "source/telecom tower.glb and 1 image in a textures folder")
+    assert pi.model_in(["Model.FBX"]) == "Model.FBX"  # any case
+    assert pi.model_in(["Textures\\a.png", "TEXTURE/b.jpg"]) == "2 images in a textures folder"  # either separator
+    assert pi.model_in(["mesh/tower.obj", "mesh/tower.mtl"]) == "mesh/tower.obj (and 1 more model file)"
+    # Not a model: plain photos, macOS metadata, a ZIP outside a source folder, a photo outside a textures folder.
+    assert pi.model_in(["DJI_0001.JPG", "._tower.glb", "backup/model.zip", "site/textures.jpg", "flight.MRK"]) is None
+
+    # Plain photos without GPS keep their message; a ZIP with a GPS photo is accepted as before, model files or not.
+    with pytest.raises(pi.NoPhotoPosition, match="None of the 2 photos") as plain:
+        pi.check_placeable([unplaced, unplaced], ["DJI_0001.JPG", "DJI_0002.JPG"])
+    assert not isinstance(plain.value, pi.ModelNotPhotos)
+    pi.check_placeable([placed, unplaced], ["DJI_0001.JPG", "mesh/tower.glb", "textures/t.png"])
+    pi.check_not_a_model(["DJI_0001.JPG"])  # nothing to say
+
+    # A ZIP holding a model and no shapefile is sent to the photo path (to be refused there); a shapefile is not.
+    assert pi.is_model_archive(["source/telecom tower.glb"])
+    assert not pi.is_model_archive(["roads.shp", "roads.dbf", "tower.glb"])
+    assert not pi.is_model_archive(["DJI_0001.JPG", "notes.txt"])
+
+
+def test_an_unreadable_picture_names_a_3d_model_only_when_its_pictures_are_textures():
+    """When a picture cannot be read, the 3D-model message replaces "... could not be read as a photo" only for a
+    model whose pictures are all in a textures folder (or that has none); a ZIP with a photo elsewhere holds photos,
+    and its refusal keeps naming the file that failed."""
+    with pytest.raises(pi.ModelNotPhotos, match="it holds tower.glb and 1 image in a textures folder"):
+        pi.check_unreadable_not_a_model(["tower.glb", "textures/broken.png"])
+    with pytest.raises(pi.ModelNotPhotos, match="it holds source/telecom tower.glb"):
+        pi.check_unreadable_not_a_model(["source/telecom tower.glb"])  # no picture at all
+    # Photos outside a textures folder, a model file beside them: not a 3D model's refusal.
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "DJI_0002.JPG", "mesh/site.obj"])
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "textures/huge.png", "tower.glb"])
+    pi.check_unreadable_not_a_model(["DJI_0001.JPG", "DJI_0002.JPG"])  # no model: nothing to say
+    pi.check_unreadable_not_a_model([])  # a single photo uploaded on its own
 
 
 def test_camera_points_and_summary(tmp_path):

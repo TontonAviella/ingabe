@@ -29,6 +29,14 @@ CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png
 # What Pillow must find inside a file with each extension (DJI writes some JPGs as MPO, a multi-picture JPEG).
 _FORMATS = {".jpg": {"JPEG", "MPO"}, ".jpeg": {"JPEG", "MPO"}, ".png": {"PNG"}}
 
+# What shows a ZIP is a 3D model (a mesh and its textures, as model downloads and photogrammetry exports package one).
+# Ingabe takes 3D only as a point cloud (a LAS or LAZ file; Roger, 2026-10-11), so such a ZIP is refused, and named
+# as a 3D model, when it has no photo with a GPS position. Only file names are read: a ZIP inside the ZIP is not opened.
+MODEL_EXTENSIONS = frozenset({".obj", ".mtl", ".fbx", ".gltf", ".glb", ".ply", ".stl", ".dae", ".3ds", ".usdz", ".blend",
+                              ".osgb", ".b3dm", ".slpk"})
+TEXTURE_FOLDERS = frozenset({"textures", "texture"})
+MODEL_SOURCE_FOLDERS = frozenset({"source"})  # a model download keeps the model (often zipped) in source/
+
 # Limits on one inspection (a ZIP unpacks no more than this).
 MAX_PHOTOS = 1_000
 MAX_UNPACKED_BYTES = 15 * 1024 ** 3  # 15 GiB
@@ -78,6 +86,10 @@ class UnreadablePhoto(ValueError):
 
 class NoPhotoPosition(ValueError):
     """None of the photos carries a GPS position, so the inspection has nowhere to go on the map."""
+
+
+class ModelNotPhotos(NoPhotoPosition):
+    """The ZIP is a 3D model (model files, textures), and none of its pictures is a photo with a GPS position."""
 
 
 @dataclass(frozen=True)
@@ -130,13 +142,83 @@ def is_photo_name(name: str) -> bool:
     return not base.startswith("._") and os.path.splitext(base)[1].lower() in PHOTO_EXTENSIONS
 
 
+def _has_shapefile(names: list[str]) -> bool:
+    return any(name.lower().endswith(".shp") for name in names)
+
+
 def is_photo_set(names: Iterable[str]) -> bool:
     """True when an archive with these file names is a photo inspection: at least one photo and no shapefile (a
     zipped shapefile keeps the vector path). Other files (flight logs, videos) are left out of the inspection."""
     names = list(names)
-    if any(name.lower().endswith(".shp") for name in names):
+    if _has_shapefile(names):
         return False
     return any(is_photo_name(name) for name in names)
+
+
+def _folders_and_base(name: str) -> tuple[list[str], str]:
+    """The folders and the file name of a name inside an archive, in lower case, / or \\ separated."""
+    *folders, base = (part.lower() for part in re.split(r"[\\/]", name))
+    return folders, base
+
+
+def _is_texture(name: str) -> bool:
+    """True for a picture in a textures folder (a 3D model's textures, not photos of anything)."""
+    folders, _base = _folders_and_base(name)
+    return is_photo_name(name) and bool(TEXTURE_FOLDERS.intersection(folders))
+
+
+def model_in(names: Iterable[str]) -> Optional[str]:
+    """What in an archive with these file names shows it is a 3D model, in words ("source/model.zip and 8 images in
+    a textures folder"); None when nothing does. A model file (MODEL_EXTENSIONS), a ZIP in a source folder and the
+    pictures in a textures folder count (folders matched in any case, / or \\ separated); macOS metadata ("._name")
+    does not. Names only: a ZIP inside the ZIP is not opened."""
+    models: list[str] = []
+    textures = 0
+    for name in names:
+        folders, base = _folders_and_base(name)
+        if base.startswith("._"):
+            continue
+        extension = os.path.splitext(base)[1]
+        if extension in MODEL_EXTENSIONS or (extension == ".zip" and MODEL_SOURCE_FOLDERS.intersection(folders)):
+            models.append(name)
+        elif _is_texture(name):
+            textures += 1
+    found = []
+    if models:
+        more = len(models) - 1
+        found.append(models[0] + (f" (and {more} more model file{'s' if more > 1 else ''})" if more else ""))
+    if textures:
+        found.append(f"{textures} image{'s' if textures > 1 else ''} in a textures folder")
+    return " and ".join(found) or None
+
+
+def is_model_archive(names: Iterable[str]) -> bool:
+    """True when an archive with these file names holds a 3D model (model_in) and no shapefile. With the switch on,
+    such a ZIP goes to the photo inspection path even without a photo, only to be refused there as a 3D model
+    (check_not_a_model): the vector path would refuse it too, as "no shapefile", so what is accepted does not
+    change."""
+    names = list(names)
+    return not _has_shapefile(names) and model_in(names) is not None
+
+
+def check_not_a_model(archive_names: Iterable[str]) -> None:
+    """Raise ModelNotPhotos when an archive with these file names holds a 3D model. Called only where the upload is
+    already refused (no photo has a GPS position: check_placeable; a picture could not be read:
+    check_unreadable_not_a_model), so it changes the message, never what is accepted."""
+    what = model_in(archive_names)
+    if what:
+        raise ModelNotPhotos(f"This ZIP is a 3D model, not photos: it holds {what}. Ingabe takes 3D only as a LAS or "
+                             "LAZ point cloud; for a photo inspection, upload the photos with their GPS.")
+
+
+def check_unreadable_not_a_model(archive_names: Iterable[str]) -> None:
+    """Raise ModelNotPhotos when a picture in an archive with these file names could not be read (or none could be
+    unpacked) and the archive is a 3D model whose only pictures are its textures. An archive with a photo outside a
+    textures folder holds photos, so it is not "a 3D model, not photos": nothing is raised here and the refusal keeps
+    naming the file that could not be read."""
+    names = list(archive_names)
+    if not any(is_photo_name(name) and not _is_texture(name) for name in names):
+        check_not_a_model(names)
 
 
 def read_photo(path: str, filename: str) -> PhotoFacts:
@@ -195,10 +277,11 @@ def view_of(facts: PhotoFacts) -> Optional[str]:
     return answer_levels.NADIR if facts.gimbal_pitch <= -90 + NADIR_WITHIN_DEG else answer_levels.OBLIQUE
 
 
-def check_placeable(facts: list[PhotoFacts]) -> None:
+def check_placeable(facts: list[PhotoFacts], archive_names: Iterable[str] = ()) -> None:
     """Raise NoPhotoPosition when no photo has a GPS position: the inspection would have nowhere to go on the
-    map."""
+    map. When the ZIP (its file names: archive_names) is a 3D model, the refusal says so (ModelNotPhotos)."""
     if not any(f.has_position for f in facts):
+        check_not_a_model(archive_names)
         if len(facts) == 1:
             raise NoPhotoPosition("This photo has no map position and no GPS position, so it cannot be placed "
                                   "on the map.")

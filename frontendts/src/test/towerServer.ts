@@ -18,6 +18,10 @@ const MEASURED: Record<TowerPart, { noun: string; lookalikes: boolean }> = {
   tower_dish: { noun: 'dishes', lookalikes: false },
   tower_antenna: { noun: 'antennas', lookalikes: true },
   tower_radio_unit: { noun: 'radio units', lookalikes: true },
+  maize_seedling: { noun: 'maize plants', lookalikes: false },
+  power_pylon: { noun: 'pylons', lookalikes: false },
+  power_insulator: { noun: 'insulators', lookalikes: false },
+  power_nest: { noun: 'bird nests', lookalikes: false },
 };
 const MAX_LOOKALIKE_MARKS = 20;
 

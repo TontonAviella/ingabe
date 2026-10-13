@@ -108,7 +108,10 @@ export function TowerCards({
   // The panel shows once the server has said this layer is tower work: an answer, or a conflict only a Telecom
   // inspection can get (409). Not while asking (every photo inspection asks, in every project), not on a 404
   // (switched off, or not a Telecom project) and not on a failed request.
-  const noTowers = cards.error?.status === 404 || photos.error?.status === 404;
+  // Outside Telecom the photos load but the cards answer 404 (no tower cards there): the panel shows the photos to
+  // mark without the cards.
+  const noCards = cards.error?.status === 404;
+  const noTowers = photos.error?.status === 404 || (noCards && !photos.data);
   const towerWork = !!(cards.data || photos.data) || cards.error?.status === 409 || photos.error?.status === 409;
   if (!layerId || noTowers || !towerWork) return null;
 
@@ -116,6 +119,10 @@ export function TowerCards({
   const photoList = photos.data?.photos ?? [];
 
   const checkPhotos = async () => {
+    if (noCards) {
+      setMarking({ index: 0, note: null });
+      return;
+    }
     setSearching(true);
     setSearchError(null);
     try {
@@ -144,10 +151,10 @@ export function TowerCards({
     <>
       <CardsPanel
         ariaLabel="Checks for this tower inspection"
-        heading="Tower checks"
-        hideLabel="Hide the tower checks"
+        heading={noCards ? 'Photo checks' : 'Tower checks'}
+        hideLabel={noCards ? 'Hide the photo checks' : 'Hide the tower checks'}
         collapsed={collapsed}
-        collapsedLabel="Tower checks"
+        collapsedLabel={noCards ? 'Photo checks' : 'Tower checks'}
         onCollapsedChange={setCollapsedAndSave}
         historyOpen={historyOpen}
       >
@@ -180,21 +187,23 @@ export function TowerCards({
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
-              {TOWER_AUDIENCES.map((a) => (
-                <button
-                  key={a.id}
-                  type="button"
-                  aria-pressed={audience === a.id}
-                  onClick={() => setAudience(a.id)}
-                  className={`min-h-8 rounded-[9px] text-[12px] cursor-pointer ${
-                    audience === a.id ? 'bg-[#3A2A21] text-[#F3EDE6] font-bold' : 'text-[#B8A99B] font-semibold hover:text-[#F3EDE6]'
-                  }`}
-                >
-                  {a.label}
-                </button>
-              ))}
-            </div>
+            {!noCards && (
+              <div className="grid grid-cols-2 gap-[2px] rounded-[12px] bg-[#221813] p-[3px]" role="group" aria-label="Who is reading">
+                {TOWER_AUDIENCES.map((a) => (
+                  <button
+                    key={a.id}
+                    type="button"
+                    aria-pressed={audience === a.id}
+                    onClick={() => setAudience(a.id)}
+                    className={`min-h-8 rounded-[9px] text-[12px] cursor-pointer ${
+                      audience === a.id ? 'bg-[#3A2A21] text-[#F3EDE6] font-bold' : 'text-[#B8A99B] font-semibold hover:text-[#F3EDE6]'
+                    }`}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <button
@@ -214,8 +223,8 @@ export function TowerCards({
               )}
             </div>
 
-            {cards.isPending && <p className="m-0 py-2 text-[15px] text-[#D8CCBF]">Loading the checks…</p>}
-            {cards.error && <p className="m-0 py-2 text-[15px] text-[#E9B987]">{cards.error.message}</p>}
+            {cards.isPending && !noCards && <p className="m-0 py-2 text-[15px] text-[#D8CCBF]">Loading the checks…</p>}
+            {cards.error && !noCards && <p className="m-0 py-2 text-[15px] text-[#E9B987]">{cards.error.message}</p>}
             {cards.data && (
               <div className="flex flex-col gap-2.5">
                 {cards.data.cards.map((card) => (
@@ -259,6 +268,7 @@ export function TowerCards({
           layerId={layerId}
           layerName={layer?.name ?? 'Photo inspection'}
           photos={photoList}
+          parts={photos.data?.parts}
           startIndex={marking.index}
           note={marking.note}
           onClose={() => setMarking(null)}

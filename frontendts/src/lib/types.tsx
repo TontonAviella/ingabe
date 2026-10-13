@@ -15,6 +15,18 @@ export interface MapProject {
   industry?: 'agriculture' | 'power_grid' | 'telecom';
 }
 
+// GET /api/projects/ (list_user_projects, src/routes/project_routes.py). The server decides which industry the list
+// shows: the one the user works in now.
+export interface ProjectList {
+  projects: MapProject[];
+  total_pages: number;
+  total_items: number; // the projects of the listed industry
+  industry: NonNullable<MapProject['industry']> | null; // null: every industry (nobody has chosen)
+  industry_label: string | null;
+  // The user's projects in the other industries, which this list leaves out.
+  other_industries: { industry: NonNullable<MapProject['industry']>; label: string; count: number }[];
+}
+
 export type ProjectState = { type: 'not_logged_in' } | { type: 'loading' } | { type: 'loaded'; projects: MapProject[] };
 
 // Keep this in sync with backend LayerMetadata (mundi-public/src/routes/postgres_routes.py)

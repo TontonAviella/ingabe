@@ -4,7 +4,16 @@ Tower work on a photo inspection in a Telecom Towers project: a person marks a f
 on a photo, the example finder suggests the rest, the person checks every suggestion, and only then is anything
 counted. One owner (CODING_STANDARDS.md, H1): `src/services/tower_inspection.py` (the work, the counting rule, the
 inventory, the photos to check, the camera facts, the same site before) with `src/services/tower_cards.py` (the
-tower question cards and the facts Sage reads). Adapters only: `src/routes/tower_routes.py`,
+tower question cards and the facts Sage reads).
+
+Agriculture uses the same photo work for maize plants (2026-10-12): on a photo inspection in an Agriculture project the
+one part is `maize_seedling` (`tower_inspection.PARTS_BY_INDUSTRY`, `parts_for`); its finder settings are the measured
+`maize_seedling` target (640 px squares read at 1280 px; a larger photo is shrunk to 640 px first, so upload squares of
+that size). The photos route lists the parts (`parts`: id, label, plural) and the marking screen offers only those; a
+part of another industry is refused (422). The tower cards and Sage's tower tools stay Telecom Towers only (their own
+capabilities, `tower_cards` and `get_tower_inspection_findings`): in Agriculture the cards answer 404 and the panel is
+"Photo checks" without them. A stored record keeps the tower parts as before and a farm part only once worked on.
+Adapters only: `src/routes/tower_routes.py`,
 `src/tools/tower_tools.py`. Tests: `src/services/test_tower_inspection.py`, `test_tower_cards.py`,
 `src/routes/test_tower_routes.py`, `src/tools/test_tower_tools.py`, and the routing, industry and eval-corpus tests.
 
@@ -110,8 +119,9 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
   `photo_context.projects_of`, `tower_inspection.work_project`; the earlier-inspection lookup uses the same rule); a layer on the current maps of more than one Telecom project (added to another
   project's map) is refused with 409 "remove it from the maps of the others", never followed to the last edited map
   (which would move its work between projects). Removing it from the other map, or deleting that project, clears it.
-  The industry is checked first: unless every project showing the layer is Telecom Towers (switch on), it is 404, so a
-  farm inspection on two farm maps is not a tower conflict. Sage's tower tools use the chat's own project
+  The industry is checked first: unless every project showing the layer has photo work (Telecom Towers or
+  Agriculture, switch on) and they all mark the same parts, it is 404; a farm inspection on two farm maps is a 409
+  like a tower one. Sage's tower tools use the chat's own project
   (`meta.project_id`, whose map must show the layer). That project's industry gates every route and tool.
 - The inspection's photos come from the facts kept at upload (`photo_inspections.load_facts`), one per stored photo
   (a photo uploaded twice keeps its first name); an inspection uploaded before 2026-10-11 has none: 409 "upload the
@@ -121,7 +131,7 @@ cut-off set on 2026-10-11, not measured (towers in a city can stand closer).
 
 All under `/api/towers/layer/{layer_id}`; 404 with a switch off (checked before the body is read, so a malformed
 request is 404 too: `src/routes/switched_routes.py`), for a layer that is not a photo inspection, or in a project that
-is not Telecom Towers; 409 for a layer on the maps of more than one Telecom project; reads need view rights
+has no photo work (the cards: not Telecom Towers); 409 for a layer on the maps of more than one project; reads need view rights
 (`get_layer`), writes edit rights (`edit_layer`). The panel (`TowerCards.tsx`) shows only after the server answered
 for the layer (data, or a 409): never while asking, on a 404 or on a failed request.
 
@@ -140,9 +150,8 @@ for the layer (data, or a 409): never while asking, on a 404 or on a failed requ
 - `GET /cards?audience=owner|technician` -> `{"cards": [{id, title, status, preview}]}`; `GET /cards/{card_id}` ->
   the drone cards' answer shape (`what, why, todo, how_sure, facts, terms, items, downloads, progress, overlay,
   choices, upload, field_check, ask_sage`, plus `question` and `status_label`). Unknown audience: 422.
-- **Rights gap (as every route on `get_layer`)**: a project editor or viewer who does not own the layer gets 404
-  (map_layers row security shows a layer to its owner only; EXAMPLE_FINDER_RULES.md). Pinned by a test; Roger's
-  decision.
+- **Project roles** (Roger, 2026-10-12; alembic `e7a1c4d9b2f3`): a project viewer who did not upload the inspection
+  reads its tower work, a project editor also marks and reviews; anyone outside the project gets 404.
 
 ## Cards (`tower_cards.py`)
 

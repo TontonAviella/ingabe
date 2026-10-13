@@ -11,6 +11,7 @@ from datetime import date
 import pytest
 
 from src.services import answer_levels as al
+from src.services import own_detector
 from src.services.answer_levels import Facts, Level, Verdict
 
 FINDER = "yoloe-11s-seg"
@@ -20,6 +21,9 @@ OPEN_FIELD = Facts(planting_date=PLANTED, capture_date=TAKEN, green_cover_share=
 TOWER_PARTS = ("tower_dish", "tower_antenna", "tower_radio_unit")
 ANSWERABLE = ("tower_dish", "tower_antenna", "tower_radio_unit", "building", "maize_seedling", "row_crop_plant", "weed")
 CANT_TELL_KINDS = ("tree_crown_forest", "tree_crown_savanna", "banana_mat")
+# Found only by a trained detector: the example finder was never measured on them (CAN'T TELL without it).
+POWER_PARTS = ("power_pylon", "power_insulator", "power_nest")
+DETECTED = (*TOWER_PARTS, *POWER_PARTS)
 EVIDENCE = json.loads(al.EVIDENCE_PATH.read_text())
 
 
@@ -67,7 +71,7 @@ def test_every_level_has_a_plain_label_and_meaning(level):
 # --------------------------------------------------------------------------- #
 
 def test_every_target_has_provenance_and_a_max_level():
-    assert {t.name for t in al.targets()} == set(ANSWERABLE) | set(CANT_TELL_KINDS)
+    assert {t.name for t in al.targets()} == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(POWER_PARTS)
     for t in al.targets():
         assert set(al.PROVENANCE_KEYS) <= set(t.measured), t.name
         assert isinstance(t.max_level, Level) and t.kind in al.KINDS and t.noun, t.name
@@ -171,7 +175,9 @@ def test_every_measurement_says_which_way_its_pictures_looked():
     views = {t.name: t.measured["view"] for t in al.targets()}
     assert views == {"tower_dish": al.OBLIQUE, "tower_antenna": al.OBLIQUE, "tower_radio_unit": al.OBLIQUE,
                      "building": al.NADIR, "maize_seedling": al.NADIR, "row_crop_plant": al.NADIR, "weed": al.NADIR,
-                     "tree_crown_forest": al.NADIR, "tree_crown_savanna": al.NADIR, "banana_mat": None}
+                     "tree_crown_forest": al.NADIR, "tree_crown_savanna": al.NADIR, "banana_mat": None,
+                     **{name: None for name in POWER_PARTS}}  # never measured with the example finder
+    assert {name: al.detector(name).measured["view"] for name in DETECTED} == {name: al.OBLIQUE for name in DETECTED}
     assert all("tower photos" in al.target(n).measured["dataset"] for n, v in views.items() if v == al.OBLIQUE)
 
 
@@ -184,7 +190,7 @@ def test_a_broken_table_fails_on_load(tmp_path):
     data = json.loads(al.TARGETS_PATH.read_text())
     good = tmp_path / "good.json"
     good.write_text(json.dumps(data))
-    assert set(al.load_targets(good)) == set(ANSWERABLE) | set(CANT_TELL_KINDS)
+    assert set(al.load_targets(good)) == set(ANSWERABLE) | set(CANT_TELL_KINDS) | set(POWER_PARTS)
 
     def broken(change, match: str) -> None:
         copy = json.loads(json.dumps(data))
@@ -535,3 +541,65 @@ def test_the_rules_do_not_depend_on_the_switch(monkeypatch):
     off = answers()
     monkeypatch.setenv("ANSWER_LADDER", "1")
     assert answers() == off
+
+
+# --------------------------------------------------------------------------- #
+# Trained detectors (2026-10-12)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("name", DETECTED)
+def test_a_detector_matches_its_evidence(name):
+    """Each detector's value, picture count and size are the recorded run's; its size floor comes from the test
+    pictures' own boxes, read as they are (no rescale)."""
+    d = al.detector(name)
+    (row,) = _rows(d.measured["evidence"])
+    assert (row["ap50"], row["n_img"], row["imgsz"]) == (d.measured["value"], d.measured["n_images"], d.finder_input_px)
+    assert row["model"] == d.finder_model and row["class"] == d.detector_class
+    assert d.finder_input_px == d.measured["image_px"] and d.max_level is Level.FULL_REVIEW
+    assert d.measured["date"] == "2026-10-13" and "same sites" in d.measured["note"]
+    model = own_detector.MODELS[d.finder_model]  # our own model, its weights named by key and sha256
+    assert d.detector_class in model.classes and model.sha256[:16] in model.key
+    assert d.size_floor_px is not None and d.size_floor_px > 0
+
+
+@pytest.mark.parametrize("name,value", [("tower_dish", 0.889), ("tower_antenna", 0.952), ("tower_radio_unit", 0.562),
+                                        ("power_pylon", 0.989), ("power_insulator", 0.869), ("power_nest", 0.958)])
+def test_the_detectors_hold_the_measurements_of_2026_10_13(name, value):
+    assert al.detector(name).measured["value"] == value
+
+
+def test_only_tower_power_and_maize_parts_have_a_detector():
+    assert {t.name for t in al.targets() if al.detector(t.name)} == set(DETECTED) | {"maize_seedling"}
+
+
+def test_maize_is_found_by_sam3_with_its_measured_prompt():
+    d = al.detector("maize_seedling")
+    (row,) = _rows(d.measured["evidence"])
+    assert (d.finder_model, d.detector_class) == ("roboflow:sam3/sam3_final", "seedling") == (row["model"], row["class"])
+    assert (row["ap50"], row["n_img"], row["imgsz"]) == (d.measured["value"], 36, 640) and d.measured["value"] == 0.741
+    assert d.measured["view"] == al.NADIR and d.max_level is Level.FULL_REVIEW
+    assert len(EVIDENCE["marks"]["rf_maize_seedling"]["pictures"]) == 36
+
+
+def test_power_parts_cannot_be_answered_by_the_example_finder():
+    for name in POWER_PARTS:
+        assert al.target(name).max_level is Level.CANT_TELL and al.target(name).finder_model == FINDER
+        gate = al.size_gate(name, 640, marked_box_px=[(300, 300)] * 3, finder_model=al.detector(name).finder_model)
+        assert al.decide(name, FINDER, _big_gate(name), al.countability(name, Facts())).level is Level.CANT_TELL
+        assert al.decide(name, al.detector(name).finder_model, gate, al.countability(name, Facts())).level is (
+            Level.FULL_REVIEW)
+
+
+def test_a_detector_reads_the_picture_at_its_own_size():
+    d = al.detector("tower_dish")
+    gate = al.size_gate("tower_dish", 2666, marked_box_px=[(2 * d.size_floor_px, 2 * d.size_floor_px)] * 3,
+                        finder_model=d.finder_model)
+    assert gate.passes is True and gate.object_px == pytest.approx(d.size_floor_px)  # 2666 px read at 1333 px
+    small = al.size_gate("tower_dish", 2666, marked_box_px=[(d.size_floor_px, d.size_floor_px)] * 3,
+                         finder_model=d.finder_model)
+    assert small.passes is False
+
+
+def test_another_model_s_output_gets_no_level():
+    with pytest.raises(ValueError, match="detector"):
+        al.decide("tower_dish", "some-other-model", _big_gate("tower_dish"), al.countability("tower_dish", Facts()))

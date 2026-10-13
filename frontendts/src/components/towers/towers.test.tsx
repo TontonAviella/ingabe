@@ -186,7 +186,7 @@ describe('marking screen: finding the rest', () => {
 
     click(await findButton(/Find the rest/));
     await findText('Waiting in line for the finder…', 'p');
-    expect(server.work(SHA).parts.tower_dish.marks).toEqual([D[0], D[1], [1200, 200, 1300, 320]]);
+    expect(server.work(SHA).parts.tower_dish?.marks).toEqual([D[0], D[1], [1200, 200, 1300, 320]]);
     expect(byButton(/Find the rest/)).toBeDisabled();
   });
 
@@ -212,7 +212,7 @@ describe('marking screen: finding the rest', () => {
       ['POST', FIND, 'tower_antenna'],
     ]);
     for (const c of calls.filter((x) => x.method === 'PUT')) expect((c.body as { lookalike_marks: Box[] }).lookalike_marks).toEqual([]);
-    expect(server.work(SHA).parts.tower_antenna.lookalike_marks).toEqual([[1500, 300, 1530, 380]]);
+    expect(server.work(SHA).parts.tower_antenna?.lookalike_marks).toEqual([[1500, 300, 1530, 380]]);
   });
 });
 
@@ -290,7 +290,7 @@ describe('marking screen: checking suggestions', () => {
     click(save);
     await findText('3 counted by you', 'p');
     expect(called('PUT', REVIEW)?.body).toEqual({ part: 'tower_dish', kept: [], rejected: [], fixed: [], added: [] });
-    expect(server.work(SHA).parts.tower_dish.counted_by_you).toBe(3);
+    expect(server.work(SHA).parts.tower_dish?.counted_by_you).toBe(3);
     expect(byButton(/Save review/)).toBeDisabled();
   });
 
@@ -432,6 +432,38 @@ describe('tower cards panel', () => {
     click(await findButton(/Check photos/));
     await findText(/^Photo 2 of 2/);
     expect(byText(/Every photo/)).toBeNull();
+  });
+
+  it('a farm inspection (no tower cards: 404) shows its photos and marks only the parts the server lists', async () => {
+    // Agriculture: the server lists maize plants as the only part and has no tower cards there (tower_routes).
+    const { filename: _, ...photo } = PHOTO;
+    const empty: PartWork = {
+      marks: [],
+      lookalike_marks: [],
+      job: null,
+      suggestions: [],
+      reviewed: { kept: [], rejected: [], fixed: [], added: [] },
+      counted_by_you: null,
+      waiting: 0,
+    };
+    routes[`GET ${PHOTOS}`] = () => ({
+      status: 200,
+      body: { photos: [photo], parts: [{ id: 'maize_seedling', label: 'Maize plant', plural: 'maize plants' }] },
+    });
+    routes[`GET ${PHOTOS}/${SHA}/work`] = () => ({ status: 200, body: { parts: { maize_seedling: empty } } });
+    routes[`GET ${CARDS}?audience=owner`] = () => ({
+      status: 404,
+      body: { detail: 'The tower cards are for photo inspections in Telecom Towers projects' },
+    });
+    mount(panel(layers));
+    await findText('Photo checks');
+    expect(byText(/tower cards are for/)).toBeNull();
+    expect(byButton('Owner')).toBeNull();
+    click(await findButton(/Check photos/));
+    await findText(/^Photo 1 of 1/);
+    expect(await findButton(/Maize plant/)).not.toBeNull();
+    expect(byButton(/Microwave dish/)).toBeNull();
+    expect(byText(/Check tower photos/)).toBeNull();
   });
 
   it('"Check photos" says the server\'s words when every photo is checked', async () => {

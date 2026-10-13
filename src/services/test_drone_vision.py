@@ -204,14 +204,15 @@ async def test_a_look_through_anthropic_asks_for_a_thinking_budget(monkeypatch):
     assert sent["max_tokens"] > 8000 and "reasoning_effort" not in sent
 
 
-def test_the_survey_is_on_unless_switched_off(monkeypatch):
+def test_the_survey_is_off_unless_switched_on(monkeypatch):
     monkeypatch.delenv("DRONE_VISION_SURVEY", raising=False)
-    assert drone_vision.survey_enabled() is True
-    for off in ("0", "false", "off", " NO "):
+    assert drone_vision.survey_enabled() is False
+    for off in ("0", "false", "off", " NO ", "maybe"):
         monkeypatch.setenv("DRONE_VISION_SURVEY", off)
         assert drone_vision.survey_enabled() is False
-    monkeypatch.setenv("DRONE_VISION_SURVEY", "1")
-    assert drone_vision.survey_enabled() is True
+    for on in ("1", "true", " ON ", "yes"):
+        monkeypatch.setenv("DRONE_VISION_SURVEY", on)
+        assert drone_vision.survey_enabled() is True
 
 
 def test_without_looks_every_measured_plot_is_unnamed_and_nothing_else_is_guessed(plots):

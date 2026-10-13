@@ -26,6 +26,13 @@ PHOTO_KEYS = {"sha256", "url", "width", "height", "taken_at", "lat", "lon", "rel
 WORK_KEYS = {"marks", "lookalike_marks", "job", "suggestions", "reviewed", "counted_by_you", "waiting"}
 
 
+@pytest.fixture(autouse=True)
+def _example_finder_for_towers(monkeypatch):
+    """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
+    back does (OWN_DETECTORS=0)."""
+    monkeypatch.setenv("OWN_DETECTORS", "0")
+
+
 @pytest.fixture
 async def seeded():
     inspections = Inspections()
@@ -114,11 +121,31 @@ async def test_with_a_switch_off_even_a_malformed_write_is_not_found(client, swi
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("other", ["agriculture", "power_grid"])
-async def test_outside_telecom_no_route_exists(client, seeded, switched_on, other):
-    ids = await seeded.make(industry=other)
+async def test_power_grid_marks_pylons_insulators_and_nests_and_has_no_tower_cards(client, seeded, switched_on):
+    """Power Grid: the photos are marked for its own three parts (found only by the trained detector); a tower part
+    is refused (422) and the tower cards do not exist there (404)."""
+    ids = await seeded.make(industry="power_grid")
     _as(ids["owner"])
-    assert await _every_route(client, ids["layer"]) == [404] * 7
+    photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert [p["id"] for p in photos["parts"]] == ["power_pylon", "power_insulator", "power_nest"]
+    assert [p["label"] for p in photos["parts"]] == ["Pylon", "Insulator", "Bird nest"]
+    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
+    assert switched_on.calls == []
+
+
+@pytest.mark.anyio
+async def test_agriculture_marks_maize_plants_and_has_no_tower_cards(client, seeded, switched_on):
+    """In Agriculture the photos are marked for maize plants only: a tower part is refused (422) before anything is
+    saved or found, and the tower cards do not exist there (404)."""
+    ids = await seeded.make(industry="agriculture")
+    _as(ids["owner"])
+    photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert photos["parts"] == [{"id": "maize_seedling", "label": "Maize plant", "plural": "maize plants"}]
+    assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
+    work = (await client.get(f"{_base(ids['layer'])}/photos/{SHA}/work")).json()
+    assert list(work["parts"]) == ["maize_seedling"]
+    saved = await client.put(f"{_base(ids['layer'])}/photos/{SHA}/marks", json={"part": "maize_seedling", "marks": MARKS})
+    assert saved.status_code == 200 and saved.json()["marks"] == MARKS
     assert switched_on.calls == []
 
 
@@ -163,13 +190,14 @@ async def _add_to_current_map(layer: str, project: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_not_tower_work(client, seeded, switched_on):
-    """Not a tower conflict (409) that would put the Tower checks panel on a farm map: not found, as for one project."""
+async def test_a_farm_inspection_on_maps_of_two_farm_projects_is_a_conflict(client, seeded, switched_on):
+    """Two farm projects showing one inspection: its photo work cannot be kept in one of them (409, as for tower
+    work), reported before anything else."""
     ids = await seeded.make(industry="agriculture")
     other = await seeded.make(owner=ids["owner"], industry="agriculture")
     await _add_to_current_map(ids["layer"], other["project"])
     _as(ids["owner"])
-    assert await _every_route(client, ids["layer"]) == [404] * 7
+    assert await _every_route(client, ids["layer"]) == [409] * 7
 
 
 @pytest.mark.anyio
@@ -373,15 +401,18 @@ async def test_reads_need_view_rights_and_writes_edit_rights(client, seeded, swi
 
 
 @pytest.mark.anyio
-async def test_a_project_member_who_does_not_own_the_layer_gets_404_today(client, seeded, switched_on):
-    """As every route on get_layer: map_layers' row-level security shows a layer only to its owner
-    (EXAMPLE_FINDER_RULES.md, "Project editors and viewers"); a decision for Roger, pinned here."""
+async def test_project_members_work_on_an_inspection_they_did_not_upload_by_their_role(client, seeded, switched_on):
+    """A layer follows the roles of the projects it is in (alembic e7a1c4d9b2f3, Roger 2026-10-12): a viewer reads the
+    tower work, an editor also marks; someone outside the project still gets 404."""
     ids = await seeded.make(editors=(EDITOR,), viewers=(VIEWER,))
-    for user in (VIEWER, EDITOR):
-        _as(user)
-        assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 404
-        assert (await client.put(f"{_base(ids['layer'])}/photos/{SHA}/marks",
-                                 json={"part": DISH, "marks": MARKS})).status_code == 404
+    marks = f"{_base(ids['layer'])}/photos/{SHA}/marks"
+    _as(VIEWER)
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 200
+    assert (await client.put(marks, json={"part": DISH, "marks": MARKS})).status_code == 403
+    _as(EDITOR)
+    assert (await client.put(marks, json={"part": DISH, "marks": MARKS})).status_code == 200
+    _as(str(uuid.uuid4()))
+    assert (await client.get(f"{_base(ids['layer'])}/photos")).status_code == 404
 
 
 @pytest.mark.anyio

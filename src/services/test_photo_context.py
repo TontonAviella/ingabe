@@ -82,7 +82,8 @@ async def _looks(s3, metadata, plots, *, start: bool = False) -> photo_context.P
                                           retry_failed=False)
 
 
-async def test_crops_come_from_the_fingerprints_and_checks_and_the_survey_keeps_the_rest(photo):
+async def test_crops_come_from_the_fingerprints_and_checks_and_the_survey_keeps_the_rest(photo, monkeypatch):
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "1")  # the survey is off by default
     s3, metadata, plots, plot_set = photo
     await _named(s3, plot_set)
     _keep_survey(s3, metadata, plots)
@@ -167,7 +168,7 @@ async def test_switched_off_before_the_fingerprints_only_checked_plots_are_named
 
 async def test_switched_on_the_survey_starts_as_before(photo, monkeypatch):
     s3, metadata, plots, _ = photo
-    monkeypatch.delenv("DRONE_VISION_SURVEY", raising=False)
+    monkeypatch.setenv("DRONE_VISION_SURVEY", "1")
     started = []
 
     def start_survey(s3_, bucket, key, url, plots_, place, scope):

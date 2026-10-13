@@ -19,6 +19,26 @@ estimate, rough number, can't tell) is not decided here: that is
 `src/services/answer_levels.py` (`docs/rules/ANSWER_LEVELS_RULES.md`). This
 module finds; it shows no count and no level.
 
+## Trained detectors (2026-10-12, our own models since 2026-10-13)
+
+A target may also have a `detector` in `answer_levels_targets.json`: a model trained on that target. The finder uses it
+instead of the example finder, and the detector's view of the target (`answer_levels.detector`, `target_for`) has its
+own measurement, size floor (read at the picture's own size, from the test pictures' boxes) and highest level
+(FULL_REVIEW: a person checks every box). The marks are still asked for (the size gate); the detector does not use them
+otherwise. Two kinds:
+
+- **Our own models** (`own:...`, `src/services/own_detector.py`): RF-DETR small (Apache 2.0) trained by us on public data
+  on Kaggle's free GPU, exported to ONNX and run on this server's CPU (4 threads). **The photos stay on the server**; no
+  key. On by default; `OWN_DETECTORS=0` switches them off (the way back: towers use the example finder, power
+  parts answer "switched off"). Weights only from object storage (`own_detector.MODELS`: key and sha256), fetched once. They find the
+  Telecom and Power Grid parts. Measured with the ONNX files on held-out pictures (AP50): dishes 0.889, antennas 0.952,
+  radio units 0.562 (60 tower photos, same sites as training; the same recipe on a new site: antennas 0.858, dishes
+  0.807, radio units 0.545), pylons 0.989, insulators 0.869, bird nests 0.958 (40 power line photos). ONNX on CPU
+  matched the trained PyTorch model within 0.02 AP50 on every class.
+- **Roboflow-hosted** (`roboflow:...`, `src/services/hosted_detector.py`): only maize plants, SAM 3 with the typed prompt
+  "seedling" (0.741 on 36 INRAe squares). Used only while `HOSTED_FINDER` is on (default off) and `ROBOFLOW_API_KEY` is
+  set: **those photos are sent to Roboflow**. Off, maize uses the example finder as measured.
+
 ## The protocol (reproduced exactly)
 
 The finder was measured on 2026-10-11 with `scripts/finder_eval/run_sameimage.py`
@@ -267,16 +287,11 @@ are two pictures, because their finds are written in different coordinates.
 - 400 for a layer that is not a raster, 409 while its photo is being
   processed or when it is in no project, 422 for a request that cannot be
   answered (the reason in data terms), 502 when the photo could not be read.
-- **Gap, for Roger to decide:** the spec gives project editors EDIT and
-  project viewers VIEW rights, but today a project editor or viewer who does
-  not own the layer gets 404 from both routes: `map_layers` row-level
-  security (alembic `c1d2e3f4a5b9`) shows a layer only to its owner, so
-  `get_layer` finds nothing before any rights check runs. This is app-wide
-  (every route on `get_layer`), so it is not changed here. The route tests
-  pin today's 404 for a viewer who starts (`finder.calls == []`) and state the
-  spec as strict xfail tests (`test_spec_*`: viewer POST 403, editor POST 200,
-  viewer GET 200) that turn red when the gap is closed. Reading without
-  starting is tested in `view_only` mode.
+- **Project roles** (Roger, 2026-10-12; alembic `e7a1c4d9b2f3`): a layer
+  follows the roles of the projects whose live maps list it. Project viewers
+  read the finds (GET 200) and are refused a start (POST 403); project
+  editors start the finder (POST 200); anyone else gets 404. Tested in the
+  route tests and, at the database, in `src/test_rls_layers_by_project_role.py`.
 
 ## Measured run time and memory (2026-10-11)
 
