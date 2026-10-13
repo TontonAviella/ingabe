@@ -38,7 +38,7 @@ from typing import Any, Optional, Sequence
 from redis.exceptions import LockError
 
 from src.services import answer_levels, example_finder, photo_inspections, stored_files
-from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto
+from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto, PictureReadError
 from src.services.photo_inspections import PhotoFacts
 from src.services.shown_maps import SHOWN_MAPS_SQL
 
@@ -332,9 +332,12 @@ def own_lookalikes(part: str, record: PhotoRecord, given: Sequence[Box]) -> tupl
     return tuple(own)
 
 
-def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts) -> Optional[answer_levels.Answer]:
+def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts,
+                 found: Sequence[Box] = ()) -> Optional[answer_levels.Answer]:
     """How far an answer about this part may go on this photo, from answer_levels (the size gate on the marks, the
-    part's countability, the measured table); None when nothing is marked."""
+    part's countability, the measured table). A scan has no marks: the gate then reads the boxes it found and the
+    person kept, fixed or added (`found`). None when there are neither."""
+    marks = tuple(marks) or tuple(found)
     if not marks:
         return None
     try:  # the finder this server runs for the part: its trained detector, else YOLOE
@@ -380,7 +383,8 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
     suggestions = suggestions_of(job) if done else ()
     reviewed = own.review.reviewed()
     waiting = sum(1 for s in suggestions if s.id not in reviewed)
-    answer = level_answer(part, own.marks, photo)
+    found = tuple(s.box for s in suggestions) + tuple(b for _, b in own.review.fixed) + own.review.added
+    answer = level_answer(part, own.marks, photo, found)
     return PartWork(part=part, marks=own.marks, lookalike_marks=lookalike_marks(part, record), job=job,
                     suggestions=suggestions, review=own.review, counted_by_you=counted(own, done, waiting, answer),
                     waiting=waiting, answer=answer, review_saved=own.review_saved)
@@ -447,6 +451,147 @@ async def start_find(redis: Any, s3: Any, bucket: str, project_id: str, user_id:
                                                        job_id=job.job_id))
             await _save_record(s3, bucket, project_id, layer_id, record)
     return job
+
+
+# --------------------------------------------------------------------------- #
+# Scanning: a trained detector looks at every photo by itself, no marks needed
+# --------------------------------------------------------------------------- #
+
+SCAN_LOCK_TTL_S = 120  # the scan's lock, renewed while it runs: another worker takes over if this one stops
+SCAN_WAIT_S = 3.0  # how often the scan checks a job it started, or the finder's line when it was full
+SCAN_JOB_LIMIT_S = 900.0  # a job still not done after this is left: the next scan starts it again
+
+
+def scan_parts(parts: Sequence[str]) -> tuple[str, ...]:
+    """The parts this server finds with a trained detector: they are scanned without marks. The others (the example
+    finder) still need a person's marks first."""
+    out = []
+    for part in parts:
+        try:
+            if example_finder.settings(part).uses_detector:
+                out.append(part)
+        except FinderInputError:  # nothing can find it here (its detector switched off)
+            continue
+    return tuple(out)
+
+
+def _needs_scan(record: PhotoRecord, part: str) -> bool:
+    own = record.parts[part]
+    return not own.marks and own.job_id is None
+
+
+async def start_scan(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str, layer_id: str,
+                     layer_metadata: dict[str, Any], photo: PhotoFacts, part: str) -> Optional[example_finder.Job]:
+    """Start the trained detector on the whole photo for one part, when nobody marked it and nothing ran on it yet;
+    None when there is nothing to start. The job becomes the part's job, as a find from marks does."""
+    view = photo_inspections.view_of(photo)
+    if view is None:
+        return None
+    async with _PhotoLock(redis, project_id, layer_id, photo.sha256):
+        record = await load_record(s3, bucket, project_id, layer_id, photo.sha256)
+        if not _needs_scan(record, part):
+            return None
+        source = InspectionPhoto(s3=s3, bucket=bucket, layer_id=layer_id, layer_metadata=layer_metadata,
+                                 sha256=photo.sha256, view=view)
+        job = await example_finder.start(redis, s3, bucket, project_id, user_id, source, [], [], part)
+        await _save_record(s3, bucket, project_id, layer_id,
+                           record.with_part(part, PartRecord(job_id=job.job_id)))
+    return job
+
+
+async def _until_done(redis: Any, s3: Any, bucket: str, project_id: str, job: example_finder.Job) -> None:
+    waited = 0.0
+    while job.status in (example_finder.QUEUED, example_finder.RUNNING) and waited < SCAN_JOB_LIMIT_S:
+        await asyncio.sleep(SCAN_WAIT_S)
+        waited += SCAN_WAIT_S
+        job = await example_finder.status(redis, s3, bucket, project_id, job.job_id) or replace(
+            job, status=example_finder.FAILED)
+
+
+async def scan(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str, layer_id: str,
+               layer_metadata: dict[str, Any], photos: Sequence[PhotoFacts], parts: Sequence[str]) -> int:
+    """Scan every photo, in flight order, for every part a trained detector finds; one job at a time, so the
+    finder's line stays open to people. Returns how many jobs it started. A photo that cannot be scanned (no camera
+    angle, unreadable, unlike the measured photos) is left for a person, with the reason in the log."""
+    started = 0
+    for photo in sorted(photos, key=_flight_order):
+        for part in scan_parts(parts):
+            while True:
+                try:
+                    job = await start_scan(redis, s3, bucket, project_id, user_id, layer_id, layer_metadata, photo,
+                                           part)
+                    break
+                except example_finder.FinderBusy:
+                    await asyncio.sleep(SCAN_WAIT_S)
+                except (FinderInputError, PictureReadError, TowerConflict) as e:
+                    logger.info("scan of %s left %s on %s for a person: %s", layer_id, part, photo.filename, e)
+                    job = None
+                    break
+            if job is not None:
+                started += 1
+                await _until_done(redis, s3, bucket, project_id, job)
+    return started
+
+
+_scans: set[asyncio.Task] = set()
+
+
+def _scan_lock(redis: Any, project_id: str, layer_id: str) -> Any:
+    return redis.lock(f"{REDIS_PREFIX}:{project_id}:{layer_id}:scan", timeout=SCAN_LOCK_TTL_S, thread_local=False)
+
+
+async def ensure_scan(redis: Any, s3: Any, bucket: str, project_id: str, user_id: str, layer_id: str,
+                      layer_metadata: dict[str, Any], photos: Sequence[PhotoFacts], parts: Sequence[str]) -> bool:
+    """Start scanning the inspection in the background unless a scan of it already runs (any worker). Returns
+    whether a scan runs now. Safe to call on every visit: finished photos are skipped, so a stopped scan resumes."""
+    if not scan_parts(parts):
+        return False
+    lock = _scan_lock(redis, project_id, layer_id)
+    if not await lock.acquire(blocking=False):
+        return True
+
+    async def run() -> None:
+        async def keep() -> None:
+            while True:
+                await asyncio.sleep(SCAN_LOCK_TTL_S / 3)
+                try:
+                    await lock.reacquire()
+                except LockError:
+                    logger.warning("scan of %s lost its lock; another worker may take over", layer_id)
+                    return
+
+        keeper = asyncio.create_task(keep())
+        try:
+            started = await scan(redis, s3, bucket, project_id, user_id, layer_id, layer_metadata, photos, parts)
+            logger.info("scan of %s finished: %d finder jobs started", layer_id, started)
+        except Exception:
+            logger.exception("scan of %s stopped", layer_id)
+        finally:
+            keeper.cancel()
+            try:
+                await lock.release()
+            except LockError:
+                pass
+
+    task = asyncio.get_running_loop().create_task(run())
+    _scans.add(task)
+    task.add_done_callback(_scans.discard)
+    return True
+
+
+async def scan_running(redis: Any, project_id: str, layer_id: str) -> bool:
+    """Whether a scan of the inspection runs now, in any worker."""
+    return bool(await _scan_lock(redis, project_id, layer_id).locked())
+
+
+def scan_progress(inspection: "Inspection", parts: Sequence[str]) -> dict[str, int]:
+    """How far the scan is: photos where every scanned part has a finished job, of the photos it can scan."""
+    scanned = scan_parts(parts)
+    can = [p for p in inspection.photos if photo_inspections.view_of(p) is not None]
+    done = sum(1 for p in can if scanned and all(
+        (w := (inspection.work.get(p.sha256) or {}).get(part)) is not None and w.job is not None
+        and w.job.status in (example_finder.DONE, example_finder.FAILED) for part in scanned))
+    return {"photos": len(can), "scanned": done if scanned else 0}
 
 
 def _ids(given: Any, what: str) -> tuple[str, ...]:

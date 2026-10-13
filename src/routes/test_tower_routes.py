@@ -143,7 +143,8 @@ async def test_agriculture_marks_maize_plants_and_has_no_tower_cards(client, see
     ids = await seeded.make(industry="agriculture")
     _as(ids["owner"])
     photos = (await client.get(f"{_base(ids['layer'])}/photos")).json()
-    assert photos["parts"] == [{"id": "maize_seedling", "label": "Maize plant", "plural": "maize plants"}]
+    assert photos["parts"] == [{"id": "maize_seedling", "label": "Maize plant", "plural": "maize plants",
+                               "scanned": False}]  # HOSTED_FINDER off: the example finder, marks first
     assert await _every_route(client, ids["layer"]) == [200, 200, 422, 422, 422, 404, 404]
     work = (await client.get(f"{_base(ids['layer'])}/photos/{SHA}/work")).json()
     assert list(work["parts"]) == ["maize_seedling"]
@@ -490,3 +491,57 @@ async def _done_on(client, layer: str, sha: str, limit_s: float = 30.0) -> dict:
             return work
         await asyncio.sleep(0.1)
     raise AssertionError(f"the finder did not finish on {sha} in {limit_s} s")
+
+
+# --- The scan: trained detectors look at every photo by themselves -------------------------------------------------
+
+@pytest.mark.anyio
+async def test_a_scan_finds_every_part_without_marks_and_only_a_persons_review_counts(client, seeded, switched_on,
+                                                                                      monkeypatch):
+    """With our own detectors on, nobody draws first: the scan runs each one on every photo, in the background, and
+    each part's suggestions wait on its photo. A count still exists only once a person checked them."""
+    from src.services import own_detector
+
+    monkeypatch.setenv("OWN_DETECTORS", "1")
+    monkeypatch.setattr(tower_inspection, "SCAN_WAIT_S", 0.05)
+    seen = {"mw": [(500.0, 400.0, 620.0, 520.0, 0.9, 0)],
+            "antenna": [(800.0, 300.0, 860.0, 520.0, 0.8, 0), (900.0, 300.0, 960.0, 520.0, 0.7, 0)]}
+
+    def runner(model, cls, s3, bucket):
+        return lambda rgb, prompts, classes, imgsz, conf, max_det: list(seen.get(cls, []))
+
+    monkeypatch.setattr(own_detector, "runner", runner)
+    ids = await seeded.make()
+    _as(ids["owner"])
+    listed = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert {p["id"]: p["scanned"] for p in listed["parts"]}[DISH] is True
+    started = await client.post(f"{_base(ids['layer'])}/scan")
+    assert started.status_code == 200, started.text
+    assert set(started.json()) == {"running", "parts", "photos", "scanned"} and DISH in started.json()["parts"]
+    for _ in range(200):
+        state = (await client.get(f"{_base(ids['layer'])}/scan")).json()
+        if not state["running"] and state["scanned"] == state["photos"]:
+            break
+        await asyncio.sleep(0.05)
+    assert state["scanned"] == state["photos"] >= 1, state
+    work = (await client.get(f"{_base(ids['layer'])}/photos/{SHA}/work")).json()["parts"]
+    assert work[DISH]["marks"] == [] and len(work[DISH]["suggestions"]) == 1 and work[DISH]["waiting"] == 1
+    assert len(work[ANTENNA]["suggestions"]) == 2 and work[RADIO]["suggestions"] == []
+    assert work[DISH]["counted_by_you"] is None  # nothing is counted before a person checks
+    dish = work[DISH]["suggestions"][0]["id"]
+    reviewed = await client.put(f"{_base(ids['layer'])}/photos/{SHA}/review", json={"part": DISH, "kept": [dish]})
+    assert reviewed.status_code == 200 and reviewed.json()["counted_by_you"] == 1
+    again = await client.post(f"{_base(ids['layer'])}/scan")  # finished photos are not scanned twice
+    assert again.json()["scanned"] == again.json()["photos"]
+    assert switched_on.calls == []  # the example finder never ran
+
+
+@pytest.mark.anyio
+async def test_the_example_finder_still_needs_marks(client, seeded, switched_on):
+    """With our detectors off, nothing is scanned: the example finder (YOLOE) needs a person's examples first."""
+    ids = await seeded.make()
+    _as(ids["owner"])
+    listed = (await client.get(f"{_base(ids['layer'])}/photos")).json()
+    assert not any(p["scanned"] for p in listed["parts"])
+    state = (await client.post(f"{_base(ids['layer'])}/scan")).json()
+    assert state["running"] is False and state["parts"] == [] and state["scanned"] == 0

@@ -137,9 +137,40 @@ async def get_tower_photos(inspection: _Inspection = Depends(_viewed)) -> dict[s
                        "height": height, "taken_at": p.taken_at, "lat": p.lat, "lon": p.lon,
                        "relative_altitude_m": p.relative_altitude_m, "gimbal_pitch": p.gimbal_pitch,
                        "gimbal_yaw": p.gimbal_yaw})
-    parts = [{"id": p, "label": tower_inspection.PART_LABELS[p][0], "plural": tower_inspection.PART_LABELS[p][1]}
-             for p in inspection.parts]
+    scanned = set(tower_inspection.scan_parts(inspection.parts))
+    parts = [{"id": p, "label": tower_inspection.PART_LABELS[p][0], "plural": tower_inspection.PART_LABELS[p][1],
+              "scanned": p in scanned} for p in inspection.parts]
     return {"photos": photos, "parts": parts}
+
+
+async def _scan_state(inspection: _Inspection, running: bool) -> dict[str, Any]:
+    s3 = await get_async_s3_client()
+    loaded = await tower_inspection.load_inspection(get_async_redis(), s3, get_bucket_name(), inspection.project_id,
+                                                    inspection.layer.layer_id, inspection.layer.name or "",
+                                                    inspection.photos, inspection.parts)
+    return {"running": running, "parts": list(tower_inspection.scan_parts(inspection.parts)),
+            **tower_inspection.scan_progress(loaded, inspection.parts)}
+
+
+@router.post("/towers/layer/{layer_id}/scan", operation_id="scan_tower_photos")
+async def scan_tower_photos(inspection: _Inspection = Depends(_edited),
+                            session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Scan every photo with the trained detectors (no marks needed), in the background; safe to call on every
+    visit: a running scan is not started twice, finished photos are skipped. Returns the scan's progress."""
+    if not example_finder.finder_enabled():
+        raise HTTPException(404, "The example finder is switched off")
+    running = await tower_inspection.ensure_scan(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
+                                                 inspection.project_id, session.get_user_id(),
+                                                 inspection.layer.layer_id, inspection.layer.metadata_dict or {},
+                                                 inspection.photos, inspection.parts)
+    return await _scan_state(inspection, running)
+
+
+@router.get("/towers/layer/{layer_id}/scan", operation_id="get_tower_scan")
+async def get_tower_scan(inspection: _Inspection = Depends(_viewed)) -> dict[str, Any]:
+    """How far the scan of the inspection's photos is, and whether one runs now."""
+    running = await tower_inspection.scan_running(get_async_redis(), inspection.project_id, inspection.layer.layer_id)
+    return await _scan_state(inspection, running)
 
 
 @router.get("/towers/layer/{layer_id}/photos/{sha256}/work", operation_id="get_tower_photo_work")
