@@ -10,8 +10,10 @@ Rules: docs/rules/EXAMPLE_FINDER_RULES.md.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -59,6 +61,10 @@ MODELS = {
 
 _sessions: dict[str, Any] = {}
 _lock = threading.Lock()
+# The model's raw rows for the last pictures it read, by (model, picture): a scan asks one model for each of its
+# classes in turn (dishes, then antennas, then radio units), and the picture is read once.
+_RECENT = 16
+_recent: "OrderedDict[tuple[str, str], list[Row]]" = OrderedDict()
 
 
 def enabled() -> bool:
@@ -84,11 +90,26 @@ def runner(model: str, detector_class: str, s3: Any, bucket: str) -> Runner:
 
     def ask(rgb: np.ndarray, prompts: Sequence[Sequence[float]], classes: Sequence[int], imgsz: int, conf: float,
             max_det: int) -> list[Row]:
-        boxes, logits = session.run(None, {session.get_inputs()[0].name: _input(rgb, session.get_inputs()[0].shape[2])})
-        rows = [r for r in _rows(boxes[0], logits[0], rgb.shape[1], rgb.shape[0]) if r[5] == wanted and r[4] >= max(conf, CONFIDENCE)]
+        rows = [r for r in _read(model, session, rgb) if r[5] == wanted and r[4] >= max(conf, CONFIDENCE)]
         return [(x0, y0, x1, y1, score, 0) for x0, y0, x1, y1, score, _ in rows][:max_det]
 
     return ask
+
+
+def _read(model: str, session: Any, rgb: np.ndarray) -> list[Row]:
+    """Every (box, class) the model sees in the picture, best first; kept for the next class asked of it."""
+    key = (model, hashlib.blake2b(rgb.tobytes(), digest_size=16).hexdigest() + str(rgb.shape))
+    with _lock:
+        if key in _recent:
+            _recent.move_to_end(key)
+            return _recent[key]
+    boxes, logits = session.run(None, {session.get_inputs()[0].name: _input(rgb, session.get_inputs()[0].shape[2])})
+    rows = _rows(boxes[0], logits[0], rgb.shape[1], rgb.shape[0])
+    with _lock:
+        _recent[key] = rows
+        while len(_recent) > _RECENT:
+            _recent.popitem(last=False)
+    return rows
 
 
 def _session(model: str, spec: Model, s3: Any, bucket: str) -> Any:
