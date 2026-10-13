@@ -375,7 +375,7 @@ def test_power_lines_ask_about_the_line_and_its_nests_never_tower_equipment():
     assert nest["what"].startswith("Bird nests: at least 2 on one photo (DJI_0001.JPG)")
     assert nest["todo"] == POWER.defect_todo and "insulator" in nest["why"]
     learn = tower_cards.answer_card("learn_review", power, "owner")
-    assert "public line photos" in learn["what"] and "0.989" in learn["what"]  # pylons, by our own model
+    assert "public line photos" in learn["what"] and "0.146" in learn["what"]  # pylons, as measured at new sites
     with pytest.raises(KeyError):
         tower_cards.answer_card("camera", power, "owner")
 
@@ -423,3 +423,28 @@ def test_the_surroundings_card_reads_what_sam3_and_the_green_rule_found_on_photo
     assert [i["title"] for i in answer["items"]] == [down[0].filename, down[1].filename]  # most trees first
     assert "Buildings, erosion and the access road are not measured yet." in answer["what"]
     assert any("0.62" in b for b in answer["how_sure"]["because"])  # the measurement, read from site_surroundings
+
+
+def test_the_conductors_card_lists_the_photos_sam3_outlined_conductors_on(monkeypatch):
+    """Line checks: where SAM 3 ("power line") outlined conductors, photo by photo, with the measurement behind it;
+    nothing invented while the photos are looked at."""
+    from src.services import line_conductors
+
+    monkeypatch.setattr(line_conductors, "enabled", lambda: True)
+    waiting = tower_cards.Here(inspection=_inspection(PHOTOS, {}), earlier=NO_EARLIER, asset=POWER, conductors={})
+    assert "conductors" in {c["id"] for c in tower_cards.deck(waiting, "owner")["cards"]}
+    assert tower_cards.answer_card("conductors", waiting, "owner")["status"] == WORKING
+    two = [[0, 0], [10, 0], [10, 2]]
+    results = {PHOTOS[0].sha256: {"method": line_conductors.METHOD, "outlines": [two]},
+               PHOTOS[1].sha256: {"method": line_conductors.METHOD, "outlines": [two, two]},
+               PHOTOS[2].sha256: {"method": line_conductors.METHOD, "outlines": []}}
+    done = tower_cards.Here(inspection=_inspection(PHOTOS[:3], {}), earlier=NO_EARLIER, asset=POWER,
+                            conductors=results)
+    answer = tower_cards.answer_card("conductors", done, "owner")
+    assert answer["status"] == READY
+    assert answer["what"].startswith("SAM 3 outlined conductors on 2 of the 3 photos looked at; 1 photo shows none.")
+    assert [i["title"] for i in answer["items"]] == [PHOTOS[1].filename, PHOTOS[0].filename]  # most outlines first
+    assert "Sag, clearance to the ground" in answer["what"]
+    assert any("97%" in b and "83%" in b for b in answer["how_sure"]["because"])
+    telecom = {c["id"] for c in tower_cards.deck(here(), "owner")["cards"]}
+    assert "conductors" not in telecom

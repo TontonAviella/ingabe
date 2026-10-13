@@ -19,9 +19,9 @@ Rules (TOWERS_RULES.md):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from src.services import answer_levels, example_finder, site_surroundings, tower_inspection
+from src.services import answer_levels, example_finder, line_conductors, site_surroundings, tower_inspection
 from src.services.example_finder_pictures import FinderInputError
 from src.services.card_status import (
     CANT_TELL,
@@ -157,6 +157,7 @@ ASSETS = {
         industry="power_grid", thing="line", heading="Line checks", equipment=("power_pylon", "power_insulator"), defects=("power_nest",),
         cards={"defects": "Are there bird nests on the line?",
                "equipment": "What is on this line?",
+               "conductors": "Where do the conductors run on the photos?",
                "right_of_way": "Are trees or buildings too close to the line?",
                "insulators": "Are any insulators broken or flashed over?",
                "sag": "Is a conductor sagging too low?",
@@ -256,6 +257,7 @@ class Here:
     earlier: Earlier
     asset: Asset = DEFAULT_ASSET
     surroundings: Optional[dict[str, dict[str, Any]]] = None  # site_surroundings results by photo (None: not loaded)
+    conductors: Optional[dict[str, dict[str, Any]]] = None  # line_conductors results by photo (None: not loaded)
 
     @property
     def inventory(self) -> dict[str, PartInventory]:
@@ -284,6 +286,17 @@ def _names(names: list[str]) -> str:
 
 def _photo_url(inspection: Inspection, photo: PhotoFacts) -> str:
     return f"/api/layer/{inspection.layer_id}/photos/{photo.sha256}"
+
+
+def _analysed(photos: Sequence[PhotoFacts], done: Optional[dict[str, dict[str, Any]]], can_run: bool) -> str:
+    """The status of a card answered by one analysis of each photo (photo_analyses)."""
+    if not photos:
+        return CANT_TELL
+    if len(done or {}) >= len(photos):
+        return READY
+    if done:
+        return PARTLY
+    return WORKING if can_run else CANT_TELL
 
 
 def _item(inspection: Inspection, photo: PhotoFacts, detail: str) -> dict[str, Any]:
@@ -410,15 +423,10 @@ def _status(card_id: str, here: Here) -> str:
             return CANT_TELL if here.earlier.same_site else NEEDS_FLIGHT
         return READY if _anything_counted(inventory) else CANT_TELL
     if card_id == "surroundings":
-        down = site_surroundings.straight_down(here.inspection.photos)
-        done = here.surroundings or {}
-        if not down:
-            return CANT_TELL
-        if len(done) >= len(down):
-            return READY
-        if done:
-            return PARTLY
-        return WORKING if site_surroundings.enabled() else CANT_TELL
+        return _analysed(site_surroundings.straight_down(here.inspection.photos), here.surroundings,
+                         site_surroundings.enabled())
+    if card_id == "conductors":
+        return _analysed(line_conductors.readable(here.inspection.photos), here.conductors, line_conductors.enabled())
     if card_id == "defects":
         defects = here.defects
         if _anything_counted(defects):
@@ -484,6 +492,13 @@ def _preview(card_id: str, here: Here) -> str:
                     else "Trees are found by SAM 3, which is switched off on this server.")
         return (f"Trees cover {mean['trees']:.0%} of the ground in view, other vegetation {mean['other_vegetation']:.0%}"
                 f" ({_n(len(here.surroundings or {}), 'photo')}).")
+    if card_id == "conductors":
+        photos, done = line_conductors.readable(here.inspection.photos), here.conductors or {}
+        if not done:
+            return (f"Outlining the conductors on {_n(len(photos), 'photo')}…" if line_conductors.enabled()
+                    else "Conductors are outlined by SAM 3, which is switched off on this server.")
+        seen = sum(1 for r in done.values() if r["outlines"])
+        return f"Conductors in view on {seen} of {_n(len(done), 'photo')} looked at."
     if card_id == "defects":
         counted = [i for i in here.defects.values() if i.at_least]
         if counted:
@@ -864,6 +879,43 @@ def _surroundings(here: Here, audience: str) -> dict[str, Any]:
                    facts=facts, items=items)
 
 
+def _conductors(here: Here, audience: str) -> dict[str, Any]:
+    inspection = here.inspection
+    photos, done = line_conductors.readable(inspection.photos), here.conductors or {}
+    m = line_conductors.MEASURED
+    measured = (f"Measured on {m['dataset']}, {m['date']}: of the conductors people outlined, {m['found']:.0%} were "
+                f"within {m['tolerance_px']} px of SAM 3's outline, and {m['right']:.0%} of SAM 3's outline was on a "
+                f"conductor (pixel overlap {m['iou']:.2f})")
+    why = ("Knowing which photos show the conductors tells you whether the inspection covered every span, and which "
+           "photos to open to look at a span.")
+    gaps = "Sag, clearance to the ground, broken strands and trees near the conductors are not measured yet."
+    rows = [(p, done[p.sha256]) for p in photos if p.sha256 in done]
+    seen = sorted(((p, r) for p, r in rows if r["outlines"]), key=lambda pr: -len(pr[1]["outlines"]))
+    facts = [{"label": "Photos looked at", "value": f"{len(rows)} of {len(photos)}"},
+             {"label": "Photos with conductors in view", "value": str(len(seen))}]
+    items = [_item(inspection, p, _n(len(r["outlines"]), "conductor outline")) for p, r in seen[:LISTED_PHOTOS]]
+    if not rows:
+        what = ((f"Outlining the conductors on the {_n(len(photos), 'photo')}; the answer appears as each one is done."
+                 if line_conductors.enabled() else
+                 "Conductors are outlined by SAM 3 on Roboflow, which is switched off on this server, so nothing is "
+                 "measured.") + " " + gaps)
+        todo = "Come back in a few minutes." if line_conductors.enabled() else "Ask for SAM 3 to be switched on."
+    else:
+        none = len(rows) - len(seen)
+        what = (f"SAM 3 outlined conductors on {len(seen)} of the {_n(len(rows), 'photo')} looked at"
+                + (f"; {_n(none, 'photo')} {'shows' if none == 1 else 'show'} none" if none else "") + ". " + gaps)
+        todo = ("Open the photos listed to see the spans they cover; photos with no conductor in view do not show the "
+                "line itself." if audience == OWNER else
+                "Open the photos listed to look along each span; they are ordered by how many conductors are in view.")
+    sure = how_sure("low" if len(rows) < len(photos) else "medium", [
+        measured,
+        "Measured on photos from other countries' lines; a line here has not been checked against people's outlines",
+        "SAM 3 runs on Roboflow: the photos are sent there",
+    ], "Outlining the conductors on a few of your photos by hand would measure it on your line.")
+    return _answer("conductors", here, what=what, why=why, todo=todo, sure=sure, audience=audience, terms=[],
+                   facts=facts, items=items)
+
+
 def _finder_of(part: str) -> tuple[Optional[str], Optional[answer_levels.Target]]:
     """How this server finds a part (its words) and the measurement behind it; (None, None) when nothing can."""
     try:
@@ -990,6 +1042,7 @@ _ANSWERS = {
     "learn_review": _learn_review,
     "defects": _defects,
     "surroundings": _surroundings,
+    "conductors": _conductors,
 }
 
 
@@ -1080,9 +1133,11 @@ async def load_here(conn: Any, redis: Any, s3: Any, bucket: str, project_id: str
     asset = ASSETS[industry]
     surroundings = (await site_surroundings.load(s3, bucket, project_id, layer_id, photos)
                     if "surroundings" in asset.cards else None)
+    conductors = (await line_conductors.load(s3, bucket, project_id, layer_id, photos)
+                  if "conductors" in asset.cards else None)
     inspection = await tower_inspection.load_inspection(redis, s3, bucket, project_id, layer_id, name, photos,
                                                         tower_inspection.parts_for(industry))
     return Here(inspection=inspection,
                 earlier=await tower_inspection.earlier_inspection(conn, redis, s3, bucket, inspection,
                                                                   asset.equipment),
-                asset=asset, surroundings=surroundings)
+                asset=asset, surroundings=surroundings, conductors=conductors)

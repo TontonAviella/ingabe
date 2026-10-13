@@ -7,28 +7,20 @@ IoU 0.62 (found 84%, right 70%; the green rule alone 0.19); other vegetation, gr
 tree, IoU 0.65 (found 78%, right 79%). Buildings, roads and erosion are not measured.
 
 SAM 3 runs on Roboflow's hosted API (hosted_detector): only while HOSTED_FINDER is on, and the photo (shrunk to
-SEND_PX on its long side) then leaves this server. Each photo is analysed once; the result is kept in storage under
-its own prefix (never beside the photo work records, which tower_inspection lists by prefix).
+SEND_PX on its long side) then leaves this server. Each photo is analysed once (photo_analyses).
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw
-from redis.exceptions import LockError
 
-from src.services import answer_levels, hosted_detector, photo_inspections, stored_files
-from src.services.example_finder_pictures import InspectionPhoto, PictureReadError
+from src.services import answer_levels, hosted_detector, photo_analyses, photo_inspections
 from src.services.photo_inspections import PhotoFacts
-
-logger = logging.getLogger(__name__)
 
 METHOD = "sam3-tree+excess-green/v1"  # changes when the method does: results of another method are not reused
 TREE_PROMPT = "tree"
@@ -36,7 +28,6 @@ SAM3_CONFIDENCE = 0.3  # as measured
 GREEN_THRESHOLD = 0.05  # excess green 2G - R - B, on 0..1 channels, as measured
 SEND_PX = 1024  # the long side SAM 3 is sent (the measured tiles were 1024 px)
 STORE_PREFIX = "towers/surroundings/v1"
-LOCK_TTL_S = 120
 MEASURED = {
     "date": "2026-10-13",
     "dataset": "61 top-down drone tiles (Roboflow Tree and Vegetation by faiz-ansari, CC BY 4.0, Hisar, India)",
@@ -102,70 +93,26 @@ def analyse(rgb: np.ndarray) -> Ground:
     return ground(small, hosted_detector.sam3_polygons(small, TREE_PROMPT, SAM3_CONFIDENCE))
 
 
-def _key(project_id: str, layer_id: str, sha256: str) -> str:
-    return f"{STORE_PREFIX}/{project_id}/{layer_id}/{sha256}.json"
+def _result(rgb: np.ndarray) -> dict[str, Any]:
+    g = analyse(rgb).as_dict()
+    del g["method"]
+    return g
+
+
+JOB = photo_analyses.PhotoAnalysis(name="surroundings", method=METHOD, store_prefix=STORE_PREFIX,
+                                   select=straight_down, analyse=_result, enabled=enabled)
 
 
 async def load(s3: Any, bucket: str, project_id: str, layer_id: str,
                photos: Sequence[PhotoFacts]) -> dict[str, dict[str, Any]]:
     """The stored results of this method for the inspection's photos looking straight down, by photo."""
-    out: dict[str, dict[str, Any]] = {}
-    for p in straight_down(photos):
-        data = await stored_files.load_json(s3, bucket, _key(project_id, layer_id, p.sha256))
-        if data is not None and data.get("method") == METHOD:
-            out[p.sha256] = data
-    return out
-
-
-async def _analyse_photo(s3: Any, bucket: str, project_id: str, layer_id: str, layer_metadata: dict[str, Any],
-                         photo: PhotoFacts) -> None:
-    picture = await InspectionPhoto(s3=s3, bucket=bucket, layer_id=layer_id, layer_metadata=layer_metadata,
-                                    sha256=photo.sha256, view=answer_levels.NADIR).read()
-    result = await asyncio.to_thread(analyse, picture.pixels)
-    await s3.put_object(Bucket=bucket, Key=_key(project_id, layer_id, photo.sha256),
-                        Body=json.dumps(result.as_dict()).encode(), ContentType="application/json")
-
-
-_tasks: set[asyncio.Task] = set()
+    return await photo_analyses.load(JOB, s3, bucket, project_id, layer_id, photos)
 
 
 async def ensure(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, layer_metadata: dict[str, Any],
                  photos: Sequence[PhotoFacts]) -> bool:
-    """Analyse, in the background, every photo looking straight down that has no result yet; one run per inspection
-    across workers. Returns whether a run goes on now. Nothing runs while SAM 3 cannot be asked."""
-    if not enabled() or not straight_down(photos):
-        return False
-    lock = redis.lock(f"towers:v1:{project_id}:{layer_id}:surroundings", timeout=LOCK_TTL_S, thread_local=False)
-    if not await lock.acquire(blocking=False):
-        return True
-
-    async def run() -> None:
-        try:
-            done = await load(s3, bucket, project_id, layer_id, photos)
-            for photo in straight_down(photos):
-                if photo.sha256 in done:
-                    continue
-                try:
-                    await _analyse_photo(s3, bucket, project_id, layer_id, layer_metadata, photo)
-                except (hosted_detector.DetectorUnavailable, PictureReadError) as e:
-                    logger.info("surroundings of %s left %s: %s", layer_id, photo.filename, e)
-                try:
-                    await lock.reacquire()
-                except LockError:
-                    logger.warning("surroundings of %s lost its lock", layer_id)
-                    return
-        except Exception:
-            logger.exception("surroundings of %s stopped", layer_id)
-        finally:
-            try:
-                await lock.release()
-            except LockError:
-                pass
-
-    task = asyncio.get_running_loop().create_task(run())
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
-    return True
+    """Analyse, in the background, every photo looking straight down that has no result yet (photo_analyses)."""
+    return await photo_analyses.ensure(JOB, redis, s3, bucket, project_id, layer_id, layer_metadata, photos)
 
 
 def summary(results: dict[str, dict[str, Any]]) -> Optional[dict[str, float]]:
