@@ -21,7 +21,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
-from src.services import answer_levels, example_finder, line_conductors, site_surroundings, tower_inspection
+from src.services import (
+    answer_levels,
+    example_finder,
+    line_conductors,
+    photo_inspections,
+    site_surroundings,
+    tower_inspection,
+)
 from src.services.example_finder_pictures import FinderInputError
 from src.services.card_status import (
     CANT_TELL,
@@ -1065,6 +1072,105 @@ def answer_card(card_id: str, here: Here, audience: Optional[str]) -> dict[str, 
     if card_id not in _ANSWERS:
         raise KeyError(card_id)
     return _ANSWERS[card_id](here, reader)
+
+
+# --- One photo: what it can answer of each question ---------------------------------------------------------------
+
+# The cards that are about the whole inspection's workflow, not a question the photo screen asks.
+_NOT_A_PHOTO_QUESTION = ("photos_to_check", "camera_positions", "learn_review")
+# The parts each question lights up on the photo; the others light up none.
+_QUESTION_PARTS = {"equipment": "equipment", "changes": "equipment", "damage": "equipment", "defects": "defects",
+                   "alignment": "antennas"}
+DAYLIGHT_HOURS = range(6, 18)  # local hours taken as daylight for the obstruction light (the photo's own clock)
+CHECK = "needs_check"  # a photo-only status: suggestions wait on this photo
+
+
+def _photo_parts(here: Here, photo: PhotoFacts, parts: Sequence[str]) -> list[Any]:
+    work = here.inspection.work.get(photo.sha256, {})
+    return [work[p] for p in parts if p in work]
+
+
+def _parts_line(here: Here, photo: PhotoFacts, parts: Sequence[str]) -> tuple[Optional[str], str]:
+    """(photo status or None, the line) for parts found or marked on this photo."""
+    works = _photo_parts(here, photo, parts)
+    waiting = sum(w.waiting for w in works)
+    counted = [(w.part, w.counted_by_you) for w in works if w.counted_by_you is not None]
+    if waiting:
+        return CHECK, f"{_n(waiting, 'suggestion')} to check on this photo."
+    if counted:
+        words = ", ".join(f"{tower_inspection.noun(p)} {n}" for p, n in counted)
+        return READY, f"Counted by you on this photo: {words}."
+    if any(w.finding for w in works):
+        return WORKING, "The model is looking at this photo."
+    return None, ""
+
+
+def _photo_line(card_id: str, here: Here, photo: PhotoFacts) -> tuple[Optional[str], str]:
+    """(photo status or None, what this photo can tell about the question)."""
+    upcoming = _upcoming(card_id, here)
+    if card_id == "equipment":
+        status, line = _parts_line(here, photo, here.asset.equipment)
+        return status, line or f"No {_names([tower_inspection.noun(p) for p in here.asset.equipment])} found here."
+    if card_id == "defects":
+        status, line = _parts_line(here, photo, here.asset.defects)
+        if line:
+            return status, line
+        if "tower_bolt_missing" in here.asset.defects:
+            return None, ("Bolts are looked for only on a close-up where you mark one: on a wide photo a bolt is a "
+                          "few pixels.")
+        return None, f"No {_names([tower_inspection.noun(p) for p in here.asset.defects])} found here."
+    if card_id == "obstruction_light" and photo.taken_at:
+        when = photo.taken_at[11:16]
+        if photo.taken_at[11:13].isdigit() and int(photo.taken_at[11:13]) in DAYLIGHT_HOURS:
+            return None, f"Taken at {when}, in daylight: the light can only be judged on photos taken at dusk or night."
+        return None, f"Taken at {when}, after dark: reading the light from photos is not built yet."
+    if card_id == "alignment" and photo.gimbal_yaw is not None:
+        tilt = f", {abs(photo.gimbal_pitch):.0f}° down" if photo.gimbal_pitch is not None else ""
+        return None, (f"The camera pointed {tower_inspection.compass(photo.gimbal_yaw)} "
+                      f"({photo.gimbal_yaw % 360:.0f}°){tilt}; the antennas' own directions are not measured yet.")
+    if card_id == "surroundings":
+        if photo_inspections.view_of(photo) != answer_levels.NADIR:
+            tilt = f" {abs(photo.gimbal_pitch):.0f}°" if photo.gimbal_pitch is not None else ""
+            return None, (f"Tilted{tilt} down: the ground is seen at a slant. Trees and vegetation are measured on "
+                          "photos looking straight down.")
+        result = (here.surroundings or {}).get(photo.sha256)
+        if result is None:
+            return None, "Looks straight down: trees and vegetation are being measured."
+        return READY, (f"Trees cover {result['trees']:.0%} of this photo, other vegetation "
+                       f"{result['other_vegetation']:.0%}.")
+    if card_id == "conductors":
+        result = (here.conductors or {}).get(photo.sha256)
+        if result is None:
+            return None, "The conductors on this photo are not outlined yet."
+        found = len(result["outlines"])
+        return READY, f"SAM 3 outlined {_n(found, 'conductor')} here." if found else "No conductor in view here."
+    if card_id == "hot_spots":
+        return None, "An ordinary photo does not show heat."
+    if upcoming is not None:
+        return None, upcoming.preview
+    return None, _preview(card_id, here)
+
+
+def photo_questions(here: Here, photo: PhotoFacts, audience: Optional[str]) -> dict[str, Any]:
+    """The inspection's questions as the photo screen asks them for one photo: each with the inspection's status,
+    what this photo can tell, what would answer it (for a question not answerable yet) and the parts it lights up
+    ("equipment", "defects", "antennas" or none). In the deck's order for the reader."""
+    out = []
+    for card in deck(here, audience)["cards"]:
+        if card["id"] in _NOT_A_PHOTO_QUESTION:
+            continue
+        upcoming = _upcoming(card["id"], here)
+        photo_status, line = _photo_line(card["id"], here, photo)
+        status = photo_status or card["status"]
+        label = ("Needs your check" if status == CHECK else upcoming.label if upcoming is not None
+                 else STATUS_LABELS.get(status, ""))
+        out.append({"id": card["id"], "question": card["title"], "status": status, "status_label": label,
+                    "on_photo": line, "needs": upcoming.needs if upcoming is not None else None,
+                    "lights": _QUESTION_PARTS.get(card["id"])})
+    first = [o for o in out if o["status"] in (CHECK, READY)]
+    summary = (f"This photo can answer: {_names([o['question'].rstrip('?').lower() for o in first])}."
+               if first else "Nothing on this photo is ready to check yet.")
+    return {"summary": summary, "questions": out}
 
 
 # --- For Sage: the same facts as the cards -------------------------------------------------------------------------

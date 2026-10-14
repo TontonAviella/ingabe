@@ -37,7 +37,7 @@ from typing import Any, Optional, Sequence
 
 from redis.exceptions import LockError
 
-from src.services import answer_levels, example_finder, photo_inspections, stored_files
+from src.services import answer_levels, example_finder, part_outlines, photo_inspections, stored_files
 from src.services.example_finder_pictures import Box, FinderInputError, InspectionPhoto, PictureReadError
 from src.services.photo_inspections import PhotoFacts
 from src.services.shown_maps import SHOWN_MAPS_SQL
@@ -256,6 +256,7 @@ class Suggestion:
     id: str  # names the finder job, so an id from older marks is refused, never taken for another suggestion
     box: Box  # in the photo's own pixels, as shown
     score: float  # the finder's confidence, 0-1 (not a measured chance of being right)
+    outline: Optional[tuple[tuple[tuple[int, int], ...], ...]] = None  # part_outlines' outline; drawn, never counted
 
 
 @dataclass(frozen=True)
@@ -290,7 +291,9 @@ class PartWork:
             "marks": [list(b) for b in self.marks],
             "lookalike_marks": [list(b) for b in self.lookalike_marks],
             "job": None if self.job is None else {"job_id": self.job.job_id, "status": self.job.status},
-            "suggestions": [{"id": s.id, "box": list(s.box), "score": s.score} for s in self.suggestions],
+            "suggestions": [{"id": s.id, "box": list(s.box), "score": s.score,
+                             **({"outline": [[list(p) for p in poly] for poly in s.outline]} if s.outline else {})}
+                            for s in self.suggestions],
             "reviewed": self.review.as_dict(),
             "counted_by_you": self.counted_by_you,
             "waiting": self.waiting,
@@ -392,6 +395,10 @@ async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: P
     job = None if part in DEFECT_PARTS and not own.marks else await _job(redis, s3, bucket, project_id, own.job_id)
     done = job is not None and job.status == example_finder.DONE
     suggestions = suggestions_of(job, _min_score(part)) if done and job is not None else ()
+    if suggestions and job is not None:
+        outlines = await part_outlines.load(s3, bucket, project_id, job.job_id) or {}
+        suggestions = tuple(replace(s, outline=tuple(tuple((int(x), int(y)) for x, y in poly) for poly in outlines[s.id]))
+                            if outlines.get(s.id) else s for s in suggestions)
     reviewed = own.review.reviewed()
     waiting = sum(1 for s in suggestions if s.id not in reviewed)
     found = tuple(s.box for s in suggestions) + tuple(b for _, b in own.review.fixed) + own.review.added

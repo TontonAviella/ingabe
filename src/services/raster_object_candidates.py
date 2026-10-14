@@ -12,7 +12,7 @@ from typing import Any
 
 from shapely.geometry import shape
 
-from src.services import boxes
+from src.services import boxes, fastsam_model
 
 # Sample cap measured in docs/FASTSAM_EVALUATION.md (building F1 0.646
 # at 2 MP -> 0.729 at 4 MP on Cyampirita). MUNDI_RASTER_OBJECT_MAX_SAMPLE_PIXELS
@@ -20,11 +20,10 @@ from src.services import boxes
 DEFAULT_MAX_SAMPLE_PIXELS = 4_000_000
 MIN_SAMPLE_PIXELS = 10_000
 
-# Ultralytics model objects are not safe to call from several threads, and the
-# model is shared via _load_fastsam_model's cache; one 4 MP run is ~40 s of
-# CPU. Inference is serialized; a request that cannot start within this wait
-# (half the tool's 480 s FastSAM timeout) reports busy instead of queueing on.
-_FASTSAM_INFERENCE_LOCK = threading.Lock()
+# One FastSAM run at a time across the app (fastsam_model). A request that cannot
+# start within this wait (half the tool's 480 s FastSAM timeout) reports busy
+# instead of queueing on.
+_FASTSAM_INFERENCE_LOCK = fastsam_model.INFERENCE_LOCK
 _FASTSAM_LOCK_WAIT_SECONDS = 240.0
 
 _SUPPORTED_TARGETS = {
@@ -1402,37 +1401,11 @@ def _fastsam_imgsz(width: int, height: int) -> int:
 
 
 def _fastsam_weights_status() -> dict[str, Any]:
-    candidates = []
-    env_path = os.environ.get("MUNDI_FASTSAM_WEIGHTS")
-    if env_path:
-        candidates.append(Path(env_path))
-    project_root = Path(__file__).resolve().parents[2]
-    candidates.extend(
-        [
-            project_root / "FastSAM-s.pt",
-            Path.cwd() / "FastSAM-s.pt",
-            Path("/app/FastSAM-s.pt"),
-        ]
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return {
-                "available": True,
-                "path": str(candidate),
-                "size_bytes": candidate.stat().st_size,
-            }
-    return {
-        "available": False,
-        "reason": "FastSAM-s.pt not found; set MUNDI_FASTSAM_WEIGHTS or place it at the project root.",
-        "checked_paths": [str(path) for path in candidates],
-    }
+    return fastsam_model.weights_status()
 
 
-@lru_cache(maxsize=2)
 def _load_fastsam_model(weights_path: str) -> Any:
-    from ultralytics import FastSAM
-
-    return FastSAM(weights_path)
+    return fastsam_model.load(weights_path)
 
 
 def _write_features_to_geoparquet(

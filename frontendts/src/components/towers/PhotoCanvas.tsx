@@ -1,5 +1,5 @@
-import { Maximize, Minus, Plus } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Hand, Maximize, Minus, PenLine, Plus } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   type Box,
   boxFromCorners,
@@ -22,9 +22,11 @@ import {
 } from '@/lib/photoView';
 
 // One photo, zoomable and pannable, with boxes drawn over it in the ORIGINAL photo's pixels (src/lib/photoView.ts
-// does every conversion). Mouse, pen and touch all go through pointer events: one pointer draws a box (or pans with
-// the Move tool, or the middle button), two fingers pinch and pan, the wheel zooms around the pointer. Tapping a box
-// edge selects it; a selected box shows corner handles to fix it and can be dragged.
+// does every conversion). Mouse, pen and touch all go through pointer events: one pointer draws a box (the Draw
+// tool), pans (the Move tool, or the middle button) or pans and taps (the Tap tool: a tap without a drag names a
+// point); two fingers pinch and pan, the wheel zooms around the pointer. Tapping a box selects it; a selected box
+// shows corner handles to fix it and can be dragged. A box may carry its part's outline, drawn instead of the
+// rectangle, and the spotlight dims the photo around the boxes marked lit.
 
 export type BoxKind = 'mark' | 'lookalike' | 'suggestion' | 'kept' | 'fixed' | 'rejected' | 'added';
 
@@ -36,7 +38,17 @@ export interface CanvasBox {
   label?: string;
   selectable: boolean;
   editable: boolean;
+  /** The part's outline (polygons in the photo's pixels), drawn instead of the rectangle; the box stays what counts. */
+  outline?: number[][][];
+  /** The part's colour, instead of the kind's. */
+  color?: string;
+  /** The one being asked about now: drawn thicker. */
+  current?: boolean;
+  /** Stays bright under the spotlight. */
+  lit?: boolean;
 }
+
+export type CanvasTool = 'draw' | 'move' | 'tap';
 
 /** How each kind of box is drawn; widths and dashes are in screen pixels. */
 export const BOX_STYLE: Record<BoxKind, { stroke: string; width: number; dash?: number; fill: string; opacity?: number }> = {
@@ -82,6 +94,9 @@ export function PhotoCanvas({
   onSelect,
   onDraw,
   onChange,
+  onTap,
+  onToolChange,
+  spotlight = false,
   selectedControls,
 }: {
   url: string;
@@ -91,17 +106,24 @@ export function PhotoCanvas({
   alt: string;
   boxes: CanvasBox[];
   selected: string | null;
-  tool: 'draw' | 'move';
+  tool: CanvasTool;
   disabled: boolean;
   /** Centre the view on this box; a new nonce asks again. */
   focus: { box: Box; nonce: number } | null;
   onSelect: (key: string | null) => void;
   onDraw: (box: Box) => void;
   onChange: (key: string, box: Box) => void;
+  /** A tap without a drag with the Tap tool, at this point of the photo. */
+  onTap?: (point: Point) => void;
+  /** Offered where both drawing and moving make sense: a Draw / Move switch beside the zoom buttons. */
+  onToolChange?: (tool: 'draw' | 'move') => void;
+  /** Dim the photo around the boxes marked lit. */
+  spotlight?: boolean;
   /** Buttons shown next to the selected box. */
   selectedControls?: React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const maskId = useId();
   const [size, setSize] = useState<[number, number] | null>(null);
   const [view, setView] = useState<View | null>(null);
   const [shown, setShown] = useState<'loading' | 'ok' | 'turned' | 'failed'>('loading');
@@ -226,7 +248,7 @@ export function PhotoCanvas({
       }
       return;
     }
-    if (tool === 'move' || e.button === 1) {
+    if (tool !== 'draw' || e.button === 1) {
       gesture.current = { kind: 'pan', startView: v, fromScreen: p };
       return;
     }
@@ -268,6 +290,10 @@ export function PhotoCanvas({
     setDrawing(null);
     setLive(null);
     if (!g || !v || cancelled) return;
+    if (g.kind === 'pan' && tool === 'tap' && onTap && !isDrag(g.fromScreen, p)) {
+      onTap(clampPoint(toPhoto(v, p), width, height));
+      return;
+    }
     if (g.kind === 'draw') {
       const box = boxFromCorners(g.fromPhoto, toPhoto(v, p), width, height);
       if (isDrag(g.fromScreen, p) && hasSize(box)) onDraw(box);
@@ -294,7 +320,7 @@ export function PhotoCanvas({
       role="application"
       aria-label={alt}
       className="relative h-full w-full overflow-hidden touch-none select-none bg-[#0B0908]"
-      style={{ cursor: blocked ? 'default' : tool === 'move' ? 'grab' : 'crosshair' }}
+      style={{ cursor: blocked ? 'default' : tool === 'move' ? 'grab' : tool === 'tap' ? 'pointer' : 'crosshair' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={(e) => onPointerEnd(e, false)}
@@ -325,26 +351,84 @@ export function PhotoCanvas({
             viewBox={`0 0 ${width} ${height}`}
             aria-hidden="true"
           >
+            {spotlight && (
+              <>
+                <defs>
+                  <mask id={maskId}>
+                    <rect x={0} y={0} width={width} height={height} fill="white" />
+                    {boxes
+                      .filter((b) => b.lit)
+                      .map((b) =>
+                        b.outline?.length ? (
+                          b.outline.map((poly, i) => (
+                            <polygon key={`${b.key}-${i}`} points={poly.map((q) => q.join(',')).join(' ')} fill="black" />
+                          ))
+                        ) : (
+                          <rect
+                            key={b.key}
+                            x={b.box[0]}
+                            y={b.box[1]}
+                            width={b.box[2] - b.box[0]}
+                            height={b.box[3] - b.box[1]}
+                            fill="black"
+                          />
+                        ),
+                      )}
+                  </mask>
+                </defs>
+                <rect
+                  x={0}
+                  y={0}
+                  width={width}
+                  height={height}
+                  fill="#0B0908"
+                  fillOpacity={0.55}
+                  mask={`url(#${maskId})`}
+                  pointerEvents="none"
+                />
+              </>
+            )}
             {ordered.map((b) => {
               const box = live?.key === b.key ? live.box : b.box;
               const [x0, y0, x1, y1] = box;
               const style = BOX_STYLE[b.kind];
               const isSelected = b.key === selected;
               const movable = isSelected && b.editable;
+              const stroke = b.kind === 'rejected' ? style.stroke : (b.color ?? style.stroke);
+              const strokeWidth = px((b.current ? 4 : isSelected ? style.width + 1 : style.width) + (b.outline ? 0.5 : 0));
+              const dash = style.dash ? `${px(style.dash)} ${px(style.dash)}` : undefined;
+              const outlined = !!b.outline?.length && !live;
               return (
                 <g key={b.key}>
-                  <rect
-                    x={x0}
-                    y={y0}
-                    width={x1 - x0}
-                    height={y1 - y0}
-                    fill={style.fill}
-                    stroke={style.stroke}
-                    strokeWidth={px(isSelected ? style.width + 1 : style.width)}
-                    strokeDasharray={style.dash ? `${px(style.dash)} ${px(style.dash)}` : undefined}
-                    opacity={style.opacity}
-                    pointerEvents="none"
-                  />
+                  {outlined ? (
+                    b.outline?.map((poly, i) => (
+                      <polygon
+                        key={i}
+                        points={poly.map((q) => q.join(',')).join(' ')}
+                        fill={b.kind === 'rejected' ? 'none' : stroke}
+                        fillOpacity={b.current ? 0.2 : 0.1}
+                        stroke={stroke}
+                        strokeWidth={strokeWidth}
+                        strokeLinejoin="round"
+                        strokeDasharray={b.kind === 'rejected' ? dash : undefined}
+                        opacity={style.opacity}
+                        pointerEvents="none"
+                      />
+                    ))
+                  ) : (
+                    <rect
+                      x={x0}
+                      y={y0}
+                      width={x1 - x0}
+                      height={y1 - y0}
+                      fill={b.color && b.kind !== 'rejected' ? `${b.color}1A` : style.fill}
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                      strokeDasharray={b.kind === 'suggestion' && b.color ? undefined : dash}
+                      opacity={style.opacity}
+                      pointerEvents="none"
+                    />
+                  )}
                   {isSelected && (
                     <rect
                       x={x0 - px(3)}
@@ -367,7 +451,7 @@ export function PhotoCanvas({
                       fill="transparent"
                       stroke="transparent"
                       strokeWidth={px(EDGE_HIT_PX)}
-                      pointerEvents={movable ? 'all' : 'stroke'}
+                      pointerEvents={movable || b.outline ? 'all' : 'stroke'}
                       style={{ cursor: movable ? 'move' : 'pointer' }}
                     />
                   )}
@@ -436,6 +520,17 @@ export function PhotoCanvas({
       )}
 
       <div className="absolute right-3 bottom-3 z-10 flex flex-col gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
+        {onToolChange && tool !== 'tap' && (
+          <button
+            type="button"
+            aria-label={tool === 'draw' ? 'Move the photo instead of drawing' : 'Draw boxes'}
+            aria-pressed={tool === 'move'}
+            onClick={() => onToolChange(tool === 'draw' ? 'move' : 'draw')}
+            className="flex size-10 items-center justify-center rounded-full bg-[#17110E]/90 border border-white/10 text-[#F3EDE6] hover:bg-[#2A1F19] cursor-pointer"
+          >
+            {tool === 'draw' ? <Hand className="size-4" /> : <PenLine className="size-4" />}
+          </button>
+        )}
         <button
           type="button"
           aria-label="Zoom in"

@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from src.services.life_harness import life_harness_enabled
-from src.services.raster_object_candidates import _fastsam_weights_status
+from src.services.fastsam_model import weights_status as _fastsam_weights_status
 
 
 def build_runtime_audit() -> dict[str, Any]:

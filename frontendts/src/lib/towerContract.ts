@@ -89,6 +89,34 @@ export interface Suggestion {
   id: string;
   box: Box;
   score: number;
+  /** The part's outline (polygons in the photo's pixels), once the server has worked it out; drawn, never counted. */
+  outline?: number[][][];
+}
+
+/** POST .../photos/{sha256}/trace: the outline of a part the person tapped, to see before keeping it. */
+export interface Traced {
+  polygons: number[][][];
+  box: Box;
+}
+
+/** One of the inspection's questions as the photo screen asks it for one photo
+ * (GET .../photos/{sha256}/questions?audience=). `lights` names the parts it lights up on the photo. */
+export interface PhotoQuestion {
+  id: string;
+  question: string;
+  /** The inspection's status, or "needs_check" when suggestions wait on this photo. */
+  status: string;
+  status_label: string;
+  /** What this photo can tell about the question. */
+  on_photo: string;
+  /** What would answer it, for a question not answerable yet. */
+  needs: string | null;
+  lights: 'equipment' | 'defects' | 'antennas' | null;
+}
+
+export interface PhotoQuestions {
+  summary: string;
+  questions: PhotoQuestion[];
 }
 
 /** What the person decided about the suggestions: kept as found, rejected, kept with a corrected box, and missed

@@ -8,6 +8,7 @@ import {
   type PartWork,
   PHOTOS_TO_CHECK_AUDIENCE,
   PHOTOS_TO_CHECK_CARD,
+  type PhotoQuestions,
   type PhotoWork,
   type ReviewPayload,
   type ScanState,
@@ -15,6 +16,7 @@ import {
   type TowerCardAnswer,
   type TowerCards,
   type TowerPart,
+  type Traced,
 } from '@/lib/towerContract';
 import { anyJobActive } from '@/lib/towerReview';
 
@@ -101,7 +103,26 @@ export function useSaveReview(layerId: string, sha256: string) {
       setPart(payload.part, () => work);
       queryClient.invalidateQueries({ queryKey: ['tower-cards', layerId] });
       queryClient.invalidateQueries({ queryKey: ['tower-card-answer', layerId] });
+      queryClient.invalidateQueries({ queryKey: ['tower-photo-questions', layerId, sha256] });
     },
+  });
+}
+
+/** The inspection's questions for one photo, for the reader; none (404) where the industry has no cards. */
+export function usePhotoQuestions(layerId: string, sha256: string, audience: TowerAudience) {
+  return useQuery<PhotoQuestions, ServerError>({
+    queryKey: ['tower-photo-questions', layerId, sha256, audience],
+    queryFn: () => getJson<PhotoQuestions>(`${photoBase(layerId, sha256)}/questions?audience=${audience}`),
+    placeholderData: (previous) => previous,
+    staleTime: 30_000,
+    retry: retryFailedRequests,
+  });
+}
+
+/** Trace the part the person tapped; 422 says why nothing was traced, in the server's words. */
+export function useTrace(layerId: string, sha256: string) {
+  return useMutation<Traced, ServerError, { x: number; y: number }>({
+    mutationFn: (point) => sendJson<Traced>(`${photoBase(layerId, sha256)}/trace`, 'POST', point),
   });
 }
 

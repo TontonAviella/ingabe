@@ -6,7 +6,7 @@ import { PhotoMarking } from '@/components/towers/PhotoMarking';
 import { TowerCards } from '@/components/towers/TowerCards';
 import type { CardAnswerCore } from '@/lib/cardAnswer';
 import type { Box } from '@/lib/photoView';
-import type { PartWork, PhotoWork } from '@/lib/towerContract';
+import type { PartReview, PartWork, PhotoWork, TowerPart } from '@/lib/towerContract';
 import type { MapLayer } from '@/lib/types';
 import { allByText, byButton, byText, click, findButton, findRole, findText, mount, pointer, unmountAll } from '@/test/dom';
 import { type FakePhoto, towerServer } from '@/test/towerServer';
@@ -309,7 +309,7 @@ describe('marking screen: checking suggestions', () => {
   });
 });
 
-describe('marking screen: parts the trained models scan', () => {
+describe('photo screen: parts the trained models scan', () => {
   const SCANNED = [
     { id: 'tower_dish' as const, label: 'Microwave dish', plural: 'microwave dishes', scanned: true },
     { id: 'tower_antenna' as const, label: 'Panel antenna', plural: 'panel antennas', scanned: true },
@@ -324,38 +324,217 @@ describe('marking screen: parts the trained models scan', () => {
     counted_by_you: null,
     waiting: 0,
   };
-  const found = (n: number): PartWork => ({
+  const found = (n: number, letter = 'e'): PartWork => ({
     ...none,
-    job: { job_id: 'e'.repeat(64), status: 'done' },
-    suggestions: FINDS.slice(0, n).map((f, i) => ({ id: `s${i + 1}`, ...f })),
+    job: { job_id: letter.repeat(64), status: 'done' },
+    suggestions: FINDS.slice(0, n).map((f, i) => ({
+      id: `s${i + 1}`,
+      ...f,
+      outline: [
+        [
+          [f.box[0], f.box[1]],
+          [f.box[2], f.box[1]],
+          [f.box[2], f.box[3]],
+        ],
+      ],
+    })),
     waiting: n,
   });
 
-  it('opens on the part with suggestions waiting and asks only for a check, never for marks', async () => {
-    viewport();
-    const work: PhotoWork = { parts: { tower_dish: found(0), tower_antenna: found(2), tower_radio_unit: none } };
+  /** One scanned photo; its review answers as the real server counts (kept + fixed + added, once nothing waits). */
+  function scannedServer(work: PhotoWork) {
     routes[`GET ${WORK}`] = () => ({ status: 200, body: work });
-    mount(<PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} parts={SCANNED} scanning startIndex={0} onClose={vi.fn()} />);
+    routes[`PUT ${REVIEW}`] = (body) => {
+      const { part, ...reviewed } = body as { part: TowerPart } & PartReview;
+      const old = work.parts[part] as PartWork;
+      const decided = new Set([...reviewed.kept, ...reviewed.rejected, ...reviewed.fixed.map((f) => f.id)]);
+      const waiting = old.suggestions.filter((sg) => !decided.has(sg.id)).length;
+      const counted = waiting === 0 ? reviewed.kept.length + reviewed.fixed.length + reviewed.added.length : null;
+      const next: PartWork = { ...old, reviewed, waiting, counted_by_you: counted };
+      work.parts[part] = next;
+      return { status: 200, body: next };
+    };
+  }
+  const reviews = () => calls.filter((c) => c.method === 'PUT' && c.url === REVIEW).map((c) => c.body);
+  const open = (scanning = false) =>
+    mount(
+      <PhotoMarking
+        layerId={LAYER}
+        layerName="Mast 12"
+        photos={[PHOTO]}
+        parts={SCANNED}
+        scanning={scanning}
+        startIndex={0}
+        onClose={vi.fn()}
+      />,
+    );
 
-    await findText(/The model suggests 2 boxes to check: its surest guesses, not a count/, 'p');
+  it('asks about each suggestion zoomed in, keeps each answer as it is given, then shows what you counted', async () => {
+    viewport();
+    const work: PhotoWork = { parts: { tower_dish: found(0), tower_antenna: found(2), tower_radio_unit: found(1, 'd') } };
+    scannedServer(work);
+    open(); // no questions here (404): the photo opens on the check
+
+    await findText(/The model suggests 2 panel antennas and 1 radio unit here, and is not sure of any microwave dish/, 'p');
+    await findText('Is this a panel antenna?', 'h2');
+    expect(byText('Check 1 of 3', 'span')).not.toBeNull();
     expect(byButton(/Find the rest/)).toBeNull();
-    expect(byButton('Change marks')).toBeNull();
     expect(byText(/Draw a box around at least/)).toBeNull();
 
-    click(await findButton(/Radio unit/));
-    await findText(/Looking for radio units on this photo/, 'p');
-    click(await findButton(/Microwave dish/));
-    await findText(/The model is not sure of any microwave dish on this photo/, 'p');
+    click(await findButton(/^Yes Y$/));
+    await vi.waitFor(() => expect(reviews()[0]).toEqual({ part: 'tower_antenna', kept: ['s1'], rejected: [], fixed: [], added: [] }));
+    await findText('Check 2 of 3', 'span');
+    click(await findButton(/^No N$/));
+    await findText('Is this a radio unit?', 'h2');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'y' }));
+    await findText('Tap a part the model missed', 'h2');
+    await vi.waitFor(() =>
+      expect(reviews()).toContainEqual({ part: 'tower_antenna', kept: ['s1'], rejected: ['s2'], fixed: [], added: [] }),
+    );
+    expect(reviews()).toContainEqual({ part: 'tower_radio_unit', kept: ['s1'], rejected: [], fixed: [], added: [] });
+
+    click(await findButton(/Nothing missed: done/));
+    await findText('Counted by you on this photo', 'h2');
+    // The model found no dish: that part is counted once its (empty) review is saved, as the server rules.
+    expect(reviews()).toContainEqual({ part: 'tower_dish', kept: [], rejected: [], fixed: [], added: [] });
+    expect([
+      work.parts.tower_dish?.counted_by_you,
+      work.parts.tower_antenna?.counted_by_you,
+      work.parts.tower_radio_unit?.counted_by_you,
+    ]).toEqual([0, 1, 1]);
   });
 
-  it('a photo the scan could not look at falls back to one mark and a find', async () => {
+  it('a part the model missed is tapped, its traced outline shown first, then kept as an added box', async () => {
     viewport();
-    const work: PhotoWork = { parts: { tower_dish: none, tower_antenna: none, tower_radio_unit: none } };
-    routes[`GET ${WORK}`] = () => ({ status: 200, body: work });
-    mount(<PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} parts={SCANNED} startIndex={0} onClose={vi.fn()} />);
+    const work: PhotoWork = { parts: { tower_dish: found(0), tower_antenna: found(0), tower_radio_unit: found(0, 'd') } };
+    scannedServer(work);
+    const TRACE = `${photoUrl(SHA)}/trace`;
+    routes[`POST ${TRACE}`] = (body) => {
+      const { x, y } = body as { x: number; y: number };
+      if (x > 1500)
+        return { status: 422, body: { detail: 'Nothing was traced there. Tap the middle of the part, or draw a box around it.' } };
+      return {
+        status: 200,
+        body: {
+          polygons: [
+            [
+              [x - 20, y - 30],
+              [x + 20, y - 30],
+              [x + 20, y + 30],
+            ],
+          ],
+          box: [x - 20, y - 30, x + 20, y + 30],
+        },
+      };
+    };
+    open();
+    await findText('Tap a part the model missed', 'h2');
+    click(await findButton(/Panel antenna/));
+    const canvas = await loadedCanvas();
+    pointer(canvas, 'pointerdown', 300, 200);
+    pointer(canvas, 'pointerup', 300, 200);
+    await findText(/Is the white outline the panel antenna\?/);
+    expect(called('POST', TRACE)?.body).toEqual({ x: 600, y: 400 });
+    click(await findButton(/Keep it/));
+    await vi.waitFor(() =>
+      expect(reviews()).toContainEqual({ part: 'tower_antenna', kept: [], rejected: [], fixed: [], added: [[580, 370, 620, 430]] }),
+    );
 
-    await findText(/This photo was not scanned for microwave dishes/, 'p');
+    pointer(canvas, 'pointerdown', 900, 100);
+    pointer(canvas, 'pointerup', 900, 100);
+    expect((await findRole('alert')).textContent).toBe('Nothing was traced there. Tap the middle of the part, or draw a box around it.');
+
+    click(await findButton(/Done with this photo/));
+    await findText('Counted by you on this photo', 'h2');
+    expect(work.parts.tower_antenna?.counted_by_you).toBe(1);
+  });
+
+  it('a photo the scan could not look at offers one mark and a find', async () => {
+    viewport();
+    scannedServer({ parts: { tower_dish: none, tower_antenna: none, tower_radio_unit: none } });
+    open();
+    await findText(/This photo was not scanned for microwave dishes or panel antennas or radio units/, 'p');
+    click(await findButton(/Mark a microwave dish/));
     await findText('0 marked · 1 more to find the rest', 'span');
+  });
+
+  it('opens on the questions, says what this photo tells, lights a question up and answers it for the reader', async () => {
+    viewport();
+    scannedServer({ parts: { tower_dish: found(0), tower_antenna: found(1), tower_radio_unit: found(0, 'd') } });
+    const question = (
+      id: string,
+      q: string,
+      status: string,
+      label: string,
+      onPhoto: string,
+      needs: string | null,
+      lights: string | null,
+    ) => ({
+      id,
+      question: q,
+      status,
+      status_label: label,
+      on_photo: onPhoto,
+      needs,
+      lights,
+    });
+    const asked = (audience: string) => ({
+      summary: audience === 'owner' ? 'This photo can answer: what is on the tower.' : 'For the technician: what is on the tower.',
+      questions: [
+        question(
+          'equipment',
+          'What is on the tower?',
+          'needs_check',
+          'Needs your check',
+          '1 suggestion to check on this photo.',
+          null,
+          'equipment',
+        ),
+        question(
+          'obstruction_light',
+          'Is the obstruction light working?',
+          'needs_flight',
+          'Needs night photos',
+          'Taken at 10:31, in daylight: the light can only be judged on photos taken at dusk or night.',
+          'Photos of the top of the tower taken at dusk or at night.',
+          null,
+        ),
+      ],
+    });
+    routes[`GET ${photoUrl(SHA)}/questions?audience=owner`] = () => ({ status: 200, body: asked('owner') });
+    routes[`GET ${photoUrl(SHA)}/questions?audience=technician`] = () => ({ status: 200, body: asked('technician') });
+    routes[`GET /api/towers/layer/${LAYER}/cards/obstruction_light?audience=owner`] = () => ({
+      status: 200,
+      body: {
+        id: 'obstruction_light',
+        title: 'Is the obstruction light working?',
+        status: 'needs_flight',
+        preview: '',
+        what: 'Not answered yet.',
+        why: 'It is a legal requirement and keeps aircraft clear of the tower.',
+        todo: 'What it needs: photos taken at dusk.',
+        how_sure: { level: 'low', label: 'Low', bars: 1, because: ['Not measured yet'], surer: null },
+        facts: [],
+        items: [],
+        progress: null,
+      },
+    });
+    open();
+
+    await findText('This photo can answer: what is on the tower.', 'p');
+    expect(byText(/Taken at 10:31, in daylight/)).not.toBeNull();
+    expect(byText('Needs night photos')).not.toBeNull();
+    click(await findButton(/Is the obstruction light working\?/));
+    await findText('On this photo', 'h3');
+    await findText('It is a legal requirement and keeps aircraft clear of the tower.', 'p');
+    expect(byText('Photos of the top of the tower taken at dusk or at night.', 'p')).not.toBeNull();
+
+    click(await findButton('Technician'));
+    await vi.waitFor(() => expect(called('GET', `${photoUrl(SHA)}/questions?audience=technician`)).toBeDefined());
+    click(await findButton(/All questions/));
+    await findText('For the technician: what is on the tower.', 'p');
+    click(await findButton(/What is on the tower\?/));
+    await findText('Is this a panel antenna?', 'h2');
   });
 });
 
@@ -511,9 +690,8 @@ describe('tower cards panel', () => {
     expect(byButton('Owner')).toBeNull();
     click(await findButton(/Check photos/));
     await findText(/^Photo 1 of 1/);
-    expect(await findButton(/Maize plant/)).not.toBeNull();
+    await findText('Mark maize plants', 'h2');
     expect(byButton(/Microwave dish/)).toBeNull();
-    expect(byText(/Check tower photos/)).toBeNull();
   });
 
   it('"Check photos" says the server\'s words when every photo is checked', async () => {
