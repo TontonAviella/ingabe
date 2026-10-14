@@ -49,7 +49,9 @@ function popupContent(b: Bubble): HTMLElement {
 function usePinned(map: MLMap | null, bubbles: Bubble[]) {
   useEffect(() => {
     if (!map || bubbles.length === 0) return;
-    const popup = new Popup({ className: 'close-look-popup', closeButton: true, maxWidth: '320px', offset: 30 });
+    // Opens above its bubble; the map first slides the bubble low on the screen, so the pop-up has room above it and
+    // stays clear of the chat box and the panels.
+    const popup = new Popup({ className: 'close-look-popup', closeButton: true, maxWidth: '320px', offset: 58, anchor: 'bottom' });
     const markers = bubbles.map((b) => {
       const node = el('button', 'close-look-bubble');
       node.setAttribute('type', 'button');
@@ -62,6 +64,7 @@ function usePinned(map: MLMap | null, bubbles: Bubble[]) {
       if (b.badge) node.append(el('span', 'close-look-badge', b.badge));
       node.addEventListener('click', (e) => {
         e.stopPropagation();
+        map.easeTo({ center: [b.lon, b.lat], offset: [0, Math.round(map.getContainer().clientHeight * 0.3)], duration: 400 });
         popup.setLngLat([b.lon, b.lat]).setDOMContent(popupContent(b)).addTo(map);
       });
       return new Marker({ element: node, anchor: 'bottom' }).setLngLat([b.lon, b.lat]).addTo(map);
