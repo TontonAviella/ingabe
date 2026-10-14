@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from src.dependencies.session import LegacyUserContext, ServiceUserContext, verify_session_required
-from src.services import example_finder, tower_cards, tower_inspection
+from src.services import example_finder, fastsam_model, part_outlines, tower_cards, tower_inspection
 from src.services.test_example_finder import RecordedModel, _redis
 from src.wsgi import app
 from test_fixtures.towers import MARKS, SHA, Inspections, admin, sha_of, tower_facts, variant
@@ -31,6 +31,7 @@ def _example_finder_for_towers(monkeypatch):
     """These tests run the example finder (YOLOE) on tower photos: our own detectors are switched off here, as the way
     back does (OWN_DETECTORS=0)."""
     monkeypatch.setenv("OWN_DETECTORS", "0")
+    monkeypatch.setenv("PART_OUTLINES", "0")  # FastSAM per test worker runs the test machine out of memory
 
 
 @pytest.fixture
@@ -545,3 +546,46 @@ async def test_the_example_finder_still_needs_marks(client, seeded, switched_on)
     assert not any(p["scanned"] for p in listed["parts"])
     state = (await client.post(f"{_base(ids['layer'])}/scan")).json()
     assert state["running"] is False and state["parts"] == [] and state["scanned"] == 0
+
+
+@pytest.mark.anyio
+async def test_suggestions_get_outlines_a_tap_is_traced_and_a_photo_answers_the_questions(client, seeded, switched_on,
+                                                                                         monkeypatch):
+    """FastSAM replaced: the outlines are worked out once in the background and come back with the suggestions; a tap
+    is traced, a tap that traces nothing or falls outside the photo says why; the photo's questions follow the
+    contract."""
+    monkeypatch.setenv("PART_OUTLINES", "1")
+    monkeypatch.setattr(fastsam_model, "weights_status", lambda: {"available": True, "path": "fake.pt"})
+    monkeypatch.setattr(part_outlines, "outline_boxes", lambda rgb, boxes: [
+        [[[int(b[0]), int(b[1])], [int(b[2]), int(b[1])], [int(b[2]), int(b[3])]]] for b in boxes])
+    monkeypatch.setattr(part_outlines, "trace", lambda rgb, x, y: part_outlines.Traced(
+        polygons=[[[1, 1], [9, 1], [9, 9]]], box=(1.0, 1.0, 9.0, 9.0)) if x < 600 else None)
+    ids = await seeded.make()
+    _as(ids["owner"])
+    photo = f"{_base(ids['layer'])}/photos/{SHA}"
+    assert (await client.put(f"{photo}/marks", json={"part": DISH, "marks": MARKS})).status_code == 200
+    assert (await client.post(f"{photo}/find", json={"part": DISH})).status_code == 200
+    work = await _done(client, ids["layer"])
+    deadline = time.monotonic() + 15
+    while not any("outline" in s for s in work["suggestions"]) and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+        work = (await client.get(f"{photo}/work")).json()["parts"][DISH]
+    first = work["suggestions"][0]
+    x0, y0, x1, y1 = (int(v) for v in first["box"])
+    assert first["outline"] == [[[x0, y0], [x1, y0], [x1, y1]]]
+
+    traced = await client.post(f"{photo}/trace", json={"x": 100, "y": 100})
+    assert traced.status_code == 200, traced.text
+    assert traced.json() == {"polygons": [[[1, 1], [9, 1], [9, 9]]], "box": [1.0, 1.0, 9.0, 9.0]}
+    missed = await client.post(f"{photo}/trace", json={"x": 700, "y": 100})
+    assert missed.status_code == 422 and "Nothing was traced there" in missed.json()["detail"]
+    outside = await client.post(f"{photo}/trace", json={"x": 5000, "y": 100})
+    assert outside.status_code == 422 and "outside the photo" in outside.json()["detail"]
+
+    asked = await client.get(f"{photo}/questions?audience=technician")
+    assert asked.status_code == 200, asked.text
+    assert set(asked.json()) == {"summary", "questions"}
+    assert all(set(q) == {"id", "question", "status", "status_label", "on_photo", "needs", "lights"}
+               for q in asked.json()["questions"])
+    equipment = next(q for q in asked.json()["questions"] if q["id"] == "equipment")
+    assert equipment["status"] == "needs_check" and equipment["on_photo"].endswith("to check on this photo.")

@@ -27,9 +27,10 @@ from src.services import (
     example_finder,
     example_finder_pictures,
     industry,
+    line_conductors,
+    part_outlines,
     photo_context,
     photo_inspections,
-    line_conductors,
     site_surroundings,
     tower_cards,
     tower_inspection,
@@ -187,9 +188,16 @@ async def get_tower_scan(inspection: _Inspection = Depends(_viewed)) -> dict[str
 async def get_tower_photo_work(sha256: str, inspection: _Inspection = Depends(_viewed)) -> dict[str, Any]:
     """Every part's work on one photo: marks, look-alike marks, the finder job, its suggestions, the review, what
     is counted by you and how many suggestions wait."""
-    works = await tower_inspection.photo_work(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
-                                              inspection.project_id, inspection.layer.layer_id,
-                                              _photo(inspection, sha256), inspection.parts)
+    photo = _photo(inspection, sha256)
+    redis, s3 = get_async_redis(), await get_async_s3_client()
+    works = await tower_inspection.photo_work(redis, s3, get_bucket_name(), inspection.project_id,
+                                              inspection.layer.layer_id, photo, inspection.parts)
+    view = photo_inspections.view_of(photo)
+    for work in works.values():  # outlines of the suggestions shown, worked out once in the background
+        if view and work.job and work.suggestions and not any(s.outline for s in work.suggestions):
+            await part_outlines.ensure(redis, s3, get_bucket_name(), inspection.project_id, inspection.layer.layer_id,
+                                       inspection.layer.metadata_dict or {}, photo.sha256, view, work.job.job_id,
+                                       [(s.id, s.box) for s in work.suggestions])
     return {"parts": {part: work.as_dict() for part, work in works.items()}}
 
 
@@ -266,6 +274,35 @@ async def find_tower_parts(
     return {"job_id": job.job_id, "status": job.status}
 
 
+class TraceBody(BaseModel):
+    x: float = Field(description="where the person tapped, in the photo's own pixels")
+    y: float
+
+
+@router.post("/towers/layer/{layer_id}/photos/{sha256}/trace", operation_id="trace_tower_part")
+@heavy_limit
+async def trace_tower_part(request: Request, sha256: str, body: TraceBody,
+                           inspection: _Inspection = Depends(_edited),
+                           session: UserContext = Depends(_limit_per_user)) -> dict[str, Any]:
+    """The outline of the part the person tapped (FastSAM), for them to see before they keep it: its polygons and
+    the box around it, in the photo's own pixels. 422 when nothing was traced there (or only the background), 503
+    while FastSAM is busy or missing."""
+    try:
+        traced = await part_outlines.trace_photo(await get_async_s3_client(), get_bucket_name(),
+                                                 inspection.layer.layer_id, inspection.layer.metadata_dict or {},
+                                                 _photo(inspection, sha256), body.x, body.y)
+    except example_finder_pictures.FinderInputError as e:
+        raise HTTPException(422, str(e)) from None
+    except part_outlines.OutlinerUnavailable as e:
+        raise HTTPException(503, str(e)) from None
+    except example_finder_pictures.PictureReadError as e:
+        logger.warning("trace on layer %s photo %s: %s", inspection.layer.layer_id, sha256, e)
+        raise HTTPException(502, "The photo could not be read; try again") from None
+    if traced is None:
+        raise HTTPException(422, "Nothing was traced there. Tap the middle of the part, or draw a box around it.")
+    return {"polygons": traced.polygons, "box": list(traced.box)}
+
+
 @router.put("/towers/layer/{layer_id}/photos/{sha256}/review", operation_id="put_tower_review")
 async def put_tower_review(sha256: str, body: ReviewBody,
                            inspection: _Inspection = Depends(_edited)) -> dict[str, Any]:
@@ -294,6 +331,16 @@ def _check_audience(audience: Optional[str]) -> str:
         return tower_cards.check_audience(audience)
     except tower_cards.UnknownAudience as e:
         raise HTTPException(422, str(e)) from None
+
+
+@router.get("/towers/layer/{layer_id}/photos/{sha256}/questions", operation_id="get_tower_photo_questions")
+async def get_tower_photo_questions(sha256: str, audience: Optional[str] = None,
+                                    inspection: _Inspection = Depends(_with_cards),
+                                    session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """The inspection's questions for one photo: each with its status, what this photo can tell and the parts it
+    lights up (tower_cards.photo_questions)."""
+    photo = _photo(inspection, sha256)
+    return tower_cards.photo_questions(await _here(inspection, session), photo, _check_audience(audience))
 
 
 @router.get("/towers/layer/{layer_id}/cards", operation_id="get_tower_cards")

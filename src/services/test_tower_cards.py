@@ -448,3 +448,30 @@ def test_the_conductors_card_lists_the_photos_sam3_outlined_conductors_on(monkey
     assert any("97%" in b and "83%" in b for b in answer["how_sure"]["because"])
     telecom = {c["id"] for c in tower_cards.deck(here(), "owner")["cards"]}
     assert "conductors" not in telecom
+
+
+def test_the_photo_screen_asks_the_inspections_questions_for_one_photo():
+    """One photo's answers: its own suggestions to check, the hour it was taken, where the camera pointed, whether it
+    looks straight down; the inspection's workflow cards are not questions; what would answer the rest is said."""
+    photo = PHOTOS[2]  # 4 dish suggestions wait on it; taken 14:03, the camera facing 180°, 30° down
+    asked = tower_cards.photo_questions(here(OPEN), photo, "owner")
+    by = {q["id"]: q for q in asked["questions"]}
+    assert not {"photos_to_check", "camera_positions", "learn_review"} & set(by)
+    assert set(by) == set(tower_cards.ASSETS["telecom"].cards) - {"photos_to_check", "camera_positions", "learn_review"}
+    equipment = by["equipment"]
+    assert (equipment["status"], equipment["status_label"], equipment["lights"]) == (
+        tower_cards.CHECK, "Needs your check", "equipment")
+    assert equipment["on_photo"] == "4 suggestions to check on this photo."
+    assert by["obstruction_light"]["on_photo"].startswith("Taken at 14:03, in daylight")
+    assert f"pointed {tower_inspection.compass(180.0)} (180°), 30° down" in by["alignment"]["on_photo"]
+    assert by["alignment"]["lights"] == "antennas"
+    assert by["surroundings"]["on_photo"].startswith("Tilted 30° down: the ground is seen at a slant")
+    assert by["defects"]["on_photo"].startswith("Bolts are looked for only on a close-up where you mark one")
+    assert by["hot_spots"]["on_photo"] == "An ordinary photo does not show heat." and by["hot_spots"]["needs"]
+    assert by["equipment"]["needs"] is None
+    assert asked["summary"] == "This photo can answer: what is on the tower, against the tenancy contracts."
+    night = tower_cards.photo_questions(here(OPEN), replace(photo, taken_at="2026-10-09T19:40:00"), "owner")
+    assert {q["id"]: q for q in night["questions"]}["obstruction_light"]["on_photo"].startswith("Taken at 19:40, after dark")
+    nothing = tower_cards.photo_questions(here(), photo, "owner")
+    assert {q["id"]: q for q in nothing["questions"]}["equipment"]["on_photo"].startswith("No ")
+    assert nothing["summary"] == "Nothing on this photo is ready to check yet."

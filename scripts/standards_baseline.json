@@ -117,7 +117,6 @@
     "private-import|src/services/legacy_tool_shim.py|src.routes.rwanda_routes._lookup_admin_bbox": 1,
     "private-import|src/services/legacy_tool_shim.py|src.services.brain_embeddings._get_embeddings": 1,
     "private-import|src/services/legacy_tool_shim.py|src.services.isdasoil_service._cog_url": 1,
-    "private-import|src/services/runtime_audit.py|src.services.raster_object_candidates._fastsam_weights_status": 1,
     "private-import|src/services/sar_ndvi.py|src.services.deafrica_stac._cached_cropland": 1,
     "private-import|src/services/sar_ndvi.py|src.services.deafrica_stac._round_bbox": 1,
     "private-import|src/services/satellite_analytics.py|src.services.deafrica_stac._bbox_from_geojson": 1,
