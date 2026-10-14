@@ -4,6 +4,7 @@ import { ArrowLeft, Check, ChevronLeft, ChevronRight, LoaderCircle, ScanSearch, 
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { PANEL_FONT } from '@/components/CardAnswer';
 import { BOX_STYLE, type BoxKind, type CanvasBox, type CanvasTool, PhotoCanvas } from '@/components/towers/PhotoCanvas';
+import { usePhotoCloseLook } from '@/hooks/useCloseLook';
 import {
   photosToCheckNow,
   useFindTheRest,
@@ -17,8 +18,10 @@ import {
 import { type DeckItem, deckOf, litParts, PART_COLOR, scoreWords, suggestedLine, unanswered } from '@/lib/photoCheck';
 import type { Box, Point } from '@/lib/photoView';
 import {
+  type CloseLookRegion,
   type InspectionPhoto,
   type PartLabel,
+  type PhotoCloseLook,
   type PhotoQuestion,
   TOWER_AUDIENCES,
   TOWER_PARTS,
@@ -174,16 +177,103 @@ function ReaderSwitch({ audience, onChange }: { audience: TowerAudience; onChang
 type View = { kind: 'questions' } | { kind: 'question'; id: string } | { kind: 'check' } | { kind: 'part'; part: TowerPart };
 type Step = 'check' | 'missed' | 'done';
 
+/** Which of the close look's worries answers each question of the photo screen. */
+const WORRY_OF: Record<string, string> = {
+  equipment: 'equipment',
+  defects: 'structure',
+  changes: 'theft_tampering',
+  alignment: 'alignment',
+  damage: 'damage',
+  hot_spots: 'hot_spots',
+  obstruction_light: 'obstruction_light',
+  surroundings: 'surroundings',
+};
+/** The questions whose close look shows its close-ups. */
+const CLOSE_UPS_FOR = new Set(['defects', 'damage', 'obstruction_light', 'surroundings', 'changes']);
+const CLOSE_LOOK_NOTE = 'A close look: not measured. A person checks before anything is counted or acted on.';
+
+/** A part of the photo, cut out and shown larger. */
+function RegionCrop({ url, region }: { url: string; region: CloseLookRegion }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    const ctx = canvas?.getContext('2d');
+    if (!canvas || !ctx) return;
+    const [x0, y0, x1, y1] = region.box;
+    const W = 640;
+    const H = Math.max(1, Math.round((W * (y1 - y0)) / Math.max(1, x1 - x0)));
+    canvas.width = W;
+    canvas.height = Math.min(H, 640);
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, x0, y0, x1 - x0, y1 - y0, 0, 0, W, canvas.height);
+    img.src = url;
+  }, [url, region]);
+  return (
+    <canvas ref={ref} aria-label={`Close-up: ${region.name}`} className="block w-full rounded-[12px] border border-white/10 bg-black" />
+  );
+}
+
+function CloseLookBlock({ look, questionId, url }: { look: PhotoCloseLook | undefined; questionId: string; url: string }) {
+  if (!look || look.status === 'off') return null;
+  if (look.status === 'working' || look.status === 'none')
+    return (
+      <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
+        <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look at this photo is on its way…
+      </p>
+    );
+  const result = look.result;
+  if (!result) return null;
+  const worry = result.worries.find((w) => w.id === WORRY_OF[questionId]);
+  const regions = CLOSE_UPS_FOR.has(questionId) ? result.regions : [];
+  if (!worry && regions.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2 rounded-[12px] border border-[#D9A066]/25 bg-[#D9A066]/[0.06] px-3 py-2.5">
+      <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#D9A066]">A close look at this photo</h3>
+      {worry && (
+        <p className="m-0 text-[14px] leading-snug text-[#F3EDE6]">
+          <span className="mr-1.5 rounded-full border border-white/15 px-1.5 py-[1px] text-[11px] font-bold text-[#B8A99B]">
+            {worry.can_see === 'yes' ? 'can see' : worry.can_see === 'partly' ? 'partly in view' : 'not in this photo'}
+          </span>
+          {worry.answer}
+          {worry.can_see !== 'yes' && worry.needs ? <span className="text-[#B8A99B]"> What would show it: {worry.needs}</span> : null}
+        </p>
+      )}
+      {regions.map((r) => (
+        <div key={r.n} className="flex flex-col gap-1.5">
+          <RegionCrop url={url} region={r} />
+          <p className="m-0 text-[13px] font-semibold text-[#F3EDE6]">{r.name}</p>
+          <ul className="m-0 flex list-none flex-col gap-1 p-0 text-[13px] leading-snug text-[#D8CCBF]">
+            {r.findings
+              .filter((f) => f.can_see !== 'no')
+              .map((f) => (
+                <li key={`${r.n}-${f.kind}`}>
+                  {f.flag && <b className="mr-1 text-[#E9B987]">Check:</b>}
+                  {f.kind}
+                  {f.where ? <span className="text-[#8C7D70]"> · {f.where}</span> : null}
+                </li>
+              ))}
+          </ul>
+        </div>
+      ))}
+      <p className="m-0 text-[11.5px] text-[#8C7D70]">{CLOSE_LOOK_NOTE}</p>
+    </section>
+  );
+}
+
 function QuestionDetail({
   layerId,
   question,
   audience,
   markParts,
   onMark,
+  look,
+  photoUrl,
 }: {
   layerId: string;
   question: PhotoQuestion;
   audience: TowerAudience;
+  look: PhotoCloseLook | undefined;
+  photoUrl: string;
   /** Parts a person can mark on this photo to answer it (bolts on a close-up). */
   markParts: PartLabel[];
   onMark: (part: TowerPart) => void;
@@ -199,6 +289,7 @@ function QuestionDetail({
         <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">On this photo</h3>
         <p className="m-0 text-[14.5px] leading-snug text-[#F3EDE6]">{question.on_photo}</p>
       </section>
+      <CloseLookBlock look={look} questionId={question.id} url={photoUrl} />
       {answer.data && (
         <section className="flex flex-col gap-1">
           <h3 className="m-0 text-[11px] font-bold uppercase tracking-[0.1em] text-[#8C7D70]">Why it matters</h3>
@@ -260,6 +351,7 @@ function PhotoWorkspace({
 }) {
   const work = usePhotoWork(layerId, photo.sha256, scanning);
   const questions = usePhotoQuestions(layerId, photo.sha256, audience);
+  const look = usePhotoCloseLook(layerId, photo.sha256);
   const saveMarks = useSaveMarks(layerId, photo.sha256);
   const find = useFindTheRest(layerId, photo.sha256);
   const saveReview = useSaveReview(layerId, photo.sha256);
@@ -696,6 +788,8 @@ function PhotoWorkspace({
           audience={audience}
           markParts={question.lights === 'defects' ? marked.filter((p) => litParts('defects', [p]).length) : []}
           onMark={(part) => setView({ kind: 'part', part })}
+          look={look.data}
+          photoUrl={photo.url}
         />
       </div>
     );
@@ -753,6 +847,21 @@ function PhotoWorkspace({
             </span>
             {scoreWords(item.suggestion.score)}
           </span>
+          {(() => {
+            const check = look.data?.result?.checks.find((c) => c.suggestion_id === item.suggestion.id && c.part === item.part);
+            if (!check) return null;
+            return (
+              <p
+                className={`m-0 rounded-[10px] border px-2.5 py-2 text-[13px] leading-snug ${
+                  check.agrees === 'no' ? 'border-[#E9B987]/40 bg-[#E9B987]/10 text-[#E9B987]' : 'border-white/10 text-[#D8CCBF]'
+                }`}
+              >
+                <b>A close look: </b>
+                {check.really}
+                {check.damage && !/^none/i.test(check.damage) ? ` Damage: ${check.damage}` : ''}
+              </p>
+            );
+          })()}
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"

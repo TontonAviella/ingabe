@@ -14,9 +14,11 @@ from pydantic import BaseModel
 
 from src.database.models import LAYER_TYPE_RASTER, MapLayer
 from src.dependencies.dag import edit_layer, get_layer
+from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.services import (
     background_jobs,
+    close_look,
     drone_cards,
     drone_plots,
     drone_vision,
@@ -162,6 +164,62 @@ async def drone_plot_picture(
     if feature is None:
         raise HTTPException(404, f"No plot {number} on this photo")
     picture = await asyncio.to_thread(drone_vision.picture_of_plot, await _cog_url(s3, metadata), feature)
+    return Response(content=picture, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+def _cog_key(metadata: dict[str, Any]) -> str:
+    key = metadata.get("cog_key")
+    if not key:
+        raise HTTPException(409, "The photo is still being processed")
+    return str(key)
+
+
+def _place(layer: MapLayer) -> str:
+    """The field's name as a person says it: the layer's name without "Orthophoto" and file-like endings."""
+    name = re.sub(r"(?i)[_ -]*ortho(photo|mosaic)?[_ -]*\d*", " ", layer.name or "").replace("_", " ").strip()
+    return re.sub(r"\s+", " ", name) or "the field"
+
+
+async def _field_look(layer: MapLayer, metadata: dict[str, Any]) -> dict[str, Any]:
+    redis, s3, key = get_async_redis(), await get_async_s3_client(), _cog_key(metadata)
+    result = await close_look.load_raster(s3, get_bucket_name(), key)
+    working = result is None and await close_look.running(redis, f"raster:{close_look.raster_key(key)}")
+    if result:
+        result = {**result, "squares": [{**sq, "picture": f"/api/layer/{layer.layer_id}/close-look/squares/{sq['n']}.jpg"}
+                                        for sq in result["squares"]]}
+    status = "ready" if result else "working" if working else "off" if not close_look.enabled() else "none"
+    return {"status": status, "result": result}
+
+
+@router.get("/layer/{layer_id}/close-look", operation_id="get_field_close_look")
+async def get_field_close_look(layer: MapLayer = Depends(get_layer),
+                               session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """The close look kept for a drone photo: the whole field, and squares of it pinned to their places."""
+    return await _field_look(layer, _photo_ready(layer))
+
+
+@router.post("/layer/{layer_id}/close-look", operation_id="start_field_close_look")
+async def start_field_close_look(layer: MapLayer = Depends(edit_layer),
+                                 session: UserContext = Depends(verify_session_required)) -> dict[str, Any]:
+    """Start the close look at a drone photo (once: a kept look is not asked again). Returns its state."""
+    metadata = _photo_ready(layer)
+    s3 = await get_async_s3_client()
+    await close_look.ensure_raster(get_async_redis(), s3, get_bucket_name(), _cog_key(metadata),
+                                   await _cog_url(s3, metadata, _LONG_URL_SECONDS), _place(layer))
+    return await _field_look(layer, metadata)
+
+
+@router.get("/layer/{layer_id}/close-look/squares/{number}.jpg", operation_id="field_close_look_square")
+async def field_close_look_square(number: int, layer: MapLayer = Depends(get_layer),
+                                  session: UserContext = Depends(verify_session_required)) -> Response:
+    """The picture of one square the close look was shown."""
+    s3, key = await get_async_s3_client(), _cog_key(_photo_ready(layer))
+    try:
+        obj = await s3.get_object(Bucket=get_bucket_name(), Key=f"{close_look.raster_key(key)}/square{number}.jpg")
+    except s3.exceptions.NoSuchKey:
+        raise HTTPException(404, f"No square {number} looked at on this photo") from None
+    async with obj["Body"] as body:
+        picture = await body.read()
     return Response(content=picture, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 

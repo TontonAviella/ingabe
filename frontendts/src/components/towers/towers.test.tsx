@@ -8,7 +8,7 @@ import type { CardAnswerCore } from '@/lib/cardAnswer';
 import type { Box } from '@/lib/photoView';
 import type { PartReview, PartWork, PhotoWork, TowerPart } from '@/lib/towerContract';
 import type { MapLayer } from '@/lib/types';
-import { allByText, byButton, byText, click, findButton, findRole, findText, mount, pointer, unmountAll } from '@/test/dom';
+import { allByText, byButton, byText, click, findButton, findBy, findRole, findText, mount, pointer, unmountAll } from '@/test/dom';
 import { type FakePhoto, towerServer } from '@/test/towerServer';
 
 // The server is a fake of the tower API whose rules are copied from the real backend code (src/test/towerServer.ts);
@@ -113,7 +113,7 @@ function openScreen(photos: FakePhoto[] = [PHOTO]) {
 
 /** Lets the photo load at its full 2000 x 1400 size and returns the canvas to draw on. */
 async function loadedCanvas() {
-  const img = await findRole('application').then((canvas) => canvas.querySelector('img') as HTMLImageElement);
+  const img = await findBy(() => document.querySelector<HTMLImageElement>('[role="application"] img'), 'the photo');
   Object.defineProperty(img, 'naturalWidth', { value: 2000 });
   Object.defineProperty(img, 'naturalHeight', { value: 1400 });
   img.dispatchEvent(new Event('load'));
@@ -206,7 +206,11 @@ describe('marking screen: finding the rest', () => {
     click(await findButton(/Find the rest/));
     await findText('Waiting in line for the finder…', 'p');
 
-    expect(calls.filter((c) => c.method !== 'GET').map((c) => [c.method, c.url, (c.body as { part: string }).part])).toEqual([
+    expect(
+      calls
+        .filter((c) => c.method !== 'GET' && !c.url.endsWith('/close-look'))
+        .map((c) => [c.method, c.url, (c.body as { part: string }).part]),
+    ).toEqual([
       ['PUT', MARKS, 'tower_radio_unit'],
       ['PUT', MARKS, 'tower_antenna'],
       ['POST', FIND, 'tower_antenna'],
@@ -519,6 +523,46 @@ describe('photo screen: parts the trained models scan', () => {
         progress: null,
       },
     });
+    routes[`POST ${photoUrl(SHA)}/close-look`] = () => ({
+      status: 200,
+      body: {
+        status: 'ready',
+        spent_today_usd: 0.3,
+        daily_usd: 10,
+        result: {
+          worries: [
+            {
+              id: 'obstruction_light',
+              can_see: 'no',
+              answer: 'The top of the tower is out of frame.',
+              confidence: 'high',
+              needs: 'a photo of the top at dusk',
+            },
+          ],
+          regions: [
+            {
+              n: 1,
+              name: 'Top mount',
+              why: 'where the light sits',
+              box: [100, 100, 400, 300],
+              what_is_shown: 'the top mount',
+              findings: [{ kind: 'loose jumper cables', where: 'below the radio', can_see: 'yes', confidence: 'medium', flag: true }],
+              cannot_judge: [],
+            },
+          ],
+          checks: [
+            {
+              suggestion_id: 's1',
+              part: 'tower_antenna',
+              really: 'a fibre splice closure, not an antenna',
+              agrees: 'no',
+              damage: 'none seen',
+              confidence: 'medium',
+            },
+          ],
+        },
+      },
+    });
     open();
 
     await findText('This photo can answer: what is on the tower.', 'p');
@@ -528,6 +572,10 @@ describe('photo screen: parts the trained models scan', () => {
     await findText('On this photo', 'h3');
     await findText('It is a legal requirement and keeps aircraft clear of the tower.', 'p');
     expect(byText('Photos of the top of the tower taken at dusk or at night.', 'p')).not.toBeNull();
+    // The close look of this photo: what it saw for this worry, and its close-ups with what to check.
+    await findText('A close look at this photo', 'h3');
+    expect(byText(/The top of the tower is out of frame\./, 'p')).not.toBeNull();
+    expect(byText(/Check:\s*loose jumper cables/, 'li')).not.toBeNull();
 
     click(await findButton('Technician'));
     await vi.waitFor(() => expect(called('GET', `${photoUrl(SHA)}/questions?audience=technician`)).toBeDefined());
@@ -535,6 +583,7 @@ describe('photo screen: parts the trained models scan', () => {
     await findText('For the technician: what is on the tower.', 'p');
     click(await findButton(/What is on the tower\?/));
     await findText('Is this a panel antenna?', 'h2');
+    await findText(/A close look: a fibre splice closure, not an antenna/, 'p');
   });
 });
 

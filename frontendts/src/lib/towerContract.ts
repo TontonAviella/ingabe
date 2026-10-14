@@ -185,3 +185,89 @@ export interface TowerCardAnswer extends TowerCard, CardAnswerCore {
   downloads?: AnswerDownload[];
   ask_sage?: AskSage[];
 }
+
+/** A close look (the server's close_look): a vision model asked narrow questions, for a person to check. It never
+ * counts; "can see: no" means the picture cannot answer it. Boxes are in the photo's own pixels. */
+export interface CloseLookWorry {
+  id: string;
+  can_see: 'yes' | 'partly' | 'no';
+  answer: string;
+  confidence: 'high' | 'medium' | 'low';
+  needs: string;
+}
+
+export interface CloseLookFinding {
+  kind: string;
+  where: string;
+  can_see: 'yes' | 'partly' | 'no';
+  confidence: 'high' | 'medium' | 'low';
+  /** Worth a person going to check. */
+  flag: boolean;
+}
+
+export interface CloseLookRegion {
+  n: number;
+  name: string;
+  why: string;
+  box: Box;
+  what_is_shown: string;
+  findings: CloseLookFinding[];
+  cannot_judge: string[];
+}
+
+export interface CloseLookCheck {
+  suggestion_id: string;
+  part: TowerPart;
+  really: string;
+  agrees: 'yes' | 'no' | 'unsure';
+  damage: string;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export type CloseLookStatus = 'ready' | 'working' | 'none' | 'off';
+
+/** GET/POST .../photos/{sha256}/close-look */
+export interface PhotoCloseLook {
+  status: CloseLookStatus;
+  result: { worries: CloseLookWorry[]; regions: CloseLookRegion[]; checks: CloseLookCheck[] } | null;
+  spent_today_usd: number;
+  daily_usd: number;
+}
+
+/** GET/POST /api/towers/layer/{layer_id}/close-look: the photos looked at, where they were taken. */
+export interface InspectionCloseLooks {
+  photos: {
+    sha256: string;
+    lat: number;
+    lon: number;
+    filename: string;
+    url: string;
+    flags: string[];
+    seen: { id: string; answer: string }[];
+  }[];
+  running: boolean;
+  /** Small enough to be looked at whole; a larger inspection is looked at photo by photo. */
+  whole: boolean;
+}
+
+/** GET/POST /api/layer/{layer_id}/close-look: a drone photo's whole field and squares pinned to their places. */
+export interface FieldCloseLook {
+  status: CloseLookStatus;
+  result: {
+    place: string;
+    field: { land_uses: { what: string; where: string }[]; roads_buildings_water: string; worth_a_look: string[]; cannot_tell: string[] };
+    squares: {
+      n: number;
+      lon: number;
+      lat: number;
+      cm_per_px: number;
+      picture: string;
+      crops: { crop: string; where: string; stage: string; confidence: string }[];
+      bare_or_gaps: string;
+      weeds: string;
+      stress_or_disease: string;
+      odd: string;
+      cannot_tell: string[];
+    }[];
+  } | null;
+}

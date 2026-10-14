@@ -339,3 +339,62 @@
 .drone-card-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #17110e; }
 .drone-card-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #17110e; }
 .drone-card-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #17110e; }
+
+/* Close-look bubbles: a round picture pinned to the place it shows (CloseLookBubbles). */
+.close-look-bubble {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid #d9a066;
+  background: #17110e;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.5);
+  cursor: pointer;
+  overflow: visible;
+}
+.close-look-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top: 7px solid #d9a066;
+  border-bottom: 0;
+}
+.close-look-bubble img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: block; }
+.close-look-bubble:hover, .close-look-bubble:focus-visible { border-color: #f3ede6; outline: none; transform: scale(1.08); }
+.close-look-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #d9a066;
+  color: #0b0908;
+  font: 800 11px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  text-align: center;
+}
+.close-look-popup .maplibregl-popup-content {
+  background: #17110e;
+  color: #f3ede6;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 14px;
+  padding: 10px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+}
+.close-look-popup .maplibregl-popup-close-button { color: #b8a99b; font-size: 18px; padding: 2px 8px; }
+.close-look-popup.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: #17110e; }
+.close-look-popup.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: #17110e; }
+.close-look-popup.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: #17110e; }
+.close-look-popup.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: #17110e; }
+.close-look-pop { display: flex; flex-direction: column; gap: 8px; }
+.close-look-pop img { width: 100%; max-height: 190px; object-fit: cover; border-radius: 10px; display: block; }
+.close-look-pop-title { font-weight: 700; font-size: 14px; }
+.close-look-pop-lines { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; color: #d8ccbf; }
+.close-look-pop-lines b { color: #f3ede6; }
+.close-look-pop-note { margin: 0; font-size: 11.5px; color: #8c7d70; }

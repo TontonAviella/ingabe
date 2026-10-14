@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from src.database.models import MapLayer
@@ -24,6 +24,7 @@ from src.dependencies.redis_client import get_async_redis
 from src.dependencies.session import UserContext, verify_session_required
 from src.routes.switched_routes import switched_route
 from src.services import (
+    close_look,
     example_finder,
     example_finder_pictures,
     industry,
@@ -341,6 +342,126 @@ async def get_tower_photo_questions(sha256: str, audience: Optional[str] = None,
     lights up (tower_cards.photo_questions)."""
     photo = _photo(inspection, sha256)
     return tower_cards.photo_questions(await _here(inspection, session), photo, _check_audience(audience))
+
+
+# --- A close look (close_look): flags for a person to check, on Telecom Towers photos ------------------------------
+
+def _close_look_here(inspection: _Inspection) -> None:
+    if not all(i == "telecom" for i in inspection.industries):
+        raise HTTPException(404, "Close looks at photos are for Telecom Towers inspections")
+
+
+async def _photo_look_inputs(inspection: _Inspection, photo: PhotoFacts) -> Optional[tuple[Any, list[close_look.Shown]]]:
+    """(a reader of the photo's pixels, the suggestions a person is shown on it), or None for a photo not read."""
+    view = photo_inspections.view_of(photo)
+    if view is None:
+        return None
+    s3 = await get_async_s3_client()
+    works = await tower_inspection.photo_work(get_async_redis(), s3, get_bucket_name(), inspection.project_id,
+                                              inspection.layer.layer_id, photo, inspection.parts)
+    shown = [close_look.Shown(id=s.id, part=part, box=s.box) for part, w in works.items()
+             if part in tower_inspection.PARTS for s in w.suggestions]
+    source = example_finder_pictures.InspectionPhoto(s3=s3, bucket=get_bucket_name(), layer_id=inspection.layer.layer_id,
+                                                     layer_metadata=inspection.layer.metadata_dict or {},
+                                                     sha256=photo.sha256, view=view)
+
+    async def read() -> Any:
+        return (await source.read()).pixels
+
+    return read, shown
+
+
+_NOUNS = {p: tower_inspection.PART_LABELS[p][0].lower() for p in tower_inspection.PARTS}
+
+
+async def _photo_look(inspection: _Inspection, photo: PhotoFacts) -> dict[str, Any]:
+    redis, s3 = get_async_redis(), await get_async_s3_client()
+    result = await close_look.load_photo(s3, get_bucket_name(), inspection.project_id, inspection.layer.layer_id,
+                                         photo.sha256)
+    working = result is None and (
+        await close_look.running(redis, f"photo:{inspection.project_id}:{inspection.layer.layer_id}:{photo.sha256}")
+        or await close_look.running(redis, f"inspection:{inspection.project_id}:{inspection.layer.layer_id}"))
+    status = "ready" if result else "working" if working else "off" if not close_look.enabled() else "none"
+    return {"status": status, "result": result, "spent_today_usd": round(await close_look.spent_today(redis), 2),
+            "daily_usd": close_look.daily_usd()}
+
+
+@router.get("/towers/layer/{layer_id}/photos/{sha256}/close-look", operation_id="get_tower_photo_close_look")
+async def get_tower_photo_close_look(sha256: str, inspection: _Inspection = Depends(_viewed)) -> dict[str, Any]:
+    """The close look kept for a photo: the owner's worries, close-ups with findings, and the shown suggestions
+    checked; status ready, working, none (not looked at yet) or off."""
+    _close_look_here(inspection)
+    return await _photo_look(inspection, _photo(inspection, sha256))
+
+
+@router.post("/towers/layer/{layer_id}/photos/{sha256}/close-look", operation_id="start_tower_photo_close_look")
+async def start_tower_photo_close_look(sha256: str, inspection: _Inspection = Depends(_edited)) -> dict[str, Any]:
+    """Start the close look at a photo (once: a kept look is not asked again). Returns its state."""
+    _close_look_here(inspection)
+    photo = _photo(inspection, sha256)
+    inputs = await _photo_look_inputs(inspection, photo)
+    if inputs is not None:
+        read, shown = inputs
+        await close_look.ensure_photo(get_async_redis(), await get_async_s3_client(), get_bucket_name(),
+                                      inspection.project_id, inspection.layer.layer_id, photo.sha256, read,
+                                      close_look.facts_of(photo, tower_inspection.compass), shown, _NOUNS)
+    return await _photo_look(inspection, photo)
+
+
+@router.get("/towers/layer/{layer_id}/photos/{sha256}/close-look/photo.jpg", operation_id="tower_close_look_photo")
+async def tower_close_look_photo(sha256: str, inspection: _Inspection = Depends(_viewed)) -> Response:
+    """The small copy of a photo kept beside its close look, for the map."""
+    _close_look_here(inspection)
+    photo = _photo(inspection, sha256)
+    s3 = await get_async_s3_client()
+    try:
+        obj = await s3.get_object(Bucket=get_bucket_name(), Key=close_look.thumb_key(
+            inspection.project_id, inspection.layer.layer_id, photo.sha256))
+    except s3.exceptions.NoSuchKey:
+        raise HTTPException(404, "This photo has no close look yet") from None
+    async with obj["Body"] as body:
+        picture = await body.read()
+    return Response(content=picture, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/towers/layer/{layer_id}/close-look", operation_id="get_tower_close_looks")
+async def get_tower_close_looks(inspection: _Inspection = Depends(_viewed)) -> dict[str, Any]:
+    """Where the inspection's close looks are on the map: each photo looked at with GPS, its picture and flags."""
+    _close_look_here(inspection)
+    s3, layer_id = await get_async_s3_client(), inspection.layer.layer_id
+    out = []
+    for p in inspection.photos:
+        result = await close_look.load_photo(s3, get_bucket_name(), inspection.project_id, layer_id, p.sha256)
+        if result is None or p.lat is None or p.lon is None:
+            continue
+        seen = [w for w in result["worries"] if w["can_see"] != "no"]
+        out.append({"sha256": p.sha256, "lat": p.lat, "lon": p.lon, "filename": p.filename,
+                    "url": f"/api/towers/layer/{layer_id}/photos/{p.sha256}/close-look/photo.jpg",
+                    "flags": close_look.flags(result), "seen": [{"id": w["id"], "answer": w["answer"]} for w in seen]})
+    running = await close_look.running(get_async_redis(), f"inspection:{inspection.project_id}:{layer_id}")
+    return {"photos": out, "running": running, "whole": len(inspection.photos) <= close_look.AUTO_PHOTOS}
+
+
+@router.post("/towers/layer/{layer_id}/close-look", operation_id="start_tower_close_looks")
+async def start_tower_close_looks(inspection: _Inspection = Depends(_edited)) -> dict[str, Any]:
+    """Look at every photo of a small inspection (at most close_look.AUTO_PHOTOS), one after another in the
+    background; a larger one is looked at photo by photo as people open them."""
+    _close_look_here(inspection)
+    if close_look.enabled() and len(inspection.photos) <= close_look.AUTO_PHOTOS:
+        redis, s3 = get_async_redis(), await get_async_s3_client()
+
+        async def every_photo() -> None:
+            for photo in inspection.photos:
+                inputs = await _photo_look_inputs(inspection, photo)
+                if inputs is None:
+                    continue
+                read, shown = inputs
+                await close_look.keep_photo(redis, s3, get_bucket_name(), inspection.project_id,
+                                            inspection.layer.layer_id, photo.sha256, read,
+                                            close_look.facts_of(photo, tower_inspection.compass), shown, _NOUNS)
+
+        await close_look.run_once(redis, f"inspection:{inspection.project_id}:{inspection.layer.layer_id}", every_photo)
+    return await get_tower_close_looks(inspection)
 
 
 @router.get("/towers/layer/{layer_id}/cards", operation_id="get_tower_cards")
