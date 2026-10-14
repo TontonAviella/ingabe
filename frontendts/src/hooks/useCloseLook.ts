@@ -10,11 +10,19 @@ import type { FieldCloseLook, InspectionCloseLooks, PhotoCloseLook } from '@/lib
 const POLL_MS = 5_000;
 const final = (count: number, error: ServerError) => !(error.status >= 400 && error.status < 500) && count < 2;
 
+// Each look is asked to start once per page visit; after that it is only read (also while it works).
+const started = new Set<string>();
+
 async function startOrRead<T>(url: string): Promise<T> {
+  if (started.has(url)) return getJson<T>(url);
+  started.add(url);
   try {
     return await sendJson<T>(url, 'POST', {});
   } catch (error) {
-    if ((error as ServerError).status !== 403) throw error;
+    if ((error as ServerError).status !== 403) {
+      started.delete(url);
+      throw error;
+    }
     return getJson<T>(url);
   }
 }
