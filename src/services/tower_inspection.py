@@ -349,10 +349,20 @@ def level_answer(part: str, marks: Sequence[Box], photo: PhotoFacts,
     return answer_levels.decide(part, model, gate, answer_levels.countability(part, answer_levels.Facts()))
 
 
-def suggestions_of(job: example_finder.Job) -> tuple[Suggestion, ...]:
-    """A finished job's finds as suggestions, best first, each with an id naming the job."""
+def suggestions_of(job: example_finder.Job, min_score: Optional[float] = None) -> tuple[Suggestion, ...]:
+    """A finished job's finds as suggestions, best first, each with an id naming the job; only those from min_score
+    up when one is given (ids keep their place among all the finds, so earlier reviews still match)."""
     return tuple(Suggestion(id=f"{job.job_id[:12]}-{i}", box=_box(find["box_px"]), score=find["score"])
-                 for i, find in enumerate(job.finds or [], 1))
+                 for i, find in enumerate(job.finds or [], 1) if min_score is None or find["score"] >= min_score)
+
+
+def _min_score(part: str) -> Optional[float]:
+    """The score the part's detector shows boxes from, as measured (answer_levels); read when shown, so a job found
+    before the floor was set is shown with it too."""
+    try:
+        return example_finder.settings(part).min_score
+    except FinderInputError:
+        return None
 
 
 def counted(record: PartRecord, done: bool, waiting: int, answer: Optional[answer_levels.Answer]) -> Optional[int]:
@@ -378,9 +388,10 @@ async def _job(redis: Any, s3: Any, bucket: str, project_id: str, job_id: Option
 async def part_work(redis: Any, s3: Any, bucket: str, project_id: str, record: PhotoRecord, part: str,
                     photo: PhotoFacts) -> PartWork:
     own = record.parts[part]
-    job = await _job(redis, s3, bucket, project_id, own.job_id)
+    # Bolts found by a scan (no marks) are not shown: scan_parts says why.
+    job = None if part in DEFECT_PARTS and not own.marks else await _job(redis, s3, bucket, project_id, own.job_id)
     done = job is not None and job.status == example_finder.DONE
-    suggestions = suggestions_of(job) if done else ()
+    suggestions = suggestions_of(job, _min_score(part)) if done and job is not None else ()
     reviewed = own.review.reviewed()
     waiting = sum(1 for s in suggestions if s.id not in reviewed)
     found = tuple(s.box for s in suggestions) + tuple(b for _, b in own.review.fixed) + own.review.added
@@ -464,9 +475,13 @@ SCAN_JOB_LIMIT_S = 900.0  # a job still not done after this is left: the next sc
 
 def scan_parts(parts: Sequence[str]) -> tuple[str, ...]:
     """The parts this server finds with a trained detector: they are scanned without marks. The others (the example
-    finder) still need a person's marks first."""
+    finder) still need a person's marks first. Bolts are never scanned: on a wide photo a bolt is a few pixels and the
+    bolt models boxed cars and bare steel (2026-10-14, a Louisville photo 64 m up); they run on a close-up a person
+    marked bolts on."""
     out = []
     for part in parts:
+        if part in DEFECT_PARTS:
+            continue
         try:
             if example_finder.settings(part).uses_detector:
                 out.append(part)

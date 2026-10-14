@@ -337,7 +337,7 @@ describe('marking screen: parts the trained models scan', () => {
     routes[`GET ${WORK}`] = () => ({ status: 200, body: work });
     mount(<PhotoMarking layerId={LAYER} layerName="Mast 12" photos={[PHOTO]} parts={SCANNED} scanning startIndex={0} onClose={vi.fn()} />);
 
-    await findText(/The model found 2 panel antennas on this photo/, 'p');
+    await findText(/The model suggests 2 boxes to check: its surest guesses, not a count/, 'p');
     expect(byButton(/Find the rest/)).toBeNull();
     expect(byButton('Change marks')).toBeNull();
     expect(byText(/Draw a box around at least/)).toBeNull();
@@ -345,7 +345,7 @@ describe('marking screen: parts the trained models scan', () => {
     click(await findButton(/Radio unit/));
     await findText(/Looking for radio units on this photo/, 'p');
     click(await findButton(/Microwave dish/));
-    await findText(/The model found no microwave dishes on this photo/, 'p');
+    await findText(/The model is not sure of any microwave dish on this photo/, 'p');
   });
 
   it('a photo the scan could not look at falls back to one mark and a find', async () => {

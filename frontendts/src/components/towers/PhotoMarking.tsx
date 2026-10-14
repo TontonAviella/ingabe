@@ -407,8 +407,8 @@ function PhotoWorkspace({
             <p className="m-0 text-[14px] leading-snug text-[#D8CCBF]">
               {scanned
                 ? partWork.suggestions.length > 0
-                  ? `The model found ${partWork.suggestions.length} ${partWork.suggestions.length === 1 ? label.label.toLowerCase() : label.plural} on this photo. Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any it missed. Nothing is counted until you save.`
-                  : `The model found no ${label.plural} on this photo. Draw a box around any it missed, then save your review: nothing is counted until you save.`
+                  ? `The model suggests ${partWork.suggestions.length} ${partWork.suggestions.length === 1 ? 'box' : 'boxes'} to check: its surest guesses, not a count. Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any ${label.label.toLowerCase()} it missed. Nothing is counted until you save.`
+                  : `The model is not sure of any ${label.label.toLowerCase()} on this photo. Draw a box around any you see, then save your review: nothing is counted until you save.`
                 : partWork.suggestions.length > 0
                   ? `Tap a blue box to keep or reject it, drag its corners to fix it, and draw a box around any ${label.label.toLowerCase()} the finder missed. Nothing is counted until you save.`
                   : `The finder found no more ${label.plural}. Draw a box around any it missed, then save your review: nothing is counted until you save.`}
