@@ -580,7 +580,9 @@ def test_pylons_are_shown_only_from_the_score_measured_at_new_sites():
     (row,) = _rows(d.measured["evidence"])
     assert d.min_score == row["cut"] == 0.6 and (row["p"], row["r"], row["n_gt"]) == (0.831, 0.153, 968)
     assert "0.989" in d.measured["note"]  # the same-site score is kept, said to be optimistic
-    assert all(al.detector(n).min_score is None for n in DETECTED if n != "power_pylon")
+    floors = {n: al.detector(n).min_score for n in (*DETECTED, *DEFECT_PARTS)}
+    assert floors == {"tower_dish": 0.4, "tower_antenna": 0.4, "tower_radio_unit": 0.5, "power_pylon": 0.6,
+                      "power_insulator": None, "power_nest": None, "tower_bolt_missing": 0.4, "tower_bolt_loose": 0.4}
 
 
 def test_only_tower_power_and_maize_parts_have_a_detector():

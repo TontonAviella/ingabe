@@ -461,3 +461,19 @@ def test_the_switch_reads_towers_only(monkeypatch):
     for value, on in (("1", True), ("true", True), ("yes", True), ("0", False), ("off", False)):
         monkeypatch.setenv("TOWERS", value)
         assert tower_inspection.enabled() is on
+
+
+def test_bolts_are_never_scanned_and_scanned_bolt_boxes_are_not_shown(monkeypatch):
+    """On a wide photo a bolt is a few pixels: the bolt models boxed cars and bare steel (2026-10-14)."""
+    monkeypatch.setenv("OWN_DETECTORS", "1")
+    assert not set(tower_inspection.scan_parts(tower_inspection.PARTS_BY_INDUSTRY["telecom"])) & set(
+        tower_inspection.DEFECT_PARTS)
+
+
+def test_suggestions_below_the_measured_floor_are_not_shown_and_ids_keep_their_place():
+    job = example_finder.Job(job_id="a" * 32, status=example_finder.DONE,
+                             finds=[{"box_px": [0, 0, 10, 10], "score": 0.9}, {"box_px": [0, 0, 5, 5], "score": 0.1},
+                                    {"box_px": [1, 1, 6, 6], "score": 0.45}])
+    shown = tower_inspection.suggestions_of(job, 0.4)
+    assert [(s.id[-2:], s.score) for s in shown] == [("-1", 0.9), ("-3", 0.45)]
+    assert len(tower_inspection.suggestions_of(job)) == 3
