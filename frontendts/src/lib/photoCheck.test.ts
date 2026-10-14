@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { deckOf, litParts, nextToAsk, suggestedLine, unanswered } from '@/lib/photoCheck';
-import type { PartLabel, PartWork, PhotoWork } from '@/lib/towerContract';
+import { countedInside, countedWords, deckOf, litParts, missedByModel, nextToAsk, suggestedLine, unanswered } from '@/lib/photoCheck';
+import type { CountedPart, PartLabel, PartWork, PhotoWork } from '@/lib/towerContract';
 import { emptyPhotoDraft, photoReducer } from '@/lib/towerReview';
 
 const PARTS: PartLabel[] = [
@@ -55,5 +55,46 @@ describe('the photo check', () => {
     expect(litParts('defects', withBolts)).toEqual(['tower_bolt_missing']);
     expect(litParts('antennas', withBolts)).toEqual(['tower_antenna']);
     expect(litParts(null, withBolts)).toEqual([]);
+  });
+});
+
+describe("a close look's count by masks", () => {
+  const part = (p: CountedPart['part'], point: [number, number], check: string | null = null): CountedPart => ({
+    type: p === 'tower_antenna' ? 'panel_antenna' : 'radio_unit',
+    part: p,
+    point,
+    confidence: 'high',
+    outline: [],
+    box: [point[0] - 1, point[1] - 1, point[0] + 1, point[1] + 1],
+    check,
+  });
+  // The antennas' boxes are [0, 0, 10, 10] and [1, 1, 11, 11]; the radio unit is still being looked for.
+  const counted = [
+    part('tower_antenna', [3, 3]),
+    part('tower_antenna', [8, 8]),
+    part('tower_antenna', [9, 2], 'too ragged'),
+    part('tower_antenna', [50, 50]),
+    part('tower_radio_unit', [70, 70]),
+  ];
+
+  it("finds the outlined parts inside one of the model's boxes, never the ones left to check", () => {
+    expect(countedInside(counted, 'tower_antenna', [0, 0, 10, 10]).map((c) => c.point)).toEqual([
+      [3, 3],
+      [8, 8],
+    ]);
+    expect(countedInside(counted, 'tower_radio_unit', [0, 0, 10, 10])).toEqual([]);
+  });
+
+  it("asks only about parts outside the model's boxes and the person's own, once the part's finding ended", () => {
+    let draft = emptyPhotoDraft();
+    expect(missedByModel(counted, WORK, draft, PARTS).map((m) => m.key)).toEqual(['x:3']);
+    draft = photoReducer(draft, { type: 'review/add', part: 'tower_antenna', box: [40, 40, 60, 60] });
+    expect(missedByModel(counted, WORK, draft, PARTS)).toEqual([]);
+    expect(missedByModel(counted, undefined, draft, PARTS)).toEqual([]);
+  });
+
+  it('says what it outlined and what is left to check, part by part', () => {
+    expect(countedWords(counted, PARTS)).toBe('3 panel antennas and 1 radio unit outlined, 1 panel antenna to check');
+    expect(countedWords([], PARTS)).toBeNull();
   });
 });

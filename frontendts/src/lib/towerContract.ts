@@ -1,5 +1,5 @@
 import type { AnswerDownload, AnswerTerm, AskSage, CardAnswerCore } from '@/lib/cardAnswer';
-import type { Box } from '@/lib/photoView';
+import type { Box, Point } from '@/lib/photoView';
 
 // The shapes of the tower inspection API (/api/towers/...), exactly as the shared contract between the backend and
 // this frontend gives them. Boxes are [x0, y0, x1, y1] in the ORIGINAL photo's pixels. Every count, status and word
@@ -226,10 +226,31 @@ export interface CloseLookCheck {
 
 export type CloseLookStatus = 'ready' | 'working' | 'none' | 'off';
 
+/** A part a close look counted inside the model's boxes: a point on it, traced into an outline when the outline fits
+ * the part; otherwise `check` says why it is left for a person (no outline, then). A suggestion, never a count. */
+export interface CountedPart {
+  type: 'panel_antenna' | 'radio_unit' | 'microwave_dish';
+  part: TowerPart;
+  point: Point;
+  confidence: 'high' | 'medium' | 'low';
+  outline: number[][][];
+  box: Box;
+  check: string | null;
+}
+
+export interface CloseLookCount {
+  method: string;
+  parts: CountedPart[];
+  counts: Record<CountedPart['type'], { outlined: number; to_check: number }>;
+}
+
 /** GET/POST .../photos/{sha256}/close-look */
 export interface PhotoCloseLook {
   status: CloseLookStatus;
   result: { worries: CloseLookWorry[]; regions: CloseLookRegion[]; checks: CloseLookCheck[] } | null;
+  /** The parts counted by masks in the model's boxes (null until counted); `counting` while it runs. */
+  counted: CloseLookCount | null;
+  counting: boolean;
   spent_today_usd: number;
   daily_usd: number;
 }

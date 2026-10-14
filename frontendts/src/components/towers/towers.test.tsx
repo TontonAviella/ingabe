@@ -585,6 +585,99 @@ describe('photo screen: parts the trained models scan', () => {
     await findText('Is this a panel antenna?', 'h2');
     await findText(/A close look: a fibre splice closure, not an antenna/, 'p');
   });
+
+  it("keeps a box's several parts as separate, then asks about the parts the model missed, counting only what is kept", async () => {
+    viewport();
+    const work: PhotoWork = { parts: { tower_dish: found(0), tower_antenna: found(1), tower_radio_unit: found(0, 'd') } };
+    scannedServer(work);
+    const square = ([x0, y0, x1, y1]: Box) => [
+      [
+        [x0, y0],
+        [x1, y0],
+        [x1, y1],
+        [x0, y1],
+      ],
+    ];
+    const part = (type: string, tower: TowerPart, point: [number, number], box: Box, check: string | null = null) => ({
+      type,
+      part: tower,
+      point,
+      confidence: 'high',
+      outline: check ? [] : square(box),
+      box,
+      check,
+    });
+    const look = {
+      status: 'ready',
+      spent_today_usd: 0.4,
+      daily_usd: 5,
+      result: { worries: [], regions: [], checks: [] },
+      counting: false,
+      counted: {
+        method: 'close-look-count/v1',
+        // Two antennas inside the model's one box [900, 100, 1010, 215]; a radio unit and an antenna it missed.
+        parts: [
+          part('panel_antenna', 'tower_antenna', [930, 150], [910, 105, 950, 210]),
+          part('panel_antenna', 'tower_antenna', [980, 150], [960, 105, 1005, 210]),
+          part('radio_unit', 'tower_radio_unit', [1600, 800], [1580, 770, 1620, 830]),
+          part('panel_antenna', 'tower_antenna', [300, 1000], [285, 985, 315, 1015], 'the outline is ragged (steel or ground)'),
+        ],
+        counts: {},
+      },
+    };
+    routes[`POST ${photoUrl(SHA)}/close-look`] = () => ({ status: 200, body: look });
+    routes[`GET ${photoUrl(SHA)}/close-look`] = () => ({ status: 200, body: look });
+    open();
+    const canvas = await loadedCanvas();
+
+    await findText('Is this a panel antenna?', 'h2');
+    await findText(/A close look sees 2 panel antennas in this box\./, 'b');
+    click(await findButton('Yes, 2 separate'));
+    // The box becomes the larger of the two outlined antennas; the other is added as its own.
+    await vi.waitFor(() =>
+      expect(reviews()).toContainEqual({
+        part: 'tower_antenna',
+        kept: [],
+        rejected: [],
+        fixed: [{ id: 's1', box: [960, 105, 1005, 210] }],
+        added: [[910, 105, 950, 210]],
+      }),
+    );
+
+    await findText('Missed by the model · 1 of 2', 'span');
+    await findText('Is this a radio unit?', 'h2');
+    expect(byText(/A close look found and outlined it; the model did not suggest it\./, 'p')).not.toBeNull();
+    click(await findButton(/^Yes Y$/));
+    await vi.waitFor(() =>
+      expect(reviews()).toContainEqual({ part: 'tower_radio_unit', kept: [], rejected: [], fixed: [], added: [[1580, 770, 1620, 830]] }),
+    );
+
+    // Without an outline it is not added as it is: the person draws its box.
+    await findText('Is this a panel antenna?', 'h2');
+    expect(byText(/its outline was not kept \(the outline is ragged \(steel or ground\)\)/, 'p')).not.toBeNull();
+    click(await findButton(/Yes: draw its box/));
+    await findText('Drag a box around the panel antenna on the photo.', 'p');
+    // The photo is centred on the part at half size: photo (200, 900)-(400, 1100) is (450, 300)-(550, 400) on screen.
+    draw(canvas, [450, 300], [550, 400]);
+    await vi.waitFor(() =>
+      expect(reviews()).toContainEqual({
+        part: 'tower_antenna',
+        kept: [],
+        rejected: [],
+        fixed: [{ id: 's1', box: [960, 105, 1005, 210] }],
+        added: [
+          [910, 105, 950, 210],
+          [200, 900, 400, 1100],
+        ],
+      }),
+    );
+
+    await findText('Tap a part the model missed', 'h2');
+    expect(byText(/A close look: 2 panel antennas and 1 radio unit outlined, 1 panel antenna to check\./, 'p')).not.toBeNull();
+    click(await findButton(/Done with this photo/));
+    await findText('Counted by you on this photo', 'h2');
+    expect([work.parts.tower_antenna?.counted_by_you, work.parts.tower_radio_unit?.counted_by_you]).toEqual([3, 1]);
+  });
 });
 
 describe('next photo to check', () => {

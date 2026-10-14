@@ -34,7 +34,7 @@ export function usePhotoCloseLook(layerId: string, sha256: string) {
     queryKey: ['close-look-photo', layerId, sha256],
     queryFn: () => startOrRead<PhotoCloseLook>(url),
     retry: final,
-    refetchInterval: (query) => (query.state.data?.status === 'working' ? POLL_MS : false),
+    refetchInterval: (query) => (query.state.data?.status === 'working' || query.state.data?.counting ? POLL_MS : false),
     staleTime: 60_000,
   });
 }
