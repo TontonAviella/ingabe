@@ -138,6 +138,7 @@ import { ReadyState } from 'react-use-websocket';
 import { toast } from 'sonner';
 import { AdminLevelsOverlay } from '@/components/AdminLevelsOverlay';
 import AttributeTable from '@/components/AttributeTable';
+import { CloseLookBubbles } from '@/components/CloseLookBubbles';
 import { DroneCards } from '@/components/DroneCards';
 import { useFollowProjectIndustry } from '@/components/IndustryGate';
 import LayerList from '@/components/LayerList';
@@ -1720,6 +1721,12 @@ export default function MapLibreMap({
           hiddenLayerIDs={hiddenLayerIDs}
           historyOpen={mobileWorkspacePanel === 'history'}
           onAskSage={(prompt) => void sendMessage(prompt)}
+        />
+        <CloseLookBubbles
+          key={`close-look-${mapInstanceId}`}
+          map={mapRef.current}
+          layers={mapData?.layers ?? []}
+          hiddenLayerIDs={hiddenLayerIDs}
         />
         <TerrainOverlay key={`terrain-${mapInstanceId}`} map={mapRef.current} />
 
