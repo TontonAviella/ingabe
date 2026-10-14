@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw, ImageFont
 from redis.exceptions import LockError
 
 from src.llm_defaults import resolve_chat_endpoint, thinking_kwargs
-from src.services import llm_cache, stored_files
+from src.services import llm_cache, part_outlines, stored_files
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +269,155 @@ def flags(result: dict[str, Any]) -> list[str]:
     return out
 
 
+# --------------------------------------------------------------------------- counting by masks
+
+COUNT_METHOD = "close-look-count/v1"
+COUNT_PER_SHEET = 4
+COUNT_TILE = 740  # each crop at most this size, 2 x 2 to a sheet
+COUNT_TYPES = ("panel_antenna", "radio_unit", "microwave_dish")
+PART_OF_TYPE = {"panel_antenna": "tower_antenna", "radio_unit": "tower_radio_unit", "microwave_dish": "tower_dish"}
+# The rules of a counted part's outline, chosen by eye on 3 Louisville photos (2026-10-14), not measured:
+MAX_GROW = 1.3  # an outline at most this much larger (area) than the model's box it was marked in; larger is background
+MIN_SOLID = 0.65  # outline area / its convex hull: below this it is ragged (lattice steel, grass)
+ANTENNA_MIN_RATIO = 2.0  # a panel antenna is long and narrow (long side / short side at least this)
+RADIO_MAX_RATIO = 2.6  # a radio unit is compact (at most this)
+MERGE_PX = 25  # two points of one type this close are the same part
+
+COUNT_SCHEMA = _obj({"parts": {"type": "array", "items": _obj({
+    "closeup": {"type": "integer"}, "type": {"type": "string", "enum": list(COUNT_TYPES)},
+    "point": {"type": "array", "items": {"type": "number"}}, "confidence": _CONF})}})
+
+
+def _count_sheet(photo: Image.Image, boxes: Sequence[Shown]) -> tuple[Image.Image, list[tuple[int, int, int, int, int, int, float]]]:
+    """The model's boxes cut out with a margin, 2 x 2 and numbered; each tile's (x, y, w, h, crop x0, crop y0, scale)."""
+    tiles = []
+    for b in boxes:
+        x0, y0, x1, y1 = b.box
+        pad = 0.35 * max(x1 - x0, y1 - y0)
+        cx0, cy0 = int(max(0, x0 - pad)), int(max(0, y0 - pad))
+        crop = photo.crop((cx0, cy0, int(min(photo.width, x1 + pad)), int(min(photo.height, y1 + pad))))
+        scale = min(1.0, COUNT_TILE / max(crop.size))
+        tiles.append((cx0, cy0, scale, crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))),
+                                                   Image.Resampling.LANCZOS)))
+    sheet = Image.new("RGB", (2 * (COUNT_TILE + 20), ((len(tiles) + 1) // 2) * (COUNT_TILE + 60)), (20, 16, 14))
+    draw = ImageDraw.Draw(sheet)
+    places = []
+    for j, (cx0, cy0, scale, small) in enumerate(tiles):
+        ox, oy = (j % 2) * (COUNT_TILE + 20) + 10, (j // 2) * (COUNT_TILE + 60) + 50
+        sheet.paste(small, (ox, oy))
+        draw.text((ox, oy - 40), f"#{j + 1}", fill=(255, 220, 120), font=ImageFont.load_default(size=32))
+        places.append((ox, oy, small.width, small.height, cx0, cy0, scale))
+    return sheet, places
+
+
+def outline_shape(polygons: Sequence[Sequence[Sequence[float]]]) -> Optional[dict[str, float]]:
+    """Area, solidity (area / convex hull) and long side / short side of an outline; None without one."""
+    import cv2  # lazy: OpenCV, loaded only when parts are counted
+
+    if not polygons:
+        return None
+    pts = np.array([q for poly in polygons for q in poly], np.float32)
+    area = float(sum(cv2.contourArea(np.array(poly, np.float32)) for poly in polygons))
+    hull = float(cv2.contourArea(cv2.convexHull(pts)))
+    (_, _), (w, h), _ = cv2.minAreaRect(pts)
+    return {"area": area, "solidity": area / hull if hull else 0.0, "ratio": max(w, h) / max(1.0, min(w, h))}
+
+
+def why_to_check(kind: str, shape: Optional[dict[str, float]], box_area: float) -> Optional[str]:
+    """Why a counted part is left for a person to check instead of shown outlined; None when its outline fits."""
+    if shape is None:
+        return "no outline could be traced"
+    if shape["area"] > MAX_GROW * box_area:
+        return "the outline is larger than the part (background)"
+    if shape["solidity"] < MIN_SOLID:
+        return "the outline is ragged (steel or ground)"
+    if kind == "panel_antenna" and shape["ratio"] < ANTENNA_MIN_RATIO:
+        return "not the shape of a panel antenna"
+    if kind == "radio_unit" and shape["ratio"] > RADIO_MAX_RATIO:
+        return "too long for a radio unit"
+    return None
+
+
+def _inside(point: Sequence[float], box: Sequence[float], margin: float = 0.1) -> bool:
+    w, h = box[2] - box[0], box[3] - box[1]
+    return box[0] - margin * w <= point[0] <= box[2] + margin * w and box[1] - margin * h <= point[1] <= box[3] + margin * h
+
+
+def _iou(a: Sequence[float], b: Sequence[float]) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    i = ix * iy
+    return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i + 1e-9)
+
+
+def merge_counted(parts: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same part marked in two crops kept once: outlined parts first, then by confidence; a part of the same type
+    overlapping one kept by half, or its point inside a kept outline's box or within MERGE_PX of a kept point."""
+    order = {"high": 0, "medium": 1, "low": 2}
+    kept: list[dict[str, Any]] = []
+    for p in sorted(parts, key=lambda q: (q["check"] is not None, order.get(q["confidence"], 3))):
+        if any(m["type"] == p["type"] and (_iou(m["box"], p["box"]) >= 0.5
+                                           or (m["check"] is None and _inside(p["point"], m["box"]))
+                                           or (abs(m["point"][0] - p["point"][0]) < MERGE_PX
+                                               and abs(m["point"][1] - p["point"][1]) < MERGE_PX)) for m in kept):
+            continue
+        kept.append(p)
+    return kept
+
+
+async def count_by_masks(redis: Any, photo: Image.Image, shown: Sequence[Shown]) -> dict[str, Any]:
+    """Count the parts in the model's boxes: the vision model, told to count, puts a point on each panel antenna,
+    radio unit and dish; FastSAM traces each point; an outline that does not fit its part is left for a person to
+    check. Every part is a suggestion for a person: nothing here is a count until they keep it."""
+    rgb = np.asarray(photo)
+    found: list[dict[str, Any]] = []
+    chosen = list(shown)[:MAX_CHECKS]
+    for g in range(0, len(chosen), COUNT_PER_SHEET):
+        group = chosen[g:g + COUNT_PER_SHEET]
+        sheet, places = _count_sheet(photo, group)
+        answer = await _ask(redis, "tower_count", f"""Numbered close-ups (#1-#{len(group)}) cut from one drone photo of a telecom tower. COUNT every panel
+antenna, radio unit (remote radio unit / RRU box) and microwave dish you can see in each close-up, and put one point on
+each, at its middle, as [x, y] in this WHOLE picture's pixels (the picture is {sheet.width} x {sheet.height}). Count a part
+cut off by a close-up's edge only if most of it is in that close-up, and a part behind others only if you can tell what
+it is. Close-ups overlap, so the same part may appear in two of them: mark it in each. {HONEST}""",
+                            [jpeg(sheet, max_side=1600)], COUNT_SCHEMA)
+        sent_w = min(1600, sheet.width) / sheet.width
+        for p in answer["parts"]:
+            n = p["closeup"] - 1
+            if not 0 <= n < len(places) or len(p["point"]) != 2:
+                continue
+            ox, oy, w, h, cx0, cy0, scale = places[n]
+            x, y = p["point"][0] / sent_w, p["point"][1] / sent_w
+            if not (ox <= x <= ox + w and oy <= y <= oy + h):
+                continue
+            px, py = cx0 + (x - ox) / scale, cy0 + (y - oy) / scale
+            try:
+                traced = await asyncio.to_thread(part_outlines.trace, rgb, px, py)
+            except part_outlines.OutlinerUnavailable:
+                traced = None
+            source = group[n].box
+            shape = outline_shape(traced.polygons) if traced else None
+            check = why_to_check(p["type"], shape, (source[2] - source[0]) * (source[3] - source[1]))
+            box = list(traced.box) if traced and check is None else [px - 15, py - 15, px + 15, py + 15]
+            found.append({"type": p["type"], "part": PART_OF_TYPE[p["type"]], "point": [round(px), round(py)],
+                          "confidence": p["confidence"], "outline": traced.polygons if traced and check is None else [],
+                          "box": [round(v, 1) for v in box], "check": check})
+    parts = merge_counted(found)
+    return {"method": COUNT_METHOD, "parts": parts,
+            "counts": {t: {"outlined": sum(1 for q in parts if q["type"] == t and q["check"] is None),
+                           "to_check": sum(1 for q in parts if q["type"] == t and q["check"] is not None)}
+                       for t in COUNT_TYPES}}
+
+
+def count_key(project_id: str, layer_id: str, sha256: str) -> str:
+    return f"{STORE_PREFIX}/count/{project_id}/{layer_id}/{sha256}.json"
+
+
+async def load_count(s3: Any, bucket: str, project_id: str, layer_id: str, sha256: str) -> Optional[dict[str, Any]]:
+    data = await stored_files.load_json(s3, bucket, count_key(project_id, layer_id, sha256))
+    return data if data is not None and data.get("method") == COUNT_METHOD else None
+
+
 # --------------------------------------------------------------------------- orthomosaics
 
 def squares_in(width: int, height: int, size: int, valid: np.ndarray, seed: str, count: int = SQUARES) -> list[tuple[int, int]]:
@@ -408,22 +557,29 @@ def facts_of(photo: Any, compass: Any) -> str:
 
 async def keep_photo(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, sha256: str,
                      read_picture: Any, facts: str, shown: Sequence[Shown], nouns: dict[str, str]) -> None:
-    """Look at one tower photo now and keep the look, unless one is kept."""
-    if await load_photo(s3, bucket, project_id, layer_id, sha256) is not None:
+    """Look at one tower photo now and keep the look and the count by masks, unless they are kept."""
+    has_look = await load_photo(s3, bucket, project_id, layer_id, sha256) is not None
+    has_count = await load_count(s3, bucket, project_id, layer_id, sha256) is not None
+    if has_look and has_count:
         return
-    pixels = await read_picture()
-    picture = Image.fromarray(pixels)
-    result = await look_at_photo(redis, picture, facts, shown, nouns)
-    await s3.put_object(Bucket=bucket, Key=thumb_key(project_id, layer_id, sha256), Body=jpeg(picture, THUMB_PX, 80),
-                        ContentType="image/jpeg")
-    await s3.put_object(Bucket=bucket, Key=photo_key(project_id, layer_id, sha256),
-                        Body=json.dumps(result).encode(), ContentType="application/json")
+    picture = Image.fromarray(await read_picture())
+    if not has_look:
+        result = await look_at_photo(redis, picture, facts, shown, nouns)
+        await s3.put_object(Bucket=bucket, Key=thumb_key(project_id, layer_id, sha256), Body=jpeg(picture, THUMB_PX, 80),
+                            ContentType="image/jpeg")
+        await s3.put_object(Bucket=bucket, Key=photo_key(project_id, layer_id, sha256),
+                            Body=json.dumps(result).encode(), ContentType="application/json")
+    if not has_count and shown:
+        counted = await count_by_masks(redis, picture, shown)
+        await s3.put_object(Bucket=bucket, Key=count_key(project_id, layer_id, sha256),
+                            Body=json.dumps(counted).encode(), ContentType="application/json")
 
 
 async def ensure_photo(redis: Any, s3: Any, bucket: str, project_id: str, layer_id: str, sha256: str,
                        read_picture: Any, facts: str, shown: Sequence[Shown], nouns: dict[str, str]) -> bool:
     """Look at one tower photo in the background unless its look is kept (or one runs). True while one runs."""
-    if not enabled() or await load_photo(s3, bucket, project_id, layer_id, sha256) is not None:
+    if not enabled() or (await load_photo(s3, bucket, project_id, layer_id, sha256) is not None
+                         and (not shown or await load_count(s3, bucket, project_id, layer_id, sha256) is not None)):
         return False
     return await run_once(redis, f"photo:{project_id}:{layer_id}:{sha256}",
                           lambda: keep_photo(redis, s3, bucket, project_id, layer_id, sha256, read_picture, facts,

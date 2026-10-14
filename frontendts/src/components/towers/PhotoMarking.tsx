@@ -15,10 +15,22 @@ import {
   useTowerCardAnswer,
   useTrace,
 } from '@/hooks/useTowers';
-import { type DeckItem, deckOf, litParts, PART_COLOR, scoreWords, suggestedLine, unanswered } from '@/lib/photoCheck';
+import {
+  countedInside,
+  countedWords,
+  type DeckItem,
+  deckOf,
+  litParts,
+  missedByModel,
+  PART_COLOR,
+  scoreWords,
+  suggestedLine,
+  unanswered,
+} from '@/lib/photoCheck';
 import type { Box, Point } from '@/lib/photoView';
 import {
   type CloseLookRegion,
+  type CountedPart,
   type InspectionPhoto,
   type PartLabel,
   type PhotoCloseLook,
@@ -94,10 +106,24 @@ function Dot({ part }: { part: TowerPart }) {
   return <span className="inline-block size-2.5 shrink-0 rounded-[3px]" style={{ background: PART_COLOR[part] }} />;
 }
 
-/** The suggestion zoomed in, with its outline (or box), drawn from the photo itself. */
-function SuggestionCrop({ url, item, useBox }: { url: string; item: DeckItem; useBox: boolean }) {
+/** A part zoomed in, with its outline (or box, or a ring on its point), drawn from the photo itself. */
+function PartCrop({
+  url,
+  part,
+  box,
+  outline,
+  point,
+  useBox = false,
+}: {
+  url: string;
+  part: TowerPart;
+  box: Box;
+  outline?: number[][][];
+  /** Marked by a ring instead of its box: a part without an outline. */
+  point?: Point;
+  useBox?: boolean;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const { suggestion, part } = item;
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
@@ -107,7 +133,7 @@ function SuggestionCrop({ url, item, useBox }: { url: string; item: DeckItem; us
     const H = 480;
     canvas.width = W;
     canvas.height = H;
-    const [x0, y0, x1, y1] = suggestion.box;
+    const [x0, y0, x1, y1] = box;
     let cw = (x1 - x0) * 1.9;
     let ch = (y1 - y0) * 1.9;
     if (cw / ch > W / H) ch = (cw * H) / W;
@@ -124,9 +150,15 @@ function SuggestionCrop({ url, item, useBox }: { url: string; item: DeckItem; us
       ctx.lineWidth = 4;
       ctx.strokeStyle = PART_COLOR[part];
       ctx.fillStyle = `${PART_COLOR[part]}22`;
+      if (point) {
+        ctx.beginPath();
+        ctx.arc((point[0] - cx) * k, (point[1] - cy) * k, 22, 0, 2 * Math.PI);
+        ctx.stroke();
+        return;
+      }
       const shapes =
-        !useBox && suggestion.outline?.length
-          ? suggestion.outline
+        !useBox && outline?.length
+          ? outline
           : [
               [
                 [x0, y0],
@@ -144,11 +176,11 @@ function SuggestionCrop({ url, item, useBox }: { url: string; item: DeckItem; us
       }
     };
     img.src = url;
-  }, [url, suggestion, part, useBox]);
+  }, [url, part, box, outline, point, useBox]);
   return (
     <canvas
       ref={ref}
-      aria-label={`The suggestion, zoomed in`}
+      aria-label="The part, zoomed in"
       className="block aspect-[4/3] w-full rounded-[14px] border border-white/10 bg-black"
     />
   );
@@ -175,7 +207,7 @@ function ReaderSwitch({ audience, onChange }: { audience: TowerAudience; onChang
 }
 
 type View = { kind: 'questions' } | { kind: 'question'; id: string } | { kind: 'check' } | { kind: 'part'; part: TowerPart };
-type Step = 'check' | 'missed' | 'done';
+type Step = 'check' | 'extra' | 'missed' | 'done';
 
 /** Which of the close look's worries answers each question of the photo screen. */
 const WORRY_OF: Record<string, string> = {
@@ -191,6 +223,27 @@ const WORRY_OF: Record<string, string> = {
 /** The questions whose close look shows its close-ups. */
 const CLOSE_UPS_FOR = new Set(['defects', 'damage', 'obstruction_light', 'surroundings', 'changes']);
 const CLOSE_LOOK_NOTE = 'A close look: not measured. A person checks before anything is counted or acted on.';
+
+const boxArea = ([x0, y0, x1, y1]: Box) => (x1 - x0) * (y1 - y0);
+/** Where a counted part is shown: its outline's box, or a square around its point when it has no outline. */
+const missedBox = (c: CountedPart): Box =>
+  c.check === null ? c.box : [c.point[0] - 80, c.point[1] - 80, c.point[0] + 80, c.point[1] + 80];
+// The close look's parts a person answered No on this device (per photo), not asked again.
+const skippedKey = (layerId: string, sha256: string) => `close-look-skipped:${layerId}:${sha256}`;
+function readSkipped(layerId: string, sha256: string): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(skippedKey(layerId, sha256)) ?? '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+function keepSkipped(layerId: string, sha256: string, keys: Set<string>) {
+  try {
+    localStorage.setItem(skippedKey(layerId, sha256), JSON.stringify([...keys]));
+  } catch {
+    // Not kept on this device: asked again next time.
+  }
+}
 
 /** A part of the photo, cut out and shown larger. */
 function RegionCrop({ url, region }: { url: string; region: CloseLookRegion }) {
@@ -375,6 +428,9 @@ function PhotoWorkspace({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [findError, setFindError] = useState<string | null>(null);
   const [remarking, setRemarking] = useState<Partial<Record<TowerPart, boolean>>>({});
+  const [skipped, setSkipped] = useState<Set<string>>(() => readSkipped(layerId, photo.sha256));
+  const [currentMissed, setCurrentMissed] = useState<string | null>(null);
+  const [drawingMissed, setDrawingMissed] = useState(false);
 
   useEffect(() => {
     if (work.data) dispatch({ type: 'sync', work: work.data });
@@ -401,7 +457,13 @@ function PhotoWorkspace({
     const w = work.data?.parts[id];
     return (w && jobState(w.job).active) || (scanning && w && !w.job && w.marks.length === 0);
   });
-  const shownStep: Step = step ?? (open.length > 0 ? 'check' : allCounted && !scanBusy ? 'done' : 'missed');
+  // The parts a close look counted that the model did not suggest: asked about after the model's own, before "Anything
+  // missed?"; a part answered No is not asked again on this device.
+  const counted = look.data?.counted?.parts ?? [];
+  const missed = missedByModel(counted, work.data, draft, scanned).filter((m) => !skipped.has(m.key));
+  const missedItem = missed.find((m) => m.key === currentMissed) ?? missed[0] ?? null;
+  const shownStep: Step =
+    step ?? (open.length > 0 ? 'check' : missed.length > 0 && !scanBusy ? 'extra' : allCounted && !scanBusy ? 'done' : 'missed');
   const currentItem =
     (current && deck.find((d) => d.key === current && !draft[d.part].review.decisions[d.suggestion.id])) || open[0] || null;
 
@@ -439,11 +501,26 @@ function PhotoWorkspace({
   const scannedDirty = scanned.some(({ id }) => draft[id].review.dirty);
   useEffect(() => onDirtyChange(markedDirty || scannedDirty), [markedDirty, scannedDirty, onDirtyChange]);
 
+  // A part added with its outline (traced by a tap, or outlined by the close look), shown with it until saved.
+  const addOutlined = useCallback(
+    (part: TowerPart, box: Box, polygons: number[][][], index: number) => {
+      if (polygons.length) setAddedOutlines((o) => ({ ...o, [`${part}:${index}`]: polygons }));
+      act({ type: 'review/add', part, box });
+    },
+    [act],
+  );
   const answer = useCallback(
-    (kind: 'keep' | 'reject') => {
+    (kind: 'keep' | 'reject' | 'separate') => {
       const item = currentItem;
       if (!item) return;
-      act({ type: kind === 'keep' ? 'review/keep' : 'review/reject', part: item.part, id: item.suggestion.id });
+      if (kind === 'separate') {
+        // The box holds several parts: it becomes the one that fills most of it, the others are added as their own.
+        const inBox = countedInside(counted, item.part, item.suggestion.box);
+        const own = inBox.reduce((a, b) => (boxArea(b.box) > boxArea(a.box) ? b : a));
+        act({ type: 'review/fix', part: item.part, id: item.suggestion.id, box: own.box });
+        const start = draft[item.part].review.added.length;
+        inBox.filter((c) => c !== own).forEach((c, j) => addOutlined(item.part, c.box, c.outline, start + j));
+      } else act({ type: kind === 'keep' ? 'review/keep' : 'review/reject', part: item.part, id: item.suggestion.id });
       setHistory((h) => [...h, item]);
       const next = deck.find(
         (d) => d.key !== item.key && deck.indexOf(d) > deck.indexOf(item) && !draft[d.part].review.decisions[d.suggestion.id],
@@ -454,7 +531,7 @@ function PhotoWorkspace({
       if (after) setFocus({ box: after.suggestion.box, nonce: Date.now() });
       else setStep(null);
     },
-    [currentItem, act, deck, draft, open],
+    [currentItem, act, deck, draft, open, counted, addOutlined],
   );
   const undo = useCallback(() => {
     const last = history[history.length - 1];
@@ -465,6 +542,38 @@ function PhotoWorkspace({
     setStep('check');
   }, [history, act]);
 
+  // A part the model missed: Yes adds it (its outline, or the box the person draws), No skips it; then the next one.
+  const nextMissed = (after: string) => {
+    const at = missed.findIndex((m) => m.key === after);
+    const next = missed[at + 1] ?? null;
+    setCurrentMissed(next?.key ?? null);
+    setDrawingMissed(false);
+  };
+  const skipMissed = (keys: string[]) => {
+    const all = new Set([...skipped, ...keys]);
+    setSkipped(all);
+    keepSkipped(layerId, photo.sha256, all);
+  };
+  const answerMissed = (kind: 'keep' | 'reject') => {
+    if (!missedItem) return;
+    const { counted: c, key } = missedItem;
+    if (kind === 'reject') skipMissed([key]);
+    else if (c.check !== null) {
+      setDrawingMissed(true);
+      return;
+    } else addOutlined(c.part, c.box, c.outline, draft[c.part].review.added.length);
+    nextMissed(key);
+  };
+  // The keys below answer through the latest one (it changes with every render).
+  const answerMissedRef = useRef(answerMissed);
+  answerMissedRef.current = answerMissed;
+
+  const shownMissed = view.kind === 'check' && shownStep === 'extra' ? missedItem : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: zoom to each part asked about, once
+  useEffect(() => {
+    if (shownMissed) setFocus({ box: missedBox(shownMissed.counted), nonce: Date.now() });
+  }, [shownMissed?.key]);
+
   // Y keeps, N rejects, U takes back the last answer; Delete removes a box you added.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -472,13 +581,15 @@ function PhotoWorkspace({
       const k = e.key.toLowerCase();
       if (view.kind === 'check' && shownStep === 'check' && k === 'y') answer('keep');
       else if (view.kind === 'check' && shownStep === 'check' && k === 'n') answer('reject');
+      else if (view.kind === 'check' && shownStep === 'extra' && !drawingMissed && k === 'y') answerMissedRef.current('keep');
+      else if (view.kind === 'check' && shownStep === 'extra' && !drawingMissed && k === 'n') answerMissedRef.current('reject');
       else if (view.kind === 'check' && k === 'u') undo();
       else return;
       e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view.kind, shownStep, answer, undo]);
+  }, [view.kind, shownStep, answer, undo, drawingMissed]);
 
   const finishPhoto = async () => {
     // A part the models found nothing of, or every suggestion answered, is counted once its review is saved.
@@ -503,9 +614,7 @@ function PhotoWorkspace({
   };
   const keepTraced = () => {
     if (!traced) return;
-    const index = draft[traced.part].review.added.length;
-    setAddedOutlines((o) => ({ ...o, [`${traced.part}:${index}`]: traced.polygons }));
-    act({ type: 'review/add', part: traced.part, box: traced.box });
+    addOutlined(traced.part, traced.box, traced.polygons, draft[traced.part].review.added.length);
     setTraced(null);
   };
 
@@ -576,6 +685,20 @@ function PhotoWorkspace({
         }),
       );
     }
+    if (view.kind === 'check' && shownStep === 'extra' && missedItem) {
+      const c = missedItem.counted;
+      boxes.push({
+        key: missedItem.key,
+        box: missedBox(c),
+        kind: 'suggestion',
+        color: PART_COLOR[c.part],
+        outline: c.check === null ? c.outline : undefined,
+        current: true,
+        lit: true,
+        selectable: false,
+        editable: false,
+      });
+    }
     if (traced)
       boxes.push({
         key: 'traced',
@@ -606,6 +729,10 @@ function PhotoWorkspace({
     if (partView) {
       if (partReviewing) act({ type: 'review/add', part: partView, box });
       else if (!partJob.active) act({ type: 'mark/add', part: partView, box });
+    } else if (view.kind === 'check' && shownStep === 'extra' && drawingMissed && missedItem) {
+      act({ type: 'review/add', part: missedItem.counted.part, box });
+      skipMissed([missedItem.key]);
+      nextMissed(missedItem.key);
     } else if (view.kind === 'check' && addKind && drawInstead) {
       act({ type: 'review/add', part: addKind, box });
       setDrawInstead(false);
@@ -687,7 +814,9 @@ function PhotoWorkspace({
       ? drawInstead
         ? 'draw'
         : 'tap'
-      : 'move';
+      : view.kind === 'check' && shownStep === 'extra' && drawingMissed
+        ? 'draw'
+        : 'move';
 
   // --- The line on the photo ---
   const suggested = suggestedLine(work.data, scanned);
@@ -839,7 +968,7 @@ function PhotoWorkspace({
           <span className={EYEBROW}>
             Check {answered + 1} of {deck.length}
           </span>
-          <SuggestionCrop url={photo.url} item={item} useBox={!!useBox[key]} />
+          <PartCrop url={photo.url} part={item.part} box={item.suggestion.box} outline={item.suggestion.outline} useBox={!!useBox[key]} />
           <h2 className="m-0 text-[21px] font-bold leading-tight">Is this a {label(item.part).label.toLowerCase()}?</h2>
           <span className="inline-flex items-center gap-2 text-[12.5px] text-[#B8A99B]">
             <span className="inline-block h-1.5 w-16 overflow-hidden rounded-full bg-[#221813]">
@@ -860,6 +989,23 @@ function PhotoWorkspace({
                 {check.really}
                 {check.damage && !/^none/i.test(check.damage) ? ` Damage: ${check.damage}` : ''}
               </p>
+            );
+          })()}
+          {(() => {
+            const inBox = countedInside(counted, item.part, item.suggestion.box);
+            if (inBox.length < 2) return null;
+            return (
+              <div className="flex flex-col gap-2 rounded-[10px] border border-[#D9A066]/40 bg-[#D9A066]/10 px-2.5 py-2">
+                <p className="m-0 text-[13px] leading-snug text-[#F3EDE6]">
+                  <b>
+                    A close look sees {inBox.length} {label(item.part).plural.toLowerCase()} in this box.
+                  </b>{' '}
+                  If they are separate, each is kept with its own outline.
+                </p>
+                <button type="button" className={`${PRIMARY} self-start`} onClick={() => answer('separate')}>
+                  Yes, {inBox.length} separate
+                </button>
+              </div>
             );
           })()}
           <div className="grid grid-cols-2 gap-2">
@@ -916,6 +1062,60 @@ function PhotoWorkspace({
               {saveError}
             </p>
           )}
+        </div>
+      );
+    } else if (shownStep === 'extra' && missedItem) {
+      const c = missedItem.counted;
+      const name = label(c.part).label.toLowerCase();
+      panel = (
+        <div className="flex flex-col gap-3">
+          {hasQuestions && back}
+          <span className={EYEBROW}>
+            Missed by the model · {missed.indexOf(missedItem) + 1} of {missed.length}
+          </span>
+          <PartCrop
+            url={photo.url}
+            part={c.part}
+            box={missedBox(c)}
+            outline={c.check === null ? c.outline : undefined}
+            point={c.check === null ? undefined : c.point}
+          />
+          <h2 className="m-0 text-[21px] font-bold leading-tight">Is this a {name}?</h2>
+          <p className="m-0 text-[14px] leading-snug text-[#B8A99B]">
+            {c.check === null
+              ? `A close look found and outlined it; the model did not suggest it.`
+              : `A close look marked a ${name} here, but its outline was not kept (${c.check}). If it is one, draw its box.`}
+          </p>
+          {drawingMissed ? (
+            <p role="status" className="m-0 rounded-[12px] border border-white/10 bg-[#221813] px-3 py-2 text-[14px] text-[#F3EDE6]">
+              Drag a box around the {name} on the photo.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className={`${BIG} border border-white/15 bg-white/[0.06] text-[#F3EDE6] hover:bg-[#FF4D1A]/20`}
+                onClick={() => answerMissed('reject')}
+              >
+                No <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">N</kbd>
+              </button>
+              <button
+                type="button"
+                className={`${BIG} bg-[#D9A066] text-[#0B0908] hover:bg-[#E9B987]`}
+                onClick={() => answerMissed('keep')}
+              >
+                {c.check === null ? 'Yes' : 'Yes: draw its box'}{' '}
+                <kbd className="rounded border border-current px-1 font-mono text-[11px] opacity-60">Y</kbd>
+              </button>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button type="button" className={LINK} onClick={() => skipMissed(missed.map((m) => m.key))}>
+              Skip the rest
+            </button>
+            <span className="text-[12px] text-[#8C7D70]">Only what you keep is counted</span>
+          </div>
+          <p className="m-0 text-[11.5px] text-[#8C7D70]">{CLOSE_LOOK_NOTE}</p>
         </div>
       );
     } else if (shownStep !== 'done') {
@@ -984,6 +1184,15 @@ function PhotoWorkspace({
               Draw a box instead
             </button>
           )}
+          {look.data?.counting ? (
+            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
+              <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look is counting the parts on this photo…
+            </p>
+          ) : countedWords(counted, scanned) ? (
+            <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
+              A close look: {countedWords(counted, scanned)}. Suggestions only: the count is what you kept.
+            </p>
+          ) : null}
           {scanned.some(({ id }) => draft[id].review.added.length > 0) && (
             <p className="m-0 text-[13px] text-[#B8A99B]">
               Added by you:{' '}
@@ -1038,6 +1247,15 @@ function PhotoWorkspace({
               );
             })}
           </div>
+          {look.data?.counting ? (
+            <p role="status" className="m-0 flex items-center gap-2 text-[13px] text-[#B8A99B]">
+              <LoaderCircle className="size-4 animate-spin text-[#D9A066]" /> A close look is counting the parts on this photo…
+            </p>
+          ) : countedWords(counted, scanned) ? (
+            <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
+              A close look: {countedWords(counted, scanned)}. Suggestions only: the count is what you kept.
+            </p>
+          ) : null}
           <p className="m-0 text-[12.5px] leading-snug text-[#8C7D70]">
             Photos overlap, so the tower's count is the most seen on one photo, not a sum. Comparing with the tenant list (what each
             contract allows) is coming.

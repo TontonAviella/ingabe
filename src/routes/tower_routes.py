@@ -381,9 +381,13 @@ async def _photo_look(inspection: _Inspection, photo: PhotoFacts) -> dict[str, A
     working = result is None and (
         await close_look.running(redis, f"photo:{inspection.project_id}:{inspection.layer.layer_id}:{photo.sha256}")
         or await close_look.running(redis, f"inspection:{inspection.project_id}:{inspection.layer.layer_id}"))
+    counted = await close_look.load_count(s3, get_bucket_name(), inspection.project_id, inspection.layer.layer_id,
+                                          photo.sha256)
+    counting = result is not None and counted is None and await close_look.running(
+        redis, f"photo:{inspection.project_id}:{inspection.layer.layer_id}:{photo.sha256}")
     status = "ready" if result else "working" if working else "off" if not close_look.enabled() else "none"
-    return {"status": status, "result": result, "spent_today_usd": round(await close_look.spent_today(redis), 2),
-            "daily_usd": close_look.daily_usd()}
+    return {"status": status, "result": result, "counted": counted, "counting": counting,
+            "spent_today_usd": round(await close_look.spent_today(redis), 2), "daily_usd": close_look.daily_usd()}
 
 
 @router.get("/towers/layer/{layer_id}/photos/{sha256}/close-look", operation_id="get_tower_photo_close_look")

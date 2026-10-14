@@ -89,3 +89,54 @@ def test_a_photos_facts_in_words():
         "taken 2020-10-06 08:16 local time, camera heading 357° (north), tilted 30° down, 64 m above take-off")
     none = SimpleNamespace(taken_at=None, gimbal_yaw=None, gimbal_pitch=None, relative_altitude_m=None)
     assert close_look.facts_of(none, str) == "no camera facts recorded"
+
+
+def test_counted_parts_are_outlined_when_the_outline_fits_and_left_to_check_otherwise(monkeypatch):
+    # One model box [900, 100, 1010, 215] cut out with a margin: the crop starts at (859, 59) and is pasted unscaled at
+    # (10, 50) of the sheet, so a point (x, y) on the sheet is (x + 849, y + 9) in the photo.
+    async def ask(redis, name, prompt, pictures, schema):
+        assert name == "tower_count"
+        return {"parts": [
+            {"closeup": 1, "type": "panel_antenna", "point": [81, 141], "confidence": "high"},
+            {"closeup": 1, "type": "panel_antenna", "point": [86, 143], "confidence": "medium"},  # the same antenna
+            {"closeup": 1, "type": "radio_unit", "point": [131, 141], "confidence": "high"},
+            {"closeup": 1, "type": "microwave_dish", "point": [151, 191], "confidence": "low"},
+            {"closeup": 1, "type": "panel_antenna", "point": [400, 400], "confidence": "high"},  # outside the close-up
+            {"closeup": 2, "type": "panel_antenna", "point": [81, 141], "confidence": "high"},  # no such close-up
+        ]}
+
+    def rect(x0, y0, x1, y1):
+        return SimpleNamespace(polygons=[[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]], box=(x0, y0, x1, y1))
+
+    def trace(rgb, x, y):
+        if x < 950:
+            return rect(915, 105, 945, 210)  # long and narrow: an antenna
+        if x < 990:
+            return rect(960, 105, 1000, 210)  # long side / short side 2.6: too long for a radio unit
+        return None
+
+    monkeypatch.setattr(close_look, "_ask", ask)
+    monkeypatch.setattr(close_look.part_outlines, "trace", trace)
+    shown = [close_look.Shown(id="j-1", part="tower_antenna", box=(900, 100, 1010, 215))]
+    counted = asyncio.run(close_look.count_by_masks(_Redis(), Image.new("RGB", (2000, 1400)), shown))
+
+    assert counted["method"] == close_look.COUNT_METHOD
+    assert [(p["type"], p["point"], p["check"]) for p in counted["parts"]] == [
+        ("panel_antenna", [930, 150], None),
+        ("radio_unit", [980, 150], "too long for a radio unit"),
+        ("microwave_dish", [1000, 200], "no outline could be traced"),
+    ]
+    assert counted["parts"][0]["box"] == [915, 105, 945, 210] and counted["parts"][0]["part"] == "tower_antenna"
+    assert counted["parts"][1]["outline"] == [] and counted["parts"][1]["box"] == [965, 135, 995, 165]
+    assert counted["counts"] == {"panel_antenna": {"outlined": 1, "to_check": 0},
+                                 "radio_unit": {"outlined": 0, "to_check": 1},
+                                 "microwave_dish": {"outlined": 0, "to_check": 1}}
+
+
+def test_an_outline_larger_than_its_part_or_ragged_is_left_to_check():
+    solid = {"area": 1000.0, "solidity": 0.9, "ratio": 3.0}
+    assert close_look.why_to_check("panel_antenna", solid, 2000) is None
+    assert close_look.why_to_check("panel_antenna", solid, 500) == "the outline is larger than the part (background)"
+    assert close_look.why_to_check("panel_antenna", {**solid, "solidity": 0.4}, 2000) == "the outline is ragged (steel or ground)"
+    assert close_look.why_to_check("panel_antenna", {**solid, "ratio": 1.2}, 2000) == "not the shape of a panel antenna"
+    assert close_look.why_to_check("microwave_dish", {**solid, "ratio": 1.2}, 2000) is None

@@ -1,4 +1,5 @@
-import type { PartLabel, PhotoWork, Suggestion, TowerPart } from '@/lib/towerContract';
+import type { Box, Point } from '@/lib/photoView';
+import type { CountedPart, PartLabel, PhotoWork, Suggestion, TowerPart } from '@/lib/towerContract';
 import { jobState, type PhotoDraft } from '@/lib/towerReview';
 
 // The photo screen's check: the suggestions of the parts the trained models found by themselves, asked about one at
@@ -46,6 +47,56 @@ export function nextToAsk(deck: DeckItem[], draft: PhotoDraft, afterKey: string 
   if (open.length === 0) return null;
   const at = afterKey === null ? -1 : deck.findIndex((d) => d.key === afterKey);
   return open.find((d) => deck.indexOf(d) > at) ?? open[0];
+}
+
+function inside([x, y]: Point, [x0, y0, x1, y1]: Box): boolean {
+  return x >= x0 && x <= x1 && y >= y0 && y <= y1;
+}
+
+/** The close look's outlined parts of the same part inside one of the model's boxes: "Yes, 3 separate" when 2 or more. */
+export function countedInside(counted: CountedPart[], part: TowerPart, box: Box): CountedPart[] {
+  return counted.filter((c) => c.part === part && c.check === null && inside(c.point, box));
+}
+
+export interface MissedPart {
+  /** `x:${index in the close look's parts}`: the screen's key for it. */
+  key: string;
+  counted: CountedPart;
+}
+
+/** The parts the close look counted that the model did not suggest: their point is in none of the model's boxes of
+ * that part (whatever the person answered) nor in a box the person added. Only the scanned parts, once found. */
+export function missedByModel(counted: CountedPart[], work: PhotoWork | undefined, draft: PhotoDraft, scanned: PartLabel[]): MissedPart[] {
+  if (!work) return [];
+  return counted.flatMap((c, i) => {
+    const partWork = work.parts[c.part];
+    if (!scanned.some((p) => p.id === c.part) || !partWork || !jobState(partWork.job).done) return [];
+    const review = draft[c.part].review;
+    const boxes = [
+      ...partWork.suggestions.map((s) => s.box),
+      ...Object.values(review.decisions).flatMap((d) => (d.kind === 'fixed' ? [d.box] : [])),
+      ...review.added,
+    ];
+    return boxes.some((b) => inside(c.point, b)) ? [] : [{ key: `x:${i}`, counted: c }];
+  });
+}
+
+/** "8 panel antennas and 3 radio units outlined, 2 panel antennas and 4 radio units to check": what the close look counted, part by part
+ * in the screen's order. Suggestions for a person, never the photo's count. */
+export function countedWords(counted: CountedPart[], parts: PartLabel[]): string | null {
+  const rows = parts
+    .map(({ id, label, plural }) => {
+      const outlined = counted.filter((c) => c.part === id && c.check === null).length;
+      const toCheck = counted.filter((c) => c.part === id && c.check !== null).length;
+      const name = (n: number) => (n === 1 ? label : plural).toLowerCase();
+      return { outlined, toCheck, name };
+    })
+    .filter((r) => r.outlined + r.toCheck > 0);
+  if (rows.length === 0) return null;
+  const join = (words: string[]) => (words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}` : words[0]);
+  const line = `${join(rows.map((r) => `${r.outlined} ${r.name(r.outlined)}`))} outlined`;
+  const more = rows.filter((r) => r.toCheck > 0);
+  return more.length ? `${line}, ${join(more.map((r) => `${r.toCheck} ${r.name(r.toCheck)}`))} to check` : line;
 }
 
 /** The parts a question lights up on the photo (PhotoQuestion.lights), among this inspection's parts. */
