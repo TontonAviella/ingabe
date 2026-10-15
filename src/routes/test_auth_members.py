@@ -32,8 +32,10 @@ def signed_in(monkeypatch, client):
          "role": "admin", "status": "active"},
         {"id": "om_2", "user_id": "user_other", "email": "o@x.rw", "name": None, "picture": None,
          "role": "member", "status": "active"}])
-    monkeypatch.setattr(workos_auth, "pending_invitations", lambda org: [{"id": "inv_1", "email": "n@x.rw",
-                                                                         "role": "member", "expires_at": "x"}])
+    monkeypatch.setattr(workos_auth, "open_invitations", lambda org: [
+        {"id": "inv_1", "email": "n@x.rw", "role": "member", "state": "pending", "expires_at": "x", "created_at": "y",
+         "link": "https://auth.example/invite?token=t"}])
+    monkeypatch.setattr(workos_auth, "resend_invitation", lambda inv: calls.append(("resend", inv)) or {"id": inv})
     monkeypatch.setattr(workos_auth, "invite", lambda org, email, role, inviter: calls.append(("invite", email, role)) or {"id": "inv_2"})
     monkeypatch.setattr(workos_auth, "remove_member", lambda mid, org: calls.append(("remove", mid)))
 
@@ -77,3 +79,16 @@ async def test_admin_invites_and_removes_but_not_themselves(client, signed_in):
     assert (await client.delete("/api/auth/organization/members/om_me")).status_code == 400
     assert (await client.delete("/api/auth/organization/members/om_unknown")).status_code == 404
     assert calls == [("invite", "new@x.rw", "member"), ("remove", "om_2")]
+
+
+@pytest.mark.anyio
+async def test_admin_sends_an_invitation_of_this_organization_again_but_not_another_ones(client, signed_in):
+    as_role, calls = signed_in
+    as_role("admin")
+    body = (await client.get("/api/auth/organization/members")).json()
+    assert body["invitations"][0]["state"] == "pending" and body["invitations"][0]["link"].startswith("https://")
+    assert (await client.post("/api/auth/organization/invitations/inv_1/resend")).status_code == 200
+    assert (await client.post("/api/auth/organization/invitations/inv_other/resend")).status_code == 404
+    as_role("member")
+    assert (await client.post("/api/auth/organization/invitations/inv_1/resend")).status_code == 403
+    assert calls == [("resend", "inv_1")]
