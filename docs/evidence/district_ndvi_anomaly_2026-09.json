@@ -1,0 +1,706 @@
+{
+ "today": "2026-10-07",
+ "workers": 4,
+ "cold": {
+  "seconds": 175.2,
+  "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)",
+  "scale": "NDVI anomaly (standard deviations from the normal for the month): -1.5 or lower = high (vegetation well below normal for the month), above -1.5 to -1 = moderate (vegetation below normal for the month), above -1 = no alert.",
+  "checked": 30,
+  "districts": [
+   {
+    "district": "Rubavu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.4,
+    "ndvi": 0.405,
+    "clear_fraction": 0.55,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gasabo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.27,
+    "ndvi": 0.335,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Kicukiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.21,
+    "ndvi": 0.31,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Nyarugenge",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.07,
+    "ndvi": 0.354,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gatsibo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.95,
+    "ndvi": 0.353,
+    "clear_fraction": 0.98,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gicumbi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.93,
+    "ndvi": 0.428,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ruhango",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.9,
+    "ndvi": 0.357,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Musanze",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.88,
+    "ndvi": 0.414,
+    "clear_fraction": 0.64,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kamonyi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.37,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyabihu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.439,
+    "clear_fraction": 0.55,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rulindo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.396,
+    "clear_fraction": 0.96,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rutsiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.452,
+    "clear_fraction": 0.44,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rwamagana",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.371,
+    "clear_fraction": 0.96,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rusizi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.76,
+    "ndvi": 0.532,
+    "clear_fraction": 0.95,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyanza",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.75,
+    "ndvi": 0.375,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kayonza",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.71,
+    "ndvi": 0.331,
+    "clear_fraction": 0.92,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Bugesera",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.341,
+    "clear_fraction": 0.95,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Burera",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.409,
+    "clear_fraction": 0.52,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyagatare",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.333,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Karongi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.442,
+    "clear_fraction": 0.8,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ngoma",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.394,
+    "clear_fraction": 0.94,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ngororero",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.431,
+    "clear_fraction": 0.93,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyamasheke",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.58,
+    "ndvi": 0.534,
+    "clear_fraction": 0.79,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gakenke",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.51,
+    "ndvi": 0.435,
+    "clear_fraction": 0.94,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Muhanga",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.47,
+    "ndvi": 0.432,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kirehe",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.4,
+    "ndvi": 0.37,
+    "clear_fraction": 0.98,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gisagara",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.29,
+    "ndvi": 0.409,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyamagabe",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.28,
+    "ndvi": 0.495,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Huye",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.23,
+    "ndvi": 0.396,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyaruguru",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.1,
+    "ndvi": 0.518,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   }
+  ],
+  "alerts": [
+   {
+    "district": "Rubavu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.4,
+    "ndvi": 0.405,
+    "clear_fraction": 0.55,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gasabo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.27,
+    "ndvi": 0.335,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Kicukiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.21,
+    "ndvi": 0.31,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Nyarugenge",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.07,
+    "ndvi": 0.354,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   }
+  ],
+  "missing": []
+ },
+ "warm": {
+  "seconds": 9.6,
+  "source": "Digital Earth Africa NDVI anomaly (Landsat + Sentinel-2 vs 1984-2020)",
+  "scale": "NDVI anomaly (standard deviations from the normal for the month): -1.5 or lower = high (vegetation well below normal for the month), above -1.5 to -1 = moderate (vegetation below normal for the month), above -1 = no alert.",
+  "checked": 30,
+  "districts": [
+   {
+    "district": "Rubavu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.4,
+    "ndvi": 0.405,
+    "clear_fraction": 0.55,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gasabo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.27,
+    "ndvi": 0.335,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Kicukiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.21,
+    "ndvi": 0.31,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Nyarugenge",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.07,
+    "ndvi": 0.354,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gatsibo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.95,
+    "ndvi": 0.353,
+    "clear_fraction": 0.98,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gicumbi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.93,
+    "ndvi": 0.428,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ruhango",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.9,
+    "ndvi": 0.357,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Musanze",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.88,
+    "ndvi": 0.414,
+    "clear_fraction": 0.64,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kamonyi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.37,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyabihu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.439,
+    "clear_fraction": 0.55,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rulindo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.396,
+    "clear_fraction": 0.96,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rutsiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.452,
+    "clear_fraction": 0.44,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rwamagana",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.78,
+    "ndvi": 0.371,
+    "clear_fraction": 0.96,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Rusizi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.76,
+    "ndvi": 0.532,
+    "clear_fraction": 0.95,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyanza",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.75,
+    "ndvi": 0.375,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kayonza",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.71,
+    "ndvi": 0.331,
+    "clear_fraction": 0.92,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Bugesera",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.341,
+    "clear_fraction": 0.95,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Burera",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.409,
+    "clear_fraction": 0.52,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyagatare",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.68,
+    "ndvi": 0.333,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Karongi",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.442,
+    "clear_fraction": 0.8,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ngoma",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.394,
+    "clear_fraction": 0.94,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Ngororero",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.59,
+    "ndvi": 0.431,
+    "clear_fraction": 0.93,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyamasheke",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.58,
+    "ndvi": 0.534,
+    "clear_fraction": 0.79,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gakenke",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.51,
+    "ndvi": 0.435,
+    "clear_fraction": 0.94,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Muhanga",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.47,
+    "ndvi": 0.432,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Kirehe",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.4,
+    "ndvi": 0.37,
+    "clear_fraction": 0.98,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Gisagara",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.29,
+    "ndvi": 0.409,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyamagabe",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.28,
+    "ndvi": 0.495,
+    "clear_fraction": 0.99,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Huye",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.23,
+    "ndvi": 0.396,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   },
+   {
+    "district": "Nyaruguru",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -0.1,
+    "ndvi": 0.518,
+    "clear_fraction": 1.0,
+    "alert": null,
+    "alert_label": null
+   }
+  ],
+  "alerts": [
+   {
+    "district": "Rubavu",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.4,
+    "ndvi": 0.405,
+    "clear_fraction": 0.55,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Gasabo",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.27,
+    "ndvi": 0.335,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Kicukiro",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.21,
+    "ndvi": 0.31,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   },
+   {
+    "district": "Nyarugenge",
+    "month": "2026-09",
+    "month_ended_days_ago": 7,
+    "z": -1.07,
+    "ndvi": 0.354,
+    "clear_fraction": 1.0,
+    "alert": "moderate",
+    "alert_label": "Vegetation below normal for the month"
+   }
+  ],
+  "missing": []
+ }
+}

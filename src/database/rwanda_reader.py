@@ -8,7 +8,7 @@ error; the roles are the boundary (audit 2026-10-09, R1-5).
 
 Two roles, so industries stay apart in the database too (R1-13):
 - mundi_rwanda_reader: agriculture projects; boundaries, weather and the farm caches (district/cell NDVI,
-  indices, anomalies, crop classes, drought, phenology, yield risk, emissions).
+  indices, crop classes, drought, phenology, yield risk, emissions).
 - mundi_rwanda_reader_general: every other industry; boundaries and weather only.
 ndvi_parcel_cache is in neither: it holds every user's uploaded parcels with no owner column.
 
@@ -42,7 +42,6 @@ AGRICULTURE_TABLES = frozenset(
         "ndvi_cell_cache",
         "ndvi_field_cache",
         "agri_indices_cache",
-        "anomaly_alerts_cache",
         "crop_classification_cache",
         "drought_cache",
         "emissions_annual_cache",

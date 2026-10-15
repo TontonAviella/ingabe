@@ -106,6 +106,19 @@ trigger whenever any alert existed. Before/after on fixed inputs:
 `docs/evidence/insurance_ndvi_z_before_after.json` (radar removed) and
 `docs/evidence/insurance_ndvi_z_deafrica_before_after.json` (the new source).
 
+The weekly scan itself is gone (Roger's decision, 2026-10-07): its z-score could not reach -2
+before the 6th observation or -3 before the 11th (the mean includes the week scored), and it had
+2-4 rows per district. Sage's `get_anomaly_alerts` now reads the same Digital Earth Africa
+anomaly for every district (`district_ndvi_anomaly`), worst first, with the month, the days since
+it ended, the alert class (`ndvi_classes.NDVI_ANOMALY_ALERTS`: SPI-style breaks -1.0 and -1.5)
+and the districts with no value and why. September 2026 (`docs/evidence/district_ndvi_anomaly_2026-09.json`):
+all 30 districts read, z from -1.40 (Rubavu) to -0.10 (Nyaruguru), four moderate alerts (Rubavu
+and the three Kigali districts), none high. A first request after a month is published reads for
+160-200 s, past the tool's 90 s deadline, so it lists the rest as not read yet; a repeat takes ~9 s.
+
 ## Still open
 
+- `get_anomaly_alerts` averages all of a district's pixels, so a built-up district (the three
+  Kigali districts in September 2026) can be an "alert" that says nothing about crops; a
+  cropland mask (Digital Earth Africa `crop_mask`) would fix it.
 - Sage's `predict_ndvi_from_sar` still answers from the same predictor.

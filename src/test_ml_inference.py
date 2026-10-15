@@ -276,7 +276,6 @@ def test_ml_service_get_status():
     assert isinstance(status["available_methods"], list)
     assert "spectral_threshold" in status["available_methods"]
     assert "mann_kendall_trend" in status["available_methods"]
-    assert "z_score_anomaly" in status["available_methods"]
 
 
 def test_ml_service_classify_ndvi_delegates_to_classifier():

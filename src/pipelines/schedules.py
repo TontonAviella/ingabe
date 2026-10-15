@@ -34,15 +34,6 @@ nightly_field_ndvi_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-weekly_anomaly_schedule = ScheduleDefinition(
-    name="weekly_anomaly_scan",
-    cron_schedule="0 1 * * 1",  # Every Monday at 1 AM UTC
-    job_name="weekly_anomaly_scan_job",
-    execution_timezone="UTC",
-    description="Weekly NDVI anomaly detection → DuckDB alerts cache",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
-
 weekly_yield_risk_schedule = ScheduleDefinition(
     name="weekly_yield_risk",
     cron_schedule="0 2 * * 1",  # Every Monday at 2 AM UTC
