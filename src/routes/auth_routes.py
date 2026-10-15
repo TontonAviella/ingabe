@@ -78,6 +78,11 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
                         error: Optional[str] = None):
     """WorkOS sends the user back here; exchange the code and set the session cookie."""
     _require_enabled()
+    if code and not state and not error:
+        # Started on WorkOS' page (an invitation email's link): sign in again from here, which WorkOS' own session
+        # makes immediate, so the callback carries this app's state. The invitation is accepted below.
+        logger.info("WorkOS callback without state (started on WorkOS' page): signing in again")
+        return RedirectResponse("/auth/login", status_code=status.HTTP_302_FOUND)
     nonce, _, target = (state or "").partition(".")
     if error or not code or not nonce or nonce != request.cookies.get(_STATE_COOKIE):
         logger.warning("WorkOS callback rejected: error=%s code=%s state_ok=%s", error, bool(code),
@@ -88,11 +93,27 @@ async def auth_callback(request: Request, code: Optional[str] = None, state: Opt
     except Exception:  # noqa: BLE001 - a garbled state just lands on the home page
         return_to = "/"
     try:
-        sealed, user, _org = await asyncio.to_thread(workos_auth.complete_login, code)
+        sealed, user, org = await asyncio.to_thread(workos_auth.complete_login, code)
     except Exception as e:  # noqa: BLE001 - shown to the user as a failed sign-in, logged here
         logger.warning("WorkOS code exchange failed: %s", e)
         return RedirectResponse("/?sign_in_error=1", status_code=status.HTTP_302_FOUND)
     await provision_workos_user(user["id"], user.get("email"))  # links an existing account by email
+    try:
+        joined = await asyncio.to_thread(workos_auth.accept_pending_invitations, user)
+    except Exception:  # noqa: BLE001 - signing in still works; the invitation stays pending, logged here
+        logger.warning("Accepting the invitations of %s failed", user["id"], exc_info=True)
+        joined = []
+    if joined:
+        _orgs_cache.pop(user["id"], None)
+    if joined and not org:
+        try:
+            switched = await asyncio.to_thread(workos_auth.switch_organization, sealed, joined[0])
+        except workos_auth.SessionCheckUnavailable as e:  # the person can still choose it once signed in
+            logger.warning("Opening the organization just joined failed: %s", e)
+            switched = None
+            sealed = e.refreshed_cookie or sealed
+        if switched is not None and switched.refreshed_cookie:
+            sealed = switched.refreshed_cookie
     response = RedirectResponse(return_to, status_code=status.HTTP_302_FOUND)
     set_session_cookie(response, sealed, is_secure(request))
     response.delete_cookie(_STATE_COOKIE, path="/auth/")

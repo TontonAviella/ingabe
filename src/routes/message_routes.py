@@ -130,6 +130,26 @@ from src.dependencies.pydantic_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Tools the loop offers but that are not schemas in get_tools(): added by hand in the loop itself.
+_HARDCODED_TOOL_NAMES = frozenset({
+    "add_layer_to_map", "zoom_to_bounds", "set_layer_style", "new_layer_from_postgis", "create_point_layer",
+})
+
+
+def replayable_tool_names() -> set[str]:
+    """Every tool name Sage's loop can offer: a past call of one of these is replayed with its result, never dropped.
+
+    Built from the same schemas the loop sends (build_sage_tools_payload), so a tool added there cannot be missing
+    here. On 2026-10-14 reverse_geocode_coordinates (defined in build_sage_tools_payload only) was missing: each
+    replay dropped Sage's call and its result, so Sage asked again every 4 s until the person stopped it.
+    """
+    from src.dependencies.pydantic_tools import get_pydantic_tool_calls
+
+    calls = get_pydantic_tool_calls()
+    offered = build_sage_tools_payload(calls, {"L": "layer"})
+    return (set(_HARDCODED_TOOL_NAMES) | {t["function"]["name"] for t in offered}
+            | {t["function"]["name"] for t in get_tools()} | set(calls) | set(LEGACY_HANDLERS))
 tracer = trace.get_tracer(__name__)
 
 # Compact deterministic IDs for each project's internal Rwanda PostGIS
@@ -2146,12 +2166,6 @@ async def process_chat_interaction_task(
                             tool_call_for_provider(_tc, os.environ.get("OPENAI_BASE_URL")) if isinstance(_tc, dict) else _tc
                             for _tc in _tcs
                         ]
-                        # Full tool name universe: pydantic/tools.json tools + hardcoded
-                        # message_routes tools that aren't in get_tools().
-                        _HARDCODED_TOOL_NAMES = {
-                            "add_layer_to_map", "zoom_to_bounds", "set_layer_style",
-                            "new_layer_from_postgis", "create_point_layer",
-                        }
                         _all_tool_names: list[str] | None = None
                         for _tc in _tcs:
                             _fn = _tc.get("function") if isinstance(_tc, dict) else None
@@ -2160,12 +2174,7 @@ async def process_chat_interaction_task(
                             _tc_name = _fn.get("name", "")
                             if _tc_name:
                                 if _all_tool_names is None:
-                                    from src.dependencies.pydantic_tools import get_pydantic_tool_calls
-                                    _all_tool_names = list(
-                                        _HARDCODED_TOOL_NAMES
-                                        | {t["function"]["name"] for t in get_tools()}
-                                        | set(get_pydantic_tool_calls().keys())
-                                    )
+                                    _all_tool_names = sorted(replayable_tool_names())
                                 if _tc_name not in _all_tool_names:
                                     _match = max(
                                         (n for n in _all_tool_names if _tc_name.startswith(n)),

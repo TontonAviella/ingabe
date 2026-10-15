@@ -193,3 +193,20 @@ def test_a_key_already_in_fernet_form_is_kept_so_existing_cookies_stay_valid():
 def test_a_short_cookie_secret_is_refused():
     with pytest.raises(RuntimeError):
         workos_auth.cookie_key("too-short")
+
+
+def test_signing_in_with_the_invited_verified_address_accepts_only_its_pending_invitations(monkeypatch):
+    client = MagicMock()
+    client.user_management.list_invitations.return_value = SimpleNamespace(data=[
+        SimpleNamespace(id="inv_1", state="pending", organization_id="org_1", email="Arnold@x.rw"),
+        SimpleNamespace(id="inv_2", state="accepted", organization_id="org_2", email="arnold@x.rw"),
+        SimpleNamespace(id="inv_3", state="pending", organization_id="org_3", email="arnold1@x.rw"),
+    ])
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+
+    assert workos_auth.accept_pending_invitations({"id": "u", "email": "arnold@x.rw", "email_verified": True}) == ["org_1"]
+    client.user_management.accept_invitation.assert_called_once_with("inv_1")
+
+    client.reset_mock()
+    assert workos_auth.accept_pending_invitations({"id": "u", "email": "arnold@x.rw", "email_verified": False}) == []
+    client.user_management.list_invitations.assert_not_called()

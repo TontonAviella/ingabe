@@ -28,8 +28,10 @@ function el(tag: string, className: string, text?: string): HTMLElement {
   return node;
 }
 
-function popupContent(b: Bubble): HTMLElement {
+/** The pop-up fits in the room above its bubble (`room` px): the picture always shows, the words scroll below it. */
+function popupContent(b: Bubble, room: number): HTMLElement {
   const box = el('div', 'close-look-pop');
+  box.style.maxHeight = `${Math.max(220, room)}px`;
   const img = document.createElement('img');
   img.src = b.picture;
   img.alt = b.title;
@@ -64,8 +66,13 @@ function usePinned(map: MLMap | null, bubbles: Bubble[]) {
       if (b.badge) node.append(el('span', 'close-look-badge', b.badge));
       node.addEventListener('click', (e) => {
         e.stopPropagation();
-        map.easeTo({ center: [b.lon, b.lat], offset: [0, Math.round(map.getContainer().clientHeight * 0.3)], duration: 400 });
-        popup.setLngLat([b.lon, b.lat]).setDOMContent(popupContent(b)).addTo(map);
+        const height = map.getContainer().clientHeight;
+        map.easeTo({ center: [b.lon, b.lat], offset: [0, Math.round(height * 0.3)], duration: 400 });
+        // The bubble ends 80% down the map; above it go the pop-up's offset, its padding and a margin.
+        popup
+          .setLngLat([b.lon, b.lat])
+          .setDOMContent(popupContent(b, Math.round(height * 0.8) - 110))
+          .addTo(map);
       });
       return new Marker({ element: node, anchor: 'bottom' }).setLngLat([b.lon, b.lat]).addTo(map);
     });
