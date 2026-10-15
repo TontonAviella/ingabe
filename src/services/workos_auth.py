@@ -215,8 +215,13 @@ def load(sealed: Optional[str], refresh: bool = True) -> Optional[WorkOSSession]
     session = _client().user_management.load_sealed_session(session_data=sealed, cookie_password=_cookie_password())
     try:
         auth = session.authenticate()
-    except jwt.PyJWKClientError as e:  # WorkOS' signing keys could not be fetched
-        raise SessionCheckUnavailable(f"WorkOS signing keys unavailable: {e}") from e
+    except jwt.PyJWKClientError as e:
+        if "Unable to find a signing key" in str(e):
+            # Signed by a key this WorkOS environment does not have: a cookie from another environment (2026-10-15,
+            # the move from staging to production showed "could not load your industry"). Not signed in here.
+            logger.info("WorkOS session cookie rejected: signed by a key of another WorkOS environment")
+            return None
+        raise SessionCheckUnavailable(f"WorkOS signing keys unavailable: {e}") from e  # the keys could not be fetched
     if auth.authenticated:
         return _from_response(auth)
     reason = _value(getattr(auth, "reason", None))
