@@ -226,3 +226,15 @@ def test_open_invitations_are_the_waiting_and_expired_ones_newest_first_with_the
     out = workos_auth.open_invitations("org_1")
     assert [(i["id"], i["state"]) for i in out] == [("c", "expired"), ("a", "pending")]
     assert out[1]["link"] == "https://auth.example/invite?t=a"
+
+
+def test_a_cookie_signed_in_another_workos_environment_is_not_signed_in_here(monkeypatch, workos_env):
+    """Not "WorkOS unreachable" (503, an error page): the person is sent to sign in again."""
+    session = MagicMock()
+    session.authenticate.side_effect = jwt.PyJWKClientError('Unable to find a signing key that matches: "abc"')
+    workos_env.user_management.load_sealed_session.return_value = session
+    assert workos_auth.load("sealed") is None
+
+    session.authenticate.side_effect = jwt.PyJWKClientError("Fail to fetch data from the url, err: timed out")
+    with pytest.raises(workos_auth.SessionCheckUnavailable):
+        workos_auth.load("sealed")
