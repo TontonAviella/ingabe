@@ -210,3 +210,19 @@ def test_signing_in_with_the_invited_verified_address_accepts_only_its_pending_i
     client.reset_mock()
     assert workos_auth.accept_pending_invitations({"id": "u", "email": "arnold@x.rw", "email_verified": False}) == []
     client.user_management.list_invitations.assert_not_called()
+
+
+def test_open_invitations_are_the_waiting_and_expired_ones_newest_first_with_their_link(monkeypatch):
+    client = MagicMock()
+    client.user_management.list_invitations.return_value = SimpleNamespace(data=[
+        SimpleNamespace(id="a", email="a@x.rw", role_slug="member", state="pending", created_at="2026-10-01",
+                        expires_at="2026-10-08", accept_invitation_url="https://auth.example/invite?t=a"),
+        SimpleNamespace(id="b", email="b@x.rw", role_slug="admin", state="accepted", created_at="2026-10-02",
+                        expires_at="2026-10-09", accept_invitation_url="https://auth.example/invite?t=b"),
+        SimpleNamespace(id="c", email="c@x.rw", role_slug="member", state="expired", created_at="2026-10-03",
+                        expires_at="2026-10-10", accept_invitation_url="https://auth.example/invite?t=c"),
+    ])
+    monkeypatch.setattr(workos_auth, "_client", lambda: client)
+    out = workos_auth.open_invitations("org_1")
+    assert [(i["id"], i["state"]) for i in out] == [("c", "expired"), ("a", "pending")]
+    assert out[1]["link"] == "https://auth.example/invite?t=a"

@@ -255,7 +255,7 @@ export function WorkOSOrgSwitcher() {
             <DropdownMenuItem asChild className="cursor-pointer">
               <Link to="/settings/organization">
                 <Users className="mr-2 h-4 w-4" />
-                Members of {current.name}
+                People of {current.name}
               </Link>
             </DropdownMenuItem>
           )}

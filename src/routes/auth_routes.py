@@ -229,7 +229,7 @@ async def organization_members(request: Request, session: UserContext = Depends(
     ws_session, org = _active_org(request)
     members, invitations = await asyncio.gather(
         asyncio.to_thread(workos_auth.organization_members, org),
-        asyncio.to_thread(workos_auth.pending_invitations, org),
+        asyncio.to_thread(workos_auth.open_invitations, org),
     )
     return {
         "organization_id": org,
@@ -255,6 +255,19 @@ async def organization_invite(body: Invite, request: Request, session: UserConte
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter an email address")
     try:
         return await asyncio.to_thread(workos_auth.invite, org, body.email.strip(), body.role, ws_session.user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@api.post("/organization/invitations/{invitation_id}/resend")
+async def organization_resend(invitation_id: str, request: Request, session: UserContext = Depends(verify_session_required)):
+    """Send an invitation of the active organization again (also one that expired)."""
+    ws_session, org = _active_org(request)
+    _require_admin(ws_session)
+    if not any(i["id"] == invitation_id for i in await asyncio.to_thread(workos_auth.open_invitations, org)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such invitation in this organization")
+    try:
+        return await asyncio.to_thread(workos_auth.resend_invitation, invitation_id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 

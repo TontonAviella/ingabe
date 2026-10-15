@@ -327,8 +327,16 @@ def _membership_dict(m: Any) -> dict[str, Any]:
     return {
         "id": m.id, "user_id": m.user_id, "email": user.get("email"), "name": name,
         "picture": user.get("profile_picture_url"), "role": getattr(role, "slug", role),
-        "status": _value(getattr(m, "status", None)),
+        "status": _value(getattr(m, "status", None)), "last_sign_in_at": _when(user.get("last_sign_in_at")),
     }
+
+
+def _when(value: Any) -> Optional[str]:
+    """A WorkOS time as an ISO string, or None."""
+    if value is None or value == "":
+        return None
+    iso = getattr(value, "isoformat", None)
+    return iso() if callable(iso) else str(value)
 
 
 def organization_members(organization_id: str) -> list[dict[str, Any]]:
@@ -336,11 +344,12 @@ def organization_members(organization_id: str) -> list[dict[str, Any]]:
         organization_id=organization_id, limit=100)
     members = [_membership_dict(m) for m in getattr(page, "data", page)]
     for m in members:  # the list may not include the user object
-        if not m["email"]:
+        if not m["email"] or m["last_sign_in_at"] is None:
             user = _user_dict(_client().user_management.get_user(m["user_id"]))
             m["email"] = user.get("email")
             m["name"] = " ".join(p for p in (user.get("first_name"), user.get("last_name")) if p) or None
             m["picture"] = user.get("profile_picture_url")
+            m["last_sign_in_at"] = _when(user.get("last_sign_in_at"))
     return members
 
 
@@ -352,6 +361,19 @@ def pending_invitations(organization_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def open_invitations(organization_id: str) -> list[dict[str, Any]]:
+    """The organization's invitations not yet accepted or cancelled (waiting or expired), newest first, each with its
+    link: an admin can send the link another way (WhatsApp) when the email does not reach the person."""
+    page = _client().user_management.list_invitations(organization_id=organization_id, limit=100)
+    out = [
+        {"id": i.id, "email": i.email, "role": i.role_slug, "state": _value(i.state),
+         "created_at": _when(getattr(i, "created_at", None)), "expires_at": _when(i.expires_at),
+         "link": getattr(i, "accept_invitation_url", None)}
+        for i in getattr(page, "data", page) if _value(i.state) in ("pending", "expired")
+    ]
+    return sorted(out, key=lambda i: i["created_at"] or "", reverse=True)
+
+
 def _refusal(e: Exception) -> Optional[str]:
     """WorkOS' own words when it refused a request (4xx), else None."""
     status_code = getattr(e, "status_code", None)
@@ -361,7 +383,8 @@ def _refusal(e: Exception) -> Optional[str]:
 
 
 def _invitation_dict(inv: Any, resent: bool = False) -> dict[str, Any]:
-    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at), "resent": resent}
+    return {"id": inv.id, "email": inv.email, "role": inv.role_slug, "expires_at": str(inv.expires_at), "resent": resent,
+            "link": getattr(inv, "accept_invitation_url", None)}
 
 
 def invite(organization_id: str, email: str, role: str, inviter_user_id: Optional[str]) -> dict[str, Any]:
