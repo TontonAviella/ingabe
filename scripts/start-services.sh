@@ -11,4 +11,4 @@ echo "[start-services] Running alembic migrations..."
 alembic upgrade head
 
 echo "[start-services] Starting main app on :8000..."
-exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level debug --access-log --use-colors --proxy-headers --forwarded-allow-ips='*' --workers ${UVICORN_WORKERS:-1}
+exec uvicorn src.wsgi:app --host 0.0.0.0 --port 8000 --log-level ${UVICORN_LOG_LEVEL:-info} --access-log --use-colors --proxy-headers --forwarded-allow-ips='*' --workers ${UVICORN_WORKERS:-1}

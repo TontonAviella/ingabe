@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -63,6 +64,40 @@ async def test_callback_sets_the_session_cookie(client, workos_on, monkeypatch):
     assert r.status_code == 302 and r.headers["location"] == "/project/abc"
     assert "wos_session=sealed-cookie" in r.headers["set-cookie"] and "HttpOnly" in r.headers["set-cookie"]
     assert linked == [("user_9", "x@y.rw")]
+
+
+@pytest.mark.anyio
+async def test_a_callback_started_on_workos_page_signs_in_again_from_here(client, workos_on):
+    """An invitation email's link signs the person in on WorkOS' page, which sends them back with no state."""
+    r = await client.get("/auth/callback", params={"code": "c"}, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/auth/login"
+    assert "wos_session=" not in r.headers.get("set-cookie", "")
+
+
+@pytest.mark.anyio
+async def test_an_invited_person_without_an_organization_is_signed_into_the_one_they_were_invited_to(
+        client, workos_on, monkeypatch):
+    user = {"id": "user_7", "email": "arnold@x.rw", "email_verified": True}
+    monkeypatch.setattr(workos_auth, "complete_login", lambda code: ("no-org-cookie", user, None))
+    monkeypatch.setattr(workos_auth, "accept_pending_invitations", lambda u: ["org_7"] if u is user else [])
+    switched = []
+
+    def switch(sealed, org):
+        switched.append((sealed, org))
+        return SimpleNamespace(refreshed_cookie="org-7-cookie")
+
+    monkeypatch.setattr(workos_auth, "switch_organization", switch)
+
+    async def fake_provision(uid, email):
+        return "uuid-7"
+
+    monkeypatch.setattr(auth_routes, "provision_workos_user", fake_provision)
+    client.cookies.set("wos_state", "n2", path="/auth/")
+    r = await client.get("/auth/callback", params={"code": "c", "state": "n2.Lw=="}, follow_redirects=False)
+    client.cookies.delete("wos_state", path="/auth/")
+    assert r.status_code == 302 and r.headers["location"] == "/"
+    assert switched == [("no-org-cookie", "org_7")]
+    assert "wos_session=org-7-cookie" in r.headers["set-cookie"]
 
 
 @pytest.mark.anyio

@@ -412,6 +412,25 @@ def remove_member(membership_id: str, organization_id: str) -> None:
     _client().organization_membership.delete_organization_membership(membership_id)
 
 
+def accept_pending_invitations(user: dict[str, Any]) -> list[str]:
+    """Accept the invitations waiting for a person who signed in with the invited, verified address: the
+    organizations they joined. The invitation email's link signs the person in on WorkOS' page, which sends them
+    back without this app's sign-in state, so the link cannot accept it by itself (2026-10-14: an invited partner
+    signed in and saw no organization, the invitation still pending)."""
+    email = (user.get("email") or "").lower()
+    if not email or not user.get("email_verified"):
+        return []
+    page = _client().user_management.list_invitations(email=email, limit=20)
+    joined = []
+    for inv in getattr(page, "data", page):
+        if _value(inv.state) != "pending" or not inv.organization_id or (inv.email or "").lower() != email:
+            continue
+        _client().user_management.accept_invitation(inv.id)
+        logger.info("Invitation %s to %s accepted at sign-in", inv.id, inv.organization_id)
+        joined.append(inv.organization_id)
+    return joined
+
+
 def revoke_invitation(invitation_id: str, organization_id: str) -> None:
     if not any(i["id"] == invitation_id for i in pending_invitations(organization_id)):
         raise PermissionError("invitation belongs to another organization or is no longer pending")
