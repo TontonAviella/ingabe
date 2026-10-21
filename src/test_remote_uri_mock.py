@@ -126,6 +126,57 @@ def mock_remote_geojson_download(monkeypatch):
     )
 
 
+@pytest.fixture
+def mock_wfs_download(monkeypatch):
+    """Serve the WFS answer from a local sample (test_fixtures/finland_population_5km_sample.gml).
+
+    The test used to ask geo.stat.fi itself, so it failed whenever that server was slow or down (PR #204 and
+    PR #210 in CI). The app reads a WFS link without the WFS: prefix as a plain download, so only that download
+    is replaced; reading the GML, the FlatGeobuf and the PMTiles all run for real.
+    """
+    import aiohttp
+
+    fixture_path = os.path.join(
+        os.path.dirname(__file__), "..", "test_fixtures", "finland_population_5km_sample.gml"
+    )
+    with open(fixture_path, "rb") as f:
+        fixture_content = f.read()
+
+    class MockResponse:
+        status = 200
+
+        async def read(self):
+            return fixture_content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    original_get = aiohttp.ClientSession.get
+
+    def patched_get(self, url, **kwargs):
+        if "geo.stat.fi" in str(url):
+            return MockResponse()
+        return original_get(self, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "get", patched_get)
+
+    # The URL check resolves the host name; keep it off the network too.
+    from src.services import map_service as ms
+
+    real_validate = ms.validate_remote_url
+
+    def patched_validate(url, source_type):
+        if "geo.stat.fi" in str(url):
+            return url
+        return real_validate(url, source_type)
+
+    monkeypatch.setattr(ms, "validate_remote_url", patched_validate)
+    monkeypatch.setattr("src.routes.postgres_routes.validate_remote_url", patched_validate)
+
+
 @pytest.mark.usefixtures("mock_remote_geojson_download")
 @pytest.mark.anyio
 @pytest.mark.timeout(120)
@@ -253,6 +304,7 @@ async def test_google_sheets_with_pmtiles_generation(auth_client):
     print(f"Layer successfully added to map {current_map_id}")
 
 
+@pytest.mark.usefixtures("mock_wfs_download")
 @pytest.mark.anyio
 @pytest.mark.timeout(120)
 async def test_wfs_with_pmtiles_generation(auth_client):
