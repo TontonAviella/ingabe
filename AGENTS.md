@@ -243,3 +243,41 @@ Key routing rules:
 - Repeated Sage workflow, "make this permanent", "we asked twice", "thin harness/fat skills", resolver, skill, or cron design → read `.claude/skills/sage-harness-upgrade/SKILL.md`
 - Tune question sensitivity → invoke /plan-tune
 - Code quality dashboard → invoke /health
+
+### The everyday loop (use these, not ad-hoc work)
+
+Roger (2026-10-22): the workflow skills were not being used as expected. For every piece of work, run the matching
+step and say which one is running:
+
+1. **A bug or "it doesn't work"** → `/investigate` first (root cause from logs and code before any fix).
+2. **Before opening any PR** → `/review` on the diff. For a PR over ~300 lines or touching error handling, tests or
+   types, also run the `pr-review-toolkit` agents: `silent-failure-hunter` (swallowed errors), `pr-test-analyzer`
+   (missing tests), `type-design-analyzer`, `comment-analyzer`, `code-simplifier`, or `/pr-review-toolkit:review-pr`
+   for all of them.
+3. **Auth, keys, permissions, uploads, anything security-related** → `/cso`. The `security-guidance` plugin also runs
+   by itself on every edit and at the end of every turn: treat its findings like a failing test and fix them before
+   finishing.
+4. **After a deploy** → `/qa` (or `/canary`) on the copy that was deployed (the live site, or `http://localhost:8000` for
+   the local stack), and say what was checked.
+5. **Type errors** → `pyright-lsp` and `typescript-lsp` give live diagnostics while editing `.py` and `.ts/.tsx`;
+   fix what they report before running tests. The build's own checks stay the authority (`basedpyright`,
+   `npx tsc -b`).
+
+### Business work (not code)
+
+The `small-business` plugin (Anthropic, knowledge-work-plugins) is installed for the company side. Use it when the
+request is about running the business, not the app:
+
+- Proposals, quotes, tenders, RFPs, grants → its `proposal-builder` / `grant-rfp-writer`
+- Who owes us money, invoices, cash → `invoice-chase`, `cash-flow-snapshot`
+- Finding customers, outreach, call lists → `lead-finder`, `outreach-composer`, `call-list`
+- Contracts (tenancy, NDAs, partner agreements) → `contract-review`
+- Inbox and weekly brief → `inbox-manager`, `monday-brief`
+- First use: say "get me started" (`smb-onboard`).
+
+Its rules still apply on top of ours: nothing is sent, posted or paid without Roger's yes; no invented numbers; no
+money-first pitches (lead with facts and the decision, never with prices or revenue); its tax and payroll skills follow US rules, so Rwanda (RRA) figures are
+drafts for an accountant. Company facts for pitches (only these, never invented): power-line inspection for STEG
+International at Bwishyura, Rubavu and Shango (missing bolts, cracked insulators, loose dampers and spacers,
+damaged or missing earthing cables, missing number and danger plates); team of certified drone pilots, AI and
+machine-learning engineers, and mechatronics engineers.
