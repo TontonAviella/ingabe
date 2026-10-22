@@ -2,7 +2,7 @@ import { apiFetch } from '@mundi/ee';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { INDUSTRY_KEY, type IndustryKey, type IndustryState, OPEN_INDUSTRY_PICKER } from '@/components/IndustryGate';
+import { INDUSTRY_KEY, type IndustryKey, type IndustryState } from '@/components/IndustryGate';
 import IndustryPicker from '@/components/IndustryPicker';
 import MapsList from '@/components/MapsList';
 import { ProjectsProvider, useProjects } from '@/contexts/ProjectsContext';
@@ -115,6 +115,19 @@ function pageLink(n: number): Element {
   return link;
 }
 
+/** The home's industry tabs as "label count" (count left out when the tab shows none), the current one starred. */
+const tabs = () =>
+  [...document.querySelectorAll('[role="tab"]')].map((t) => {
+    const count = t.querySelector('span')?.textContent;
+    const name = (t.textContent ?? '').replace(count ?? '', '').trim();
+    return `${t.getAttribute('aria-selected') === 'true' ? '*' : ''}${name}${count ? ` ${count}` : ''}`;
+  });
+const tab = (name: string) => {
+  const found = [...document.querySelectorAll('[role="tab"]')].find((t) => t.textContent?.startsWith(name));
+  if (!found) throw new Error(`no tab ${name}`);
+  return found;
+};
+
 /** Holds the main-list requests until the returned function is called. */
 function holdLists(): () => void {
   let release!: () => void;
@@ -195,27 +208,39 @@ describe('the home lists the maps of the industry the user works in now', () => 
     expect(listCalls().length).toBeGreaterThan(0);
   });
 
-  it('names the industry and counts its maps only, with one line for the other industries', async () => {
+  it('names the industry, lists its maps only, and has a tab per industry with its count', async () => {
     world.projects = [...projects('telecom', 1, 'T'), ...projects('agriculture', 1, 'A')];
     renderHome();
     await findText('Your Telecom Towers maps (1 project)', 'h1');
     expect(byText('T1')).not.toBeNull();
     expect(byText('A1')).toBeNull();
-    await findText('1 Agriculture map is in another industry. Switch industry to see it.', 'p');
-    // The server decides the industry: the client never sends one.
+    await vi.waitFor(() => expect(tabs()).toEqual(['Agriculture 1', 'Power Grid', '*Telecom Towers 1']));
+    // The server decides the industry: the client never sends one with a list.
     expect(calls.some((u) => u.includes('industry='))).toBe(false);
-
-    const opened = vi.fn();
-    window.addEventListener(OPEN_INDUSTRY_PICKER, opened);
-    click(await findButton('Switch industry'));
-    window.removeEventListener(OPEN_INDUSTRY_PICKER, opened);
-    expect(opened).toHaveBeenCalledTimes(1);
   });
 
-  it('words several other industries in one line', async () => {
+  it('switches industry in one tap on its tab, without the full-screen picker (Roger, 2026-10-22)', async () => {
+    world.projects = [...projects('telecom', 1, 'T'), ...projects('agriculture', 2, 'A')];
+    renderHome();
+    await findText('Your Telecom Towers maps (1 project)', 'h1');
+    await vi.waitFor(() => expect(tabs()).toContain('Agriculture 2'));
+
+    click(tab('Agriculture'));
+    await findText('Your Agriculture maps (2 projects)', 'h1');
+    expect(byText('A1')).not.toBeNull();
+    expect(byText('T1')).toBeNull();
+    const puts = fetchMock.mock.calls.filter(([url, init]) => url === '/api/user/industry' && init?.method === 'PUT');
+    expect(puts.map(([, init]) => JSON.parse(String(init?.body)).industry)).toEqual(['agriculture']);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await vi.waitFor(() => expect(tabs()).toEqual(['*Agriculture 2', 'Power Grid', 'Telecom Towers 1']));
+    // The sidebar's recent maps follow the switch too.
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="recent"]')?.textContent).toBe('A1,A2'));
+  });
+
+  it('counts several other industries in their tabs', async () => {
     world.projects = [...projects('telecom', 1, 'T'), ...projects('agriculture', 2, 'A'), ...projects('power_grid', 1, 'G')];
     renderHome();
-    await findText('2 Agriculture maps and 1 Power Grid map are in other industries. Switch industry to see them.', 'p');
+    await vi.waitFor(() => expect(tabs()).toEqual(['Agriculture 2', 'Power Grid 1', '*Telecom Towers 1']));
   });
 
   it('goes back to page 1 when the industry changes, and never asks for page 2 of the new one', async () => {
@@ -259,15 +284,14 @@ describe('the home lists the maps of the industry the user works in now', () => 
     world.projects = [...projects('telecom', 13, 'T'), ...projects('agriculture', 2, 'A')];
     renderHome();
     await findText('Your Telecom Towers maps (13 projects)', 'h1');
-    const others = '2 Agriculture maps are in another industry. Switch industry to see them.';
-    await findText(others, 'p');
+    await vi.waitFor(() => expect(tabs()).toContain('Agriculture 2'));
 
-    // Another page of the same industry: the current one stays, with its header and the other-industries line.
+    // Another page of the same industry: the current one stays, with its header and the other industries' counts.
     let release = holdLists();
     click(pageLink(2));
     await vi.waitFor(() => expect(pageCalls().some((u) => u.includes('page=2&'))).toBe(true));
     expect(title()).toBe('Your Telecom Towers maps (13 projects)');
-    expect(byText(others, 'p')).not.toBeNull();
+    expect(tabs()).toContain('Agriculture 2');
     release();
     await findText('T13');
 

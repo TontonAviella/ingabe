@@ -1,24 +1,15 @@
 import { Clock, Plus, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { OPEN_INDUSTRY_PICKER, useIndustryKnown } from '@/components/IndustryGate';
+import { type IndustryKey, useIndustry, useIndustryKnown } from '@/components/IndustryGate';
+import { IndustryTabs } from '@/components/IndustryTabs';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useProjects } from '../contexts/ProjectsContext';
-import type { ProjectList } from '../lib/types';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from './ui/pagination';
 import { Tooltip, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
-/** Words the server's count of the user's maps in other industries: "1 Agriculture map is in another industry." */
-function otherIndustriesText(others: ProjectList['other_industries']): { text: string; total: number } {
-  const parts = others.map((o) => plural(o.count, `${o.label} map`, `${o.label} maps`));
-  const total = others.reduce((sum, o) => sum + o.count, 0);
-  const listed = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
-  const where = others.length === 1 ? 'another industry' : 'other industries';
-  return { text: `${listed} ${total === 1 ? 'is' : 'are'} in ${where}.`, total };
-}
 
 export default function MapsList() {
   // A new project takes its industry at creation: wait until it is known (audit R1-31).
@@ -39,7 +30,10 @@ export default function MapsList() {
     deleteProject,
     refetchProjects,
   } = useProjects();
-  const elsewhere = otherIndustries.length > 0 ? otherIndustriesText(otherIndustries) : null;
+  // Maps per industry for the tabs: the listed industry's total, and the server's count for each of the others.
+  const shownIndustry = useIndustry().data?.industry ?? null;
+  const counts: Partial<Record<IndustryKey, number>> = Object.fromEntries(otherIndustries.map((o) => [o.industry, o.count]));
+  if (shownIndustry && totalItems !== null) counts[shownIndustry] = totalItems;
 
   const handlePageChange = (page: number) => {
     setCurrentPage(page);
@@ -166,19 +160,7 @@ export default function MapsList() {
         </TooltipProvider>
       </div>
 
-      {elsewhere && (
-        <p className="-mt-3 text-center text-sm text-gray-400">
-          {elsewhere.text}{' '}
-          <button
-            type="button"
-            onClick={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))}
-            className="text-[#D9A066] underline-offset-2 hover:underline cursor-pointer"
-          >
-            Switch industry
-          </button>{' '}
-          to see {elsewhere.total === 1 ? 'it' : 'them'}.
-        </p>
-      )}
+      <IndustryTabs counts={counts} />
 
       {/* Top pagination */}
       {renderPagination()}

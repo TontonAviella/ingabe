@@ -29,12 +29,14 @@ function Project({ industry }: { industry?: 'agriculture' | 'power_grid' | 'tele
   return null;
 }
 
-function open(user: IndustryState, project?: 'agriculture' | 'power_grid' | 'telecom') {
+function open(user: IndustryState, project?: 'agriculture' | 'power_grid' | 'telecom', copies = 1) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(INDUSTRY_KEY, user);
   mount(
     <QueryClientProvider client={client}>
-      <Project industry={project} />
+      {Array.from({ length: copies }, (_, i) => (
+        <Project key={i} industry={project} />
+      ))}
     </QueryClientProvider>,
   );
   return client;
@@ -67,5 +69,26 @@ describe('one industry at a time', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
     expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('a map that mounts twice sends the switch once and says so once (2026-10-22: two PUTs within a second)', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchMock.mockImplementation(async (_url, init) => {
+      if (init?.method === 'PUT') {
+        await held;
+        return new Response(JSON.stringify(state('telecom')), { status: 200 });
+      }
+      return new Response(JSON.stringify(state('agriculture')), { status: 200 });
+    });
+    open(state('agriculture'), 'telecom', 2);
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    await findBy(() => (vi.mocked(toast).mock.calls.length ? true : null), 'the switch notice');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(1);
+    expect(toast).toHaveBeenCalledTimes(1);
   });
 });

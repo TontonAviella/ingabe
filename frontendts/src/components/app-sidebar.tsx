@@ -1,10 +1,18 @@
 import { AccountMenu, OrgSwitcher } from '@mundi/ee';
-import { House, Mountain, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { Check, House, Loader2, Mountain, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import { Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import { IngabeIcon, IngabeWordmark } from '@/components/Brand';
-import { OPEN_INDUSTRY_PICKER } from '@/components/IndustryGate';
+import { OPEN_INDUSTRY_PICKER, useIndustry, useSwitchIndustry } from '@/components/IndustryGate';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Sidebar,
   SidebarContent,
@@ -22,6 +30,47 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useProjects } from '@/contexts/ProjectsContext';
 import type { MapProject } from '@/lib/types';
 import { formatRelativeTime } from '@/lib/utils';
+
+/** "Your industry": a menu of the industries, the current one ticked; choosing another switches at once. */
+function IndustryMenu() {
+  const { data } = useIndustry();
+  const { switchTo, pending } = useSwitchIndustry();
+  if (!data || !data.can_choose || data.industry === null) return null;
+  const current = data.options.find((o) => o.key === data.industry);
+  return (
+    <SidebarMenuItem>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuButton tooltip={`Your industry: ${current?.label ?? ''}`}>
+            {pending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Mountain className="w-4 h-4 mr-2" />}
+            <span className="flex min-w-0 flex-col text-left leading-tight">
+              <span className="text-xs text-gray-500">Your industry</span>
+              <span className="truncate text-sm">{current?.label}</span>
+            </span>
+          </SidebarMenuButton>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" className="min-w-52">
+          <DropdownMenuLabel>Switch industry</DropdownMenuLabel>
+          {data.options.map((option) => (
+            <DropdownMenuItem
+              key={option.key}
+              disabled={pending !== null}
+              onSelect={() => option.key !== data.industry && switchTo(option.key, option.label)}
+              className="cursor-pointer"
+            >
+              <Check className={`mr-2 h-4 w-4 ${option.key === data.industry ? 'opacity-100' : 'opacity-0'}`} />
+              {option.label}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))} className="cursor-pointer text-gray-500">
+            What each industry covers…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </SidebarMenuItem>
+  );
+}
 
 export function AppSidebar() {
   const { state, toggleSidebar } = useSidebar();
@@ -107,12 +156,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton tooltip="Your industry" onClick={() => window.dispatchEvent(new Event(OPEN_INDUSTRY_PICKER))}>
-                  <Mountain className="w-4 h-4 mr-2" />
-                  <span className="text-sm">Your industry</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              <IndustryMenu />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
