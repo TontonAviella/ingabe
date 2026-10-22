@@ -1,4 +1,5 @@
 import os
+import uuid
 import math
 import json
 import hashlib
@@ -16,6 +17,7 @@ from fastapi import (
 from fastapi.responses import Response, HTMLResponse
 from pydantic import BaseModel
 from src.dependencies.session import (
+    external_auth_enabled,
     verify_session_required,
     UserContext,
 )
@@ -52,7 +54,7 @@ from src.dependencies.postgres_connection import (
     PostgresConfigurationError,
 )
 from src.dependencies.dag import get_project, edit_project
-from src.services import industry
+from src.services import industry, project_people
 from src.services.map_service import (
     generate_id,
     get_map_style_internal,
@@ -101,6 +103,8 @@ class ProjectResponse(BaseModel):
     soft_deleted_at: Optional[datetime] = None
     # The one industry the project belongs to: the app hides farm-only controls elsewhere (audit R1-28).
     industry: str = "agriculture"
+    # The signed-in user owns it (only the owner deletes or shares it); None where a response does not say.
+    is_owner: Optional[bool] = None
 
 
 class OtherIndustry(BaseModel):
@@ -170,7 +174,8 @@ async def list_user_projects(
 
         projects_data = await conn.fetch(
             f"""
-            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at, p.industry
+            SELECT p.id, p.title, p.maps, p.created_on, p.soft_deleted_at, p.industry,
+                   p.owner_uuid = $1 AS is_owner
             FROM user_mundiai_projects p
             WHERE {_SHOWN}
             ORDER BY p.created_on DESC
@@ -233,6 +238,7 @@ async def list_user_projects(
                     most_recent_version=most_recent_map_details,
                     soft_deleted_at=project_data["soft_deleted_at"],
                     industry=project_data["industry"],
+                    is_owner=project_data["is_owner"],
                 )
             )
 
@@ -891,11 +897,14 @@ async def get_project_social_preview(
 )
 async def delete_project(
     project: MundiProject = Depends(edit_project),
+    session: UserContext = Depends(verify_session_required),
 ):
     """
     Soft deletes a map project. This project will no longer be listed in the user's
-    list of projects, but will appear in recently deleted projects.
+    list of projects, but will appear in recently deleted projects. Only its owner may delete it: an editor it was
+    shared with could, until 2026-10-22.
     """
+    _require_owner(project, session, "delete")
     started_at = time.monotonic()
     async with get_async_db_connection() as conn:
         # Soft delete the project
@@ -927,6 +936,93 @@ async def delete_project(
             "message": "Project successfully deleted",
             "project_id": project.id,
         }
+
+
+def _require_owner(project: MundiProject, session: UserContext, action: str) -> None:
+    """403 unless the signed-in user owns the project (with sign-in on; the legacy single-user mode has one user)."""
+    if external_auth_enabled() and not project_people.owns(project.owner_uuid, session.get_user_id()):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"Only the project's owner can {action} it")
+
+
+class ProjectPerson(BaseModel):
+    user_id: str
+    email: Optional[str] = None
+    role: Optional[str] = None  # editor or viewer; None for the owner
+
+
+class ProjectPeopleResponse(BaseModel):
+    owner: ProjectPerson
+    people: List[ProjectPerson]  # the people it is shared with
+    can_share: bool  # the signed-in user owns it (and sign-in is on)
+    colleagues: List[ProjectPerson] = []  # who the owner may share with; empty for everyone else
+
+
+class ShareRequest(BaseModel):
+    email: str
+    role: project_people.Role = "editor"
+
+
+async def _people_response(conn, project: MundiProject, session: UserContext, listed: dict) -> ProjectPeopleResponse:
+    can_share = external_auth_enabled() and project_people.owns(project.owner_uuid, session.get_user_id())
+    return ProjectPeopleResponse(
+        owner=ProjectPerson(**listed["owner"]),
+        people=[ProjectPerson(**p) for p in listed["people"]],
+        can_share=can_share,
+        colleagues=[ProjectPerson(**c) for c in await project_people.colleagues(conn, session.get_user_id())]
+        if can_share else [],
+    )
+
+
+@project_router.get("/{project_id}/people", response_model=ProjectPeopleResponse, operation_id="list_project_people")
+async def list_project_people(
+    project: MundiProject = Depends(get_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Who the project is shared with; for its owner, also the colleagues it can be shared with."""
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
+        return await _people_response(conn, project, session, await project_people.people(conn, project.id))
+
+
+@project_router.put("/{project_id}/people", response_model=ProjectPeopleResponse, operation_id="share_project")
+async def share_project(
+    body: ShareRequest,
+    project: MundiProject = Depends(get_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Shares the project with a colleague of its owner (someone in one of the owner's organizations) as editor or
+    viewer, or changes their role. Owner only."""
+    _require_owner(project, session, "share")
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
+        try:
+            listed = await project_people.share(conn, project.id, session.get_user_id(), body.email, body.role)
+        except project_people.NotOwner:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the project's owner can share it")
+        except project_people.NotShareable:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"{body.email} is not in your organization yet. Invite them from People first, then share.",
+            )
+        capture_for_session("backend_project_shared", session, {"project_id": project.id, "role": body.role})
+        return await _people_response(conn, project, session, listed)
+
+
+@project_router.delete(
+    "/{project_id}/people/{user_id}", response_model=ProjectPeopleResponse, operation_id="unshare_project"
+)
+async def unshare_project(
+    user_id: uuid.UUID,
+    project: MundiProject = Depends(get_project),
+    session: UserContext = Depends(verify_session_required),
+):
+    """Stops sharing the project with someone (the owner always keeps it). Owner only."""
+    _require_owner(project, session, "change who has")
+    async with get_async_db_connection(user_id=session.get_user_id()) as conn:
+        try:
+            listed = await project_people.unshare(conn, project.id, session.get_user_id(), str(user_id))
+        except project_people.NotOwner:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the project's owner can change who has it")
+        capture_for_session("backend_project_unshared", session, {"project_id": project.id})
+        return await _people_response(conn, project, session, listed)
 
 
 @project_router.get("/embed/v1/{project_id}.html", response_class=HTMLResponse)

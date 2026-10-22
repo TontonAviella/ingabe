@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 
 import EditableTitle from '@/components/EditableTitle';
 import { LayerListItem } from '@/components/LayerListItem';
+import { ShareProject } from '@/components/ShareProject';
 import UploadDocument from '@/components/UploadDocument';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -192,6 +193,7 @@ const LayerList: React.FC<LayerListProps> = ({
               </TooltipContent>
             </Tooltip>
             <EditableTitle projectId={currentMapData.project_id} title={project?.title} placeholder="Enter map title here" />
+            {currentMapData.project_id && <ShareProject projectId={currentMapData.project_id} />}
           </div>
         </CardTitle>
       </CardHeader>

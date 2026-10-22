@@ -232,7 +232,7 @@ export default function MapsList() {
                     <div className="absolute inset-0 bg-black/40 group-hover:bg-black/50 transition-colors" />
 
                     {/* Delete button - appears on hover */}
-                    {project.soft_deleted_at === null && (
+                    {project.soft_deleted_at === null && project.is_owner !== false && (
                       <button
                         onClick={(e) => handleDeleteMap(project.id, e)}
                         className="absolute top-2 right-2 p-1 bg-red-800 hover:bg-red-700 text-gray-200 hover:text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-10 cursor-pointer"
