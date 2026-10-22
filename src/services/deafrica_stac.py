@@ -81,6 +81,32 @@ _INDEX_BANDS: Dict[str, Tuple[str, ...]] = {
 }
 
 
+# Sentinel-2 scene classification: 6 is water. Water is not vegetation, so a
+# vegetation mean that keeps it reads a lakeside cell as bare ground.
+SCL_WATER = 6
+
+
+def _inside_geometry(
+    geometry: Dict[str, Any], s3_href: str, shape: Tuple[int, int], transform: Any,
+) -> Optional[np.ndarray]:
+    """True for the pixels of a window (shape, transform) inside the polygon.
+
+    The raster's CRS comes from the COG header; None if it cannot be read.
+    """
+    import rasterio
+    from rasterio.features import geometry_mask
+    from rasterio.warp import transform_geom
+
+    try:
+        with rasterio.open(s3_href) as src:
+            crs = src.crs
+        projected = transform_geom("EPSG:4326", crs, geometry)
+        return geometry_mask([projected], out_shape=shape, transform=transform, invert=True)
+    except Exception as e:
+        logger.warning("Could not clip to the polygon for %s: %s", s3_href, e)
+        return None
+
+
 def _bbox_from_geojson(geom: Dict[str, Any]) -> Tuple[float, float, float, float]:
     """Compute WGS84 bbox (minx, miny, maxx, maxy) from a GeoJSON geometry."""
     from shapely.geometry import shape
@@ -511,12 +537,21 @@ class DEAfricaSTACService:
         index: str = "ndvi",
         collection: Optional[str] = None,  # ignored, kept for API parity
         max_cloud: float = 80.0,
+        clip_to_geometry: bool = False,
+        drop_water: bool = False,
     ) -> Dict[str, Any]:
         """Compute vegetation index statistics for a GeoJSON polygon.
 
         Matches the output shape of SentinelHubService.get_field_stats so
         callers can swap implementations. `collection` is accepted for
         signature compatibility but DE Africa only exposes s2_l2a here.
+
+        By default the statistics cover the polygon's bounding box. With
+        `clip_to_geometry` they cover only pixels inside the polygon (a scene
+        whose clip fails is skipped, never widened to the box); with
+        `drop_water` water pixels are left out too, and each interval also
+        reports `inside_pixels`. Both are off by default so the numbers
+        existing callers show do not change unmeasured.
         """
         now = datetime.utcnow()
         if date_to is None:
@@ -561,15 +596,18 @@ class DEAfricaSTACService:
 
             band_arrays: Dict[str, np.ndarray] = {}
             shape: Optional[Tuple[int, int]] = None
+            band_transform: Any = None
+            band_href = ""
             failed = False
             for b in needed_bands:
                 res = _read_window(assets[b]["href"], bbox)
                 if res is None:
                     failed = True
                     break
-                arr, _ = res
+                arr, band_transform = res
                 band_arrays[b] = arr.astype("float32")
                 shape = arr.shape
+                band_href = assets[b]["href"]
             if failed or shape is None:
                 continue
 
@@ -586,8 +624,20 @@ class DEAfricaSTACService:
                 scl = scl[yy[:, None], xx[None, :]]
 
             valid = ~np.isin(scl, list(SCL_UNUSABLE)) & (band_arrays[next(iter(needed_bands))] > 0)
+            if drop_water:
+                valid &= scl != SCL_WATER
+            inside = None
+            if clip_to_geometry:
+                inside = _inside_geometry(geometry, band_href, shape, band_transform)
+                if inside is None:
+                    continue
+                valid &= inside
             idx_arr = _compute_index(band_arrays, index)
             stats = _stats_from_array(idx_arr, valid)
+            if inside is not None:
+                # Pixels of the polygon on the grid read, clear or not: the base for a coverage share
+                # (a capped window counts fewer, larger pixels than the polygon's area at 10 m).
+                stats["inside_pixels"] = int(inside.sum())
 
             dt = item["properties"].get("datetime", "")
             intervals.append({

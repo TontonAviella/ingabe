@@ -1674,7 +1674,7 @@ async def _handle_get_cell_ndvi_stats(ctx: LegacyToolContext) -> Dict[str, Any]:
             f"nc.mean_ndvi, nc.std_ndvi, nc.min_ndvi, nc.max_ndvi, nc.valid_pixels "
             f"FROM ndvi_cell_cache nc "
             f"JOIN rwanda_cell_boundaries cb "
-            f"ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+            f"ON nc.cell_id = cb.cell_id "
             f"{where_sql} "
             f"ORDER BY cb.sector_name, nc.cell_name, nc.computed_at DESC LIMIT 200",
             *params,

@@ -1635,7 +1635,7 @@ async def _compare_areas(
             ndvi_rows = await conn.fetch(
                 "SELECT cb.sector_name AS area_name, AVG(nc.mean_ndvi) AS avg_ndvi "
                 "FROM ndvi_cell_cache nc "
-                "JOIN rwanda_cell_boundaries cb ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+                "JOIN rwanda_cell_boundaries cb ON nc.cell_id = cb.cell_id "
                 "WHERE LOWER(nc.district_name) = LOWER($1) "
                 "AND nc.computed_at > NOW() - INTERVAL '30 days' "
                 "GROUP BY cb.sector_name",
@@ -1647,7 +1647,7 @@ async def _compare_areas(
             ndvi_rows = await conn.fetch(
                 f"SELECT nc.cell_name AS area_name, AVG(nc.mean_ndvi) AS avg_ndvi "
                 f"FROM ndvi_cell_cache nc "
-                f"JOIN rwanda_cell_boundaries cb ON nc.cell_name = cb.cell_name AND nc.district_name = cb.district_name "
+                f"JOIN rwanda_cell_boundaries cb ON nc.cell_id = cb.cell_id "
                 f"WHERE LOWER(cb.{filter_col}) = LOWER($1) "
                 f"AND nc.computed_at > NOW() - INTERVAL '30 days' "
                 f"GROUP BY nc.cell_name",
