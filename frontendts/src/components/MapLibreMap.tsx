@@ -1,5 +1,5 @@
 import { apiFetch } from '@mundi/ee';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import legendSymbol, { type RenderElement } from 'legend-symbol-ts';
 import { injectOverridesIntoStyle, useLayerPaintOverrides } from '../hooks/useLayerPaintOverrides';
 import { StyleBridge } from '../lib/StyleBridge';
@@ -591,24 +591,31 @@ export default function MapLibreMap({
     }
   }, [mapData]);
 
+  const queryClient = useQueryClient();
   useEffect(() => {
     if (isCancelling) {
       const cancelActions = async () => {
-        await apiFetch(`/api/maps/${mapId}/messages/cancel`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({}),
-        });
-
-        toast.success('Actions cancelled');
-        setIsCancelling(false);
+        try {
+          const res = await apiFetch(`/api/maps/${mapId}/messages/cancel`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({}),
+          });
+          const body = res.ok ? ((await res.json().catch(() => ({}))) as { closed?: boolean }) : {};
+          // A turn that was no longer running is closed by the server: read the conversation again so the
+          // "working…" panel gives way to the closing message.
+          if (body.closed) await queryClient.invalidateQueries({ predicate: (q) => q.queryKey[4] === 'tree' });
+          toast.success(res.ok ? 'Sage stopped' : 'Could not stop Sage');
+        } finally {
+          setIsCancelling(false);
+        }
       };
 
       cancelActions();
     }
-  }, [isCancelling, mapId]);
+  }, [isCancelling, mapId, queryClient]);
 
   const [selectedFeature, setSelectedFeature] = useState<MapGeoJSONFeature | null>(null);
 

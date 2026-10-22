@@ -2004,6 +2004,54 @@ async def _scope_request_to_map_industry(map_id: str) -> Optional[str]:
 BRAIN_PACKET_TIMEOUT_SECONDS = float(os.environ.get("SAGE_BRAIN_PACKET_TIMEOUT_SECONDS", "5"))
 
 
+UNFINISHED_TURN_REPLY = "I stopped before finishing this request. Please ask again."
+STOPPED_TURN_REPLY = "Stopped."
+# A running turn saves a message at least every tool call (each at most SAGE_TOOL_TIMEOUT_SECONDS, 120 s by
+# default); a turn silent for longer than this is no longer running.
+STALE_TURN_SECONDS = 180
+
+
+def _waits_for_sage(message_json: Any) -> bool:
+    """A conversation whose last message is this still waits for Sage: a question, a tool result, or an empty
+    Sage message (tool calls only). The screen then shows "Sage working…" until a Sage message with text."""
+    message = json.loads(message_json) if isinstance(message_json, str) else (message_json or {})
+    role = message.get("role")
+    return role in ("user", "tool") or (role == "assistant" and not (message.get("content") or "").strip())
+
+
+async def close_unfinished_turn(conversation_id: int, map_id: str, user_id: str, reply: str = UNFINISHED_TURN_REPLY,
+                                older_than_seconds: Optional[int] = None) -> bool:
+    """Save a closing Sage message when the conversation still waits for one; True when one was saved.
+
+    A turn that ends without a final answer (the round limit, a stop, a crash, a server restart) otherwise reads
+    as "Sage working…" for ever, and Stop has nothing left to stop (2026-10-21: a turn that hit the round limit on
+    2026-10-14 still showed "working" a week later). With ``older_than_seconds`` only a turn silent that long is
+    closed, so a turn that is still running is left to stop itself.
+    """
+    async with async_conn("close_unfinished_turn", user_id=user_id) as conn:
+        last = await conn.fetchrow(
+            "SELECT message_json, created_at FROM chat_completion_messages WHERE conversation_id = $1 "
+            "ORDER BY id DESC LIMIT 1",
+            conversation_id,
+        )
+        if last is None or not _waits_for_sage(last["message_json"]):
+            return False
+        if older_than_seconds is not None and last["created_at"] is not None:
+            age = await conn.fetchval("SELECT EXTRACT(EPOCH FROM (now() - $1::timestamptz))", last["created_at"])
+            if age is not None and age < older_than_seconds:
+                return False
+        await conn.execute(
+            "INSERT INTO chat_completion_messages (map_id, sender_id, message_json, conversation_id) "
+            "VALUES ($1, $2, $3, $4)",
+            map_id,
+            user_id,
+            json.dumps({"role": "assistant", "content": reply}),
+            conversation_id,
+        )
+    logger.info("Closed an unfinished Sage turn in conversation %s", conversation_id)
+    return True
+
+
 def chat_lock_key(conversation_id: int) -> str:
     """Redis lock for one conversation's turn, per database (conversation ids repeat across databases)."""
     return f"chat_lock:{os.environ.get('POSTGRES_DB', 'mundidb')}:{conversation_id}"
@@ -3052,6 +3100,10 @@ async def process_chat_interaction_task_safely(
         )
     finally:
         try:
+            await close_unfinished_turn(conversation.id, map_id, user_id)
+        except Exception:  # noqa: BLE001 - the conversation stays as it is; logged for follow-up
+            logger.warning("Closing the unfinished turn of conversation %s failed", conversation.id, exc_info=True)
+        try:
             redis.delete(lock_key)
         except Exception:
             logger.debug("Redis unavailable for chat lock cleanup")
@@ -3325,4 +3377,24 @@ async def cancel_map_message(
         except Exception:
             logger.debug("Redis unavailable for message cancellation")
 
-        return JSONResponse(content={"status": "cancelled"})
+        conversation_id = await conn.fetchval(
+            "SELECT conversation_id FROM chat_completion_messages WHERE map_id = $1 ORDER BY id DESC LIMIT 1",
+            map_id,
+        )
+
+    # A running turn sees the flag and stops itself. One that is no longer running (it died with the server, or
+    # ended without an answer) is closed here, or the screen would say "Sage working…" for ever.
+    closed = False
+    if conversation_id is not None:
+        try:
+            closed = await close_unfinished_turn(conversation_id, map_id, session.get_user_id(), STOPPED_TURN_REPLY,
+                                                 older_than_seconds=STALE_TURN_SECONDS)
+        except Exception:  # noqa: BLE001 - the flag above still stops a running turn
+            logger.warning("Closing a stale turn on map %s failed", map_id, exc_info=True)
+        if closed:
+            try:
+                redis.delete(f"messages:{map_id}:cancelled")
+                await kue_stream_token(conversation_id, "", done=True, turn_id=None)
+            except Exception:
+                logger.debug("Clearing the stopped turn's stream failed", exc_info=True)
+    return JSONResponse(content={"status": "cancelled", "closed": closed})
