@@ -20,7 +20,7 @@ sensors, schedules, and resources defined in the pipelines package.
 
 Scheduled Rwanda jobs:
 - Admin boundary bootstrap and the H3 <-> admin index
-- Pre-compute caches Sage reads (field/parcel NDVI, anomalies, yield risk,
+- Pre-compute caches Sage reads (field/parcel/cell NDVI, anomalies, yield risk,
   drought, phenology, weather) and their nightly cleanup
 
 Requires: dagster package. If not installed, this module exports HAS_DAGSTER=False
@@ -100,6 +100,13 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
+    weekly_cell_ndvi_job = define_asset_job(
+        name="weekly_cell_ndvi_job",
+        description="Weekly NDVI per cell → PostgreSQL ndvi_cell_cache",
+        selection=AssetSelection.assets(rwanda_assets.weekly_cell_ndvi),
+        tags={"category": "rwanda", "precompute": "true"},
+    )
+
     weekly_phenology_job = define_asset_job(
         name="weekly_phenology_job",
         description="Weekly crop phenology analysis → DuckDB cache",
@@ -142,6 +149,7 @@ if HAS_DAGSTER:
         weekly_anomaly_scan_job,
         weekly_yield_risk_job,
         weekly_drought_scan_job,
+        weekly_cell_ndvi_job,
         weekly_phenology_job,
         nightly_cache_cleanup_job,
         nightly_parcel_ndvi_job,
@@ -153,6 +161,7 @@ if HAS_DAGSTER:
         schedules.weekly_anomaly_schedule,
         schedules.weekly_yield_risk_schedule,
         schedules.weekly_drought_schedule,
+        schedules.weekly_cell_ndvi_schedule,
         schedules.weekly_phenology_schedule,
         schedules.nightly_cache_cleanup_schedule,
         schedules.nightly_parcel_ndvi_schedule,

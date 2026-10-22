@@ -70,6 +70,15 @@ weekly_phenology_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+weekly_cell_ndvi_schedule = ScheduleDefinition(
+    name="weekly_cell_ndvi",
+    cron_schedule="0 20 * * 0",  # Every Sunday at 8 PM UTC (~2.5 h, done before Monday's scans)
+    job_name="weekly_cell_ndvi_job",
+    execution_timezone="UTC",
+    description="Weekly NDVI per cell (2,148 cells) → PostgreSQL ndvi_cell_cache",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 # ─── Cache cleanup and parcel-level NDVI schedules ─────────────────────
 
 nightly_cache_cleanup_schedule = ScheduleDefinition(

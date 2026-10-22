@@ -1142,6 +1142,160 @@ def weekly_drought_scan(
         return {"status": "error", "error": str(e)}
 
 
+# A cell gets a week's value only if the week's scenes together saw at least
+# this share of its pixels clear (inside, cloud-free, not water): a few clear
+# pixels in one corner do not describe the cell. Pooled across scenes because a
+# cell on a tile edge is seen in halves (Kirehe/Muhamba, 2026-10-22).
+# Measured 2026-10-22 on 20 random cells: 7 met it that week (rainy season).
+CELL_MIN_CLEAR_SHARE = 0.2
+CELL_NDVI_WORKERS = 4  # one cell takes 4-46 s (2026-10-22); 2,148 cells one at a time ~10 h
+# More failed cells than this share means the source was down, not that cells were cloudy:
+# the run fails and the week's rows already stored stay.
+CELL_MAX_ERROR_SHARE = 0.25
+
+
+def _cell_ndvi_row(
+    dea: Any, geometry: dict[str, Any], date_from: str, date_to: str,
+) -> tuple[float, float, float, float, int] | None:
+    """(mean, std, min, max, pixels) for a cell's week, or None if too little was clear.
+
+    Each scene is clipped to the cell outline with water left out. The mean is
+    over all clear pixels of the week (each scene weighted by its clear pixels);
+    std, min and max are over the scene means. Remote reads run under the GDAL
+    HTTP limits, so a stalled read fails this cell instead of holding the run.
+    """
+    import rasterio
+
+    from src.services.gdal_http import GDAL_HTTP_TIMEOUTS
+
+    with rasterio.Env(**GDAL_HTTP_TIMEOUTS):
+        stats = dea.get_field_stats(
+            geometry=geometry, date_from=date_from, date_to=date_to, index="ndvi",
+            clip_to_geometry=True, drop_water=True,
+        )
+    if "error" in stats:
+        raise RuntimeError(stats["error"])
+    scenes = [iv["ndvi"] for iv in stats.get("intervals", []) if "ndvi" in iv]
+    seen = [s for s in scenes if s.get("valid_pixels", 0) > 0]
+    cell_pixels = max((int(s.get("inside_pixels", 0)) for s in scenes), default=0)
+    pixels = sum(int(s["valid_pixels"]) for s in seen)
+    if not seen or pixels < CELL_MIN_CLEAR_SHARE * cell_pixels:
+        return None
+    means = [float(s["mean"]) for s in seen]
+    mean = sum(float(s["mean"]) * int(s["valid_pixels"]) for s in seen) / pixels
+    return mean, float(np.std(means)), float(np.min(means)), float(np.max(means)), pixels
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description="Weekly: NDVI per cell (2,148 cells) -> PostgreSQL ndvi_cell_cache",
+)
+@observed_dagster_asset(
+    asset_name="weekly_cell_ndvi",
+    pipeline_family="satellite_cell_ndvi",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="ndvi_cell_cache",
+)
+def weekly_cell_ndvi(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+) -> dict[str, Any]:
+    """Fill ndvi_cell_cache, which the area comparison and the legacy NDVI tool read.
+
+    Runs Sunday 20:00 UTC. Reads the last 7 days of Sentinel-2 from Digital
+    Earth Africa (free) for every cell in rwanda_cell_boundaries, clipped to the
+    cell and without cloud or water. A cell seen too little that week gets no
+    row; readers average the last 30 days, so it shows the weeks that were seen.
+    Until 2026-10-22 only run_cell_ndvi.py wrote this table, into a DuckDB file
+    the app never reads, so the Postgres table stayed empty.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from src.services.deafrica_stac import get_deafrica_service
+
+    cells = postgres.execute_query("""
+        SELECT cell_id, cell_name, district_name, ST_AsGeoJSON(geom)
+        FROM rwanda_cell_boundaries
+        WHERE geom IS NOT NULL
+        ORDER BY cell_id
+    """)
+    if not cells:
+        context.log.warning("No cell boundaries: run rwanda_cell_boundaries first")
+        return {"status": "skipped", "reason": "no_cell_boundaries"}
+
+    now = datetime.utcnow()
+    date_from = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
+    week_start = date_from
+    dea = get_deafrica_service()
+
+    rows: list[tuple[Any, ...]] = []
+    no_scene = 0
+    errors: list[dict[str, str]] = []
+    with ThreadPoolExecutor(max_workers=CELL_NDVI_WORKERS) as pool:
+        futures = {
+            pool.submit(_cell_ndvi_row, dea, json.loads(geom), date_from, date_to):
+                (cell_id, cell, district)
+            for cell_id, cell, district, geom in cells
+        }
+        for done, future in enumerate(as_completed(futures), start=1):
+            cell_id, cell, district = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                errors.append({"cell": cell, "district": district, "error": str(e)[:200]})
+                continue
+            if result is None:
+                no_scene += 1
+            else:
+                rows.append((cell_id, cell, district, week_start, *result))
+            if done % 100 == 0:
+                context.log.info(
+                    "Cell NDVI %d/%d: %d rows, %d seen too little, %d errors",
+                    done, len(cells), len(rows), no_scene, len(errors),
+                )
+
+    for err in errors[:10]:
+        context.log.warning("Cell NDVI failed for %s/%s: %s", err["district"], err["cell"], err["error"])
+    if len(errors) > CELL_MAX_ERROR_SHARE * len(cells):
+        return {
+            "status": "error",
+            "error": f"{len(errors)} of {len(cells)} cells failed; first: {errors[0]['error']}",
+            "cells_written": 0,
+        }
+    if not rows:  # nothing seen this week: keep whatever an earlier run stored for it
+        context.log.warning("Cell NDVI: no cell was seen enough this week; nothing written")
+        return {"status": "no_data", "cells": len(cells), "cells_written": 0, "errors": len(errors)}
+
+    with postgres.get_sync_connection() as pg_conn:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM ndvi_cell_cache WHERE week_start = %s", (week_start,))
+            cur.executemany(
+                """
+                INSERT INTO ndvi_cell_cache
+                    (cell_id, cell_name, district_name, week_start,
+                     mean_ndvi, std_ndvi, min_ndvi, max_ndvi, valid_pixels)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                rows,
+            )
+        pg_conn.commit()
+
+    context.log.info(
+        "Cell NDVI done: %d of %d cells written, %d seen too little, %d errors",
+        len(rows), len(cells), no_scene, len(errors),
+    )
+    return {
+        "status": "ok",
+        "cells": len(cells),
+        "cells_written": len(rows),
+        "cells_seen_too_little": no_scene,
+        "errors": len(errors),
+        "date_range": f"{date_from}/{date_to}",
+    }
+
+
 @asset(
     group_name="rwanda_precompute",
     description="Weekly: crop phenology analysis per district → PostgreSQL cache",
