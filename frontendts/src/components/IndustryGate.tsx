@@ -1,11 +1,12 @@
 import { apiFetch } from '@mundi/ee';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 // Ingabe serves three industries. The first time someone signs in, before anything else, they pick theirs from
 // three miniature worlds (the same dioramas as nozalabs.rw), so "grid" or "towers" is never a guess. The choice is
-// saved on the account (/api/user/industry) and can be switched from the sidebar ("Your industry"). A switch changes
+// saved on the account (/api/user/industry) and switched in one tap from the home's industry tabs or the sidebar's
+// "Your industry" menu (the full-screen picker is only the first choice). A switch changes
 // only the user's own view, also for a company's owners and admins. Members of a company that has an industry start
 // in it (its default) and are never asked, but can switch too.
 
@@ -40,6 +41,49 @@ export function useIndustry() {
   });
 }
 
+// One request per target industry at a time, shared by every caller (the tabs, the sidebar menu, a map that mounts
+// twice): on 2026-10-22 opening a Telecom map sent the same switch twice within a second.
+const switching = new Map<IndustryKey, Promise<IndustryState>>();
+
+/** Switches the user's industry to `wanted` (saved on the account) and reloads the lists; resolves with the saved
+ * state. The lists keep showing the current industry until the server has saved the new one: the server, not this
+ * tab, decides what they list, so the industry query only changes once it agrees. */
+export function switchIndustry(queryClient: QueryClient, wanted: IndustryKey): Promise<IndustryState> {
+  const pending = switching.get(wanted);
+  if (pending) return pending;
+  const request = apiFetch('/api/user/industry', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ industry: wanted }),
+  })
+    .then(async (res) => {
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? 'Could not switch your industry');
+      const saved = (await res.json()) as IndustryState;
+      queryClient.setQueryData(INDUSTRY_KEY, saved);
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      return saved;
+    })
+    .finally(() => switching.delete(wanted));
+  switching.set(wanted, request);
+  return request;
+}
+
+/** One-tap switching for buttons and menus: `pending` is the industry being switched to, for a busy state. */
+export function useSwitchIndustry() {
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState<IndustryKey | null>(null);
+  const switchTo = useCallback(
+    (wanted: IndustryKey, label: string) => {
+      setPending(wanted);
+      switchIndustry(queryClient, wanted)
+        .catch(() => toast.error(`Could not switch to ${label}. Check your connection and try again.`))
+        .finally(() => setPending(null));
+    },
+    [queryClient],
+  );
+  return { switchTo, pending };
+}
+
 /** One industry at a time: opening a project of another industry switches the user into the project's (saved on
  * the account like a sidebar switch), so the sidebar, the lists, the cards and Sage all say the same industry. Once
  * per project and industry; nothing when signed out or in the legacy single-user mode. */
@@ -52,20 +96,14 @@ export function useFollowProjectIndustry(projectIndustry: IndustryKey | null | u
     if (!data || !data.can_choose || data.industry === wanted || switched.current === wanted) return;
     switched.current = wanted;
     const label = data.options.find((o) => o.key === wanted)?.label ?? wanted;
-    apiFetch('/api/user/industry', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ industry: wanted }),
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error('switch refused');
-        queryClient.setQueryData(INDUSTRY_KEY, (await res.json()) as IndustryState);
-        queryClient.invalidateQueries({ queryKey: ['projects'] });
-        toast(`This project is ${label}: you are working in ${label} now.`);
+    const first = !switching.has(wanted); // a second mount joins the first switch and says nothing again
+    switchIndustry(queryClient, wanted)
+      .then(() => {
+        if (first) toast(`This project is ${label}: you are working in ${label} now.`);
       })
       .catch(() => {
         switched.current = null;
-        toast.error(`This project is ${label}, but your industry could not be switched to it.`);
+        if (first) toast.error(`This project is ${label}, but your industry could not be switched to it.`);
       });
   }, [data, projectIndustry, queryClient]);
 }
