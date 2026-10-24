@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 # COG tiles on public AWS S3 — Sentinel-2 MGRS grid, UTM projection
 _LULC_BASE = "https://io-10m-annual-lulc.s3.us-west-2.amazonaws.com"
 _LULC_YEAR = 2024  # Latest available year
+LULC_YEAR = _LULC_YEAR  # the year of the land-cover map in use (stored with each statistic)
 
 # Rwanda spans MGRS zones 35M and 36M
 _RWANDA_MGRS_ZONES = ["35M", "36M"]

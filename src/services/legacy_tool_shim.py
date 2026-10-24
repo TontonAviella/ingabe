@@ -3516,7 +3516,9 @@ async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, An
                     _vrt.close()
                     _raw.close()
         else:
-            _sql = "SELECT admin_level, admin_name, district_name, class_name, area_hectares FROM worldcover_admin_stats"
+            # Filled monthly by the Dagster asset worldcover_zonal_stats (PostgreSQL since 2026-10-25).
+            _sql = ("SELECT admin_level, admin_name, district_name, sector_name, class_name, area_hectares, lulc_year "
+                    "FROM worldcover_admin_stats")
             _where: list[str] = []
             _params: list[Any] = []
             _pidx = 1
@@ -3525,6 +3527,10 @@ async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, An
                 _where.append(f"admin_level = 'cell' AND LOWER(admin_name) = LOWER(${_pidx})")
                 _params.append(_wc_cell)
                 _pidx += 1
+                if _wc_sector:  # cell names repeat across sectors
+                    _where.append(f"LOWER(sector_name) = LOWER(${_pidx})")
+                    _params.append(_wc_sector)
+                    _pidx += 1
             elif _wc_sector:
                 _where.append(f"admin_level = 'sector' AND LOWER(admin_name) = LOWER(${_pidx})")
                 _params.append(_wc_sector)
@@ -3535,6 +3541,10 @@ async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, An
                 _pidx += 1
             else:
                 _where.append("admin_level = 'district'")
+            if (_wc_cell or _wc_sector) and _wc_district:  # sector names repeat across districts
+                _where.append(f"LOWER(district_name) = LOWER(${_pidx})")
+                _params.append(_wc_district)
+                _pidx += 1
 
             if _where:
                 _sql += " WHERE " + " AND ".join(_where)
@@ -3549,18 +3559,21 @@ async def _handle_query_worldcover_stats(ctx: LegacyToolContext) -> Dict[str, An
                     "data": [
                         {
                             "admin_level": r["admin_level"], "admin_name": r["admin_name"],
-                            "district": r["district_name"], "class_name": r["class_name"],
-                            "area_hectares": r["area_hectares"],
+                            "district": r["district_name"], "sector": r["sector_name"],
+                            "class_name": r["class_name"], "area_hectares": r["area_hectares"],
                         }
                         for r in _rows
                     ],
+                    "source": f"ESRI 10 m annual land use/land cover {_rows[0]['lulc_year']}, computed per boundary",
                 }
             return {
                 "status": "success",
                 "query_type": "land_cover",
                 "count": 0,
                 "data": [],
-                "note": "No data yet. Run the worldcover_zonal_stats Dagster asset first.",
+                "note": ("No land-cover statistics for this area: either the name did not match a district, "
+                         "sector or cell, or the monthly computation has not run yet. Say so; for an area on the "
+                         "map, call this tool again with its bbox to compute it directly."),
             }
     except Exception as e:
         logger.exception("query_worldcover_stats tool failed")

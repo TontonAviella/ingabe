@@ -114,6 +114,13 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
+    monthly_worldcover_stats_job = define_asset_job(
+        name="monthly_worldcover_stats_job",
+        description="Monthly land cover per district, sector and cell → PostgreSQL worldcover_admin_stats",
+        selection=AssetSelection.assets(rwanda_assets.worldcover_zonal_stats),
+        tags={"category": "rwanda", "precompute": "true"},
+    )
+
     weekly_phenology_job = define_asset_job(
         name="weekly_phenology_job",
         description="Weekly crop phenology analysis → DuckDB cache",
@@ -145,7 +152,6 @@ if HAS_DAGSTER:
     # ─── Define resource instances ──────────────────────────────────────────
     resource_defs = {
         "postgres": resources.PostgresResource.from_env(),
-        "duckdb": resources.DuckDBResource(database_path="/tmp/ingabe_cache/cache.duckdb"),
     }
 
     # ─── Collect all jobs ───────────────────────────────────────────────────
@@ -158,6 +164,7 @@ if HAS_DAGSTER:
         weekly_drought_scan_job,
         weekly_cell_ndvi_job,
         weekly_land_surface_temperature_job,
+        monthly_worldcover_stats_job,
         weekly_phenology_job,
         nightly_cache_cleanup_job,
         nightly_parcel_ndvi_job,
@@ -171,6 +178,7 @@ if HAS_DAGSTER:
         schedules.weekly_drought_schedule,
         schedules.weekly_cell_ndvi_schedule,
         schedules.weekly_land_surface_temperature_schedule,
+        schedules.monthly_worldcover_stats_schedule,
         schedules.weekly_phenology_schedule,
         schedules.nightly_cache_cleanup_schedule,
         schedules.nightly_parcel_ndvi_schedule,

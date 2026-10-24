@@ -40,6 +40,7 @@ class TestPipelineDefinitions:
             "weekly_drought_scan_job",
             "weekly_cell_ndvi_job",
             "weekly_land_surface_temperature_job",
+            "monthly_worldcover_stats_job",
             "weekly_phenology_job",
             "nightly_cache_cleanup_job",
             "nightly_parcel_ndvi_job",
@@ -56,13 +57,14 @@ class TestPipelineDefinitions:
             "weekly_drought_scan",
             "weekly_cell_ndvi",
             "weekly_land_surface_temperature",
+            "monthly_worldcover_stats",
             "weekly_phenology",
             "nightly_cache_cleanup",
             "nightly_parcel_ndvi",
             "daily_weather_ingest",
         }
 
-        assert set(defs.resources) == {"postgres", "duckdb"}
+        assert set(defs.resources) == {"postgres"}
 
     def test_every_schedule_targets_a_defined_job(self):
         job_names = {job.name for job in defs.jobs}
@@ -93,16 +95,6 @@ class TestResources:
             # Test connection string
             conn_str = pg_resource.get_connection_string()
             assert "postgresql://testuser:testpass@test-db:5433/testdb" == conn_str
-
-    def test_duckdb_resource(self):
-        """Test DuckDB resource configuration."""
-        duckdb_resource = resources.DuckDBResource(
-            database_path=":memory:",
-            read_only=False,
-        )
-
-        assert duckdb_resource.database_path == ":memory:"
-        assert duckdb_resource.read_only is False
 
 
 class TestUploadHandlerIntegration:
