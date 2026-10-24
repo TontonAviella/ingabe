@@ -28,6 +28,11 @@ pipeline_cache:
     SELECT 'lst_district_8day', 'weekly',
            EXTRACT(EPOCH FROM now() - COALESCE((max(composite_start) + 38)::timestamptz, 'epoch'))
       FROM lst_district_8day
+    UNION ALL
+    -- Land cover per district/sector/cell, filled monthly (the source map is yearly).
+    SELECT 'worldcover_admin_stats', 'monthly',
+           EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at), 'epoch'))
+      FROM worldcover_admin_stats
   metrics:
     - cache:
         usage: LABEL

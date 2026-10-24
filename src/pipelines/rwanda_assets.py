@@ -20,9 +20,8 @@ Asset groups:
   - rwanda_precompute:   Scheduled pre-computation (NDVI cache, anomalies, drought, weather)
   - rwanda_admin_index:  H3 <-> admin unit index
 
-Cache tables (agri_indices, ndvi_field, anomaly_alerts, etc.) are stored in
-PostgreSQL for shared multi-session access. DuckDB is still used for
-analytical workloads (worldcover_admin_stats).
+Cache tables (agri_indices, ndvi_field, anomaly_alerts, worldcover_admin_stats, etc.) are stored in
+PostgreSQL for shared multi-session access.
 """
 
 import asyncio
@@ -35,7 +34,7 @@ import numpy as np
 import requests
 from dagster import AssetExecutionContext, asset
 
-from src.pipelines.resources import DuckDBResource, PostgresResource
+from src.pipelines.resources import PostgresResource
 from src.pipelines.posthog_observability import observed_dagster_asset
 from src.services.admin_boundaries import RWANDA_DISTRICTS
 
@@ -1663,16 +1662,21 @@ def daily_weather_ingest(
 @asset(
     group_name="rwanda_precompute",
     description=(
-        "Pre-compute ESRI 10m Annual LULC 2024 land-cover zonal statistics for every "
-        "Rwanda admin boundary (district, sector, cell).  Results are cached in "
-        "DuckDB for instant querying by Sage.  Connected-component analysis for "
-        "largest cropland regions is done on-the-fly per user query."
+        "Monthly: ESRI 10m annual land use/land cover per Rwanda district, sector and cell "
+        "-> PostgreSQL worldcover_admin_stats (read by Sage's query_worldcover_stats). "
+        "Largest-cropland analysis is done on the fly per question."
     ),
+)
+@observed_dagster_asset(
+    asset_name="worldcover_zonal_stats",
+    pipeline_family="satellite_land_cover",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="worldcover_admin_stats",
 )
 def worldcover_zonal_stats(
     context: AssetExecutionContext,
     postgres: PostgresResource,
-    duckdb: DuckDBResource,
 ) -> dict[str, Any]:
     """Memory-efficient LULC zonal stats using per-boundary windowed
     COG reads via WarpedVRT (ESRI tiles are UTM, we need EPSG:4326).
@@ -1687,7 +1691,7 @@ def worldcover_zonal_stats(
     from rasterio.features import geometry_mask
     from rasterio.merge import merge
 
-    from src.worldcover import WORLDCOVER_CLASSES, open_rwanda_datasets_warped
+    from src.worldcover import LULC_YEAR, WORLDCOVER_CLASSES, open_rwanda_datasets_warped
 
     PIXEL_AREA_HA = 0.01  # 10m x 10m = 100 m^2 = 0.01 hectares
 
@@ -1792,34 +1796,22 @@ def worldcover_zonal_stats(
         vrt.close()
         raw_ds.close()
 
-    # ── Step 3: Write results to DuckDB ───────────────────────────────────
-    # Note: Connected-component analysis for largest_cropland queries is
-    # now done on-the-fly in message_routes.py for the specific boundary
-    # the user asks about. This asset only pre-computes zonal stats.
-    context.log.info("Writing results to DuckDB...")
-    with duckdb.get_connection() as conn:
-        conn.execute("DROP TABLE IF EXISTS worldcover_admin_stats")
-        conn.execute("""
-            CREATE TABLE worldcover_admin_stats (
-                admin_level VARCHAR,
-                admin_name VARCHAR,
-                district_name VARCHAR,
-                sector_name VARCHAR,
-                class_value INTEGER,
-                class_name VARCHAR,
-                pixel_count INTEGER,
-                area_hectares DOUBLE
+    # ── Step 3: Write results to PostgreSQL ───────────────────────────────
+    # Sage's query_worldcover_stats reads this table. Replaced in one transaction, so a reader sees the old rows
+    # or the new ones, never none. A run that computed nothing (the tiles unreadable) keeps the old rows and fails.
+    if not all_stats_rows:
+        return {"status": "error", "error": "no land-cover statistics computed; the previous ones are kept"}
+    with postgres.get_sync_connection() as pg_conn:
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM worldcover_admin_stats")
+            cur.executemany(
+                "INSERT INTO worldcover_admin_stats (admin_level, admin_name, district_name, sector_name, lulc_year, "
+                "class_value, class_name, pixel_count, area_hectares) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [(lvl, name, dist, sect, LULC_YEAR, val, cls, cnt, ha)
+                 for lvl, name, dist, sect, val, cls, cnt, ha in all_stats_rows],
             )
-        """)
-        if all_stats_rows:
-            conn.executemany(
-                "INSERT INTO worldcover_admin_stats VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                all_stats_rows,
-            )
-        context.log.info("Wrote %d rows to worldcover_admin_stats", len(all_stats_rows))
-
-        # Drop legacy CC table if it exists (no longer pre-computed)
-        conn.execute("DROP TABLE IF EXISTS worldcover_cropland_regions")
+        pg_conn.commit()
+    context.log.info("Wrote %d rows to worldcover_admin_stats", len(all_stats_rows))
 
     return {
         "status": "ok",

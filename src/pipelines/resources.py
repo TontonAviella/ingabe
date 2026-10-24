@@ -1,7 +1,7 @@
 """Dagster resources wrapping existing Mundi.ai clients.
 
-These resources provide Dagster-compatible interfaces to the Postgres and
-DuckDB clients used by the Rwanda pre-compute assets.
+These resources provide Dagster-compatible interfaces to the Postgres client used by the Rwanda pre-compute
+assets (every cache table lives in PostgreSQL; the DuckDB resource was removed 2026-10-25).
 """
 
 import os
@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import asyncpg
-import duckdb
 from dagster import ConfigurableResource
 from pydantic import Field
 
@@ -77,39 +76,3 @@ class PostgresResource(ConfigurableResource):
                 if cur.description:
                     return cur.fetchall()
                 return []
-
-
-class DuckDBResource(ConfigurableResource):
-    """Dagster resource for DuckDB operations.
-
-    DuckDB is used for analytical queries and data transformations.
-    Each operation gets a fresh in-memory or persistent database connection.
-    """
-
-    database_path: str = Field(default=":memory:", description="DuckDB database path")
-    read_only: bool = Field(default=False, description="Open database in read-only mode")
-
-    @contextmanager
-    def get_connection(self):
-        """Get a DuckDB connection."""
-        conn = duckdb.connect(database=self.database_path, read_only=self.read_only)
-        try:
-            # Configure DuckDB for S3 access — each SET must be a separate
-            # execute() call because DuckDB only supports prepared parameters
-            # on the last statement in a batch.
-            s3_endpoint = os.environ.get("S3_ENDPOINT_URL", "minio:9000").replace("http://", "")
-            s3_key = os.environ.get("S3_ACCESS_KEY_ID", "s3user")
-            s3_secret = os.environ.get("S3_SECRET_ACCESS_KEY", "backup123")
-            s3_region = os.environ.get("S3_DEFAULT_REGION", "us-east-1")
-            conn.execute(f"SET s3_endpoint = '{s3_endpoint}'")
-            conn.execute(f"SET s3_access_key_id = '{s3_key}'")
-            conn.execute(f"SET s3_secret_access_key = '{s3_secret}'")
-            conn.execute(f"SET s3_region = '{s3_region}'")
-            yield conn
-        finally:
-            conn.close()
-
-    def query(self, sql: str) -> Any:
-        """Execute a query and return results."""
-        with self.get_connection() as conn:
-            return conn.execute(sql).fetchall()

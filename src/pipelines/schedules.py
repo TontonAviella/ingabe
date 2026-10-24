@@ -88,6 +88,16 @@ weekly_land_surface_temperature_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+# The land-cover map is yearly; monthly keeps the table filled after a restore or a missed run.
+monthly_worldcover_stats_schedule = ScheduleDefinition(
+    name="monthly_worldcover_stats",
+    cron_schedule="0 4 1 * *",  # 1st of every month at 4 AM UTC
+    job_name="monthly_worldcover_stats_job",
+    execution_timezone="UTC",
+    description="Monthly ESRI land cover per district, sector and cell → PostgreSQL worldcover_admin_stats",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 # ─── Cache cleanup and parcel-level NDVI schedules ─────────────────────
 
 nightly_cache_cleanup_schedule = ScheduleDefinition(
