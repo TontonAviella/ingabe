@@ -1,0 +1,47 @@
+// Alloy: ships every container's logs to Loki, labelled by container and compose service. The app logs JSON;
+// its level and logger become labels so Grafana can show "errors from mundi-app" directly.
+// Prometheus's /metrics scrapes (one every 10 s) are dropped: they are noise.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.process.app.receiver]
+}
+
+loki.process "app" {
+  stage.drop {
+    expression = "GET /metrics HTTP"
+  }
+  stage.json {
+    expressions = { level = "level", logger = "logger" }
+  }
+  stage.labels {
+    values = { level = "", logger = "" }
+  }
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

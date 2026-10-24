@@ -19,26 +19,26 @@ tests:
       - eval_time: 40s
         alertname: PostgresUnavailable
         exp_alerts:
-          - exp_labels: {severity: critical, job: postgres}
-            exp_annotations: {summary: "Postgres is not accepting connections (down or in crash recovery)"}
+          - exp_labels: {area: database, severity: critical, job: postgres}
+            exp_annotations: {where: "container ingabe-postgresdb-1 / mundi-postgresdb", summary: "Postgres is not accepting connections (down or in crash recovery)"}
       - eval_time: 100s
         alertname: PostgresUnavailable
         exp_alerts: []
       - eval_time: 100s
         alertname: PostgresRecoveredRecently
         exp_alerts:
-          - exp_labels: {severity: warning, job: postgres}
-            exp_annotations: {summary: "Postgres was unavailable at least once in the last 15 minutes"}
+          - exp_labels: {area: database, severity: warning, job: postgres}
+            exp_annotations: {where: "container postgresdb logs", summary: "Postgres was unavailable at least once in the last 15 minutes"}
       - eval_time: 6m
         alertname: DockerVMMemoryLow
         exp_alerts:
-          - exp_labels: {severity: warning, job: docker-vm}
-            exp_annotations: {summary: "Docker VM has under 1 GB available; Postgres workers start dying near here"}
+          - exp_labels: {area: server, severity: warning, job: docker-vm}
+            exp_annotations: {where: "server memory (Grafana: Server)", summary: "Docker VM has under 1 GB available; Postgres workers start dying near here"}
       - eval_time: 6m
         alertname: DockerVMSwapNearlyFull
         exp_alerts:
-          - exp_labels: {severity: warning, job: docker-vm}
-            exp_annotations: {summary: "Docker VM swap over 85% used (it was 96% when Postgres crash-looped)"}
+          - exp_labels: {area: server, severity: warning, job: docker-vm}
+            exp_annotations: {where: "server memory (Grafana: Server)", summary: "Docker VM swap over 85% used (it was 96% when Postgres crash-looped)"}
 
   - interval: 1m
     input_series:
@@ -54,7 +54,159 @@ tests:
       - eval_time: 31m
         alertname: DataPipelineStale
         exp_alerts:
-          - exp_labels: {severity: warning, job: postgres, cache: weather_daily_cache, cadence: daily}
-            exp_annotations: {summary: "weather_daily_cache has not been refreshed by Dagster on schedule (daily)"}
-          - exp_labels: {severity: warning, job: postgres, cache: ndvi_cell_cache, cadence: weekly}
-            exp_annotations: {summary: "ndvi_cell_cache has not been refreshed by Dagster on schedule (weekly)"}
+          - exp_labels: {area: data, severity: warning, job: postgres, cache: weather_daily_cache, cadence: daily}
+            exp_annotations: {where: "Dagster job that fills weather_daily_cache", summary: "weather_daily_cache has not been refreshed by Dagster on schedule (daily)"}
+          - exp_labels: {area: data, severity: warning, job: postgres, cache: ndvi_cell_cache, cadence: weekly}
+            exp_annotations: {where: "Dagster job that fills ndvi_cell_cache", summary: "ndvi_cell_cache has not been refreshed by Dagster on schedule (weekly)"}
+
+  # Live app checked from outside: down for 3 minutes, then slow for 10.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="public-app",instance="https://gis.nozalabs.rw/api/health"}'
+        values: '1 0 0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'probe_duration_seconds{job="public-app",instance="https://gis.nozalabs.rw/api/health"}'
+        values: '0.4 15 15 15 15 4 4 4 4 4 4 4 4 4 4 4 4 4'
+      - series: 'up{job="mundi-app",instance="app:8000"}'
+        values: '1 0 0 0 1x14'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AppUnreachable
+        exp_alerts:
+          - exp_labels: {area: app, severity: critical, job: public-app, instance: "https://gis.nozalabs.rw/api/health"}
+            exp_annotations:
+              where: "gis.nozalabs.rw: cloudflared on the host, container mundi-app, /api/health body"
+              summary: The live app does not answer from outside, or reports its database or Redis down
+      - eval_time: 7m
+        alertname: AppUnreachable
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: AppSlow
+        exp_alerts:
+          - exp_labels: {area: app, severity: warning, job: public-app, instance: "https://gis.nozalabs.rw/api/health"}
+            exp_annotations:
+              where: "container mundi-app (Grafana: App, Logs)"
+              summary: The live app takes over 3 s to answer its health check
+      - eval_time: 3m
+        alertname: AppProcessDown
+        exp_alerts:
+          - exp_labels: {area: app, severity: critical, job: mundi-app, instance: "app:8000"}
+            exp_annotations:
+              where: "container mundi-app (docker logs mundi-app)"
+              summary: The app container does not answer inside the server
+
+  # Sage: 10 turns in an hour, 1 crashed and 1 ended by an AI-model credit error (20% fail); one tool timed out
+  # twice; one turn left hanging. The credit runs out in 5 days.
+  - interval: 5m
+    input_series:
+      - series: 'sage_turns_total{job="mundi-app",outcome="completed"}'
+        values: '0+1x12'
+      - series: 'sage_turns_total{job="mundi-app",outcome="failed"}'
+        values: '0 0 0 0 0 0 1x7'
+      - series: 'sage_llm_errors_total{job="mundi-app",kind="credit",stage="final"}'
+        values: '0 0 0 0 0 0 0 1x6'
+      - series: 'sage_tool_calls_total{job="mundi-app",tool="get_insurance_intelligence",outcome="timeout"}'
+        values: '0 0 0 0 1 2x8'
+      - series: 'sage_turns_closed_unfinished_total{job="mundi-app",source="turn_end"}'
+        values: '0 0 0 0 0 0 0 0 1x5'
+      - series: 'sage_llm_credit_expires_timestamp_seconds{job="mundi-app"}'
+        values: '432000x12'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SageTurnsFailing
+        exp_alerts:
+          - exp_labels: {area: sage, severity: warning}
+            exp_annotations:
+              where: "src/routes/message_routes.py (process_chat_interaction_task), Grafana: Sage + Logs"
+              summary: More than 1 in 10 Sage turns failed in the last hour
+      - eval_time: 60m
+        alertname: SageToolTimingOut
+        exp_alerts:
+          - exp_labels: {area: sage, severity: warning, tool: get_insurance_intelligence}
+            exp_annotations:
+              where: "tool get_insurance_intelligence (its data source is slow or down)"
+              summary: "Sage tool get_insurance_intelligence was stopped for taking too long twice in the last hour"
+      - eval_time: 60m
+        alertname: SageTurnsLeftHanging
+        exp_alerts:
+          - exp_labels: {area: sage, severity: warning}
+            exp_annotations:
+              where: "turns that ended without an answer (round limit, crash, restart); Grafana: Logs"
+              summary: A Sage turn ended without an answer in the last hour
+      - eval_time: 40m
+        alertname: AIModelCreditOrKeyRefused
+        exp_alerts:
+          - exp_labels: {area: ai-model, severity: critical}
+            exp_annotations:
+              where: "AI provider account (credit balance or API key in .env)"
+              summary: The AI model refused Sage for credit or the API key; Sage cannot answer
+      - eval_time: 5m
+        alertname: AICreditEndsSoon
+        exp_alerts:
+          - exp_labels: {area: ai-model, severity: warning, job: mundi-app}
+            exp_annotations:
+              where: "SAGE_LLM_CREDIT_EXPIRES in .env; the provider's billing page"
+              summary: The AI model's paid credit ends within 7 days; then Sage stops answering
+      - eval_time: 5m
+        alertname: AICreditEndsVerySoon
+        exp_alerts: []
+
+  # Dagster: the drought scan's latest run failed and the scheduler stopped reporting in.
+  - interval: 1m
+    input_series:
+      - series: 'dagster_job_last_run_failed{job="dagster",job_name="weekly_drought_scan_job"}'
+        values: '0 0 1x9'
+      - series: 'dagster_daemon_heartbeat_age_seconds{job="dagster",daemon_type="SCHEDULER"}'
+        values: '20 20 400 460 520 580 640 700 760 820 880'
+      - series: 'dagster_runs_stuck{job="dagster"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DagsterDaemonDown
+        exp_alerts:
+          - exp_labels: {area: dagster, severity: critical, job: dagster, daemon_type: SCHEDULER}
+            exp_annotations:
+              where: "container mundi-dagster-daemon (recreate it when no run is going)"
+              summary: The Dagster scheduler has not reported in for over 5 minutes; no schedule will run
+      - eval_time: 8m
+        alertname: DagsterJobFailed
+        exp_alerts:
+          - exp_labels: {area: dagster, severity: warning, job: dagster, job_name: weekly_drought_scan_job}
+            exp_annotations:
+              where: "Dagster job weekly_drought_scan_job (container mundi-dagster-daemon, Grafana: Dagster + Logs)"
+              summary: "The latest run of weekly_drought_scan_job failed"
+
+  # Backups: last night's run failed (the good one before is 30 h old) and the one before that had halved.
+  - interval: 1h
+    input_series:
+      - series: 'backup_last_run_success{job="docker-vm"}'
+        values: '0x2'
+      # promtool's clock starts at 0: 30 hours before it.
+      - series: 'backup_last_success_timestamp_seconds{job="docker-vm"}'
+        values: '-108000x2'
+      - series: 'backup_last_size_bytes{job="docker-vm"}'
+        values: '4e6x2'
+      - series: 'backup_previous_size_bytes{job="docker-vm"}'
+        values: '9e6x2'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: BackupFailed
+        exp_alerts:
+          - exp_labels: {area: backup, severity: critical, job: docker-vm}
+            exp_annotations:
+              where: "container mundi-backup (/var/log/backup.log), scripts/backup.sh"
+              summary: The last nightly database backup failed
+      - eval_time: 1h
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels: {area: backup, severity: critical, job: docker-vm}
+            exp_annotations:
+              where: "container mundi-backup (cron), scripts/backup.sh"
+              summary: No good database backup in over 26 hours
+      - eval_time: 1h
+        alertname: BackupShrank
+        exp_alerts:
+          - exp_labels: {area: backup, severity: warning, job: docker-vm}
+            exp_annotations:
+              where: "container mundi-backup; compare the two newest files in MinIO backups/"
+              summary: The newest backup is less than half the size of the one before it
+

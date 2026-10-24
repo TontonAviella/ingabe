@@ -83,6 +83,7 @@ dependency is allowed when the line carries `# lazy: <reason>`.)
 | Administrative boundaries | `src/services/admin_boundaries.py` | |
 | Rwanda crop calendar (planting date, days to harvest, current season) | `src/services/crop_calendar.py` | |
 | Rain impact | `src/services/rain_impact.py` | |
+| Sage and AI-model health counters (turn outcomes, tool calls, model errors by kind, credit end date) for `/metrics` | `src/dependencies/health_metrics.py` | Alert rules in `monitoring/alerts.yml` |
 | Ground temperature per district and its heat condition (month mean of clear composites, normal = same month since 2003, harvest note only where the link was measured; context, never a trigger) | `src/services/land_surface_temperature.py` | |
 | Industries (the three industries; which capability serves which, and its switch; a user's, a company's and a project's industry; the industry the user works in now, which new projects take and the home lists) | `src/services/industry.py` | Rules in the module docstring (no rules doc yet) |
 | Who can open a project, and sharing it (owner rule, colleagues = same organization, editor/viewer) | `src/services/project_people.py` | Owner/editor checks also in `src/dependencies/dag.py` (`_can_access_project`, `_can_edit_project`) |

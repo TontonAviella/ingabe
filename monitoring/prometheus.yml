@@ -1,5 +1,5 @@
 # Prometheus configuration for Mundi.ai
-# Scrapes the /metrics endpoint exposed by the FastAPI app
+# Scrapes the app's /metrics (internal only), the exporters, and checks the public address from outside.
 
 global:
   scrape_interval: 15s
@@ -30,3 +30,26 @@ scrape_configs:
   - job_name: "docker-vm"
     static_configs:
       - targets: ["node-exporter:9100"]
+
+  # The app as people reach it: public address, Cloudflare tunnel, /api/health must say "healthy".
+  # (A local stack probes the live site too; it only reads.)
+  - job_name: "public-app"
+    metrics_path: /probe
+    params:
+      module: [app_health]
+    scrape_interval: 60s
+    scrape_timeout: 20s
+    static_configs:
+      - targets: ["https://gis.nozalabs.rw/api/health"]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: "dagster"
+    static_configs:
+      - targets: ["postgres-exporter-dagster:9187"]
+    scrape_interval: 30s

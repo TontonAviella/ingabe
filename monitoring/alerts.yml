@@ -1,23 +1,28 @@
-# Alert rules for the local stack (visible at http://localhost:9090/alerts
-# and in Grafana). Added after 2026-10-03, when Postgres looped through
+# Alert rules (Prometheus :9090/alerts, Grafana, and the Ingabe Health page). Every rule has an `area` label
+# (app, sage, ai-model, dagster, data, backup, database, server, monitoring) and a `where` annotation saying
+# where to look first. Added after 2026-10-03, when Postgres looped through
 # crash recovery under Docker-VM memory pressure with nothing showing it.
 groups:
   - name: database
     rules:
       - alert: PostgresUnavailable
         # Crash recovery refuses connections for 20-40 s; a 10 s scrape sees it.
-        expr: pg_up == 0
+        expr: pg_up{job="postgres"} == 0
         labels:
           severity: critical
+          area: database
         annotations:
+          where: "container ingabe-postgresdb-1 / mundi-postgresdb"
           summary: Postgres is not accepting connections (down or in crash recovery)
       - alert: PostgresRecoveredRecently
         # Any unavailability in the last 15 minutes, so a crash between
         # dashboard glances is not missed.
-        expr: min_over_time(pg_up[15m]) == 0
+        expr: min_over_time(pg_up{job="postgres"}[15m]) == 0
         labels:
           severity: warning
+          area: database
         annotations:
+          where: "container postgresdb logs"
           summary: Postgres was unavailable at least once in the last 15 minutes
 
   - name: docker-vm
@@ -27,14 +32,18 @@ groups:
         for: 5m
         labels:
           severity: warning
+          area: server
         annotations:
+          where: "server memory (Grafana: Server)"
           summary: Docker VM has under 1 GB available; Postgres workers start dying near here
       - alert: DockerVMSwapNearlyFull
         expr: (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes > 0.85
         for: 5m
         labels:
           severity: warning
+          area: server
         annotations:
+          where: "server memory (Grafana: Server)"
           summary: Docker VM swap over 85% used (it was 96% when Postgres crash-looped)
 
   - name: data-pipelines
@@ -49,5 +58,219 @@ groups:
         for: 30m
         labels:
           severity: warning
+          area: data
         annotations:
+          where: "Dagster job that fills {{ $labels.cache }}"
           summary: "{{ $labels.cache }} has not been refreshed by Dagster on schedule ({{ $labels.cadence }})"
+
+  - name: app
+    rules:
+      - alert: AppUnreachable
+        # Checked from outside through Cloudflare every minute; /api/health must say "healthy".
+        expr: probe_success{job="public-app"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          area: app
+        annotations:
+          where: "gis.nozalabs.rw: cloudflared on the host, container mundi-app, /api/health body"
+          summary: The live app does not answer from outside, or reports its database or Redis down
+      - alert: AppSlow
+        expr: probe_duration_seconds{job="public-app"} > 3
+        for: 10m
+        labels:
+          severity: warning
+          area: app
+        annotations:
+          where: "container mundi-app (Grafana: App, Logs)"
+          summary: The live app takes over 3 s to answer its health check
+      - alert: AppProcessDown
+        expr: up{job="mundi-app"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          area: app
+        annotations:
+          where: "container mundi-app (docker logs mundi-app)"
+          summary: The app container does not answer inside the server
+      - alert: AppServerErrors
+        expr: |
+          (sum(increase(http_request_errors_total[15m])) / clamp_min(sum(increase(http_requests_total[15m])), 1)) > 0.05
+          and sum(increase(http_requests_total[15m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+          area: app
+        annotations:
+          where: "container mundi-app, 5xx in Grafana: Logs"
+          summary: Over 5% of app requests failed with a server error in the last 15 minutes
+
+  - name: sage
+    rules:
+      - alert: SageTurnsFailing
+        # Failed turns plus turns ended by an AI-model error, over all turns in the last hour. Not counted: turns
+        # cut off by a restart (outcome "cancelled", every deploy) and chats grown past the model's limit
+        # (kind "context", the person's chat, not a fault).
+        expr: |
+          (
+            (sum(increase(sage_turns_total{outcome="failed"}[1h])) or vector(0))
+            + (sum(increase(sage_llm_errors_total{stage="final",kind!="context"}[1h])) or vector(0))
+          ) / sum(increase(sage_turns_total[1h])) > 0.1
+          and sum(increase(sage_turns_total[1h])) >= 3
+        labels:
+          severity: warning
+          area: sage
+        annotations:
+          where: "src/routes/message_routes.py (process_chat_interaction_task), Grafana: Sage + Logs"
+          summary: More than 1 in 10 Sage turns failed in the last hour
+      - alert: SageTurnsLeftHanging
+        expr: sum(increase(sage_turns_closed_unfinished_total[1h])) > 0
+        labels:
+          severity: warning
+          area: sage
+        annotations:
+          where: "turns that ended without an answer (round limit, crash, restart); Grafana: Logs"
+          summary: A Sage turn ended without an answer in the last hour
+      - alert: SageSlow
+        expr: |
+          histogram_quantile(0.9, sum by (le) (rate(sage_turn_duration_seconds_bucket[1h]))) > 120
+          and sum(increase(sage_turns_total[1h])) >= 3
+        for: 15m
+        labels:
+          severity: warning
+          area: sage
+        annotations:
+          where: "slow tools in Grafana: Sage (tool calls), AI model latency"
+          summary: 1 in 10 Sage answers took over 2 minutes in the last hour
+      - alert: SageToolTimingOut
+        expr: sum by (tool) (increase(sage_tool_calls_total{outcome="timeout"}[1h])) >= 2
+        labels:
+          severity: warning
+          area: sage
+        annotations:
+          where: "tool {{ $labels.tool }} (its data source is slow or down)"
+          summary: "Sage tool {{ $labels.tool }} was stopped for taking too long twice in the last hour"
+
+  - name: ai-model
+    rules:
+      - alert: AIModelCreditOrKeyRefused
+        expr: sum(increase(sage_llm_errors_total{kind=~"credit|auth"}[30m])) > 0
+        labels:
+          severity: critical
+          area: ai-model
+        annotations:
+          where: "AI provider account (credit balance or API key in .env)"
+          summary: The AI model refused Sage for credit or the API key; Sage cannot answer
+      - alert: AIModelErrors
+        expr: sum(increase(sage_llm_errors_total{stage="final",kind!="context"}[1h])) >= 3
+        labels:
+          severity: warning
+          area: ai-model
+        annotations:
+          where: "AI provider status, error kinds in Grafana: AI model"
+          summary: The AI model failed 3 or more Sage turns in the last hour
+      - alert: AICreditEndsSoon
+        expr: (sage_llm_credit_expires_timestamp_seconds - time()) < 7 * 86400
+        labels:
+          severity: warning
+          area: ai-model
+        annotations:
+          where: "SAGE_LLM_CREDIT_EXPIRES in .env; the provider's billing page"
+          summary: The AI model's paid credit ends within 7 days; then Sage stops answering
+      - alert: AICreditEndsVerySoon
+        expr: (sage_llm_credit_expires_timestamp_seconds - time()) < 2 * 86400
+        labels:
+          severity: critical
+          area: ai-model
+        annotations:
+          where: "SAGE_LLM_CREDIT_EXPIRES in .env; the provider's billing page"
+          summary: The AI model's paid credit ends within 2 days
+
+  - name: dagster
+    rules:
+      - alert: DagsterJobFailed
+        expr: dagster_job_last_run_failed == 1
+        labels:
+          severity: warning
+          area: dagster
+        annotations:
+          where: "Dagster job {{ $labels.job_name }} (container mundi-dagster-daemon, Grafana: Dagster + Logs)"
+          summary: "The latest run of {{ $labels.job_name }} failed"
+      - alert: DagsterRunStuck
+        expr: dagster_runs_stuck > 0
+        for: 10m
+        labels:
+          severity: warning
+          area: dagster
+        annotations:
+          where: "container mundi-dagster-daemon (runs table in the dagster database)"
+          summary: A Dagster run started over 3 hours ago and has not finished
+      - alert: DagsterDaemonDown
+        expr: dagster_daemon_heartbeat_age_seconds{daemon_type="SCHEDULER"} > 300
+        for: 5m
+        labels:
+          severity: critical
+          area: dagster
+        annotations:
+          where: "container mundi-dagster-daemon (recreate it when no run is going)"
+          summary: The Dagster scheduler has not reported in for over 5 minutes; no schedule will run
+
+  - name: backup
+    rules:
+      - alert: BackupFailed
+        expr: backup_last_run_success == 0
+        labels:
+          severity: critical
+          area: backup
+        annotations:
+          where: "container mundi-backup (/var/log/backup.log), scripts/backup.sh"
+          summary: The last nightly database backup failed
+      - alert: BackupMissing
+        expr: time() - backup_last_success_timestamp_seconds > 26 * 3600
+        labels:
+          severity: critical
+          area: backup
+        annotations:
+          where: "container mundi-backup (cron), scripts/backup.sh"
+          summary: No good database backup in over 26 hours
+      - alert: BackupNeverRecorded
+        expr: absent(backup_last_run_timestamp_seconds)
+        for: 26h
+        labels:
+          severity: warning
+          area: backup
+        annotations:
+          where: "container mundi-backup (BACKUP_METRICS_DIR, health-textfile volume)"
+          summary: The backup has written no health record for over 26 hours
+      - alert: BackupShrank
+        expr: backup_last_size_bytes < 0.5 * backup_previous_size_bytes
+        labels:
+          severity: warning
+          area: backup
+        annotations:
+          where: "container mundi-backup; compare the two newest files in MinIO backups/"
+          summary: The newest backup is less than half the size of the one before it
+
+  - name: server
+    rules:
+      - alert: DiskNearlyFull
+        expr: 1 - node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} > 0.85
+        for: 15m
+        labels:
+          severity: warning
+          area: server
+        annotations:
+          where: "server disk: docker images and build cache (docker builder prune), MinIO photos"
+          summary: The server disk is over 85% full
+
+  - name: monitoring
+    rules:
+      - alert: MonitoringTargetDown
+        expr: up{job=~"postgres|dagster|docker-vm|public-app"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "exporter container for job {{ $labels.job }}"
+          summary: "Prometheus cannot read {{ $labels.job }}, so its alerts are blind"

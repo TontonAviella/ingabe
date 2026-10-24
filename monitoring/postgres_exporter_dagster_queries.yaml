@@ -1,0 +1,67 @@
+# Custom metrics read from Dagster's own run storage (the `dagster` database), by a second postgres-exporter.
+# pipeline_cache_age_seconds (mundidb) says a cache went stale; these say why: a job whose latest run failed,
+# a run stuck for hours, or a daemon that stopped beating (2026-08-12 to 10-04 it was dead for 7 weeks).
+# Ad-hoc runs (names starting "__") and jobs with no run in 14 days (removed from the code; weekly jobs run every 7) are left out; a job that
+# stops being scheduled is caught by DataPipelineStale and DagsterDaemonDown instead. Times in runs/daemon_heartbeats are UTC without a zone.
+dagster_job:
+  query: |
+    SELECT j.job AS job_name,
+           (latest.status = 'FAILURE')::int AS last_run_failed,
+           COALESCE(ok.last_success, 0) AS last_success_timestamp_seconds,
+           COALESCE(f.failed_24h, 0) AS failed_runs_24h,
+           COALESCE(latest.duration, 0) AS last_run_duration_seconds
+      FROM (SELECT DISTINCT pipeline_name AS job FROM runs
+             WHERE pipeline_name NOT LIKE '\_\_%' AND create_timestamp > now() - interval '14 days') j
+      JOIN LATERAL (SELECT status, COALESCE(end_time - start_time, 0) AS duration FROM runs
+                     WHERE pipeline_name = j.job AND status IN ('SUCCESS', 'FAILURE', 'CANCELED')
+                     ORDER BY id DESC LIMIT 1) latest ON true
+      LEFT JOIN (SELECT pipeline_name, max(end_time) AS last_success FROM runs
+                  WHERE status = 'SUCCESS' GROUP BY 1) ok ON ok.pipeline_name = j.job
+      LEFT JOIN (SELECT pipeline_name, count(*) AS failed_24h FROM runs
+                  WHERE status = 'FAILURE' AND update_timestamp > (now() at time zone 'utc') - interval '1 day'
+                  GROUP BY 1) f ON f.pipeline_name = j.job
+  metrics:
+    - job_name:
+        usage: LABEL
+        description: Dagster job name (not "job", which Prometheus uses for the scrape job)
+    - last_run_failed:
+        usage: GAUGE
+        description: 1 when the job's latest finished run failed
+    - last_success_timestamp_seconds:
+        usage: GAUGE
+        description: End time of the job's latest successful run (Unix seconds; 0 = never)
+    - failed_runs_24h:
+        usage: GAUGE
+        description: Failed runs of the job in the last 24 hours
+    - last_run_duration_seconds:
+        usage: GAUGE
+        description: How long the job's latest finished run took
+dagster_runs:
+  query: |
+    SELECT count(*) FILTER (WHERE status IN ('STARTED', 'STARTING')
+                              AND update_timestamp < (now() at time zone 'utc') - interval '3 hours') AS stuck,
+           count(*) FILTER (WHERE status IN ('STARTED', 'STARTING')) AS running,
+           count(*) FILTER (WHERE status = 'QUEUED') AS queued
+      FROM runs
+  metrics:
+    - stuck:
+        usage: GAUGE
+        description: Runs started over 3 hours ago and still not finished
+    - running:
+        usage: GAUGE
+        description: Runs in progress
+    - queued:
+        usage: GAUGE
+        description: Runs waiting to start
+dagster_daemon:
+  query: |
+    SELECT daemon_type,
+           EXTRACT(EPOCH FROM (now() at time zone 'utc') - max(timestamp)) AS heartbeat_age_seconds
+      FROM daemon_heartbeats GROUP BY daemon_type
+  metrics:
+    - daemon_type:
+        usage: LABEL
+        description: Dagster daemon (SCHEDULER, SENSOR, ...)
+    - heartbeat_age_seconds:
+        usage: GAUGE
+        description: Seconds since the daemon last reported in

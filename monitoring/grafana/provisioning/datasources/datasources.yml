@@ -1,11 +1,25 @@
-# Auto-provisioned Grafana datasources for Mundi.ai
+# Auto-provisioned Grafana datasources for Mundi.ai. Fixed uids so dashboards (and Claude Code through the
+# Grafana MCP server) can refer to them by name.
 
 apiVersion: 1
 
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
 datasources:
   - name: Prometheus
+    uid: prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
-    editable: true
+    editable: false
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 2000

@@ -1,0 +1,13 @@
+# Blackbox exporter: checks the app from outside, the way a person reaches it (public address, through the
+# Cloudflare tunnel). /api/health always answers 200; its body says "healthy" or "degraded" (database or Redis
+# down), so a degraded app fails the check too.
+modules:
+  app_health:
+    prober: http
+    timeout: 15s
+    http:
+      method: GET
+      valid_status_codes: [200]
+      fail_if_body_not_matches_regexp:
+        - '"status":\s*"healthy"'
+      preferred_ip_protocol: ip4

@@ -62,6 +62,7 @@ from src.services.life_harness import (
 )
 from src.services.tool_call_scrubber import _ToolCallTextScrubber
 from src.services.posthog_analytics import capture_for_session, elapsed_ms
+from src.dependencies import health_metrics
 from src.services.admin_boundaries import resolve_admin_boundary
 from src.services.sage_flight_recorder import sage_turn_trace
 from src.services import data_coverage, industry, llm_cache, project_partner
@@ -1649,14 +1650,21 @@ async def _within_tool_limit(function_name: str, call: Any) -> Any:
     person's turn for ever: it is stopped and the model told, so it answers with what it has."""
     limit = _tool_timeout_seconds()
     try:
-        return await asyncio.wait_for(call, timeout=limit)
+        result = await asyncio.wait_for(call, timeout=limit)
     except TimeoutError:
         logger.warning("Sage tool %s stopped after %.0f s", function_name, limit)
+        await health_metrics.count("sage_tool_calls_total", {"tool": function_name, "outcome": "timeout"})
         return {
             "status": "error",
             "error": (f"{function_name} did not finish within {limit:.0f} seconds and was stopped. "
                       "Answer with what the other tools found, and say plainly which part is missing."),
         }
+    except Exception:
+        await health_metrics.count("sage_tool_calls_total", {"tool": function_name, "outcome": "error"})
+        raise
+    failed = isinstance(result, dict) and result.get("status") == "error"
+    await health_metrics.count("sage_tool_calls_total", {"tool": function_name, "outcome": "error" if failed else "ok"})
+    return result
 
 
 async def _maybe_run_fast_raster_object_turn(
@@ -2577,10 +2585,14 @@ async def process_chat_interaction_task(
                             if _model_name != _primary_model:
                                 turn_trace.flag("fallback_model")
                             _last_err = None
+                            await health_metrics.count("sage_llm_calls_total", {"outcome": "ok"})
                             break
                         except APIError as _api_err:
                             _last_err = _api_err
                             _err_str = str(_api_err)
+                            await health_metrics.count("sage_llm_calls_total", {"outcome": "error"})
+                            await health_metrics.count("sage_llm_errors_total", {
+                                "kind": health_metrics.llm_error_kind(_api_err), "stage": "attempt"})
                             _generation.end(level="ERROR", status=_err_str)
                             _is_upstream_5xx = (
                                 "Provider returned error" in _err_str
@@ -2746,6 +2758,8 @@ async def process_chat_interaction_task(
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM APIError (code=%s): %s", e.code, e, exc_info=True)
                         turn_trace.flag("llm_error")
+                        await health_metrics.count("sage_llm_errors_total", {
+                            "kind": health_metrics.llm_error_kind(e), "stage": "final"})
                         _is_context_overflow = (
                             e.code == "context_length_exceeded"
                             or "context length" in str(e).lower()
@@ -2777,6 +2791,7 @@ async def process_chat_interaction_task(
                             await kue_stream_token(conversation.id, "", done=True, turn_id=turn_id)
                         logger.error("LLM unexpected error: %s", e, exc_info=True)
                         turn_trace.flag("llm_error")
+                        await health_metrics.count("sage_llm_errors_total", {"kind": "other", "stage": "final"})
                         await kue_notify_error(
                             conversation.id,
                             "Error connecting to LLM. This is probably a bug with Mundi, please open a new issue on GitHub.",
@@ -3023,6 +3038,8 @@ async def process_chat_interaction_task_safely(
             client_turn_id=client_turn_id,
             user_message_id=user_message_id,
         )
+        await health_metrics.count("sage_turns_total", {"outcome": "completed"})
+        await health_metrics.observe("sage_turn_duration_seconds", time.monotonic() - started_at)
         capture_for_session(
             "backend_sage_message_completed",
             session,
@@ -3039,6 +3056,7 @@ async def process_chat_interaction_task_safely(
             "Sage chat processing was cancelled for conversation %s",
             conversation.id,
         )
+        await health_metrics.count("sage_turns_total", {"outcome": "cancelled"})
         capture_for_session(
             "backend_sage_message_failed",
             session,
@@ -3064,6 +3082,8 @@ async def process_chat_interaction_task_safely(
             conversation.id,
             detail,
         )
+        await health_metrics.count("sage_turns_total", {"outcome": "failed"})
+        await health_metrics.observe("sage_turn_duration_seconds", time.monotonic() - started_at)
         capture_for_session(
             "backend_sage_message_failed",
             session,
@@ -3081,6 +3101,8 @@ async def process_chat_interaction_task_safely(
         await kue_notify_error(conversation.id, detail)
     except Exception as exc:
         logger.exception("Sage chat processing crashed for conversation %s", conversation.id)
+        await health_metrics.count("sage_turns_total", {"outcome": "failed"})
+        await health_metrics.observe("sage_turn_duration_seconds", time.monotonic() - started_at)
         capture_for_session(
             "backend_sage_message_failed",
             session,
@@ -3100,7 +3122,8 @@ async def process_chat_interaction_task_safely(
         )
     finally:
         try:
-            await close_unfinished_turn(conversation.id, map_id, user_id)
+            if await close_unfinished_turn(conversation.id, map_id, user_id):
+                await health_metrics.count("sage_turns_closed_unfinished_total", {"source": "turn_end"})
         except Exception:  # noqa: BLE001 - the conversation stays as it is; logged for follow-up
             logger.warning("Closing the unfinished turn of conversation %s failed", conversation.id, exc_info=True)
         try:
@@ -3392,6 +3415,7 @@ async def cancel_map_message(
         except Exception:  # noqa: BLE001 - the flag above still stops a running turn
             logger.warning("Closing a stale turn on map %s failed", map_id, exc_info=True)
         if closed:
+            await health_metrics.count("sage_turns_closed_unfinished_total", {"source": "stop"})
             try:
                 redis.delete(f"messages:{map_id}:cancelled")
                 await kue_stream_token(conversation_id, "", done=True, turn_id=None)
