@@ -9,6 +9,7 @@ import { apiFetch, fetchMaybeAuth, useIsReady, useIsSignedOut } from '@mundi/ee'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Map as MLMap } from 'maplibre-gl';
 import { toast } from 'sonner';
+import { CHAT_CONNECTION_TOAST, chatShouldConnect } from '@/lib/chatConnection';
 import { fileAnalytics, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
 import { decodeGeoJsonLayerData, geoJsonFeatureCount } from '../lib/geojsonTransport';
@@ -376,14 +377,16 @@ export default function ProjectView() {
   }, []);
 
   // WebSocket using react-use-websocket - only connect when in a conversation
-  const shouldConnect = conversationId !== null && (isTabVisible || !hiddenTimeoutExpired);
+  const shouldConnect = chatShouldConnect({ conversationId, isReady, isSignedOut, isTabVisible, hiddenTimeoutExpired });
   const backoffMs = [30, 1_000, 5_000, 15_000, 50_000];
   const { lastMessage, readyState } = useWebSocket(
     wsUrl,
     {
+      // One notice that updates in place while retrying, gone once the chat is back (they used to stack).
       onError: () => {
-        toast.error('Chat connection error.');
+        toast.error('Chat connection lost. Reconnecting…', { id: CHAT_CONNECTION_TOAST });
       },
+      onOpen: () => toast.dismiss(CHAT_CONNECTION_TOAST),
       // The handshake cannot refresh the sign-in (it could not send the new cookie back).
       // A normal request does; the reconnect that follows carries the refreshed cookie,
       // and a 401 there sends the user to sign in as usual.
