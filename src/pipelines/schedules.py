@@ -79,6 +79,15 @@ weekly_cell_ndvi_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+weekly_land_surface_temperature_schedule = ScheduleDefinition(
+    name="weekly_land_surface_temperature",
+    cron_schedule="0 3 * * 3",  # Every Wednesday at 3 AM UTC
+    job_name="weekly_land_surface_temperature_job",
+    execution_timezone="UTC",
+    description="Weekly MODIS 8-day ground temperature per district → PostgreSQL lst_district_8day",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 # ─── Cache cleanup and parcel-level NDVI schedules ─────────────────────
 
 nightly_cache_cleanup_schedule = ScheduleDefinition(

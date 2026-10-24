@@ -529,6 +529,18 @@ class TestFormatForAudience:
         text = format_for_audience(report, "farmer")
         assert "1 trigger(s) activated" in text
 
+    @pytest.mark.parametrize("audience", ["insurance", "agronomist"])
+    def test_heat_is_shown_as_context_never_as_a_trigger(self, report, audience):
+        report.heat = {"month": "2025-10", "lst_c": 31.2, "normal_c": 29.0, "anomaly_c": 2.2, "heat_condition": 0.1,
+                       "years_in_normal": 23, "note": "Context, not a trigger."}
+        text = format_for_audience(report, audience)
+        assert "HEAT (ground temperature; context, not a trigger)" in text
+        assert report.triggers_total == 2 and "heat" not in {t.signal for t in report.triggers}
+        assert report.to_dict()["heat"]["anomaly_c"] == 2.2
+
+    def test_no_heat_section_without_a_reading(self, report):
+        assert "HEAT" not in format_for_audience(report, "insurance")
+
     @pytest.mark.parametrize("audience", ["farmer", "insurance", "agronomist"])
     def test_rainfall_says_what_it_covers(self, report, audience):
         text = format_for_audience(report, audience)

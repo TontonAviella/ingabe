@@ -27,6 +27,8 @@ from src.services import crop_stages
 from src.services import deafrica_stac
 from src.services import et_normals
 from src.services import forecast_openmeteo
+from src.services import land_surface_temperature
+from src.services.land_surface_temperature import heat_lines
 from src.services import wapor_service
 from src.services.data_coverage import point_sample_note
 from src.services.numbers import round_or_none
@@ -198,6 +200,7 @@ class InsuranceReport:
     accuracy_components: Optional[dict] = None
 
     forecast_outlook: Optional[dict] = None
+    heat: Optional[dict] = None  # ground temperature vs normal: context, never a trigger
 
     sources: list[str] = field(default_factory=list)
     late_sources: list[str] = field(default_factory=list)  # reads that did not arrive in time: missing
@@ -249,6 +252,7 @@ class InsuranceReport:
             "recommendation": self.recommendation,
             "accuracy_components": self.accuracy_components,
             "forecast_outlook": self.forecast_outlook,
+            "heat": self.heat,
             "sources": self.sources,
             "not_read_in_time": self.late_sources,
             "period_start": self.period_start,
@@ -1310,6 +1314,10 @@ def _format_insurance(r: InsuranceReport) -> str:
         sections.append(f"  Method: {fo['projection_method']}")
         sections.append("")
 
+    if r.heat:
+        sections.extend(heat_lines(r.heat))
+        sections.append("")
+
     sections.append(phase_info)
     sections.append(f"Sources: {sources}")
     sections.append(f"Rainfall coverage: {point_sample_note('chirps', r.location_name, r.admin_level)}")
@@ -1355,6 +1363,10 @@ def _format_agronomist(r: InsuranceReport) -> str:
     if r.drought_diagnostic and r.drought_diagnostic != "insufficient_data":
         lines.append(f"  Drought diagnostic: {r.drought_diagnostic_label}")
 
+    if r.heat:
+        lines.append("")
+        lines.extend(heat_lines(r.heat))
+
     if r.forecast_outlook:
         fo = r.forecast_outlook
         lines.append("")
@@ -1387,6 +1399,7 @@ def _format_scientist(r: InsuranceReport) -> str:
         "et": "WaPOR v3 AETI dekadal, 100m resolution",
         "soil_moisture": "WaPOR v3 relative soil moisture, dekadal",
         "dry_spells": "Consecutive days < 2mm threshold from CHIRPS daily",
+        "heat": "MODIS MOD11A2/MYD11A2 day-time land surface temperature, district mean of clear 1 km pixels; month = mean of 8-day composites at least 30% clear; normal = median of the same month since 2003; heat_condition (TCI) = (hottest - this) / (hottest - coolest), 0 = hottest. Context only: weak link to Season A maize harvests in Oct-Dec (NISR 2021-2025), none found elsewhere",
         "triggers": "Parametric thresholds from insurance_triggers table",
         "confidence": "Weighted composite: passing_weight / total_weight * 100",
     }
@@ -1947,6 +1960,12 @@ async def compute_insurance_intelligence(
             logger.debug("ndvi_concordance fetch failed", exc_info=True)
             ndvi_conc_result = None
 
+        try:
+            heat = await land_surface_temperature.heat_condition(conn, district, today, crop)
+        except Exception:
+            logger.warning("ground temperature lookup failed; heat context unavailable", exc_info=True)
+            heat = None
+
         arrived, late = await _collect_reads(reads, _FETCH_DEADLINE_S - (time.monotonic() - started))
     finally:
         for task in reads.values():
@@ -2090,6 +2109,8 @@ async def compute_insurance_intelligence(
         sources.append(f"Multi-model forecast ({', '.join(forecast_outlook.get('models_used', []))})")
     else:
         logger.info("forecast outlook is None (forecast_result=%s)", type(forecast_result).__name__)
+    if heat:
+        sources.append(land_surface_temperature.SOURCE)
 
     # --- BUILD REPORT ---
     report = InsuranceReport(
@@ -2123,6 +2144,7 @@ async def compute_insurance_intelligence(
         recommendation=recommendation,
         accuracy_components=accuracy_components,
         forecast_outlook=forecast_outlook,
+        heat=heat,
         sources=sources,
         late_sources=late,
         period_start=planting_date.strftime("%Y-%m-%d"),

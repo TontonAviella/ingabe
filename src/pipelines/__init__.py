@@ -107,6 +107,13 @@ if HAS_DAGSTER:
         tags={"category": "rwanda", "precompute": "true"},
     )
 
+    weekly_land_surface_temperature_job = define_asset_job(
+        name="weekly_land_surface_temperature_job",
+        description="Weekly MODIS ground temperature per district → PostgreSQL lst_district_8day",
+        selection=AssetSelection.assets(rwanda_assets.weekly_land_surface_temperature),
+        tags={"category": "rwanda", "precompute": "true"},
+    )
+
     weekly_phenology_job = define_asset_job(
         name="weekly_phenology_job",
         description="Weekly crop phenology analysis → DuckDB cache",
@@ -150,6 +157,7 @@ if HAS_DAGSTER:
         weekly_yield_risk_job,
         weekly_drought_scan_job,
         weekly_cell_ndvi_job,
+        weekly_land_surface_temperature_job,
         weekly_phenology_job,
         nightly_cache_cleanup_job,
         nightly_parcel_ndvi_job,
@@ -162,6 +170,7 @@ if HAS_DAGSTER:
         schedules.weekly_yield_risk_schedule,
         schedules.weekly_drought_schedule,
         schedules.weekly_cell_ndvi_schedule,
+        schedules.weekly_land_surface_temperature_schedule,
         schedules.weekly_phenology_schedule,
         schedules.nightly_cache_cleanup_schedule,
         schedules.nightly_parcel_ndvi_schedule,
