@@ -35,7 +35,8 @@ def upgrade() -> None:
         sa.Column("computed_at", sa.DateTime(timezone=True), server_default=sa.text("NOW()"), nullable=False),
         sa.UniqueConstraint("district", "composite_start", "product", name="uq_lst_district_8day"),
     )
-    op.create_index("ix_lst_district_8day_district_start", "lst_district_8day", ["district", "composite_start"])
+    # Readers match the district case-insensitively.
+    op.create_index("ix_lst_district_8day_district_start", "lst_district_8day", [sa.text("lower(district)"), "composite_start"])
 
 
 def downgrade() -> None:

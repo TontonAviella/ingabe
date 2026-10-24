@@ -1298,10 +1298,11 @@ def weekly_cell_ndvi(
 
 # Composites already stored are read again this many days back: MODIS publishes a composite some days after
 # its 8 days end, and a re-read replaces a composite read before all its tiles were out.
-LST_REREAD_DAYS = 16
-LST_FIRST_COMPOSITE = date(2000, 2, 18)  # MOD11A2 starts here; an empty table fills from it
-LST_STALE_DAYS = 40  # newest composite older than this: MODIS has likely stopped (its science ends in 2027)
-LST_MAX_COMPOSITES_PER_RUN = 60  # a long gap (or an empty table) catches up over several weeks
+LST_REREAD_DAYS = 16  # composites this close to the newest stored one are read again (late reprocessing)
+LST_RETRY_DAYS = 120  # a composite missing from this far back is tried again every run until it is read
+LST_FIRST_COMPOSITE = date(2003, 1, 1)  # the normals start in 2003 (Aqua's first full year); an empty table fills from it
+LST_STALE_DAYS = 47  # newest composite older than this: MODIS has likely stopped (its science ends in 2027)
+LST_MAX_COMPOSITES_PER_RUN = 60  # oldest first: a long gap catches up over a few weeks (load history from a file)
 
 
 @asset(
@@ -1321,9 +1322,10 @@ def weekly_land_surface_temperature(
 ) -> dict[str, Any]:
     """Add the MODIS 8-day land surface temperature composites published since the last run, per district.
 
-    Runs Wednesday 03:00 UTC. Reads from LST_REREAD_DAYS before the newest stored composite (or from the first
-    MODIS composite when the table is empty) to today, both satellites, at most LST_MAX_COMPOSITES_PER_RUN
-    composites oldest first, and upserts one row per composite, satellite and district. The heat condition (src/services/land_surface_temperature.py) reads the table; its
+    Runs Wednesday 03:00 UTC. Reads, for both satellites, every composite from LST_REREAD_DAYS before the newest
+    stored one to today, plus any composite of the last LST_RETRY_DAYS that is still missing (one that failed is
+    tried again next week), at most LST_MAX_COMPOSITES_PER_RUN oldest first; an empty table fills from
+    LST_FIRST_COMPOSITE. Upserts one row per composite, satellite and district. The heat condition (src/services/land_surface_temperature.py) reads the table; its
     normals are every stored year, so they extend themselves. Fails (red in Dagster) when more than a quarter of
     the composites cannot be read; warns when the newest composite is older than LST_STALE_DAYS.
     """
@@ -1334,9 +1336,13 @@ def weekly_land_surface_temperature(
     if not districts:
         return {"status": "skipped", "reason": "no_district_boundaries"}
     newest = postgres.execute_query("SELECT max(composite_start) FROM lst_district_8day")[0][0]
-    start = newest - timedelta(days=LST_REREAD_DAYS) if newest else LST_FIRST_COMPOSITE
+    reread_from = newest - timedelta(days=LST_REREAD_DAYS) if newest else LST_FIRST_COMPOSITE
+    start = max(LST_FIRST_COMPOSITE, newest - timedelta(days=LST_RETRY_DAYS)) if newest else LST_FIRST_COMPOSITE
+    stored = {(d.isoformat(), p) for d, p in postgres.execute_query(
+        "SELECT DISTINCT composite_start, product FROM lst_district_8day WHERE composite_start >= %s", (start,))}
     today = datetime.utcnow().date()
-    found = dict(sorted(lst.composites(start, today).items())[:LST_MAX_COMPOSITES_PER_RUN])  # oldest first
+    wanted = {k: v for k, v in lst.composites(start, today).items() if k not in stored or k[0] >= reread_from.isoformat()}
+    found = dict(sorted(wanted.items())[:LST_MAX_COMPOSITES_PER_RUN])  # oldest first
     written, failed = 0, []
     for (day, product), items in found.items():
         try:
