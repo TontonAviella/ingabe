@@ -210,3 +210,74 @@ tests:
               where: "container mundi-backup; compare the two newest files in MinIO backups/"
               summary: The newest backup is less than half the size of the one before it
 
+  # Component checks: PostGIS fails two runs, a feed fails an hour, then the check loop stops.
+  - interval: 5m
+    input_series:
+      - series: 'component_check_ok{job="mundi-app",check="postgis",component="PostGIS",tier="core"}'
+        values: '1 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
+      - series: 'component_check_ok{job="mundi-app",check="chirps",component="CHIRPS rain",tier="feed"}'
+        values: '0x14'
+      - series: 'component_check_last_run_timestamp_seconds{job="mundi-app",check="postgis",component="PostGIS",tier="core"}'
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ComponentCheckFailing
+        exp_alerts:
+          - exp_labels: {area: components, severity: critical, job: mundi-app, check: postgis, component: PostGIS, tier: core}
+            exp_annotations:
+              where: 'PostGIS: detail at /internal/component-checks and in the app log ("component check postgis failed")'
+              summary: "PostGIS is not doing its job (check postgis)"
+      - eval_time: 65m
+        alertname: DataFeedCheckFailing
+        exp_alerts:
+          - exp_labels: {area: components, severity: warning, job: mundi-app, check: chirps, component: CHIRPS rain, tier: feed}
+            exp_annotations:
+              where: "CHIRPS rain: the outside service; detail at /internal/component-checks"
+              summary: "Outside data feed CHIRPS rain has failed its check for an hour"
+      - eval_time: 65m
+        alertname: ComponentChecksNotRunning
+        exp_alerts:
+          - exp_labels: {area: monitoring, severity: warning}
+            exp_annotations:
+              where: "container mundi-app (the component check loop; COMPONENT_CHECKS, Redis lock component_checks:runner)"
+              summary: No component check has run for 30 minutes; the self-tests are blind
+
+  # Maps in browsers: 10 maps opened in an hour, 4 hit errors; 6 tile errors.
+  - interval: 6m
+    input_series:
+      - series: 'frontend_map_events_total{job="mundi-app",event="map_load"}'
+        values: '0+1x10'
+      - series: 'frontend_map_events_total{job="mundi-app",event="map_error"}'
+        values: '0 0 1 1 2 2 3 3 4 4 4'
+      - series: 'frontend_map_events_total{job="mundi-app",event="tile_error"}'
+        values: '0 1 2 3 4 5 6 6 6 6 6'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: MapsFailingForUsers
+        exp_alerts:
+          - exp_labels: {area: maps, severity: warning}
+            exp_annotations:
+              where: "MapLibre / deck.gl in the browser: Grafana Components (maps) and Logs; frontendts/src/components/MapLibreMap.tsx"
+              summary: More than 1 in 5 maps opened in the last hour hit a map or 3D error
+      - eval_time: 60m
+        alertname: MapTilesFailingForUsers
+        exp_alerts:
+          - exp_labels: {area: maps, severity: warning}
+            exp_annotations:
+              where: "tile routes /api/layer/... and rasterd; Grafana Logs (container mundi-app, mundi-rasterd)"
+              summary: People's maps reported 5 or more tile errors in the last hour (at most one per page a minute)
+
+  # No component check has ever reported.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="mundi-app"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ComponentChecksNotRunning
+        exp_alerts:
+          - exp_labels: {area: monitoring, severity: warning}
+            exp_annotations:
+              where: "container mundi-app (the component check loop; COMPONENT_CHECKS, Redis lock component_checks:runner)"
+              summary: No component check has run for 30 minutes; the self-tests are blind
+

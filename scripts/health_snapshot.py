@@ -22,6 +22,9 @@ import urllib.request
 from datetime import datetime, timezone
 
 PROM = os.environ.get("PROMETHEUS_URL", "http://127.0.0.1:9090")
+# The app's component self-tests with their details (internal only; the app listens on 127.0.0.1:8000 here).
+APP = os.environ.get("APP_URL", "http://127.0.0.1:8000")
+TIER_AREA = {"core": "components", "ai": "ai-model", "feed": "feeds"}
 
 # (area, check, PromQL, unit, warn at, bad at, higher is worse, where to look)
 CHECKS = [
@@ -67,7 +70,37 @@ CHECKS = [
     ("server", "Memory available", "min(node_memory_MemAvailable_bytes) / 1e9", "GB", 4, 2, False, "Grafana Server"),
     ("monitoring", "Monitoring sources not answering", "count(up == 0) or vector(0)", "count", None, 1, True,
      "Grafana Server (What Prometheus reads)"),
+    ("maps", "Maps opened by people, last 24 hours",
+     'sum(increase(frontend_map_events_total{event="map_load"}[24h])) or vector(0)', "count", None, None, True,
+     "Grafana Components (maps)"),
+    ("maps", "Map or 3D errors in browsers, last hour",
+     'sum(increase(frontend_map_events_total{event=~"map_error|deck_error|webgl_lost"}[1h])) or vector(0)', "count",
+     1, 5, True, "MapLibre / deck.gl; Grafana Logs"),
+    ("maps", "Tile errors in browsers, last hour", 'sum(increase(frontend_map_events_total{event="tile_error"}[1h])) or vector(0)',
+     "count", 1, 5, True, "tile routes and rasterd; Grafana Logs"),
 ]
+
+
+def component_rows() -> list[dict]:
+    """One row per component self-test, with what it found (src/dependencies/component_checks.py)."""
+    try:
+        with urllib.request.urlopen(f"{APP}/internal/component-checks", timeout=10) as resp:
+            found = json.load(resp)
+    except Exception as e:  # noqa: BLE001 - the page then shows the app itself as unreachable
+        return [{"area": "components", "check": "Component self-tests", "status": "bad",
+                 "value": f"could not read them: {str(e)[:80]}", "where": "container mundi-app"}]
+    rows = []
+    for name, r in sorted(found.items(), key=lambda kv: (kv[1].get("tier", ""), kv[1].get("component", ""))):
+        age_min = (time.time() - r.get("at", 0)) / 60
+        # A first failure is retried in 2 minutes (amber); two in a row is a real fault (red; amber for outside feeds).
+        fails = r.get("fails", 0 if r.get("ok") else 2)
+        status = "ok" if not fails else "warn" if fails == 1 or r.get("tier") == "feed" else "bad"
+        if age_min > 90:
+            status = "unknown"
+        rows.append({"area": TIER_AREA.get(r.get("tier", ""), "components"), "check": r.get("component", name),
+                     "status": status, "value": f'{r.get("detail", "")} ({r.get("seconds", 0):.1f} s)',
+                     "where": f"check {name}; checked {age_min:.0f} min ago"})
+    return rows
 
 
 def _get(path: str, **params) -> list:
@@ -119,6 +152,8 @@ def snapshot() -> dict:
             value, where = None, f"{where} (query failed: {str(e)[:80]})"
         checks.append({"area": area, "check": name, "status": _status(value, unit, warn, bad, higher_worse),
                        "value": _show(value, unit), "where": where})
+
+    checks += component_rows()
 
     alerts = []
     with urllib.request.urlopen(f"{PROM}/api/v1/alerts", timeout=20) as resp:
