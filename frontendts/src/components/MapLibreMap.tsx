@@ -153,6 +153,7 @@ import { featureFieldRows } from '@/lib/featureFields';
 import { inspectionPhotoUrl } from '@/lib/inspectionPhoto';
 import { createAnalyticsTurnId, track, trackDuration, trackError } from '../lib/analytics';
 import type { ErrorEntry, UploadingFile } from '../lib/frontend-types';
+import { reportMapHealth } from '../lib/mapHealth';
 import type {
   Conversation,
   EphemeralAction,
@@ -861,6 +862,7 @@ export default function MapLibreMap({
 
       const newMap = new MLMap(mapOptions);
       localMapRef.current = newMap;
+      newMap.getCanvas().addEventListener('webglcontextlost', () => reportMapHealth('webgl_lost'));
       if (mapRef.current !== undefined) {
         (mapRef as any).current = newMap;
       }
@@ -889,6 +891,7 @@ export default function MapLibreMap({
       };
 
       newMap.on('load', () => {
+        reportMapHealth('map_load');
         setIsMapReady(true);
         trackDuration('map_renderer_initialized', mapInitStartedAt, {
           project_id: project.id,
@@ -922,8 +925,10 @@ export default function MapLibreMap({
             });
             deckOverlayRef.current = deckOverlay;
             newMap.addControl(deckOverlay);
+            if (allDeckLayers.length) reportMapHealth('deck_ready');
           } catch (deckErr) {
             console.error('Error initializing deck.gl overlay:', deckErr);
+            reportMapHealth('deck_error');
             trackError('map_deck_overlay_failed', deckErr, {
               project_id: project.id,
               map_id: mapId,
@@ -984,6 +989,7 @@ export default function MapLibreMap({
         // Also suppress deck.gl multi-version warnings surfaced as map error events.
         if (e.error?.message && /^(__\w+|[\w$]{1,3}) is not defined$/.test(e.error.message)) return;
         if (e.error?.message?.includes('multiple versions detected')) return;
+        reportMapHealth(e.error instanceof AJAXError ? 'tile_error' : 'map_error');
 
         if (e.error instanceof AJAXError) {
           // 401 on tile requests = the sign-in session ended (tile requests carry

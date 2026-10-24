@@ -1,5 +1,5 @@
 # Alert rules (Prometheus :9090/alerts, Grafana, and the Ingabe Health page). Every rule has an `area` label
-# (app, sage, ai-model, dagster, data, backup, database, server, monitoring) and a `where` annotation saying
+# (app, sage, ai-model, dagster, data, backup, database, server, monitoring, components, maps) and a `where` annotation saying
 # where to look first. Added after 2026-10-03, when Postgres looped through
 # crash recovery under Docker-VM memory pressure with nothing showing it.
 groups:
@@ -274,3 +274,58 @@ groups:
         annotations:
           where: "exporter container for job {{ $labels.job }}"
           summary: "Prometheus cannot read {{ $labels.job }}, so its alerts are blind"
+
+  - name: components
+    rules:
+      - alert: ComponentCheckFailing
+        # src/dependencies/component_checks.py asks each part to do its job with a known answer. Core parts and the
+        # AI model: two failed runs in a row (runs are 5-60 min apart). Outside feeds: an hour.
+        expr: component_check_ok{tier=~"core|ai"} == 0
+        for: 10m
+        labels:
+          severity: critical
+          area: components
+        annotations:
+          where: "{{ $labels.component }}: detail at /internal/component-checks and in the app log (\"component check {{ $labels.check }} failed\")"
+          summary: "{{ $labels.component }} is not doing its job (check {{ $labels.check }})"
+      - alert: DataFeedCheckFailing
+        expr: component_check_ok{tier="feed"} == 0
+        for: 1h
+        labels:
+          severity: warning
+          area: components
+        annotations:
+          where: "{{ $labels.component }}: the outside service; detail at /internal/component-checks"
+          summary: "Outside data feed {{ $labels.component }} has failed its check for an hour"
+      - alert: ComponentChecksNotRunning
+        expr: time() - max(component_check_last_run_timestamp_seconds) > 1800
+        for: 10m
+        labels:
+          severity: warning
+          area: monitoring
+        annotations:
+          where: "container mundi-app (the component check loop; COMPONENT_CHECKS, Redis lock component_checks:runner)"
+          summary: No component check has run for 30 minutes; the self-tests are blind
+
+  - name: maps
+    rules:
+      - alert: MapsFailingForUsers
+        # From people's browsers (frontendts/src/lib/mapHealth.ts): map errors against maps loaded, last hour.
+        expr: |
+          sum(increase(frontend_map_events_total{event=~"map_error|deck_error|webgl_lost"}[1h]))
+            / clamp_min(sum(increase(frontend_map_events_total{event="map_load"}[1h])), 1) > 0.2
+          and sum(increase(frontend_map_events_total{event="map_load"}[1h])) >= 3
+        labels:
+          severity: warning
+          area: maps
+        annotations:
+          where: "MapLibre / deck.gl in the browser: Grafana Components (maps) and Logs; frontendts/src/components/MapLibreMap.tsx"
+          summary: More than 1 in 5 maps opened in the last hour hit a map or 3D error
+      - alert: MapTilesFailingForUsers
+        expr: sum(increase(frontend_map_events_total{event="tile_error"}[1h])) >= 5
+        labels:
+          severity: warning
+          area: maps
+        annotations:
+          where: "tile routes /api/layer/... and rasterd; Grafana Logs (container mundi-app, mundi-rasterd)"
+          summary: People's maps reported 5 or more tile errors in the last hour (at most one per page a minute)
