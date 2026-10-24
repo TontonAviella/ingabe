@@ -7,14 +7,17 @@ picks it), each on its own interval and time limit; results are kept in Redis an
 component_check_ok / _duration_seconds / _last_run_timestamp_seconds with labels component, check and tier
 ("core": the live app breaks without it; "feed": an outside data source; "ai": the AI model and embeddings).
 
-Checks only read, except two that clean up after themselves: a MinIO object under snapshots/selftest/ (that prefix
-expires in a day anyway) and a Redis key with a 60 s life. The AI-model check is one tiny call an hour.
+Checks only read, except two that clean up after themselves: a MinIO object under snapshots/selftest/ (deleted at
+once; that prefix also expires in a day) and a Redis key with a 60 s life. The AI-model check is one tiny call an
+hour. A failed check is tried again after RETRY_AFTER_S, and only two failures in a row export ok=0, so one blip
+raises no alarm. At most MAX_PARALLEL checks run at once, on their own threads, never the app's shared pool.
 Alerts: ComponentCheckFailing and ComponentChecksNotRunning in monitoring/alerts.yml; dashboard "Components".
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -25,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Awaitable, Callable
@@ -35,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 _KEY = "component_checks:v1"  # Redis hash: check name -> JSON result
 _LOCK = "component_checks:runner"  # one runner across app workers
+RETRY_AFTER_S = 120  # a failed check runs again this soon, to tell a blip from a fault
+MAX_PARALLEL = 3
+_POOL = ThreadPoolExecutor(max_workers=MAX_PARALLEL, thread_name_prefix="component-check")
+_SLOTS: asyncio.Semaphore | None = None
 UA = {"User-Agent": "ingabe-selftest (gis.nozalabs.rw)"}
 
 # The stored district outlines (geoBoundaries) cover 25,316 km² (PostGIS and GeoPandas agreed, 2026-10-25); Rwanda's
@@ -59,6 +67,11 @@ class Check:
     run: Callable[[], Awaitable[str]]  # returns a short detail; raises when the component is not doing its job
 
 
+async def _in_thread(fn, *args):
+    """Run blocking work on the checks' own threads (a hung check cannot take the app's shared pool)."""
+    return await asyncio.get_running_loop().run_in_executor(_POOL, functools.partial(fn, *args))
+
+
 def _http(url: str, method: str = "GET", body: bytes | None = None, headers: dict | None = None,
           timeout: float = 15) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, method=method, headers={**UA, **(headers or {})})
@@ -70,7 +83,7 @@ def _http(url: str, method: str = "GET", body: bytes | None = None, headers: dic
 
 
 async def _get_json(url: str, timeout: float = 15) -> Any:
-    status, body = await asyncio.to_thread(_http, url, "GET", None, None, timeout)
+    status, body = await _in_thread(_http, url, "GET", None, None, timeout)
     if status != 200:
         raise CheckFailed(f"HTTP {status} from {url.split('?')[0]}")
     return json.loads(body)
@@ -106,7 +119,7 @@ async def check_geopandas() -> str:
                                geometry=[wkb.loads(bytes(r["wkb"])) for r in rows], crs="EPSG:4326")
         return float(gdf.to_crs("EPSG:6933").area.sum() / 1e6)  # equal-area projection
 
-    km2 = await asyncio.to_thread(area)
+    km2 = await _in_thread(area)
     if abs(km2 - RWANDA_KM2) > RWANDA_KM2 * AREA_TOLERANCE:
         raise CheckFailed(f"GeoPandas measures {km2:,.0f} km², expected about {RWANDA_KM2:,}")
     return f"{len(rows)} districts, {km2:,.0f} km² (equal-area)"
@@ -129,9 +142,11 @@ async def check_minio() -> str:
     from src.utils import get_async_s3_client, get_bucket_name
 
     bucket, key, payload = get_bucket_name(), f"snapshots/selftest/{time.time_ns()}.txt", os.urandom(32).hex()
-    async with await get_async_s3_client() as s3:
+    s3 = await get_async_s3_client()  # the app's shared, already-open client: used, never closed here
+    try:
         await s3.put_object(Bucket=bucket, Key=key, Body=payload.encode())
         got = await (await s3.get_object(Bucket=bucket, Key=key))["Body"].read()
+    finally:
         await s3.delete_object(Bucket=bucket, Key=key)
     if got.decode() != payload:
         raise CheckFailed("read back a different object")
@@ -164,7 +179,7 @@ def _gdal_drivers() -> str:
 
 
 async def check_gdal() -> str:
-    return await asyncio.to_thread(_gdal_drivers)
+    return await _in_thread(_gdal_drivers)
 
 
 def _read_public_cog() -> str:
@@ -188,7 +203,7 @@ def _read_public_cog() -> str:
 
 
 async def check_rasterio_cog() -> str:
-    return await asyncio.to_thread(_read_public_cog)
+    return await _in_thread(_read_public_cog)
 
 
 def _tile_xy(lon: float, lat: float, z: int) -> tuple[int, int]:
@@ -203,21 +218,24 @@ def _tile_xy(lon: float, lat: float, z: int) -> tuple[int, int]:
 async def check_rasterd() -> str:
     """The Rust/GDAL tile server renders a real PNG of the public COG over Kigali (what map raster layers use)."""
     base = os.environ.get("RASTER_TILE_ENGINE_URL", "http://rasterd:8877").rstrip("/")
-    status, _ = await asyncio.to_thread(_http, f"{base}/healthz", "GET", None, None, 5)
+    status, _ = await _in_thread(_http, f"{base}/healthz", "GET", None, None, 5)
     if status != 200:
         raise CheckFailed(f"healthz HTTP {status}")
     z = 12
     x, y = _tile_xy(*KIGALI, z)
     url = f"{base}/tiles/{z}/{x}/{y}.png?" + urllib.parse.urlencode({"url": PUBLIC_COG})
-    status, body = await asyncio.to_thread(_http, url, "GET", None, None, 25)
+    status, body = await _in_thread(_http, url, "GET", None, None, 25)
     if status != 200 or not body.startswith(b"\x89PNG") or len(body) < 200:
         raise CheckFailed(f"tile HTTP {status}, {len(body)} bytes")
     return f"rendered tile {z}/{x}/{y} ({len(body):,} bytes)"
 
 
 async def check_map_tiles() -> str:
-    """The app's own tile route, as MapLibre calls it (terrain basemap: S3 cache, then AWS)."""
-    status, body = await asyncio.to_thread(_http, "http://127.0.0.1:8000/api/basemaps/terrain/8/149/129.png",
+    """The app's own tile route, as MapLibre calls it. The tile (over Kampala) is outside the region the app keeps
+    in S3, so each check fetches it from the upstream terrain tiles and stores nothing."""
+    x, y = _tile_xy(32.58, 0.32, 8)
+    port = os.environ.get("PORT", "8000")
+    status, body = await _in_thread(_http, f"http://127.0.0.1:{port}/api/basemaps/terrain/8/{x}/{y}.png",
                                            "GET", None, None, 20)
     if status != 200 or not body.startswith(b"\x89PNG"):
         raise CheckFailed(f"terrain tile HTTP {status}, {len(body)} bytes")
@@ -239,23 +257,11 @@ def _duckdb_geoparquet() -> str:
         con.close()
     if (n, total) != (3, 6):
         raise CheckFailed(f"read back {n} rows summing {total}, expected 3 and 6")
-    detail = "GeoParquet written by GeoPandas, read by DuckDB"
-    cache = "/tmp/ingabe_cache/cache.duckdb"
-    if os.path.exists(cache):
-        try:
-            con = duckdb.connect(cache, read_only=True)
-            levels = con.execute("SELECT count(DISTINCT admin_level) FROM worldcover_admin_stats").fetchone()[0]
-            con.close()
-            detail += f"; pipeline cache has WorldCover stats for {levels} admin levels"
-        except duckdb.IOException:
-            detail += "; pipeline cache busy (a Dagster run is writing it)"
-        except duckdb.CatalogException:
-            raise CheckFailed("the pipeline cache has no worldcover_admin_stats table") from None
-    return detail
+    return "GeoParquet written by GeoPandas, read by DuckDB"
 
 
 async def check_duckdb() -> str:
-    return await asyncio.to_thread(_duckdb_geoparquet)
+    return await _in_thread(_duckdb_geoparquet)
 
 
 def _dask_sum() -> str:
@@ -268,7 +274,7 @@ def _dask_sum() -> str:
 
 
 async def check_dask() -> str:
-    return await asyncio.to_thread(_dask_sum)
+    return await _in_thread(_dask_sum)
 
 
 # --- AI ---------------------------------------------------------------------------------------------------------
@@ -277,7 +283,7 @@ async def check_ollama_embeddings() -> str:
     base = (os.environ.get("BRAIN_EMBEDDINGS_BASE_URL") or os.environ.get("OLLAMA_BASE_URL") or "http://ollama:11434")
     base = base.rstrip("/").removesuffix("/v1")
     body = json.dumps({"model": "nomic-embed-text", "prompt": "Kigali maize field", "keep_alive": "30m"}).encode()
-    status, raw = await asyncio.to_thread(_http, f"{base}/api/embeddings", "POST", body,
+    status, raw = await _in_thread(_http, f"{base}/api/embeddings", "POST", body,
                                           {"Content-Type": "application/json"}, 30)
     if status != 200:
         raise CheckFailed(f"HTTP {status}")
@@ -289,16 +295,18 @@ async def check_ollama_embeddings() -> str:
 
 async def check_ai_model() -> str:
     """One tiny call to Sage's model: it must answer, and with the word asked for."""
-    from src.utils import get_openai_client
+    from src.utils import get_chat_client_for_model
 
-    model = os.environ.get("OPENAI_MODEL", "")
-    if model.startswith("ollama:"):
-        return f"local model {model}: not checked here"
-    resp = await get_openai_client(None).chat.completions.create(  # type: ignore[arg-type]  # request is unused
-        model=model, max_tokens=16,  # no temperature: Claude Haiku 5.5 refuses it ("deprecated for this model")
-        messages=[{"role": "user", "content": "Reply with exactly the word: READY"}])
-    text = (resp.choices[0].message.content or "").strip()
-    if "READY" not in text.upper():
+    client, model = get_chat_client_for_model(None)  # type: ignore[arg-type]  # the request is not used
+    try:
+        # 200 tokens: reasoning models spend tokens thinking first. No temperature: Claude Haiku 5.5 refuses it.
+        resp = await client.chat.completions.create(
+            model=model, max_tokens=200, messages=[{"role": "user", "content": "Reply with exactly the word: READY"}])
+    finally:
+        await client.close()
+    choice = resp.choices[0]
+    text = (choice.message.content or "").strip()
+    if choice.finish_reason == "stop" and "READY" not in text.upper():
         raise CheckFailed(f"answered {text[:40]!r} instead of READY")
     return f"{model} answered"
 
@@ -337,7 +345,7 @@ async def check_chirps() -> str:
     day = date.today() - timedelta(days=60)  # the final product lags three weeks or more
     url = (f"https://data.chc.ucsb.edu/products/CHIRPS-2.0/africa_daily/tifs/p05/{day:%Y}/"
            f"chirps-v2.0.{day:%Y.%m.%d}.tif.gz")
-    status, _ = await asyncio.to_thread(_http, url, "HEAD", None, None, 20)
+    status, _ = await _in_thread(_http, url, "HEAD", None, None, 20)
     if status != 200:
         raise CheckFailed(f"HTTP {status} for the {day} file")
     return f"daily rain file for {day} is there"
@@ -395,7 +403,15 @@ CHECKS: tuple[Check, ...] = (
 
 # --- running and exporting --------------------------------------------------------------------------------------
 
-async def run_one(check: Check) -> dict[str, Any]:
+async def run_one(check: Check, fails_before: int = 0) -> dict[str, Any]:
+    global _SLOTS
+    if _SLOTS is None:
+        _SLOTS = asyncio.Semaphore(MAX_PARALLEL)
+    async with _SLOTS:  # the time limit starts once the check runs, not while it waits for a slot
+        return await _run(check, fails_before)
+
+
+async def _run(check: Check, fails_before: int) -> dict[str, Any]:
     started = time.monotonic()
     try:
         detail, ok = await asyncio.wait_for(check.run(), check.timeout_s), 1
@@ -405,7 +421,8 @@ async def run_one(check: Check) -> dict[str, Any]:
         detail, ok = str(e), 0
     except Exception as e:  # noqa: BLE001 - any error is the component failing its check; recorded and logged
         detail, ok = f"{type(e).__name__}: {str(e)[:200]}", 0
-    result = {"ok": ok, "detail": detail, "seconds": round(time.monotonic() - started, 3), "at": time.time(),
+    result = {"ok": ok, "fails": 0 if ok else fails_before + 1, "detail": detail,
+              "seconds": round(time.monotonic() - started, 3), "at": time.time(),
               "component": check.component, "tier": check.tier}
     if not ok:
         logger.warning("component check %s failed: %s", check.name, detail)
@@ -419,8 +436,13 @@ async def run_due(now: float | None = None) -> list[str]:
         return []
     now = now or time.time()
     stored = {(k.decode() if isinstance(k, bytes) else k): json.loads(v) for k, v in (await r.hgetall(_KEY)).items()}
-    due = [c for c in CHECKS if now - stored.get(c.name, {}).get("at", 0) >= c.every_s]
-    results = await asyncio.gather(*(run_one(c) for c in due))
+    def is_due(c: Check) -> bool:
+        last = stored.get(c.name, {})
+        wait = RETRY_AFTER_S if last.get("fails") else c.every_s
+        return now - last.get("at", 0) >= wait
+
+    due = [c for c in CHECKS if is_due(c)]
+    results = await asyncio.gather(*(run_one(c, stored.get(c.name, {}).get("fails", 0)) for c in due))
     if due:
         await r.hset(_KEY, mapping={c.name: json.dumps(res) for c, res in zip(due, results)})
     return [c.name for c in due]
@@ -461,7 +483,8 @@ async def metric_lines() -> list[str]:
             continue
         res, c = json.loads(v), by_name[name]
         lab = f'check="{name}",component="{c.component}",tier="{c.tier}"'
-        lines["ok"].append(f"component_check_ok{{{lab}}} {res['ok']}")
+        # One failure is retried before it counts: ok=0 only after two failures in a row.
+        lines["ok"].append(f"component_check_ok{{{lab}}} {0 if res.get('fails', 0) >= 2 else 1}")
         lines["duration_seconds"].append(f"component_check_duration_seconds{{{lab}}} {res['seconds']}")
         lines["last_run_timestamp_seconds"].append(f"component_check_last_run_timestamp_seconds{{{lab}}} {res['at']:.0f}")
     help_ = {"ok": ("gauge", "1 when the component did its job at the last check"),

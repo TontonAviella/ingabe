@@ -234,7 +234,7 @@ tests:
             exp_annotations:
               where: "CHIRPS rain: the outside service; detail at /internal/component-checks"
               summary: "Outside data feed CHIRPS rain has failed its check for an hour"
-      - eval_time: 45m
+      - eval_time: 65m
         alertname: ComponentChecksNotRunning
         exp_alerts:
           - exp_labels: {area: monitoring, severity: warning}
@@ -266,4 +266,18 @@ tests:
             exp_annotations:
               where: "tile routes /api/layer/... and rasterd; Grafana Logs (container mundi-app, mundi-rasterd)"
               summary: People's maps reported 5 or more tile errors in the last hour (at most one per page a minute)
+
+  # No component check has ever reported.
+  - interval: 5m
+    input_series:
+      - series: 'up{job="mundi-app"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ComponentChecksNotRunning
+        exp_alerts:
+          - exp_labels: {area: monitoring, severity: warning}
+            exp_annotations:
+              where: "container mundi-app (the component check loop; COMPONENT_CHECKS, Redis lock component_checks:runner)"
+              summary: No component check has run for 30 minutes; the self-tests are blind
 

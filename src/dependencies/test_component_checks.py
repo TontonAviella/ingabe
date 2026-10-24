@@ -37,6 +37,10 @@ class FakeRedis:
     async def expire(self, key, s):
         return True
 
+    async def incr(self, key):
+        self.kv[key] = str(int(self.kv.get(key, 0)) + 1)
+        return int(self.kv[key])
+
 
 def _check(name, run, every=300, timeout=1.0, tier="core"):
     return cc.Check(name, name.title(), tier, every, timeout, run)
@@ -80,17 +84,20 @@ async def test_only_due_checks_run_and_results_render(monkeypatch):
         ran.append("slow")
         raise cc.CheckFailed("tile was empty")
 
-    monkeypatch.setattr(cc, "CHECKS", (_check("fast", fast, every=60), _check("slow", slow, every=3600, tier="feed")))
+    monkeypatch.setattr(cc, "CHECKS", (_check("fast", fast, every=600), _check("slow", slow, every=3600, tier="feed")))
     now = time.time()
     assert await cc.run_due(now) == ["fast", "slow"]
-    assert await cc.run_due(now + 120) == ["fast"]  # slow is not due again for an hour
-    assert ran == ["fast", "slow", "fast"]
-
+    text = "\n".join(await cc.metric_lines())
+    assert 'component_check_ok{check="slow",component="Slow",tier="feed"} 1' in text  # one failure: retried first
+    # The failed check is retried after RETRY_AFTER_S; the healthy one waits its full interval.
+    assert await cc.run_due(now + cc.RETRY_AFTER_S + 1) == ["slow"]
+    assert ran == ["fast", "slow", "slow"]
     text = "\n".join(await cc.metric_lines())
     assert 'component_check_ok{check="fast",component="Fast",tier="core"} 1' in text
-    assert 'component_check_ok{check="slow",component="Slow",tier="feed"} 0' in text
+    assert 'component_check_ok{check="slow",component="Slow",tier="feed"} 0' in text  # two in a row
     assert "# TYPE component_check_last_run_timestamp_seconds gauge" in text
-    assert json.loads(fake.h["slow"])["detail"] == "tile was empty"
+    stored = json.loads(fake.h["slow"])
+    assert stored["detail"] == "tile was empty" and stored["fails"] == 2
 
 
 def test_tile_numbers_over_kigali():
@@ -103,9 +110,44 @@ async def test_map_health_counts_only_known_events(monkeypatch):
 
     fake = FakeRedis()
     monkeypatch.setattr(hm, "_redis", lambda: fake)
+    monkeypatch.setattr(routes, "get_async_redis", lambda: fake)
     for event in ("map_load", "map_load", "tile_error", "<script>"):
         await routes.client_health(routes.ClientHealthEvent(event=event), session=None)  # type: ignore[arg-type]
     assert fake.h == {"frontend_map_events_total|event=map_load": "2", "frontend_map_events_total|event=tile_error": "1"}
+    for _ in range(routes.PER_USER_PER_MINUTE + 10):  # a loop in someone's browser is capped
+        await routes.client_health(routes.ClientHealthEvent(event="map_error"), session=None)  # type: ignore[arg-type]
+    assert int(fake.h["frontend_map_events_total|event=map_error"]) == routes.PER_USER_PER_MINUTE - 3  # 3 used above
+
+
+@pytest.mark.anyio
+async def test_minio_check_uses_the_shared_client_and_always_cleans_up(monkeypatch):
+    import src.utils as utils
+
+    calls = []
+
+    class SharedS3:
+        async def put_object(self, **kw):
+            calls.append("put")
+
+        async def get_object(self, **kw):
+            raise ConnectionError("read failed")
+
+        async def delete_object(self, **kw):
+            calls.append("delete")
+
+        async def __aexit__(self, *a):  # closing the app's shared client would break every later upload
+            raise AssertionError("the shared client must not be closed")
+
+    shared = SharedS3()
+
+    async def get_client():
+        return shared
+
+    monkeypatch.setattr(utils, "get_async_s3_client", get_client)
+    monkeypatch.setattr(utils, "get_bucket_name", lambda: "b")
+    result = await cc.run_one(_check("minio", cc.check_minio))
+    assert result["ok"] == 0 and "read failed" in result["detail"]
+    assert calls == ["put", "delete"]  # deleted even though the read failed
 
 
 @pytest.mark.anyio

@@ -92,7 +92,9 @@ def component_rows() -> list[dict]:
     rows = []
     for name, r in sorted(found.items(), key=lambda kv: (kv[1].get("tier", ""), kv[1].get("component", ""))):
         age_min = (time.time() - r.get("at", 0)) / 60
-        status = "ok" if r.get("ok") else ("warn" if r.get("tier") == "feed" else "bad")
+        # A first failure is retried in 2 minutes (amber); two in a row is a real fault (red; amber for outside feeds).
+        fails = r.get("fails", 0 if r.get("ok") else 2)
+        status = "ok" if not fails else "warn" if fails == 1 or r.get("tier") == "feed" else "bad"
         if age_min > 90:
             status = "unknown"
         rows.append({"area": TIER_AREA.get(r.get("tier", ""), "components"), "check": r.get("component", name),
