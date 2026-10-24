@@ -28,7 +28,7 @@ analytical workloads (worldcover_admin_stats).
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 
 import numpy as np
@@ -1294,6 +1294,90 @@ def weekly_cell_ndvi(
         "errors": len(errors),
         "date_range": f"{date_from}/{date_to}",
     }
+
+
+# Composites already stored are read again this many days back: MODIS publishes a composite some days after
+# its 8 days end, and a re-read replaces a composite read before all its tiles were out.
+LST_REREAD_DAYS = 16  # composites this close to the newest stored one are read again (late reprocessing)
+LST_RETRY_DAYS = 120  # a composite missing from this far back is tried again every run until it is read
+LST_FIRST_COMPOSITE = date(2003, 1, 1)  # the normals start in 2003 (Aqua's first full year); an empty table fills from it
+LST_STALE_DAYS = 47  # newest composite older than this: MODIS has likely stopped (its science ends in 2027)
+LST_MAX_COMPOSITES_PER_RUN = 60  # oldest first: a long gap catches up over a few weeks (load history from a file)
+
+
+@asset(
+    group_name="rwanda_precompute",
+    description="Weekly: MODIS 8-day ground temperature per district -> PostgreSQL lst_district_8day",
+)
+@observed_dagster_asset(
+    asset_name="weekly_land_surface_temperature",
+    pipeline_family="satellite_land_surface_temperature",
+    source_category="satellite",
+    analysis_domain="agriculture",
+    evidence_kind="lst_district_8day",
+)
+def weekly_land_surface_temperature(
+    context: AssetExecutionContext,
+    postgres: PostgresResource,
+) -> dict[str, Any]:
+    """Add the MODIS 8-day land surface temperature composites published since the last run, per district.
+
+    Runs Wednesday 03:00 UTC. Reads, for both satellites, every composite from LST_REREAD_DAYS before the newest
+    stored one to today, plus any composite of the last LST_RETRY_DAYS that is still missing (one that failed is
+    tried again next week), at most LST_MAX_COMPOSITES_PER_RUN oldest first; an empty table fills from
+    LST_FIRST_COMPOSITE. Upserts one row per composite, satellite and district. The heat condition (src/services/land_surface_temperature.py) reads the table; its
+    normals are every stored year, so they extend themselves. Fails (red in Dagster) when more than a quarter of
+    the composites cannot be read; warns when the newest composite is older than LST_STALE_DAYS.
+    """
+    from src.services import land_surface_temperature as lst
+
+    districts = [(name, json.loads(geom)) for name, geom in postgres.execute_query(
+        "SELECT district, ST_AsGeoJSON(ST_Transform(geom, 4326)) FROM rwanda_district_boundaries WHERE geom IS NOT NULL")]
+    if not districts:
+        return {"status": "skipped", "reason": "no_district_boundaries"}
+    newest = postgres.execute_query("SELECT max(composite_start) FROM lst_district_8day")[0][0]
+    reread_from = newest - timedelta(days=LST_REREAD_DAYS) if newest else LST_FIRST_COMPOSITE
+    start = max(LST_FIRST_COMPOSITE, newest - timedelta(days=LST_RETRY_DAYS)) if newest else LST_FIRST_COMPOSITE
+    stored = {(d.isoformat(), p) for d, p in postgres.execute_query(
+        "SELECT DISTINCT composite_start, product FROM lst_district_8day WHERE composite_start >= %s", (start,))}
+    today = datetime.utcnow().date()
+    wanted = {k: v for k, v in lst.composites(start, today).items() if k not in stored or k[0] >= reread_from.isoformat()}
+    found = dict(sorted(wanted.items())[:LST_MAX_COMPOSITES_PER_RUN])  # oldest first
+    written, failed = 0, []
+    for (day, product), items in found.items():
+        try:
+            rows = lst.district_means(items, districts)
+        except Exception as e:  # noqa: BLE001 - counted; too many failures fail the run below
+            failed.append(f"{day} {product}: {str(e)[:160]}")
+            continue
+        with postgres.get_sync_connection() as pg_conn:
+            with pg_conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO lst_district_8day
+                        (district, composite_start, product, lst_day_k, day_clear_share, lst_night_k, night_clear_share)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (district, composite_start, product) DO UPDATE SET
+                        lst_day_k = EXCLUDED.lst_day_k, day_clear_share = EXCLUDED.day_clear_share,
+                        lst_night_k = EXCLUDED.lst_night_k, night_clear_share = EXCLUDED.night_clear_share,
+                        computed_at = NOW()
+                    """,
+                    [(r["district"], day, product, r["lst_day_k"], r["day_clear_share"], r["lst_night_k"], r["night_clear_share"])
+                     for r in rows],
+                )
+            pg_conn.commit()
+        written += 1
+    for f in failed[:10]:
+        context.log.warning("LST composite not read: %s", f)
+    if found and len(failed) > 0.25 * len(found):
+        return {"status": "error", "error": f"{len(failed)} of {len(found)} composites not read; first: {failed[0]}"}
+    latest = postgres.execute_query("SELECT max(composite_start) FROM lst_district_8day")[0][0]
+    if latest is None or (today - latest).days > LST_STALE_DAYS:
+        context.log.warning("Newest MODIS composite is %s: MODIS may have stopped (science ends 2027); switch to "
+                            "Sentinel-3 SLSTR or VIIRS", latest)
+    context.log.info("LST: %d composites written (%s..%s), %d failed, newest %s", written, start, today, len(failed), latest)
+    return {"status": "ok", "composites_written": written, "composites_failed": len(failed),
+            "from": start.isoformat(), "newest_composite": latest.isoformat() if latest else None}
 
 
 @asset(

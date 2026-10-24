@@ -21,6 +21,13 @@ pipeline_cache:
     SELECT 'ndvi_cell_cache', 'weekly',
            EXTRACT(EPOCH FROM now() - COALESCE(max(computed_at)::timestamptz, 'epoch'))
       FROM ndvi_cell_cache
+    UNION ALL
+    -- Ground temperature: by the newest MODIS composite, not the last write (each run re-writes the last 16
+    -- days, so writes continue even if MODIS stops). Composites normally arrive 2-3 weeks late, so the age counts
+    -- from 38 days after the newest one: the weekly alert (9 days) then fires when it is over 47 days old.
+    SELECT 'lst_district_8day', 'weekly',
+           EXTRACT(EPOCH FROM now() - COALESCE((max(composite_start) + 38)::timestamptz, 'epoch'))
+      FROM lst_district_8day
   metrics:
     - cache:
         usage: LABEL

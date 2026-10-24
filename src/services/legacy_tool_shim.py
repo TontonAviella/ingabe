@@ -14,13 +14,14 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 import asyncpg
 
 from src.services.insurance_engine import season_rainfall_sentence
 from src.services.numbers import round_or_none
-from src.services import industry, ndvi_classes
+from src.services import industry, land_surface_temperature, ndvi_classes
 from src.services.forecast_openmeteo import without_farm_advice
 from src.services import satellite_analytics
 
@@ -2396,6 +2397,26 @@ async def _handle_get_drought_status(ctx: LegacyToolContext) -> Dict[str, Any]:
                 "count": len(_rows),
                 "districts": _districts_out,
             }
+            try:
+                _heat = await land_surface_temperature.heat_conditions(
+                    ctx.conn, [d["district"] for d in _districts_out], date.today(),
+                )
+            except Exception:
+                logger.warning("ground temperature lookup failed; heat context left out", exc_info=True)
+                _heat = {}
+            for _d in _districts_out:
+                if _d["district"] in _heat:
+                    _h = dict(_heat[_d["district"]])
+                    _h.pop("district", None)
+                    _h.pop("source", None)
+                    _d["heat"] = _h
+            if _heat:
+                tool_result["heat_note"] = (
+                    "'heat' is the district's day-time ground temperature for the month against the same month "
+                    "since 2003 (heat_condition 0 = hottest on record, 1 = coolest). It is context next to the "
+                    "drought status, never a drought verdict or an insurance trigger; repeat its 'note' when you use it. "
+                    f"Source: {land_surface_temperature.SOURCE}."
+                )
             if all(
                 d["drought_status"] == "insufficient_data"
                 for d in _districts_out
