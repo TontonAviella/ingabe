@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from src.services.ndvi_classes import legend, ndvi_class, scale_text
+from src.services.ndvi_classes import (
+    NDVI_ANOMALY_ALERTS,
+    anomaly_alert_scale_text,
+    legend,
+    ndvi_anomaly_alert,
+    ndvi_class,
+    scale_text,
+)
 
 
 @pytest.mark.parametrize("value,key", [
@@ -29,3 +36,21 @@ def test_legend_and_sage_text_describe_the_same_scale():
     text = scale_text()
     for item in legend()["items"]:
         assert f"{item['range']} = {item['label'].lower()}" in text
+
+
+@pytest.mark.parametrize("z,key", [
+    (-2.4, "high"), (-1.5, "high"), (-1.49, "moderate"), (-1.0, "moderate"), (-0.99, None), (0.0, None), (1.3, None),
+])
+def test_anomaly_alert_breaks_are_inclusive_upper_bounds(z, key):
+    alert = ndvi_anomaly_alert(z)
+    assert (alert.key if alert else None) == key
+
+
+def test_no_anomaly_value_is_no_alert():
+    assert ndvi_anomaly_alert(None) is None
+
+
+def test_anomaly_scale_text_names_every_class_at_its_break():
+    text = anomaly_alert_scale_text()
+    for alert in NDVI_ANOMALY_ALERTS:
+        assert alert.key in text and f"{alert.max_z:g}" in text

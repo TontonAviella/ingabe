@@ -74,3 +74,37 @@ def scale_text() -> str:
     """The scale as one sentence, for tool results Sage reads."""
     parts = [f"{_range(i)} = {c.label.lower()}" for i, c in reversed(list(enumerate(NDVI_CLASSES)))]
     return "NDVI values: " + ", ".join(parts) + "."
+
+
+# --- Standardised NDVI anomaly (z-score against a climatology) ---------------------------------
+# Alert classes for an area's mean standardised NDVI anomaly. The breaks are the SPI drought
+# categories of McKee et al. (1993): -1.0 to -1.49 moderately dry, -1.5 and below severely or
+# extremely dry, applied to vegetation the same way. Above -1.0 is no alert. An area's mean is
+# smoother than its pixels, so a district reaches these less often than a field does.
+@dataclass(frozen=True)
+class NdviAnomalyAlert:
+    key: str
+    label: str
+    max_z: float  # inclusive upper bound
+
+
+NDVI_ANOMALY_ALERTS: tuple[NdviAnomalyAlert, ...] = (
+    NdviAnomalyAlert("high", "Vegetation well below normal for the month", -1.5),
+    NdviAnomalyAlert("moderate", "Vegetation below normal for the month", -1.0),
+)
+
+
+def ndvi_anomaly_alert(z: Optional[float]) -> Optional[NdviAnomalyAlert]:
+    """The alert class for a standardised NDVI anomaly, or None (no alert, or no value)."""
+    if z is None:
+        return None
+    return next((a for a in NDVI_ANOMALY_ALERTS if z <= a.max_z), None)
+
+
+def anomaly_alert_scale_text() -> str:
+    """The alert scale as one sentence, for tool results Sage reads."""
+    high, moderate = NDVI_ANOMALY_ALERTS
+    return (f"NDVI anomaly (standard deviations from the normal for the month): "
+            f"{high.max_z:g} or lower = {high.key} ({high.label.lower()}), "
+            f"above {high.max_z:g} to {moderate.max_z:g} = {moderate.key} ({moderate.label.lower()}), "
+            f"above {moderate.max_z:g} = no alert.")
