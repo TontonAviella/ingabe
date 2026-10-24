@@ -7,7 +7,7 @@ groups:
     rules:
       - alert: PostgresUnavailable
         # Crash recovery refuses connections for 20-40 s; a 10 s scrape sees it.
-        expr: pg_up == 0
+        expr: pg_up{job="postgres"} == 0
         labels:
           severity: critical
           area: database
@@ -17,7 +17,7 @@ groups:
       - alert: PostgresRecoveredRecently
         # Any unavailability in the last 15 minutes, so a crash between
         # dashboard glances is not missed.
-        expr: min_over_time(pg_up[15m]) == 0
+        expr: min_over_time(pg_up{job="postgres"}[15m]) == 0
         labels:
           severity: warning
           area: database
@@ -108,11 +108,13 @@ groups:
   - name: sage
     rules:
       - alert: SageTurnsFailing
-        # Failed or cut-off turns plus turns ended by an AI-model error, over all turns in the last hour.
+        # Failed turns plus turns ended by an AI-model error, over all turns in the last hour. Not counted: turns
+        # cut off by a restart (outcome "cancelled", every deploy) and chats grown past the model's limit
+        # (kind "context", the person's chat, not a fault).
         expr: |
           (
-            (sum(increase(sage_turns_total{outcome=~"failed|cancelled"}[1h])) or vector(0))
-            + (sum(increase(sage_llm_errors_total{stage="final"}[1h])) or vector(0))
+            (sum(increase(sage_turns_total{outcome="failed"}[1h])) or vector(0))
+            + (sum(increase(sage_llm_errors_total{stage="final",kind!="context"}[1h])) or vector(0))
           ) / sum(increase(sage_turns_total[1h])) > 0.1
           and sum(increase(sage_turns_total[1h])) >= 3
         labels:
@@ -160,7 +162,7 @@ groups:
           where: "AI provider account (credit balance or API key in .env)"
           summary: The AI model refused Sage for credit or the API key; Sage cannot answer
       - alert: AIModelErrors
-        expr: sum(increase(sage_llm_errors_total{stage="final"}[1h])) >= 3
+        expr: sum(increase(sage_llm_errors_total{stage="final",kind!="context"}[1h])) >= 3
         labels:
           severity: warning
           area: ai-model

@@ -32,8 +32,8 @@ CHECKS = [
     ("app", "Server errors, last hour", "sum(increase(http_request_errors_total[1h]))", "count", 1, 10, True,
      "container mundi-app logs"),
     ("sage", "Failed turns, last hour",
-     '(sum(increase(sage_turns_total{outcome=~"failed|cancelled"}[1h])) or vector(0))'
-     ' + (sum(increase(sage_llm_errors_total{stage="final"}[1h])) or vector(0))', "count", 1, 3, True,
+     '(sum(increase(sage_turns_total{outcome="failed"}[1h])) or vector(0))'
+     ' + (sum(increase(sage_llm_errors_total{stage="final",kind!="context"}[1h])) or vector(0))', "count", 1, 3, True,
      "src/routes/message_routes.py; Grafana Sage"),
     ("sage", "Turns, last 24 hours", "sum(increase(sage_turns_total[24h])) or vector(0)", "count", None, None, True,
      "Grafana Sage"),
@@ -61,7 +61,7 @@ CHECKS = [
      "container mundi-backup"),
     ("backup", "Hours since the last good backup", "(time() - max(backup_last_success_timestamp_seconds)) / 3600", "h",
      25, 26, True, "container mundi-backup"),
-    ("database", "Postgres", "min(pg_up)", "updown", None, None, False, "container postgresdb"),
+    ("database", "Postgres", 'min(pg_up{job="postgres"})', "updown", None, None, False, "container postgresdb"),
     ("server", "Disk used", '1 - max(node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"})',
      "share", 0.75, 0.85, True, "docker builder prune; MinIO photos"),
     ("server", "Memory available", "min(node_memory_MemAvailable_bytes) / 1e9", "GB", 4, 2, False, "Grafana Server"),

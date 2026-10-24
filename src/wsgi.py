@@ -373,6 +373,7 @@ _request_errors = 0
 _request_latency_sum = 0.0
 _request_latency_count = 0
 _active_requests = 0
+_UNCOUNTED_PATHS = frozenset({"/metrics", "/health", "/healthz", "/ready", "/api/health"})
 
 
 class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
@@ -385,19 +386,23 @@ class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4())[:8])
         request.state.request_id = request_id
 
+        # Prometheus's own scrapes and health probes are not traffic: counted, they hide a real error rate.
+        counted = request.url.path not in _UNCOUNTED_PATHS
         _active_requests += 1
-        _request_count += 1
+        if counted:
+            _request_count += 1
         start = time.monotonic()
         status_code: int | None = None
         try:
             response: Response = await call_next(request)
             status_code = response.status_code
-            if response.status_code >= 500:
+            if response.status_code >= 500 and counted:
                 _request_errors += 1
             response.headers["X-Request-ID"] = request_id
             return response
         except Exception as exc:
-            _request_errors += 1
+            if counted:
+                _request_errors += 1
             capture_backend_event(
                 "backend_http_exception",
                 properties={
@@ -411,8 +416,9 @@ class RequestIdMetricsMiddleware(BaseHTTPMiddleware):
             raise
         finally:
             elapsed = time.monotonic() - start
-            _request_latency_sum += elapsed
-            _request_latency_count += 1
+            if counted:
+                _request_latency_sum += elapsed
+                _request_latency_count += 1
             _active_requests -= 1
             duration_ms = int(elapsed * 1000)
             slow_threshold_ms = int(os.environ.get("POSTHOG_SLOW_REQUEST_MS", "3000"))

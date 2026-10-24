@@ -226,7 +226,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "((sum(increase(sage_turns_total{outcome=~\"failed|cancelled\"}[1h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\"}[1h])) or vector(0)))",
+     "expr": "((sum(increase(sage_turns_total{outcome=\"failed\"}[1h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\",kind!=\"context\"}[1h])) or vector(0)))",
      "instant": true
     }
    ],
@@ -412,7 +412,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "min(pg_up)",
+     "expr": "min(pg_up{job=\"postgres\"})",
      "instant": true
     }
    ],

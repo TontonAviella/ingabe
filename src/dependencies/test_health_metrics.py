@@ -145,3 +145,39 @@ async def test_each_tool_call_is_counted_by_outcome(monkeypatch):
     assert stopped["status"] == "error"
     assert fake.h == {"sage_tool_calls_total|outcome=ok,tool=t": 1, "sage_tool_calls_total|outcome=error,tool=t": 2,
                       "sage_tool_calls_total|outcome=timeout,tool=t": 1}
+
+
+def test_alerting_counters_start_at_zero():
+    text = "\n".join(hm.render({}))
+    assert 'sage_llm_errors_total{kind="credit",stage="final"} 0' in text
+    assert 'sage_turns_closed_unfinished_total{source="turn_end"} 0' in text
+    assert 'sage_turns_total{outcome="failed"} 0' in text
+    stored = "\n".join(hm.render({"sage_turns_total|outcome=failed": "4"}))
+    assert 'sage_turns_total{outcome="failed"} 4' in stored and stored.count('outcome="failed"') == 1
+
+
+@pytest.mark.anyio
+async def test_a_hung_redis_does_not_hold_up_a_turn(monkeypatch):
+    import asyncio
+    import time
+
+    class Hung:
+        async def hincrby(self, *a):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(hm, "_redis", lambda: Hung())
+    started = time.monotonic()
+    await hm.count("sage_turns_total", {"outcome": "completed"})
+    assert time.monotonic() - started < 2
+
+
+@pytest.mark.anyio
+async def test_health_probes_and_scrapes_are_not_counted_as_traffic(client):
+    def total(text):
+        return int(next(line.split()[-1] for line in text.splitlines() if line.startswith("http_requests_total ")))
+
+    before = total((await client.get("/metrics")).text)
+    await client.get("/api/health")
+    await client.get("/healthz")
+    after = total((await client.get("/metrics")).text)
+    assert after == before

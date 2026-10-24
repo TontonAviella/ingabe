@@ -92,7 +92,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "(sum(increase(sage_turns_total{outcome=~\"failed|cancelled\"}[24h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\"}[24h])) or vector(0))",
+     "expr": "(sum(increase(sage_turns_total{outcome=\"failed\"}[24h])) or vector(0)) + (sum(increase(sage_llm_errors_total{stage=\"final\",kind!=\"context\"}[24h])) or vector(0))",
      "instant": true
     }
    ],

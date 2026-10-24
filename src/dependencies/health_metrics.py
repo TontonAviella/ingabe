@@ -13,6 +13,7 @@ Alerts on these live in monitoring/alerts.yml; the Sage dashboard in monitoring/
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -24,6 +25,18 @@ logger = logging.getLogger(__name__)
 
 _KEY = "health_metrics:v1"  # one Redis hash: field "name|label=value,..." -> number
 TURN_BUCKETS = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)  # seconds; a turn over 2 minutes is slow
+REDIS_LIMIT_S = 0.5  # a Redis that hangs must not hold up a turn: past this the count is dropped
+
+# Shown as 0 until first counted. Prometheus's increase() needs a sample before the first event, or the first
+# credit refusal (or hanging turn) after a deploy or a Redis restart would never alert.
+_ZERO_FIELDS = (
+    [f"sage_turns_total|outcome={o}" for o in ("completed", "failed", "cancelled")]
+    + [f"sage_turns_closed_unfinished_total|source={s}" for s in ("turn_end", "stop")]
+    + [f"sage_llm_calls_total|outcome={o}" for o in ("ok", "error")]
+    + [f"sage_llm_errors_total|kind={k},stage={st}"
+       for k in ("credit", "auth", "rate_limit", "overloaded", "upstream_5xx", "context", "bad_request", "other")
+       for st in ("attempt", "final")]
+)
 
 _HELP = {
     "sage_turns_total": ("counter", "Sage turns by how they ended (completed, failed, stopped)"),
@@ -70,8 +83,8 @@ async def count(name: str, labels: Optional[dict[str, str]] = None, by: int = 1)
     try:
         r = _redis()
         if r is not None:
-            await r.hincrby(_KEY, _field(name, labels), by)
-    except Exception:  # noqa: BLE001 - counting must never break a turn
+            await asyncio.wait_for(r.hincrby(_KEY, _field(name, labels), by), REDIS_LIMIT_S)
+    except Exception:  # noqa: BLE001 - counting must never break or hold up a turn
         logger.debug("health metric %s not counted", name, exc_info=True)
 
 
@@ -88,7 +101,7 @@ async def observe(name: str, seconds: float, labels: Optional[dict[str, str]] = 
         pipe.hincrby(_KEY, _field(f"{name}_bucket", {**(labels or {}), "le": "+Inf"}), 1)
         pipe.hincrbyfloat(_KEY, _field(f"{name}_sum", labels), seconds)
         pipe.hincrby(_KEY, _field(f"{name}_count", labels), 1)
-        await pipe.execute()
+        await asyncio.wait_for(pipe.execute(), REDIS_LIMIT_S)
     except Exception:  # noqa: BLE001
         logger.debug("health metric %s not observed", name, exc_info=True)
 
@@ -112,6 +125,7 @@ def _credit_expiry_line() -> list[str]:
 def render(fields: dict[str, str]) -> list[str]:
     """Prometheus text lines for the stored counters (`fields` as read from the Redis hash)."""
     by_family: dict[str, list[str]] = {}
+    fields = {**{f: "0" for f in _ZERO_FIELDS}, **fields}
     for field, value in sorted(fields.items()):
         name, _, inner = field.partition("|")
         family = next((f for f in _HELP if name == f or name.startswith(f + "_")), name)
@@ -130,7 +144,7 @@ async def metric_lines() -> list[str]:
     try:
         r = _redis()
         if r is not None:
-            raw = await r.hgetall(_KEY)
+            raw = await asyncio.wait_for(r.hgetall(_KEY), 2 * REDIS_LIMIT_S)
             lines = render({(k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
                             for k, v in raw.items()})
     except Exception:  # noqa: BLE001 - /metrics still answers with what it has

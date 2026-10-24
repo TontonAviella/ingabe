@@ -39,7 +39,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "min(pg_up)",
+     "expr": "min(pg_up{job=\"postgres\"})",
      "instant": true
     }
    ],
@@ -444,7 +444,7 @@
       "type": "prometheus",
       "uid": "prometheus"
      },
-     "expr": "pg_up",
+     "expr": "pg_up{job=\"postgres\"}",
      "legendFormat": "up"
     }
    ],
