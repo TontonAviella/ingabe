@@ -699,19 +699,22 @@ class CropClassifier:
         if not ndvi_ndwi_timeseries:
             return {"error": "No data provided"}
 
-        dates, ndvi_vals, ndwi_vals = [], [], []
+        # A week without NDWI keeps None: unknown water, never 0 (missing is not zero, and zero is not missing;
+        # until 2026-10-24 it was 0.0, which reached drought_cache.latest_ndwi and the drought periods).
+        dates: List[Any] = []
+        ndvi_vals: List[float] = []
+        ndwi_vals: List[Optional[float]] = []
         for entry in ndvi_ndwi_timeseries:
             if entry.get("mean_ndvi") is not None:
                 dates.append(entry.get("date", "unknown"))
                 ndvi_vals.append(float(entry["mean_ndvi"]))
-                ndwi_vals.append(float(entry["mean_ndwi"]) if entry.get("mean_ndwi") is not None else 0.0)
+                ndwi_vals.append(float(entry["mean_ndwi"]) if entry.get("mean_ndwi") is not None else None)
 
         if len(ndvi_vals) < 3:
             return {"error": "Need at least 3 observations for drought detection"}
 
         days = [date.fromisoformat(str(d)[:10]) for d in dates]
-        latest_ndwi = round(ndwi_vals[-1], 4) if any(v != 0.0 for v in ndwi_vals) else None
-        has_ndwi = latest_ndwi is not None
+        latest_ndwi = round(ndwi_vals[-1], 4) if ndwi_vals[-1] is not None else None
 
         # ── Seasonal VCI ──
         # VCI compares NDVI with the same time of year in earlier years (WMO). Min/max over a
@@ -780,7 +783,8 @@ class CropClassifier:
             if period_vci is None:
                 continue
             evaluated += 1
-            water_stressed = ndwi_vals[i] < 0.0 if has_ndwi else False
+            week_ndwi = ndwi_vals[i]
+            water_stressed = week_ndwi is not None and week_ndwi < 0.0  # unmeasured: not shown to be stressed
             if period_vci < 20 or (period_vci < 35 and water_stressed):
                 severity = "severe" if period_vci < 20 else "moderate"
             elif period_vci < 35:
@@ -791,7 +795,7 @@ class CropClassifier:
                 "date": dates[i],
                 "vci": round(period_vci, 2),
                 "ndvi": round(ndvi_vals[i], 4),
-                "ndwi": round(ndwi_vals[i], 4) if has_ndwi else None,
+                "ndwi": round(week_ndwi, 4) if week_ndwi is not None else None,
                 "severity": severity,
             })
 
