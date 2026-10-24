@@ -23,7 +23,7 @@ from src.routes import (
 )
 from src.routes.basemap_routes import basemap_router
 from src.routes.layer_router import layer_router
-from src.routes import drone_card_routes
+from src.routes import client_health_routes, drone_card_routes
 from src.routes import example_finder_routes
 from src.routes import tower_routes
 from src.routes.attribute_table import attribute_table_router
@@ -241,6 +241,11 @@ async def lifespan(app: FastAPI):
 
     workers_enabled = _background_workers_enabled()
     hook_task = asyncio.create_task(_brain_hook_loop()) if workers_enabled else None
+    # Component self-tests (src/dependencies/component_checks.py): one worker runs them, chosen by a Redis lock.
+    checks_task = None
+    if workers_enabled and os.environ.get("COMPONENT_CHECKS", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        from src.dependencies import component_checks
+        checks_task = asyncio.create_task(component_checks.runner_loop())
 
     # Start the per-source ingestion scheduler (APScheduler, in-process).
     # Failure to start is logged but non-fatal — app continues to serve
@@ -259,6 +264,8 @@ async def lifespan(app: FastAPI):
     yield
 
     workos_warm_task.cancel()
+    if checks_task is not None:
+        checks_task.cancel()
     if hook_task is not None:
         hook_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -534,6 +541,16 @@ async def readiness():
 _PROXY_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip", "forwarded")
 
 
+@app.get("/internal/component-checks")
+async def component_check_results(request: Request):
+    """The latest result of every component self-test, with its detail. Internal only, like /metrics."""
+    from src.dependencies import component_checks
+
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        return Response(status_code=404)
+    return JSONResponse(await component_checks.results())
+
+
 @app.get("/metrics")
 async def metrics(request: Request):
     """Lightweight metrics endpoint for monitoring (Prometheus-compatible text format). Internal only."""
@@ -573,6 +590,8 @@ async def metrics(request: Request):
         lines.append(f"db_read_pool_free {_async_read_pool.get_idle_size()}")
 
     lines += await health_metrics.metric_lines()
+    from src.dependencies import component_checks
+    lines += await component_checks.metric_lines()
 
     body = "\n".join(lines) + "\n"
     return Response(content=body, media_type="text/plain; charset=utf-8")
@@ -639,6 +658,11 @@ app.include_router(
     websocket.router,
     prefix="/api/maps",
     tags=["WebSocket"],
+)
+app.include_router(
+    client_health_routes.router,
+    prefix="/api",
+    tags=["Health"],
 )
 app.include_router(
     layer_router,

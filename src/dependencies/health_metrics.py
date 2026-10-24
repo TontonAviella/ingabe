@@ -36,6 +36,8 @@ _ZERO_FIELDS = (
     + [f"sage_llm_errors_total|kind={k},stage={st}"
        for k in ("credit", "auth", "rate_limit", "overloaded", "upstream_5xx", "context", "bad_request", "other")
        for st in ("attempt", "final")]
+    + [f"frontend_map_events_total|event={e}"
+       for e in ("map_load", "map_error", "tile_error", "deck_ready", "deck_error", "webgl_lost")]
 )
 
 _HELP = {
@@ -45,6 +47,7 @@ _HELP = {
     "sage_tool_calls_total": ("counter", "Sage tool calls by tool and outcome (ok, error, timeout)"),
     "sage_llm_calls_total": ("counter", "Calls to the AI model by outcome"),
     "sage_llm_errors_total": ("counter", "AI model errors by kind; stage=attempt is one try, stage=final ended the turn"),
+    "frontend_map_events_total": ("counter", "Maps in people's browsers: loaded, failed, tile errors, deck.gl, lost graphics"),
 }
 
 
