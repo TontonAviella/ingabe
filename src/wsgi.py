@@ -523,11 +523,19 @@ async def readiness():
         return JSONResponse(status_code=503, content={"ready": False, "error": str(e)})
 
 
+# Headers the public front ends add (Cloudflare tunnel, Tailscale serve, nginx). Prometheus scrapes app:8000 on the
+# Docker network without them; a request carrying one came from outside and must not read the metrics.
+_PROXY_HEADERS = ("x-forwarded-for", "cf-connecting-ip", "x-real-ip", "forwarded")
+
+
 @app.get("/metrics")
-async def metrics():
-    """Lightweight metrics endpoint for monitoring (Prometheus-compatible text format)."""
-    import asyncio
+async def metrics(request: Request):
+    """Lightweight metrics endpoint for monitoring (Prometheus-compatible text format). Internal only."""
     from src.database.pool import _async_connection_pool, _async_read_pool
+    from src.dependencies import health_metrics
+
+    if any(h in request.headers for h in _PROXY_HEADERS):
+        return Response(status_code=404)
 
     lines = []
     # Request metrics
@@ -557,6 +565,8 @@ async def metrics():
     if _async_read_pool:
         lines.append(f"db_read_pool_size {_async_read_pool.get_size()}")
         lines.append(f"db_read_pool_free {_async_read_pool.get_idle_size()}")
+
+    lines += await health_metrics.metric_lines()
 
     body = "\n".join(lines) + "\n"
     return Response(content=body, media_type="text/plain; charset=utf-8")

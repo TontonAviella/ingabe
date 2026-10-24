@@ -18,6 +18,42 @@ DUMP_FILE="/tmp/${DB_NAME}_${TIMESTAMP}.sql.gz"
 S3_PATH="s3://${S3_BUCKET:-test-bucket}/backups/${DB_NAME}_${TIMESTAMP}.sql.gz"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-7}"
 
+METRICS_DIR="${BACKUP_METRICS_DIR:-}"
+
+# Health metrics for Prometheus (node-exporter's textfile collector reads ${METRICS_DIR}/backup.prom): when the
+# last run ended and whether it worked, when the last good backup was made and its size, and the size of the one
+# before it. A failed run keeps the last good values. Off when BACKUP_METRICS_DIR is unset.
+previous_metric() { grep "^$1 " "${METRICS_DIR}/backup.prom" 2>/dev/null | awk '{print $2}' || true; }
+write_metrics() {  # $1 = 1 (worked) or 0 (failed); $2 = size in bytes of the new backup (when it worked)
+  [ -n "${METRICS_DIR}" ] && [ -d "${METRICS_DIR}" ] || return 0
+  local now last_ok size prev_size
+  now=$(date -u +%s)
+  if [ "$1" = 1 ]; then
+    last_ok="${now}"; size="$2"; prev_size="$(previous_metric backup_last_size_bytes)"
+  else
+    last_ok="$(previous_metric backup_last_success_timestamp_seconds)"
+    size="$(previous_metric backup_last_size_bytes)"; prev_size="$(previous_metric backup_previous_size_bytes)"
+  fi
+  {
+    echo "# HELP backup_last_run_timestamp_seconds When the last backup run ended"
+    echo "# TYPE backup_last_run_timestamp_seconds gauge"
+    echo "backup_last_run_timestamp_seconds ${now}"
+    echo "# HELP backup_last_run_success 1 when the last backup run worked, 0 when it failed"
+    echo "# TYPE backup_last_run_success gauge"
+    echo "backup_last_run_success $1"
+    echo "# HELP backup_last_success_timestamp_seconds When the last good backup was made"
+    echo "# TYPE backup_last_success_timestamp_seconds gauge"
+    echo "backup_last_success_timestamp_seconds ${last_ok:-0}"
+    echo "# HELP backup_last_size_bytes Compressed size of the last good backup"
+    echo "# TYPE backup_last_size_bytes gauge"
+    echo "backup_last_size_bytes ${size:-0}"
+    echo "# HELP backup_previous_size_bytes Compressed size of the good backup before it"
+    echo "# TYPE backup_previous_size_bytes gauge"
+    echo "backup_previous_size_bytes ${prev_size:-${size:-0}}"
+  } > "${METRICS_DIR}/backup.prom.tmp" && mv "${METRICS_DIR}/backup.prom.tmp" "${METRICS_DIR}/backup.prom"
+}
+trap 'write_metrics 0' ERR
+
 echo "[backup] Starting pg_dump of ${DB_NAME} at ${TIMESTAMP}"
 
 # 1. Dump + compress
@@ -39,6 +75,7 @@ PGPASSWORD="${POSTGRES_PASSWORD:-changeme}" pg_dump \
   | gzip > "${DUMP_FILE}"
 
 DUMP_SIZE=$(du -h "${DUMP_FILE}" | cut -f1)
+DUMP_BYTES=$(wc -c < "${DUMP_FILE}" | tr -d ' ')
 echo "[backup] Dump complete: ${DUMP_FILE} (${DUMP_SIZE})"
 
 # 2. Configure mc alias
@@ -52,6 +89,9 @@ mc alias set mundi \
 # 3. Upload to S3
 echo "[backup] Uploading to ${S3_PATH}"
 mc cp "${DUMP_FILE}" "mundi/${S3_PATH#s3://}"
+# The backup is stored: record it, so a failed prune below does not read as a failed backup.
+write_metrics 1 "${DUMP_BYTES}"
+trap - ERR
 
 # 4. Clean up local dump
 rm -f "${DUMP_FILE}"

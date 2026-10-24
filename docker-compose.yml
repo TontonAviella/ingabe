@@ -423,7 +423,18 @@ services:
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=7d"
+      - "--storage.tsdb.retention.time=30d"
+    restart: unless-stopped
+
+  # Checks the app from outside, the way a person reaches it (monitoring/blackbox.yml): the public address
+  # through the Cloudflare tunnel, not app:8000. The address is in monitoring/prometheus.yml (job public-app).
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: mundi-blackbox-exporter
+    mem_limit: 32m
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro
     restart: unless-stopped
 
   # Database and Docker-VM health for Prometheus/Grafana. On 2026-10-03
@@ -445,6 +456,26 @@ services:
       - postgresdb
     restart: unless-stopped
 
+  # Dagster's own run storage (the `dagster` database): failed jobs, stuck runs, daemon heartbeats
+  # (monitoring/postgres_exporter_dagster_queries.yaml). Only the custom queries; the one above covers Postgres.
+  postgres-exporter-dagster:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: mundi-postgres-exporter-dagster
+    mem_limit: 64m
+    command:
+      - "--extend.query-path=/etc/postgres_exporter/queries.yaml"
+      - "--disable-default-metrics"
+      - "--disable-settings-metrics"
+    volumes:
+      - ./monitoring/postgres_exporter_dagster_queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+    environment:
+      - DATA_SOURCE_URI=${POSTGRES_HOST:-postgresdb}:${POSTGRES_PORT:-5432}/dagster?sslmode=disable
+      - DATA_SOURCE_USER=${POSTGRES_USER:-mundiuser}
+      - DATA_SOURCE_PASS=${POSTGRES_PASSWORD:-changeme}
+    depends_on:
+      - postgresdb
+    restart: unless-stopped
+
   # Reads the Docker VM's own /proc (the VM is the memory budget every
   # container shares), not the Mac host's.
   node-exporter:
@@ -460,9 +491,43 @@ services:
       - "--collector.pressure"
       - "--collector.loadavg"
       - "--collector.cpu"
+      - "--collector.filesystem"
+      - "--path.rootfs=/host/root"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+|snap/.+)($$|/)"
+      # Metrics other containers write as files: the nightly backup (scripts/backup.sh).
+      - "--collector.textfile"
+      - "--collector.textfile.directory=/textfile"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
+      - /:/host/root:ro
+      - health-textfile:/textfile:ro
+    restart: unless-stopped
+
+  # Container logs, searchable in Grafana (monitoring/loki.yml, 14 days kept).
+  loki:
+    image: grafana/loki:3.5.5
+    container_name: mundi-loki
+    mem_limit: 512m
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  # Ships every container's logs to Loki (monitoring/alloy.alloy). It reads the Docker socket to find the
+  # containers and follow their logs; it has no published port.
+  alloy:
+    image: grafana/alloy:v1.10.2
+    container_name: mundi-alloy
+    mem_limit: 256m
+    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./monitoring/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
     restart: unless-stopped
 
   grafana:
@@ -473,14 +538,20 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_AUTH_ANONYMOUS_ENABLED=true
+      # Local stack: anyone on this machine may look. The server sets GRAFANA_ANONYMOUS=false (sign-in only).
+      - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS:-true}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      # The address people open (the server's private Tailscale address); links in alerts use it.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3000}
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus
+      - loki
     restart: unless-stopped
 
   # --- Database backup (pg_dump → gzip → S3/MinIO) ---
@@ -504,8 +575,10 @@ services:
       - S3_BUCKET=${S3_BUCKET:-test-bucket}
       - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
       - BACKUP_CRON=${BACKUP_CRON:-0 2 * * *}
+      - BACKUP_METRICS_DIR=/textfile
     volumes:
       - ./scripts/backup.sh:/backup.sh:ro
+      - health-textfile:/textfile
     entrypoint:
       - /bin/sh
       - -c
@@ -520,6 +593,9 @@ services:
     restart: unless-stopped
 
 volumes:
+  health-textfile:
+  loki-data:
+  alloy-data:
   dagster-home:
   ingabe-cache:
   prometheus-data:
