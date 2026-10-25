@@ -125,8 +125,9 @@ RUN_TAG = uuid.uuid4().hex[:8]
 
 
 @contextlib.asynccontextmanager
-async def _people(n: int, *, org_industry: Optional[str] = None):
-    """n fresh users (no industry chosen) and a company (with `org_industry`); everything they own is removed after."""
+async def _people(n: int, *, org_industry: Optional[str] = None, tier: str = "partner"):
+    """n fresh users (no industry chosen) and a company (with `org_industry`, of `tier`: 'internal' is Ingabe's own,
+    which sees every industry); everything they own is removed after."""
     from src.database.pool import get_async_db_connection
 
     users = [str(uuid.uuid4()) for _ in range(n)]
@@ -134,8 +135,8 @@ async def _people(n: int, *, org_industry: Optional[str] = None):
     async with get_async_db_connection() as conn:
         for user in users:
             await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
-        await conn.execute("INSERT INTO organizations (id, name, slug, industry) VALUES ($1::uuid, 'Home Co', $2, $3)",
-                           org, f"home-{RUN_TAG}-{org[:8]}", org_industry)
+        await conn.execute("INSERT INTO organizations (id, name, slug, industry, tier) VALUES ($1::uuid, 'Home Co', $2, $3, $4)",
+                           org, f"home-{RUN_TAG}-{org[:8]}", org_industry, tier)
     try:
         yield users, org
     finally:
@@ -212,7 +213,7 @@ async def test_the_home_follows_the_users_choice_else_the_companys(client):
     from src.database.pool import get_async_db_connection
     from src.services import industry
 
-    async with _people(1, org_industry="power_grid") as ((me,), org):
+    async with _people(1, org_industry="power_grid", tier="internal") as ((me,), org):  # Ingabe's own company
         grid = await _project(me, "power_grid")
         mast = await _project(me, "telecom")
         await _project(me, "agriculture")
@@ -275,3 +276,20 @@ async def test_nothing_chosen_lists_every_industry(client):
         body = await _home(client)
         assert _ids(body) == {farm, mast} and body["total_items"] == 2
         assert (body["industry"], body["industry_label"], body["other_industries"]) == (None, None, [])
+
+
+@pytest.mark.anyio
+async def test_a_partner_companys_people_see_only_its_industry(client):
+    """A partner company with an industry: its people's home lists only that industry, never mentions the others,
+    and the industry cannot be switched (Roger, 2026-10-25)."""
+    async with _people(1, org_industry="agriculture") as ((me,), org):
+        farm = await _project(me, "agriculture")
+        await _project(me, "telecom")  # made before, elsewhere: not shown, not counted
+        _signed_in(me, org)
+        body = await _home(client)
+        assert _ids(body) == {farm} and body["industry"] == "agriculture"
+        assert body["other_industries"] == []
+        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 403
+        made = (await client.post("/api/maps/create", json={"title": f"Farm {RUN_TAG}"})).json()
+        assert _ids(await _home(client)) == {farm, made["project_id"]}
+

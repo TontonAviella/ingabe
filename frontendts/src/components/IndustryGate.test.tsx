@@ -21,6 +21,7 @@ const state = (industry: IndustryState['industry']): IndustryState => ({
   source: 'you',
   company: null,
   can_choose: true,
+  locked: false,
   options: OPTIONS,
 });
 

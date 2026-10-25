@@ -171,6 +171,22 @@ async def _workos_user_uuid(workos_user_id: str, email: str | None) -> str:
     return cached if cached else await provision_workos_user(workos_user_id, email)
 
 
+async def provision_organization(conn, workos_org_id: str, name: str) -> str:
+    """The internal organizations.id for a WorkOS org, creating its row (named from WorkOS) if needed. Used at a
+    member's first sign-in and when Ingabe staff add a company (so its industry can be set before anyone signs in)."""
+    org_id = await conn.fetchval("SELECT id::text FROM organizations WHERE workos_org_id = $1", workos_org_id)
+    if org_id is None:
+        base = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-") or "org"
+        org_id = await conn.fetchval(
+            "INSERT INTO organizations (name, slug, workos_org_id) VALUES ($1, $2, $3) "
+            "ON CONFLICT (workos_org_id) DO UPDATE SET name = EXCLUDED.name RETURNING id::text",
+            name, f"{base}-{workos_org_id[-6:].lower()}", workos_org_id,
+        )
+        logger.info("Provisioned organization %s (%s) -> %s", name, workos_org_id, org_id)
+    _workos_org_ids[workos_org_id] = org_id
+    return org_id
+
+
 async def resolve_workos_org(workos_org_id: str, user_uuid: str, role: str | None) -> str:
     """The internal organizations.id for a WorkOS org, creating the row the first time.
 
@@ -185,13 +201,7 @@ async def resolve_workos_org(workos_org_id: str, user_uuid: str, role: str | Non
             org_id = await conn.fetchval("SELECT id::text FROM organizations WHERE workos_org_id = $1", workos_org_id)
         if org_id is None:
             name = await asyncio.to_thread(workos_auth.organization_name, workos_org_id)
-            base = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-") or "org"
-            org_id = await conn.fetchval(
-                "INSERT INTO organizations (name, slug, workos_org_id) VALUES ($1, $2, $3) "
-                "ON CONFLICT (workos_org_id) DO UPDATE SET name = EXCLUDED.name RETURNING id::text",
-                name, f"{base}-{workos_org_id[-6:].lower()}", workos_org_id,
-            )
-            logger.info("Provisioned organization %s (%s) -> %s", name, workos_org_id, org_id)
+            org_id = await provision_organization(conn, workos_org_id, name)
         await conn.execute(
             "INSERT INTO user_organizations (user_id, org_id, role) VALUES ($1, $2::uuid, $3) "
             "ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role",

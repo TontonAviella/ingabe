@@ -162,7 +162,8 @@ async def list_user_projects(
             f"SELECT COUNT(*) FROM user_mundiai_projects p WHERE {_SHOWN}", *listable, shown
         )
         others: list = []
-        if shown is not None:
+        # A partner company works in one industry: its people are never told about projects in the others.
+        if shown is not None and not await industry.locked_industry(conn, session.get_org_id()):
             per_industry = await conn.fetch(
                 f"SELECT p.industry, COUNT(*) AS n FROM user_mundiai_projects p WHERE {_LISTABLE} GROUP BY p.industry",
                 *listable,

@@ -68,6 +68,7 @@ class IndustryUpdate(BaseModel):
 async def _industry_payload(conn, session: UserContext) -> dict:
     user_id, org_id = session.get_user_id(), session.get_org_id()
     current, source = await industry.current_industry_and_source(conn, user_id, org_id)
+    locked = await industry.locked_industry(conn, org_id) is not None
     company = None
     if org_id:
         name = await conn.fetchval("SELECT name FROM organizations WHERE id::text = $1", org_id)
@@ -80,6 +81,8 @@ async def _industry_payload(conn, session: UserContext) -> dict:
         "industry": current,
         "source": source,
         "company": company,
+        # A partner company's people work only in its industry: the app shows no other industry and no switch.
+        "locked": locked,
         # Only an account row can keep a choice (the legacy single-user mode has none): the app asks only then.
         "can_choose": bool(user_id) and await conn.fetchval("SELECT 1 FROM users WHERE internal_uuid = $1", user_id) is not None,
         "options": [{"key": k, **v} for k, v in industry.INDUSTRIES.items()],
@@ -95,14 +98,20 @@ async def get_industry(session: UserContext = Depends(verify_session_required)):
 
 @router.put("/industry")
 async def put_industry(body: IndustryUpdate, session: UserContext = Depends(verify_session_required)):
-    """Save the user's own industry: agriculture, power_grid or telecom. It changes only what this user sees and
-    where their new projects go, for every user, a company's owners and admins too; the company's industry (the
-    default for members who never chose) is not changed here (Roger, 2026-10-12)."""
+    """Save the user's own industry: agriculture, power_grid or telecom. Refused for a partner company that has an
+    industry (its people work only in it). For the first person of a partner company without one, the choice becomes
+    the company's industry for everyone (src/services/industry.py)."""
     async with get_async_db_connection() as conn:
+        locked = await industry.locked_industry(conn, session.get_org_id())
+        if locked:
+            label = industry.INDUSTRIES[locked]["label"]
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"Your company works in {label}. Ask Ingabe if that needs to change.")
         try:
             saved = await industry.save_industry(conn, session.get_user_id(), body.industry)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         if not saved:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="saving an industry needs a signed-in account")
+        await industry.claim_company_industry(conn, session.get_org_id(), body.industry)
         return await _industry_payload(conn, session)

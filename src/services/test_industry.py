@@ -145,11 +145,12 @@ async def _project(conn, owner: str, project_industry: str, layer_id: str) -> st
 
 @pytest.mark.anyio
 async def test_current_industry_is_the_users_own_choice_else_the_companys():
+    """In Ingabe's own company (tier 'internal'): the user's own choice, else the company's default."""
     user, org = str(uuid.uuid4()), str(uuid.uuid4())
     async with get_async_db_connection() as conn:
         await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
-        await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, 'Mast Co', $2)", org,
-                           f"mast-{RUN_TAG}-{org[:8]}")
+        await conn.execute("INSERT INTO organizations (id, name, slug, tier) VALUES ($1::uuid, 'Mast Co', $2, 'internal')",
+                           org, f"mast-{RUN_TAG}-{org[:8]}")
         try:
             assert await industry.current_industry(conn, user, org) is None  # nobody chose yet
             assert await industry.industry_for_new_project(conn, user, org) == "agriculture"
@@ -165,6 +166,33 @@ async def test_current_industry_is_the_users_own_choice_else_the_companys():
             assert await industry.industry_for_new_project(conn, user, org) == "telecom"
         finally:
             await conn.execute("DELETE FROM organizations WHERE id = $1::uuid", org)
+            await conn.execute("DELETE FROM users WHERE internal_uuid = $1", user)
+
+
+@pytest.mark.anyio
+async def test_a_partner_companys_industry_beats_its_peoples_own_choice():
+    """A partner company with an industry is locked to it; its first choice is claimed once; Ingabe's is never."""
+    user, partner, ingabe = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    async with get_async_db_connection() as conn:
+        await conn.execute("INSERT INTO users (internal_uuid, industry) VALUES ($1, 'telecom')", user)
+        await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, 'Insure Co', $2)", partner,
+                           f"insure-{RUN_TAG}-{partner[:8]}")
+        await conn.execute("INSERT INTO organizations (id, name, slug, tier) VALUES ($1::uuid, 'Own Co', $2, 'internal')",
+                           ingabe, f"own-{RUN_TAG}-{ingabe[:8]}")
+        try:
+            assert await industry.locked_industry(conn, partner) is None  # no industry yet: its people choose
+            assert await industry.claim_company_industry(conn, partner, "agriculture")
+            assert not await industry.claim_company_industry(conn, partner, "power_grid")  # once
+            assert await industry.locked_industry(conn, partner) == "agriculture"
+            assert await industry.current_industry_and_source(conn, user, partner) == ("agriculture", "company")
+            assert await industry.industry_for_new_project(conn, user, partner) == "agriculture"
+
+            assert not await industry.claim_company_industry(conn, ingabe, "agriculture")  # Ingabe is never locked
+            await industry.save_company_industry(conn, ingabe, "power_grid")
+            assert await industry.locked_industry(conn, ingabe) is None
+            assert await industry.current_industry(conn, user, ingabe) == "telecom"
+        finally:
+            await conn.execute("DELETE FROM organizations WHERE id = ANY($1::uuid[])", [partner, ingabe])
             await conn.execute("DELETE FROM users WHERE internal_uuid = $1", user)
 
 

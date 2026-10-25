@@ -22,6 +22,7 @@ const MEMBER: IndustryState = {
   source: 'company',
   company: { name: 'Mast Co', industry: 'telecom' },
   can_choose: true,
+  locked: false,
   options: OPTIONS,
 };
 
