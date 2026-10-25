@@ -25,6 +25,25 @@ export function reportMapHealth(event: MapHealthEvent): void {
   }
 }
 
+// MapLibre's own map.remove() loses the WebGL context on purpose (WEBGL_lose_context, to free the GPU), so leaving a
+// map page fired 'webglcontextlost' and was counted as a map that lost its graphics: MapsFailingForUsers went off on
+// 2026-10-25 from people switching between maps. The listener is taken off before the app removes a map; only a
+// loss the app did not cause (the GPU reset, too many maps open) is reported.
+const graphicsWatch = new WeakMap<HTMLCanvasElement, () => void>();
+
+/** Report when this map's canvas loses its graphics (WebGL context), unless the app removes the map itself. */
+export function watchGraphics(canvas: HTMLCanvasElement): void {
+  const onLost = () => reportMapHealth('webgl_lost');
+  canvas.addEventListener('webglcontextlost', onLost);
+  graphicsWatch.set(canvas, () => canvas.removeEventListener('webglcontextlost', onLost));
+}
+
+/** Call right before map.remove(): its own context loss is not a failure. */
+export function stopWatchingGraphics(canvas: HTMLCanvasElement): void {
+  graphicsWatch.get(canvas)?.();
+  graphicsWatch.delete(canvas);
+}
+
 // A tile error worth counting is the server's or the network's fault: a 5xx or no answer at all (status 0).
 // A 401 (session ended) or 404 (a deleted layer) is not a broken map.
 export function isServerTileFailure(status: number | undefined): boolean {
