@@ -177,13 +177,19 @@ def _limit_words(unit: str, warn, bad, higher_worse: bool) -> str:
     side = "or more" if higher_worse else "or less"
     parts = [f"amber at {_show(warn, unit)} {side}" if warn is not None else "",
              f"red at {_show(bad, unit)} {side}" if bad is not None else ""]
-    return "; ".join(p for p in parts if p).capitalize() + "."
+    text = "; ".join(p for p in parts if p)
+    return text[:1].upper() + text[1:] + "."
 
 
 def alarm_rules() -> list[dict]:
     """Every alarm rule Prometheus runs (monitoring/alerts.yml), with its state now."""
-    with urllib.request.urlopen(f"{PROM}/api/v1/rules", timeout=20) as resp:
-        groups = json.load(resp)["data"]["groups"]
+    try:
+        with urllib.request.urlopen(f"{PROM}/api/v1/rules", timeout=20) as resp:
+            groups = json.load(resp)["data"]["groups"]
+    except Exception as e:  # noqa: BLE001 - one row saying so; the rest of the snapshot still goes out
+        return [{"step": "9 Monitoring", "area": "monitoring", "alarm": "(rules)", "severity": "", "state": "quiet",
+                 "since": "", "watches": f"could not read the alarm rules: {str(e)[:120]}", "where": "Prometheus",
+                 "condition": "", "for_minutes": 0, "healthy": False, "rule_error": str(e)[:200], "group": ""}]
     rows = []
     for g in groups:
         for r in g["rules"]:
@@ -211,7 +217,7 @@ def _env(name: str) -> str:
     try:
         for line in ENV_FILE.read_text().splitlines():
             if line.startswith(f"{name}="):
-                return line.split("=", 1)[1].strip()
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
         pass
     return os.environ.get(name, "")
@@ -233,8 +239,11 @@ def _log_text(line: str) -> str:
         obj = json.loads(line)
         if isinstance(obj, dict):
             text = " ".join(str(obj.get(k, "")) for k in ("level", "logger", "message") if obj.get(k))
-            if obj.get("exc_info") or obj.get("exception"):
-                last = str(obj.get("exc_info") or obj.get("exception")).strip().splitlines()[-1:]
+            exc = obj.get("exception") or obj.get("exc_info")
+            if isinstance(exc, dict):  # src/logging_json.py: {"type", "message", "traceback": [...]}
+                text += f" | {exc.get('type', '')}: {exc.get('message', '')}"
+            elif exc:
+                last = str(exc).strip().splitlines()[-1:]
                 text += (" | " + last[0]) if last else ""
             line = text or line
     except ValueError:

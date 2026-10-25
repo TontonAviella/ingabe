@@ -289,6 +289,8 @@ class TurnTrace:
         }
         self._tool_steps: dict[str, dict[str, Any]] = {}
         self._finished = False
+        # Only real turns go to the turn log; evals (scripts/eval_sage_routing.py, "sage.eval_case") stay out of it.
+        self._log_turn = name == "sage.turn" and self._environment != "eval"
         if tracer is None:
             return
         try:
@@ -457,12 +459,12 @@ class TurnTrace:
         name: str = "model_call",
     ) -> Observation:
         """Start a model call; ``end`` it with the reply or the error."""
-        step = self._step("model", model)
+        rec_step = self._step("model", model)
         self._record["model"] = model
 
         def on_end(level: str | None, status: str | None) -> None:
             failed = level == "ERROR"
-            self._end_step(step, status="error" if failed else "ok", error=status if failed else None)
+            self._end_step(rec_step, status="error" if failed else "ok", error=status if failed else None)
 
         if not self.enabled:
             return Observation(on_end=on_end)
@@ -581,7 +583,8 @@ class TurnTrace:
             rec["seconds"] = round(time.monotonic() - self._t0, 2)
             rec["outcome"] = "failed" if error else "cancelled" if "cancelled" in self._tags else "completed"
             rec["rules"] = sorted(t for t in self._tags if t != "turn_error")
-            sage_turn_log.save_soon(rec)
+            if self._log_turn:
+                sage_turn_log.save_soon(rec)
         except Exception:
             logger.debug("sage flight recorder: could not save the turn record", exc_info=True)
 

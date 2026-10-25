@@ -124,3 +124,25 @@ async def test_a_saved_turn_comes_back_in_the_summary() -> None:
     finally:
         async with get_async_db_connection() as conn:
             await conn.execute("DELETE FROM sage_turn_log WHERE conversation_id = $1", tool)
+
+
+def test_eval_cases_stay_out_of_the_turn_log(saved: list[dict]) -> None:
+    with fr.sage_turn_trace(session_id="e", user_id="u", name="sage.eval_case", environment="eval"):
+        pass
+    with fr.sage_turn_trace(session_id="e", user_id="u", environment="eval"):
+        pass
+    assert saved == []
+
+
+def test_model_calls_keep_their_step_number_in_langfuse() -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with fr.sage_turn_trace(session_id="1", user_id="u", tracer=provider.get_tracer("t")) as turn:
+        turn.generation(model="m", messages=[], tools=None, step=3).end(output="x")
+    span = next(s for s in exporter.get_finished_spans() if s.name == "model_call")
+    assert span.attributes["langfuse.observation.metadata.step"] == 3
