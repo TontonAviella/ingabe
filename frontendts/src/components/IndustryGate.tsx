@@ -60,7 +60,12 @@ export function switchIndustry(queryClient: QueryClient, wanted: IndustryKey): P
     body: JSON.stringify({ industry: wanted }),
   })
     .then(async (res) => {
-      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail ?? 'Could not switch your industry');
+      if (!res.ok) {
+        // Refused (403: the company works in one industry; 409: a colleague chose first): load the industry again,
+        // so the app shows the company's and a first-choice picker closes on it.
+        if (res.status === 403 || res.status === 409) queryClient.invalidateQueries({ queryKey: INDUSTRY_KEY });
+        throw new Error((await res.json().catch(() => null))?.detail ?? 'Could not switch your industry');
+      }
       const saved = (await res.json()) as IndustryState;
       queryClient.setQueryData(INDUSTRY_KEY, saved);
       queryClient.invalidateQueries({ queryKey: ['projects'] });

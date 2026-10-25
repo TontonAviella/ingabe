@@ -74,9 +74,15 @@ async def add_company(body: NewCompany, request: Request, session: UserContext =
         created = await asyncio.to_thread(workos_auth.create_partner, body.name, body.admin_email)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    # Set before anyone signs in, so the company's people only ever see this industry.
-    await _set_company_industry(created["organization_id"], created["name"], body.industry)
-    return {**created, "industry": body.industry}
+    # Set before anyone signs in, so the company's people only ever see this industry. A company that already existed
+    # (same name: the form was used to invite another admin) keeps its industry: that is changed on its own row.
+    async with get_async_db_connection() as conn:
+        org_id = await provision_organization(conn, created["organization_id"], created["name"])
+        current = await industry.company_industry(conn, org_id)
+        if created["created"] or current is None:
+            await industry.save_company_industry(conn, org_id, body.industry)
+            current = body.industry
+    return {**created, "industry": current, "industry_kept": current != body.industry}
 
 
 class CompanyIndustry(BaseModel):
@@ -92,8 +98,10 @@ async def set_company_industry(organization_id: str, body: CompanyIndustry, requ
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Choose one of the industries")
     try:
         name = await asyncio.to_thread(workos_auth.organization_name, organization_id)
-    except Exception:  # noqa: BLE001 - an unknown organization id
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such company")
+    except Exception as e:  # noqa: BLE001 - WorkOS SDK errors: only its 404 means the company does not exist
+        if getattr(e, "status_code", None) == 404:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such company") from e
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"WorkOS did not answer: {e}") from e
     await _set_company_industry(organization_id, name, body.industry)
     return {"organization_id": organization_id, "industry": body.industry}
 

@@ -37,6 +37,8 @@ services:
       - WORKOS_COOKIE_PASSWORD=${WORKOS_COOKIE_PASSWORD:-}
       - WORKOS_REDIRECT_URI=${WORKOS_REDIRECT_URI:-}
       - PLATFORM_ADMIN_EMAILS=${PLATFORM_ADMIN_EMAILS:-}
+      # WorkOS id(s) of Ingabe's own company: it sees every industry; partner companies work in one.
+      - INGABE_WORKOS_ORG_IDS=${INGABE_WORKOS_ORG_IDS:-}
       - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-s3user}
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-changeme}
       - S3_DEFAULT_REGION=${S3_DEFAULT_REGION:-us-east-1}

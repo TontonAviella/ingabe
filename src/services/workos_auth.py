@@ -489,6 +489,12 @@ def _platform_admins() -> list[str]:
     return [e.strip().lower() for e in os.environ.get("PLATFORM_ADMIN_EMAILS", "").split(",") if e.strip()]
 
 
+def internal_organization_ids() -> set[str]:
+    """The WorkOS ids of Ingabe's own company (INGABE_WORKOS_ORG_IDS, comma-separated): it sees every industry
+    (organizations.tier 'internal'; src/services/industry.py)."""
+    return {o.strip() for o in os.environ.get("INGABE_WORKOS_ORG_IDS", "").split(",") if o.strip()}
+
+
 def is_platform_staff(email: Optional[str]) -> bool:
     """Ingabe staff who may add companies: PLATFORM_ADMIN_EMAILS, comma-separated."""
     return bool(email) and email.strip().lower() in _platform_admins()

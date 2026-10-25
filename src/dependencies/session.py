@@ -175,14 +175,18 @@ async def provision_organization(conn, workos_org_id: str, name: str) -> str:
     """The internal organizations.id for a WorkOS org, creating its row (named from WorkOS) if needed. Used at a
     member's first sign-in and when Ingabe staff add a company (so its industry can be set before anyone signs in)."""
     org_id = await conn.fetchval("SELECT id::text FROM organizations WHERE workos_org_id = $1", workos_org_id)
+    internal = workos_org_id in workos_auth.internal_organization_ids()  # Ingabe's own company: every industry
     if org_id is None:
         base = "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-") or "org"
         org_id = await conn.fetchval(
-            "INSERT INTO organizations (name, slug, workos_org_id) VALUES ($1, $2, $3) "
+            "INSERT INTO organizations (name, slug, workos_org_id, tier) VALUES ($1, $2, $3, $4) "
             "ON CONFLICT (workos_org_id) DO UPDATE SET name = EXCLUDED.name RETURNING id::text",
-            name, f"{base}-{workos_org_id[-6:].lower()}", workos_org_id,
+            name, f"{base}-{workos_org_id[-6:].lower()}", workos_org_id, "internal" if internal else "partner",
         )
         logger.info("Provisioned organization %s (%s) -> %s", name, workos_org_id, org_id)
+    elif internal:
+        await conn.execute("UPDATE organizations SET tier = 'internal' WHERE id::text = $1 AND tier <> 'internal'",
+                           org_id)
     _workos_org_ids[workos_org_id] = org_id
     return org_id
 

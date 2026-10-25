@@ -179,3 +179,49 @@ async def test_a_partner_company_works_in_one_industry(client):
             await conn.execute("DELETE FROM organizations WHERE id = $1::uuid", org)
             await conn.execute("DELETE FROM users WHERE internal_uuid = ANY($1)", [first, second])
 
+
+
+@pytest.mark.anyio
+async def test_only_a_first_choice_claims_a_partner_company(client):
+    """A member who already chose and later switches (a tab, a shared map) never moves the company; a second person
+    whose first choice matches the claimed industry is simply saved; one who lost the race is told."""
+    import uuid
+
+    from src.database.pool import get_async_db_connection
+    from src.dependencies.session import WorkOSUserContext, verify_session_required
+    from src.wsgi import app
+
+    veteran, newcomer, late = (str(uuid.uuid4()) for _ in range(3))
+    org = str(uuid.uuid4())
+    async with get_async_db_connection() as conn:
+        for user in (veteran, newcomer, late):
+            await conn.execute("INSERT INTO users (internal_uuid) VALUES ($1)", user)
+        await conn.execute("UPDATE users SET industry = 'agriculture' WHERE internal_uuid = $1", veteran)
+        await conn.execute("INSERT INTO organizations (id, name, slug) VALUES ($1::uuid, 'Open Co', $2)",
+                           org, f"open-{org[:8]}")
+
+    def as_(user):
+        app.dependency_overrides[verify_session_required] = lambda: WorkOSUserContext(user, f"w-{user[:6]}", org_id=org,
+                                                                                      org_role="member")
+
+    async def company():
+        async with get_async_db_connection() as conn:
+            return await conn.fetchval("SELECT industry FROM organizations WHERE id = $1::uuid", org)
+
+    try:
+        as_(veteran)  # had chosen before: a switch is theirs only, the company stays unclaimed
+        assert (await client.put("/api/user/industry", json={"industry": "telecom"})).status_code == 200
+        assert await company() is None
+        as_(newcomer)  # a first choice claims it
+        assert (await client.put("/api/user/industry", json={"industry": "power_grid"})).json()["locked"] is True
+        assert await company() == "power_grid"
+        as_(late)  # their first choice matches: saved, no error
+        assert (await client.put("/api/user/industry", json={"industry": "power_grid"})).status_code == 200
+        as_(late)  # a different one is refused, naming the company's
+        refused = await client.put("/api/user/industry", json={"industry": "agriculture"})
+        assert refused.status_code == 403 and "Power Grid" in refused.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(verify_session_required, None)
+        async with get_async_db_connection() as conn:
+            await conn.execute("DELETE FROM organizations WHERE id = $1::uuid", org)
+            await conn.execute("DELETE FROM users WHERE internal_uuid = ANY($1)", [veteran, newcomer, late])

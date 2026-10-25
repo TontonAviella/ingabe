@@ -102,16 +102,27 @@ async def put_industry(body: IndustryUpdate, session: UserContext = Depends(veri
     industry (its people work only in it). For the first person of a partner company without one, the choice becomes
     the company's industry for everyone (src/services/industry.py)."""
     async with get_async_db_connection() as conn:
-        locked = await industry.locked_industry(conn, session.get_org_id())
+        org_id = session.get_org_id()
+        locked = await industry.locked_industry(conn, org_id)
+        if locked == body.industry:  # already where the company works (e.g. a second person's first choice)
+            return await _industry_payload(conn, session)
         if locked:
-            label = industry.INDUSTRIES[locked]["label"]
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Your company works in {label}. Ask Ingabe if that needs to change.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_locked_message(locked))
+        # Only a person's first choice can give an unclaimed company its industry: a later switch (a tab, a shared
+        # map from another industry) must never move a whole company.
+        first_choice = await industry.industry_of(conn, session.get_user_id()) is None
         try:
             saved = await industry.save_industry(conn, session.get_user_id(), body.industry)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
         if not saved:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="saving an industry needs a signed-in account")
-        await industry.claim_company_industry(conn, session.get_org_id(), body.industry)
+        if first_choice and not await industry.claim_company_industry(conn, org_id, body.industry):
+            won = await industry.locked_industry(conn, org_id)
+            if won and won != body.industry:  # a colleague chose first, a moment ago
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_locked_message(won))
         return await _industry_payload(conn, session)
+
+
+def _locked_message(locked: str) -> str:
+    return f"Your company works in {industry.INDUSTRIES[locked]['label']}. Ask Ingabe if that needs to change."

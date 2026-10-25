@@ -168,13 +168,22 @@ export default function Companies() {
     e.preventDefault();
     setAdding(true);
     try {
-      const res = await call<{ name: string; created: boolean; invitation: { resent?: boolean } }>('', {
+      const res = await call<{
+        name: string;
+        created: boolean;
+        invitation: { resent?: boolean };
+        industry: string;
+        industry_kept: boolean;
+      }>('', {
         method: 'POST',
         body: JSON.stringify({ name: name.trim(), admin_email: adminEmail.trim(), industry: newIndustry }),
       });
       const sent = res.invitation?.resent ? 'was already invited: invitation sent again' : 'invitation sent';
+      const kept = res.industry_kept
+        ? `; it keeps its industry (${industries.find((o) => o.key === res.industry)?.label ?? res.industry}): change it on its row`
+        : '';
       toast.success(
-        res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}`,
+        res.created ? `${res.name} added; ${adminEmail.trim()} ${sent}` : `${res.name} already exists; ${adminEmail.trim()} ${sent}${kept}`,
       );
       setName('');
       setAdminEmail('');
